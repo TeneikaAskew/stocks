@@ -1,4 +1,5 @@
 # PowerShell script to build and run Docker containers on Windows
+# If this script doesn't run, try: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 Write-Host "Building and starting Docker containers..." -ForegroundColor Green
 
@@ -20,7 +21,7 @@ Start-Sleep -Seconds 5
 Write-Host "`nContainer status:" -ForegroundColor Green
 docker-compose ps
 
-Write-Host "`nJupyter Notebook is available at: http://localhost:8888" -ForegroundColor Cyan
+Write-Host "`nJupyter Notebook is available at: http://localhost:8889" -ForegroundColor Cyan
 Write-Host "Claude Code container is running. Access it with: docker exec -it stocks-claude-code-image bash" -ForegroundColor Cyan
 
 Write-Host "`nTo stop containers, run: docker-compose down" -ForegroundColor Yellow
