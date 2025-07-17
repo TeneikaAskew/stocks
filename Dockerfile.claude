@@ -1,0 +1,20 @@
+FROM node:18-slim
+
+WORKDIR /workspace
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code globally
+RUN npm install -g @anthropic-ai/claude-code
+
+# Set up volume mount point
+VOLUME ["/workspace"]
+
+# Keep container running
+CMD ["tail", "-f", "/dev/null"]
