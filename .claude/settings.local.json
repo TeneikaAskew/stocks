@@ -1,7 +1,23 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:docs.anthropic.com)"
+      "WebFetch(domain:docs.anthropic.com)",
+      "Bash(python:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(pip install:*)",
+      "Bash(pip3 install:*)",
+      "Bash(apt-get:*)",
+      "Bash(apt-get install:*)",
+      "Bash(docker-compose:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker compose build:*)",
+      "Bash(hostname)",
+      "Bash(grep:*)",
+      "Bash(awk:*)",
+      "WebFetch(domain:robinhood.com)",
+      "WebFetch(domain:learn.robinhood.com)"
     ],
     "deny": []
   }

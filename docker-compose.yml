@@ -12,6 +12,14 @@ services:
     environment:
       - JUPYTER_ENABLE_LAB=yes
     command: jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
     networks:
       - app-network
 
@@ -28,6 +36,14 @@ services:
     working_dir: /workspace
     environment:
       - TERM=xterm-256color
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
     networks:
       - app-network
 

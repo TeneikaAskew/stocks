@@ -22,6 +22,6 @@ Write-Host "`nContainer status:" -ForegroundColor Green
 docker-compose ps
 
 Write-Host "`nJupyter Notebook is available at: http://localhost:8889" -ForegroundColor Cyan
-Write-Host "Claude Code container is running. Access it with: docker exec -it stocks-claude-code-image bash" -ForegroundColor Cyan
+Write-Host "Claude Code container is running. Access it with: docker exec -it stocks-claude-code bash" -ForegroundColor Cyan
 
 Write-Host "`nTo stop containers, run: docker-compose down" -ForegroundColor Yellow
