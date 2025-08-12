@@ -23,12 +23,29 @@
   - Current pre-market price
 - [ ] Check if other indices (SPY, QQQ) are aligned or diverging
 
-### ✅ YOUR Key Indicator Levels (Based on Your Patterns)
-- [ ] Current RSI position:
-  - If RSI < 45: Potential CALL setup developing
-  - If RSI > 50: Potential PUT setup developing
-  - **Note**: You DON'T trade extremes (<30 or >70)
-- [ ] Note current ATR for volatility context (your avg: 0.10)
+### ✅ YOUR Key Indicator Levels (Based on Pipeline Analysis)
+
+**TIME WINDOWS (Your Performance):**
+- [ ] 10:00 AM - 2:00 PM: Your best window (83% win, 0.255% avg)
+- [ ] 9:35 AM - 2:30 PM: Good extended window (88% win, 0.244% avg)
+- [ ] 2:00 PM - 3:55 PM: Late day works (100% win, 0.120% avg)
+- [ ] 9:30 AM - 10:00 AM: Weakest window (50% win, avoid)
+
+**RSI SWEET SPOTS:**
+- [ ] Entry RSI < 30: Excellent for entries (100% win, 0.327% avg)
+- [ ] Entry RSI > 70: Also excellent (100% win, 0.324% avg)
+- [ ] Exit RSI < 30: Strong exit signal (80% win, 0.237% avg)
+- [ ] Current RSI position: _____
+
+**VOLATILITY (ATR) LEVELS:**
+- [ ] ATR ≥ 0.15: Best volatility (100% win, 0.391% avg)
+- [ ] ATR ≥ 0.10: Good volatility (100% win, 0.392% avg)
+- [ ] ATR ≥ 0.08: Minimum preferred (83% win, 0.293% avg)
+- [ ] Current ATR: _____
+
+**VOLUME TARGETS:**
+- [ ] Exit RVOL ≥ 2.0x: Best exit volume (100% win, 0.249% avg)
+- [ ] Exit RVOL ≥ 1.2x: Good exit volume (87% win, 0.227% avg)
 - [ ] VWAP will calculate at open - prepare to track
 
 ### ✅ Volume Context
@@ -40,21 +57,49 @@
 
 ## 2. Final Preparation (9:25-9:30 AM)
 
-### ✅ Your Trade Setup Criteria
+### ✅ Your Trade Setup Criteria (Based on Pipeline Analysis)
 
-**FOR CALLS (Your 80% Win Rate Pattern):**
-- [ ] RSI between 27-66 (your range, avg 42)
-- [ ] Price can be BELOW VWAP (80% of your CALLs were)
-- [ ] Look for slight upward momentum
-- [ ] StochRSI not extreme (your avg: 31)
-- [ ] Plan for 9-21 minute holds
+**TOP PRIORITY SETUP COMBINATIONS:**
 
-**FOR PUTS (Your 86% Win Rate Pattern):**
-- [ ] RSI between 33-72 (your range, avg 55)
-- [ ] Price often ABOVE VWAP (71% of your PUTs were)
-- [ ] Look for slight downward momentum
-- [ ] StochRSI can be higher (your avg: 65)
-- [ ] Plan for 22-45 minute holds
+**FOR CALLS:**
+1. **CALL Bias Met** (100% win rate, 0.306% avg return)
+   - [ ] 20 EMA > 50 EMA
+   - [ ] Price > VWAP  
+   - [ ] RSI > 50
+   - This is your highest probability CALL setup
+
+2. **CALL Momentum Met** (86% win rate, 0.186% avg return)
+   - [ ] 9 EMA > 20 EMA
+   - [ ] RSI > 50
+   - Good for quicker entries
+
+3. **Full CALL Setup** (100% win rate, 0.143% avg return)
+   - [ ] All bias criteria met
+   - [ ] All momentum criteria met
+   - [ ] RVOL ≥ 1.0x
+   - Most restrictive but consistent
+
+**FOR PUTS:**
+1. **Full PUT Setup** (100% win rate, 0.196% avg return)
+   - [ ] 20 EMA < 50 EMA
+   - [ ] Price < VWAP
+   - [ ] RSI < 50
+   - [ ] RVOL ≥ 1.0x
+   - Your best PUT setup
+
+2. **PUT Bias Met** (80% win rate, 0.142% avg return)
+   - [ ] 20 EMA < 50 EMA
+   - [ ] Price < VWAP
+   - [ ] RSI < 50
+
+3. **PUT Momentum Met** (80% win rate, 0.142% avg return)
+   - [ ] 9 EMA < 20 EMA
+   - [ ] RSI < 50
+
+**YOUR CONTRARIAN EDGE (Still Valid):**
+- [ ] CALLs often work BELOW VWAP (opposite of bias criteria)
+- [ ] PUTs often work ABOVE VWAP (opposite of bias criteria)
+- [ ] Plan for standard hold times: CALLs 9-21 min, PUTs 22-45 min
 
 ### ✅ Position Planning
 - [ ] Have option chains ready (0-1 DTE ATM)
@@ -133,14 +178,18 @@
 
 ---
 
-## Quick Decision Matrix
+## Quick Decision Matrix (Updated with Pipeline Insights)
 
-| Signal | Your Action |
-|--------|------------|
-| RSI 35, slight up move | Consider CALL (9 min target) |
-| RSI 55, slight down move | Consider PUT (22 min target) |
-| RSI 25 or 75 | WAIT - Too extreme for your style |
-| Big gap, high volume | WAIT - Let it settle |
-| Choppy, no direction | SKIP - Wait for your setup |
+| Signal | Your Action | Win Rate | Avg Return |
+|--------|------------|----------|------------|
+| **CALL Bias Met** (20EMA>50EMA, Price>VWAP, RSI>50) | Strong CALL Entry | 100% | 0.306% |
+| **Full PUT Setup** (All criteria met + RVOL≥1.0) | Strong PUT Entry | 100% | 0.196% |
+| **RSI < 30** at entry | Excellent entry signal | 100% | 0.327% |
+| **RSI > 70** at entry | Excellent entry signal | 100% | 0.324% |
+| **ATR ≥ 0.15** | High volatility - trade larger | 100% | 0.391% |
+| **10:00 AM - 2:00 PM** window | Best trading time | 83% | 0.255% |
+| **Exit RVOL ≥ 2.0x** | Strong exit signal | 100% | 0.249% |
+| **9:30-10:00 AM** | Avoid - low win rate | 50% | 0.003% |
+| Choppy, no clear setup | SKIP - Wait for criteria | - | - |
 
 **Remember**: You're not trading textbook patterns. You're trading YOUR proven edge!
