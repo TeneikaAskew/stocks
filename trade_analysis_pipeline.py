@@ -1784,50 +1784,120 @@ class TradeAnalysisPipeline:
         print(f"   Average duration: {results['basic_stats']['avg_duration_min']:.1f} minutes")
         print(f"   Average return: {results['basic_stats']['avg_return_pct']:.3f}%")
         
-        # 2. Performance Metrics
-        print("\n2. PERFORMANCE METRICS:")
-        results['performance_metrics'] = self._analyze_performance_metrics(df)
+        # 2. Trade Performance Analysis (combines performance metrics, setups, combinations)
+        print("\n2. TRADE PERFORMANCE ANALYSIS:")
+        perf_results = self._analyze_trade_performance(df)
+        results.update(perf_results)
         
-        # 3. RSI Patterns
-        print("\n3. RSI PATTERNS:")
-        results['rsi_patterns'] = self._analyze_rsi_patterns(df)
+        # 3. Market Indicators Analysis (combines RSI, MA, StochRSI)
+        print("\n3. MARKET INDICATORS ANALYSIS:")
+        indicator_results = self._analyze_market_indicators(df)
+        results.update(indicator_results)
         
-        # 4. Moving Average Patterns
-        print("\n4. MOVING AVERAGE PATTERNS:")
-        results['ma_patterns'] = self._analyze_ma_patterns(df)
+        # 4. Market Conditions Analysis (combines volume, volatility, time patterns)
+        print("\n4. MARKET CONDITIONS ANALYSIS:")
+        condition_results = self._analyze_market_conditions(df)
+        results.update(condition_results)
         
-        # 5. StochRSI Patterns
-        print("\n5. STOCHRSI PATTERNS:")
-        results['stochrsi_patterns'] = self._analyze_stochrsi_patterns(df)
-        
-        # 6. Volume Patterns
-        print("\n6. VOLUME (RVOL) PATTERNS:")
-        results['volume_patterns'] = self._analyze_volume_patterns(df)
-        
-        # 7. Volatility Patterns
-        print("\n7. VOLATILITY (ATR) PATTERNS:")
-        results['volatility_patterns'] = self._analyze_volatility_patterns(df)
-        
-        # 8. Time-based Patterns
-        print("\n8. TIME-BASED PATTERNS:")
-        results['time_patterns'] = self._analyze_time_patterns(df)
-        
-        # 9. Setup Analysis
-        print("\n9. SETUP ANALYSIS:")
-        results['setup_analysis'] = self._analyze_setups(df)
-        
-        # 10. Powerful Indicator Combinations
-        print("\n10. POWERFUL INDICATOR COMBINATIONS:")
-        results['indicator_combinations'] = self._analyze_indicator_combinations(df)
-        
-        # 11. Key Insights
-        print("\n11. KEY INSIGHTS:")
+        # 5. Key Insights
+        print("\n5. KEY INSIGHTS:")
         results['key_insights'] = self._generate_key_insights(results)
         
         for insight in results['key_insights']:
             print(f"   • {insight}")
         
         return results
+    
+    def _analyze_trade_performance(self, df):
+        """Consolidated analysis of trade performance, setups, and combinations"""
+        results = {}
+        
+        # Performance metrics
+        print("   > Analyzing performance metrics...")
+        results['performance_metrics'] = self._calculate_performance_metrics(df)
+        
+        # Setup analysis
+        print("   > Analyzing setup effectiveness...")
+        results['setup_analysis'] = self._calculate_setup_effectiveness(df)
+        
+        # Indicator combinations
+        print("   > Analyzing powerful indicator combinations...")
+        results['indicator_combinations'] = self._calculate_indicator_combinations(df)
+        
+        return results
+    
+    def _analyze_market_indicators(self, df):
+        """Consolidated analysis of market indicators (RSI, MA, StochRSI)"""
+        results = {}
+        
+        # RSI patterns
+        print("   > Analyzing RSI patterns...")
+        results['rsi_patterns'] = self._calculate_rsi_patterns(df)
+        
+        # Moving average patterns
+        print("   > Analyzing moving average patterns...")
+        results['ma_patterns'] = self._calculate_ma_patterns(df)
+        
+        # StochRSI patterns
+        print("   > Analyzing StochRSI patterns...")
+        results['stochrsi_patterns'] = self._calculate_stochrsi_patterns(df)
+        
+        return results
+    
+    def _analyze_market_conditions(self, df):
+        """Consolidated analysis of market conditions (volume, volatility, time)"""
+        results = {}
+        
+        # Volume patterns
+        print("   > Analyzing volume (RVOL) patterns...")
+        results['volume_patterns'] = self._calculate_volume_patterns(df)
+        
+        # Volatility patterns
+        print("   > Analyzing volatility (ATR) patterns...")
+        results['volatility_patterns'] = self._calculate_volatility_patterns(df)
+        
+        # Time patterns
+        print("   > Analyzing time-based patterns...")
+        results['time_patterns'] = self._calculate_time_patterns(df)
+        
+        return results
+    
+    # Mapping methods to new names for clarity
+    def _calculate_performance_metrics(self, df):
+        """Calculate performance metrics"""
+        return self._analyze_performance_metrics(df)
+    
+    def _calculate_setup_effectiveness(self, df):
+        """Calculate setup effectiveness"""
+        return self._analyze_setups(df)
+    
+    def _calculate_indicator_combinations(self, df):
+        """Calculate indicator combinations"""
+        return self._analyze_indicator_combinations(df)
+    
+    def _calculate_rsi_patterns(self, df):
+        """Calculate RSI patterns"""
+        return self._analyze_rsi_patterns(df)
+    
+    def _calculate_ma_patterns(self, df):
+        """Calculate moving average patterns"""
+        return self._analyze_ma_patterns(df)
+    
+    def _calculate_stochrsi_patterns(self, df):
+        """Calculate StochRSI patterns"""
+        return self._analyze_stochrsi_patterns(df)
+    
+    def _calculate_volume_patterns(self, df):
+        """Calculate volume patterns"""
+        return self._analyze_volume_patterns(df)
+    
+    def _calculate_volatility_patterns(self, df):
+        """Calculate volatility patterns"""
+        return self._analyze_volatility_patterns(df)
+    
+    def _calculate_time_patterns(self, df):
+        """Calculate time-based patterns"""
+        return self._analyze_time_patterns(df)
     
     def _analyze_performance_metrics(self, df):
         """Analyze overall performance metrics"""
@@ -1853,11 +1923,7 @@ class TradeAnalysisPipeline:
         metrics['return_p75'] = df['Return_Pct'].quantile(0.75)
         metrics['return_p90'] = df['Return_Pct'].quantile(0.90)
         
-        print(f"   Overall win rate: {metrics['overall_win_rate']*100:.1f}%")
-        print(f"   CALL win rate: {metrics['call_win_rate']*100:.1f}%")
-        print(f"   PUT win rate: {metrics['put_win_rate']*100:.1f}%")
-        print(f"   Return distribution - 50th percentile: {metrics['return_p50']:.3f}%")
-        print(f"   Return distribution - 90th percentile: {metrics['return_p90']:.3f}%")
+        # Print output handled by parent method
         
         return metrics
     
