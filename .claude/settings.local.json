@@ -20,7 +20,13 @@
       "WebFetch(domain:learn.robinhood.com)",
       "Bash(rm:*)",
       "Bash(mkdir:*)",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "Bash(true)",
+      "Bash(/dev/null)",
+      "Bash(if [ -f /.dockerenv ])",
+      "Bash(then echo \"In Docker container\")",
+      "Bash(fi)",
+      "Bash(docker exec:*)"
     ],
     "deny": []
   }

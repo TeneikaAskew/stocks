@@ -1,6 +1,6 @@
 # Trade Analysis Report
 
-Generated: 2025-08-09 17:32:20
+Generated: 2025-08-12 07:08:13
 
 ---
 
@@ -86,17 +86,17 @@ Generated: 2025-08-09 17:32:20
 
 ## Similar Trades Found
 
-- **Total Similar Trades**: 9918
-- **CALL Trades**: 4894
-- **PUT Trades**: 5024
-- **Average Expected Return**: 0.27%
+- **Total Similar Trades**: 36547
+- **CALL Trades**: 18650
+- **PUT Trades**: 17897
+- **Average Expected Return**: 0.34%
 
 ### Top 5 Opportunities
-- 2025-08-01 09:30:00: PUT - 1.68% expected
-- 2025-06-11 08:20:00: CALL - 1.67% expected
-- 2025-06-11 08:18:00: CALL - 1.67% expected
-- 2025-07-30 14:44:00: PUT - 1.65% expected
-- 2025-07-30 14:36:00: PUT - 1.64% expected
+- 2025-04-07 09:43:00: CALL - 10.49% expected
+- 2025-04-07 09:44:00: CALL - 10.31% expected
+- 2025-04-07 09:46:00: CALL - 9.75% expected
+- 2025-04-07 09:47:00: CALL - 9.37% expected
+- 2025-04-07 09:48:00: CALL - 9.25% expected
 
 ## Key Insights
 
