@@ -26,7 +26,8 @@
       "Bash(if [ -f /.dockerenv ])",
       "Bash(then echo \"In Docker container\")",
       "Bash(fi)",
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": []
   }

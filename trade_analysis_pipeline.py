@@ -13,6 +13,8 @@ import numpy as np
 import os
 from datetime import datetime
 import glob
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import multiprocessing
 
 class TradeAnalysisPipeline:
     def __init__(self):
@@ -20,6 +22,55 @@ class TradeAnalysisPipeline:
         self.iwm_df = None
         self.pivoted_trades = None
         self.search_months = 1  # Default to 1 month
+        
+        # Phase 3: DataFrame cache to avoid re-reading CSVs
+        self._cache = {
+            'similar_trades': None,
+            'criteria_effectiveness': None,
+            'trades_enriched': None
+        }
+    
+    def _get_cached_df(self, key, file_path):
+        """Get DataFrame from cache or read from file if not cached"""
+        if self._cache[key] is None:
+            if os.path.exists(file_path):
+                self._cache[key] = pd.read_csv(file_path)
+        return self._cache[key]
+    
+    def _clear_cache(self):
+        """Clear the DataFrame cache"""
+        for key in self._cache:
+            self._cache[key] = None
+    
+    def _vectorized_criteria_analysis(self, criteria_df, boolean_cols):
+        """Vectorized version of criteria effectiveness analysis"""
+        # Pre-calculate masks for all criteria at once
+        criteria_masks = criteria_df[boolean_cols] == 1
+        
+        # Calculate statistics for all criteria using vectorized operations
+        results = []
+        
+        # Use vectorized operations for each criterion
+        for criterion in boolean_cols:
+            mask = criteria_masks[criterion]
+            trades_met = mask.sum()
+            
+            if trades_met >= 100:  # Minimum threshold
+                # Vectorized calculations
+                profitable_met = (criteria_df.loc[mask, 'Trade_Profitable']).sum()
+                win_rate = profitable_met / trades_met
+                avg_return = criteria_df.loc[mask, 'Return_Pct'].mean()
+                total_return = criteria_df.loc[mask, 'Return_Pct'].sum()
+                
+                results.append({
+                    'Criterion': criterion,
+                    'Trades_Met': trades_met,
+                    'Win_Rate': win_rate,
+                    'Avg_Return': avg_return,
+                    'Total_Return': total_return
+                })
+        
+        return pd.DataFrame(results)
         
     def clean_old_files(self):
         """Clean up old test and validation files"""
@@ -852,7 +903,7 @@ class TradeAnalysisPipeline:
         print("="*60)
         
         # Load the SIMILAR trades criteria analysis file (not the original trades)
-        criteria_df = pd.read_csv('data/similar_trades_pipeline.csv')
+        criteria_df = self._get_cached_df('similar_trades', 'data/similar_trades_pipeline.csv')
         
         # Get all boolean columns (those with 0/1 values)
         boolean_cols = []
@@ -865,33 +916,10 @@ class TradeAnalysisPipeline:
         
         print(f"\nAnalyzing {len(boolean_cols)} boolean criteria...")
         
-        # Analyze criteria effectiveness
-        criteria_results = []
-        
-        for criterion in boolean_cols:
-            # Get trades where this criterion is met
-            met_mask = criteria_df[criterion] == 1
-            met_trades = criteria_df[met_mask]
-            
-            if len(met_trades) > 0:
-                # Calculate statistics
-                total_met = len(met_trades)
-                profitable_met = met_trades['Trade_Profitable'].sum()
-                win_rate = profitable_met / total_met if total_met > 0 else 0
-                avg_return = met_trades['Return_Pct'].mean()
-                
-                # Only include criteria that have at least 100 trades (for similar trades dataset)
-                if total_met >= 100:
-                    criteria_results.append({
-                        'Criterion': criterion,
-                        'Trades_Met': total_met,
-                        'Win_Rate': win_rate,
-                        'Avg_Return': avg_return,
-                        'Total_Return': met_trades['Return_Pct'].sum()
-                    })
+        # Use vectorized analysis for better performance
+        criteria_results_df = self._vectorized_criteria_analysis(criteria_df, boolean_cols)
         
         # Sort by average return
-        criteria_results_df = pd.DataFrame(criteria_results)
         criteria_results_df = criteria_results_df.sort_values('Avg_Return', ascending=False)
         
         # Save detailed results
@@ -1493,7 +1521,7 @@ class TradeAnalysisPipeline:
         # Entry indicators analysis
         report_lines.append("\n## Entry Indicator Analysis\n")
         
-        enriched_df = pd.read_csv('data/trades_enriched.csv')
+        enriched_df = self._get_cached_df('trades_enriched', 'data/trades_enriched.csv')
         entries = enriched_df[enriched_df['Exit_Type'] == 'EXIT']
         
         for trade_type in ['CALL', 'PUT']:
@@ -1520,7 +1548,7 @@ class TradeAnalysisPipeline:
         
         # Similar trades found
         if os.path.exists('data/similar_trades_pipeline.csv'):
-            similar_df = pd.read_csv('data/similar_trades_pipeline.csv')
+            similar_df = self._get_cached_df('similar_trades', 'data/similar_trades_pipeline.csv')
             if len(similar_df) > 0:
                 report_lines.append("\n## Similar Trades Found\n")
                 report_lines.append(f"- **Total Similar Trades**: {len(similar_df)}")
@@ -1536,8 +1564,8 @@ class TradeAnalysisPipeline:
         
         # Add Top 20 Criteria by Return (separated by CALL vs PUT)
         if os.path.exists('data/criteria_effectiveness.csv'):
-            criteria_results_df = pd.read_csv('data/criteria_effectiveness.csv')
-            criteria_df = pd.read_csv('data/similar_trades_pipeline.csv')
+            criteria_results_df = self._get_cached_df('criteria_effectiveness', 'data/criteria_effectiveness.csv')
+            criteria_df = self._get_cached_df('similar_trades', 'data/similar_trades_pipeline.csv')
             
             report_lines.append("\n## Top 20 Criteria by Average Return\n")
             
@@ -1751,7 +1779,7 @@ class TradeAnalysisPipeline:
         print("="*60)
         
         # Load the similar trades data
-        df = pd.read_csv('data/similar_trades_pipeline.csv')
+        df = self._get_cached_df('similar_trades', 'data/similar_trades_pipeline.csv')
         
         results = {
             'basic_stats': {},
