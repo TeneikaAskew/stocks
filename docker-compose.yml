@@ -27,7 +27,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.claude
-    container_name: stocks-claude-code-image
+    container_name: stocks-claude-code
     stdin_open: true
     tty: true
     volumes:
@@ -39,7 +39,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
           cpus: '1.0'
         reservations:
           memory: 1G

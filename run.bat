@@ -18,7 +18,7 @@ docker-compose ps
 
 echo.
 echo Jupyter Notebook is available at: http://localhost:8888
-echo Claude Code container is running. Access it with: docker exec -it stocks-claude-code-image bash
+echo Claude Code container is running. Access it with: docker exec -it stocks-claude-code bash
 echo.
 echo To stop containers, run: docker-compose down
 pause
