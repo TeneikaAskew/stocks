@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IWM Live Trading Dashboard - Polygon.io REST API</title>
+    <title>IWM Live Trading Dashboard - Polygon.io</title>
     <style>
         * {
             margin: 0;
@@ -478,10 +478,44 @@
             animation: spin 1s ease-in-out infinite;
         }
 
+        .button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .button:active {
+            transform: translateY(0);
+        }
+
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
 
+        @media (max-width: 768px) {
+            .trade-cards {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 1.8em;
+            }
+            
+            .price-header {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
         /* Audio Alert Styles */
         .alert-config {
             position: fixed;
@@ -709,7 +743,7 @@
     <div class="container">
         <div class="header">
             <h1>IWM Live Trading Dashboard</h1>
-            <p>1-minute delayed data with extended hours (9 AM - 9 PM ET) powered by Polygon.io Free Tier</p>
+            <p>Real-time data with extended hours (9 AM - 9 PM ET) powered by Polygon.io REST API</p>
         </div>
 
         <div class="status-bar">
@@ -718,16 +752,16 @@
                 <span id="marketStatusText">Market Closed</span>
             </div>
             <div class="status-item">
-                <span class="websocket-status disconnected" id="wsStatus">📊 Disconnected</span>
+                <span class="websocket-status disconnected" id="wsStatus">⚡ Disconnected</span>
             </div>
             <div class="status-item">
                 <span id="lastUpdate">Last Update: Never</span>
             </div>
             <div class="status-item">
-                <span id="tickCount">Updates: 0</span>
+                <span id="tickCount">Ticks: 0</span>
             </div>
             <div class="status-item">
-                <button id="connectBtn" onclick="toggleConnection()">🔌 Connect</button>
+                <button class="button" id="connectBtn" onclick="toggleConnection()">🔌 Connect</button>
             </div>
         </div>
 
@@ -758,34 +792,6 @@
             <div class="ticker-item">
                 <span class="ticker-label">LAST SIZE:</span>
                 <span class="ticker-value" id="lastSize">--</span>
-            </div>
-        </div>
-
-        <!-- Technical Indicators Row -->
-        <div class="real-time-ticker" style="background: rgba(102, 126, 234, 0.05); border: 1px solid rgba(102, 126, 234, 0.2);">
-            <div class="ticker-item">
-                <span class="ticker-label">EMA9:</span>
-                <span class="ticker-value" id="ema9Value">--</span>
-            </div>
-            <div class="ticker-item">
-                <span class="ticker-label">EMA20:</span>
-                <span class="ticker-value" id="ema20Value">--</span>
-            </div>
-            <div class="ticker-item">
-                <span class="ticker-label">EMA50:</span>
-                <span class="ticker-value" id="ema50Value">--</span>
-            </div>
-            <div class="ticker-item">
-                <span class="ticker-label">StochRSI:</span>
-                <span class="ticker-value" id="stochValue">--</span>
-            </div>
-            <div class="ticker-item">
-                <span class="ticker-label">ATR:</span>
-                <span class="ticker-value" id="atrValue">--</span>
-            </div>
-            <div class="ticker-item">
-                <span class="ticker-label">RVOL:</span>
-                <span class="ticker-value" id="rvolValue">--</span>
             </div>
         </div>
 
@@ -1191,7 +1197,7 @@
             change: null,
             changePercent: null,
             lastSize: null,
-            // Technical indicators
+            // Technical indicators (calculated locally)
             rsi: null,
             ema9: null,
             ema20: null,
@@ -1342,6 +1348,7 @@
             
             // Calculate %D (3-period SMA of %K)
             // For simplicity, we'll just use the current K value
+            // In a full implementation, you'd track K history
             const d = k; // Simplified
             
             return { k, d };
@@ -1358,17 +1365,12 @@
         let pollingInterval = null;
         let pollCount = 0;
 
-        // Fetch data using REST API (free tier endpoints only)
+        // Fetch data using REST API
         async function fetchMarketData() {
             try {
-                // For free tier, we'll use the previous close endpoint instead of real-time quotes
-                const now = new Date();
-                const to = now.toISOString().split('T')[0];
-                const from = new Date(now - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-                
-                // Get latest minute bar (free tier)
-                const aggregateUrl = `https://api.polygon.io/v2/aggs/ticker/${SYMBOL}/range/1/minute/${from}/${to}?adjusted=true&sort=desc&limit=1&apiKey=${POLYGON_API_KEY}`;
-                const response = await fetch(aggregateUrl);
+                // Get current price and quote
+                const quoteUrl = `https://api.polygon.io/v3/quotes/${SYMBOL}?limit=1&order=desc&apiKey=${POLYGON_API_KEY}`;
+                const response = await fetch(quoteUrl);
                 
                 if (!response.ok) {
                     throw new Error(`API Error: ${response.status}`);
@@ -1377,48 +1379,21 @@
                 const data = await response.json();
                 
                 if (data.results && data.results.length > 0) {
-                    const latestBar = data.results[0];
+                    const quote = data.results[0];
                     
                     // Update tick count
                     tickCount++;
                     pollCount++;
                     document.getElementById('tickCount').textContent = `Updates: ${tickCount}`;
                     
-                    // Update market data from the latest bar
-                    marketData.price = latestBar.c; // Close price
-                    marketData.open = latestBar.o;
-                    marketData.high = latestBar.h;
-                    marketData.low = latestBar.l;
-                    marketData.vwap = latestBar.vw;
+                    // Update market data
+                    if (quote.bid_price) marketData.bid = quote.bid_price;
+                    if (quote.ask_price) marketData.ask = quote.ask_price;
                     
-                    // For current day volume, we'll use the bar volume as a snapshot
-                    // Since we're getting minute bars, this represents recent trading volume
-                    marketData.volume = latestBar.v;
-                    
-                    // Keep track of cumulative volume if we're tracking throughout the day
-                    if (!marketData.sessionStartTime) {
-                        marketData.sessionStartTime = new Date();
-                        marketData.dayVolume = 0;
+                    // Calculate mid price as current price
+                    if (marketData.bid && marketData.ask) {
+                        marketData.price = (marketData.bid + marketData.ask) / 2;
                     }
-                    
-                    // Reset at market open (9:30 AM)
-                    const now = new Date();
-                    if (now.getHours() === 9 && now.getMinutes() >= 30 && now.getMinutes() < 35) {
-                        if (!marketData.volumeResetToday) {
-                            marketData.dayVolume = 0;
-                            marketData.volumeResetToday = true;
-                        }
-                    } else if (now.getHours() !== 9) {
-                        marketData.volumeResetToday = false;
-                    }
-                    
-                    // Add to cumulative volume
-                    marketData.dayVolume = (marketData.dayVolume || 0) + latestBar.v;
-                    
-                    // Estimate bid/ask from the bar data (not real-time but approximation)
-                    const spread = (latestBar.h - latestBar.l) * 0.01; // Approximate 1% of range as spread
-                    marketData.bid = marketData.price - spread / 2;
-                    marketData.ask = marketData.price + spread / 2;
                     
                     // Add to price history
                     if (marketData.price) {
@@ -1439,25 +1414,20 @@
                     setTimeout(() => priceCard.classList.remove('updating'), 1000);
                 }
                 
-                // Fetch more historical data every 10th poll (every 2.5 minutes)
-                if (pollCount % 10 === 0) {
+                // Fetch aggregates for OHLCV data every 5th poll
+                if (pollCount % 5 === 0) {
                     await fetchAggregateData();
                 }
                 
             } catch (error) {
                 console.error('Error fetching market data:', error);
                 if (error.message.includes('429')) {
-                    showError('Rate limit reached - pausing for 60 seconds');
-                    // Pause for 60 seconds then resume at slower rate
+                    showError('Rate limit reached - slowing down requests');
+                    // Increase polling interval
                     if (pollingInterval) {
                         clearInterval(pollingInterval);
-                        setTimeout(() => {
-                            pollingInterval = setInterval(fetchMarketData, 30000); // Resume at 30s intervals
-                            showSuccess('Resuming at slower rate (2 calls/min)');
-                        }, 60000);
+                        pollingInterval = setInterval(fetchMarketData, 10000); // Slow to 10s
                     }
-                } else if (error.message.includes('403')) {
-                    showError('API key invalid or no access to this endpoint - check your API key');
                 }
             }
         }
@@ -1465,14 +1435,11 @@
         // Fetch aggregate data for technical indicators
         async function fetchAggregateData() {
             try {
-                // Only fetch if we haven't fetched recently
-                if (priceHistory.length > 40) return;
-                
                 const now = new Date();
                 const to = now.toISOString().split('T')[0];
-                const from = new Date(now - 1 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]; // Just 1 day of data
+                const from = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
                 
-                const aggregateUrl = `https://api.polygon.io/v2/aggs/ticker/${SYMBOL}/range/5/minute/${from}/${to}?adjusted=true&sort=desc&limit=50&apiKey=${POLYGON_API_KEY}`;
+                const aggregateUrl = `https://api.polygon.io/v2/aggs/ticker/${SYMBOL}/range/1/minute/${from}/${to}?adjusted=true&sort=desc&limit=50&apiKey=${POLYGON_API_KEY}`;
                 const response = await fetch(aggregateUrl);
                 
                 if (!response.ok) return;
@@ -1480,49 +1447,43 @@
                 const data = await response.json();
                 
                 if (data.results && data.results.length > 0) {
-                    // Update volume history and calculate average volume
+                    const latest = data.results[0];
+                    
+                    marketData.open = latest.o;
+                    marketData.high = latest.h;
+                    marketData.low = latest.l;
+                    marketData.close = latest.c;
+                    marketData.volume = latest.v;
+                    marketData.vwap = latest.vw;
+                    
+                    // Update volume history
                     volumeHistory = data.results.slice(0, 20).map(r => r.v).reverse();
                     
-                    // Calculate average volume from historical data
-                    if (volumeHistory.length > 0) {
-                        // For 5-minute bars, we need to scale up to estimate daily average
-                        // Assuming ~78 5-minute bars in a trading day (390 minutes / 5)
-                        const avgBarVolume = volumeHistory.reduce((a, b) => a + b, 0) / volumeHistory.length;
-                        marketData.avgVolume = avgBarVolume * 78; // Scale to daily volume
-                    }
-                    
-                    // Only update price history if it's empty
-                    if (priceHistory.length < 20) {
-                        const closePrices = data.results.slice(0, HISTORY_LENGTH).map(r => r.c).reverse();
-                        if (closePrices.length > 0) {
-                            priceHistory = closePrices;
-                        }
-                    }
-                    
-                    // Get previous close from the data
-                    if (!marketData.prevClose && data.results.length > 0) {
-                        // Find yesterday's close
-                        const yesterdayClose = data.results.find(bar => {
-                            const barDate = new Date(bar.t);
-                            return barDate.getDate() !== now.getDate();
-                        });
-                        
-                        if (yesterdayClose) {
-                            marketData.prevClose = yesterdayClose.c;
-                        } else {
-                            // Use the oldest bar as approximation
-                            marketData.prevClose = data.results[data.results.length - 1].c;
-                        }
-                        
-                        if (marketData.price && marketData.prevClose) {
-                            marketData.change = marketData.price - marketData.prevClose;
-                            marketData.changePercent = (marketData.change / marketData.prevClose) * 100;
-                        }
+                    // Update price history with close prices
+                    const closePrices = data.results.slice(0, HISTORY_LENGTH).map(r => r.c).reverse();
+                    if (closePrices.length > 0) {
+                        priceHistory = closePrices;
                     }
                     
                     updateTechnicalIndicators();
                     updateIndicators();
                 }
+                
+                // Get previous day data
+                const prevUrl = `https://api.polygon.io/v2/aggs/ticker/${SYMBOL}/prev?adjusted=true&apiKey=${POLYGON_API_KEY}`;
+                const prevResponse = await fetch(prevUrl);
+                
+                if (prevResponse.ok) {
+                    const prevData = await prevResponse.json();
+                    if (prevData.results && prevData.results.length > 0) {
+                        marketData.prevClose = prevData.results[0].c;
+                        if (marketData.price && marketData.prevClose) {
+                            marketData.change = marketData.price - marketData.prevClose;
+                            marketData.changePercent = (marketData.change / marketData.prevClose) * 100;
+                        }
+                    }
+                }
+                
             } catch (error) {
                 console.error('Error fetching aggregate data:', error);
             }
@@ -1539,13 +1500,13 @@
             wsStatus.className = 'websocket-status connected';
             
             isConnected = true;
-            showSuccess('Started polling IWM data via REST API (Free tier: 5 calls/min limit)');
+            showSuccess('Started polling IWM data via REST API');
             
             // Initial fetch
             fetchMarketData();
             
-            // Poll every 15 seconds to stay under rate limit (4 calls per minute)
-            pollingInterval = setInterval(fetchMarketData, 15000);
+            // Poll every 5 seconds (adjust based on your needs and rate limits)
+            pollingInterval = setInterval(fetchMarketData, 5000);
         }
 
         // Stop polling
@@ -1562,7 +1523,197 @@
             isConnected = false;
         }
 
-        // Calculate technical indicators
+        // Connect to Polygon WebSocket (keeping for reference, but using REST instead)
+        function connectWebSocket() {
+            // Using REST API polling instead of WebSocket
+            startPolling();
+        }
+
+            ws.onopen = function() {
+                console.log('WebSocket connection opened');
+                isConnected = true;
+                
+                wsStatus.textContent = '⚡ Authenticating...';
+                wsStatus.className = 'websocket-status connecting';
+                
+                showSuccess('WebSocket connected - authenticating...');
+            };
+
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    // Handle array of messages
+                    if (Array.isArray(data)) {
+                        data.forEach(msg => {
+                            processMessage(msg);
+                        });
+                    } else {
+                        // Handle single message
+                        processMessage(data);
+                    }
+                } catch (error) {
+                    console.error('Error processing message:', error);
+                }
+            };
+
+            function processMessage(msg) {
+                switch(msg.ev || msg.event || msg.status) {
+                    case 'status':
+                    case 'connected':
+                        console.log('Status message:', msg);
+                        if (msg.status === 'connected' || msg.message === 'Connected Successfully') {
+                            console.log('WebSocket connected, authenticating...');
+                            // Send auth message
+                            ws.send(JSON.stringify({
+                                action: 'auth',
+                                params: POLYGON_API_KEY
+                            }));
+                        }
+                        break;
+                        
+                    case 'auth_success':
+                    case 'authenticated':
+                        console.log('Authentication successful, subscribing to IWM...');
+                        wsStatus.textContent = '⚡ Connected';
+                        wsStatus.className = 'websocket-status connected';
+                        // Subscribe to IWM data
+                        ws.send(JSON.stringify({
+                            action: 'subscribe',
+                            params: `T.${SYMBOL},Q.${SYMBOL},A.${SYMBOL}`
+                        }));
+                        showSuccess('Subscribed to IWM real-time data');
+                        break;
+                        
+                    case 'auth_failed':
+                        showError('Authentication failed - check API key');
+                        wsStatus.textContent = '⚡ Auth Failed';
+                        wsStatus.className = 'websocket-status disconnected';
+                        break;
+                    
+                    case 'T': // Trade
+                        handleTrade(msg);
+                        break;
+                    
+                    case 'Q': // Quote
+                        handleQuote(msg);
+                        break;
+                    
+                    case 'A': // Aggregate
+                        handleAggregate(msg);
+                        break;
+                    
+                    default:
+                        if (msg.message) {
+                            console.log('Server message:', msg.message);
+                            if (msg.message.includes('authenticated')) {
+                                processMessage({status: 'authenticated'});
+                            }
+                        }
+                }
+            }
+
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                showError('WebSocket connection error');
+                
+                wsStatus.textContent = '⚡ Error';
+                wsStatus.className = 'websocket-status disconnected';
+            };
+
+            ws.onclose = function(event) {
+                console.log('WebSocket disconnected:', event.code, event.reason);
+                isConnected = false;
+                
+                wsStatus.textContent = '⚡ Disconnected';
+                wsStatus.className = 'websocket-status disconnected';
+                
+                // Reset button text
+                document.getElementById('connectBtn').textContent = '🔌 Connect';
+                
+                // Auto-reconnect after 5 seconds if within extended hours and not manually closed
+                if (isMarketOpen() && event.code !== 1000) {
+                    showError('Connection lost - reconnecting in 5 seconds...');
+                    setTimeout(connectWebSocket, 5000);
+                }
+            };
+        }
+
+        // Handle trade data
+        function handleTrade(trade) {
+            tickCount++;
+            document.getElementById('tickCount').textContent = `Ticks: ${tickCount}`;
+            
+            // Update price
+            marketData.price = trade.p;
+            marketData.lastSize = trade.s;
+            marketData.volume += trade.s || 0;
+            
+            // Add to price history
+            priceHistory.push(trade.p);
+            if (priceHistory.length > HISTORY_LENGTH) {
+                priceHistory.shift();
+            }
+            
+            // Animate price card
+            const priceCard = document.getElementById('priceCard');
+            priceCard.classList.add('updating');
+            setTimeout(() => priceCard.classList.remove('updating'), 1000);
+            
+            updatePriceDisplay();
+            updateTechnicalIndicators();
+            updateIndicators();
+        }
+
+        // Handle quote data
+        function handleQuote(quote) {
+            marketData.bid = quote.bp || quote.p;
+            marketData.ask = quote.ap || quote.P;
+            
+            // Update bid/ask display
+            if (marketData.bid) {
+                document.getElementById('bidPrice').textContent = `$${marketData.bid.toFixed(2)}`;
+            }
+            if (marketData.ask) {
+                document.getElementById('askPrice').textContent = `$${marketData.ask.toFixed(2)}`;
+            }
+            
+            if (marketData.bid && marketData.ask) {
+                const spread = (marketData.ask - marketData.bid).toFixed(3);
+                document.getElementById('spread').textContent = `$${spread}`;
+            }
+        }
+
+        // Handle aggregate data
+        function handleAggregate(agg) {
+            marketData.open = agg.o;
+            marketData.high = agg.h;
+            marketData.low = agg.l;
+            marketData.close = agg.c;
+            marketData.volume = agg.v;
+            marketData.vwap = agg.vw || agg.vwap;
+            
+            // Add close price to history for technical calculations
+            if (agg.c) {
+                priceHistory.push(agg.c);
+                if (priceHistory.length > HISTORY_LENGTH) {
+                    priceHistory.shift();
+                }
+            }
+            
+            if (agg.v) {
+                volumeHistory.push(agg.v);
+                if (volumeHistory.length > HISTORY_LENGTH) {
+                    volumeHistory.shift();
+                }
+            }
+            
+            // Calculate technical indicators
+            updateTechnicalIndicators();
+            updateIndicators();
+        }
+
+        // Update technical indicators
         function updateTechnicalIndicators() {
             if (priceHistory.length > 0) {
                 // Calculate EMAs
@@ -1583,8 +1734,10 @@
                     marketData.atr = calculateATR(marketData.high, marketData.low, marketData.price);
                 }
                 
-                // Average volume is calculated in fetchAggregateData
-                // Keep the existing avgVolume if already set
+                // Calculate average volume
+                if (volumeHistory.length > 0) {
+                    marketData.avgVolume = volumeHistory.reduce((a, b) => a + b, 0) / volumeHistory.length;
+                }
             }
         }
 
@@ -1593,25 +1746,22 @@
             if (marketData.price) {
                 document.getElementById('currentPrice').textContent = `$${marketData.price.toFixed(2)}`;
                 
-                if (marketData.change !== null) {
+                if (marketData.prevClose && marketData.price) {
+                    const change = marketData.price - marketData.prevClose;
+                    const changePercent = (change / marketData.prevClose * 100).toFixed(2);
                     const changeElement = document.getElementById('priceChange');
-                    const changePercent = marketData.changePercent ? marketData.changePercent.toFixed(2) : 
-                                         (marketData.change / marketData.prevClose * 100).toFixed(2);
-                    changeElement.textContent = `${marketData.change >= 0 ? '+' : ''}${marketData.change.toFixed(2)} (${changePercent}%)`;
-                    changeElement.className = marketData.change >= 0 ? 'price-change positive' : 'price-change negative';
+                    changeElement.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)} (${changePercent}%)`;
+                    changeElement.className = change >= 0 ? 'price-change positive' : 'price-change negative';
                 }
             }
             
-            if (marketData.dayVolume) {
-                document.getElementById('currentVolume').textContent = (marketData.dayVolume / 1000000).toFixed(2) + 'M';
+            if (marketData.volume) {
+                document.getElementById('currentVolume').textContent = (marketData.volume / 1000000).toFixed(2) + 'M';
                 
-                if (marketData.avgVolume && marketData.avgVolume > 0) {
-                    const rvol = (marketData.dayVolume / marketData.avgVolume).toFixed(2);
+                if (marketData.avgVolume) {
+                    const rvol = (marketData.volume / marketData.avgVolume).toFixed(2);
                     document.getElementById('volumeRatio').textContent = `RVOL: ${rvol}`;
                 }
-            } else if (marketData.volume) {
-                // Fallback to single bar volume if no cumulative volume
-                document.getElementById('currentVolume').textContent = (marketData.volume / 1000000).toFixed(2) + 'M';
             }
             
             if (marketData.rsi) {
@@ -1640,40 +1790,11 @@
                 }
             }
             
-            if (marketData.bid) {
-                document.getElementById('bidPrice').textContent = `$${marketData.bid.toFixed(2)}`;
-            }
-            if (marketData.ask) {
-                document.getElementById('askPrice').textContent = `$${marketData.ask.toFixed(2)}`;
-            }
-            
-            if (marketData.bid && marketData.ask) {
-                const spread = (marketData.ask - marketData.bid).toFixed(3);
-                document.getElementById('spread').textContent = `$${spread}`;
+            if (marketData.lastSize) {
+                document.getElementById('lastSize').textContent = marketData.lastSize.toString();
             }
             
             updateTimestamps();
-            
-            // Update technical indicators display
-            if (marketData.ema9) {
-                document.getElementById('ema9Value').textContent = `$${marketData.ema9.toFixed(2)}`;
-            }
-            if (marketData.ema20) {
-                document.getElementById('ema20Value').textContent = `$${marketData.ema20.toFixed(2)}`;
-            }
-            if (marketData.ema50) {
-                document.getElementById('ema50Value').textContent = `$${marketData.ema50.toFixed(2)}`;
-            }
-            if (marketData.stochK) {
-                document.getElementById('stochValue').textContent = marketData.stochK.toFixed(1);
-            }
-            if (marketData.atr) {
-                document.getElementById('atrValue').textContent = `$${marketData.atr.toFixed(2)}`;
-            }
-            const rvol = marketData.volume && marketData.avgVolume ? (marketData.volume / marketData.avgVolume) : null;
-            if (rvol) {
-                document.getElementById('rvolValue').textContent = rvol.toFixed(2);
-            }
         }
 
         // Update indicator status
@@ -1726,16 +1847,16 @@
                 let detailsHTML = `<div class="tooltip-header">${isActive ? 'Signal Triggered' : 'Signal Not Met'}</div>`;
                 
                 if (indicatorId.includes('price')) {
-                    detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">Current Price:</span><span class="tooltip-value">${cv}</span></div>`;
+                    detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">Current Price:</span><span class="tooltip-value">$${cv}</span></div>`;
                     
                     if (indicatorId.includes('ema9')) {
-                        detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">EMA9:</span><span class="tooltip-value">${cmpv}</span></div>`;
+                        detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">EMA9:</span><span class="tooltip-value">$${cmpv}</span></div>`;
                     } else if (indicatorId.includes('ema20')) {
-                        detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">EMA20:</span><span class="tooltip-value">${cmpv}</span></div>`;
+                        detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">EMA20:</span><span class="tooltip-value">$${cmpv}</span></div>`;
                     } else if (indicatorId.includes('ema50')) {
-                        detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">EMA50:</span><span class="tooltip-value">${cmpv}</span></div>`;
+                        detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">EMA50:</span><span class="tooltip-value">$${cmpv}</span></div>`;
                     } else if (indicatorId.includes('vwap')) {
-                        detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">VWAP:</span><span class="tooltip-value">${cmpv}</span></div>`;
+                        detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">VWAP:</span><span class="tooltip-value">$${cmpv}</span></div>`;
                     }
                 } else if (indicatorId.includes('rsi')) {
                     detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">RSI(14):</span><span class="tooltip-value">${cv}</span></div>`;
@@ -1751,7 +1872,7 @@
                     const rvol = marketData.volume && marketData.avgVolume ? 
                         (marketData.volume / marketData.avgVolume).toFixed(2) : '--';
                     detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">Current Vol:</span><span class="tooltip-value">${(marketData.volume/1000000).toFixed(1)}M</span></div>`;
-                    detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">Avg Vol:</span><span class="tooltip-value">${(marketData.avgVolume/1000000).toFixed(1)}M</span></div>`;
+                    detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">Avg Vol:</span><span class="tooltip-value">${marketData.avgVolume ? (marketData.avgVolume/1000000).toFixed(1) + 'M' : '--'}</span></div>`;
                     detailsHTML += `<div class="tooltip-row"><span class="tooltip-label">RVOL:</span><span class="tooltip-value">${rvol}</span></div>`;
                 }
                 
@@ -1843,8 +1964,34 @@
 
         // Fetch initial data from REST API
         async function fetchInitialData() {
-            console.log('Dashboard will use Polygon REST API');
-            showSuccess('Dashboard ready - Click Connect to start fetching data');
+            try {
+                // Note: This will require CORS proxy or backend implementation
+                const response = await fetch(`https://api.polygon.io/v2/aggs/ticker/${SYMBOL}/prev?apiKey=${POLYGON_API_KEY}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.results && data.results.length > 0) {
+                        const result = data.results[0];
+                        marketData.prevClose = result.c;
+                        marketData.open = result.o;
+                        marketData.high = result.h;
+                        marketData.low = result.l;
+                        marketData.volume = result.v;
+                        marketData.vwap = result.vw;
+                        
+                        // Initialize price history with closing price
+                        if (result.c) {
+                            for (let i = 0; i < 20; i++) {
+                                priceHistory.push(result.c);
+                            }
+                        }
+                        
+                        updatePriceDisplay();
+                        showSuccess('Previous day data loaded successfully');
+                    }
+                }
+            } catch (error) {
+                console.log('Note: REST API calls may be blocked by CORS. WebSocket will provide real-time data.');
+            }
         }
 
         // Toggle connection
@@ -1903,7 +2050,6 @@
             const savedKey = localStorage.getItem('polygonApiKey');
             if (savedKey) {
                 document.getElementById('apiKeyInput').value = savedKey;
-                POLYGON_API_KEY = savedKey;
             }
 
             // Load trade history
@@ -2096,10 +2242,8 @@
 
         // Initialize dashboard
         async function initDashboard() {
-            console.log('Initializing IWM Trading Dashboard with Polygon.io REST API...');
+            console.log('Initializing IWM Trading Dashboard with Polygon.io...');
             console.log('Extended Hours: 9:00 AM - 9:00 PM ET');
-            console.log('Using REST API with 5-second polling interval');
-            console.log('='.repeat(50));
             
             // Load saved settings and history
             loadSettings();
@@ -2114,8 +2258,7 @@
             // Check if auto-connect is enabled
             if (document.getElementById('autoConnect').checked) {
                 setTimeout(() => {
-                    startPolling();
-                    document.getElementById('connectBtn').textContent = '🔌 Disconnect';
+                    connectWebSocket();
                 }, 1000);
             }
             
