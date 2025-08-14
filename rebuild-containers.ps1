@@ -18,4 +18,4 @@ docker compose up -d
 Write-Host "Containers rebuilt successfully!" -ForegroundColor Green
 Write-Host ""
 Write-Host "To access Claude Code container, run:" -ForegroundColor Cyan
-Write-Host "docker exec -it stocks-claude-code-image /bin/bash" -ForegroundColor White
+Write-Host "docker exec -it stocks-claude-code /bin/bash" -ForegroundColor White
