@@ -18,6 +18,11 @@ const CONFIG = {
  * Main function to check for trading alerts
  * Set this to run every 1-5 minutes during trading hours
  */
+/**
+ * Main function to check for trading alert conditions
+ * Monitors market data and triggers alerts based on technical analysis
+ * @returns {void}
+ */
 function checkTradingAlerts() {
   try {
     // Check if we're in trading hours
@@ -60,6 +65,11 @@ function checkTradingAlerts() {
 /**
  * Check if current time is within trading hours
  */
+/**
+ * Checks if current time is within market trading hours
+ * Validates both trading days and time ranges
+ * @returns {boolean} True if market is open for trading
+ */
 function isTradingHours() {
   const now = new Date();
   const timeString = Utilities.formatDate(now, CONFIG.TRADING_HOURS.TIMEZONE, 'HH:mm');
@@ -73,6 +83,11 @@ function isTradingHours() {
 /**
  * Get current market data
  * You'll need to implement this based on your data source
+ */
+/**
+ * Fetches current market data from data source
+ * Placeholder function that needs implementation for actual data source
+ * @returns {Object} Market data object with price, volume, and indicator data
  */
 function getCurrentMarketData() {
   // Example implementation - replace with your actual data source
@@ -98,6 +113,12 @@ function getCurrentMarketData() {
 
 /**
  * Check for CALL signal based on trading rules
+ */
+/**
+ * Analyzes market conditions for CALL option signals
+ * Checks multiple technical indicators and trend conditions
+ * @param {Object} data - Market data object
+ * @returns {Object|null} Signal object if conditions are met, null otherwise
  */
 function checkCallSignal(data) {
   const signal = {
@@ -153,6 +174,12 @@ function checkCallSignal(data) {
 
 /**
  * Check for PUT signal based on trading rules
+ */
+/**
+ * Analyzes market conditions for PUT option signals  
+ * Checks for bearish indicators and downward trend conditions
+ * @param {Object} data - Market data object
+ * @returns {Object|null} Signal object if conditions are met, null otherwise
  */
 function checkPutSignal(data) {
   const signal = {
