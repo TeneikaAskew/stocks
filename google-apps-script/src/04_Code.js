@@ -6,73 +6,17 @@
  * - Logs to console, Logger, and a "Log" sheet
  * - Optional login (set Script Properties: EW_USER, EW_PASS) if API needs session
  * https://hackernoon.com/writing-google-apps-script-code-locally-in-vscode
+ * 
+ * Dependencies:
+ * - GlobalVars.js: Configuration constants and global variables
+ * - HelperFunctions.js: Utility functions and helpers
  */
 
-// ======= Config & Utilities =======
-const EW = {
-  STRATEGY_ENDPOINTS: {
-    'Short Puts':   '/api/getshortput',
-    'Bull Spreads': '/api/getbullcallspread',
-    'Long Calls':   '/api/getlongcalls',
-    'Strangles':    '/api/getstrangle',  
-    'Covered Calls':'/api/getcoveredcall',
-    'Straddles':    '/api/getstraddle',   
-    'Short Calls':  '/api/getshortcalls',
-    'Bear Spreads': '/api/getbearputspread',
-    'Long Puts':    '/api/getlongput'
-  },
-
-  BASE: 'https://www.earningswhispers.com',
-  MATRIX_REFERRER: 'https://www.earningswhispers.com/optiontrades',
-  PROPS: PropertiesService.getScriptProperties(),
-
-  get p() {
-    return {
-      user: EW.PROPS.getProperty('EW_USER') || '',
-      pass: EW.PROPS.getProperty('EW_PASS') || '',
-      loginUrl: 'https://www.earningswhispers.com/login'
-    };
-  }
-};
-
-// unify url helper name + expose as EW.url
-function EW_url(path) {
-  if (/^https?:\/\//i.test(path)) return path;
-  return EW.BASE.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
-}
+// ======= EXPOSE HELPER FUNCTIONS ON EW OBJECT =======
+// Make URL helper available on EW object for backwards compatibility
 EW.url = EW_url;
 
-// super-logger: console + Logger + optional Log sheet
-function EW_trace(scope, msg, alsoSheet = false) {
-  const line = `[${new Date().toISOString()}] [${scope}] ${msg}`;
-  try { console.log(line); } catch (_) {}
-  try { Logger.log(line); } catch (_) {}
-  if (alsoSheet) {
-    try {
-      const ss = SpreadsheetApp.getActive();
-      let log = ss.getSheetByName('Log');
-      if (!log) log = ss.insertSheet('Log');
-      log.appendRow([new Date(), scope, msg]);
-    } catch (_) {}
-  }
-}
-
-// quick CSV-ish snapshot of object keys/length
-function EW_summarizeJson(j) {
-  try {
-    if (Array.isArray(j)) return `Array(len=${j.length})`;
-    if (j && typeof j === 'object') {
-      if (Array.isArray(j.data)) return `Object{data:Array(len=${j.data.length})}`;
-      const keys = Object.keys(j);
-      return `Object{keys=${keys.slice(0,8).join(',')}${keys.length>8?'…':''}}`;
-    }
-    return typeof j;
-  } catch (e) {
-    return 'uninspectable json';
-  }
-}
-
-// ======= UI Menu =======
+// ======= UI MENU =======
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('EarningsWhispers')
@@ -81,7 +25,25 @@ function onOpen() {
     .addSeparator()
     .addItem('Generate Success Report', 'EW_generateSuccessReport')
     .addItem('Update Tracking Data', 'EW_updateTrackingData')
+    .addSeparator()
+    .addSubMenu(SpreadsheetApp.getUi().createMenu('Automation & Triggers')
+      .addItem('Setup Full Auto Tracking', 'EW_setupAutoTracking')
+      .addItem('Setup Daily Data Fetch (8AM)', 'EW_setupDailyDataTrigger')
+      .addItem('Setup Missing Triggers Only', 'EW_setupTriggersIfMissing')
+      .addSeparator()
+      .addItem('Stop All Auto Tracking', 'EW_stopAutoTracking')
+      .addItem('Stop Daily Data Fetch', 'EW_stopDailyDataTrigger')
+      .addSeparator()
+      .addItem('List Active Triggers', 'EW_listActiveTriggers')
+      .addItem('Validate Triggers', 'EW_validateTriggers')
+      .addItem('Verify & Repair Triggers', 'EW_verifyAndRepairTriggers')
+      .addSeparator()
+      .addItem('Test Environment Detection', 'EW_testEnvironmentDetection')
+    )
     .addToUi();
+    
+  // Auto-create success report on first run
+  EW_ensureSuccessReportExists();
 }
 
 // Prompt to run a single tab quickly
@@ -532,25 +494,6 @@ function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
 
 
 // ======= Cookie & CSRF =======
-function EW_collectSetCookies(res) {
-  const headers = res.getAllHeaders();
-  let sc = headers['Set-Cookie'];
-  if (!sc) return {};
-  const out = {};
-  (Array.isArray(sc) ? sc : [sc]).forEach(line => {
-    const pair = String(line).split(';')[0];
-    const idx = pair.indexOf('=');
-    if (idx > -1) out[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
-  });
-  return out;
-}
-function EW_mergeCookies(a, b) { return Object.assign({}, a || {}, b || {}); }
-function EW_cookieHeader(obj) { return Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`).join('; '); }
-function EW_extractCsrf(html) {
-  const m = html && html.match(/name=["'](__RequestVerificationToken|csrf|_token)["'][^>]*value=["']([^"']+)["']/i);
-  return m ? m[2] : '';
-}
-
 // Add a rich set of eval columns for options decisioning
 // function EW_addGFHeaders(header) {
 //   const gf = [
@@ -600,11 +543,6 @@ function EW_extractCsrf(html) {
 //   };
 // }
 
-// Normalize a header string for matching (lowercase, strip non-alphanum)
-function EW_norm(s) {
-  return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
 // Add our evaluation columns (exact labels used everywhere below)
 const EW_GF_LABELS = [
   'GF_Name','GF_Price','GF_ChangePct','GF_High','GF_Low','GF_High52','GF_Low52',
@@ -616,16 +554,9 @@ const EW_GF_LABELS = [
 const EW_TRACKING_LABELS = [
   'Days_To_Exp','Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
   'Day1_Check','Day2_Check','Day3_Check','Day5_Check','Exp_Result',
-  'Success_Score','Profit_Potential','Risk_Reward'
+  'Success_Score','Profit_Potential','Risk_Reward','Historical_High','Historical_Low',
+  'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days','Peak_Profit_Date'
 ];
-
-function EW_addGFHeaders(header) {
-  const have = new Set(header.map(h => EW_norm(h)));
-  const out = header.slice();
-  EW_GF_LABELS.forEach(lbl => { if (!have.has(EW_norm(lbl))) out.push(lbl); });
-  EW_TRACKING_LABELS.forEach(lbl => { if (!have.has(EW_norm(lbl))) out.push(lbl); });
-  return out;
-}
 
 function EW_headerMap(headerRow) {
   const byName = {};               // raw key -> 1-based index
@@ -685,6 +616,15 @@ function EW_headerMap(headerRow) {
   const successScoreCol = find(['Success_Score']);
   const profitPotentialCol = find(['Profit_Potential']);
   const riskRewardCol   = find(['Risk_Reward']);
+  
+  // Enhanced historical tracking columns
+  const historicalHighCol = find(['Historical_High']);
+  const historicalLowCol  = find(['Historical_Low']);
+  const everHitStrikeCol  = find(['Ever_Hit_Strike']);
+  const firstHitDateCol   = find(['First_Hit_Date']);
+  const lastUpdateCol     = find(['Last_Update']);
+  const totalHitDaysCol   = find(['Total_Hit_Days']);
+  const peakProfitDateCol = find(['Peak_Profit_Date']);
 
   // Strategy and core data columns
   const strategyCol     = find(['strategy','Strategy']);
@@ -700,6 +640,8 @@ function EW_headerMap(headerRow) {
     daysToExpCol, strikeHitCol, hitDateCol, maxFavorableCol, minUnfavorableCol,
     day1CheckCol, day2CheckCol, day3CheckCol, day5CheckCol, expResultCol,
     successScoreCol, profitPotentialCol, riskRewardCol,
+    historicalHighCol, historicalLowCol, everHitStrikeCol, firstHitDateCol,
+    lastUpdateCol, totalHitDaysCol, peakProfitDateCol,
     width: headerRow.length
   };
 }
@@ -896,8 +838,97 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
          IF(OR(px="",op=""),,(px-op)/op*100))`
   );
 
-  // ===== TRACKING FORMULAS FOR STRATEGY SUCCESS =====
+  // ===== ENHANCED HISTORICAL TRACKING FORMULAS =====
   
+  // Historical High (never resets - captures peak favorable price)
+  setHeaderArray(
+    hdrMap.historicalHighCol, 'Historical_High',
+    `LET(
+       currentPrice, IFERROR(GOOGLEFINANCE(t,"price"),),
+       prevHigh, INDEX($${EW_columnToLetter(hdrMap.historicalHighCol)}2:$${EW_columnToLetter(hdrMap.historicalHighCol)}, ROW(${tRange})-1),
+       IF(currentPrice="", prevHigh, MAX(IF(prevHigh="", currentPrice, prevHigh), currentPrice))
+     )`
+  );
+
+  // Historical Low (never resets - captures worst unfavorable price)
+  setHeaderArray(
+    hdrMap.historicalLowCol, 'Historical_Low',
+    `LET(
+       currentPrice, IFERROR(GOOGLEFINANCE(t,"price"),),
+       prevLow, INDEX($${EW_columnToLetter(hdrMap.historicalLowCol)}2:$${EW_columnToLetter(hdrMap.historicalLowCol)}, ROW(${tRange})-1),
+       IF(currentPrice="", prevLow, MIN(IF(prevLow="", currentPrice, prevLow), currentPrice))
+     )`
+  );
+
+  // Ever Hit Strike (permanent flag - once hit, stays TRUE)
+  setHeaderArray(
+    hdrMap.everHitStrikeCol, 'Ever_Hit_Strike',
+    `LET(
+       stratCol, $${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)},
+       strikeCol, $${EW_columnToLetter(hdrMap.strikeCol)}2:$${EW_columnToLetter(hdrMap.strikeCol)},
+       rowNum, ROW(${tRange})-1,
+       strategy, UPPER(INDEX(stratCol, rowNum)),
+       strike, INDEX(strikeCol, rowNum),
+       currentPrice, IFERROR(GOOGLEFINANCE(t,"price"),),
+       historicalHigh, INDEX($${EW_columnToLetter(hdrMap.historicalHighCol)}2:$${EW_columnToLetter(hdrMap.historicalHighCol)}, rowNum),
+       historicalLow, INDEX($${EW_columnToLetter(hdrMap.historicalLowCol)}2:$${EW_columnToLetter(hdrMap.historicalLowCol)}, rowNum),
+       prevEverHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, rowNum),
+       
+       IF(OR(strategy="", strike="", currentPrice=""), prevEverHit,
+         IF(prevEverHit="TRUE", "TRUE",
+           IF(OR(ISNUMBER(SEARCH("LONG CALL", strategy)), ISNUMBER(SEARCH("BULL", strategy))),
+             IF(historicalHigh >= strike, "TRUE", "FALSE"),
+             IF(OR(ISNUMBER(SEARCH("LONG PUT", strategy)), ISNUMBER(SEARCH("BEAR", strategy))),
+               IF(historicalLow <= strike, "TRUE", "FALSE"),
+               IF(OR(ISNUMBER(SEARCH("SHORT CALL", strategy)), ISNUMBER(SEARCH("COVERED", strategy))),
+                 IF(historicalHigh < strike, "FAVORABLE", "UNFAVORABLE"),
+                 IF(ISNUMBER(SEARCH("SHORT PUT", strategy)),
+                   IF(historicalLow > strike, "FAVORABLE", "UNFAVORABLE"),
+                   "UNKNOWN"
+                 )
+               )
+             )
+           )
+         )
+       )
+     )`
+  );
+
+  // First Hit Date (permanent - never changes once set)
+  setHeaderArray(
+    hdrMap.firstHitDateCol, 'First_Hit_Date',
+    `LET(
+       everHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, ROW(${tRange})-1),
+       prevFirstHit, INDEX($${EW_columnToLetter(hdrMap.firstHitDateCol)}2:$${EW_columnToLetter(hdrMap.firstHitDateCol)}, ROW(${tRange})-1),
+       
+       IF(AND(OR(everHit="TRUE", everHit="FAVORABLE"), prevFirstHit=""), 
+         TEXT(TODAY(), "yyyy-mm-dd"), 
+         prevFirstHit
+       )
+     )`
+  );
+
+  // Last Update timestamp
+  setHeaderArray(
+    hdrMap.lastUpdateCol, 'Last_Update',
+    `TEXT(NOW(), "yyyy-mm-dd hh:mm:ss")`
+  );
+
+  // Total Hit Days (count of days strike was favorable)
+  setHeaderArray(
+    hdrMap.totalHitDaysCol, 'Total_Hit_Days',
+    `LET(
+       everHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, ROW(${tRange})-1),
+       prevTotal, INDEX($${EW_columnToLetter(hdrMap.totalHitDaysCol)}2:$${EW_columnToLetter(hdrMap.totalHitDaysCol)}, ROW(${tRange})-1),
+       currentHit, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, ROW(${tRange})-1),
+       
+       IF(OR(currentHit="HIT", currentHit="FAVORABLE"), 
+         IF(prevTotal="", 1, prevTotal + 1), 
+         IF(prevTotal="", 0, prevTotal)
+       )
+     )`
+  );
+
   // Days to Expiration
   setHeaderArray(
     hdrMap.daysToExpCol, 'Days_To_Exp',
@@ -909,7 +940,7 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
      )`
   );
 
-  // Strike Hit Checker (dynamic based on strategy)
+  // Current Strike Hit Status
   setHeaderArray(
     hdrMap.strikeHitCol, 'Strike_Hit',
     `LET(
@@ -938,134 +969,29 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
      )`
   );
 
-  // Hit Date Tracker
-  setHeaderArray(
-    hdrMap.hitDateCol, 'Hit_Date',
-    `LET(
-       hitStatus, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, ROW(${tRange})-1),
-       prevHitDate, INDEX($${EW_columnToLetter(hdrMap.hitDateCol)}2:$${EW_columnToLetter(hdrMap.hitDateCol)}, ROW(${tRange})-1),
-       IF(hitStatus="HIT", IF(prevHitDate="", TODAY(), prevHitDate), "")
-     )`
-  );
-
-  // Max Favorable Price (best case scenario tracking)
-  setHeaderArray(
-    hdrMap.maxFavorableCol, 'Max_Favorable',
-    `LET(
-       stratCol, $${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)},
-       rowNum, ROW(${tRange})-1,
-       strategy, UPPER(INDEX(stratCol, rowNum)),
-       currentPrice, IFERROR(GOOGLEFINANCE(t,"price"),),
-       prevMax, INDEX($${EW_columnToLetter(hdrMap.maxFavorableCol)}2:$${EW_columnToLetter(hdrMap.maxFavorableCol)}, rowNum),
-       
-       IF(OR(strategy="", currentPrice=""), prevMax,
-         IF(OR(ISNUMBER(SEARCH("CALL", strategy)), ISNUMBER(SEARCH("BULL", strategy))),
-           MAX(prevMax, currentPrice),
-           IF(OR(ISNUMBER(SEARCH("PUT", strategy)), ISNUMBER(SEARCH("BEAR", strategy))),
-             IF(prevMax="", currentPrice, MIN(prevMax, currentPrice)),
-             currentPrice
-           )
-         )
-       )
-     )`
-  );
-
-  // Daily Progress Checks
-  setHeaderArray(
-    hdrMap.day1CheckCol, 'Day1_Check',
-    `LET(
-       runDateCol, $${EW_columnToLetter(hdrMap.runDateCol)}2:$${EW_columnToLetter(hdrMap.runDateCol)},
-       rowNum, ROW(${tRange})-1,
-       runDate, INDEX(runDateCol, rowNum),
-       daysSinceRun, IF(runDate="", "", TODAY() - runDate),
-       hitStatus, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, rowNum),
-       
-       IF(daysSinceRun >= 1, hitStatus, "PENDING")
-     )`
-  );
-
-  setHeaderArray(
-    hdrMap.day2CheckCol, 'Day2_Check',
-    `LET(
-       runDateCol, $${EW_columnToLetter(hdrMap.runDateCol)}2:$${EW_columnToLetter(hdrMap.runDateCol)},
-       rowNum, ROW(${tRange})-1,
-       runDate, INDEX(runDateCol, rowNum),
-       daysSinceRun, IF(runDate="", "", TODAY() - runDate),
-       hitStatus, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, rowNum),
-       
-       IF(daysSinceRun >= 2, hitStatus, "PENDING")
-     )`
-  );
-
-  setHeaderArray(
-    hdrMap.day5CheckCol, 'Day5_Check',
-    `LET(
-       runDateCol, $${EW_columnToLetter(hdrMap.runDateCol)}2:$${EW_columnToLetter(hdrMap.runDateCol)},
-       rowNum, ROW(${tRange})-1,
-       runDate, INDEX(runDateCol, rowNum),
-       daysSinceRun, IF(runDate="", "", TODAY() - runDate),
-       hitStatus, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, rowNum),
-       
-       IF(daysSinceRun >= 5, hitStatus, "PENDING")
-     )`
-  );
-
-  // Success Score (0-100 based on multiple factors)
+  // Enhanced Success Score with historical data
   setHeaderArray(
     hdrMap.successScoreCol, 'Success_Score',
     `LET(
-       hitStatus, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, ROW(${tRange})-1),
+       everHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, ROW(${tRange})-1),
        daysToExp, INDEX($${EW_columnToLetter(hdrMap.daysToExpCol)}2:$${EW_columnToLetter(hdrMap.daysToExpCol)}, ROW(${tRange})-1),
+       totalHitDays, INDEX($${EW_columnToLetter(hdrMap.totalHitDaysCol)}2:$${EW_columnToLetter(hdrMap.totalHitDaysCol)}, ROW(${tRange})-1),
        rvol, INDEX($${EW_columnToLetter(hdrMap.rvol10Col)}2:$${EW_columnToLetter(hdrMap.rvol10Col)}, ROW(${tRange})-1),
        
-       IF(OR(hitStatus="", daysToExp=""), "",
+       IF(OR(everHit="", daysToExp=""), "",
          LET(
-           hitScore, IF(OR(hitStatus="HIT", hitStatus="FAVORABLE"), 60, 
-                        IF(hitStatus="UNFAVORABLE", 20, 40)),
+           hitScore, IF(OR(everHit="TRUE", everHit="FAVORABLE"), 60, 
+                        IF(everHit="UNFAVORABLE", 20, 40)),
            timeScore, MIN(30, MAX(0, daysToExp * 2)),
            volScore, MIN(10, MAX(0, (rvol - 1) * 10)),
-           hitScore + timeScore + volScore
+           consistencyScore, MIN(20, totalHitDays * 2),
+           hitScore + timeScore + volScore + consistencyScore
          )
        )
      )`
   );
 
   EW_trace('GF', 'ARRAYFORMULAs set (no DROP/TAKE)');
-}
-
-
-
-function EW_columnToLetter(col) {
-  let s = '';
-  while (col > 0) {
-    const m = (col - 1) % 26;
-    s = String.fromCharCode(65 + m) + s;
-    col = Math.floor((col - 1) / 26);
-  }
-  return s;
-}
-
-
-// Build YYYY-MM-DD in script timezone (static per run)
-// function EW_getRunStamp() {
-//   return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
-// }
-
-function EW_getRunStamp() {
-  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
-}
-
-
-// Ensure "Run Date" is first header column
-function EW_ensureRunDateInHeader(header) {
-  const ix = header.findIndex(h => String(h).toLowerCase() === 'run date');
-  if (ix === 0) return header;
-  if (ix > 0) {
-    const copy = header.slice();
-    const [rd] = copy.splice(ix, 1);
-    return [rd, ...copy];
-  }
-  return ['Run Date', ...header];
 }
 
 // ===== SUCCESS TRACKING & REPORTING FUNCTIONS =====
