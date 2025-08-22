@@ -1,0 +1,909 @@
+/**
+ * EarningsWhispers OptionTrades — Apps Script (sheet-bound, verbose)
+ * - Fetches JSON from /api/get* endpoints for each strategy
+ * - Normalizes JSON -> header row + data rows
+ * - Appends to tabs named after strategies (creates if missing)
+ * - Logs to console, Logger, and a "Log" sheet
+ * - Optional login (set Script Properties: EW_USER, EW_PASS) if API needs session
+ * https://hackernoon.com/writing-google-apps-script-code-locally-in-vscode
+ */
+
+// ======= Config & Utilities =======
+const EW = {
+  STRATEGY_ENDPOINTS: {
+    'Short Puts':   '/api/getshortput',
+    'Bull Spreads': '/api/getbullcallspread',
+    'Long Calls':   '/api/getlongcalls',
+    'Strangles':    '/api/getstrangle',  
+    'Covered Calls':'/api/getcoveredcall',
+    'Straddles':    '/api/getstraddle',   
+    'Short Calls':  '/api/getshortcalls',
+    'Bear Spreads': '/api/getbearputspread',
+    'Long Puts':    '/api/getlongput'
+  },
+
+  BASE: 'https://www.earningswhispers.com',
+  MATRIX_REFERRER: 'https://www.earningswhispers.com/optiontrades',
+  PROPS: PropertiesService.getScriptProperties(),
+
+  get p() {
+    return {
+      user: EW.PROPS.getProperty('EW_USER') || '',
+      pass: EW.PROPS.getProperty('EW_PASS') || '',
+      loginUrl: 'https://www.earningswhispers.com/login'
+    };
+  }
+};
+
+// unify url helper name + expose as EW.url
+function EW_url(path) {
+  if (/^https?:\/\//i.test(path)) return path;
+  return EW.BASE.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
+}
+EW.url = EW_url;
+
+// super-logger: console + Logger + optional Log sheet
+function EW_trace(scope, msg, alsoSheet = false) {
+  const line = `[${new Date().toISOString()}] [${scope}] ${msg}`;
+  try { console.log(line); } catch (_) {}
+  try { Logger.log(line); } catch (_) {}
+  if (alsoSheet) {
+    try {
+      const ss = SpreadsheetApp.getActive();
+      let log = ss.getSheetByName('Log');
+      if (!log) log = ss.insertSheet('Log');
+      log.appendRow([new Date(), scope, msg]);
+    } catch (_) {}
+  }
+}
+
+// quick CSV-ish snapshot of object keys/length
+function EW_summarizeJson(j) {
+  try {
+    if (Array.isArray(j)) return `Array(len=${j.length})`;
+    if (j && typeof j === 'object') {
+      if (Array.isArray(j.data)) return `Object{data:Array(len=${j.data.length})}`;
+      const keys = Object.keys(j);
+      return `Object{keys=${keys.slice(0,8).join(',')}${keys.length>8?'…':''}}`;
+    }
+    return typeof j;
+  } catch (e) {
+    return 'uninspectable json';
+  }
+}
+
+// ======= UI Menu =======
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('EarningsWhispers')
+    .addItem('Run all strategies', 'EW_runAll')
+    .addItem('Debug one (prompt)', 'EW_debugOne')
+    .addToUi();
+}
+
+// Prompt to run a single tab quickly
+function EW_debugOne() {
+  const ui = SpreadsheetApp.getUi();
+  const names = Object.keys(EW.STRATEGY_ENDPOINTS);
+  const res = ui.prompt(
+    'Debug one strategy',
+    `Type one of:\n${names.join(', ')}`,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+  const name = res.getResponseText().trim();
+  if (!EW.STRATEGY_ENDPOINTS[name]) {
+    ui.alert(`Unknown strategy: "${name}"`);
+    return;
+  }
+  EW_runSingle(name);
+}
+
+// ======= Entry points =======
+function EW_runAll() {
+  EW_trace('MAIN', 'EW_runAll() started', true);
+
+  let cookies = {};
+  if (EW.p.user && EW.p.pass) {
+    try {
+      EW_trace('LOGIN', `Attempting login as ${EW.p.user}`);
+      cookies = EW_login();
+      EW_trace('LOGIN', `Login complete; cookies=${Object.keys(cookies).length}`);
+      Utilities.sleep(600);
+    } catch (e) {
+      EW_trace('LOGIN', `Login failed: ${e && e.message ? e.message : e}`, true);
+    }
+  } else {
+    EW_trace('LOGIN', 'No EW_USER/EW_PASS set; skipping login');
+  }
+
+  const ss = SpreadsheetApp.getActive();
+  const endpoints = EW.STRATEGY_ENDPOINTS;
+  EW_trace('MAIN', `Fetching ${Object.keys(endpoints).length} endpoints`);
+
+  for (const [tabName, path] of Object.entries(endpoints)) {
+    EW_runOneInternal(ss, tabName, path, cookies);
+  }
+
+  EW_trace('MAIN', 'EW_runAll() finished', true);
+}
+
+// run a single strategy programmatically
+function EW_runSingle(tabName) {
+  tabName = 'Bull Spreads'
+  EW_trace('MAIN', `EW_runSingle(${tabName})`);
+  const path = EW.STRATEGY_ENDPOINTS[tabName];
+  if (!path) {
+    EW_trace('MAIN', `Unknown tabName: ${tabName}`, true);
+    return;
+  }
+  let cookies = {};
+  if (EW.p.user && EW.p.pass) {
+    try { cookies = EW_login(); } catch (e) {}
+  }
+  const ss = SpreadsheetApp.getActive();
+  EW_runOneInternal(ss, tabName, path, cookies);
+  EW_trace('MAIN', `EW_runSingle(${tabName}) done`, true);
+}
+
+// core per-endpoint work
+function EW_runOneInternal(ss, tabName, path, cookies) {
+  try {
+    const url = EW.url(path);
+    EW_trace(tabName, `GET ${url}`);
+    const json = EW_fetchJson(url, cookies);
+    EW_trace(tabName, `HTTP OK; JSON=${EW_summarizeJson(json)}`);
+    const rows = EW_jsonToRows(json);
+    EW_trace(tabName, `Parsed rows=${rows ? rows.length : 0}`);
+
+    if (!rows || rows.length === 0) {
+      EW_trace(tabName, 'Empty table or parse failure', true);
+      return;
+    }
+
+    const before = ss.getSheetByName(tabName)?.getLastRow() || 0;
+    EW_appendToTab(ss, tabName, rows, true);
+    const after = ss.getSheetByName(tabName)?.getLastRow() || 0;
+    EW_trace(tabName, `Wrote to sheet "${tabName}": +${Math.max(0, after - before)} rows`, true);
+
+    Utilities.sleep(300);
+  } catch (err) {
+    const msg = (err && err.stack) ? err.stack : (err && err.message ? err.message : String(err));
+    EW_trace(tabName, `ERROR: ${msg}`, true);
+  }
+}
+
+// ======= HTTP & Auth =======
+function EW_fetchJson(url, cookiesObj) {
+  const headers = {
+    'accept': 'application/json, text/javascript, */*; q=0.01',
+    'x-requested-with': 'XMLHttpRequest',
+    'User-Agent': 'Mozilla/5.0 (compatible; AppsScript)',
+    'Referer': EW.MATRIX_REFERRER
+  };
+  if (cookiesObj && Object.keys(cookiesObj).length) {
+    headers['Cookie'] = EW_cookieHeader(cookiesObj);
+  }
+
+  EW_trace('HTTP', `Fetching ${url}`);
+  const res = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers,
+    muteHttpExceptions: true,
+    followRedirects: true
+  });
+
+  const code = res.getResponseCode();
+  EW_trace('HTTP', `Response ${code} for ${url}`);
+  if (code >= 400) {
+    const snippet = (res.getContentText() || '').slice(0, 300).replace(/\s+/g, ' ');
+    throw new Error(`HTTP ${code} for ${url}; body[0..300]: ${snippet}`);
+  }
+
+  const text = res.getContentText();
+  console.log("Response: \n", text)
+  try {
+    const parsed = JSON.parse(text);
+    return parsed;
+  } catch (e) {
+    EW_trace('HTTP', `JSON parse error for ${url}: ${(e && e.message) || e}`);
+    throw new Error(`JSON parse error for ${url}: ${e.message || e}`);
+  }
+}
+
+function EW_login() {
+  const { user, pass, loginUrl } = EW.p;
+  if (!user || !pass) {
+    EW_trace('LOGIN', 'No credentials provided; returning empty cookies');
+    return {};
+  }
+
+  EW_trace('LOGIN', `GET ${loginUrl}`);
+  const res1 = UrlFetchApp.fetch(loginUrl, {
+    method: 'get',
+    muteHttpExceptions: true,
+    followRedirects: false,
+    headers: {
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'User-Agent': 'Mozilla/5.0 (compatible; AppsScript)'
+    }
+  });
+  const c1 = EW_collectSetCookies(res1);
+  EW_trace('LOGIN', `res1 code=${res1.getResponseCode()} cookies=${Object.keys(c1).length}`);
+
+  const html = res1.getContentText() || '';
+  const csrf = EW_extractCsrf(html);
+  if (csrf) EW_trace('LOGIN', `Found CSRF token`);
+
+  const payload = { Email: user, Password: pass };
+  if (csrf) payload['__RequestVerificationToken'] = csrf;
+
+  EW_trace('LOGIN', `POST ${loginUrl}`);
+  const res2 = UrlFetchApp.fetch(loginUrl, {
+    method: 'post',
+    payload,
+    muteHttpExceptions: true,
+    followRedirects: false,
+    headers: {
+      'Cookie': EW_cookieHeader(c1),
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'Mozilla/5.0 (compatible; AppsScript)',
+      'Origin': EW.BASE,
+      'Referer': loginUrl
+    }
+  });
+  let cookies = EW_mergeCookies(c1, EW_collectSetCookies(res2));
+  EW_trace('LOGIN', `res2 code=${res2.getResponseCode()} cookies now=${Object.keys(cookies).length}`);
+
+  if (res2.getResponseCode() >= 300 && res2.getResponseCode() < 400) {
+    const loc = res2.getHeaders()['Location'];
+    EW_trace('LOGIN', `Redirect -> ${loc || '(none)'}`);
+    if (loc) {
+      const res3 = UrlFetchApp.fetch(loc, {
+        method: 'get',
+        muteHttpExceptions: true,
+        followRedirects: true,
+        headers: {
+          'Cookie': EW_cookieHeader(cookies),
+          'User-Agent': 'Mozilla/5.0 (compatible; AppsScript)'
+        }
+      });
+      cookies = EW_mergeCookies(cookies, EW_collectSetCookies(res3));
+      EW_trace('LOGIN', `res3 code=${res3.getResponseCode()} cookies now=${Object.keys(cookies).length}`);
+    }
+  }
+
+  return cookies;
+}
+
+// ======= JSON -> rows =======
+function EW_jsonToRows(data) {
+  if (!data) return [];
+
+  if (Array.isArray(data)) {
+    EW_trace('PARSE', `Array detected len=${data.length}`);
+    return EW_objectsToRows(data);
+  }
+  if (data && Array.isArray(data.data)) {
+    EW_trace('PARSE', `Object with data[] len=${data.data.length}`);
+    return EW_objectsToRows(data.data);
+  }
+  if (data && Array.isArray(data.rows) && Array.isArray(data.headers)) {
+    EW_trace('PARSE', `Already {headers,rows} with rows=${data.rows.length}`);
+    return [data.headers, ...data.rows];
+  }
+
+  if (typeof data === 'object') {
+    EW_trace('PARSE', 'Single object -> one row');
+    return EW_objectsToRows([data]);
+  }
+
+  EW_trace('PARSE', 'Unknown shape -> empty');
+  return [];
+}
+
+function EW_objectsToRows(arr) {
+  if (!arr || arr.length === 0) return [];
+  const preferred = [
+    'company','ticker','strategy','earningsDate','earningsTime','price',
+    'strike','expiration','delta','iv','rvol','rsi','atr','premium','maxProfit',
+    'breakeven','probITM','probOTM','notes','date','time'
+  ];
+  const keySet = new Set(preferred);
+  arr.forEach(obj => {
+    Object.keys(obj || {}).forEach(k => { if (!keySet.has(k)) keySet.add(k); });
+  });
+  const headers = Array.from(keySet).filter(k =>
+    arr.some(o => Object.prototype.hasOwnProperty.call(o || {}, k))
+  );
+
+  const rows = arr.map(o => headers.map(h => {
+    const v = (o && o[h] != null) ? o[h] : '';
+    return (typeof v === 'object') ? JSON.stringify(v) : String(v);
+  }));
+
+  EW_trace('PARSE', `headers=${headers.length} dataRows=${rows.length}`);
+  return [headers, ...rows];
+}
+
+// ======= Sheets helpers =======
+// function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
+//   EW_trace('SHEET', `Append -> "${tabName}" rows=${rows.length}`);
+//   let sheet = ss.getSheetByName(tabName);
+//   if (!sheet) {
+//     EW_trace('SHEET', `Creating sheet "${tabName}"`);
+//     sheet = ss.insertSheet(tabName);
+//   }
+//   if (!rows || rows.length === 0) return;
+
+//   const lastRow = sheet.getLastRow();
+//   if (writeHeaderIfEmpty && lastRow === 0 && rows.length > 0) {
+//     const header = rows[0];
+//     if (Array.isArray(header) && header.every(c => typeof c === 'string')) {
+//       sheet.getRange(1, 1, 1, header.length).setValues([header]);
+//       EW_trace('SHEET', `Wrote header (${header.length} cols)`);
+//       if (rows.length > 1) {
+//         sheet.getRange(2, 1, rows.length - 1, header.length).setValues(rows.slice(1));
+//         EW_trace('SHEET', `Wrote ${rows.length - 1} data rows`);
+//       }
+//       return;
+//     }
+//   }
+
+//   const width = Math.max(...rows.map(r => r.length));
+//   const start = sheet.getLastRow() + 1;
+//   const padded = rows.map(r => {
+//     const copy = r.slice();
+//     if (copy.length < width) copy.push(...Array(width - copy.length).fill(''));
+//     return copy;
+//   });
+//   sheet.getRange(start, 1, padded.length, width).setValues(padded);
+//   EW_trace('SHEET', `Appended ${padded.length} rows at row ${start}`);
+// }
+
+// ======= Sheets helpers (with Run Date + GOOGLEFINANCE) =======
+// function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
+//   EW_trace('SHEET', `Append -> "${tabName}" rows=${rows.length}`);
+//   let sheet = ss.getSheetByName(tabName);
+//   if (!sheet) {
+//     EW_trace('SHEET', `Creating sheet "${tabName}"`);
+//     sheet = ss.insertSheet(tabName);
+//   }
+//   if (!rows || rows.length === 0) return;
+
+//   // Split incoming rows
+//   const incomingHeader = Array.isArray(rows[0]) ? rows[0].slice() : [];
+//   const incomingData = rows.slice(1).map(r => r.slice());
+
+//   const runDate = EW_getRunStamp(); // e.g., 2025-08-15
+
+//   const lastRow = sheet.getLastRow();
+
+//   // If the sheet is empty, we create a new header with Run Date + GF columns
+//   if (writeHeaderIfEmpty && lastRow === 0) {
+//     // Build header: prepend Run Date, then incoming header, then GF headers
+//     const baseHeader = EW_ensureRunDateInHeader(incomingHeader);
+//     const headerWithGF = EW_addGFHeaders(baseHeader);
+
+//     // Build data rows: prepend run date; pad to header width (GF cols left blank, formulas will fill)
+//     const width = headerWithGF.length;
+//     const dataRows = incomingData.map(r => {
+//       const row = [runDate, ...r];
+//       if (row.length < width) row.push(...Array(width - row.length).fill(''));
+//       return row;
+//     });
+
+//     sheet.getRange(1, 1, 1, headerWithGF.length).setValues([headerWithGF]);
+//     EW_trace('SHEET', `Wrote header (${headerWithGF.length} cols)`);
+
+//     if (dataRows.length) {
+//       sheet.getRange(2, 1, dataRows.length, width).setValues(dataRows);
+//       EW_trace('SHEET', `Wrote ${dataRows.length} data rows`);
+//       // Fill GF formulas for the rows we just wrote
+//       const hdrMap = EW_headerMap(headerWithGF);
+//       EW_writeGFForRows(sheet, 2, dataRows.length, hdrMap);
+//     }
+//     return;
+//   }
+
+//   // Existing sheet: read current header from row 1
+//   const sheetHeader = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+//   const hdrMap = EW_headerMap(sheetHeader);
+
+//   // Ensure the sheet already has "Run Date" as first column (created on first run)
+//   const hasRunDate = (hdrMap.runDateCol === 1); // we create it as first col initially
+//   if (!hasRunDate) {
+//     EW_trace('SHEET', `Warning: "Run Date" not found as first column. Appending anyway.`, true);
+//   }
+
+//   // Align incoming data to sheet header order:
+//   //  - Prepend Run Date value
+//   //  - Reorder/trim/extend cells to match the sheet header columns
+//   const width = sheetHeader.length;
+//   const aligned = incomingData.map(r => {
+//     const mapFromIncoming = EW_headerMap(incomingHeader);
+//     const dstRow = Array(width).fill('');
+//     // Put Run Date in col 1 if header has it
+//     if (hdrMap.runDateCol) dstRow[hdrMap.runDateCol - 1] = runDate;
+//     // Copy matching columns by header name
+//     for (const [name, idx] of Object.entries(mapFromIncoming.byName)) {
+//       if (!hdrMap.byName[name]) continue;             // skip fields not present in sheet
+//       const dstIdx1 = hdrMap.byName[name];            // 1-based
+//       const srcIdx0 = idx - 1;                        // incoming is 1-based in map
+//       dstRow[dstIdx1 - 1] = r[srcIdx0] != null ? r[srcIdx0] : '';
+//     }
+//     return dstRow;
+//   });
+
+//   if (!aligned.length) return;
+
+//   // Append aligned rows
+//   const start = sheet.getLastRow() + 1;
+//   sheet.getRange(start, 1, aligned.length, width).setValues(aligned);
+//   EW_trace('SHEET', `Appended ${aligned.length} rows at row ${start}`);
+
+//   // Add GF formulas for the new rows (if GF headers exist and ticker column is found)
+//   EW_writeGFForRows(sheet, start, aligned.length, hdrMap);
+// }
+
+function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
+  EW_trace('SHEET', `Append -> "${tabName}" rows=${rows.length}`);
+  let sheet = ss.getSheetByName(tabName);
+  if (!sheet) {
+    EW_trace('SHEET', `Creating sheet "${tabName}"`);
+    sheet = ss.insertSheet(tabName);
+  }
+  if (!rows || rows.length === 0) return;
+
+  const incomingHeader = Array.isArray(rows[0]) ? rows[0].slice() : [];
+  const incomingData = rows.slice(1).map(r => r.slice());
+  const runDate = EW_getRunStamp();
+
+  const lastRow = sheet.getLastRow();
+
+  // First run on this tab
+  if (writeHeaderIfEmpty && lastRow === 0) {
+    const baseHeader   = EW_ensureRunDateInHeader(incomingHeader);
+    const headerWithGF = EW_addGFHeaders(baseHeader);
+
+    const width = headerWithGF.length;
+    const dataRows = incomingData.map(r => {
+      const row = [runDate, ...r];
+      if (row.length < width) row.push(...Array(width - row.length).fill(''));
+      return row;
+    });
+
+    sheet.getRange(1, 1, 1, width).setValues([headerWithGF]);
+    EW_trace('SHEET', `Wrote header (${width} cols)`);
+
+    if (dataRows.length) {
+      sheet.getRange(2, 1, dataRows.length, width).setValues(dataRows);
+      EW_trace('SHEET', `Wrote ${dataRows.length} data rows`);
+    }
+
+    // Plant ARRAYFORMULAs once
+    const hdrMap = EW_headerMap(headerWithGF);
+    EW_setGFArrayFormulas(sheet, hdrMap);
+    return;
+  }
+
+
+
+  // Subsequent runs: align to existing header
+  const sheetHeader = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(sheetHeader);
+  const width = sheetHeader.length;
+
+  const mapFromIncoming = EW_headerMap(incomingHeader);
+  const aligned = incomingData.map(src => {
+    const dst = Array(width).fill('');
+    if (hdrMap.runDateCol) dst[hdrMap.runDateCol - 1] = runDate;
+    for (const [name, src1] of Object.entries(mapFromIncoming.byName)) {
+      const dst1 = hdrMap.byName[name];
+      if (!dst1) continue;
+      dst[dst1 - 1] = src[src1 - 1] != null ? src[src1 - 1] : '';
+    }
+    return dst;
+  });
+
+  if (!aligned.length) return;
+
+    // If any GF header exists but row 1 cell is empty (formula removed), replant
+  if (hdrMap.tickerCol && (
+      (hdrMap.priceCol && !sheet.getRange(1, hdrMap.priceCol).getFormula()) ||
+      (hdrMap.volCol   && !sheet.getRange(1, hdrMap.volCol).getFormula())
+    )) {
+    EW_trace('GF', 'Detected missing GF formulas; replanting');
+    EW_setGFArrayFormulas(sheet, hdrMap);
+  }
+
+
+  const start = sheet.getLastRow() + 1;
+  sheet.getRange(start, 1, aligned.length, width).setValues(aligned);
+  EW_trace('SHEET', `Appended ${aligned.length} rows at row ${start}`);
+
+  // Do NOT call any filler here; array formulas spill automatically.
+}
+
+
+
+
+// ======= Cookie & CSRF =======
+function EW_collectSetCookies(res) {
+  const headers = res.getAllHeaders();
+  let sc = headers['Set-Cookie'];
+  if (!sc) return {};
+  const out = {};
+  (Array.isArray(sc) ? sc : [sc]).forEach(line => {
+    const pair = String(line).split(';')[0];
+    const idx = pair.indexOf('=');
+    if (idx > -1) out[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+  });
+  return out;
+}
+function EW_mergeCookies(a, b) { return Object.assign({}, a || {}, b || {}); }
+function EW_cookieHeader(obj) { return Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`).join('; '); }
+function EW_extractCsrf(html) {
+  const m = html && html.match(/name=["'](__RequestVerificationToken|csrf|_token)["'][^>]*value=["']([^"']+)["']/i);
+  return m ? m[2] : '';
+}
+
+// Add a rich set of eval columns for options decisioning
+// function EW_addGFHeaders(header) {
+//   const gf = [
+//     'GF_Name','GF_Price','GF_ChangePct','GF_High','GF_Low','GF_High52','GF_Low52',
+//     'GF_Volume','GF_AvgVol10','GF_MktCap','GF_PE','GF_Beta',
+//     'HV_30D','RVOL_10','Ret_5D','Ret_20D','GapPct'
+//   ];
+//   const existing = new Set(header.map(h => String(h).toLowerCase()));
+//   const toAdd = gf.filter(h => !existing.has(h.toLowerCase()));
+//   return header.concat(toAdd);
+// }
+
+// Map header names to 1-based indices + friendly handles
+// function EW_headerMap(headerRow) {
+//   const byName = {};
+//   headerRow.forEach((h, i) => {
+//     const key = String(h || '').trim().toLowerCase();
+//     if (key) byName[key] = i + 1;
+//   });
+//   return {
+//     byName,
+//     runDateCol:  byName['run date'] || null,
+//     tickerCol:   byName['ticker'] || null,
+
+//     // Live GF columns
+//     nameCol:     byName['gf_name']     || null,
+//     priceCol:    byName['gf_price']    || null,
+//     chgPctCol:   byName['gf_changepct']|| null,
+//     highCol:     byName['gf_high']     || null,
+//     lowCol:      byName['gf_low']      || null,
+//     high52Col:   byName['gf_high52']   || null,
+//     low52Col:    byName['gf_low52']    || null,
+//     volCol:      byName['gf_volume']   || null,
+//     avgVol10Col: byName['gf_avgvol10'] || null,
+//     mcapCol:     byName['gf_mktcap']   || null,
+//     peCol:       byName['gf_pe']       || null,
+//     betaCol:     byName['gf_beta']     || null,
+
+//     // Derived signal columns
+//     hv30Col:     byName['hv_30d']      || null,
+//     rvol10Col:   byName['rvol_10']     || null,
+//     ret5Col:     byName['ret_5d']      || null,
+//     ret20Col:    byName['ret_20d']     || null,
+//     gapPctCol:   byName['gappct']      || null,
+
+//     width:       headerRow.length
+//   };
+// }
+
+// Normalize a header string for matching (lowercase, strip non-alphanum)
+function EW_norm(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// Add our evaluation columns (exact labels used everywhere below)
+const EW_GF_LABELS = [
+  'GF_Name','GF_Price','GF_ChangePct','GF_High','GF_Low','GF_High52','GF_Low52',
+  'GF_Volume','GF_AvgVol10','GF_MktCap','GF_PE','GF_Beta',
+  'HV_30D','RVOL_10','Ret_5D','Ret_20D','GapPct'
+];
+
+function EW_addGFHeaders(header) {
+  const have = new Set(header.map(h => EW_norm(h)));
+  const out = header.slice();
+  EW_GF_LABELS.forEach(lbl => { if (!have.has(EW_norm(lbl))) out.push(lbl); });
+  return out;
+}
+
+function EW_headerMap(headerRow) {
+  const byName = {};               // raw key -> 1-based index
+  const byNorm = {};               // normalized key -> 1-based index
+  headerRow.forEach((h, i) => {
+    const raw  = String(h || '').trim();
+    const norm = EW_norm(raw);
+    if (raw)  byName[raw.toLowerCase()] = i + 1;
+    if (norm) byNorm[norm] = i + 1;
+  });
+
+  // Helper: first match among aliases (by normalized name)
+  function find(aliases) {
+    for (const a of aliases) {
+      const ix = byNorm[EW_norm(a)];
+      if (ix) return ix;
+    }
+    return null;
+  }
+
+  // Common aliases for upstream data
+  const tickerCol   = find(['ticker','symbol','sym','underlying','root']);
+  const runDateCol  = find(['run date','rundate','dateadded']);
+  // (add more if needed: expiration/strike/etc for dedupe later)
+
+  // GF/derived columns we ourselves add — locate by exact labels or normalized
+  const nameCol     = find(['GF_Name']);
+  const priceCol    = find(['GF_Price']);
+  const chgPctCol   = find(['GF_ChangePct']);
+  const highCol     = find(['GF_High']);
+  const lowCol      = find(['GF_Low']);
+  const high52Col   = find(['GF_High52','GF_52w High']);
+  const low52Col    = find(['GF_Low52','GF_52w Low']);
+  const volCol      = find(['GF_Volume']);
+  const avgVol10Col = find(['GF_AvgVol10','GF_Avg Vol 10']);
+  const mcapCol     = find(['GF_MktCap','GF_Market Cap']);
+  const peCol       = find(['GF_PE']);
+  const betaCol     = find(['GF_Beta']);
+
+  const hv30Col     = find(['HV_30D']);
+  const rvol10Col   = find(['RVOL_10']);
+  const ret5Col     = find(['Ret_5D']);
+  const ret20Col    = find(['Ret_20D']);
+  const gapPctCol   = find(['GapPct','Gap %']);
+
+  return {
+    byName, byNorm,
+    runDateCol, tickerCol,
+    nameCol, priceCol, chgPctCol, highCol, lowCol, high52Col, low52Col,
+    volCol, avgVol10Col, mcapCol, peCol, betaCol,
+    hv30Col, rvol10Col, ret5Col, ret20Col, gapPctCol,
+    width: headerRow.length
+  };
+}
+
+
+
+// Put ARRAYFORMULAs in row 1 so they spill down forever
+// function EW_setGFArrayFormulas(sheet, hdrMap) {
+//   if (!hdrMap.tickerCol) {
+//     EW_trace('GF', 'No "ticker" column found; skipping ARRAYFORMULAs');
+//     return;
+//   }
+//   const tLtr   = EW_columnToLetter(hdrMap.tickerCol);
+//   const tRange = `$${tLtr}2:$${tLtr}`; // open-ended down the sheet
+
+//   function setHeaderArray(colIndex, headerLabel, innerExpr) {
+//     if (!colIndex) return;
+//     // Row 1 cell holds: {"Header"; MAP(TickerRange, LAMBDA(t, IF(t="",, innerExpr )))}
+//     const cell = sheet.getRange(1, colIndex);
+//     const formula = `={"${headerLabel}"; MAP(${tRange}, LAMBDA(t, IF(t="",,${innerExpr})))}`;
+//     cell.setFormula(formula);
+//   }
+
+//   // ---- Live GOOGLEFINANCE attributes (fast) ----
+//   setHeaderArray(hdrMap.nameCol,   'GF_Name',      `IFERROR(GOOGLEFINANCE(t,"name"),)`       );
+//   setHeaderArray(hdrMap.priceCol,  'GF_Price',     `IFERROR(GOOGLEFINANCE(t,"price"),)`      );
+//   setHeaderArray(hdrMap.chgPctCol, 'GF_ChangePct', `IFERROR(GOOGLEFINANCE(t,"changepct"),)`  );
+//   setHeaderArray(hdrMap.highCol,   'GF_High',      `IFERROR(GOOGLEFINANCE(t,"high"),)`       );
+//   setHeaderArray(hdrMap.lowCol,    'GF_Low',       `IFERROR(GOOGLEFINANCE(t,"low"),)`        );
+//   setHeaderArray(hdrMap.high52Col, 'GF_High52',    `IFERROR(GOOGLEFINANCE(t,"high52"),)`     );
+//   setHeaderArray(hdrMap.low52Col,  'GF_Low52',     `IFERROR(GOOGLEFINANCE(t,"low52"),)`      );
+//   setHeaderArray(hdrMap.volCol,    'GF_Volume',    `IFERROR(GOOGLEFINANCE(t,"volume"),)`     );
+//   setHeaderArray(hdrMap.mcapCol,   'GF_MktCap',    `IFERROR(GOOGLEFINANCE(t,"marketcap"),)`  );
+//   setHeaderArray(hdrMap.peCol,     'GF_PE',        `IFERROR(GOOGLEFINANCE(t,"pe"),)`         );
+//   setHeaderArray(hdrMap.betaCol,   'GF_Beta',      `IFERROR(GOOGLEFINANCE(t,"beta"),)`       );
+
+//   // 10-day average volume (from historical data)
+//   setHeaderArray(
+//     hdrMap.avgVol10Col, 'GF_AvgVol10',
+//     `LET(vh, IFERROR(GOOGLEFINANCE(t,"volume",TODAY()-20,TODAY()),),
+//          vd, IF(ROWS(vh)<2,,DROP(vh,1)),
+//          IF(ROWS(vd)<10,,AVERAGE(TAKE(vd,-10))))`
+//   );
+
+//   // ---- Derived signals using history ----
+
+//   // HV_30D: 30-day close-to-close historical volatility (annualized %) 
+//   // Uses LN returns, STDEV, and scales by sqrt(252)
+//   setHeaderArray(
+//     hdrMap.hv30Col, 'HV_30D',
+//     `LET(
+//        data, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-40,TODAY()),),
+//        cl,   IF(ROWS(data)<3,,DROP(INDEX(data,0,2),1)),              /* closes (drop header row) */
+//        c1,   IF(ROWS(cl)<31,,DROP(cl,1)),                            /* t1..n */
+//        c0,   IF(ROWS(cl)<31,,TAKE(cl,ROWS(cl)-1)),                   /* t0..n-1 */
+//        r,    IF(OR(c1="",c0=""),,LN(c1/c0)),
+//        st,   IFERROR(STDEV(r),),
+//        IF(st="",,SQRT(252)*st*100)
+//      )`
+//   );
+
+//   // RVOL_10: live volume / 10-day avg volume
+//   setHeaderArray(
+//     hdrMap.rvol10Col, 'RVOL_10',
+//     `LET(
+//        cv, IFERROR(GOOGLEFINANCE(t,"volume"),),
+//        vh, IFERROR(GOOGLEFINANCE(t,"volume",TODAY()-20,TODAY()),),
+//        vd, IF(ROWS(vh)<2,,DROP(vh,1)),
+//        av, IF(ROWS(vd)<10,,AVERAGE(TAKE(vd,-10))),
+//        IF(OR(cv="",av=""),,cv/av)
+//      )`
+//   );
+
+//   // Ret_5D: (last close / close 5 trading days ago - 1) * 100
+//   setHeaderArray(
+//     hdrMap.ret5Col, 'Ret_5D',
+//     `LET(
+//        d, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-15,TODAY()),),
+//        c, IF(ROWS(d)<2,,DROP(INDEX(d,0,2),1)),
+//        n, ROWS(c),
+//        IF(n<6,,(INDEX(c,n)/INDEX(c,n-5)-1)*100)
+//      )`
+//   );
+
+//   // Ret_20D: (last close / close 20 trading days ago - 1) * 100
+//   setHeaderArray(
+//     hdrMap.ret20Col, 'Ret_20D',
+//     `LET(
+//        d, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-35,TODAY()),),
+//        c, IF(ROWS(d)<2,,DROP(INDEX(d,0,2),1)),
+//        n, ROWS(c),
+//        IF(n<21,,(INDEX(c,n)/INDEX(c,n-20)-1)*100)
+//      )`
+//   );
+
+//   // GapPct: (price - open)/open * 100  (intraday gap check)
+//   setHeaderArray(
+//     hdrMap.gapPctCol, 'GapPct',
+//     `LET(px, IFERROR(GOOGLEFINANCE(t,"price"),),
+//          op, IFERROR(GOOGLEFINANCE(t,"priceopen"),),
+//          IF(OR(px="",op=""),,(px-op)/op*100))`
+//   );
+
+//   EW_trace('GF', 'ARRAYFORMULAs set for all eval columns');
+// }
+
+function EW_setGFArrayFormulas(sheet, hdrMap) {
+  if (!hdrMap.tickerCol) {
+    EW_trace('GF', 'No "ticker" column found; skipping ARRAYFORMULAs');
+    return;
+  }
+  const tLtr   = EW_columnToLetter(hdrMap.tickerCol);
+  const tRange = `$${tLtr}2:$${tLtr}`;
+
+  function setHeaderArray(colIndex, headerLabel, innerExpr) {
+    if (!colIndex) return;
+    const cell = sheet.getRange(1, colIndex);
+    cell.setFormula(`={"${headerLabel}"; MAP(${tRange}, LAMBDA(t, IF(t="",,${innerExpr})))}`);
+  }
+
+  // GOOGLEFINANCE attributes
+  setHeaderArray(hdrMap.nameCol,   'GF_Name',      `IFERROR(GOOGLEFINANCE(t,"name"),)`);
+  setHeaderArray(hdrMap.priceCol,  'GF_Price',     `IFERROR(GOOGLEFINANCE(t,"price"),)`);
+  setHeaderArray(hdrMap.chgPctCol, 'GF_ChangePct', `IFERROR(GOOGLEFINANCE(t,"changepct"),)`);
+  setHeaderArray(hdrMap.highCol,   'GF_High',      `IFERROR(GOOGLEFINANCE(t,"high"),)`);
+  setHeaderArray(hdrMap.lowCol,    'GF_Low',       `IFERROR(GOOGLEFINANCE(t,"low"),)`);
+  setHeaderArray(hdrMap.high52Col, 'GF_High52',    `IFERROR(GOOGLEFINANCE(t,"high52"),)`);
+  setHeaderArray(hdrMap.low52Col,  'GF_Low52',     `IFERROR(GOOGLEFINANCE(t,"low52"),)`);
+  setHeaderArray(hdrMap.volCol,    'GF_Volume',    `IFERROR(GOOGLEFINANCE(t,"volume"),)`);
+  setHeaderArray(hdrMap.mcapCol,   'GF_MktCap',    `IFERROR(GOOGLEFINANCE(t,"marketcap"),)`);
+  setHeaderArray(hdrMap.peCol,     'GF_PE',        `IFERROR(GOOGLEFINANCE(t,"pe"),)`);
+  setHeaderArray(hdrMap.betaCol,   'GF_Beta',      `IFERROR(GOOGLEFINANCE(t,"beta"),)`);
+
+  // 10-day average volume
+  setHeaderArray(
+    hdrMap.avgVol10Col, 'GF_AvgVol10',
+    `LET(
+       vh, IFERROR(GOOGLEFINANCE(t,"volume",TODAY()-30,TODAY()),),
+       vd, IF(ROWS(vh)<2,,OFFSET(vh,1,0)),
+       n,  ROWS(vd),
+       IF(n<10,,AVERAGE(INDEX(vd,n-9,2):INDEX(vd,n,2)))
+     )`
+  );
+
+  // HV_30D (annualized, %)
+  setHeaderArray(
+    hdrMap.hv30Col, 'HV_30D',
+    `LET(
+       data, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-60,TODAY()),),
+       col2, INDEX(data,0,2),
+       cl,   IF(ROWS(col2)<2,,OFFSET(col2,1,0)),
+       n,    ROWS(cl),
+       c0,   IF(n<31,,OFFSET(cl,0,0,n-1)),
+       c1,   IF(n<31,,OFFSET(cl,1,0,n-1)),
+       r,    IF(n<31,,LN(c1/c0)),
+       st,   IF(n<31,,STDEV(r)),
+       IF(n<31,,SQRT(252)*st*100)
+     )`
+  );
+
+  // RVOL_10 (current vol / 10-day avg vol)
+  setHeaderArray(
+    hdrMap.rvol10Col, 'RVOL_10',
+    `LET(
+       cv, IFERROR(GOOGLEFINANCE(t,"volume"),),
+       vh, IFERROR(GOOGLEFINANCE(t,"volume",TODAY()-30,TODAY()),),
+       vd, IF(ROWS(vh)<2,,OFFSET(vh,1,0)),
+       n,  ROWS(vd),
+       av, IF(n<10,,AVERAGE(INDEX(vd,n-9,2):INDEX(vd,n,2))),
+       IF(OR(cv="",av=""),,cv/av)
+     )`
+  );
+
+  // Ret_5D
+  setHeaderArray(
+    hdrMap.ret5Col, 'Ret_5D',
+    `LET(
+       d, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-20,TODAY()),),
+       c, IF(ROWS(d)<2,,OFFSET(INDEX(d,0,2),1,0)),
+       n, ROWS(c),
+       IF(n<6,,(INDEX(c,n)/INDEX(c,n-5)-1)*100)
+     )`
+  );
+
+  // Ret_20D
+  setHeaderArray(
+    hdrMap.ret20Col, 'Ret_20D',
+    `LET(
+       d, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-45,TODAY()),),
+       c, IF(ROWS(d)<2,,OFFSET(INDEX(d,0,2),1,0)),
+       n, ROWS(c),
+       IF(n<21,,(INDEX(c,n)/INDEX(c,n-20)-1)*100)
+     )`
+  );
+
+  // GapPct unchanged
+  setHeaderArray(
+    hdrMap.gapPctCol, 'GapPct',
+    `LET(px, IFERROR(GOOGLEFINANCE(t,"price"),),
+         op, IFERROR(GOOGLEFINANCE(t,"priceopen"),),
+         IF(OR(px="",op=""),,(px-op)/op*100))`
+  );
+
+  EW_trace('GF', 'ARRAYFORMULAs set (no DROP/TAKE)');
+}
+
+
+
+function EW_columnToLetter(col) {
+  let s = '';
+  while (col > 0) {
+    const m = (col - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    col = Math.floor((col - 1) / 26);
+  }
+  return s;
+}
+
+
+// Build YYYY-MM-DD in script timezone (static per run)
+// function EW_getRunStamp() {
+//   return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+// }
+
+function EW_getRunStamp() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+}
+
+
+// Ensure "Run Date" is first header column
+function EW_ensureRunDateInHeader(header) {
+  const ix = header.findIndex(h => String(h).toLowerCase() === 'run date');
+  if (ix === 0) return header;
+  if (ix > 0) {
+    const copy = header.slice();
+    const [rd] = copy.splice(ix, 1);
+    return [rd, ...copy];
+  }
+  return ['Run Date', ...header];
+}
+
