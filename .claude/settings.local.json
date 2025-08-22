@@ -27,7 +27,8 @@
       "Bash(then echo \"In Docker container\")",
       "Bash(fi)",
       "Bash(docker exec:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(tree:*)"
     ],
     "deny": []
   }
