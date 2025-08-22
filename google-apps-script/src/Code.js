@@ -78,6 +78,9 @@ function onOpen() {
     .createMenu('EarningsWhispers')
     .addItem('Run all strategies', 'EW_runAll')
     .addItem('Debug one (prompt)', 'EW_debugOne')
+    .addSeparator()
+    .addItem('Generate Success Report', 'EW_generateSuccessReport')
+    .addItem('Update Tracking Data', 'EW_updateTrackingData')
     .addToUi();
 }
 
@@ -609,10 +612,18 @@ const EW_GF_LABELS = [
   'HV_30D','RVOL_10','Ret_5D','Ret_20D','GapPct'
 ];
 
+// Add tracking columns for strategy success monitoring
+const EW_TRACKING_LABELS = [
+  'Days_To_Exp','Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
+  'Day1_Check','Day2_Check','Day3_Check','Day5_Check','Exp_Result',
+  'Success_Score','Profit_Potential','Risk_Reward'
+];
+
 function EW_addGFHeaders(header) {
   const have = new Set(header.map(h => EW_norm(h)));
   const out = header.slice();
   EW_GF_LABELS.forEach(lbl => { if (!have.has(EW_norm(lbl))) out.push(lbl); });
+  EW_TRACKING_LABELS.forEach(lbl => { if (!have.has(EW_norm(lbl))) out.push(lbl); });
   return out;
 }
 
@@ -660,12 +671,35 @@ function EW_headerMap(headerRow) {
   const ret20Col    = find(['Ret_20D']);
   const gapPctCol   = find(['GapPct','Gap %']);
 
+  // Tracking columns
+  const daysToExpCol    = find(['Days_To_Exp']);
+  const strikeHitCol    = find(['Strike_Hit']);
+  const hitDateCol      = find(['Hit_Date']);
+  const maxFavorableCol = find(['Max_Favorable']);
+  const minUnfavorableCol = find(['Min_Unfavorable']);
+  const day1CheckCol    = find(['Day1_Check']);
+  const day2CheckCol    = find(['Day2_Check']);
+  const day3CheckCol    = find(['Day3_Check']);
+  const day5CheckCol    = find(['Day5_Check']);
+  const expResultCol    = find(['Exp_Result']);
+  const successScoreCol = find(['Success_Score']);
+  const profitPotentialCol = find(['Profit_Potential']);
+  const riskRewardCol   = find(['Risk_Reward']);
+
+  // Strategy and core data columns
+  const strategyCol     = find(['strategy','Strategy']);
+  const strikeCol       = find(['strike','Strike']);
+  const expDateCol      = find(['expDate','expiration','Expiration']);
+
   return {
     byName, byNorm,
-    runDateCol, tickerCol,
+    runDateCol, tickerCol, strategyCol, strikeCol, expDateCol,
     nameCol, priceCol, chgPctCol, highCol, lowCol, high52Col, low52Col,
     volCol, avgVol10Col, mcapCol, peCol, betaCol,
     hv30Col, rvol10Col, ret5Col, ret20Col, gapPctCol,
+    daysToExpCol, strikeHitCol, hitDateCol, maxFavorableCol, minUnfavorableCol,
+    day1CheckCol, day2CheckCol, day3CheckCol, day5CheckCol, expResultCol,
+    successScoreCol, profitPotentialCol, riskRewardCol,
     width: headerRow.length
   };
 }
@@ -804,9 +838,8 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
     hdrMap.avgVol10Col, 'GF_AvgVol10',
     `LET(
        vh, IFERROR(GOOGLEFINANCE(t,"volume",TODAY()-30,TODAY()),),
-       vd, IF(ROWS(vh)<2,,OFFSET(vh,1,0)),
-       n,  ROWS(vd),
-       IF(n<10,,AVERAGE(INDEX(vd,n-9,2):INDEX(vd,n,2)))
+       n, ROWS(vh)-1,
+       IF(n<10,,AVERAGE(INDEX(vh,SEQUENCE(10,1,n-8),2)))
      )`
   );
 
@@ -815,14 +848,11 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
     hdrMap.hv30Col, 'HV_30D',
     `LET(
        data, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-60,TODAY()),),
-       col2, INDEX(data,0,2),
-       cl,   IF(ROWS(col2)<2,,OFFSET(col2,1,0)),
-       n,    ROWS(cl),
-       c0,   IF(n<31,,OFFSET(cl,0,0,n-1)),
-       c1,   IF(n<31,,OFFSET(cl,1,0,n-1)),
-       r,    IF(n<31,,LN(c1/c0)),
-       st,   IF(n<31,,STDEV(r)),
-       IF(n<31,,SQRT(252)*st*100)
+       n, ROWS(data),
+       IF(n<32,,LET(
+         returns, MAP(SEQUENCE(30), LAMBDA(i, LN(INDEX(data,n-i+1,2)/INDEX(data,n-i,2)))),
+         SQRT(252)*STDEV(returns)*100
+       ))
      )`
   );
 
@@ -832,9 +862,8 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
     `LET(
        cv, IFERROR(GOOGLEFINANCE(t,"volume"),),
        vh, IFERROR(GOOGLEFINANCE(t,"volume",TODAY()-30,TODAY()),),
-       vd, IF(ROWS(vh)<2,,OFFSET(vh,1,0)),
-       n,  ROWS(vd),
-       av, IF(n<10,,AVERAGE(INDEX(vd,n-9,2):INDEX(vd,n,2))),
+       n, ROWS(vh)-1,
+       av, IF(n<10,,AVERAGE(INDEX(vh,SEQUENCE(10,1,n-8),2))),
        IF(OR(cv="",av=""),,cv/av)
      )`
   );
@@ -844,9 +873,8 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
     hdrMap.ret5Col, 'Ret_5D',
     `LET(
        d, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-20,TODAY()),),
-       c, IF(ROWS(d)<2,,OFFSET(INDEX(d,0,2),1,0)),
-       n, ROWS(c),
-       IF(n<6,,(INDEX(c,n)/INDEX(c,n-5)-1)*100)
+       n, ROWS(d),
+       IF(n<7,,(INDEX(d,n,2)/INDEX(d,n-5,2)-1)*100)
      )`
   );
 
@@ -855,9 +883,8 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
     hdrMap.ret20Col, 'Ret_20D',
     `LET(
        d, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-45,TODAY()),),
-       c, IF(ROWS(d)<2,,OFFSET(INDEX(d,0,2),1,0)),
-       n, ROWS(c),
-       IF(n<21,,(INDEX(c,n)/INDEX(c,n-20)-1)*100)
+       n, ROWS(d),
+       IF(n<22,,(INDEX(d,n,2)/INDEX(d,n-20,2)-1)*100)
      )`
   );
 
@@ -867,6 +894,140 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
     `LET(px, IFERROR(GOOGLEFINANCE(t,"price"),),
          op, IFERROR(GOOGLEFINANCE(t,"priceopen"),),
          IF(OR(px="",op=""),,(px-op)/op*100))`
+  );
+
+  // ===== TRACKING FORMULAS FOR STRATEGY SUCCESS =====
+  
+  // Days to Expiration
+  setHeaderArray(
+    hdrMap.daysToExpCol, 'Days_To_Exp',
+    `LET(
+       expCol, $${EW_columnToLetter(hdrMap.expDateCol)}2:$${EW_columnToLetter(hdrMap.expDateCol)},
+       rowNum, ROW(${tRange})-1,
+       expDate, INDEX(expCol, rowNum),
+       IF(expDate="",, MAX(0, expDate - TODAY()))
+     )`
+  );
+
+  // Strike Hit Checker (dynamic based on strategy)
+  setHeaderArray(
+    hdrMap.strikeHitCol, 'Strike_Hit',
+    `LET(
+       stratCol, $${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)},
+       strikeCol, $${EW_columnToLetter(hdrMap.strikeCol)}2:$${EW_columnToLetter(hdrMap.strikeCol)},
+       rowNum, ROW(${tRange})-1,
+       strategy, UPPER(INDEX(stratCol, rowNum)),
+       strike, INDEX(strikeCol, rowNum),
+       currentPrice, IFERROR(GOOGLEFINANCE(t,"price"),),
+       
+       IF(OR(strategy="", strike="", currentPrice=""), "",
+         IF(OR(ISNUMBER(SEARCH("LONG CALL", strategy)), ISNUMBER(SEARCH("BULL", strategy))),
+           IF(currentPrice >= strike, "HIT", "NO"),
+           IF(OR(ISNUMBER(SEARCH("LONG PUT", strategy)), ISNUMBER(SEARCH("BEAR", strategy))),
+             IF(currentPrice <= strike, "HIT", "NO"),
+             IF(OR(ISNUMBER(SEARCH("SHORT CALL", strategy)), ISNUMBER(SEARCH("COVERED", strategy))),
+               IF(currentPrice < strike, "FAVORABLE", IF(currentPrice >= strike, "UNFAVORABLE", "NEUTRAL")),
+               IF(ISNUMBER(SEARCH("SHORT PUT", strategy)),
+                 IF(currentPrice > strike, "FAVORABLE", IF(currentPrice <= strike, "UNFAVORABLE", "NEUTRAL")),
+                 "UNKNOWN"
+               )
+             )
+           )
+         )
+       )
+     )`
+  );
+
+  // Hit Date Tracker
+  setHeaderArray(
+    hdrMap.hitDateCol, 'Hit_Date',
+    `LET(
+       hitStatus, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, ROW(${tRange})-1),
+       prevHitDate, INDEX($${EW_columnToLetter(hdrMap.hitDateCol)}2:$${EW_columnToLetter(hdrMap.hitDateCol)}, ROW(${tRange})-1),
+       IF(hitStatus="HIT", IF(prevHitDate="", TODAY(), prevHitDate), "")
+     )`
+  );
+
+  // Max Favorable Price (best case scenario tracking)
+  setHeaderArray(
+    hdrMap.maxFavorableCol, 'Max_Favorable',
+    `LET(
+       stratCol, $${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)},
+       rowNum, ROW(${tRange})-1,
+       strategy, UPPER(INDEX(stratCol, rowNum)),
+       currentPrice, IFERROR(GOOGLEFINANCE(t,"price"),),
+       prevMax, INDEX($${EW_columnToLetter(hdrMap.maxFavorableCol)}2:$${EW_columnToLetter(hdrMap.maxFavorableCol)}, rowNum),
+       
+       IF(OR(strategy="", currentPrice=""), prevMax,
+         IF(OR(ISNUMBER(SEARCH("CALL", strategy)), ISNUMBER(SEARCH("BULL", strategy))),
+           MAX(prevMax, currentPrice),
+           IF(OR(ISNUMBER(SEARCH("PUT", strategy)), ISNUMBER(SEARCH("BEAR", strategy))),
+             IF(prevMax="", currentPrice, MIN(prevMax, currentPrice)),
+             currentPrice
+           )
+         )
+       )
+     )`
+  );
+
+  // Daily Progress Checks
+  setHeaderArray(
+    hdrMap.day1CheckCol, 'Day1_Check',
+    `LET(
+       runDateCol, $${EW_columnToLetter(hdrMap.runDateCol)}2:$${EW_columnToLetter(hdrMap.runDateCol)},
+       rowNum, ROW(${tRange})-1,
+       runDate, INDEX(runDateCol, rowNum),
+       daysSinceRun, IF(runDate="", "", TODAY() - runDate),
+       hitStatus, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, rowNum),
+       
+       IF(daysSinceRun >= 1, hitStatus, "PENDING")
+     )`
+  );
+
+  setHeaderArray(
+    hdrMap.day2CheckCol, 'Day2_Check',
+    `LET(
+       runDateCol, $${EW_columnToLetter(hdrMap.runDateCol)}2:$${EW_columnToLetter(hdrMap.runDateCol)},
+       rowNum, ROW(${tRange})-1,
+       runDate, INDEX(runDateCol, rowNum),
+       daysSinceRun, IF(runDate="", "", TODAY() - runDate),
+       hitStatus, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, rowNum),
+       
+       IF(daysSinceRun >= 2, hitStatus, "PENDING")
+     )`
+  );
+
+  setHeaderArray(
+    hdrMap.day5CheckCol, 'Day5_Check',
+    `LET(
+       runDateCol, $${EW_columnToLetter(hdrMap.runDateCol)}2:$${EW_columnToLetter(hdrMap.runDateCol)},
+       rowNum, ROW(${tRange})-1,
+       runDate, INDEX(runDateCol, rowNum),
+       daysSinceRun, IF(runDate="", "", TODAY() - runDate),
+       hitStatus, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, rowNum),
+       
+       IF(daysSinceRun >= 5, hitStatus, "PENDING")
+     )`
+  );
+
+  // Success Score (0-100 based on multiple factors)
+  setHeaderArray(
+    hdrMap.successScoreCol, 'Success_Score',
+    `LET(
+       hitStatus, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, ROW(${tRange})-1),
+       daysToExp, INDEX($${EW_columnToLetter(hdrMap.daysToExpCol)}2:$${EW_columnToLetter(hdrMap.daysToExpCol)}, ROW(${tRange})-1),
+       rvol, INDEX($${EW_columnToLetter(hdrMap.rvol10Col)}2:$${EW_columnToLetter(hdrMap.rvol10Col)}, ROW(${tRange})-1),
+       
+       IF(OR(hitStatus="", daysToExp=""), "",
+         LET(
+           hitScore, IF(OR(hitStatus="HIT", hitStatus="FAVORABLE"), 60, 
+                        IF(hitStatus="UNFAVORABLE", 20, 40)),
+           timeScore, MIN(30, MAX(0, daysToExp * 2)),
+           volScore, MIN(10, MAX(0, (rvol - 1) * 10)),
+           hitScore + timeScore + volScore
+         )
+       )
+     )`
   );
 
   EW_trace('GF', 'ARRAYFORMULAs set (no DROP/TAKE)');
@@ -905,5 +1066,198 @@ function EW_ensureRunDateInHeader(header) {
     return [rd, ...copy];
   }
   return ['Run Date', ...header];
+}
+
+// ===== SUCCESS TRACKING & REPORTING FUNCTIONS =====
+
+function EW_generateSuccessReport() {
+  EW_trace('REPORT', 'Generating success report...', true);
+  
+  const ss = SpreadsheetApp.getActive();
+  let reportSheet = ss.getSheetByName('Success_Report');
+  if (!reportSheet) {
+    reportSheet = ss.insertSheet('Success_Report');
+  }
+  
+  // Clear existing content
+  reportSheet.clear();
+  
+  // Create report header
+  const reportHeaders = [
+    'Strategy', 'Total_Positions', 'Hits', 'Hit_Rate_%', 'Avg_Success_Score',
+    'Day1_Hit_Rate', 'Day2_Hit_Rate', 'Day5_Hit_Rate', 'Avg_Days_To_Hit',
+    'Best_Performers', 'Worst_Performers', 'Recommendations'
+  ];
+  
+  reportSheet.getRange(1, 1, 1, reportHeaders.length).setValues([reportHeaders]);
+  
+  // Get data from all strategy sheets
+  const strategies = Object.keys(EW.STRATEGY_ENDPOINTS);
+  const reportData = [];
+  
+  strategies.forEach(strategy => {
+    const sheet = ss.getSheetByName(strategy);
+    if (!sheet || sheet.getLastRow() < 2) return;
+    
+    try {
+      const data = sheet.getDataRange().getValues();
+      const headers = data[0];
+      const rows = data.slice(1);
+      
+      const hdrMap = EW_headerMap(headers);
+      if (!hdrMap.strikeHitCol || !hdrMap.successScoreCol) return;
+      
+      // Calculate statistics
+      const stats = EW_calculateStrategyStats(rows, hdrMap, strategy);
+      reportData.push(stats);
+      
+    } catch (e) {
+      EW_trace('REPORT', `Error processing ${strategy}: ${e.message}`, true);
+    }
+  });
+  
+  // Write report data
+  if (reportData.length > 0) {
+    const reportRows = reportData.map(stat => [
+      stat.strategy,
+      stat.totalPositions,
+      stat.hits,
+      stat.hitRate,
+      stat.avgSuccessScore,
+      stat.day1HitRate,
+      stat.day2HitRate,
+      stat.day5HitRate,
+      stat.avgDaysToHit,
+      stat.bestPerformers,
+      stat.worstPerformers,
+      stat.recommendations
+    ]);
+    
+    reportSheet.getRange(2, 1, reportRows.length, reportHeaders.length).setValues(reportRows);
+  }
+  
+  // Format the report
+  reportSheet.getRange(1, 1, 1, reportHeaders.length).setFontWeight('bold');
+  reportSheet.autoResizeColumns(1, reportHeaders.length);
+  
+  EW_trace('REPORT', 'Success report generated successfully!', true);
+  SpreadsheetApp.getUi().alert('Success Report', 'Strategy success report has been generated in the "Success_Report" sheet.', SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+function EW_calculateStrategyStats(rows, hdrMap, strategyName) {
+  const stats = {
+    strategy: strategyName,
+    totalPositions: rows.length,
+    hits: 0,
+    hitRate: 0,
+    avgSuccessScore: 0,
+    day1HitRate: 0,
+    day2HitRate: 0,
+    day5HitRate: 0,
+    avgDaysToHit: 0,
+    bestPerformers: '',
+    worstPerformers: '',
+    recommendations: ''
+  };
+  
+  let totalSuccess = 0;
+  let day1Hits = 0, day2Hits = 0, day5Hits = 0;
+  let daysToHitSum = 0, hitCount = 0;
+  const performers = [];
+  
+  rows.forEach((row, i) => {
+    const ticker = row[hdrMap.tickerCol - 1] || '';
+    const strikeHit = row[hdrMap.strikeHitCol - 1] || '';
+    const successScore = parseFloat(row[hdrMap.successScoreCol - 1]) || 0;
+    const day1Check = row[hdrMap.day1CheckCol - 1] || '';
+    const day2Check = row[hdrMap.day2CheckCol - 1] || '';
+    const day5Check = row[hdrMap.day5CheckCol - 1] || '';
+    const hitDate = row[hdrMap.hitDateCol - 1] || '';
+    const runDate = row[hdrMap.runDateCol - 1] || '';
+    
+    // Count hits
+    if (strikeHit === 'HIT' || strikeHit === 'FAVORABLE') {
+      stats.hits++;
+      if (hitDate && runDate) {
+        const days = (new Date(hitDate) - new Date(runDate)) / (1000 * 60 * 60 * 24);
+        daysToHitSum += days;
+        hitCount++;
+      }
+    }
+    
+    // Daily hit rates
+    if (day1Check === 'HIT' || day1Check === 'FAVORABLE') day1Hits++;
+    if (day2Check === 'HIT' || day2Check === 'FAVORABLE') day2Hits++;
+    if (day5Check === 'HIT' || day5Check === 'FAVORABLE') day5Hits++;
+    
+    totalSuccess += successScore;
+    
+    performers.push({
+      ticker: ticker,
+      score: successScore,
+      hit: strikeHit
+    });
+  });
+  
+  // Calculate percentages
+  stats.hitRate = stats.totalPositions > 0 ? Math.round((stats.hits / stats.totalPositions) * 100) : 0;
+  stats.day1HitRate = stats.totalPositions > 0 ? Math.round((day1Hits / stats.totalPositions) * 100) : 0;
+  stats.day2HitRate = stats.totalPositions > 0 ? Math.round((day2Hits / stats.totalPositions) * 100) : 0;
+  stats.day5HitRate = stats.totalPositions > 0 ? Math.round((day5Hits / stats.totalPositions) * 100) : 0;
+  stats.avgSuccessScore = stats.totalPositions > 0 ? Math.round(totalSuccess / stats.totalPositions) : 0;
+  stats.avgDaysToHit = hitCount > 0 ? Math.round(daysToHitSum / hitCount * 10) / 10 : 0;
+  
+  // Best and worst performers
+  performers.sort((a, b) => b.score - a.score);
+  stats.bestPerformers = performers.slice(0, 3).map(p => `${p.ticker}(${p.score})`).join(', ');
+  stats.worstPerformers = performers.slice(-3).map(p => `${p.ticker}(${p.score})`).join(', ');
+  
+  // Generate recommendations
+  if (stats.hitRate >= 70) {
+    stats.recommendations = 'HIGH CONFIDENCE - Continue strategy';
+  } else if (stats.hitRate >= 50) {
+    stats.recommendations = 'MODERATE - Monitor closely';
+  } else if (stats.hitRate >= 30) {
+    stats.recommendations = 'LOW CONFIDENCE - Review parameters';
+  } else {
+    stats.recommendations = 'POOR PERFORMANCE - Revise strategy';
+  }
+  
+  return stats;
+}
+
+function EW_updateTrackingData() {
+  EW_trace('UPDATE', 'Updating tracking data for all sheets...', true);
+  
+  const ss = SpreadsheetApp.getActive();
+  const strategies = Object.keys(EW.STRATEGY_ENDPOINTS);
+  let updatedSheets = 0;
+  
+  strategies.forEach(strategy => {
+    const sheet = ss.getSheetByName(strategy);
+    if (!sheet || sheet.getLastRow() < 2) return;
+    
+    try {
+      // Force recalculation of tracking formulas
+      const lastRow = sheet.getLastRow();
+      const lastCol = sheet.getLastColumn();
+      
+      // Touch a cell to trigger recalculation
+      const tempCell = sheet.getRange(lastRow + 1, 1);
+      tempCell.setValue('REFRESH');
+      tempCell.clear();
+      
+      SpreadsheetApp.flush(); // Force calculation
+      updatedSheets++;
+      
+      EW_trace('UPDATE', `Updated tracking for ${strategy}`, false);
+      
+    } catch (e) {
+      EW_trace('UPDATE', `Error updating ${strategy}: ${e.message}`, true);
+    }
+  });
+  
+  EW_trace('UPDATE', `Tracking data updated for ${updatedSheets} sheets`, true);
+  SpreadsheetApp.getUi().alert('Update Complete', `Tracking data has been refreshed for ${updatedSheets} strategy sheets.`, SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
