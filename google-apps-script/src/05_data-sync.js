@@ -6,6 +6,12 @@
 /**
  * Fetch data from Yahoo Finance (free, no API key required)
  */
+/**
+ * Fetches real-time market data from Yahoo Finance API
+ * Retrieves current price, volume, and basic market metrics
+ * @param {string} symbol - Stock symbol to fetch data for (default: 'IWM')
+ * @returns {Object} Market data object with current metrics
+ */
 function fetchYahooFinanceData(symbol = 'IWM') {
   try {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`;
@@ -43,6 +49,13 @@ function fetchYahooFinanceData(symbol = 'IWM') {
 
 /**
  * Calculate technical indicators from price data
+ */
+/**
+ * Calculates technical indicators from historical price data
+ * Computes RSI, moving averages, VWAP, ATR and other key indicators
+ * @param {string} symbol - Stock symbol to analyze (default: 'IWM')
+ * @param {string} period - Time period for historical data (default: '5d')
+ * @returns {Object} Object containing calculated technical indicators
  */
 function calculateTechnicalIndicators(symbol = 'IWM', period = '5d') {
   try {
@@ -102,6 +115,13 @@ function calculateTechnicalIndicators(symbol = 'IWM', period = '5d') {
 /**
  * Calculate RSI (Relative Strength Index)
  */
+/**
+ * Calculates Relative Strength Index (RSI) from price array
+ * Uses standard 14-period RSI calculation with smoothed moving averages
+ * @param {Array} closes - Array of closing prices
+ * @param {number} period - RSI period (default: 14)
+ * @returns {number} RSI value between 0 and 100
+ */
 function calculateRSI(closes, period = 14) {
   if (closes.length < period + 1) return null;
   
@@ -139,6 +159,15 @@ function calculateRSI(closes, period = 14) {
 /**
  * Calculate VWAP (Volume Weighted Average Price)
  */
+/**
+ * Calculates Volume Weighted Average Price (VWAP)
+ * Computes VWAP using typical price and volume data
+ * @param {Array} closes - Array of closing prices
+ * @param {Array} highs - Array of high prices  
+ * @param {Array} lows - Array of low prices
+ * @param {Array} volumes - Array of volume data
+ * @returns {number} VWAP value
+ */
 function calculateVWAP(closes, highs, lows, volumes) {
   if (closes.length !== highs.length || closes.length !== lows.length || closes.length !== volumes.length) {
     return null;
@@ -160,6 +189,15 @@ function calculateVWAP(closes, highs, lows, volumes) {
 
 /**
  * Calculate ATR (Average True Range)
+ */
+/**
+ * Calculates Average True Range (ATR) for volatility measurement
+ * Uses standard ATR calculation over specified period
+ * @param {Array} highs - Array of high prices
+ * @param {Array} lows - Array of low prices
+ * @param {Array} closes - Array of closing prices
+ * @param {number} period - ATR period (default: 14)
+ * @returns {number} ATR value
  */
 function calculateATR(highs, lows, closes, period = 14) {
   if (highs.length < period + 1) return null;

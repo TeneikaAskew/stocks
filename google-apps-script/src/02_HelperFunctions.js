@@ -20,6 +20,12 @@ function EW_url(path) {
  * @param {string} s - String to normalize
  * @returns {string} Normalized string
  */
+/**
+ * Normalizes string for comparison (lowercase, trimmed)
+ * Used for case-insensitive string matching
+ * @param {string} s - String to normalize
+ * @returns {string} Normalized string
+ */
 function EW_norm(s) {
   if (typeof s !== 'string') return '';
   return s.toString()
