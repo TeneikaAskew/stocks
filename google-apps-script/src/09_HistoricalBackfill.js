@@ -1260,49 +1260,145 @@ function EW_testHistoricalBackfill() {
                 console.log(`  RSI String: ${testArrays.rsi}`);
                 console.log(`  SMA20 String: ${testArrays.sma20}`);
                 console.log(`  VWAP String: ${testArrays.vwap}`);
+                console.log(`  PriceVsSMA20 String: ${testArrays.priceVsSMA20}`);
+                console.log(`  PriceVsVWAP String: ${testArrays.priceVsVWAP}`);
               }
               
               console.log(`  Exp Result: ${analysis.expResult || 'N/A'}`);
             }
             
-            // Test direct update if requested
-            if (testConfig.testDirectUpdate && hdrMap.strikeHitCol && analysis.strikeHitArray.length > 0) {
-              console.log('\n=== Testing Direct Cell Update ===');
-              const testValue = JSON.stringify(analysis.strikeHitArray);
-              console.log(`Attempting to set Strike_Hit in row ${rowIndex + 2}, col ${hdrMap.strikeHitCol}`);
-              console.log(`Value: ${testValue}`);
+            // Test direct update if requested - update ALL columns like real backfill
+            if (testConfig.testDirectUpdate) {
+              console.log('\n=== Updating All Columns (Like Real Backfill) ===');
+              const actualRow = rowIndex + 2;
               
-              sheet.getRange(rowIndex + 2, hdrMap.strikeHitCol).setValue(testValue);
-              SpreadsheetApp.flush();
-              
-              // Verify
-              const newValue = sheet.getRange(rowIndex + 2, hdrMap.strikeHitCol).getValue();
-              console.log(`Verification - value in sheet: "${newValue}"`);
-              
-              if (newValue === testValue) {
-                console.log('✓ SUCCESS: Direct update worked!');
-              } else {
-                console.log('✗ FAILED: Value did not update correctly');
+              // Update Hit_Date
+              if (hdrMap.hitDateCol && analysis.firstHitDate) {
+                sheet.getRange(actualRow, hdrMap.hitDateCol).setValue(analysis.firstHitDate);
+                console.log(`✓ Hit_Date updated: ${analysis.firstHitDate}`);
               }
               
-              // Test RSI update
-              if (hdrMap.hitRSICol && analysis.dailyIndicators.rsi.length > 0) {
-                const indicatorArrays = EW_buildIndicatorArrays(analysis.dailyIndicators);
-                console.log(`\nTesting RSI update in row ${rowIndex + 2}, col ${hdrMap.hitRSICol}`);
-                console.log(`Value: ${indicatorArrays.rsi}`);
-                
-                sheet.getRange(rowIndex + 2, hdrMap.hitRSICol).setValue(indicatorArrays.rsi);
-                SpreadsheetApp.flush();
-                
-                const newRSI = sheet.getRange(rowIndex + 2, hdrMap.hitRSICol).getValue();
-                console.log(`Verification - RSI in sheet: "${newRSI}"`);
-                
-                if (newRSI === indicatorArrays.rsi) {
-                  console.log('✓ SUCCESS: RSI update worked!');
-                } else {
-                  console.log('✗ FAILED: RSI did not update correctly');
+              // Update Day checks
+              if (hdrMap.day0CheckCol && analysis.day0Hit) {
+                sheet.getRange(actualRow, hdrMap.day0CheckCol).setValue(analysis.day0Hit);
+              }
+              if (hdrMap.day1CheckCol && analysis.day1Hit) {
+                sheet.getRange(actualRow, hdrMap.day1CheckCol).setValue(analysis.day1Hit);
+              }
+              if (hdrMap.day2CheckCol && analysis.day2Hit) {
+                sheet.getRange(actualRow, hdrMap.day2CheckCol).setValue(analysis.day2Hit);
+              }
+              if (hdrMap.day3CheckCol && analysis.day3Hit) {
+                sheet.getRange(actualRow, hdrMap.day3CheckCol).setValue(analysis.day3Hit);
+              }
+              if (hdrMap.day4CheckCol && analysis.day4Hit) {
+                sheet.getRange(actualRow, hdrMap.day4CheckCol).setValue(analysis.day4Hit);
+              }
+              if (hdrMap.day5CheckCol && analysis.day5Hit) {
+                sheet.getRange(actualRow, hdrMap.day5CheckCol).setValue(analysis.day5Hit);
+              }
+              console.log(`✓ Day checks updated: ${analysis.day0Hit}, ${analysis.day1Hit}, ${analysis.day2Hit}, ${analysis.day3Hit}, ${analysis.day4Hit}, ${analysis.day5Hit || 'N/A'}`);
+              
+              // Update Max/Min Favorable arrays
+              if (hdrMap.maxFavorableCol && analysis.maxFavorableArray.length > 0) {
+                sheet.getRange(actualRow, hdrMap.maxFavorableCol).setValue(JSON.stringify(analysis.maxFavorableArray));
+                console.log(`✓ Max_Favorable array updated: ${JSON.stringify(analysis.maxFavorableArray)}`);
+              }
+              if (hdrMap.minUnfavorableCol && analysis.minUnfavorableArray.length > 0) {
+                sheet.getRange(actualRow, hdrMap.minUnfavorableCol).setValue(JSON.stringify(analysis.minUnfavorableArray));
+                console.log(`✓ Min_Unfavorable array updated: ${JSON.stringify(analysis.minUnfavorableArray)}`);
+              }
+              
+              // Update Strike_Hit array
+              if (hdrMap.strikeHitCol && analysis.strikeHitArray.length > 0) {
+                sheet.getRange(actualRow, hdrMap.strikeHitCol).setValue(JSON.stringify(analysis.strikeHitArray));
+                console.log(`✓ Strike_Hit array updated: ${JSON.stringify(analysis.strikeHitArray)}`);
+              }
+              
+              // Update Exp_Result
+              if (hdrMap.expResultCol && analysis.expResult) {
+                sheet.getRange(actualRow, hdrMap.expResultCol).setValue(analysis.expResult);
+                console.log(`✓ Exp_Result updated: ${analysis.expResult}`);
+              }
+              
+              // Calculate and update Risk_Reward
+              if (hdrMap.riskRewardCol && analysis.maxFavorableArray.length > 0 && analysis.minUnfavorableArray.length > 0) {
+                const maxFav = Math.max(...analysis.maxFavorableArray.map(v => parseFloat(v)));
+                const maxUnfav = Math.max(...analysis.minUnfavorableArray.map(v => parseFloat(v)));
+                if (maxUnfav > 0) {
+                  const riskReward = (maxFav / maxUnfav).toFixed(2);
+                  sheet.getRange(actualRow, hdrMap.riskRewardCol).setValue(riskReward);
+                  console.log(`✓ Risk_Reward updated: ${riskReward}`);
                 }
               }
+              
+              // Update ALL indicator arrays
+              if (analysis.dailyIndicators && analysis.dailyIndicators.rsi.length > 0) {
+                const indicatorArrays = EW_buildIndicatorArrays(analysis.dailyIndicators);
+                console.log('\nUpdating indicator arrays:');
+                
+                if (hdrMap.hitRSICol && indicatorArrays.rsi) {
+                  sheet.getRange(actualRow, hdrMap.hitRSICol).setValue(indicatorArrays.rsi);
+                  console.log(`✓ Hit_RSI: ${indicatorArrays.rsi}`);
+                }
+                if (hdrMap.hitSMA20Col && indicatorArrays.sma20) {
+                  sheet.getRange(actualRow, hdrMap.hitSMA20Col).setValue(indicatorArrays.sma20);
+                  console.log(`✓ Hit_SMA20: ${indicatorArrays.sma20}`);
+                }
+                if (hdrMap.hitSMA50Col && indicatorArrays.sma50) {
+                  sheet.getRange(actualRow, hdrMap.hitSMA50Col).setValue(indicatorArrays.sma50);
+                  console.log(`✓ Hit_SMA50: ${indicatorArrays.sma50}`);
+                }
+                if (hdrMap.hitEMA9Col && indicatorArrays.ema9) {
+                  sheet.getRange(actualRow, hdrMap.hitEMA9Col).setValue(indicatorArrays.ema9);
+                  console.log(`✓ Hit_EMA9: ${indicatorArrays.ema9}`);
+                }
+                if (hdrMap.hitEMA21Col && indicatorArrays.ema21) {
+                  sheet.getRange(actualRow, hdrMap.hitEMA21Col).setValue(indicatorArrays.ema21);
+                  console.log(`✓ Hit_EMA21: ${indicatorArrays.ema21}`);
+                }
+                if (hdrMap.hitVWAPCol && indicatorArrays.vwap) {
+                  sheet.getRange(actualRow, hdrMap.hitVWAPCol).setValue(indicatorArrays.vwap);
+                  console.log(`✓ Hit_VWAP: ${indicatorArrays.vwap}`);
+                }
+                if (hdrMap.hitRVOLCol && indicatorArrays.rvol) {
+                  sheet.getRange(actualRow, hdrMap.hitRVOLCol).setValue(indicatorArrays.rvol);
+                  console.log(`✓ Hit_RVOL: ${indicatorArrays.rvol}`);
+                }
+                if (hdrMap.hitATRCol && indicatorArrays.atr) {
+                  sheet.getRange(actualRow, hdrMap.hitATRCol).setValue(indicatorArrays.atr);
+                  console.log(`✓ Hit_ATR: ${indicatorArrays.atr}`);
+                }
+                if (hdrMap.hitPriceVsSMA20Col && indicatorArrays.priceVsSMA20) {
+                  sheet.getRange(actualRow, hdrMap.hitPriceVsSMA20Col).setValue(indicatorArrays.priceVsSMA20);
+                  console.log(`✓ Hit_PriceVsSMA20: ${indicatorArrays.priceVsSMA20}`);
+                }
+                if (hdrMap.hitPriceVsVWAPCol && indicatorArrays.priceVsVWAP) {
+                  sheet.getRange(actualRow, hdrMap.hitPriceVsVWAPCol).setValue(indicatorArrays.priceVsVWAP);
+                  console.log(`✓ Hit_PriceVsVWAP: ${indicatorArrays.priceVsVWAP}`);
+                }
+              }
+              
+              // Update Historical_High and Historical_Low if needed
+              if (hdrMap.historicalHighCol && analysis.historicalHigh) {
+                const existing = row[hdrMap.historicalHighCol - 1];
+                if (!existing || existing < analysis.historicalHigh) {
+                  sheet.getRange(actualRow, hdrMap.historicalHighCol).setValue(analysis.historicalHigh);
+                  console.log(`✓ Historical_High updated: ${analysis.historicalHigh}`);
+                }
+              }
+              
+              if (hdrMap.historicalLowCol && analysis.historicalLow < Infinity) {
+                const existing = row[hdrMap.historicalLowCol - 1];
+                if (!existing || existing > analysis.historicalLow) {
+                  sheet.getRange(actualRow, hdrMap.historicalLowCol).setValue(analysis.historicalLow);
+                  console.log(`✓ Historical_Low updated: ${analysis.historicalLow}`);
+                }
+              }
+              
+              // Force save all changes
+              SpreadsheetApp.flush();
+              console.log('\n✓ All columns updated and flushed to sheet');
             }
             
             testResults.push({
@@ -1371,12 +1467,39 @@ function EW_testHistoricalBackfill() {
       if (!ticker) return;
       
       const actualRow = rowIndex + 2;
-      const strikeHitValue = sheet.getRange(actualRow, hdrMap.strikeHitCol).getValue();
-      const rsiValue = hdrMap.hitRSICol ? sheet.getRange(actualRow, hdrMap.hitRSICol).getValue() : 'N/A';
       
-      console.log(`Row ${actualRow} (${ticker}):`);
-      console.log(`  Strike_Hit: "${strikeHitValue || 'EMPTY'}"`);
-      console.log(`  Hit_RSI: "${rsiValue || 'EMPTY'}"`);
+      console.log(`\nRow ${actualRow} (${ticker}):`);
+      
+      // Check all columns that should be filled
+      const checks = [
+        { name: 'Strike_Hit', col: hdrMap.strikeHitCol },
+        { name: 'Hit_Date', col: hdrMap.hitDateCol },
+        { name: 'Day0_Check', col: hdrMap.day0CheckCol },
+        { name: 'Day1_Check', col: hdrMap.day1CheckCol },
+        { name: 'Day2_Check', col: hdrMap.day2CheckCol },
+        { name: 'Day3_Check', col: hdrMap.day3CheckCol },
+        { name: 'Day4_Check', col: hdrMap.day4CheckCol },
+        { name: 'Day5_Check', col: hdrMap.day5CheckCol },
+        { name: 'Max_Favorable', col: hdrMap.maxFavorableCol },
+        { name: 'Min_Unfavorable', col: hdrMap.minUnfavorableCol },
+        { name: 'Exp_Result', col: hdrMap.expResultCol },
+        { name: 'Risk_Reward', col: hdrMap.riskRewardCol },
+        { name: 'Hit_RSI', col: hdrMap.hitRSICol },
+        { name: 'Hit_SMA20', col: hdrMap.hitSMA20Col },
+        { name: 'Hit_SMA50', col: hdrMap.hitSMA50Col },
+        { name: 'Hit_VWAP', col: hdrMap.hitVWAPCol },
+        { name: 'Hit_PriceVsSMA20', col: hdrMap.hitPriceVsSMA20Col },
+        { name: 'Hit_PriceVsVWAP', col: hdrMap.hitPriceVsVWAPCol }
+      ];
+      
+      checks.forEach(check => {
+        if (check.col) {
+          const value = sheet.getRange(actualRow, check.col).getValue();
+          if (value) {
+            console.log(`  ${check.name}: "${value}"`);
+          }
+        }
+      });
     });
     
     // Test single position fetch for most recent expired position
