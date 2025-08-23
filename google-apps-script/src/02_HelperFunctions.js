@@ -117,6 +117,38 @@ function EW_ensureRunDateInHeader(header) {
 }
 
 /**
+ * Ensure required columns (Run Date, Strategy) are in header
+ * @param {Array} header - Header array
+ * @param {string} strategyName - Strategy name for the sheet
+ * @returns {Array} Header with required columns
+ */
+function EW_ensureRequiredHeaders(header, strategyName) {
+  let result = [...header];
+  
+  // Ensure Run Date is first
+  const runDateIx = result.findIndex(h => String(h).toLowerCase() === 'run date');
+  if (runDateIx === -1) {
+    result = ['Run Date', ...result];
+  } else if (runDateIx > 0) {
+    const [rd] = result.splice(runDateIx, 1);
+    result = [rd, ...result];
+  }
+  
+  // Ensure Strategy is second
+  const strategyIx = result.findIndex(h => String(h).toLowerCase() === 'strategy');
+  if (strategyIx === -1) {
+    // Insert Strategy as second column
+    result.splice(1, 0, 'Strategy');
+  } else if (strategyIx !== 1) {
+    // Move it to position 1
+    const [strat] = result.splice(strategyIx, 1);
+    result.splice(1, 0, strat);
+  }
+  
+  return result;
+}
+
+/**
  * Add Google Finance headers to existing header
  * @param {Array} header - Original header
  * @returns {Array} Header with GF columns added
