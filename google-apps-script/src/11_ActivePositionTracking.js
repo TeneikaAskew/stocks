@@ -364,20 +364,173 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
 // Note: Trigger functions have been moved to 03_Triggers.js
 
 /**
- * Test function to check a single position
+ * Test function for active position tracking
+ * Similar to EW_testHistoricalBackfill but for active positions
+ * Updates all columns including arrays for a test position
  */
-function EW_testActivePositionCheck() {
-  const ticker = 'IWM';
-  const strike = 235;
-  const strategy = 'Bull Spreads';
-  const startDate = new Date();
-  startDate.setDate(startDate.getDate() - 7);
-  const endDate = new Date();
+function EW_testActivePositionTracking() {
+  console.log('\n=== ACTIVE POSITION TRACKING TEST ===');
+  const startTime = new Date();
   
-  console.log(`Testing ${ticker} @ ${strike} for ${strategy}`);
+  // Test configuration - simulates an active position
+  const testConfig = {
+    ticker: 'IWM',
+    strategy: 'Long Calls',
+    strike: 230,
+    runDate: new Date('2025-01-20'),  // 3 days ago
+    expDate: new Date('2025-01-27'),  // 4 days from now
+  };
   
-  const result = EW_checkStrikeHitYahoo(ticker, strike, strategy, startDate, endDate);
-  console.log('Result:', result);
+  // Calculate days since entry
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const runDate = new Date(testConfig.runDate);
+  runDate.setHours(0, 0, 0, 0);
+  const daysSinceEntry = Math.floor((today - runDate) / (1000 * 60 * 60 * 24));
+  const dayIndex = Math.min(daysSinceEntry, 5);
   
-  return result;
+  console.log(`\nTest Configuration:`);
+  console.log(`  Ticker: ${testConfig.ticker}`);
+  console.log(`  Strategy: ${testConfig.strategy}`);
+  console.log(`  Strike: ${testConfig.strike}`);
+  console.log(`  Run Date: ${testConfig.runDate.toISOString().split('T')[0]}`);
+  console.log(`  Exp Date: ${testConfig.expDate.toISOString().split('T')[0]}`);
+  console.log(`  Days Since Entry: ${daysSinceEntry}`);
+  console.log(`  Current Day Index: ${dayIndex}`);
+  
+  // Simulate existing arrays (as if we've been tracking for previous days)
+  const existingArrays = {
+    maxFavorable: dayIndex > 0 ? Array(dayIndex).fill(null).map((_, i) => (Math.random() * 5).toFixed(2)) : [],
+    minUnfavorable: dayIndex > 0 ? Array(dayIndex).fill(null).map((_, i) => (Math.random() * 3).toFixed(2)) : [],
+    strikeHit: dayIndex > 0 ? Array(dayIndex).fill("NO") : [],
+    indicators: {
+      rsi: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (40 + Math.random() * 40).toFixed(2)) : [],
+      sma20: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (225 + Math.random() * 10).toFixed(2)) : [],
+      sma50: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (220 + Math.random() * 10).toFixed(2)) : [],
+      ema9: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (227 + Math.random() * 10).toFixed(2)) : [],
+      ema21: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (223 + Math.random() * 10).toFixed(2)) : [],
+      vwap: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (226 + Math.random() * 10).toFixed(2)) : [],
+      rvol: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (0.8 + Math.random() * 0.4).toFixed(2)) : [],
+      atr: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (2 + Math.random()).toFixed(4)) : [],
+      priceVsSMA20: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (-2 + Math.random() * 4).toFixed(2)) : [],
+      priceVsVWAP: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (-1 + Math.random() * 2).toFixed(2)) : []
+    }
+  };
+  
+  console.log('\nExisting Arrays (simulated):');
+  console.log(`  Max_Favorable: ${JSON.stringify(existingArrays.maxFavorable)}`);
+  console.log(`  Min_Unfavorable: ${JSON.stringify(existingArrays.minUnfavorable)}`);
+  console.log(`  Strike_Hit: ${JSON.stringify(existingArrays.strikeHit)}`);
+  
+  // Get today's data from Yahoo
+  console.log('\nFetching today\'s data from Yahoo...');
+  const result = EW_checkStrikeHitYahoo(
+    testConfig.ticker,
+    testConfig.strike,
+    testConfig.strategy,
+    today,
+    today
+  );
+  
+  if (result.error) {
+    console.error(`ERROR: ${result.error}`);
+    return;
+  }
+  
+  console.log('\nToday\'s Market Data:');
+  console.log(`  High: ${result.dayHigh}`);
+  console.log(`  Low: ${result.dayLow}`);
+  console.log(`  Close: ${result.lastClose || 'N/A'}`);
+  console.log(`  Strike Hit: ${result.hit}`);
+  if (result.hit) {
+    console.log(`  Hit Time: ${result.hitTime}`);
+    console.log(`  Hit Price: ${result.hitPrice}`);
+  }
+  
+  // Build updated arrays using array builder functions
+  console.log('\nBuilding updated arrays...');
+  
+  const updatedMaxFav = EW_buildMaxFavorableArray(
+    existingArrays.maxFavorable, dayIndex, testConfig.strategy, testConfig.strike, result.dayHigh, result.dayLow
+  );
+  console.log(`  Updated Max_Favorable: ${JSON.stringify(updatedMaxFav)}`);
+  
+  const updatedMinUnfav = EW_buildMinUnfavorableArray(
+    existingArrays.minUnfavorable, dayIndex, testConfig.strategy, testConfig.strike, result.dayHigh, result.dayLow
+  );
+  console.log(`  Updated Min_Unfavorable: ${JSON.stringify(updatedMinUnfav)}`);
+  
+  const updatedStrikeHit = EW_buildStrikeHitArray(
+    existingArrays.strikeHit, dayIndex, testConfig.strategy, testConfig.strike, result.dayHigh, result.dayLow, result.hit
+  );
+  console.log(`  Updated Strike_Hit: ${JSON.stringify(updatedStrikeHit)}`);
+  
+  // Update indicator arrays if we have data
+  let updatedIndicators = existingArrays.indicators;
+  if (result.indicators) {
+    updatedIndicators = EW_buildIndicatorArraysForDay(
+      existingArrays.indicators, dayIndex, result.indicators
+    );
+    console.log('\nUpdated Indicator Arrays:');
+    console.log(`  RSI: ${JSON.stringify(updatedIndicators.rsi)}`);
+    console.log(`  SMA20: ${JSON.stringify(updatedIndicators.sma20)}`);
+    console.log(`  Price vs SMA20: ${JSON.stringify(updatedIndicators.priceVsSMA20)}`);
+    console.log(`  Price vs VWAP: ${JSON.stringify(updatedIndicators.priceVsVWAP)}`);
+  }
+  
+  // Calculate Risk/Reward from arrays
+  const riskReward = EW_calculateRiskRewardFromArrays(updatedMaxFav, updatedMinUnfav);
+  console.log(`\nRisk/Reward: ${riskReward || 'N/A'}`);
+  
+  // Historical tracking
+  const historicalHigh = result.dayHigh;
+  const historicalLow = result.dayLow;
+  console.log(`\nHistorical High: ${historicalHigh}`);
+  console.log(`Historical Low: ${historicalLow}`);
+  
+  // Day check value (closing price)
+  const dayCheckValue = result.lastClose ? result.lastClose.toFixed(2) : 
+    ((parseFloat(result.dayHigh) + parseFloat(result.dayLow)) / 2).toFixed(2);
+  console.log(`\nDay ${dayIndex} Check: ${dayCheckValue}`);
+  
+  // Summary of what would be updated in the sheet
+  console.log('\n=== SUMMARY OF UPDATES ===');
+  console.log('Arrays (stored as JSON):');
+  console.log(`  Max_Favorable: ${EW_arrayToJson(updatedMaxFav)}`);
+  console.log(`  Min_Unfavorable: ${EW_arrayToJson(updatedMinUnfav)}`);
+  console.log(`  Strike_Hit: ${EW_arrayToJson(updatedStrikeHit)}`);
+  console.log(`  Hit_RSI: ${EW_arrayToJson(updatedIndicators.rsi)}`);
+  console.log(`  Hit_SMA20: ${EW_arrayToJson(updatedIndicators.sma20)}`);
+  console.log(`  Hit_Price_vs_SMA20: ${EW_arrayToJson(updatedIndicators.priceVsSMA20)}`);
+  console.log(`  Hit_Price_vs_VWAP: ${EW_arrayToJson(updatedIndicators.priceVsVWAP)}`);
+  
+  console.log('\nSingle Values:');
+  console.log(`  Historical_High: ${historicalHigh}`);
+  console.log(`  Historical_Low: ${historicalLow}`);
+  console.log(`  Risk_Reward: ${riskReward || ''}`);
+  console.log(`  Day${dayIndex}_Check: ${dayCheckValue}`);
+  if (result.hit) {
+    console.log(`  Hit_Date: ${result.hitDate.toISOString().split('T')[0]}`);
+    console.log(`  First_Hit_Date: ${result.hitDate.toISOString().split('T')[0]} (if not already set)`);
+  }
+  
+  const endTime = new Date();
+  const duration = Math.round((endTime - startTime) / 1000);
+  console.log(`\nTest completed in ${duration} seconds`);
+  console.log('=== END ACTIVE POSITION TRACKING TEST ===\n');
+  
+  return {
+    success: true,
+    ticker: testConfig.ticker,
+    dayIndex: dayIndex,
+    arrays: {
+      maxFavorable: updatedMaxFav,
+      minUnfavorable: updatedMinUnfav,
+      strikeHit: updatedStrikeHit,
+      indicators: updatedIndicators
+    },
+    riskReward: riskReward,
+    dayCheck: dayCheckValue,
+    duration: duration
+  };
 }
