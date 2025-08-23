@@ -547,7 +547,7 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
       
       // Log the strike for debugging
       if (tradingDaysSinceEntry === 0) {
-        EW_trace('BACKFILL', `${ticker} - Strike: ${strike}, Day0 Close: ${dayData.close}, Move: ${percentMove}`);
+        EW_trace('BACKFILL', `Strike: ${strike}, Day0 Close: ${dayData.close}, Move: ${percentMove}`);
       }
       
       // Calculate indicators for this day if we have raw data
