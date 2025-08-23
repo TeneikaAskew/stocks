@@ -59,12 +59,23 @@ function EW_generateSuccessReport() {
   const duration = Math.round((new Date() - startTime) / 1000);
   console.log(`Success report generated in ${duration} seconds`);
   
-  SpreadsheetApp.getUi().alert(
-    'Success Report Generated',
-    `Analysis complete. Processed ${allTrades.length} trades in ${duration} seconds.\n\n` +
-    `Check the "Success_Report" sheet for insights.`,
-    SpreadsheetApp.getUi().ButtonSet.OK
-  );
+  // Only show alert if in spreadsheet environment (not triggered)
+  if (EW_isSpreadsheetEnvironment()) {
+    SpreadsheetApp.getUi().alert(
+      'Success Report Generated',
+      `Analysis complete. Processed ${allTrades.length} trades in ${duration} seconds.\n\n` +
+      `Check the "Success_Report" sheet for insights.`,
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+  }
+}
+
+/**
+ * Update success report - alias for generate
+ * This is called from the menu for clarity
+ */
+function EW_updateSuccessReport() {
+  EW_generateSuccessReport();
 }
 
 /**
@@ -831,4 +842,357 @@ function EW_exportMLData() {
     `Ready for analysis in Python, R, or your preferred ML platform.`,
     SpreadsheetApp.getUi().ButtonSet.OK
   );
+}
+
+// ===== QUICK ACCESS ANALYSIS FUNCTIONS =====
+// These provide focused views of specific analyses from the menu
+
+/**
+ * Show top 20 winning plays in a quick report
+ */
+function EW_showTopWinningPlays() {
+  const ss = SpreadsheetApp.getActive();
+  const allTrades = EW_collectAllTrades(ss);
+  const topPlays = EW_identifyTopPlays(allTrades);
+  
+  // Create or clear sheet
+  let sheet = ss.getSheetByName('Top_Winning_Plays');
+  if (sheet) {
+    sheet.clear();
+  } else {
+    sheet = ss.insertSheet('Top_Winning_Plays');
+  }
+  
+  // Title
+  sheet.getRange(1, 1).setValue('TOP 20 WINNING PLAYS').setFontSize(16).setFontWeight('bold');
+  sheet.getRange(1, 2).setValue(new Date().toLocaleString());
+  
+  // Headers
+  const headers = ['Rank', 'Ticker', 'Strategy', 'Entry Date', 'Strike', 'Max Profit', 
+                   'Days to Hit', 'Profitable Days', 'Risk/Reward', 'Multi-Day Profile'];
+  sheet.getRange(3, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  
+  // Data
+  topPlays.forEach((play, idx) => {
+    sheet.getRange(idx + 4, 1, 1, 10).setValues([[
+      idx + 1, play.ticker, play.strategy, play.entryDate, play.strike,
+      play.maxProfit, play.daysToHit, play.profitableDays, play.riskReward,
+      play.multiDayProfile
+    ]]);
+  });
+  
+  // Add key indicators for top plays
+  sheet.getRange(25, 1).setValue('KEY INDICATORS AT ENTRY').setFontWeight('bold');
+  
+  let indicatorRow = 26;
+  topPlays.slice(0, 5).forEach(play => {
+    sheet.getRange(indicatorRow, 1).setValue(`${play.ticker} (${play.maxProfit}):`);
+    let indicatorStr = Object.entries(play.indicators)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join(', ');
+    sheet.getRange(indicatorRow, 2).setValue(indicatorStr);
+    indicatorRow++;
+  });
+  
+  sheet.autoResizeColumns(1, 10);
+  SpreadsheetApp.setActiveSheet(sheet);
+  
+  SpreadsheetApp.getUi().alert(
+    'Top Plays Report Generated',
+    `Found ${topPlays.length} winning plays with >5% profit.\n\nCheck the "Top_Winning_Plays" sheet.`,
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
+
+/**
+ * Show multi-day profitability analysis
+ */
+function EW_showMultiDayReport() {
+  const ss = SpreadsheetApp.getActive();
+  const allTrades = EW_collectAllTrades(ss);
+  const analysis = EW_analyzeMultiDayProfitability(allTrades);
+  
+  // Create or clear sheet
+  let sheet = ss.getSheetByName('Multi_Day_Analysis');
+  if (sheet) {
+    sheet.clear();
+  } else {
+    sheet = ss.insertSheet('Multi_Day_Analysis');
+  }
+  
+  // Title
+  sheet.getRange(1, 1).setValue('MULTI-DAY PROFITABILITY ANALYSIS').setFontSize(16).setFontWeight('bold');
+  sheet.getRange(1, 2).setValue(new Date().toLocaleString());
+  
+  // Sustained profitability
+  sheet.getRange(3, 1).setValue('Trades with 3+ Consecutive Profitable Days').setFontWeight('bold');
+  const headers = ['Ticker', 'Strategy', 'Consecutive Days', 'Peak Day', 'Peak Value', 'Strike'];
+  sheet.getRange(4, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  
+  analysis.sustainedProfitability.slice(0, 20).forEach((trade, idx) => {
+    sheet.getRange(idx + 5, 1, 1, 6).setValues([[
+      trade.ticker, trade.strategy, trade.consecutiveDays,
+      `Day ${trade.peakDay}`, trade.peakValue, trade.strike
+    ]]);
+  });
+  
+  // Day-by-day profitability
+  const dayRow = Math.max(25, analysis.sustainedProfitability.length + 7);
+  sheet.getRange(dayRow, 1).setValue('Profitability by Holding Period').setFontWeight('bold');
+  
+  const dayHeaders = ['Day', 'Total Trades', 'Profitable', 'Success Rate', 'Avg Profit'];
+  sheet.getRange(dayRow + 1, 1, 1, dayHeaders.length).setValues([dayHeaders]).setFontWeight('bold');
+  
+  Object.entries(analysis.profitabilityByDay).forEach(([day, stats], idx) => {
+    sheet.getRange(dayRow + 2 + idx, 1, 1, 5).setValues([[
+      day, stats.totalTrades, stats.profitableCount, stats.profitableRate, stats.avgProfit
+    ]]);
+  });
+  
+  sheet.autoResizeColumns(1, 6);
+  SpreadsheetApp.setActiveSheet(sheet);
+  
+  SpreadsheetApp.getUi().alert(
+    'Multi-Day Analysis Complete',
+    `Found ${analysis.sustainedProfitability.length} trades with sustained profitability.\n\n` +
+    `Check the "Multi_Day_Analysis" sheet.`,
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
+
+/**
+ * Show indicator effectiveness analysis
+ */
+function EW_showIndicatorAnalysis() {
+  const ss = SpreadsheetApp.getActive();
+  const allTrades = EW_collectAllTrades(ss);
+  const analysis = EW_analyzeIndicatorEffectiveness(allTrades);
+  
+  // Create or clear sheet
+  let sheet = ss.getSheetByName('Indicator_Analysis');
+  if (sheet) {
+    sheet.clear();
+  } else {
+    sheet = ss.insertSheet('Indicator_Analysis');
+  }
+  
+  // Title
+  sheet.getRange(1, 1).setValue('INDICATOR EFFECTIVENESS ANALYSIS').setFontSize(16).setFontWeight('bold');
+  sheet.getRange(1, 2).setValue(new Date().toLocaleString());
+  
+  // High impact indicators
+  sheet.getRange(3, 1).setValue('High-Impact Indicators (Correlation > 0.3)').setFontWeight('bold');
+  
+  let row = 4;
+  const headers = ['Indicator', 'Correlation', 'Significance', 'Bullish Range', 'Bearish Range'];
+  sheet.getRange(row, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  row++;
+  
+  Object.entries(analysis)
+    .filter(([name, data]) => data.significance === 'HIGH')
+    .sort((a, b) => Math.abs(b[1].correlationWithProfit) - Math.abs(a[1].correlationWithProfit))
+    .forEach(([name, data]) => {
+      const bullishRange = data.profitableRanges.bullish.count > 0 ?
+        `${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} (${data.profitableRanges.bullish.avgProfit}%)` : 'N/A';
+      const bearishRange = data.profitableRanges.bearish.count > 0 ?
+        `${data.profitableRanges.bearish.min?.toFixed(2)}-${data.profitableRanges.bearish.max?.toFixed(2)} (${data.profitableRanges.bearish.avgProfit}%)` : 'N/A';
+      
+      sheet.getRange(row, 1, 1, 5).setValues([[
+        name.toUpperCase(), data.correlationWithProfit, data.significance,
+        bullishRange, bearishRange
+      ]]);
+      row++;
+    });
+  
+  // Medium impact indicators
+  row += 2;
+  sheet.getRange(row, 1).setValue('Medium-Impact Indicators (0.15 < Correlation < 0.3)').setFontWeight('bold');
+  row++;
+  
+  Object.entries(analysis)
+    .filter(([name, data]) => data.significance === 'MEDIUM')
+    .forEach(([name, data]) => {
+      sheet.getRange(row, 1).setValue(name.toUpperCase());
+      sheet.getRange(row, 2).setValue(data.correlationWithProfit);
+      sheet.getRange(row, 3).setValue(data.significance);
+      row++;
+    });
+  
+  sheet.autoResizeColumns(1, 5);
+  SpreadsheetApp.setActiveSheet(sheet);
+  
+  const highImpact = Object.values(analysis).filter(d => d.significance === 'HIGH').length;
+  
+  SpreadsheetApp.getUi().alert(
+    'Indicator Analysis Complete',
+    `Found ${highImpact} high-impact indicators with strong correlation to profitability.\n\n` +
+    `Check the "Indicator_Analysis" sheet.`,
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
+
+/**
+ * Show earnings timing analysis
+ */
+function EW_showEarningsTimingReport() {
+  const ss = SpreadsheetApp.getActive();
+  const allTrades = EW_collectAllTrades(ss);
+  const analysis = EW_analyzeEarningsTiming(allTrades);
+  
+  // Create or clear sheet
+  let sheet = ss.getSheetByName('Earnings_Timing');
+  if (sheet) {
+    sheet.clear();
+  } else {
+    sheet = ss.insertSheet('Earnings_Timing');
+  }
+  
+  // Title
+  sheet.getRange(1, 1).setValue('EARNINGS TIMING ANALYSIS').setFontSize(16).setFontWeight('bold');
+  sheet.getRange(1, 2).setValue(new Date().toLocaleString());
+  
+  // Summary
+  sheet.getRange(3, 1).setValue('Summary').setFontWeight('bold');
+  let row = 4;
+  
+  Object.entries(analysis.earningsImpact).forEach(([key, value]) => {
+    sheet.getRange(row, 1).setValue(key.replace(/([A-Z])/g, ' $1').trim());
+    sheet.getRange(row, 2).setValue(value);
+    row++;
+  });
+  
+  // Pre-earnings hits
+  row += 2;
+  sheet.getRange(row, 1).setValue('Top Pre-Earnings Hits').setFontWeight('bold');
+  row++;
+  
+  const preHeaders = ['Ticker', 'Strategy', 'Days to Earnings', 'Days to Hit', 'Max Profit'];
+  sheet.getRange(row, 1, 1, preHeaders.length).setValues([preHeaders]).setFontWeight('bold');
+  row++;
+  
+  analysis.preEarningsHits
+    .sort((a, b) => b.maxProfit - a.maxProfit)
+    .slice(0, 10)
+    .forEach(trade => {
+      sheet.getRange(row, 1, 1, 5).setValues([[
+        trade.ticker, trade.strategy, trade.daysToEarnings,
+        trade.daysToHit, trade.maxProfit.toFixed(2) + '%'
+      ]]);
+      row++;
+    });
+  
+  // Post-earnings hits
+  row += 2;
+  sheet.getRange(row, 1).setValue('Top Post-Earnings Hits').setFontWeight('bold');
+  row++;
+  
+  sheet.getRange(row, 1, 1, preHeaders.length).setValues([preHeaders]).setFontWeight('bold');
+  row++;
+  
+  analysis.postEarningsHits
+    .sort((a, b) => b.maxProfit - a.maxProfit)
+    .slice(0, 10)
+    .forEach(trade => {
+      sheet.getRange(row, 1, 1, 5).setValues([[
+        trade.ticker, trade.strategy, trade.daysToEarnings,
+        trade.daysToHit, trade.maxProfit.toFixed(2) + '%'
+      ]]);
+      row++;
+    });
+  
+  sheet.autoResizeColumns(1, 5);
+  SpreadsheetApp.setActiveSheet(sheet);
+  
+  SpreadsheetApp.getUi().alert(
+    'Earnings Timing Analysis Complete',
+    `Analyzed ${analysis.preEarningsHits.length + analysis.postEarningsHits.length} trades with earnings data.\n\n` +
+    `${analysis.earningsImpact.recommendation}\n\n` +
+    `Check the "Earnings_Timing" sheet.`,
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
+
+/**
+ * Show strategy performance summary
+ */
+function EW_showStrategyPerformance() {
+  const ss = SpreadsheetApp.getActive();
+  const allTrades = EW_collectAllTrades(ss);
+  const analysis = EW_analyzeStrategyPerformance(allTrades);
+  
+  // Create or clear sheet
+  let sheet = ss.getSheetByName('Strategy_Performance');
+  if (sheet) {
+    sheet.clear();
+  } else {
+    sheet = ss.insertSheet('Strategy_Performance');
+  }
+  
+  // Title
+  sheet.getRange(1, 1).setValue('STRATEGY PERFORMANCE SUMMARY').setFontSize(16).setFontWeight('bold');
+  sheet.getRange(1, 2).setValue(new Date().toLocaleString());
+  
+  // Performance table
+  sheet.getRange(3, 1).setValue('Performance by Strategy').setFontWeight('bold');
+  
+  const headers = ['Strategy', 'Total Trades', 'Hit Rate', 'Avg Profit', 'Avg Loss', 
+                   'Profit Factor', 'Avg Days to Hit'];
+  sheet.getRange(4, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  
+  let row = 5;
+  Object.entries(analysis).forEach(([strategy, stats]) => {
+    sheet.getRange(row, 1, 1, 7).setValues([[
+      strategy, stats.totalTrades, stats.hitRate, stats.avgProfit,
+      stats.avgLoss, stats.profitFactor, stats.avgDaysToHit
+    ]]);
+    row++;
+  });
+  
+  // Best performers by strategy
+  row += 2;
+  sheet.getRange(row, 1).setValue('Top Performers by Strategy').setFontWeight('bold');
+  row++;
+  
+  Object.entries(analysis).forEach(([strategy, stats]) => {
+    if (stats.bestPerformers.length > 0) {
+      sheet.getRange(row, 1).setValue(strategy).setFontWeight('bold');
+      row++;
+      
+      stats.bestPerformers.forEach(performer => {
+        sheet.getRange(row, 2).setValue(`${performer.ticker}: ${performer.profit} (${performer.daysHeld} days)`);
+        row++;
+      });
+      row++;
+    }
+  });
+  
+  sheet.autoResizeColumns(1, 7);
+  SpreadsheetApp.setActiveSheet(sheet);
+  
+  const bestStrategy = Object.entries(analysis)
+    .sort((a, b) => parseFloat(b[1].profitFactor) - parseFloat(a[1].profitFactor))[0];
+  
+  SpreadsheetApp.getUi().alert(
+    'Strategy Performance Analysis Complete',
+    `Best performing strategy: ${bestStrategy[0]} with profit factor ${bestStrategy[1].profitFactor}\n\n` +
+    `Check the "Strategy_Performance" sheet.`,
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+}
+
+/**
+ * Helper function to collect all trades
+ */
+function EW_collectAllTrades(ss) {
+  const strategies = Object.keys(EW.STRATEGY_ENDPOINTS);
+  const allTrades = [];
+  
+  for (const strategy of strategies) {
+    const sheet = ss.getSheetByName(strategy);
+    if (!sheet || sheet.getLastRow() < 2) continue;
+    const trades = EW_extractTradeData(sheet, strategy);
+    allTrades.push(...trades);
+  }
+  
+  return allTrades;
 }

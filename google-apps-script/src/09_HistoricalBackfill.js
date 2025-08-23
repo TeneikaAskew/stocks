@@ -148,8 +148,12 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       // Debug logging for existing values
       if (ticker) {
         EW_trace('BACKFILL', `${ticker} Current values check:`);
-        EW_trace('BACKFILL', `  Strike_Hit column ${hdrMap.strikeHitCol}: "${row[hdrMap.strikeHitCol - 1] || 'EMPTY'}"`);
-        EW_trace('BACKFILL', `  Hit_RSI column ${hdrMap.hitRSICol}: "${row[hdrMap.hitRSICol - 1] || 'EMPTY'}"`);
+        EW_trace('BACKFILL', `  Run Date: ${runDateStr}`);
+        EW_trace('BACKFILL', `  Day0_Check (${hdrMap.day0CheckCol}): "${row[hdrMap.day0CheckCol - 1] || 'EMPTY'}"`);
+        EW_trace('BACKFILL', `  Day1_Check (${hdrMap.day1CheckCol}): "${row[hdrMap.day1CheckCol - 1] || 'EMPTY'}"`);
+        EW_trace('BACKFILL', `  Strike_Hit (${hdrMap.strikeHitCol}): "${row[hdrMap.strikeHitCol - 1] || 'EMPTY'}"`);
+        EW_trace('BACKFILL', `  Hit_RSI (${hdrMap.hitRSICol}): "${row[hdrMap.hitRSICol - 1] || 'EMPTY'}"`);
+        EW_trace('BACKFILL', `  Has values: Day0=${hasDay0}, Day1=${hasDay1}, StrikeHit=${hasStrikeHit}, Indicators=${hasIndicators}`);
       }
       
       // Skip if ALL day values AND arrays are already filled
@@ -179,21 +183,34 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       const expDate = expDateStr ? new Date(expDateStr) : null;
       if (expDate) expDate.setHours(0, 0, 0, 0);
       
-      // Determine end date (expiration or today, whichever is earlier)
-      const endDate = expDate && expDate < today ? expDate : today;
-      
-      // Skip if run date is in the future or invalid
-      if (runDate > today || runDate > endDate) {
-        EW_trace('BACKFILL', `Skipping ${ticker}: Invalid date range`);
+      // Skip if run date is in the future
+      if (runDate > today) {
+        EW_trace('BACKFILL', `Skipping ${ticker}: Run date is in the future`);
         return;
       }
       
+      // Determine end date (expiration or today, whichever is earlier)
+      const endDate = expDate && expDate < today ? expDate : today;
+      
       EW_trace('BACKFILL', `Processing expired position: ${ticker} from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (Exp: ${expDateStr || 'none'})`);
       
-      // Get historical price data using Yahoo Finance with raw data for indicators
-      const yahooResult = EW_getYahooHistoricalRange(ticker, runDate, endDate, true);
+      // Check if runDate is more than 7 days old
+      const daysSinceRun = Math.floor((today - runDate) / (1000 * 60 * 60 * 24));
+      const useDaily = daysSinceRun > 7;
+      
+      let yahooResult;
+      
+      if (useDaily) {
+        EW_trace('BACKFILL', `${ticker}: Using daily data (${daysSinceRun} days old)`);
+        // For daily data, we need to create a custom function or modify existing one
+        yahooResult = EW_getYahooHistoricalRangeWithInterval(ticker, runDate, endDate, '1d', true);
+      } else {
+        // Get minute data for recent dates
+        yahooResult = EW_getYahooHistoricalRange(ticker, runDate, endDate, true);
+      }
+      
       if (!yahooResult || !yahooResult.data || yahooResult.data.length === 0) {
-        EW_trace('BACKFILL', `No 1-minute data available for ${ticker} - skipping position`);
+        EW_trace('BACKFILL', `No data available for ${ticker} - skipping position`);
         
         // Mark the position as having no data available
         const strikeHitValue = JSON.stringify(['NO_DATA']);
@@ -201,7 +218,7 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         
         // Add note about data unavailability
         if (hdrMap.notesCol) {
-          dataRange.getCell(rowIndex + 1, hdrMap.notesCol).setValue('1-minute data unavailable (>7 days old)');
+          dataRange.getCell(rowIndex + 1, hdrMap.notesCol).setValue(`No ${useDaily ? 'daily' : '1-minute'} data available`);
         }
         
         skippedCount++;
@@ -380,14 +397,32 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
   const dailyGroups = {};
   const runDateStr = runDate.toISOString().split('T')[0];
   
+  // Check if we're dealing with daily data
+  const isDaily = rawData && rawData.isDailyOrHigher === true;
+  
   // Log input data info
-  EW_trace('BACKFILL', `${ticker}: Received ${historicalData.length} 1-minute bars to process`);
+  EW_trace('BACKFILL', `${ticker}: Received ${historicalData.length} ${isDaily ? 'daily' : '1-minute'} bars to process`);
   if (historicalData.length > 0) {
     EW_trace('BACKFILL', `${ticker}: Data range from ${EW_toEDT(historicalData[0].date)} to ${EW_toEDT(historicalData[historicalData.length - 1].date)}`);
   }
   
-  // First, group all 1-minute bars by date
-  historicalData.forEach((bar, barIndex) => {
+  // If we have daily data, use it directly without grouping
+  if (isDaily) {
+    // For daily data, each bar is already a full day
+    historicalData.forEach((bar, index) => {
+      const dateStr = bar.date.toISOString().split('T')[0];
+      dailyGroups[dateStr] = {
+        date: new Date(dateStr),
+        bars: [bar], // Single bar for the day
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close
+      };
+    });
+  } else {
+    // First, group all 1-minute bars by date
+    historicalData.forEach((bar, barIndex) => {
     const dateStr = bar.date.toISOString().split('T')[0];
     if (!dailyGroups[dateStr]) {
       dailyGroups[dateStr] = {
@@ -415,6 +450,7 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
       EW_trace('BACKFILL', `${ticker}: Bar ${barIndex} - ${EW_toEDT(bar.date)}, O:${bar.open}, H:${bar.high}, L:${bar.low}, C:${bar.close}`);
     }
   });
+  }
   
   // Convert to sorted array of days
   const sortedDays = Object.keys(dailyGroups)
@@ -1489,5 +1525,33 @@ function EW_quickTestBackfill() {
     } catch (error) {
       console.error(`Error: ${error.message}`);
     }
+  });
+}
+
+/**
+ * Test function to verify the backfill handles dates over 7 days old correctly
+ */
+function EW_testBackfillDateLogic() {
+  const today = new Date();
+  const testCases = [
+    { days: 5, expected: '1m' },
+    { days: 7, expected: '1m' },
+    { days: 8, expected: '1d' },
+    { days: 15, expected: '1d' },
+    { days: 30, expected: '1d' }
+  ];
+  
+  console.log('Testing backfill date logic:');
+  console.log('Today:', today.toISOString().split('T')[0]);
+  
+  testCases.forEach(test => {
+    const testDate = new Date(today);
+    testDate.setDate(today.getDate() - test.days);
+    
+    const daysSinceRun = Math.floor((today - testDate) / (1000 * 60 * 60 * 24));
+    const useDaily = daysSinceRun > 7;
+    const interval = useDaily ? '1d' : '1m';
+    
+    console.log(`Test date ${test.days} days ago (${testDate.toISOString().split('T')[0]}): ${interval} data (expected: ${test.expected}) ${interval === test.expected ? '✓' : '✗'}`);
   });
 }
