@@ -1353,15 +1353,33 @@ function EW_completeSheetRepair() {
         sheet.getRange(1, 1, updatedData.length, updatedData[0].length).setValues(updatedData);
       }
       
-      // Now add GF headers back
+      // Now add ALL GF and tracking headers back
       const cleanedHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      const withGFHeaders = EW_addGFHeaders(cleanedHeaders);
+      
+      // Add ALL Google Finance columns
+      const allGFColumns = [
+        'GF_Name','GF_Price','GF_ChangePct','GF_High','GF_Low','GF_High52','GF_Low52',
+        'GF_Volume','GF_AvgVol10','GF_MktCap','GF_PE','GF_Beta',
+        'HV_30D','RVOL_10','Ret_5D','Ret_20D','GapPct'
+      ];
+      
+      // Add ALL tracking columns
+      const allTrackingColumns = [
+        'Days_To_Exp','Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
+        'Day1_Check','Day2_Check','Day3_Check','Day5_Check','Exp_Result',
+        'Success_Score','Profit_Potential','Risk_Reward','Historical_High','Historical_Low',
+        'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days','Peak_Profit_Date',
+        'Stock_Price'
+      ];
+      
+      // Combine all headers
+      const withAllColumns = [...cleanedHeaders, ...allGFColumns, ...allTrackingColumns];
       
       // Update header row
-      sheet.getRange(1, 1, 1, withGFHeaders.length).setValues([withGFHeaders]);
+      sheet.getRange(1, 1, 1, withAllColumns.length).setValues([withAllColumns]);
       
       // Apply formulas
-      const finalHdrMap = EW_headerMap(withGFHeaders);
+      const finalHdrMap = EW_headerMap(withAllColumns);
       EW_setGFArrayFormulas(sheet, finalHdrMap);
       
       sheetsRepaired++;
