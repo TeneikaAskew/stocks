@@ -110,11 +110,16 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
   data.forEach((row, rowIndex) => {
     const ticker = row[hdrMap.tickerCol - 1];
     const runDateStr = row[hdrMap.runDateCol - 1];
-    const strike = parseFloat(row[hdrMap.strikeCol - 1]) || 0;
+    const strike = hdrMap.strikeCol ? parseFloat(row[hdrMap.strikeCol - 1]) || 0 : 0;
+    const longStrike = hdrMap.longStrikeCol ? parseFloat(row[hdrMap.longStrikeCol - 1]) || 0 : 0;
+    const shortStrike = hdrMap.shortStrikeCol ? parseFloat(row[hdrMap.shortStrikeCol - 1]) || 0 : 0;
     const daysToExp = parseFloat(row[hdrMap.daysToExpCol - 1]) || 0;
     const currentStrikeHit = row[hdrMap.strikeHitCol - 1];
     
-    if (!ticker || !runDateStr || !strike) return;
+    // Check if position has valid strike data
+    const hasValidStrike = strike || (longStrike && shortStrike);
+    
+    if (!ticker || !runDateStr || !hasValidStrike) return;
     
     // ONLY process active positions (Days_To_Exp > 0) that haven't hit yet
     if (daysToExp > 0 && currentStrikeHit !== 'HIT') {
@@ -125,6 +130,8 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         rowIndex: rowIndex,
         ticker: ticker,
         strike: strike,
+        longStrike: longStrike,
+        shortStrike: shortStrike,
         strategy: strategyName,
         startDate: runDate,
         endDate: today

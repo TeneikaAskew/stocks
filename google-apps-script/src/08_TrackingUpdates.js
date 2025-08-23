@@ -109,11 +109,13 @@ function EW_updateStrategyTracking(ss, strategyName) {
         }
       }
       
-      // Update Day1_Check, Day2_Check, Day3_Check, Day5_Check
+      // Update Day0_Check, Day1_Check, Day2_Check, Day3_Check, Day4_Check, Day5_Check
       const dayChecks = [
+        { col: hdrMap.day0CheckCol, day: 0 },
         { col: hdrMap.day1CheckCol, day: 1 },
         { col: hdrMap.day2CheckCol, day: 2 },
         { col: hdrMap.day3CheckCol, day: 3 },
+        { col: hdrMap.day4CheckCol, day: 4 },
         { col: hdrMap.day5CheckCol, day: 5 }
       ];
       
