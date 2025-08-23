@@ -78,6 +78,7 @@ function EW_backfillStrategyTracking(ss, strategyName) {
   const data = dataRange.getValues();
   
   let processedCount = 0;
+  let skippedCount = 0;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   
@@ -131,7 +132,18 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       // Get historical price data using Yahoo Finance with raw data for indicators
       const yahooResult = EW_getYahooHistoricalRange(ticker, runDate, endDate, true);
       if (!yahooResult || !yahooResult.data || yahooResult.data.length === 0) {
-        EW_trace('BACKFILL', `No historical data for ${ticker}`);
+        EW_trace('BACKFILL', `No 1-minute data available for ${ticker} - skipping position`);
+        
+        // Mark the position as having no data available
+        const strikeHitValue = JSON.stringify(['NO_DATA']);
+        dataRange.getCell(rowIndex + 1, hdrMap.strikeHitCol).setValue(strikeHitValue);
+        
+        // Add note about data unavailability
+        if (hdrMap.notesCol) {
+          dataRange.getCell(rowIndex + 1, hdrMap.notesCol).setValue('1-minute data unavailable (>7 days old)');
+        }
+        
+        skippedCount++;
         return;
       }
       
@@ -332,6 +344,7 @@ function EW_backfillStrategyTracking(ss, strategyName) {
     }
   }
   
+  EW_trace('BACKFILL', `${strategyName}: Processed ${processedCount} positions, skipped ${skippedCount} (no 1-minute data)`);
   return processedCount;
 }
 
@@ -593,17 +606,44 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
           const dayDateStr = dayData.date.toISOString().split('T')[0];
           let rawDataIndex = -1;
           
+          // Debug: Log what date we're looking for
+          if (tradingDaysSinceEntry === 0) {
+            EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry} - Looking for date: ${dayDateStr} (from dayData.date: ${dayData.date.toISOString()})`);
+          }
+          
           // Debug: Log first few timestamps to understand the data
           if (tradingDaysSinceEntry === 0 && rawData.timestamps.length > 0) {
             EW_trace('BACKFILL', `${ticker} Raw data has ${rawData.timestamps.length} timestamps, first: ${new Date(rawData.timestamps[0] * 1000).toISOString()}, last: ${new Date(rawData.timestamps[rawData.timestamps.length - 1] * 1000).toISOString()}`);
+            
+            // Log all raw data dates
+            const rawDates = rawData.timestamps.map(ts => new Date(ts * 1000).toISOString().split('T')[0]);
+            EW_trace('BACKFILL', `${ticker} Raw data dates: ${rawDates.join(', ')}`);
           }
           
-          for (let ri = 0; ri < rawData.timestamps.length; ri++) {
-            const timestamp = new Date(rawData.timestamps[ri] * 1000);
-            if (timestamp.toISOString().split('T')[0] === dayDateStr) {
-              rawDataIndex = ri;
-              break;
+          // Since we're using daily data, the indices should match
+          // The historicalData array and raw data arrays should have the same trading days
+          // Use the current index position to find corresponding raw data
+          rawDataIndex = index;
+          
+          // Verify the dates match as a safety check
+          if (rawDataIndex < rawData.timestamps.length) {
+            const timestamp = new Date(rawData.timestamps[rawDataIndex] * 1000);
+            const timestampDateStr = timestamp.toISOString().split('T')[0];
+            
+            if (timestampDateStr !== dayDateStr) {
+              // If dates don't match, fall back to searching
+              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Index mismatch, searching for ${dayDateStr}`);
+              rawDataIndex = -1;
+              for (let ri = 0; ri < rawData.timestamps.length; ri++) {
+                const ts = new Date(rawData.timestamps[ri] * 1000);
+                if (ts.toISOString().split('T')[0] === dayDateStr) {
+                  rawDataIndex = ri;
+                  break;
+                }
+              }
             }
+          } else {
+            rawDataIndex = -1;
           }
           
           if (rawDataIndex >= 0) {
