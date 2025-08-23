@@ -799,19 +799,19 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     let dayMinUnfavorable = 0;
     
     if (isBullish) {
-      // For bullish: favorable = high - strike, unfavorable = strike - low
-      dayMaxFavorable = Math.max(0, dayData.high - strike);
-      dayMinUnfavorable = Math.max(0, strike - dayData.low);
+      // For bullish: favorable = (high - strike) / strike, unfavorable = (strike - low) / strike
+      dayMaxFavorable = Math.max(0, (dayData.high - strike) / strike);
+      dayMinUnfavorable = Math.max(0, (strike - dayData.low) / strike);
     } else if (isBearish) {
-      // For bearish: favorable = strike - low, unfavorable = high - strike
-      dayMaxFavorable = Math.max(0, strike - dayData.low);
-      dayMinUnfavorable = Math.max(0, dayData.high - strike);
+      // For bearish: favorable = (strike - low) / strike, unfavorable = (high - strike) / strike
+      dayMaxFavorable = Math.max(0, (strike - dayData.low) / strike);
+      dayMinUnfavorable = Math.max(0, (dayData.high - strike) / strike);
     }
     
     // Add to arrays if within Day 0-5 range
     if (tradingDaysSinceEntry >= 0 && tradingDaysSinceEntry <= 5) {
-      analysis.maxFavorableArray.push(dayMaxFavorable.toFixed(2));
-      analysis.minUnfavorableArray.push(dayMinUnfavorable.toFixed(2));
+      analysis.maxFavorableArray.push(dayMaxFavorable.toFixed(6));
+      analysis.minUnfavorableArray.push(dayMinUnfavorable.toFixed(6));
     }
     
     // Track overall max/min for backward compatibility
