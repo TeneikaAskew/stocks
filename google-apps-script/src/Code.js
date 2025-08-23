@@ -17,24 +17,14 @@
 EW.url = EW_url;
 
 // ======= UI MENU =======
-
-/**
- * Creates the EarningsWhispers menu in the Google Sheets UI
- * Automatically executed when the spreadsheet is opened
- * Sets up the main menu with options for running strategies, reports, and automation
- * @returns {void}
- */
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('EarningsWhispers')
     .addItem('Run all strategies', 'EW_runAll')
     .addItem('Debug one (prompt)', 'EW_debugOne')
     .addSeparator()
-    .addItem('Test Login', 'EW_testLogin')
-    .addSeparator()
     .addItem('Generate Success Report', 'EW_generateSuccessReport')
     .addItem('Update Tracking Data', 'EW_updateTrackingData')
-    .addItem('Check and add missing columns', 'EW_checkAllSheetsColumns')
     .addSeparator()
     .addSubMenu(SpreadsheetApp.getUi().createMenu('Automation & Triggers')
       .addItem('Setup Full Auto Tracking', 'EW_setupAutoTracking')
@@ -56,11 +46,7 @@ function onOpen() {
   EW_ensureSuccessReportExists();
 }
 
-/**
- * Interactive prompt to run a single strategy for quick debugging
- * Shows a popup dialog with available strategies for selection
- * @returns {void}
- */
+// Prompt to run a single tab quickly
 function EW_debugOne() {
   const ui = SpreadsheetApp.getUi();
   const names = Object.keys(EW.STRATEGY_ENDPOINTS);
@@ -78,45 +64,7 @@ function EW_debugOne() {
   EW_runSingle(name);
 }
 
-/**
- * Debug function to test authentication and report login status
- * @returns {void}
- */
-function EW_testLogin() {
-  try {
-    EW_trace('TEST', 'Testing login credentials...', true);
-    
-    if (!EW.p.user || !EW.p.pass) {
-      EW_safeAlert('No credentials found. Please set EW_USER and EW_PASS in Script Properties.');
-      return;
-    }
-    
-    EW_trace('TEST', `Found credentials for user: ${EW.p.user}`, true);
-    
-    const cookies = EW_login();
-    EW_trace('TEST', `Login attempt completed. Cookies received: ${Object.keys(cookies).length}`, true);
-    
-    if (Object.keys(cookies).length === 0) {
-      EW_safeAlert('Login failed - no cookies received. Check your credentials.');
-    } else {
-      EW_safeAlert(`Login appears successful. Received ${Object.keys(cookies).length} cookies.`);
-    }
-    
-  } catch (e) {
-    EW_trace('TEST', `Login test failed: ${e.message}`, true);
-    EW_safeAlert(`Login test failed: ${e.message}`);
-  }
-}
-
-// ======= MAIN STRATEGY EXECUTION =======
-
-/**
- * Runs all configured EarningsWhispers strategies sequentially
- * Fetches data from each strategy endpoint and populates corresponding sheets
- * Creates sheets automatically if they don't exist
- * Handles authentication and session management
- * @returns {void}
- */
+// ======= Entry points =======
 function EW_runAll() {
   EW_trace('MAIN', 'EW_runAll() started', true);
 
@@ -145,11 +93,7 @@ function EW_runAll() {
   EW_trace('MAIN', 'EW_runAll() finished', true);
 }
 
-/**
- * Runs a single EarningsWhispers strategy by name
- * @param {string} tabName - Name of the strategy to run (must match keys in EW.STRATEGY_ENDPOINTS)
- * @returns {void}
- */
+// run a single strategy programmatically
 function EW_runSingle(tabName) {
   tabName = 'Bull Spreads'
   EW_trace('MAIN', `EW_runSingle(${tabName})`);
@@ -167,15 +111,7 @@ function EW_runSingle(tabName) {
   EW_trace('MAIN', `EW_runSingle(${tabName}) done`, true);
 }
 
-/**
- * Internal function to execute a strategy against a specific sheet
- * Handles the complete flow: API call, data processing, and sheet updates
- * @param {Spreadsheet} ss - The Google Sheets spreadsheet object
- * @param {string} tabName - Name of the strategy/tab
- * @param {string} path - API endpoint path for the strategy
- * @param {Object} cookies - Authentication cookies object
- * @returns {void}
- */
+// core per-endpoint work
 function EW_runOneInternal(ss, tabName, path, cookies) {
   try {
     const url = EW.url(path);
@@ -199,23 +135,10 @@ function EW_runOneInternal(ss, tabName, path, cookies) {
   } catch (err) {
     const msg = (err && err.stack) ? err.stack : (err && err.message ? err.message : String(err));
     EW_trace(tabName, `ERROR: ${msg}`, true);
-    
-    // If it's an authentication-related error, log it and continue with other endpoints
-    if (msg.includes('HTML page instead of JSON') || msg.includes('authentication')) {
-      EW_trace(tabName, `Skipping ${tabName} due to authentication issue - endpoint may require login`, true);
-    }
   }
 }
 
-// ======= API COMMUNICATION =======
-
-/**
- * Fetches JSON data from EarningsWhispers API endpoint
- * Handles HTTP requests with proper headers and cookie management
- * @param {string} url - Full URL to fetch from
- * @param {Object} cookiesObj - Cookies object for authentication
- * @returns {Object|null} Parsed JSON response or null if error
- */
+// ======= HTTP & Auth =======
 function EW_fetchJson(url, cookiesObj) {
   const headers = {
     'accept': 'application/json, text/javascript, */*; q=0.01',
@@ -243,31 +166,16 @@ function EW_fetchJson(url, cookiesObj) {
   }
 
   const text = res.getContentText();
-  
-  // Check if response is HTML (likely an error page)
-  if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
-    EW_trace('HTTP', `Received HTML instead of JSON for ${url} - possible authentication issue`);
-    // Extract title from HTML for better error reporting
-    const titleMatch = text.match(/<title[^>]*>([^<]+)</i);
-    const title = titleMatch ? titleMatch[1] : 'Unknown HTML page';
-    throw new Error(`API returned HTML page instead of JSON for ${url}. Page title: "${title}". This usually indicates authentication failure.`);
-  }
-  
+  console.log("Response: \n", text)
   try {
     const parsed = JSON.parse(text);
     return parsed;
   } catch (e) {
     EW_trace('HTTP', `JSON parse error for ${url}: ${(e && e.message) || e}`);
-    const snippet = text.slice(0, 200).replace(/\s+/g, ' ');
-    throw new Error(`JSON parse error for ${url}: ${e.message || e}. Response start: ${snippet}`);
+    throw new Error(`JSON parse error for ${url}: ${e.message || e}`);
   }
 }
 
-/**
- * Performs login authentication to EarningsWhispers
- * Fetches credentials from Script Properties and handles CSRF tokens
- * @returns {Object} Cookies object containing session information
- */
 function EW_login() {
   const { user, pass, loginUrl } = EW.p;
   if (!user || !pass) {
@@ -315,16 +223,8 @@ function EW_login() {
   if (res2.getResponseCode() >= 300 && res2.getResponseCode() < 400) {
     const loc = res2.getHeaders()['Location'];
     EW_trace('LOGIN', `Redirect -> ${loc || '(none)'}`);
-    
-    // Check if redirect indicates login failure
-    if (loc && (loc.includes('/doh') || loc.includes('error') || loc.includes('failed'))) {
-      const errorMsg = `Login failed: Bad request: ${EW.BASE}${loc}`;
-      EW_trace('LOGIN', errorMsg);
-      throw new Error(errorMsg);
-    }
-    
     if (loc) {
-      const res3 = UrlFetchApp.fetch(EW.BASE + loc, {
+      const res3 = UrlFetchApp.fetch(loc, {
         method: 'get',
         muteHttpExceptions: true,
         followRedirects: true,
@@ -337,30 +237,11 @@ function EW_login() {
       EW_trace('LOGIN', `res3 code=${res3.getResponseCode()} cookies now=${Object.keys(cookies).length}`);
     }
   }
-  
-  // Validate login success by checking for typical authentication cookies
-  const hasAuthCookie = Object.keys(cookies).some(key => 
-    key.toLowerCase().includes('auth') || 
-    key.toLowerCase().includes('session') || 
-    key.toLowerCase().includes('login') ||
-    key.toLowerCase().includes('token')
-  );
-  
-  if (!hasAuthCookie && Object.keys(cookies).length < 2) {
-    EW_trace('LOGIN', 'Warning: Login may have failed - no authentication cookies found');
-  }
 
   return cookies;
 }
 
-// ======= DATA PROCESSING =======
-
-/**
- * Converts raw JSON data to spreadsheet rows format
- * Handles both array and object-based JSON structures
- * @param {Array|Object} data - Raw JSON data from API
- * @returns {Array} Array of arrays suitable for Google Sheets
- */
+// ======= JSON -> rows =======
 function EW_jsonToRows(data) {
   if (!data) return [];
 
@@ -386,12 +267,6 @@ function EW_jsonToRows(data) {
   return [];
 }
 
-/**
- * Converts array of objects to rows format with headers
- * Extracts all unique keys as headers and creates data rows
- * @param {Array} arr - Array of objects from JSON
- * @returns {Array} Array where first element is headers, rest are data rows
- */
 function EW_objectsToRows(arr) {
   if (!arr || arr.length === 0) return [];
   const preferred = [
@@ -416,17 +291,126 @@ function EW_objectsToRows(arr) {
   return [headers, ...rows];
 }
 
-// ======= SHEET MANAGEMENT =======
+// ======= Sheets helpers =======
+// function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
+//   EW_trace('SHEET', `Append -> "${tabName}" rows=${rows.length}`);
+//   let sheet = ss.getSheetByName(tabName);
+//   if (!sheet) {
+//     EW_trace('SHEET', `Creating sheet "${tabName}"`);
+//     sheet = ss.insertSheet(tabName);
+//   }
+//   if (!rows || rows.length === 0) return;
 
-/**
- * Main function to append data rows to a strategy sheet
- * Handles sheet creation, header management, and GOOGLEFINANCE formula setup
- * @param {Spreadsheet} ss - Google Sheets spreadsheet object
- * @param {string} tabName - Name of the sheet/tab to append to
- * @param {Array} rows - Array of arrays containing headers and data
- * @param {boolean} writeHeaderIfEmpty - Whether to write headers if sheet is empty
- * @returns {void}
- */
+//   const lastRow = sheet.getLastRow();
+//   if (writeHeaderIfEmpty && lastRow === 0 && rows.length > 0) {
+//     const header = rows[0];
+//     if (Array.isArray(header) && header.every(c => typeof c === 'string')) {
+//       sheet.getRange(1, 1, 1, header.length).setValues([header]);
+//       EW_trace('SHEET', `Wrote header (${header.length} cols)`);
+//       if (rows.length > 1) {
+//         sheet.getRange(2, 1, rows.length - 1, header.length).setValues(rows.slice(1));
+//         EW_trace('SHEET', `Wrote ${rows.length - 1} data rows`);
+//       }
+//       return;
+//     }
+//   }
+
+//   const width = Math.max(...rows.map(r => r.length));
+//   const start = sheet.getLastRow() + 1;
+//   const padded = rows.map(r => {
+//     const copy = r.slice();
+//     if (copy.length < width) copy.push(...Array(width - copy.length).fill(''));
+//     return copy;
+//   });
+//   sheet.getRange(start, 1, padded.length, width).setValues(padded);
+//   EW_trace('SHEET', `Appended ${padded.length} rows at row ${start}`);
+// }
+
+// ======= Sheets helpers (with Run Date + GOOGLEFINANCE) =======
+// function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
+//   EW_trace('SHEET', `Append -> "${tabName}" rows=${rows.length}`);
+//   let sheet = ss.getSheetByName(tabName);
+//   if (!sheet) {
+//     EW_trace('SHEET', `Creating sheet "${tabName}"`);
+//     sheet = ss.insertSheet(tabName);
+//   }
+//   if (!rows || rows.length === 0) return;
+
+//   // Split incoming rows
+//   const incomingHeader = Array.isArray(rows[0]) ? rows[0].slice() : [];
+//   const incomingData = rows.slice(1).map(r => r.slice());
+
+//   const runDate = EW_getRunStamp(); // e.g., 2025-08-15
+
+//   const lastRow = sheet.getLastRow();
+
+//   // If the sheet is empty, we create a new header with Run Date + GF columns
+//   if (writeHeaderIfEmpty && lastRow === 0) {
+//     // Build header: prepend Run Date, then incoming header, then GF headers
+//     const baseHeader = EW_ensureRunDateInHeader(incomingHeader);
+//     const headerWithGF = EW_addGFHeaders(baseHeader);
+
+//     // Build data rows: prepend run date; pad to header width (GF cols left blank, formulas will fill)
+//     const width = headerWithGF.length;
+//     const dataRows = incomingData.map(r => {
+//       const row = [runDate, ...r];
+//       if (row.length < width) row.push(...Array(width - row.length).fill(''));
+//       return row;
+//     });
+
+//     sheet.getRange(1, 1, 1, headerWithGF.length).setValues([headerWithGF]);
+//     EW_trace('SHEET', `Wrote header (${headerWithGF.length} cols)`);
+
+//     if (dataRows.length) {
+//       sheet.getRange(2, 1, dataRows.length, width).setValues(dataRows);
+//       EW_trace('SHEET', `Wrote ${dataRows.length} data rows`);
+//       // Fill GF formulas for the rows we just wrote
+//       const hdrMap = EW_headerMap(headerWithGF);
+//       EW_writeGFForRows(sheet, 2, dataRows.length, hdrMap);
+//     }
+//     return;
+//   }
+
+//   // Existing sheet: read current header from row 1
+//   const sheetHeader = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+//   const hdrMap = EW_headerMap(sheetHeader);
+
+//   // Ensure the sheet already has "Run Date" as first column (created on first run)
+//   const hasRunDate = (hdrMap.runDateCol === 1); // we create it as first col initially
+//   if (!hasRunDate) {
+//     EW_trace('SHEET', `Warning: "Run Date" not found as first column. Appending anyway.`, true);
+//   }
+
+//   // Align incoming data to sheet header order:
+//   //  - Prepend Run Date value
+//   //  - Reorder/trim/extend cells to match the sheet header columns
+//   const width = sheetHeader.length;
+//   const aligned = incomingData.map(r => {
+//     const mapFromIncoming = EW_headerMap(incomingHeader);
+//     const dstRow = Array(width).fill('');
+//     // Put Run Date in col 1 if header has it
+//     if (hdrMap.runDateCol) dstRow[hdrMap.runDateCol - 1] = runDate;
+//     // Copy matching columns by header name
+//     for (const [name, idx] of Object.entries(mapFromIncoming.byName)) {
+//       if (!hdrMap.byName[name]) continue;             // skip fields not present in sheet
+//       const dstIdx1 = hdrMap.byName[name];            // 1-based
+//       const srcIdx0 = idx - 1;                        // incoming is 1-based in map
+//       dstRow[dstIdx1 - 1] = r[srcIdx0] != null ? r[srcIdx0] : '';
+//     }
+//     return dstRow;
+//   });
+
+//   if (!aligned.length) return;
+
+//   // Append aligned rows
+//   const start = sheet.getLastRow() + 1;
+//   sheet.getRange(start, 1, aligned.length, width).setValues(aligned);
+//   EW_trace('SHEET', `Appended ${aligned.length} rows at row ${start}`);
+
+//   // Add GF formulas for the new rows (if GF headers exist and ticker column is found)
+//   EW_writeGFForRows(sheet, start, aligned.length, hdrMap);
+// }
+
 function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
   EW_trace('SHEET', `Append -> "${tabName}" rows=${rows.length}`);
   let sheet = ss.getSheetByName(tabName);
@@ -471,36 +455,14 @@ function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
 
 
   // Subsequent runs: align to existing header
-  // First ensure all columns exist
-  const updatedHdrMap = EW_ensureAllColumnsExist(sheet);
-  if (!updatedHdrMap) {
-    EW_trace('SHEET', 'Failed to ensure columns exist', true);
-    return;
-  }
-  
-  // Re-read headers after potential column additions
   const sheetHeader = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(sheetHeader);
   const width = sheetHeader.length;
 
-  // Ensure the sheet already has "Run Date" as first column (created on first run)
-  const hasRunDate = (hdrMap.runDateCol === 1); // we create it as first col initially
-  if (!hasRunDate) {
-    EW_trace('SHEET', `Warning: "Run Date" not found as first column. Appending anyway.`, true);
-  }
-
   const mapFromIncoming = EW_headerMap(incomingHeader);
   const aligned = incomingData.map(src => {
     const dst = Array(width).fill('');
-    
-    // Set Run Date - try mapped column first, then fallback to column 1
-    if (hdrMap.runDateCol) {
-      dst[hdrMap.runDateCol - 1] = runDate;
-    } else if (sheetHeader[0] && String(sheetHeader[0]).toLowerCase().includes('run')) {
-      // Fallback: if first column looks like Run Date but wasn't detected
-      dst[0] = runDate;
-    }
-    
+    if (hdrMap.runDateCol) dst[hdrMap.runDateCol - 1] = runDate;
     for (const [name, src1] of Object.entries(mapFromIncoming.byName)) {
       const dst1 = hdrMap.byName[name];
       if (!dst1) continue;
@@ -531,7 +493,55 @@ function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
 
 
 
-// ======= HEADER MANAGEMENT =======
+// ======= Cookie & CSRF =======
+// Add a rich set of eval columns for options decisioning
+// function EW_addGFHeaders(header) {
+//   const gf = [
+//     'GF_Name','GF_Price','GF_ChangePct','GF_High','GF_Low','GF_High52','GF_Low52',
+//     'GF_Volume','GF_AvgVol10','GF_MktCap','GF_PE','GF_Beta',
+//     'HV_30D','RVOL_10','Ret_5D','Ret_20D','GapPct'
+//   ];
+//   const existing = new Set(header.map(h => String(h).toLowerCase()));
+//   const toAdd = gf.filter(h => !existing.has(h.toLowerCase()));
+//   return header.concat(toAdd);
+// }
+
+// Map header names to 1-based indices + friendly handles
+// function EW_headerMap(headerRow) {
+//   const byName = {};
+//   headerRow.forEach((h, i) => {
+//     const key = String(h || '').trim().toLowerCase();
+//     if (key) byName[key] = i + 1;
+//   });
+//   return {
+//     byName,
+//     runDateCol:  byName['run date'] || null,
+//     tickerCol:   byName['ticker'] || null,
+
+//     // Live GF columns
+//     nameCol:     byName['gf_name']     || null,
+//     priceCol:    byName['gf_price']    || null,
+//     chgPctCol:   byName['gf_changepct']|| null,
+//     highCol:     byName['gf_high']     || null,
+//     lowCol:      byName['gf_low']      || null,
+//     high52Col:   byName['gf_high52']   || null,
+//     low52Col:    byName['gf_low52']    || null,
+//     volCol:      byName['gf_volume']   || null,
+//     avgVol10Col: byName['gf_avgvol10'] || null,
+//     mcapCol:     byName['gf_mktcap']   || null,
+//     peCol:       byName['gf_pe']       || null,
+//     betaCol:     byName['gf_beta']     || null,
+
+//     // Derived signal columns
+//     hv30Col:     byName['hv_30d']      || null,
+//     rvol10Col:   byName['rvol_10']     || null,
+//     ret5Col:     byName['ret_5d']      || null,
+//     ret20Col:    byName['ret_20d']     || null,
+//     gapPctCol:   byName['gappct']      || null,
+
+//     width:       headerRow.length
+//   };
+// }
 
 // Add our evaluation columns (exact labels used everywhere below)
 const EW_GF_LABELS = [
@@ -548,12 +558,6 @@ const EW_TRACKING_LABELS = [
   'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days','Peak_Profit_Date'
 ];
 
-/**
- * Creates a mapping object from header row for easy column access
- * Maps header names to 1-based column indices and provides friendly column references
- * @param {Array} headerRow - Array of header names from first row
- * @returns {Object} Object with byName mapping and specific column references
- */
 function EW_headerMap(headerRow) {
   const byName = {};               // raw key -> 1-based index
   const byNorm = {};               // normalized key -> 1-based index
@@ -575,7 +579,7 @@ function EW_headerMap(headerRow) {
 
   // Common aliases for upstream data
   const tickerCol   = find(['ticker','symbol','sym','underlying','root']);
-  const runDateCol  = find(['Run Date','run date','rundate','dateadded','RunDate','RUNDATE']);
+  const runDateCol  = find(['run date','rundate','dateadded']);
   // (add more if needed: expiration/strike/etc for dedupe later)
 
   // GF/derived columns we ourselves add — locate by exact labels or normalized
@@ -643,77 +647,57 @@ function EW_headerMap(headerRow) {
 }
 
 
-// ======= GOOGLEFINANCE ARRAY FORMULAS =======
 
-/**
- * Ensures all Google Finance and tracking columns exist in the sheet
- * Adds any missing columns and preserves existing data
- * @param {SpreadsheetSheet} sheet - The sheet to check and update
- * @returns {Object} Updated header map after adding columns
- */
-function EW_ensureAllColumnsExist(sheet) {
-  if (!sheet || sheet.getLastRow() === 0) {
-    return null;
-  }
-  
-  const lastCol = sheet.getLastColumn();
-  const lastRow = sheet.getLastRow();
-  const currentHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  let hdrMap = EW_headerMap(currentHeaders);
-  
-  // Check if we need to add columns
-  const allLabels = [...EW_GF_LABELS, ...EW_TRACKING_LABELS];
-  const missingColumns = [];
-  
-  for (const label of allLabels) {
-    const colIndex = hdrMap.byName[label.toLowerCase()];
-    if (!colIndex) {
-      missingColumns.push(label);
-    }
-  }
-  
-  if (missingColumns.length === 0) {
-    EW_trace('COLUMNS', 'All columns already exist');
-    return hdrMap;
-  }
-  
-  EW_trace('COLUMNS', `Adding ${missingColumns.length} missing columns: ${missingColumns.join(', ')}`);
-  
-  // Get all existing data
-  const allData = lastRow > 1 ? 
-    sheet.getRange(1, 1, lastRow, lastCol).getValues() : 
-    [currentHeaders];
-  
-  // Add new columns to each row
-  const updatedData = allData.map((row, rowIndex) => {
-    const newRow = [...row];
-    if (rowIndex === 0) {
-      // Header row - add missing column names
-      newRow.push(...missingColumns);
-    } else {
-      // Data rows - add empty cells
-      newRow.push(...new Array(missingColumns.length).fill(''));
-    }
-    return newRow;
-  });
-  
-  // Clear sheet and write updated data
-  sheet.clear();
-  const newWidth = lastCol + missingColumns.length;
-  sheet.getRange(1, 1, lastRow, newWidth).setValues(updatedData);
-  
-  // Return updated header map
-  const newHeaders = sheet.getRange(1, 1, 1, newWidth).getValues()[0];
-  return EW_headerMap(newHeaders);
-}
+// Put ARRAYFORMULAs in row 1 so they spill down forever
+// function EW_setGFArrayFormulas(sheet, hdrMap) {
+//   if (!hdrMap.tickerCol) {
+//     EW_trace('GF', 'No "ticker" column found; skipping ARRAYFORMULAs');
+//     return;
+//   }
+//   const tLtr   = EW_columnToLetter(hdrMap.tickerCol);
+//   const tRange = `$${tLtr}2:$${tLtr}`; // open-ended down the sheet
 
-/**
- * Set up ARRAYFORMULA functions for GOOGLEFINANCE data and tracking columns
- * Plants formulas in row 1 that automatically populate down for all rows
- * @param {Sheet} sheet - The Google Sheets sheet object
- * @param {Object} hdrMap - Header mapping object from EW_headerMap function
- * @returns {void}
- */
+//   function setHeaderArray(colIndex, headerLabel, innerExpr) {
+//     if (!colIndex) return;
+//     // Row 1 cell holds: {"Header"; MAP(TickerRange, LAMBDA(t, IF(t="",, innerExpr )))}
+//     const cell = sheet.getRange(1, colIndex);
+//     const formula = `={"${headerLabel}"; MAP(${tRange}, LAMBDA(t, IF(t="",,${innerExpr})))}`;
+//     cell.setFormula(formula);
+//   }
+
+//   // ---- Live GOOGLEFINANCE attributes (fast) ----
+//   setHeaderArray(hdrMap.nameCol,   'GF_Name',      `IFERROR(GOOGLEFINANCE(t,"name"),)`       );
+//   setHeaderArray(hdrMap.priceCol,  'GF_Price',     `IFERROR(GOOGLEFINANCE(t,"price"),)`      );
+//   setHeaderArray(hdrMap.chgPctCol, 'GF_ChangePct', `IFERROR(GOOGLEFINANCE(t,"changepct"),)`  );
+//   setHeaderArray(hdrMap.highCol,   'GF_High',      `IFERROR(GOOGLEFINANCE(t,"high"),)`       );
+//   setHeaderArray(hdrMap.lowCol,    'GF_Low',       `IFERROR(GOOGLEFINANCE(t,"low"),)`        );
+//   setHeaderArray(hdrMap.high52Col, 'GF_High52',    `IFERROR(GOOGLEFINANCE(t,"high52"),)`     );
+//   setHeaderArray(hdrMap.low52Col,  'GF_Low52',     `IFERROR(GOOGLEFINANCE(t,"low52"),)`      );
+//   setHeaderArray(hdrMap.volCol,    'GF_Volume',    `IFERROR(GOOGLEFINANCE(t,"volume"),)`     );
+//   setHeaderArray(hdrMap.mcapCol,   'GF_MktCap',    `IFERROR(GOOGLEFINANCE(t,"marketcap"),)`  );
+//   setHeaderArray(hdrMap.peCol,     'GF_PE',        `IFERROR(GOOGLEFINANCE(t,"pe"),)`         );
+//   setHeaderArray(hdrMap.betaCol,   'GF_Beta',      `IFERROR(GOOGLEFINANCE(t,"beta"),)`       );
+
+//   // 10-day average volume (from historical data)
+//   setHeaderArray(
+//     hdrMap.avgVol10Col, 'GF_AvgVol10',
+//     `LET(vh, IFERROR(GOOGLEFINANCE(t,"volume",TODAY()-20,TODAY()),),
+//          vd, IF(ROWS(vh)<2,,DROP(vh,1)),
+//          IF(ROWS(vd)<10,,AVERAGE(TAKE(vd,-10))))`
+//   );
+
+//   // ---- Derived signals using history ----
+
+//   // HV_30D: 30-day close-to-close historical volatility (annualized %) 
+//   // Uses LN returns, STDEV, and scales by sqrt(252)
+//   setHeaderArray(
+//     hdrMap.hv30Col, 'HV_30D',
+//     `LET(
+//        data, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-40,TODAY()),),
+//        cl,   IF(ROWS(data)<3,,DROP(INDEX(data,0,2),1)),              /* closes (drop header row) */
+//        c1,   IF(ROWS(cl)<31,,DROP(cl,1)),                            /* t1..n */
+//        c0,   IF(ROWS(cl)<31,,TAKE(cl,ROWS(cl)-1)),                   /* t0..n-1 */
+//        r,    IF(OR(c1="",c0=""),,LN(c1/c0)),
 //        st,   IFERROR(STDEV(r),),
 //        IF(st="",,SQRT(252)*st*100)
 //      )`
@@ -1012,52 +996,6 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
 
 // ===== SUCCESS TRACKING & REPORTING FUNCTIONS =====
 
-/**
- * Checks all strategy sheets and adds any missing Google Finance or tracking columns
- * @returns {void}
- */
-function EW_checkAllSheetsColumns() {
-  EW_trace('COLUMNS', 'Checking all sheets for missing columns', true);
-  const ss = SpreadsheetApp.getActive();
-  const endpoints = EW.STRATEGY_ENDPOINTS;
-  let sheetsUpdated = 0;
-  
-  for (const tabName of Object.keys(endpoints)) {
-    const sheet = ss.getSheetByName(tabName);
-    if (!sheet || sheet.getLastRow() === 0) {
-      EW_trace('COLUMNS', `Skipping ${tabName} - sheet empty or doesn't exist`);
-      continue;
-    }
-    
-    const beforeCols = sheet.getLastColumn();
-    const updatedHdrMap = EW_ensureAllColumnsExist(sheet);
-    
-    if (updatedHdrMap) {
-      const afterCols = sheet.getLastColumn();
-      if (afterCols > beforeCols) {
-        sheetsUpdated++;
-        EW_trace('COLUMNS', `Updated ${tabName}: ${beforeCols} -> ${afterCols} columns`);
-        
-        // Re-apply Google Finance formulas with updated header map
-        EW_setGFArrayFormulas(sheet, updatedHdrMap);
-      }
-    }
-  }
-  
-  const msg = sheetsUpdated > 0 ? 
-    `Updated ${sheetsUpdated} sheets with missing columns` : 
-    'All sheets already have all required columns';
-  
-  EW_trace('COLUMNS', msg, true);
-  SpreadsheetApp.getUi().alert('Column Check Complete', msg, SpreadsheetApp.getUi().ButtonSet.OK);
-}
-
-/**
- * Generates comprehensive success analysis report for all strategies
- * Creates or updates the "Success Report" sheet with performance metrics
- * Analyzes hit rates, success scores, and strategy effectiveness
- * @returns {void}
- */
 function EW_generateSuccessReport() {
   EW_trace('REPORT', 'Generating success report...', true);
   
@@ -1132,14 +1070,6 @@ function EW_generateSuccessReport() {
   SpreadsheetApp.getUi().alert('Success Report', 'Strategy success report has been generated in the "Success_Report" sheet.', SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
-/**
- * Calculates performance statistics for a specific strategy
- * Analyzes hit rates, success scores, timing, and generates recommendations
- * @param {Array} rows - Data rows from strategy sheet
- * @param {Object} hdrMap - Header mapping object
- * @param {string} strategyName - Name of the strategy being analyzed
- * @returns {Object} Statistics object with performance metrics
- */
 function EW_calculateStrategyStats(rows, hdrMap, strategyName) {
   const stats = {
     strategy: strategyName,
@@ -1222,11 +1152,6 @@ function EW_calculateStrategyStats(rows, hdrMap, strategyName) {
   return stats;
 }
 
-/**
- * Forces recalculation of tracking formulas across all strategy sheets
- * Updates GOOGLEFINANCE data and tracking metrics by triggering formula refresh
- * @returns {void}
- */
 function EW_updateTrackingData() {
   EW_trace('UPDATE', 'Updating tracking data for all sheets...', true);
   
@@ -1259,6 +1184,6 @@ function EW_updateTrackingData() {
   });
   
   EW_trace('UPDATE', `Tracking data updated for ${updatedSheets} sheets`, true);
-  EW_safeAlert('Update Complete', `Tracking data has been refreshed for ${updatedSheets} strategy sheets.`);
+  SpreadsheetApp.getUi().alert('Update Complete', `Tracking data has been refreshed for ${updatedSheets} strategy sheets.`, SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
