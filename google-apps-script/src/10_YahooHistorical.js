@@ -173,7 +173,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       logEntry.error = `HTTP ${responseCode}`;
       logEntry.errorDetails = responseText.substring(0, 500);
       logEntry.success = false;
-      EW_logApiCall(logEntry);
+      EW_logApiCall(logEntry, null);
       return { hit: false, error: `HTTP ${responseCode}` };
     }
     
@@ -184,7 +184,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       EW_trace('YAHOO', `API Error: ${data.chart.error.description}`);
       logEntry.error = data.chart.error.description;
       logEntry.success = false;
-      EW_logApiCall(logEntry);
+      EW_logApiCall(logEntry, data);
       return { hit: false, error: data.chart.error.description };
     }
     
@@ -192,7 +192,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       EW_trace('YAHOO', 'No data in response');
       logEntry.error = 'No data available';
       logEntry.success = false;
-      EW_logApiCall(logEntry);
+      EW_logApiCall(logEntry, data);
       return { hit: false, error: 'No data available' };
     }
     
@@ -204,7 +204,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       EW_trace('YAHOO', 'No timestamps in response');
       logEntry.error = 'No price data available';
       logEntry.success = false;
-      EW_logApiCall(logEntry);
+      EW_logApiCall(logEntry, data);
       return { hit: false, error: 'No price data available' };
     }
     
@@ -276,7 +276,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
           priceVsSMA20: indicators.priceVsSMA20
         };
       }
-      EW_logApiCall(logEntry);
+      EW_logApiCall(logEntry, data);
       
       return {
         hit: true,
@@ -369,7 +369,7 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate) {
     if (responseCode !== 200) {
       logEntry.error = `HTTP ${responseCode}`;
       logEntry.success = false;
-      EW_logApiCall(logEntry);
+      EW_logApiCall(logEntry, data);
       return [];
     }
     
@@ -378,7 +378,7 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate) {
     if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
       logEntry.error = 'No data available';
       logEntry.success = false;
-      EW_logApiCall(logEntry);
+      EW_logApiCall(logEntry, data);
       return [];
     }
     
