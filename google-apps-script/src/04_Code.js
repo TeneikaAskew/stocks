@@ -1262,12 +1262,11 @@ function EW_fixAddStrategyColumn() {
 }
 
 /**
- * Complete sheet repair - fixes all known issues in one go
- * 1. Removes duplicate columns
- * 2. Fixes corrupted headers
+ * Complete sheet repair - removes all GF/error columns and recreates them
+ * 1. Removes all Google Finance columns
+ * 2. Removes all corrupted columns (#ERROR!, #REF!)
  * 3. Adds Strategy column if missing
- * 4. Ensures all required columns exist
- * 5. Re-applies all formulas
+ * 4. Re-applies all formulas fresh
  * @returns {void}
  */
 function EW_completeSheetRepair() {
@@ -1284,48 +1283,35 @@ function EW_completeSheetRepair() {
     }
     
     try {
-      let needsRepair = false;
-      let lastRow = sheet.getLastRow();
+      const lastRow = sheet.getLastRow();
       let lastCol = sheet.getLastColumn();
       let allData = sheet.getRange(1, 1, lastRow, lastCol).getValues();
       let headers = allData[0];
       
-      // Step 1: Remove duplicate columns and fix corrupted headers
-      const seenColumns = new Map(); // column name -> first occurrence index
-      const columnsToKeep = []; // indices of columns to keep
-      const expectedColumns = ['Run Date', 'Strategy', ...EW_GF_LABELS, ...EW_TRACKING_LABELS];
+      // List of all formula columns to remove
+      const formulaColumns = [...EW_GF_LABELS, ...EW_TRACKING_LABELS];
+      const formulaColumnsLower = formulaColumns.map(c => c.toLowerCase());
       
+      // Step 1: Identify columns to keep (not GF/tracking/error columns)
+      const columnsToKeep = [];
       headers.forEach((header, index) => {
         const headerStr = header ? header.toString() : '';
+        const headerLower = headerStr.toLowerCase();
         
-        // Skip corrupted headers
-        if (headerStr.startsWith('#')) {
-          needsRepair = true;
-          EW_trace('REPAIR', `${tabName}: Found corrupted header "${header}" at column ${index + 1}`);
-          return;
-        }
-        
-        // Normalize header for comparison
-        const normalizedHeader = headerStr.toLowerCase().trim();
-        
-        // Check if this is a duplicate
-        if (normalizedHeader && seenColumns.has(normalizedHeader)) {
-          needsRepair = true;
-          EW_trace('REPAIR', `${tabName}: Found duplicate column "${header}" at column ${index + 1}`);
+        // Skip if it's a formula column, error, or duplicate
+        if (headerStr.startsWith('#') || 
+            formulaColumnsLower.includes(headerLower)) {
+          EW_trace('REPAIR', `${tabName}: Removing column "${header}" at position ${index + 1}`);
           return;
         }
         
         // Keep this column
-        if (normalizedHeader) {
-          seenColumns.set(normalizedHeader, index);
-        }
         columnsToKeep.push(index);
       });
       
-      // If we need to remove columns, rebuild the data
+      // Step 2: Rebuild data with only kept columns
       if (columnsToKeep.length < lastCol) {
-        needsRepair = true;
-        EW_trace('REPAIR', `${tabName}: Removing ${lastCol - columnsToKeep.length} duplicate/corrupted columns`);
+        EW_trace('REPAIR', `${tabName}: Keeping ${columnsToKeep.length} of ${lastCol} columns`);
         
         // Filter data to keep only selected columns
         allData = allData.map(row => columnsToKeep.map(i => row[i]));
@@ -1337,11 +1323,13 @@ function EW_completeSheetRepair() {
         sheet.getRange(1, 1, lastRow, lastCol).setValues(allData);
       }
       
-      // Step 2: Check if Strategy column exists
+      // Step 3: Ensure Strategy column exists
       let hdrMap = EW_headerMap(headers);
       if (!hdrMap.strategyCol) {
         EW_trace('REPAIR', `${tabName}: Adding Strategy column`);
-        needsRepair = true;
+        
+        // Get current data
+        allData = sheet.getDataRange().getValues();
         
         // Insert Strategy as second column
         allData = allData.map((row, rowIndex) => {
@@ -1358,56 +1346,16 @@ function EW_completeSheetRepair() {
         sheet.clear();
         lastCol = lastCol + 1;
         sheet.getRange(1, 1, lastRow, lastCol).setValues(allData);
-        headers = allData[0];
       }
       
-      // Step 3: Add missing columns (but don't duplicate existing ones)
-      const currentHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      const currentHeadersLower = currentHeaders.map(h => h ? h.toString().toLowerCase() : '');
-      const missingColumns = [];
+      // Step 4: Apply all GF formulas fresh
+      // This will add all the formula columns
+      const finalHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      const finalHdrMap = EW_headerMap(finalHeaders);
+      EW_setGFArrayFormulas(sheet, finalHdrMap);
       
-      for (const expectedCol of expectedColumns) {
-        if (!currentHeadersLower.includes(expectedCol.toLowerCase())) {
-          missingColumns.push(expectedCol);
-        }
-      }
-      
-      if (missingColumns.length > 0) {
-        needsRepair = true;
-        EW_trace('REPAIR', `${tabName}: Adding ${missingColumns.length} missing columns: ${missingColumns.join(', ')}`);
-        
-        // Get current data
-        const currentData = sheet.getDataRange().getValues();
-        
-        // Add missing columns
-        const updatedData = currentData.map((row, rowIndex) => {
-          const newRow = [...row];
-          if (rowIndex === 0) {
-            // Header row
-            newRow.push(...missingColumns);
-          } else {
-            // Data rows - add empty cells
-            newRow.push(...new Array(missingColumns.length).fill(''));
-          }
-          return newRow;
-        });
-        
-        // Clear sheet and write updated data
-        sheet.clear();
-        const newWidth = currentData[0].length + missingColumns.length;
-        sheet.getRange(1, 1, currentData.length, newWidth).setValues(updatedData);
-      }
-      
-      // Step 4: Re-apply all formulas if any repairs were made
-      if (needsRepair) {
-        const finalHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-        const finalHdrMap = EW_headerMap(finalHeaders);
-        EW_setGFArrayFormulas(sheet, finalHdrMap);
-        sheetsRepaired++;
-        EW_trace('REPAIR', `Repaired ${tabName} successfully`);
-      } else {
-        EW_trace('REPAIR', `${tabName} is already in good shape`);
-      }
+      sheetsRepaired++;
+      EW_trace('REPAIR', `Repaired ${tabName} successfully`);
       
     } catch (e) {
       EW_trace('REPAIR', `Error repairing ${tabName}: ${e.message}`, true);
@@ -1415,8 +1363,8 @@ function EW_completeSheetRepair() {
   }
   
   const msg = sheetsRepaired > 0 ? 
-    `Successfully repaired ${sheetsRepaired} sheets (removed duplicates, fixed headers, added missing columns)` : 
-    'All sheets are already in good condition';
+    `Successfully repaired ${sheetsRepaired} sheets - removed all GF/error columns and recreated formulas` : 
+    'No sheets needed repair';
   
   EW_trace('REPAIR', msg, true);
   EW_safeAlert('Complete Sheet Repair', msg);
