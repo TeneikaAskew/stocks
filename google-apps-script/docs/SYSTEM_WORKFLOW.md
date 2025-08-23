@@ -11,12 +11,13 @@ This Google Apps Script system fetches options trading data from EarningsWhisper
 ## Automated Triggers
 
 ### 1. Daily Data Fetch (8:00 AM ET)
-- **Function**: `EW_runAll()`
+- **Function**: `EW_dailyDataFetch()` (wrapper for `EW_runAll()`)
 - **Purpose**: Fetch fresh options strategy data from EarningsWhispers
 - **Actions**:
   - Fetches data for all 9 strategies
   - Applies Google Finance formulas
   - Updates Days_To_Exp calculations
+  - Suppresses UI alerts for automated execution
 
 ### 2. Success Report Generation (9:00 AM ET)
 - **Function**: `EW_generateSuccessReport()`
@@ -31,11 +32,12 @@ This Google Apps Script system fetches options trading data from EarningsWhisper
 - **Purpose**: Refresh Google Finance data during trading hours
 - **Schedule**: Every 30 minutes, Monday-Friday, 9:00 AM - 5:00 PM ET only
 - **Actions**:
-  - Checks if within market hours before running
+  - Checks if within market hours (9 AM - 5 PM ET, weekdays only)
+  - If outside hours, logs skip message and exits
   - Updates array formulas
   - Forces recalculation
   - Refreshes live prices
-- **Note**: Automatically skips weekends and after-hours to conserve resources
+- **Note**: Trigger runs 24/7 but function only executes during market hours
 
 ### 4. Active Position Tracking (5:00 PM ET) - CONSOLIDATED
 - **Function**: `EW_updateActiveStrikeHits()`
@@ -186,11 +188,15 @@ All Sheets → Success Calculations → Report Generation
 - `EW_testHistoricalBackfill()`: Test backfill logic
 - `EW_testDayChecks()`: Debug day check calculations
 - `EW_listActiveTriggers()`: View all triggers
+- `EW_testAllTriggers()`: Verify trigger configuration and show detailed info
 
 ## Recent Updates
 - **Consolidated Triggers**: Combined 4:30 PM and 5:00 PM functionality into single 5 PM trigger
+- **Market Hours Only**: 30-minute updates now skip nights and weekends
+- **Improved Automation**: Daily data fetch uses wrapper to suppress UI alerts
 - **Enhanced Tracking**: Added Day0_Check for same-day hit detection
 - **Technical Indicators**: Capture RSI, SMA, VWAP values when strikes are hit
 - **Spread Support**: Improved handling of bull/bear spread strategies
+- **5 PM Trigger Integration**: Active position tracking now properly included in all setup functions
 
 This system provides comprehensive automated tracking of options strategy performance with minimal manual intervention required.

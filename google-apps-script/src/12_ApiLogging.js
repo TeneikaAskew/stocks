@@ -3,8 +3,9 @@
  * Stores detailed logs in JSON format for tracking and analysis
  */
 
-// Drive folder ID for storing logs
-const API_LOG_FOLDER_ID = '1fUcRfi6y-JoWPlMO2jGAJOutapihfUUd';
+// Drive folder IDs for storing logs
+const API_LOG_FOLDER_ID = '1fUcRfi6y-JoWPlMO2jGAJOutapihfUUd';  // Main folder for detailed responses
+const API_SUMMARY_FOLDER_ID = '1BMa9E4nvjW3hjz1mgZQrMR1zxTNKnful';  // Subfolder for summary logs
 
 /**
  * Initialize or get today's API log file
@@ -12,7 +13,7 @@ const API_LOG_FOLDER_ID = '1fUcRfi6y-JoWPlMO2jGAJOutapihfUUd';
  */
 function EW_getApiLogFile() {
   try {
-    const folder = DriveApp.getFolderById(API_LOG_FOLDER_ID);
+    const folder = DriveApp.getFolderById(API_SUMMARY_FOLDER_ID);  // Use summary folder
     const today = new Date();
     const fileName = `yahoo_api_log_${today.toISOString().split('T')[0]}.json`;
     
@@ -42,8 +43,9 @@ function EW_getApiLogFile() {
 /**
  * Log an API call to the JSON file
  * @param {Object} callData - Data about the API call
+ * @param {Object} rawResponse - Raw JSON response from Yahoo API (optional)
  */
-function EW_logApiCall(callData) {
+function EW_logApiCall(callData, rawResponse = null) {
   try {
     const file = EW_getApiLogFile();
     if (!file) return;
@@ -61,6 +63,11 @@ function EW_logApiCall(callData) {
     // Update file
     file.setContent(JSON.stringify(logData, null, 2));
     
+    // If we have a raw response, save it separately
+    if (rawResponse && callData.success) {
+      EW_saveApiResponse(callData.ticker, callData.timestamp, rawResponse, callData);
+    }
+    
   } catch (error) {
     console.error(`API LOG ERROR: Failed to log API call: ${error.message}`);
     EW_trace('API_LOG', `Failed to log API call: ${error.message}`);
@@ -74,7 +81,7 @@ function EW_logApiCall(callData) {
  */
 function EW_getApiCallSummary(date = new Date()) {
   try {
-    const folder = DriveApp.getFolderById(API_LOG_FOLDER_ID);
+    const folder = DriveApp.getFolderById(API_SUMMARY_FOLDER_ID);  // Use summary folder
     const fileName = `yahoo_api_log_${date.toISOString().split('T')[0]}.json`;
     
     const files = folder.getFilesByName(fileName);
@@ -152,7 +159,7 @@ function EW_createDailyApiReport() {
       return;
     }
     
-    const folder = DriveApp.getFolderById(API_LOG_FOLDER_ID);
+    const folder = DriveApp.getFolderById(API_SUMMARY_FOLDER_ID);  // Use summary folder
     const today = new Date();
     const reportName = `yahoo_api_summary_${today.toISOString().split('T')[0]}.txt`;
     
@@ -213,18 +220,40 @@ function EW_createDailyApiReport() {
  */
 function EW_cleanupOldApiLogs() {
   try {
-    const folder = DriveApp.getFolderById(API_LOG_FOLDER_ID);
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 30);
-    
-    const files = folder.getFiles();
     let deletedCount = 0;
     
-    while (files.hasNext()) {
-      const file = files.next();
+    // Clean up detailed response files in main folder
+    const mainFolder = DriveApp.getFolderById(API_LOG_FOLDER_ID);
+    const mainFiles = mainFolder.getFiles();
+    
+    while (mainFiles.hasNext()) {
+      const file = mainFiles.next();
       const fileName = file.getName();
       
-      // Check if it's a log file
+      // Check if it's a response JSON file (format: TICKER_YYYY-MM-DD_HH-MM-SS.json)
+      if (fileName.endsWith('.json') && fileName.includes('_')) {
+        const fileDateStr = fileName.match(/\d{4}-\d{2}-\d{2}/);
+        if (fileDateStr) {
+          const fileDate = new Date(fileDateStr[0]);
+          if (fileDate < cutoffDate) {
+            file.setTrashed(true);
+            deletedCount++;
+          }
+        }
+      }
+    }
+    
+    // Clean up summary logs in summary folder
+    const summaryFolder = DriveApp.getFolderById(API_SUMMARY_FOLDER_ID);
+    const summaryFiles = summaryFolder.getFiles();
+    
+    while (summaryFiles.hasNext()) {
+      const file = summaryFiles.next();
+      const fileName = file.getName();
+      
+      // Check if it's a log or summary file
       if (fileName.startsWith('yahoo_api_log_') || fileName.startsWith('yahoo_api_summary_')) {
         const fileDateStr = fileName.match(/\d{4}-\d{2}-\d{2}/);
         if (fileDateStr) {
@@ -238,13 +267,60 @@ function EW_cleanupOldApiLogs() {
     }
     
     if (deletedCount > 0) {
-      console.log(`API LOG CLEANUP: Deleted ${deletedCount} old log files`);
-      EW_trace('API_LOG', `Cleaned up ${deletedCount} old API log files`);
+      console.log(`API LOG CLEANUP: Deleted ${deletedCount} old log/response files`);
+      EW_trace('API_LOG', `Cleaned up ${deletedCount} old API log/response files`);
     }
+    
+    EW_safeAlert('Cleanup Complete', `Deleted ${deletedCount} files older than 30 days`);
     
   } catch (error) {
     console.error(`API LOG CLEANUP ERROR: ${error.message}`);
     EW_trace('API_LOG', `Failed to cleanup old logs: ${error.message}`);
+  }
+}
+
+/**
+ * Save the raw API response to a separate JSON file
+ * @param {string} ticker - The ticker symbol
+ * @param {string} timestamp - ISO timestamp
+ * @param {Object} response - Raw API response
+ * @param {Object} metadata - Additional metadata about the call
+ */
+function EW_saveApiResponse(ticker, timestamp, response, metadata = {}) {
+  try {
+    const folder = DriveApp.getFolderById(API_LOG_FOLDER_ID);  // Main folder for detailed responses
+    
+    // Create filename with ticker and timestamp
+    const date = new Date(timestamp);
+    const dateStr = date.toISOString().split('T')[0];
+    const timeStr = date.toISOString().split('T')[1].replace(/:/g, '-').split('.')[0];
+    const fileName = `${ticker}_${dateStr}_${timeStr}.json`;
+    
+    // Create response object with metadata
+    const responseData = {
+      metadata: {
+        ticker: ticker,
+        timestamp: timestamp,
+        date: dateStr,
+        interval: metadata.interval || '1m',
+        targetPrice: metadata.targetPrice || null,
+        success: metadata.success || true,
+        dataPoints: metadata.dataPoints || 0,
+        hitDetected: metadata.hitDetected || false,
+        fallbackUsed: metadata.fallbackUsed || false
+      },
+      response: response
+    };
+    
+    // Save the file to main folder
+    const blob = Utilities.newBlob(JSON.stringify(responseData, null, 2), 'application/json', fileName);
+    folder.createFile(blob);
+    
+    console.log(`API RESPONSE SAVED: ${fileName}`);
+    
+  } catch (error) {
+    console.error(`API RESPONSE SAVE ERROR: ${error.message}`);
+    // Don't throw - this is supplementary logging
   }
 }
 
@@ -282,5 +358,31 @@ function EW_showApiSummary() {
   } catch (error) {
     console.error(`API SUMMARY ERROR: ${error.message}`);
     EW_safeAlert('Error', `Failed to show API summary: ${error.message}`);
+  }
+}
+
+/**
+ * Get the API folders URLs for easy access
+ */
+function EW_getApiResponsesFolderUrl() {
+  try {
+    const mainFolder = DriveApp.getFolderById(API_LOG_FOLDER_ID);
+    const summaryFolder = DriveApp.getFolderById(API_SUMMARY_FOLDER_ID);
+    
+    const mainUrl = mainFolder.getUrl();
+    const summaryUrl = summaryFolder.getUrl();
+    
+    EW_safeAlert('API Logging Folders', 
+      `Your API files are organized in two folders:\n\n` +
+      `📁 Detailed Responses:\n${mainUrl}\n` +
+      `Contains full JSON responses from each API call\n\n` +
+      `📊 Summary Logs:\n${summaryUrl}\n` +
+      `Contains daily summaries and statistics`
+    );
+    
+    return { mainUrl, summaryUrl };
+  } catch (error) {
+    console.error(`API FOLDER ERROR: ${error.message}`);
+    EW_safeAlert('Error', `Failed to get folder URLs: ${error.message}`);
   }
 }
