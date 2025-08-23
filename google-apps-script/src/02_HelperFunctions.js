@@ -32,6 +32,7 @@ function EW_norm(s) {
     .replace(/["']/g, '')       // Remove quotes
     .replace(/\s+/g, ' ')       // Normalize whitespace
     .replace(/[^\w\s.-]/g, '')  // Keep only word chars, spaces, dots, hyphens
+    .toLowerCase()              // Convert to lowercase for case-insensitive matching
     .trim();
 }
 
@@ -158,17 +159,40 @@ function EW_cookieHeader(obj) {
 function EW_extractCsrf(html) {
   if (!html || typeof html !== 'string') return '';
   try {
-    // Look for _token in meta tags
+    // Look for csrf-token in meta tags (Laravel style)
     let m = html.match(/<meta\s+name=["']?csrf-token["']?\s+content=["']?([^"'>\s]+)/i);
-    if (m && m[1]) return m[1];
+    if (m && m[1]) {
+      EW_trace('CSRF', `Found CSRF token in meta tag: ${m[1].substring(0, 8)}...`);
+      return m[1];
+    }
     
-    // Look for _token in hidden inputs
+    // Look for _token in hidden inputs (Laravel style)
     m = html.match(/<input[^>]+name=["']?_token["']?[^>]+value=["']?([^"'>\s]+)/i);
-    if (m && m[1]) return m[1];
+    if (m && m[1]) {
+      EW_trace('CSRF', `Found CSRF token in hidden input: ${m[1].substring(0, 8)}...`);
+      return m[1];
+    }
     
-    // Alternative pattern
+    // Look for __RequestVerificationToken (ASP.NET style)
+    m = html.match(/<input[^>]+name=["']?__RequestVerificationToken["']?[^>]+value=["']?([^"'>\s]+)/i);
+    if (m && m[1]) {
+      EW_trace('CSRF', `Found ASP.NET verification token: ${m[1].substring(0, 8)}...`);
+      return m[1];
+    }
+    
+    // Alternative pattern for _token
     m = html.match(/name=["']?_token["']?[^>]+value=["']?([^"'>\s]+)/i);
-    if (m && m[1]) return m[1];
+    if (m && m[1]) {
+      EW_trace('CSRF', `Found CSRF token (alt pattern): ${m[1].substring(0, 8)}...`);
+      return m[1];
+    }
+    
+    // Look for form token in any input
+    m = html.match(/<input[^>]+name=["']?[^"']*token[^"']*["']?[^>]+value=["']?([^"'>\s]+)/i);
+    if (m && m[1]) {
+      EW_trace('CSRF', `Found generic token: ${m[1].substring(0, 8)}...`);
+      return m[1];
+    }
     
     EW_trace('CSRF', 'No CSRF token found in HTML');
     return '';

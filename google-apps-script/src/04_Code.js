@@ -30,11 +30,10 @@ function onOpen() {
     .addItem('Run all strategies', 'EW_runAll')
     .addItem('Debug one (prompt)', 'EW_debugOne')
     .addSeparator()
+    .addItem('Test Login', 'EW_testLogin')
+    .addSeparator()
     .addItem('Generate Success Report', 'EW_generateSuccessReport')
     .addItem('Update Tracking Data', 'EW_updateTrackingData')
-    .addSeparator()
-    .addItem('🔍 Diagnose Run Date Columns', 'EW_diagnoseRunDateColumns')
-    .addItem('🔧 Repair Missing Run Date Columns', 'EW_repairRunDateColumns')
     .addSeparator()
     .addSubMenu(SpreadsheetApp.getUi().createMenu('Automation & Triggers')
       .addItem('Setup Full Auto Tracking', 'EW_setupAutoTracking')
@@ -76,6 +75,36 @@ function EW_debugOne() {
     return;
   }
   EW_runSingle(name);
+}
+
+/**
+ * Debug function to test authentication and report login status
+ * @returns {void}
+ */
+function EW_testLogin() {
+  try {
+    EW_trace('TEST', 'Testing login credentials...', true);
+    
+    if (!EW.p.user || !EW.p.pass) {
+      EW_safeAlert('No credentials found. Please set EW_USER and EW_PASS in Script Properties.');
+      return;
+    }
+    
+    EW_trace('TEST', `Found credentials for user: ${EW.p.user}`, true);
+    
+    const cookies = EW_login();
+    EW_trace('TEST', `Login attempt completed. Cookies received: ${Object.keys(cookies).length}`, true);
+    
+    if (Object.keys(cookies).length === 0) {
+      EW_safeAlert('Login failed - no cookies received. Check your credentials.');
+    } else {
+      EW_safeAlert(`Login appears successful. Received ${Object.keys(cookies).length} cookies.`);
+    }
+    
+  } catch (e) {
+    EW_trace('TEST', `Login test failed: ${e.message}`, true);
+    EW_safeAlert(`Login test failed: ${e.message}`);
+  }
 }
 
 // ======= MAIN STRATEGY EXECUTION =======
@@ -169,6 +198,11 @@ function EW_runOneInternal(ss, tabName, path, cookies) {
   } catch (err) {
     const msg = (err && err.stack) ? err.stack : (err && err.message ? err.message : String(err));
     EW_trace(tabName, `ERROR: ${msg}`, true);
+    
+    // If it's an authentication-related error, log it and continue with other endpoints
+    if (msg.includes('HTML page instead of JSON') || msg.includes('authentication')) {
+      EW_trace(tabName, `Skipping ${tabName} due to authentication issue - endpoint may require login`, true);
+    }
   }
 }
 
@@ -208,13 +242,23 @@ function EW_fetchJson(url, cookiesObj) {
   }
 
   const text = res.getContentText();
-  console.log("Response: \n", text)
+  
+  // Check if response is HTML (likely an error page)
+  if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
+    EW_trace('HTTP', `Received HTML instead of JSON for ${url} - possible authentication issue`);
+    // Extract title from HTML for better error reporting
+    const titleMatch = text.match(/<title[^>]*>([^<]+)</i);
+    const title = titleMatch ? titleMatch[1] : 'Unknown HTML page';
+    throw new Error(`API returned HTML page instead of JSON for ${url}. Page title: "${title}". This usually indicates authentication failure.`);
+  }
+  
   try {
     const parsed = JSON.parse(text);
     return parsed;
   } catch (e) {
     EW_trace('HTTP', `JSON parse error for ${url}: ${(e && e.message) || e}`);
-    throw new Error(`JSON parse error for ${url}: ${e.message || e}`);
+    const snippet = text.slice(0, 200).replace(/\s+/g, ' ');
+    throw new Error(`JSON parse error for ${url}: ${e.message || e}. Response start: ${snippet}`);
   }
 }
 
@@ -270,8 +314,16 @@ function EW_login() {
   if (res2.getResponseCode() >= 300 && res2.getResponseCode() < 400) {
     const loc = res2.getHeaders()['Location'];
     EW_trace('LOGIN', `Redirect -> ${loc || '(none)'}`);
+    
+    // Check if redirect indicates login failure
+    if (loc && (loc.includes('/doh') || loc.includes('error') || loc.includes('failed'))) {
+      const errorMsg = `Login failed: Bad request: ${EW.BASE}${loc}`;
+      EW_trace('LOGIN', errorMsg);
+      throw new Error(errorMsg);
+    }
+    
     if (loc) {
-      const res3 = UrlFetchApp.fetch(loc, {
+      const res3 = UrlFetchApp.fetch(EW.BASE + loc, {
         method: 'get',
         muteHttpExceptions: true,
         followRedirects: true,
@@ -283,6 +335,18 @@ function EW_login() {
       cookies = EW_mergeCookies(cookies, EW_collectSetCookies(res3));
       EW_trace('LOGIN', `res3 code=${res3.getResponseCode()} cookies now=${Object.keys(cookies).length}`);
     }
+  }
+  
+  // Validate login success by checking for typical authentication cookies
+  const hasAuthCookie = Object.keys(cookies).some(key => 
+    key.toLowerCase().includes('auth') || 
+    key.toLowerCase().includes('session') || 
+    key.toLowerCase().includes('login') ||
+    key.toLowerCase().includes('token')
+  );
+  
+  if (!hasAuthCookie && Object.keys(cookies).length < 2) {
+    EW_trace('LOGIN', 'Warning: Login may have failed - no authentication cookies found');
   }
 
   return cookies;
@@ -410,10 +474,24 @@ function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
   const hdrMap = EW_headerMap(sheetHeader);
   const width = sheetHeader.length;
 
+  // Ensure the sheet already has "Run Date" as first column (created on first run)
+  const hasRunDate = (hdrMap.runDateCol === 1); // we create it as first col initially
+  if (!hasRunDate) {
+    EW_trace('SHEET', `Warning: "Run Date" not found as first column. Appending anyway.`, true);
+  }
+
   const mapFromIncoming = EW_headerMap(incomingHeader);
   const aligned = incomingData.map(src => {
     const dst = Array(width).fill('');
-    if (hdrMap.runDateCol) dst[hdrMap.runDateCol - 1] = runDate;
+    
+    // Set Run Date - try mapped column first, then fallback to column 1
+    if (hdrMap.runDateCol) {
+      dst[hdrMap.runDateCol - 1] = runDate;
+    } else if (sheetHeader[0] && String(sheetHeader[0]).toLowerCase().includes('run')) {
+      // Fallback: if first column looks like Run Date but wasn't detected
+      dst[0] = runDate;
+    }
+    
     for (const [name, src1] of Object.entries(mapFromIncoming.byName)) {
       const dst1 = hdrMap.byName[name];
       if (!dst1) continue;
@@ -488,7 +566,7 @@ function EW_headerMap(headerRow) {
 
   // Common aliases for upstream data
   const tickerCol   = find(['ticker','symbol','sym','underlying','root']);
-  const runDateCol  = find(['run date','rundate','dateadded']);
+  const runDateCol  = find(['Run Date','run date','rundate','dateadded','RunDate','RUNDATE']);
   // (add more if needed: expiration/strike/etc for dedupe later)
 
   // GF/derived columns we ourselves add — locate by exact labels or normalized
@@ -1071,144 +1149,5 @@ function EW_updateTrackingData() {
   
   EW_trace('UPDATE', `Tracking data updated for ${updatedSheets} sheets`, true);
   EW_safeAlert('Update Complete', `Tracking data has been refreshed for ${updatedSheets} strategy sheets.`);
-}
-
-/**
- * Diagnostic function to check if Run Date column exists in all strategy sheets
- * Helps troubleshoot missing Run Date columns
- * @returns {void} Shows alert with current sheet status
- */
-function EW_diagnoseRunDateColumns() {
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const allSheets = ss.getSheets();
-    const strategySheets = allSheets.filter(sheet => 
-      !['SuccessReport', 'Dashboard', 'Settings'].includes(sheet.getName())
-    );
-    
-    const diagnostics = [];
-    let totalSheets = 0;
-    let sheetsWithRunDate = 0;
-    
-    strategySheets.forEach(sheet => {
-      const sheetName = sheet.getName();
-      const lastRow = sheet.getLastRow();
-      
-      if (lastRow === 0) {
-        diagnostics.push(`📄 ${sheetName}: Empty sheet`);
-        return;
-      }
-      
-      totalSheets++;
-      const headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      const hasRunDate = headerRow.some(cell => 
-        String(cell).toLowerCase() === 'run date'
-      );
-      
-      if (hasRunDate) {
-        sheetsWithRunDate++;
-        const runDateCol = headerRow.findIndex(cell => 
-          String(cell).toLowerCase() === 'run date'
-        ) + 1;
-        diagnostics.push(`✅ ${sheetName}: Run Date in column ${runDateCol} (${lastRow} rows)`);
-      } else {
-        diagnostics.push(`❌ ${sheetName}: NO Run Date column found (${lastRow} rows)`);
-        diagnostics.push(`   Headers: ${headerRow.slice(0, 5).join(', ')}...`);
-      }
-    });
-    
-    const summary = `Run Date Column Diagnostic\n\n` +
-                   `📊 Summary:\n` +
-                   `• Total strategy sheets: ${totalSheets}\n` +
-                   `• Sheets with Run Date: ${sheetsWithRunDate}\n` +
-                   `• Missing Run Date: ${totalSheets - sheetsWithRunDate}\n\n` +
-                   `📋 Details:\n${diagnostics.join('\n')}`;
-    
-    EW_safeAlert('Run Date Diagnostic', summary);
-    console.log('Run Date Diagnostic:', summary);
-    
-    return {
-      totalSheets,
-      sheetsWithRunDate,
-      missing: totalSheets - sheetsWithRunDate,
-      details: diagnostics
-    };
-    
-  } catch (error) {
-    console.error('Error in Run Date diagnostic:', error);
-    EW_safeAlert('Diagnostic Error', 'Failed to check Run Date columns: ' + error.toString());
-  }
-}
-
-/**
- * Fix missing Run Date columns in existing strategy sheets
- * Adds Run Date as first column to sheets that don't have it
- * @returns {void} Shows alert with repair results
- */
-function EW_repairRunDateColumns() {
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const allSheets = ss.getSheets();
-    const strategySheets = allSheets.filter(sheet => 
-      !['SuccessReport', 'Dashboard', 'Settings'].includes(sheet.getName())
-    );
-    
-    const repairs = [];
-    let repairedSheets = 0;
-    
-    strategySheets.forEach(sheet => {
-      const sheetName = sheet.getName();
-      const lastRow = sheet.getLastRow();
-      
-      if (lastRow === 0) {
-        repairs.push(`⏭️ ${sheetName}: Empty sheet, skipped`);
-        return;
-      }
-      
-      const headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      const hasRunDate = headerRow.some(cell => 
-        String(cell).toLowerCase() === 'run date'
-      );
-      
-      if (!hasRunDate) {
-        // Insert a new column at the beginning
-        sheet.insertColumnBefore(1);
-        
-        // Set the header
-        sheet.getRange(1, 1).setValue('Run Date');
-        
-        // Fill in Run Date for existing rows
-        const currentDate = EW_getRunStamp();
-        if (lastRow > 1) {
-          const runDateValues = Array(lastRow - 1).fill([currentDate]);
-          sheet.getRange(2, 1, lastRow - 1, 1).setValues(runDateValues);
-        }
-        
-        repairedSheets++;
-        repairs.push(`✅ ${sheetName}: Added Run Date column and filled ${lastRow - 1} rows`);
-      } else {
-        repairs.push(`✓ ${sheetName}: Run Date column already exists`);
-      }
-    });
-    
-    const summary = `Run Date Column Repair Complete\n\n` +
-                   `📊 Results:\n` +
-                   `• Sheets repaired: ${repairedSheets}\n` +
-                   `• Total strategy sheets: ${strategySheets.length}\n\n` +
-                   `📋 Details:\n${repairs.join('\n')}`;
-    
-    EW_safeAlert('Run Date Repair Results', summary);
-    console.log('Run Date Repair:', summary);
-    
-    return {
-      totalSheets: strategySheets.length,
-      repairedSheets,
-      details: repairs
-    };
-    
-  } catch (error) {
-    console.error('Error repairing Run Date columns:', error);
-    EW_safeAlert('Repair Error', 'Failed to repair Run Date columns: ' + error.toString());
-  }
 }
 
