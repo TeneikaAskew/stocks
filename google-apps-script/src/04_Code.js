@@ -1270,7 +1270,7 @@ function EW_fixAddStrategyColumn() {
  * @returns {void}
  */
 function EW_completeSheetRepair() {
-  EW_trace('REPAIR', 'Starting complete sheet repair', true);
+  EW_trace('REPAIR', 'Starting sheet repair - delete and recreate all GF columns', true);
   const ss = SpreadsheetApp.getActive();
   const endpoints = EW.STRATEGY_ENDPOINTS;
   let sheetsRepaired = 0;
@@ -1284,55 +1284,61 @@ function EW_completeSheetRepair() {
     
     try {
       const lastRow = sheet.getLastRow();
-      let lastCol = sheet.getLastColumn();
-      let allData = sheet.getRange(1, 1, lastRow, lastCol).getValues();
-      let headers = allData[0];
+      const lastCol = sheet.getLastColumn();
       
-      // List of all formula columns to remove
-      const formulaColumns = [...EW_GF_LABELS, ...EW_TRACKING_LABELS];
+      if (lastRow === 0 || lastCol === 0) {
+        EW_trace('REPAIR', `${tabName} has no data, skipping`);
+        continue;
+      }
+      
+      // Get all data
+      const allData = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+      const headers = allData[0];
+      
+      // List of ALL formula columns from EW_setGFArrayFormulas
+      const formulaColumns = [
+        'GF_Name', 'GF_Price', 'GF_ChangePct', 'GF_High', 'GF_Low', 
+        'GF_High52', 'GF_Low52', 'GF_Volume', 'GF_AvgVol10', 'GF_MktCap', 
+        'GF_PE', 'GF_Beta', 'HV_30D', 'RVOL_10', 'Ret_5D', 'Ret_20D', 
+        'GapPct', 'Historical_High', 'Historical_Low', 'Ever_Hit_Strike',
+        'First_Hit_Date', 'Last_Update', 'Total_Hit_Days', 'Peak_Profit_Date',
+        'Days_To_Exp', 'Strike_Hit', 'Hit_Date', 'Max_Favorable', 
+        'Min_Unfavorable', 'Day1_Check', 'Day2_Check', 'Day3_Check', 
+        'Day5_Check', 'Exp_Result', 'Success_Score', 'Profit_Potential', 
+        'Risk_Reward', 'Stock_Price'
+      ];
       const formulaColumnsLower = formulaColumns.map(c => c.toLowerCase());
       
-      // Step 1: Identify columns to keep (not GF/tracking/error columns)
+      // Identify columns to keep (not formula columns or errors)
       const columnsToKeep = [];
       headers.forEach((header, index) => {
         const headerStr = header ? header.toString() : '';
         const headerLower = headerStr.toLowerCase();
         
-        // Skip if it's a formula column, error, or duplicate
-        if (headerStr.startsWith('#') || 
-            formulaColumnsLower.includes(headerLower)) {
+        if (!headerStr.startsWith('#') && !formulaColumnsLower.includes(headerLower)) {
+          columnsToKeep.push(index);
+        } else {
           EW_trace('REPAIR', `${tabName}: Removing column "${header}" at position ${index + 1}`);
-          return;
         }
-        
-        // Keep this column
-        columnsToKeep.push(index);
       });
       
-      // Step 2: Rebuild data with only kept columns
-      if (columnsToKeep.length < lastCol) {
-        EW_trace('REPAIR', `${tabName}: Keeping ${columnsToKeep.length} of ${lastCol} columns`);
-        
-        // Filter data to keep only selected columns
-        allData = allData.map(row => columnsToKeep.map(i => row[i]));
-        headers = allData[0];
-        lastCol = columnsToKeep.length;
-        
-        // Clear sheet and write filtered data
-        sheet.clear();
-        sheet.getRange(1, 1, lastRow, lastCol).setValues(allData);
-      }
+      // Filter data to keep only non-formula columns
+      const filteredData = allData.map(row => columnsToKeep.map(i => row[i]));
       
-      // Step 3: Ensure Strategy column exists
-      let hdrMap = EW_headerMap(headers);
+      // Clear sheet and write filtered data
+      sheet.clear();
+      sheet.getRange(1, 1, lastRow, columnsToKeep.length).setValues(filteredData);
+      
+      // Ensure Strategy column exists
+      let currentData = sheet.getDataRange().getValues();
+      let currentHeaders = currentData[0];
+      let hdrMap = EW_headerMap(currentHeaders);
+      
       if (!hdrMap.strategyCol) {
         EW_trace('REPAIR', `${tabName}: Adding Strategy column`);
         
-        // Get current data
-        allData = sheet.getDataRange().getValues();
-        
         // Insert Strategy as second column
-        allData = allData.map((row, rowIndex) => {
+        const updatedData = currentData.map((row, rowIndex) => {
           const newRow = [...row];
           if (rowIndex === 0) {
             newRow.splice(1, 0, 'Strategy');
@@ -1342,20 +1348,24 @@ function EW_completeSheetRepair() {
           return newRow;
         });
         
-        // Clear and rewrite
+        // Update sheet with Strategy column
         sheet.clear();
-        lastCol = lastCol + 1;
-        sheet.getRange(1, 1, lastRow, lastCol).setValues(allData);
+        sheet.getRange(1, 1, updatedData.length, updatedData[0].length).setValues(updatedData);
       }
       
-      // Step 4: Apply all GF formulas fresh
-      // This will add all the formula columns
-      const finalHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      const finalHdrMap = EW_headerMap(finalHeaders);
+      // Now add GF headers back
+      const cleanedHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      const withGFHeaders = EW_addGFHeaders(cleanedHeaders);
+      
+      // Update header row
+      sheet.getRange(1, 1, 1, withGFHeaders.length).setValues([withGFHeaders]);
+      
+      // Apply formulas
+      const finalHdrMap = EW_headerMap(withGFHeaders);
       EW_setGFArrayFormulas(sheet, finalHdrMap);
       
       sheetsRepaired++;
-      EW_trace('REPAIR', `Repaired ${tabName} successfully`);
+      EW_trace('REPAIR', `${tabName}: Successfully repaired`);
       
     } catch (e) {
       EW_trace('REPAIR', `Error repairing ${tabName}: ${e.message}`, true);
@@ -1363,11 +1373,11 @@ function EW_completeSheetRepair() {
   }
   
   const msg = sheetsRepaired > 0 ? 
-    `Successfully repaired ${sheetsRepaired} sheets - removed all GF/error columns and recreated formulas` : 
+    `Successfully repaired ${sheetsRepaired} sheets - deleted and recreated all GF columns` :
     'No sheets needed repair';
   
+  EW_safeAlert('Sheet Repair Complete', msg);
   EW_trace('REPAIR', msg, true);
-  EW_safeAlert('Complete Sheet Repair', msg);
 }
 
 /**
