@@ -173,6 +173,56 @@
 //   EW_safeAlert('Header Fix Complete', msg);
 // }
 
+// // ==================== REMOVED EW_checkAllSheetsColumns ====================
+
+// /**
+//  * EW_checkAllSheetsColumns was removed because EW_completeSheetRepair does everything it does:
+//  * - Checks for missing columns
+//  * - Adds missing columns
+//  * - Re-applies formulas
+//  * 
+//  * The complete repair function is more comprehensive as it also:
+//  * - Removes corrupted headers
+//  * - Removes duplicate columns
+//  * - Ensures proper column ordering
+//  */
+
+// function EW_checkAllSheetsColumns() {
+//   EW_trace('COLUMNS', 'Checking all sheets for missing columns', true);
+//   const ss = SpreadsheetApp.getActive();
+//   const endpoints = EW.STRATEGY_ENDPOINTS;
+//   let sheetsUpdated = 0;
+//   
+//   for (const tabName of Object.keys(endpoints)) {
+//     const sheet = ss.getSheetByName(tabName);
+//     if (!sheet || sheet.getLastRow() === 0) {
+//       EW_trace('COLUMNS', `Skipping ${tabName} - sheet empty or doesn't exist`);
+//       continue;
+//     }
+//     
+//     const beforeCols = sheet.getLastColumn();
+//     const updatedHdrMap = EW_ensureAllColumnsExist(sheet);
+//     
+//     if (updatedHdrMap) {
+//       const afterCols = sheet.getLastColumn();
+//       if (afterCols > beforeCols) {
+//         sheetsUpdated++;
+//         EW_trace('COLUMNS', `Updated ${tabName}: ${beforeCols} -> ${afterCols} columns`);
+//         
+//         // Re-apply Google Finance formulas with updated header map
+//         EW_setGFArrayFormulas(sheet, updatedHdrMap);
+//       }
+//     }
+//   }
+//   
+//   const msg = sheetsUpdated > 0 ? 
+//     `Updated ${sheetsUpdated} sheets with missing columns` : 
+//     'All sheets already have all required columns';
+//   
+//   EW_trace('COLUMNS', msg, true);
+//   EW_safeAlert('Column Check Complete', msg);
+// }
+
 // // ==================== ORIGINAL EW_appendToTab IMPLEMENTATIONS ====================
 
 // /**
