@@ -98,7 +98,7 @@ function EW_debugOne() {
   if (res.getSelectedButton() !== ui.Button.OK) return;
   const name = res.getResponseText().trim();
   if (!EW.STRATEGY_ENDPOINTS[name]) {
-    ui.alert(`Unknown strategy: "${name}"`);
+    EW_safeAlert('Unknown Strategy', `Unknown strategy: "${name}"`);
     return;
   }
   EW_runSingle(name);

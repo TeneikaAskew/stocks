@@ -308,7 +308,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
     logEntry.dayHigh = dayHigh === 0 ? null : dayHigh;
     logEntry.dayLow = dayLow === Infinity ? null : dayLow;
     logEntry.lastClose = lastClose;
-    EW_logApiCall(logEntry);
+    EW_logApiCall(logEntry, data);
     
     return { 
       hit: false, 
@@ -404,7 +404,7 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate) {
     // Log successful call
     logEntry.success = true;
     logEntry.dataPoints = historicalData.length;
-    EW_logApiCall(logEntry);
+    EW_logApiCall(logEntry, data);
     
     return historicalData;
     
