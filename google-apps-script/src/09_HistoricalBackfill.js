@@ -888,6 +888,7 @@ function EW_backfillSelectedRows() {
 /**
  * Centralized function to update all backfill columns
  * Ensures consistency across all backfill functions
+ * Arrays are always merged with existing data to preserve previous values
  * @param {Sheet} sheet - The sheet to update
  * @param {number} rowNum - Row number to update (1-based)
  * @param {Object} analysis - Analysis results from EW_backfillSinglePosition
@@ -902,10 +903,11 @@ function EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDa
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   
-  // Helper function to check if value already exists
+  // Helper function to check if value already exists (for non-array fields)
   const shouldUpdate = (columnIndex, newValue) => {
     if (!columnIndex || newValue === null || newValue === undefined) return false;
     if (!existingRowData) return true; // If no existing data provided, always update
+    
     const existingValue = existingRowData[columnIndex - 1];
     return !existingValue || existingValue === '';
   };
@@ -933,22 +935,30 @@ function EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDa
     }
   }
   
-  // Update Max_Favorable array
-  if (shouldUpdate(hdrMap.maxFavorableCol, analysis.maxFavorableArray) && analysis.maxFavorableArray.length > 0) {
-    sheet.getRange(rowNum, hdrMap.maxFavorableCol).setValue(JSON.stringify(analysis.maxFavorableArray));
+  // Update Max_Favorable array (ALWAYS merge with existing)
+  if (hdrMap.maxFavorableCol && analysis.maxFavorableArray && analysis.maxFavorableArray.length > 0) {
+    const existingMaxFav = existingRowData ? existingRowData[hdrMap.maxFavorableCol - 1] : null;
+    const mergedArray = EW_mergeArrays(existingMaxFav, analysis.maxFavorableArray);
+    sheet.getRange(rowNum, hdrMap.maxFavorableCol).setValue(JSON.stringify(mergedArray));
     updated = true;
+    EW_trace('BACKFILL', `${ticker} Max_Favorable array merged: ${JSON.stringify(mergedArray)} (was: ${existingMaxFav})`);
   }
   
-  // Update Min_Unfavorable array
-  if (shouldUpdate(hdrMap.minUnfavorableCol, analysis.minUnfavorableArray) && analysis.minUnfavorableArray.length > 0) {
-    sheet.getRange(rowNum, hdrMap.minUnfavorableCol).setValue(JSON.stringify(analysis.minUnfavorableArray));
+  // Update Min_Unfavorable array (ALWAYS merge with existing)
+  if (hdrMap.minUnfavorableCol && analysis.minUnfavorableArray && analysis.minUnfavorableArray.length > 0) {
+    const existingMinUnfav = existingRowData ? existingRowData[hdrMap.minUnfavorableCol - 1] : null;
+    const mergedArray = EW_mergeArrays(existingMinUnfav, analysis.minUnfavorableArray);
+    sheet.getRange(rowNum, hdrMap.minUnfavorableCol).setValue(JSON.stringify(mergedArray));
     updated = true;
+    EW_trace('BACKFILL', `${ticker} Min_Unfavorable array merged: ${JSON.stringify(mergedArray)} (was: ${existingMinUnfav})`);
   }
   
-  // Update Strike_Hit array
-  if (shouldUpdate(hdrMap.strikeHitCol, analysis.strikeHitArray) && analysis.strikeHitArray.length > 0) {
-    sheet.getRange(rowNum, hdrMap.strikeHitCol).setValue(JSON.stringify(analysis.strikeHitArray));
-    EW_trace('BACKFILL', `${ticker} Strike_Hit array updated: ${JSON.stringify(analysis.strikeHitArray)}`);
+  // Update Strike_Hit array (ALWAYS merge with existing)
+  if (hdrMap.strikeHitCol && analysis.strikeHitArray && analysis.strikeHitArray.length > 0) {
+    const existingStrikeHit = existingRowData ? existingRowData[hdrMap.strikeHitCol - 1] : null;
+    const mergedArray = EW_mergeArrays(existingStrikeHit, analysis.strikeHitArray);
+    sheet.getRange(rowNum, hdrMap.strikeHitCol).setValue(JSON.stringify(mergedArray));
+    EW_trace('BACKFILL', `${ticker} Strike_Hit array merged: ${JSON.stringify(mergedArray)} (was: ${existingStrikeHit})`);
     updated = true;
   }
   
@@ -971,9 +981,15 @@ function EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDa
     ];
     
     for (const indicator of indicatorMappings) {
-      if (shouldUpdate(indicator.col, indicator.value)) {
-        sheet.getRange(rowNum, indicator.col).setValue(indicator.value);
-        updated = true;
+      if (indicator.value) {
+        const existingValue = existingRowData ? existingRowData[indicator.col - 1] : null;
+        
+        // All indicator arrays are merged with existing data
+        if (indicator.value.startsWith('[')) {
+          const mergedArray = EW_mergeArrays(existingValue, JSON.parse(indicator.value));
+          sheet.getRange(rowNum, indicator.col).setValue(JSON.stringify(mergedArray));
+          updated = true;
+        }
       }
     }
     

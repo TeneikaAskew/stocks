@@ -300,6 +300,31 @@ function EW_parseArrayFromCell(cellValue) {
 }
 
 /**
+ * Merge two arrays, preserving existing data and adding new data
+ * This is the standard behavior for all array updates (backfill and active)
+ * @param {Array|string} existingArray - Existing array (may be JSON string)
+ * @param {Array} newArray - New array with updates
+ * @returns {Array} Merged array
+ */
+function EW_mergeArrays(existingArray, newArray) {
+  if (!existingArray || (typeof existingArray === 'string' && existingArray === '')) return newArray || [];
+  if (!newArray || newArray.length === 0) return EW_parseArrayFromCell(existingArray);
+  
+  // Parse existing array
+  const existing = EW_parseArrayFromCell(existingArray);
+  
+  // Create merged array, using new values where available
+  const merged = [...existing];
+  for (let i = 0; i < newArray.length; i++) {
+    if (newArray[i] !== null && newArray[i] !== undefined) {
+      merged[i] = newArray[i];
+    }
+  }
+  
+  return merged;
+}
+
+/**
  * Convert array to JSON string for storage
  * @param {Array} array - Array to convert
  * @returns {string} JSON string
