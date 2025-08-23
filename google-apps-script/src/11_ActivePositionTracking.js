@@ -106,7 +106,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
   // Batch positions for efficiency
   const positionsToCheck = [];
   
-  // First pass: collect positions that need checking
+  // Process all positions (both active and recently expired)
   data.forEach((row, rowIndex) => {
     const ticker = row[hdrMap.tickerCol - 1];
     const runDateStr = row[hdrMap.runDateCol - 1];
@@ -115,17 +115,20 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
     const shortStrike = hdrMap.shortStrikeCol ? parseFloat(row[hdrMap.shortStrikeCol - 1]) || 0 : 0;
     const daysToExp = parseFloat(row[hdrMap.daysToExpCol - 1]) || 0;
     const currentStrikeHit = row[hdrMap.strikeHitCol - 1];
+    const expDateStr = hdrMap.expDateCol ? row[hdrMap.expDateCol - 1] : null;
     
     // Check if position has valid strike data
     const hasValidStrike = strike || (longStrike && shortStrike);
     
     if (!ticker || !runDateStr || !hasValidStrike) return;
     
-    // ONLY process active positions (Days_To_Exp > 0) that haven't hit yet
-    if (daysToExp > 0 && currentStrikeHit !== 'HIT') {
-      const runDate = new Date(runDateStr);
-      runDate.setHours(0, 0, 0, 0);
-      
+    const runDate = new Date(runDateStr);
+    runDate.setHours(0, 0, 0, 0);
+    const expDate = expDateStr ? new Date(expDateStr) : null;
+    const daysSinceEntry = Math.floor((today - runDate) / (1000 * 60 * 60 * 24));
+    
+    // Process active positions and recently expired (within last 7 days)
+    if (daysToExp > -7) {
       positionsToCheck.push({
         rowIndex: rowIndex,
         ticker: ticker,
@@ -134,7 +137,12 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         shortStrike: shortStrike,
         strategy: strategyName,
         startDate: runDate,
-        endDate: today
+        endDate: today,
+        daysToExp: daysToExp,
+        daysSinceEntry: daysSinceEntry,
+        expDate: expDate,
+        currentStrikeHit: currentStrikeHit,
+        row: row  // Pass entire row for additional updates
       });
     }
   });
@@ -215,6 +223,73 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         
         updatedCount++;
         console.log(`ACTIVE TRACKING: ${strategyName} - Updated ${result.ticker} to ${newStatus}`);
+      }
+      
+      // Additional tracking updates (from 4:30 PM function)
+      const position = positionsToCheck[results.indexOf(result)];
+      const row = position.row;
+      
+      // Update Day0_Check through Day5_Check
+      const dayChecks = [
+        { col: hdrMap.day0CheckCol, day: 0 },
+        { col: hdrMap.day1CheckCol, day: 1 },
+        { col: hdrMap.day2CheckCol, day: 2 },
+        { col: hdrMap.day3CheckCol, day: 3 },
+        { col: hdrMap.day4CheckCol, day: 4 },
+        { col: hdrMap.day5CheckCol, day: 5 }
+      ];
+      
+      for (const check of dayChecks) {
+        if (check.col && position.daysSinceEntry >= check.day) {
+          const existingCheck = row[check.col - 1];
+          if (!existingCheck) {
+            // Use the hit status from Yahoo data
+            const dayCheckStatus = result.hit ? 'HIT' : 'NO';
+            dataRange.getCell(result.rowIndex + 1, check.col).setValue(dayCheckStatus);
+            updatedCount++;
+          }
+        }
+      }
+      
+      // Update Max_Favorable and Min_Unfavorable based on Yahoo data
+      if (hdrMap.maxFavorableCol && result.dayHigh) {
+        const maxFav = EW_calculateMaxFavorable(strategyName, position.strike || position.longStrike, result.dayHigh, result.dayLow);
+        const existing = row[hdrMap.maxFavorableCol - 1];
+        if (!existing && maxFav !== null) {
+          dataRange.getCell(result.rowIndex + 1, hdrMap.maxFavorableCol).setValue(maxFav);
+          updatedCount++;
+        }
+      }
+      
+      if (hdrMap.minUnfavorableCol && result.dayLow) {
+        const minUnfav = EW_calculateMinUnfavorable(strategyName, position.strike || position.longStrike, result.dayHigh, result.dayLow);
+        const existing = row[hdrMap.minUnfavorableCol - 1];
+        if (!existing && minUnfav !== null) {
+          dataRange.getCell(result.rowIndex + 1, hdrMap.minUnfavorableCol).setValue(minUnfav);
+          updatedCount++;
+        }
+      }
+      
+      // Update Exp_Result if position has expired
+      if (hdrMap.expResultCol && position.expDate && today >= position.expDate) {
+        const existing = row[hdrMap.expResultCol - 1];
+        if (!existing) {
+          const expResult = result.hit ? 'HIT' : 'NO';
+          dataRange.getCell(result.rowIndex + 1, hdrMap.expResultCol).setValue(expResult);
+          updatedCount++;
+        }
+      }
+      
+      // Calculate Profit_Potential if we have current price from indicators
+      if (hdrMap.profitPotentialCol && result.indicators && result.indicators.price) {
+        const existing = row[hdrMap.profitPotentialCol - 1];
+        if (!existing && (position.strike || position.longStrike) > 0) {
+          const potential = EW_calculateProfitPotential(strategyName, result.indicators.price, position.strike || position.longStrike);
+          if (potential !== null) {
+            dataRange.getCell(result.rowIndex + 1, hdrMap.profitPotentialCol).setValue(potential);
+            updatedCount++;
+          }
+        }
       }
     } else {
       console.error(`ACTIVE TRACKING ERROR: ${strategyName} - ${result.ticker}: ${result.error}`);
