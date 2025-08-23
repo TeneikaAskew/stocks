@@ -333,7 +333,7 @@ function EW_backfillSinglePosition(ticker, strategy, strike, runDate, expDate) {
   const startDate = new Date(runDate);
   const endDate = expDate ? new Date(expDate) : new Date();
   
-  const historicalData = EW_getHistoricalPrices(ticker, startDate, endDate);
+  const historicalData = EW_getYahooHistoricalRange(ticker, startDate, endDate);
   const analysis = EW_analyzeHistoricalData(strategy, strike, historicalData, startDate);
   
   return analysis;
@@ -407,4 +407,233 @@ function EW_backfillSelectedRows() {
   
   SpreadsheetApp.flush();
   EW_safeAlert('Backfill Complete', `Processed ${processedCount} of ${numRows} selected rows`);
+}
+
+/**
+ * Test function to verify historical backfill with Yahoo data on a single sheet
+ * Tests various scenarios including hit detection, day checks, and profit calculations
+ */
+function EW_testHistoricalBackfill() {
+  console.log('=== Testing Historical Backfill with Yahoo Data ===');
+  
+  // Test configuration - modify these to test different scenarios
+  const testConfig = {
+    sheetName: 'Long Calls',  // Change this to test a different sheet
+    maxRows: 5,              // Limit number of rows to test
+    logDetails: true         // Set to true for detailed logging
+  };
+  
+  try {
+    const ss = SpreadsheetApp.getActive();
+    const sheet = ss.getSheetByName(testConfig.sheetName);
+    
+    if (!sheet) {
+      console.error(`Sheet '${testConfig.sheetName}' not found`);
+      return;
+    }
+    
+    console.log(`Testing sheet: ${testConfig.sheetName}`);
+    
+    // Get headers
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const hdrMap = EW_headerMap(headers);
+    console.log('Header columns found:', Object.keys(hdrMap).filter(k => hdrMap[k]).join(', '));
+    
+    // Check required columns
+    const requiredCols = ['tickerCol', 'runDateCol', 'strikeCol', 'daysToExpCol'];
+    const missingCols = requiredCols.filter(col => !hdrMap[col]);
+    if (missingCols.length > 0) {
+      console.error('Missing required columns:', missingCols.join(', '));
+      return;
+    }
+    
+    // Get data rows
+    const lastRow = Math.min(sheet.getLastRow(), testConfig.maxRows + 1);
+    if (lastRow < 2) {
+      console.log('No data rows found');
+      return;
+    }
+    
+    const dataRange = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
+    const data = dataRange.getValues();
+    
+    console.log(`\nProcessing ${data.length} test rows...`);
+    let testResults = [];
+    
+    // Test each row
+    data.forEach((row, rowIndex) => {
+      const ticker = row[hdrMap.tickerCol - 1];
+      const runDateStr = row[hdrMap.runDateCol - 1];
+      const strike = parseFloat(row[hdrMap.strikeCol - 1]) || 0;
+      const expDateStr = hdrMap.expDateCol ? row[hdrMap.expDateCol - 1] : null;
+      const daysToExp = parseFloat(row[hdrMap.daysToExpCol - 1]) || 0;
+      
+      if (!ticker || !runDateStr || !strike) {
+        console.log(`Row ${rowIndex + 2}: Skipping - missing required data`);
+        return;
+      }
+      
+      console.log(`\n--- Testing Row ${rowIndex + 2} ---`);
+      console.log(`Ticker: ${ticker}, Strike: ${strike}, Days to Exp: ${daysToExp}`);
+      
+      // Test different date scenarios
+      const runDate = new Date(runDateStr);
+      const today = new Date();
+      
+      // Scenario 1: Test if position is expired (historical)
+      if (daysToExp < 0) {
+        console.log('Position is EXPIRED - testing historical backfill');
+        
+        // Determine end date
+        const expDate = expDateStr ? new Date(expDateStr) : null;
+        const endDate = expDate && expDate < today ? expDate : today;
+        
+        console.log(`Date range: ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+        
+        // Test Yahoo data fetch
+        try {
+          console.log('Fetching Yahoo historical data...');
+          const historicalData = EW_getYahooHistoricalRange(ticker, runDate, endDate);
+          
+          if (historicalData && historicalData.length > 0) {
+            console.log(`Retrieved ${historicalData.length} days of data`);
+            
+            // Test analysis
+            const analysis = EW_analyzeHistoricalData(testConfig.sheetName, strike, historicalData, runDate);
+            
+            if (testConfig.logDetails) {
+              console.log('Analysis results:');
+              console.log(`  First Hit Date: ${analysis.firstHitDate || 'Not hit'}`);
+              console.log(`  Day 1 Check: ${analysis.day1Hit || 'N/A'}`);
+              console.log(`  Day 2 Check: ${analysis.day2Hit || 'N/A'}`);
+              console.log(`  Day 3 Check: ${analysis.day3Hit || 'N/A'}`);
+              console.log(`  Day 5 Check: ${analysis.day5Hit || 'N/A'}`);
+              console.log(`  Max Favorable: ${analysis.maxFavorable}%`);
+              console.log(`  Min Unfavorable: ${analysis.minUnfavorable}%`);
+              console.log(`  Historical High: ${analysis.historicalHigh}`);
+              console.log(`  Historical Low: ${analysis.historicalLow}`);
+              console.log(`  Exp Result: ${analysis.expResult || 'N/A'}`);
+            }
+            
+            testResults.push({
+              row: rowIndex + 2,
+              ticker: ticker,
+              strike: strike,
+              status: 'SUCCESS',
+              hitDetected: analysis.firstHitDate !== null,
+              dataPoints: historicalData.length
+            });
+          } else {
+            console.log('No historical data available');
+            testResults.push({
+              row: rowIndex + 2,
+              ticker: ticker,
+              strike: strike,
+              status: 'NO_DATA',
+              error: 'No historical data retrieved'
+            });
+          }
+        } catch (error) {
+          console.error(`Error fetching data: ${error.message}`);
+          testResults.push({
+            row: rowIndex + 2,
+            ticker: ticker,
+            strike: strike,
+            status: 'ERROR',
+            error: error.message
+          });
+        }
+      } else {
+        console.log('Position is ACTIVE (not expired) - skipping as per backfill logic');
+        testResults.push({
+          row: rowIndex + 2,
+          ticker: ticker,
+          strike: strike,
+          status: 'SKIPPED',
+          reason: 'Active position'
+        });
+      }
+    });
+    
+    // Summary
+    console.log('\n=== Test Summary ===');
+    console.log(`Total rows tested: ${testResults.length}`);
+    console.log(`Successful: ${testResults.filter(r => r.status === 'SUCCESS').length}`);
+    console.log(`No data: ${testResults.filter(r => r.status === 'NO_DATA').length}`);
+    console.log(`Errors: ${testResults.filter(r => r.status === 'ERROR').length}`);
+    console.log(`Skipped: ${testResults.filter(r => r.status === 'SKIPPED').length}`);
+    
+    // Test single position fetch for most recent expired position
+    const expiredPositions = testResults.filter(r => r.status === 'SUCCESS' && r.hitDetected);
+    if (expiredPositions.length > 0) {
+      console.log('\n=== Testing Single Position Backfill ===');
+      const testPos = data[expiredPositions[0].row - 2];
+      const ticker = testPos[hdrMap.tickerCol - 1];
+      const runDate = testPos[hdrMap.runDateCol - 1];
+      const strike = parseFloat(testPos[hdrMap.strikeCol - 1]);
+      const expDate = hdrMap.expDateCol ? testPos[hdrMap.expDateCol - 1] : null;
+      
+      console.log(`Testing EW_backfillSinglePosition for ${ticker}`);
+      const singleResult = EW_backfillSinglePosition(ticker, testConfig.sheetName, strike, runDate, expDate);
+      console.log('Single position result:', singleResult);
+    }
+    
+    return testResults;
+    
+  } catch (error) {
+    console.error('Test failed:', error.message);
+    console.error(error.stack);
+  }
+}
+
+/**
+ * Quick test to verify Yahoo integration is working
+ * Tests a known historical position that should have hit
+ */
+function EW_quickTestBackfill() {
+  console.log('=== Quick Backfill Test ===');
+  
+  // Test with a known historical example
+  const testDate = new Date();
+  testDate.setDate(testDate.getDate() - 10); // 10 days ago
+  
+  const testCases = [
+    {
+      ticker: 'IWM',
+      strategy: 'Long Calls',
+      strike: 220,
+      runDate: testDate.toISOString().split('T')[0],
+      expDate: new Date().toISOString().split('T')[0]
+    },
+    {
+      ticker: 'SPY',
+      strategy: 'Long Calls', 
+      strike: 440,
+      runDate: testDate.toISOString().split('T')[0],
+      expDate: new Date().toISOString().split('T')[0]
+    }
+  ];
+  
+  testCases.forEach((testCase, index) => {
+    console.log(`\nTest Case ${index + 1}: ${testCase.ticker} $${testCase.strike}`);
+    try {
+      const result = EW_backfillSinglePosition(
+        testCase.ticker,
+        testCase.strategy,
+        testCase.strike,
+        testCase.runDate,
+        testCase.expDate
+      );
+      
+      console.log('Result:', {
+        hit: result.firstHitDate ? 'YES' : 'NO',
+        hitDate: result.firstHitDate,
+        maxFavorable: result.maxFavorable,
+        historicalHigh: result.historicalHigh,
+        historicalLow: result.historicalLow
+      });
+    } catch (error) {
+      console.error(`Error: ${error.message}`);
+    }
+  });
 }
