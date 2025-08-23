@@ -409,6 +409,15 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
     const timestamps = result.timestamp || [];
     const quotes = result.indicators.quote[0];
     
+    // Validate data structure
+    if (!timestamps || !quotes || !quotes.high || !quotes.low || !quotes.close) {
+      EW_trace('YAHOO', `Invalid data structure for ${ticker}: missing required fields`);
+      logEntry.error = 'Invalid data structure';
+      logEntry.success = false;
+      EW_logApiCall(logEntry, data);
+      return [];
+    }
+    
     // Keep 1-minute data as-is for detailed analysis
     const historicalData = [];
     

@@ -557,54 +557,70 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     analysis.historicalHigh = Math.max(analysis.historicalHigh, dayData.high);
     analysis.historicalLow = Math.min(analysis.historicalLow, dayData.low);
     
-    // Check if strike was hit by examining all 1-minute bars for this day
+    // Find the best price of the day that surpasses the strike
     let dayHit = false;
     let hitPrice = null;
     let hitTime = null;
     let hitBarIndex = -1;
     
-    // Loop through all 1-minute bars for this day
-    for (let barIdx = 0; barIdx < dayData.bars.length; barIdx++) {
-      const bar = dayData.bars[barIdx];
-      
-      if (isSpread && shortStrike) {
-        // For spreads, check if price is in the profitable range
-        if (isBullSpread) {
-          // Bull spread: profitable when price >= longStrike AND < shortStrike
+    // For spreads and single strategies, we need to find the best price
+    if (isSpread && shortStrike) {
+      // For spreads, find the best price within the profitable range
+      if (isBullSpread) {
+        // Bull spread: find highest price that's >= longStrike AND < shortStrike
+        for (let barIdx = 0; barIdx < dayData.bars.length; barIdx++) {
+          const bar = dayData.bars[barIdx];
           if (bar.high >= strike && bar.high < shortStrike) {
-            dayHit = true;
-            hitPrice = bar.high;
-            hitTime = bar.date;
-            hitBarIndex = barIdx;
-            break; // Stop at first hit
-          }
-        } else if (isBearSpread) {
-          // Bear spread: profitable when price <= longStrike AND > shortStrike  
-          if (bar.low <= strike && bar.low > shortStrike) {
-            dayHit = true;
-            hitPrice = bar.low;
-            hitTime = bar.date;
-            hitBarIndex = barIdx;
-            break;
+            if (!dayHit || bar.high > hitPrice) {
+              dayHit = true;
+              hitPrice = bar.high;
+              hitTime = bar.date;
+              hitBarIndex = barIdx;
+            }
           }
         }
-      } else {
-        // Single strike strategies
-        if (isBullish) {
-          if (bar.high >= strike) {
-            dayHit = true;
-            hitPrice = bar.high;
-            hitTime = bar.date;
-            hitBarIndex = barIdx;
-            break;
+      } else if (isBearSpread) {
+        // Bear spread: find lowest price that's <= longStrike AND > shortStrike
+        for (let barIdx = 0; barIdx < dayData.bars.length; barIdx++) {
+          const bar = dayData.bars[barIdx];
+          if (bar.low <= strike && bar.low > shortStrike) {
+            if (!dayHit || bar.low < hitPrice) {
+              dayHit = true;
+              hitPrice = bar.low;
+              hitTime = bar.date;
+              hitBarIndex = barIdx;
+            }
           }
-        } else if (isBearish) {
-          if (bar.low <= strike) {
-            dayHit = true;
-            hitPrice = bar.low;
-            hitTime = bar.date;
-            hitBarIndex = barIdx;
-            break;
+        }
+      }
+    } else {
+      // Single strike strategies - find the day's extreme that surpasses strike
+      if (isBullish) {
+        // For bullish: use the day's high if it exceeds strike
+        if (dayData.high >= strike) {
+          dayHit = true;
+          hitPrice = dayData.high;
+          // Find which bar had the high
+          for (let barIdx = 0; barIdx < dayData.bars.length; barIdx++) {
+            if (dayData.bars[barIdx].high === dayData.high) {
+              hitTime = dayData.bars[barIdx].date;
+              hitBarIndex = barIdx;
+              break;
+            }
+          }
+        }
+      } else if (isBearish) {
+        // For bearish: use the day's low if it's below strike
+        if (dayData.low <= strike) {
+          dayHit = true;
+          hitPrice = dayData.low;
+          // Find which bar had the low
+          for (let barIdx = 0; barIdx < dayData.bars.length; barIdx++) {
+            if (dayData.bars[barIdx].low === dayData.low) {
+              hitTime = dayData.bars[barIdx].date;
+              hitBarIndex = barIdx;
+              break;
+            }
           }
         }
       }
@@ -624,16 +640,13 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     
     // Check specific day milestones based on trading days
     // tradingDaysSinceEntry starts at 0 for the entry date (same day)
-    // Store the most favorable price (high for bullish, low for bearish, or close)
+    // Always use the day's extreme value (high for bullish, low for bearish)
     let dayPrice;
-    if (dayHit && hitPrice) {
-      // If strike was hit, use the hit price
-      dayPrice = hitPrice.toFixed(2);
-    } else if (isBullish) {
-      // For bullish: show the high (best possible price)
+    if (isBullish) {
+      // For bullish: always use the day's high
       dayPrice = dayData.high.toFixed(2);
     } else if (isBearish) {
-      // For bearish: show the low (best possible price)
+      // For bearish: always use the day's low
       dayPrice = dayData.low.toFixed(2);
     } else {
       // Default: use closing price
@@ -704,9 +717,19 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
           
           // Find the corresponding index in raw data
           const targetTimestamp = Math.floor(targetTime.getTime() / 1000);
+          
+          // Log search details for debugging
+          if (tradingDaysSinceEntry === 0) {
+            EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Searching for timestamp ${targetTimestamp} (${targetTime.toISOString()})`);
+            EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Raw data has ${rawData.timestamps.length} timestamps`);
+          }
+          
           for (let ri = 0; ri < rawData.timestamps.length; ri++) {
             if (rawData.timestamps[ri] === targetTimestamp) {
               rawDataIndex = ri;
+              if (tradingDaysSinceEntry === 0) {
+                EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Found exact match at index ${ri}`);
+              }
               break;
             }
           }
