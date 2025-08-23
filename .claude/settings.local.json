@@ -28,7 +28,8 @@
       "Bash(fi)",
       "Bash(docker exec:*)",
       "Bash(git checkout:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(node:*)"
     ],
     "deny": []
   }

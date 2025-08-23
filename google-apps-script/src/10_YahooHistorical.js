@@ -259,21 +259,37 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       }
     }
     
+    // Calculate indicators for the last data point of the day
+    // This ensures we have indicators even if exact hit moment wasn't captured
+    let lastValidIndex = -1;
+    for (let i = timestamps.length - 1; i >= 0; i--) {
+      const dataTime = new Date(timestamps[i] * 1000);
+      if (dataTime >= targetDateStart && dataTime <= targetDateEnd && quotes.close[i] !== null) {
+        lastValidIndex = i;
+        break;
+      }
+    }
+    
+    let indicators = null;
+    if (lastValidIndex >= 0) {
+      indicators = EW_calculateIndicatorsFromYahoo(timestamps, quotes, lastValidIndex);
+    }
+    
     if (hitTime) {
       // Calculate indicators at the point where strike was hit
-      const indicators = EW_calculateIndicatorsFromYahoo(timestamps, quotes, hitData.index);
+      const hitIndicators = EW_calculateIndicatorsFromYahoo(timestamps, quotes, hitData.index);
       
       logEntry.hitDetected = true;
       logEntry.hitPrice = targetPrice;
       logEntry.hitTime = hitTime.toISOString();
       logEntry.dayHigh = dayHigh;
       logEntry.dayLow = dayLow;
-      if (indicators) {
+      if (hitIndicators) {
         logEntry.indicatorsAtHit = {
-          rsi: indicators.rsi,
-          vwap: indicators.vwap,
-          rvol: indicators.rvol,
-          priceVsSMA20: indicators.priceVsSMA20
+          rsi: hitIndicators.rsi,
+          vwap: hitIndicators.vwap,
+          rvol: hitIndicators.rvol,
+          priceVsSMA20: hitIndicators.priceVsSMA20
         };
       }
       EW_logApiCall(logEntry, data);
@@ -287,7 +303,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
         dayHigh: dayHigh,
         dayLow: dayLow,
         interval: interval,
-        indicators: indicators  // Include full indicators object
+        indicators: hitIndicators  // Include full indicators object
       };
     }
     
@@ -317,6 +333,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       lastClose: lastClose,
       interval: interval,
       dataPoints: timestamps.length,
+      indicators: indicators,  // Include indicators even when no exact hit
       message: `Target ${targetPrice} not hit. Range: ${dayLow.toFixed(2)} - ${dayHigh.toFixed(2)}`
     };
     
@@ -529,6 +546,9 @@ function EW_batchCheckStrikeHits(positions) {
             if (hit) {
               hitDate = intradayResult.timestamp || position.endDate;
               indicators = intradayResult.indicators;
+            } else if (intradayResult.indicators) {
+              // Even if spread wasn't hit, keep indicators for potential use
+              indicators = intradayResult.indicators;
             }
           }
         } else {
@@ -560,7 +580,8 @@ function EW_batchCheckStrikeHits(positions) {
               hitDate = position.endDate;
             }
             
-            if (hit) {
+            if (hit && !indicators) {
+              // Use indicators from the intraday result even if exact hit wasn't detected
               indicators = intradayResult.indicators;
             }
           }

@@ -584,8 +584,8 @@ const EW_TRACKING_LABELS = [
   'Days_To_Exp','Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
   'Day0_Check','Day1_Check','Day2_Check','Day3_Check','Day4_Check','Day5_Check','Exp_Result',
   'Success_Score','Profit_Potential','Risk_Reward','Historical_High','Historical_Low',
-  'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days','Peak_Profit_Date',
-  // Technical indicators at strike hit
+  'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days',
+  // Technical indicators (now arrays for Day0-Day5)
   'Hit_RSI','Hit_SMA20','Hit_SMA50','Hit_EMA9','Hit_EMA21','Hit_VWAP',
   'Hit_RVOL','Hit_ATR','Hit_PriceVsSMA20','Hit_PriceVsVWAP'
 ];
@@ -664,7 +664,7 @@ function EW_headerMap(headerRow) {
   const firstHitDateCol   = find(['First_Hit_Date']);
   const lastUpdateCol     = find(['Last_Update']);
   const totalHitDaysCol   = find(['Total_Hit_Days']);
-  const peakProfitDateCol = find(['Peak_Profit_Date']);
+  // Peak_Profit_Date removed - using daily indicator arrays instead
   
   // Technical indicators at strike hit
   const hitRSICol         = find(['Hit_RSI']);
@@ -1547,7 +1547,9 @@ function EW_calculateStrategyStats(rows, hdrMap, strategyName) {
   
   rows.forEach((row, i) => {
     const ticker = row[hdrMap.tickerCol - 1] || '';
-    const strikeHit = row[hdrMap.strikeHitCol - 1] || '';
+    const strikeHitRaw = row[hdrMap.strikeHitCol - 1] || '';
+    const strikeHitArray = EW_parseStrikeHitArray(strikeHitRaw);
+    const strikeHit = strikeHitArray.length > 0 ? 'HIT' : '';  // Consider hit if array has values
     const successScore = parseFloat(row[hdrMap.successScoreCol - 1]) || 0;
     const day0Check = row[hdrMap.day0CheckCol - 1] || '';
     const day1Check = row[hdrMap.day1CheckCol - 1] || '';
@@ -1559,7 +1561,7 @@ function EW_calculateStrategyStats(rows, hdrMap, strategyName) {
     const runDate = row[hdrMap.runDateCol - 1] || '';
     
     // Count hits
-    if (strikeHit === 'HIT' || strikeHit === 'FAVORABLE') {
+    if (strikeHit === 'HIT' || strikeHit === 'FAVORABLE' || strikeHitArray.length > 0) {
       stats.hits++;
       if (hitDate && runDate) {
         const days = (new Date(hitDate) - new Date(runDate)) / (1000 * 60 * 60 * 24);

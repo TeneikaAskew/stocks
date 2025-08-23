@@ -598,3 +598,178 @@ function EW_retryWithBackoff(fn, maxRetries = EW_DEFAULTS.MAX_RETRIES, delay = 1
   
   return attempt();
 }
+
+/**
+ * Parse Strike_Hit array from cell value
+ * Handles both array format and legacy single values
+ * @param {string|Array} value - Cell value
+ * @returns {Array} Array of strike hit values
+ */
+function EW_parseStrikeHitArray(value) {
+  if (!value) return [];
+  
+  // If already an array, return it
+  if (Array.isArray(value)) return value;
+  
+  // If JSON string, parse it
+  if (typeof value === 'string' && value.startsWith('[')) {
+    try {
+      return JSON.parse(value);
+    } catch (e) {
+      console.log('Failed to parse Strike_Hit array:', e);
+      return [value]; // Fallback to single value
+    }
+  }
+  
+  // Handle comma-separated format
+  if (typeof value === 'string' && value.includes(',')) {
+    return value.split(',').map(v => v.trim());
+  }
+  
+  // Handle legacy single value
+  return [value];
+}
+
+/**
+ * Append new value to Strike_Hit array
+ * @param {string|Array} currentValue - Current cell value
+ * @param {string} newValue - New value to append
+ * @returns {string} JSON string of updated array
+ */
+function EW_appendStrikeHit(currentValue, newValue) {
+  const array = EW_parseStrikeHitArray(currentValue);
+  array.push(newValue);
+  return JSON.stringify(array);
+}
+
+/**
+ * Get Strike_Hit value for specific day
+ * @param {string|Array} strikeHitValue - Strike_Hit cell value
+ * @param {number} dayIndex - Day index (0-based)
+ * @returns {string|null} Strike hit value for that day
+ */
+function EW_getStrikeHitForDay(strikeHitValue, dayIndex) {
+  const array = EW_parseStrikeHitArray(strikeHitValue);
+  return array[dayIndex] || null;
+}
+
+/**
+ * Check if indicators should be recalculated based on price history
+ * Uses "high water mark" approach - only recalculate when current price exceeds all previous prices
+ * @param {Array<number>} priceHistory - Array of daily closing prices
+ * @returns {boolean} True if indicators should be recalculated
+ */
+function EW_shouldRecalculateIndicators(priceHistory) {
+  if (!priceHistory || priceHistory.length < 2) return true;
+  
+  const currentPrice = priceHistory[priceHistory.length - 1];
+  const previousPrices = priceHistory.slice(0, -1);
+  const highWaterMark = Math.max(...previousPrices);
+  
+  return currentPrice > highWaterMark;
+}
+
+/**
+ * Track price history for a position
+ * @param {Object} row - Row data
+ * @param {Object} hdrMap - Header mapping
+ * @returns {Array<number>} Array of daily prices
+ */
+function EW_getPriceHistory(row, hdrMap) {
+  const priceHistory = [];
+  
+  // Extract prices from Day0_Check through Day5_Check
+  const dayChecks = [
+    hdrMap.day0CheckCol,
+    hdrMap.day1CheckCol,
+    hdrMap.day2CheckCol,
+    hdrMap.day3CheckCol,
+    hdrMap.day4CheckCol,
+    hdrMap.day5CheckCol
+  ];
+  
+  for (const col of dayChecks) {
+    if (col) {
+      const value = row[col - 1];
+      if (value && value !== 'None') {
+        const price = parseFloat(value);
+        if (!isNaN(price)) {
+          priceHistory.push(price);
+        }
+      }
+    }
+  }
+  
+  return priceHistory;
+}
+
+/**
+ * Parse indicator array from cell value (similar to Strike_Hit)
+ * @param {string|Array} value - Cell value containing indicator array
+ * @returns {Array} Array of indicator values
+ */
+function EW_parseIndicatorArray(value) {
+  if (!value) return [];
+  
+  // If already an array, return it
+  if (Array.isArray(value)) return value;
+  
+  // If JSON string, parse it
+  if (typeof value === 'string' && value.startsWith('[')) {
+    try {
+      return JSON.parse(value);
+    } catch (e) {
+      console.log('Failed to parse indicator array:', e);
+      return [value]; // Fallback to single value
+    }
+  }
+  
+  // Handle comma-separated format
+  if (typeof value === 'string' && value.includes(',')) {
+    return value.split(',').map(v => v.trim());
+  }
+  
+  // Handle legacy single value
+  return [value];
+}
+
+/**
+ * Append new indicator value to array
+ * @param {string|Array} currentValue - Current cell value
+ * @param {string|number} newValue - New indicator value to append
+ * @returns {string} JSON string of updated array
+ */
+function EW_appendIndicatorValue(currentValue, newValue) {
+  const array = EW_parseIndicatorArray(currentValue);
+  // Format the value if it's a number
+  const formattedValue = typeof newValue === 'number' ? newValue.toFixed(2) : newValue;
+  array.push(formattedValue);
+  return JSON.stringify(array);
+}
+
+/**
+ * Build indicator arrays for all indicators from Day0 to Day5
+ * @param {Object} dailyIndicators - Object with arrays of daily indicator values
+ * @returns {Object} Object with JSON strings for each indicator array
+ */
+function EW_buildIndicatorArrays(dailyIndicators) {
+  const arrays = {};
+  
+  // Process each indicator type
+  const indicatorTypes = ['rsi', 'sma20', 'sma50', 'ema9', 'ema21', 'vwap', 'rvol', 'atr', 'priceVsSMA20', 'priceVsVWAP'];
+  
+  for (const type of indicatorTypes) {
+    if (dailyIndicators[type]) {
+      // Format values appropriately
+      const formattedArray = dailyIndicators[type].map(val => {
+        if (val === null || val === undefined) return null;
+        if (type === 'atr') return val.toFixed(4);
+        if (type === 'priceVsSMA20' || type === 'priceVsVWAP') return val.toFixed(2) + '%';
+        return val.toFixed(2);
+      });
+      arrays[type] = JSON.stringify(formattedArray);
+    }
+  }
+  
+  return arrays;
+}
