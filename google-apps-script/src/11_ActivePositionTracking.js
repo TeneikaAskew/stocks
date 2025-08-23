@@ -71,9 +71,21 @@ function EW_updateActiveStrikeHits() {
 
 /**
  * Update Strike_Hit for active positions in a specific strategy sheet
+ * REFACTORED: Now uses array building functions from 13_ArrayBuilders.js
+ * This ensures consistency with backfill functions and properly builds arrays day-by-day
+ * 
+ * Updates performed:
+ * - Strike_Hit, Max_Favorable, Min_Unfavorable arrays (by day index)
+ * - All indicator arrays (RSI, SMA20, etc.) for the current day
+ * - Historical_High/Low tracking
+ * - Day checks for the current day only
+ * - Exp_Result (closing price) for expired positions
+ * - Risk_Reward calculated from arrays
+ * - First_Hit_Date (in addition to Hit_Date)
+ * 
  * @param {SpreadsheetApp.Spreadsheet} ss - The spreadsheet
  * @param {string} strategyName - Name of the strategy/sheet
- * @returns {number} Number of positions updated
+ * @returns {Object} Object with checked and updated counts
  */
 function EW_updateStrategyActiveStrikes(ss, strategyName) {
   const sheet = ss.getSheetByName(strategyName);
@@ -160,8 +172,10 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
   // Update cells with results
   results.forEach(result => {
     if (!result.error) {
-      const newStatus = result.hit ? 'HIT' : 'NO';
-      const currentStatus = data[result.rowIndex][hdrMap.strikeHitCol - 1];
+      const position = positionsToCheck[results.indexOf(result)];
+      const row = position.row;
+      const strike = position.strike || position.longStrike || 0;
+      const dayIndex = Math.min(position.daysSinceEntry, 5); // Cap at day 5
       
       // Log if fallback was used
       if (result.fallbackUsed) {
@@ -169,134 +183,122 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         Logger.log(`ACTIVE TRACKING FALLBACK: ${strategyName}/${result.ticker} used ${result.fallbackUsed} interval`);
       }
       
-      // Calculate percentage move from Day0 to strike
-      let percentMove = null;
-      const position = positionsToCheck[results.indexOf(result)];
-      const strike = position.strike || position.longStrike || 0;
+      // Parse existing arrays from cells
+      const existingMaxFav = EW_parseArrayFromCell(row[hdrMap.maxFavorableCol - 1]);
+      const existingMinUnfav = EW_parseArrayFromCell(row[hdrMap.minUnfavorableCol - 1]);
+      const existingStrikeHit = EW_parseArrayFromCell(row[hdrMap.strikeHitCol - 1]);
+      const existingHistoricalHigh = parseFloat(row[hdrMap.historicalHighCol - 1]) || 0;
+      const existingHistoricalLow = parseFloat(row[hdrMap.historicalLowCol - 1]) || Infinity;
       
-      // Get Day0 price by fetching historical data for the entry date
-      if (strike && position.startDate) {
-        try {
-          // Fetch day 0 closing price
-          const entryDateData = EW_getYahooHistoricalRange(
-            position.ticker,
-            position.startDate,
-            position.startDate
-          );
-          
-          if (entryDateData && entryDateData.length > 0 && entryDateData[0].close) {
-            const day0Price = entryDateData[0].close;
-            const strategyUpper = position.strategy.toUpperCase();
-            
-            if (strategyUpper.includes('BULL') || strategyUpper.includes('LONG CALL')) {
-              // For bullish strategies: (day0Price - strike) / strike (positive when above strike)
-              percentMove = ((day0Price - strike) / strike).toFixed(6);
-            } else if (strategyUpper.includes('BEAR') || strategyUpper.includes('LONG PUT')) {
-              // For bearish strategies: (strike - day0Price) / strike (positive when below strike)
-              percentMove = ((strike - day0Price) / strike).toFixed(6);
-            } else {
-              // Default for other strategies
-              percentMove = ((day0Price - strike) / strike).toFixed(6);
-            }
-            
-            console.log(`ACTIVE TRACKING: ${position.ticker} - Strike: ${strike}, Price: ${day0Price}, Move: ${percentMove}`);
+      // Parse existing indicator arrays
+      const existingIndicators = {
+        rsi: EW_parseArrayFromCell(row[hdrMap.hitRSICol - 1]),
+        sma20: EW_parseArrayFromCell(row[hdrMap.hitSMA20Col - 1]),
+        sma50: EW_parseArrayFromCell(row[hdrMap.hitSMA50Col - 1]),
+        ema9: EW_parseArrayFromCell(row[hdrMap.hitEMA9Col - 1]),
+        ema21: EW_parseArrayFromCell(row[hdrMap.hitEMA21Col - 1]),
+        vwap: EW_parseArrayFromCell(row[hdrMap.hitVWAPCol - 1]),
+        rvol: EW_parseArrayFromCell(row[hdrMap.hitRVOLCol - 1]),
+        atr: EW_parseArrayFromCell(row[hdrMap.hitATRCol - 1]),
+        priceVsSMA20: EW_parseArrayFromCell(row[hdrMap.hitPriceVsSMA20Col - 1]),
+        priceVsVWAP: EW_parseArrayFromCell(row[hdrMap.hitPriceVsVWAPCol - 1])
+      };
+      
+      // Build/update arrays for current day
+      const updatedMaxFav = EW_buildMaxFavorableArray(
+        existingMaxFav, dayIndex, strategyName, strike, result.dayHigh, result.dayLow
+      );
+      
+      const updatedMinUnfav = EW_buildMinUnfavorableArray(
+        existingMinUnfav, dayIndex, strategyName, strike, result.dayHigh, result.dayLow
+      );
+      
+      const updatedStrikeHit = EW_buildStrikeHitArray(
+        existingStrikeHit, dayIndex, strategyName, strike, result.dayHigh, result.dayLow, result.hit
+      );
+      
+      // Update indicator arrays if we have indicator data
+      let updatedIndicators = existingIndicators;
+      if (result.indicators) {
+        updatedIndicators = EW_buildIndicatorArraysForDay(
+          existingIndicators, dayIndex, result.indicators
+        );
+      }
+      
+      // Update historical high/low
+      const updatedHistorical = EW_updateHistoricalHighLow(
+        { high: existingHistoricalHigh, low: existingHistoricalLow },
+        result.dayHigh, result.dayLow
+      );
+      
+      // Update arrays in sheet
+      if (hdrMap.maxFavorableCol) {
+        dataRange.getCell(result.rowIndex + 1, hdrMap.maxFavorableCol)
+          .setValue(EW_arrayToJson(updatedMaxFav));
+      }
+      
+      if (hdrMap.minUnfavorableCol) {
+        dataRange.getCell(result.rowIndex + 1, hdrMap.minUnfavorableCol)
+          .setValue(EW_arrayToJson(updatedMinUnfav));
+      }
+      
+      if (hdrMap.strikeHitCol) {
+        dataRange.getCell(result.rowIndex + 1, hdrMap.strikeHitCol)
+          .setValue(EW_arrayToJson(updatedStrikeHit));
+      }
+      
+      // Update historical high/low
+      if (hdrMap.historicalHighCol && updatedHistorical.high !== existingHistoricalHigh) {
+        dataRange.getCell(result.rowIndex + 1, hdrMap.historicalHighCol)
+          .setValue(updatedHistorical.high);
+      }
+      
+      if (hdrMap.historicalLowCol && updatedHistorical.low !== existingHistoricalLow) {
+        dataRange.getCell(result.rowIndex + 1, hdrMap.historicalLowCol)
+          .setValue(updatedHistorical.low);
+      }
+      
+      // Update indicator arrays (store as JSON)
+      const indicatorMappings = [
+        { col: hdrMap.hitRSICol, data: updatedIndicators.rsi },
+        { col: hdrMap.hitSMA20Col, data: updatedIndicators.sma20 },
+        { col: hdrMap.hitSMA50Col, data: updatedIndicators.sma50 },
+        { col: hdrMap.hitEMA9Col, data: updatedIndicators.ema9 },
+        { col: hdrMap.hitEMA21Col, data: updatedIndicators.ema21 },
+        { col: hdrMap.hitVWAPCol, data: updatedIndicators.vwap },
+        { col: hdrMap.hitRVOLCol, data: updatedIndicators.rvol },
+        { col: hdrMap.hitATRCol, data: updatedIndicators.atr },
+        { col: hdrMap.hitPriceVsSMA20Col, data: updatedIndicators.priceVsSMA20 },
+        { col: hdrMap.hitPriceVsVWAPCol, data: updatedIndicators.priceVsVWAP }
+      ];
+      
+      indicatorMappings.forEach(mapping => {
+        if (mapping.col && mapping.data.length > 0) {
+          dataRange.getCell(result.rowIndex + 1, mapping.col)
+            .setValue(EW_arrayToJson(mapping.data));
+        }
+      });
+      
+      // Update Hit_Date and First_Hit_Date if strike was hit
+      if (result.hit) {
+        const hitDateStr = result.hitDate.toISOString().split('T')[0];
+        
+        // Update Hit_Date (most recent hit)
+        if (hdrMap.hitDateCol) {
+          dataRange.getCell(result.rowIndex + 1, hdrMap.hitDateCol).setValue(hitDateStr);
+        }
+        
+        // Update First_Hit_Date (only if not already set)
+        if (hdrMap.firstHitDateCol) {
+          const existingFirstHit = row[hdrMap.firstHitDateCol - 1];
+          if (!existingFirstHit) {
+            dataRange.getCell(result.rowIndex + 1, hdrMap.firstHitDateCol).setValue(hitDateStr);
           }
-        } catch (e) {
-          console.log(`ACTIVE TRACKING: Could not fetch Day0 price for ${position.ticker}: ${e.message}`);
         }
       }
       
-      // Update Strike_Hit with array format
-      let updatedValue;
-      if (percentMove !== null) {
-        // Append to existing array or create new one (no % suffix)
-        updatedValue = EW_appendStrikeHit(currentStatus, percentMove);
-      } else {
-        // Fallback - create array with status
-        updatedValue = EW_appendStrikeHit(currentStatus, newStatus);
-      }
-      
-      // Only update if value changed
-      if (currentStatus !== updatedValue) {
-        dataRange.getCell(result.rowIndex + 1, hdrMap.strikeHitCol).setValue(updatedValue);
-        
-        // If hit, also update Hit_Date and indicators
-        if (result.hit) {
-          // Update Hit_Date if column exists
-          if (hdrMap.hitDateCol) {
-            const existingHitDate = data[result.rowIndex][hdrMap.hitDateCol - 1];
-            if (!existingHitDate) {
-              const hitDateStr = result.hitDate.toISOString().split('T')[0];
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitDateCol).setValue(hitDateStr);
-            }
-          }
-          
-          // Update indicator arrays - always append for daily tracking
-          if (result.indicators) {
-            const ind = result.indicators;
-            
-            // Append to each indicator array
-            if (hdrMap.hitRSICol && ind.rsi !== null) {
-              const currentValue = row[hdrMap.hitRSICol - 1] || '';
-              const updatedValue = EW_appendIndicatorValue(currentValue, ind.rsi);
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitRSICol).setValue(updatedValue);
-            }
-            if (hdrMap.hitSMA20Col && ind.sma20 !== null) {
-              const currentValue = row[hdrMap.hitSMA20Col - 1] || '';
-              const updatedValue = EW_appendIndicatorValue(currentValue, ind.sma20);
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitSMA20Col).setValue(updatedValue);
-            }
-            if (hdrMap.hitSMA50Col && ind.sma50 !== null) {
-              const currentValue = row[hdrMap.hitSMA50Col - 1] || '';
-              const updatedValue = EW_appendIndicatorValue(currentValue, ind.sma50);
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitSMA50Col).setValue(updatedValue);
-            }
-            if (hdrMap.hitEMA9Col && ind.ema9 !== null) {
-              const currentValue = row[hdrMap.hitEMA9Col - 1] || '';
-              const updatedValue = EW_appendIndicatorValue(currentValue, ind.ema9);
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitEMA9Col).setValue(updatedValue);
-            }
-            if (hdrMap.hitEMA21Col && ind.ema21 !== null) {
-              const currentValue = row[hdrMap.hitEMA21Col - 1] || '';
-              const updatedValue = EW_appendIndicatorValue(currentValue, ind.ema21);
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitEMA21Col).setValue(updatedValue);
-            }
-            if (hdrMap.hitVWAPCol && ind.vwap !== null) {
-              const currentValue = row[hdrMap.hitVWAPCol - 1] || '';
-              const updatedValue = EW_appendIndicatorValue(currentValue, ind.vwap);
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitVWAPCol).setValue(updatedValue);
-            }
-            if (hdrMap.hitRVOLCol && ind.rvol !== null) {
-              const currentValue = row[hdrMap.hitRVOLCol - 1] || '';
-              const updatedValue = EW_appendIndicatorValue(currentValue, ind.rvol);
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitRVOLCol).setValue(updatedValue);
-            }
-            if (hdrMap.hitATRCol && ind.atr !== null) {
-              const currentValue = row[hdrMap.hitATRCol - 1] || '';
-              const updatedValue = EW_appendIndicatorValue(currentValue, ind.atr.toFixed(4));
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitATRCol).setValue(updatedValue);
-            }
-            if (hdrMap.hitPriceVsSMA20Col && ind.priceVsSMA20 !== null) {
-              const currentValue = row[hdrMap.hitPriceVsSMA20Col - 1] || '';
-              const updatedValue = EW_appendIndicatorValue(currentValue, ind.priceVsSMA20.toFixed(2) + '%');
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitPriceVsSMA20Col).setValue(updatedValue);
-            }
-            if (hdrMap.hitPriceVsVWAPCol && ind.priceVsVWAP !== null) {
-              const currentValue = row[hdrMap.hitPriceVsVWAPCol - 1] || '';
-              const updatedValue = EW_appendIndicatorValue(currentValue, ind.priceVsVWAP.toFixed(2) + '%');
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitPriceVsVWAPCol).setValue(updatedValue);
-            }
-            
-            console.log(`ACTIVE TRACKING: Updated indicator arrays for ${result.ticker}`);
-          }
-        }
-        
-        updatedCount++;
-        console.log(`ACTIVE TRACKING: ${strategyName} - Updated ${result.ticker} Strike_Hit`);
-      }
-      
-      // Additional tracking updates (from 4:30 PM function)
-      const row = position.row;
+      updatedCount++;
+      console.log(`ACTIVE TRACKING: ${strategyName} - Updated ${result.ticker} arrays for day ${dayIndex}`);
       
       // Update Day0_Check through Day5_Check
       const dayChecks = [
@@ -308,44 +310,21 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         { col: hdrMap.day5CheckCol, day: 5 }
       ];
       
+      // Update the specific day check for today
       for (const check of dayChecks) {
-        if (check.col && position.daysSinceEntry >= check.day) {
-          const existingCheck = row[check.col - 1];
-          if (!existingCheck) {
-            // Always show the actual closing price
-            let dayCheckValue = 'None';
-            
-            // Use the last close price if available, otherwise average of high/low
-            if (result.lastClose) {
-              dayCheckValue = result.lastClose.toFixed(2);
-            } else if (result.dayHigh && result.dayLow) {
-              // If no close price, use average of high and low
-              const avgPrice = (parseFloat(result.dayHigh) + parseFloat(result.dayLow)) / 2;
-              dayCheckValue = avgPrice.toFixed(2);
-            }
-            
-            dataRange.getCell(result.rowIndex + 1, check.col).setValue(dayCheckValue);
-            updatedCount++;
+        if (check.col && position.daysSinceEntry === check.day) {
+          // Update today's day check with closing price
+          let dayCheckValue = 'None';
+          
+          if (result.lastClose) {
+            dayCheckValue = result.lastClose.toFixed(2);
+          } else if (result.dayHigh && result.dayLow) {
+            // If no close price, use average of high and low
+            const avgPrice = (parseFloat(result.dayHigh) + parseFloat(result.dayLow)) / 2;
+            dayCheckValue = avgPrice.toFixed(2);
           }
-        }
-      }
-      
-      // Update Max_Favorable and Min_Unfavorable based on Yahoo data
-      if (hdrMap.maxFavorableCol && result.dayHigh) {
-        const maxFav = EW_calculateMaxFavorable(strategyName, position.strike || position.longStrike, result.dayHigh, result.dayLow);
-        const existing = row[hdrMap.maxFavorableCol - 1];
-        if (!existing && maxFav !== null) {
-          dataRange.getCell(result.rowIndex + 1, hdrMap.maxFavorableCol).setValue(maxFav);
-          updatedCount++;
-        }
-      }
-      
-      if (hdrMap.minUnfavorableCol && result.dayLow) {
-        const minUnfav = EW_calculateMinUnfavorable(strategyName, position.strike || position.longStrike, result.dayHigh, result.dayLow);
-        const existing = row[hdrMap.minUnfavorableCol - 1];
-        if (!existing && minUnfav !== null) {
-          dataRange.getCell(result.rowIndex + 1, hdrMap.minUnfavorableCol).setValue(minUnfav);
-          updatedCount++;
+          
+          dataRange.getCell(result.rowIndex + 1, check.col).setValue(dayCheckValue);
         }
       }
       
@@ -356,22 +335,16 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
           // Store the closing price at expiration
           const expResult = result.lastClose.toFixed(2);
           dataRange.getCell(result.rowIndex + 1, hdrMap.expResultCol).setValue(expResult);
-          updatedCount++;
         }
       }
       
-      // Removed Profit_Potential calculation - duplicates Max_Favorable
-      
-      // Calculate and update Risk_Reward if we have both favorable and unfavorable
-      if (hdrMap.riskRewardCol && hdrMap.maxFavorableCol && hdrMap.minUnfavorableCol) {
+      // Calculate and update Risk_Reward from arrays
+      if (hdrMap.riskRewardCol) {
         const existing = row[hdrMap.riskRewardCol - 1];
         if (!existing) {
-          const favorable = parseFloat(row[hdrMap.maxFavorableCol - 1]) || 0;
-          const unfavorable = parseFloat(row[hdrMap.minUnfavorableCol - 1]) || 0;
-          if (favorable > 0 && unfavorable > 0) {
-            const riskReward = (favorable / unfavorable).toFixed(2);
+          const riskReward = EW_calculateRiskRewardFromArrays(updatedMaxFav, updatedMinUnfav);
+          if (riskReward) {
             dataRange.getCell(result.rowIndex + 1, hdrMap.riskRewardCol).setValue(riskReward);
-            updatedCount++;
           }
         }
       }

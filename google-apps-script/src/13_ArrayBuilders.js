@@ -159,35 +159,35 @@ function EW_buildIndicatorArraysForDay(existingIndicators = {}, dayIndex, dayInd
   
   // Update values for this day
   if (dayIndicators.rsi !== null && dayIndicators.rsi !== undefined) {
-    indicators.rsi[dayIndex] = dayIndicators.rsi.toFixed(2);
+    indicators.rsi[dayIndex] = parseFloat(dayIndicators.rsi).toFixed(2);
   }
   if (dayIndicators.sma20 !== null && dayIndicators.sma20 !== undefined) {
-    indicators.sma20[dayIndex] = dayIndicators.sma20.toFixed(2);
+    indicators.sma20[dayIndex] = parseFloat(dayIndicators.sma20).toFixed(2);
   }
   if (dayIndicators.sma50 !== null && dayIndicators.sma50 !== undefined) {
-    indicators.sma50[dayIndex] = dayIndicators.sma50.toFixed(2);
+    indicators.sma50[dayIndex] = parseFloat(dayIndicators.sma50).toFixed(2);
   }
   if (dayIndicators.ema9 !== null && dayIndicators.ema9 !== undefined) {
-    indicators.ema9[dayIndex] = dayIndicators.ema9.toFixed(2);
+    indicators.ema9[dayIndex] = parseFloat(dayIndicators.ema9).toFixed(2);
   }
   if (dayIndicators.ema21 !== null && dayIndicators.ema21 !== undefined) {
-    indicators.ema21[dayIndex] = dayIndicators.ema21.toFixed(2);
+    indicators.ema21[dayIndex] = parseFloat(dayIndicators.ema21).toFixed(2);
   }
   if (dayIndicators.vwap !== null && dayIndicators.vwap !== undefined) {
-    indicators.vwap[dayIndex] = dayIndicators.vwap.toFixed(2);
+    indicators.vwap[dayIndex] = parseFloat(dayIndicators.vwap).toFixed(2);
   }
   if (dayIndicators.rvol !== null && dayIndicators.rvol !== undefined) {
-    indicators.rvol[dayIndex] = dayIndicators.rvol.toFixed(2);
+    indicators.rvol[dayIndex] = parseFloat(dayIndicators.rvol).toFixed(2);
   }
   if (dayIndicators.atr !== null && dayIndicators.atr !== undefined) {
-    indicators.atr[dayIndex] = dayIndicators.atr.toFixed(4);
+    indicators.atr[dayIndex] = parseFloat(dayIndicators.atr).toFixed(4);
   }
   // No % sign for priceVsSMA20 and priceVsVWAP (as per requirements)
   if (dayIndicators.priceVsSMA20 !== null && dayIndicators.priceVsSMA20 !== undefined) {
-    indicators.priceVsSMA20[dayIndex] = dayIndicators.priceVsSMA20.toFixed(2);
+    indicators.priceVsSMA20[dayIndex] = parseFloat(dayIndicators.priceVsSMA20).toFixed(2);
   }
   if (dayIndicators.priceVsVWAP !== null && dayIndicators.priceVsVWAP !== undefined) {
-    indicators.priceVsVWAP[dayIndex] = dayIndicators.priceVsVWAP.toFixed(2);
+    indicators.priceVsVWAP[dayIndex] = parseFloat(dayIndicators.priceVsVWAP).toFixed(2);
   }
   
   return indicators;
