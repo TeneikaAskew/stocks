@@ -540,3 +540,98 @@ function EW_validateTriggers() {
     return { isValid: false, error: error.toString() };
   }
 }
+
+/**
+ * Setup trigger to run tracking updates daily
+ * This creates a time-based trigger that runs every day at 4:30 PM ET
+ */
+function EW_setupDailyTrackingTrigger() {
+  // Remove existing tracking triggers
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'EW_updateAllTrackingData') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // Create new daily trigger at 4:30 PM ET (after market close)
+  ScriptApp.newTrigger('EW_updateAllTrackingData')
+    .timeBased()
+    .atHour(16) // 4 PM
+    .nearMinute(30) // 30 minutes past
+    .everyDays(1)
+    .inTimezone('America/New_York')
+    .create();
+    
+  EW_trace('TRACKING', 'Daily tracking trigger created for 4:30 PM ET', true);
+  EW_safeAlert('Tracking Trigger Created', 'Daily tracking updates will run at 4:30 PM ET');
+}
+
+/**
+ * Remove daily tracking trigger
+ */
+function EW_removeDailyTrackingTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'EW_updateAllTrackingData') {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+  });
+  
+  const msg = removed > 0 ? 
+    `Removed ${removed} tracking trigger(s)` : 
+    'No tracking triggers found to remove';
+    
+  EW_trace('TRACKING', msg, true);
+  EW_safeAlert('Tracking Trigger Removed', msg);
+}
+
+/**
+ * Setup automated trigger for active position tracking
+ * Runs daily at 5 PM ET after market close to capture full day data
+ */
+function EW_setupActiveTrackingTrigger() {
+  // Remove existing active tracking triggers
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'EW_updateActiveStrikeHits') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // Create new daily trigger at 5 PM ET (after market close)
+  ScriptApp.newTrigger('EW_updateActiveStrikeHits')
+    .timeBased()
+    .atHour(17) // 5 PM
+    .everyDays(1)
+    .inTimezone('America/New_York')
+    .create();
+    
+  EW_trace('ACTIVE_TRACKING', 'Active position tracking trigger created for 5 PM ET daily', true);
+  EW_safeAlert('Active Tracking Trigger Created', 'Strike_Hit updates will run daily at 5 PM ET to capture full day data');
+}
+
+/**
+ * Remove active tracking trigger
+ */
+function EW_removeActiveTrackingTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'EW_updateActiveStrikeHits') {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+  });
+  
+  const msg = removed > 0 ? 
+    `Removed ${removed} active tracking trigger(s)` : 
+    'No active tracking triggers found to remove';
+    
+  EW_trace('ACTIVE_TRACKING', msg, true);
+  EW_safeAlert('Active Tracking Trigger Removed', msg);
+}

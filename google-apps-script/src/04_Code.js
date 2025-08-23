@@ -39,18 +39,26 @@ function onOpen() {
     .addSeparator()
     .addItem('Generate Success Report', 'EW_generateSuccessReport')
     .addItem('Update Success Report', 'EW_updateSuccessReport')
-    .addItem('Update Tracking Data', 'EW_updateTrackingData')
-    .addItem('Check and add missing columns', 'EW_checkAllSheetsColumns')
+    .addItem('Update Tracking Data (Formulas)', 'EW_updateTrackingData')
+    .addItem('Update Tracking Data (Fill Columns)', 'EW_updateAllTrackingData')
     .addItem('Fix: Add Strategy column (one-time)', 'EW_fixAddStrategyColumn')
     .addItem('Fix: Complete sheet repair', 'EW_completeSheetRepair')
+    .addSeparator()
+    .addItem('Backfill Historical Tracking (All)', 'EW_backfillHistoricalTracking')
+    .addItem('Backfill Selected Rows', 'EW_backfillSelectedRows')
+    .addItem('Update Active Position Strikes', 'EW_updateActiveStrikeHits')
     .addSeparator()
     .addSubMenu(ui.createMenu('Automation & Triggers')
       .addItem('Setup Full Auto Tracking', 'EW_setupAutoTracking')
       .addItem('Setup Daily Data Fetch (8AM)', 'EW_setupDailyDataTrigger')
+      .addItem('Setup Daily Tracking Update (4:30PM)', 'EW_setupDailyTrackingTrigger')
+      .addItem('Setup Active Position Tracking (5PM)', 'EW_setupActiveTrackingTrigger')
       .addItem('Setup Missing Triggers Only', 'EW_setupTriggersIfMissing')
       .addSeparator()
       .addItem('Stop All Auto Tracking', 'EW_stopAutoTracking')
       .addItem('Stop Daily Data Fetch', 'EW_stopDailyDataTrigger')
+      .addItem('Stop Daily Tracking Update', 'EW_removeDailyTrackingTrigger')
+      .addItem('Stop Active Position Tracking', 'EW_removeActiveTrackingTrigger')
       .addSeparator()
       .addItem('List Active Triggers', 'EW_listActiveTriggers')
       .addItem('Validate Triggers', 'EW_validateTriggers')
@@ -953,39 +961,16 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
        expDate, INDEX($${EW_columnToLetter(hdrMap.expDateCol)}2:$${EW_columnToLetter(hdrMap.expDateCol)}, i),
        IF(OR(ticker="", expDate=""), "", 
          IF(ISNUMBER(expDate), 
-           MAX(0, expDate - TODAY()), 
-           IFERROR(MAX(0, DATEVALUE(expDate) - TODAY()), 0)
+           MAX(expDate - TODAY()), 
+           IFERROR(MAX(DATEVALUE(expDate) - TODAY()), 0)
          )
        )
      )`
   );
 
-  // Current Strike Hit Status - Uses Strategy column
-  setHeaderArrayMultiCol(
-    hdrMap.strikeHitCol, 'Strike_Hit',
-    `LET(
-       ticker, INDEX(${tRange}, i),
-       strategy, UPPER(INDEX($${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)}, i)),
-       strike, INDEX($${EW_columnToLetter(hdrMap.strikeCol)}2:$${EW_columnToLetter(hdrMap.strikeCol)}, i),
-       currentPrice, IFERROR(GOOGLEFINANCE(ticker,"price"),0),
-       
-       IF(OR(ticker="", strategy="", strike="", currentPrice=0), "",
-         IF(OR(REGEXMATCH(strategy, "LONG CALL"), REGEXMATCH(strategy, "BULL")),
-           IF(currentPrice >= strike, "HIT", "NO"),
-           IF(OR(REGEXMATCH(strategy, "LONG PUT"), REGEXMATCH(strategy, "BEAR")),
-             IF(currentPrice <= strike, "HIT", "NO"),
-             IF(OR(REGEXMATCH(strategy, "SHORT CALL"), REGEXMATCH(strategy, "COVERED")),
-               IF(currentPrice < strike, "FAVORABLE", IF(currentPrice >= strike, "UNFAVORABLE", "NEUTRAL")),
-               IF(REGEXMATCH(strategy, "SHORT PUT"),
-                 IF(currentPrice > strike, "FAVORABLE", IF(currentPrice <= strike, "UNFAVORABLE", "NEUTRAL")),
-                 "UNKNOWN"
-               )
-             )
-           )
-         )
-       )
-     )`
-  );
+  // Strike_Hit is now populated by scripts (not a formula column)
+  // See EW_updateActiveStrikeHits() for active positions
+  // See EW_backfillHistoricalTracking() for expired positions
 
   // Enhanced Success Score with historical data
   setHeaderArrayMultiCol(
@@ -1015,45 +1000,6 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
 
 // ===== SUCCESS TRACKING & REPORTING FUNCTIONS =====
 
-/**
- * Checks all strategy sheets and adds any missing Google Finance or tracking columns
- * @returns {void}
- */
-function EW_checkAllSheetsColumns() {
-  EW_trace('COLUMNS', 'Checking all sheets for missing columns', true);
-  const ss = SpreadsheetApp.getActive();
-  const endpoints = EW.STRATEGY_ENDPOINTS;
-  let sheetsUpdated = 0;
-  
-  for (const tabName of Object.keys(endpoints)) {
-    const sheet = ss.getSheetByName(tabName);
-    if (!sheet || sheet.getLastRow() === 0) {
-      EW_trace('COLUMNS', `Skipping ${tabName} - sheet empty or doesn't exist`);
-      continue;
-    }
-    
-    const beforeCols = sheet.getLastColumn();
-    const updatedHdrMap = EW_ensureAllColumnsExist(sheet);
-    
-    if (updatedHdrMap) {
-      const afterCols = sheet.getLastColumn();
-      if (afterCols > beforeCols) {
-        sheetsUpdated++;
-        EW_trace('COLUMNS', `Updated ${tabName}: ${beforeCols} -> ${afterCols} columns`);
-        
-        // Re-apply Google Finance formulas with updated header map
-        EW_setGFArrayFormulas(sheet, updatedHdrMap);
-      }
-    }
-  }
-  
-  const msg = sheetsUpdated > 0 ? 
-    `Updated ${sheetsUpdated} sheets with missing columns` : 
-    'All sheets already have all required columns';
-  
-  EW_trace('COLUMNS', msg, true);
-  EW_safeAlert('Column Check Complete', msg);
-}
 
 
 /**
@@ -1181,9 +1127,9 @@ function EW_completeSheetRepair() {
         // Tracking columns with formulas
         'Historical_High', 'Historical_Low', 'Ever_Hit_Strike', 
         'First_Hit_Date', 'Last_Update', 'Total_Hit_Days',
-        'Days_To_Exp', 'Strike_Hit', 'Success_Score',
-        // Plain text tracking columns (for success reports)
-        'Hit_Date', 'Max_Favorable', 'Min_Unfavorable', 
+        'Days_To_Exp', 'Success_Score',
+        // Plain text tracking columns (for success reports and scripts)
+        'Strike_Hit', 'Hit_Date', 'Max_Favorable', 'Min_Unfavorable', 
         'Day1_Check', 'Day2_Check', 'Day3_Check', 'Day5_Check',
         'Exp_Result', 'Profit_Potential', 'Risk_Reward', 
         'Peak_Profit_Date'
@@ -1408,7 +1354,7 @@ function EW_generateSuccessReport() {
     EW_safeAlert('Success Report', `Strategy success report has been generated with data from ${reportData.length} strategies.`);
   } else {
     EW_trace('REPORT', 'No data found for success report - sheets may be missing required columns', true);
-    EW_safeAlert('No Data Found', 'No strategy data found for report. Please ensure sheets have Strike_Hit and Success_Score columns, then run "Check and add missing columns" first.');
+    EW_safeAlert('No Data Found', 'No strategy data found for report. Please ensure sheets have Strike_Hit and Success_Score columns, then run "Fix: Complete sheet repair" to add missing columns.');
   }
 }
 
