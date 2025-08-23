@@ -335,9 +335,10 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
  * @param {string} ticker - Stock ticker symbol
  * @param {Date} startDate - Start date
  * @param {Date} endDate - End date
- * @returns {Array} Array of daily price data
+ * @param {boolean} includeRaw - Whether to include raw data for indicators
+ * @returns {Array|Object} Array of daily price data or object with data and raw
  */
-function EW_getYahooHistoricalRange(ticker, startDate, endDate) {
+function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = false) {
   const period1 = Math.floor(startDate.getTime() / 1000);
   const period2 = Math.floor(endDate.getTime() / 1000);
   
@@ -405,6 +406,17 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate) {
     logEntry.success = true;
     logEntry.dataPoints = historicalData.length;
     EW_logApiCall(logEntry, data);
+    
+    // Return with raw data if requested
+    if (includeRaw) {
+      return {
+        data: historicalData,
+        raw: {
+          timestamps: timestamps,
+          quotes: quotes
+        }
+      };
+    }
     
     return historicalData;
     

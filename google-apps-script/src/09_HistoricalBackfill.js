@@ -123,9 +123,9 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       
       EW_trace('BACKFILL', `Processing expired position: ${ticker} from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
       
-      // Get historical price data using Yahoo Finance
-      const historicalData = EW_getYahooHistoricalRange(ticker, runDate, endDate);
-      if (!historicalData || historicalData.length === 0) {
+      // Get historical price data using Yahoo Finance with raw data for indicators
+      const yahooResult = EW_getYahooHistoricalRange(ticker, runDate, endDate, true);
+      if (!yahooResult || !yahooResult.data || yahooResult.data.length === 0) {
         EW_trace('BACKFILL', `No historical data for ${ticker}`);
         return;
       }
@@ -134,8 +134,8 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       const shortStrike = isSpread && hdrMap.shortStrikeCol ? 
         parseFloat(row[hdrMap.shortStrikeCol - 1]) || null : null;
       
-      // Analyze historical data
-      const analysis = EW_analyzeHistoricalData(strategyName, strike, historicalData, runDate, shortStrike);
+      // Analyze historical data with raw data for indicators
+      const analysis = EW_analyzeHistoricalData(strategyName, strike, yahooResult.data, runDate, shortStrike, yahooResult.raw);
       
       // Update tracking columns with historical analysis
       let updated = false;
@@ -220,6 +220,67 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         }
       }
       
+      
+      // Calculate and update Risk_Reward
+      if (hdrMap.riskRewardCol && analysis.maxFavorable !== null && analysis.minUnfavorable !== null) {
+        const existing = row[hdrMap.riskRewardCol - 1];
+        if (!existing) {
+          const favorable = parseFloat(analysis.maxFavorable);
+          const unfavorable = parseFloat(analysis.minUnfavorable);
+          if (unfavorable > 0) {
+            const riskReward = (favorable / unfavorable).toFixed(2);
+            dataRange.getCell(rowIndex + 1, hdrMap.riskRewardCol).setValue(riskReward);
+            updated = true;
+          }
+        }
+      }
+      
+      // Update technical indicators if available
+      if (analysis.indicators) {
+        const ind = analysis.indicators;
+        
+        if (hdrMap.hitRSICol && ind.rsi !== null && !row[hdrMap.hitRSICol - 1]) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitRSICol).setValue(ind.rsi.toFixed(2));
+          updated = true;
+        }
+        if (hdrMap.hitSMA20Col && ind.sma20 !== null && !row[hdrMap.hitSMA20Col - 1]) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitSMA20Col).setValue(ind.sma20.toFixed(2));
+          updated = true;
+        }
+        if (hdrMap.hitSMA50Col && ind.sma50 !== null && !row[hdrMap.hitSMA50Col - 1]) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitSMA50Col).setValue(ind.sma50.toFixed(2));
+          updated = true;
+        }
+        if (hdrMap.hitEMA9Col && ind.ema9 !== null && !row[hdrMap.hitEMA9Col - 1]) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitEMA9Col).setValue(ind.ema9.toFixed(2));
+          updated = true;
+        }
+        if (hdrMap.hitEMA21Col && ind.ema21 !== null && !row[hdrMap.hitEMA21Col - 1]) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitEMA21Col).setValue(ind.ema21.toFixed(2));
+          updated = true;
+        }
+        if (hdrMap.hitVWAPCol && ind.vwap !== null && !row[hdrMap.hitVWAPCol - 1]) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitVWAPCol).setValue(ind.vwap.toFixed(2));
+          updated = true;
+        }
+        if (hdrMap.hitRVOLCol && ind.rvol !== null && !row[hdrMap.hitRVOLCol - 1]) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitRVOLCol).setValue(ind.rvol.toFixed(2));
+          updated = true;
+        }
+        if (hdrMap.hitATRCol && ind.atr !== null && !row[hdrMap.hitATRCol - 1]) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitATRCol).setValue(ind.atr.toFixed(2));
+          updated = true;
+        }
+        if (hdrMap.hitPriceVsSMA20Col && ind.priceVsSMA20 !== null && !row[hdrMap.hitPriceVsSMA20Col - 1]) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitPriceVsSMA20Col).setValue(ind.priceVsSMA20.toFixed(2));
+          updated = true;
+        }
+        if (hdrMap.hitPriceVsVWAPCol && ind.priceVsVWAP !== null && !row[hdrMap.hitPriceVsVWAPCol - 1]) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitPriceVsVWAPCol).setValue(ind.priceVsVWAP.toFixed(2));
+          updated = true;
+        }
+      }
+      
       if (updated) {
         processedCount++;
         
@@ -286,9 +347,10 @@ function EW_countTradingDays(startDate, endDate) {
  * @param {Array} historicalData - Array of price data
  * @param {Date} runDate - Entry date
  * @param {number} shortStrike - Short strike for spread strategies (optional)
+ * @param {Object} rawData - Raw Yahoo data for indicator calculation (optional)
  * @returns {Object} Analysis results
  */
-function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, shortStrike = null) {
+function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, shortStrike = null, rawData = null) {
   const analysis = {
     firstHitDate: null,
     firstHitPrice: null,
@@ -302,8 +364,11 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
     minUnfavorable: null,
     expResult: null,
     peakProfitDate: null,
+    peakProfitIndex: null,  // Store index for indicator calculation
     historicalHigh: 0,
-    historicalLow: Infinity
+    historicalLow: Infinity,
+    // Technical indicators at peak profit
+    indicators: null
   };
   
   if (!historicalData || historicalData.length === 0) return analysis;
@@ -438,6 +503,7 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
     if (dayProfit > maxProfit) {
       maxProfit = dayProfit;
       analysis.peakProfitDate = dayData.date.toISOString().split('T')[0];
+      analysis.peakProfitIndex = index;  // Store the index for indicator calculation
     }
   });
   
@@ -453,18 +519,37 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
       // For spreads, check if closing price is in profitable range
       if (isBullSpread) {
         analysis.expResult = (lastDay.close >= strike && lastDay.close < shortStrike) ? 
-          lastDay.close.toFixed(2) : 'None';
+          lastDay.close.toFixed(2) : 'Not profitable at closing';
       } else if (isBearSpread) {
         analysis.expResult = (lastDay.close <= strike && lastDay.close > shortStrike) ? 
-          lastDay.close.toFixed(2) : 'None';
+          lastDay.close.toFixed(2) : 'Not profitable at closing';
       }
     } else {
       // Single strike strategies
       if (isBullish) {
-        analysis.expResult = lastDay.close >= strike ? lastDay.close.toFixed(2) : 'None';
+        analysis.expResult = lastDay.close >= strike ? lastDay.close.toFixed(2) : 'Not profitable at closing';
       } else if (isBearish) {
-        analysis.expResult = lastDay.close <= strike ? lastDay.close.toFixed(2) : 'None';
+        analysis.expResult = lastDay.close <= strike ? lastDay.close.toFixed(2) : 'Not profitable at closing';
       }
+    }
+  }
+  
+  // Calculate technical indicators at peak profit if we have raw data
+  if (rawData && analysis.peakProfitIndex !== null) {
+    try {
+      // Calculate indicators at the peak profit point
+      const indicators = EW_calculateIndicatorsFromYahoo(
+        rawData.timestamps, 
+        rawData.quotes, 
+        analysis.peakProfitIndex
+      );
+      
+      if (indicators) {
+        analysis.indicators = indicators;
+        EW_trace('BACKFILL', `Calculated indicators at peak profit date ${analysis.peakProfitDate}`);
+      }
+    } catch (error) {
+      EW_trace('BACKFILL', `Failed to calculate indicators: ${error.message}`);
     }
   }
   
@@ -566,7 +651,8 @@ function EW_backfillSelectedRows() {
   }
   
   SpreadsheetApp.flush();
-  EW_safeAlert('Backfill Complete', `Processed ${processedCount} of ${numRows} selected rows`);
+  const message = 'Processed ' + processedCount + ' of ' + numRows + ' selected rows';
+  EW_safeAlert('Backfill Complete', message);
 }
 
 /**
