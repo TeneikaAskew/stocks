@@ -444,6 +444,11 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
       const firstDate = historicalData[0].date.toISOString();
       const lastDate = historicalData[historicalData.length - 1].date.toISOString();
       EW_trace('BACKFILL', `${ticker}: Retrieved ${historicalData.length} 1-minute data points from ${firstDate} to ${lastDate}`);
+      
+      // Validate timestamps are in expected range (Unix seconds, not milliseconds)
+      if (timestamps[0] > 2000000000) {
+        EW_trace('YAHOO', `WARNING: Timestamps appear to be in milliseconds, not seconds`);
+      }
     }
     
     // Return with raw data if requested
