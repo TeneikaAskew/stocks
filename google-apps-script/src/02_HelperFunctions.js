@@ -505,14 +505,25 @@ function EW_isSpreadsheetEnvironment() {
  */
 function EW_safeAlert(title, message, buttonSet = null) {
   try {
+    // Ensure parameters are strings
+    const safeTitle = String(title || 'Alert');
+    const safeMessage = String(message || '');
+    
     if (EW_isSpreadsheetEnvironment()) {
+      const ui = SpreadsheetApp.getUi();
       if (buttonSet) {
-        return SpreadsheetApp.getUi().alert(title, message, buttonSet);
+        return ui.alert(safeTitle, safeMessage, buttonSet);
       } else {
-        return SpreadsheetApp.getUi().alert(title, message);
+        // Use single parameter alert as fallback
+        try {
+          return ui.alert(safeTitle, safeMessage);
+        } catch (e) {
+          // Fallback to single parameter if two-parameter fails
+          return ui.alert(safeTitle + ': ' + safeMessage);
+        }
       }
     } else {
-      console.log(`[UI Alert] ${title}: ${message}`);
+      console.log(`[UI Alert] ${safeTitle}: ${safeMessage}`);
       return null;
     }
   } catch (error) {

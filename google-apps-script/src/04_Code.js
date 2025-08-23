@@ -654,7 +654,7 @@ function EW_headerMap(headerRow) {
   const day5CheckCol    = find(['Day5_Check']);
   const expResultCol    = find(['Exp_Result']);
   const successScoreCol = find(['Success_Score']);
-  const profitPotentialCol = find(['Profit_Potential']);
+  // Removed profitPotentialCol - duplicates Max_Favorable
   const riskRewardCol   = find(['Risk_Reward']);
   
   // Enhanced historical tracking columns
@@ -699,7 +699,7 @@ function EW_headerMap(headerRow) {
     hv30Col, rvol10Col, ret5Col, ret20Col, gapPctCol,
     daysToExpCol, strikeHitCol, hitDateCol, maxFavorableCol, minUnfavorableCol,
     day0CheckCol, day1CheckCol, day2CheckCol, day3CheckCol, day4CheckCol, day5CheckCol, expResultCol,
-    successScoreCol, profitPotentialCol, riskRewardCol,
+    successScoreCol, riskRewardCol,
     historicalHighCol, historicalLowCol, everHitStrikeCol, firstHitDateCol,
     lastUpdateCol, totalHitDaysCol, peakProfitDateCol,
     hitRSICol, hitSMA20Col, hitSMA50Col, hitEMA9Col, hitEMA21Col,
