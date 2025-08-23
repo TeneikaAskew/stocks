@@ -222,6 +222,30 @@ function EW_backfillStrategyTracking(ss, strategyName) {
 // using EW_getYahooHistoricalRange() function
 
 /**
+ * Count trading days between two dates (excluding weekends)
+ * @param {Date} startDate - Start date
+ * @param {Date} endDate - End date
+ * @returns {number} Number of trading days
+ */
+function EW_countTradingDays(startDate, endDate) {
+  let count = 0;
+  const current = new Date(startDate);
+  current.setHours(0, 0, 0, 0);
+  const end = new Date(endDate);
+  end.setHours(0, 0, 0, 0);
+  
+  while (current <= end) {
+    const dayOfWeek = current.getDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Not Sunday or Saturday
+      count++;
+    }
+    current.setDate(current.getDate() + 1);
+  }
+  
+  return count;
+}
+
+/**
  * Analyze historical price data to determine tracking values
  * @param {string} strategy - Strategy name
  * @param {number} strike - Strike price
@@ -256,12 +280,45 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate) {
   let maxLoss = Infinity;
   let hitDetected = false;
   
+  // Find the index where our run date data starts
+  let runDateIndex = -1;
+  const runDateStr = runDate.toISOString().split('T')[0];
+  
+  for (let i = 0; i < historicalData.length; i++) {
+    if (historicalData[i].date.toISOString().split('T')[0] === runDateStr) {
+      runDateIndex = i;
+      break;
+    }
+  }
+  
+  if (runDateIndex === -1) {
+    EW_trace('BACKFILL', `Warning: Run date ${runDateStr} not found in historical data`);
+    // Try to find the first date after run date
+    for (let i = 0; i < historicalData.length; i++) {
+      if (historicalData[i].date >= runDate) {
+        runDateIndex = i;
+        break;
+      }
+    }
+  }
+  
+  if (runDateIndex === -1) {
+    EW_trace('BACKFILL', `Error: No data found on or after run date ${runDateStr}`);
+    return analysis;
+  }
+  
   historicalData.forEach((dayData, index) => {
-    const daysSinceEntry = Math.floor((dayData.date - runDate) / (1000 * 60 * 60 * 24));
+    // Skip data before run date
+    if (index < runDateIndex) {
+      return;
+    }
+    
+    // Calculate trading days since entry (based on array position)
+    const tradingDaysSinceEntry = index - runDateIndex;
     
     // Debug logging for first few days
-    if (index < 5) {
-      EW_trace('BACKFILL', `Day ${index}: Date=${dayData.date.toISOString().split('T')[0]}, DaysSinceEntry=${daysSinceEntry}`);
+    if (tradingDaysSinceEntry <= 5) {
+      EW_trace('BACKFILL', `Trading Day ${tradingDaysSinceEntry}: Date=${dayData.date.toISOString().split('T')[0]}, Index=${index}, RunDateIndex=${runDateIndex}`);
     }
     
     // Track historical high/low
@@ -282,19 +339,19 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate) {
       hitDetected = true;
     }
     
-    // Check specific day milestones
-    // Note: daysSinceEntry starts at 0 for the entry date (same day)
-    if (daysSinceEntry === 0) {
+    // Check specific day milestones based on trading days
+    // tradingDaysSinceEntry starts at 0 for the entry date (same day)
+    if (tradingDaysSinceEntry === 0) {
       analysis.day0Hit = dayHit ? 'HIT' : 'NO';
-    } else if (daysSinceEntry === 1) {
+    } else if (tradingDaysSinceEntry === 1) {
       analysis.day1Hit = dayHit ? 'HIT' : 'NO';
-    } else if (daysSinceEntry === 2) {
+    } else if (tradingDaysSinceEntry === 2) {
       analysis.day2Hit = dayHit ? 'HIT' : 'NO';
-    } else if (daysSinceEntry === 3) {
+    } else if (tradingDaysSinceEntry === 3) {
       analysis.day3Hit = dayHit ? 'HIT' : 'NO';
-    } else if (daysSinceEntry === 4) {
+    } else if (tradingDaysSinceEntry === 4) {
       analysis.day4Hit = dayHit ? 'HIT' : 'NO';
-    } else if (daysSinceEntry === 5) {
+    } else if (tradingDaysSinceEntry === 5) {
       analysis.day5Hit = dayHit ? 'HIT' : 'NO';
     }
     
@@ -636,12 +693,17 @@ function EW_testDayChecks() {
     console.log(`  Days since entry: ${scenario.daysAgo}`);
     
     // Check which day checks should have values
-    console.log('  Expected day checks:');
+    console.log('  Expected day checks (based on trading days):');
+    
+    // Calculate actual trading days
+    const tradingDays = EW_countTradingDays(runDate, today) - 1; // -1 because we don't count today
+    console.log(`  Actual trading days since entry: ${tradingDays}`);
+    
     for (let day = 0; day <= 5; day++) {
-      if (scenario.daysAgo >= day) {
-        console.log(`    Day${day}_Check: Should have value (position is ${scenario.daysAgo} days old)`);
+      if (tradingDays >= day) {
+        console.log(`    Day${day}_Check: Should have value (${tradingDays} trading days have passed)`);
       } else {
-        console.log(`    Day${day}_Check: Should be N/A (position is only ${scenario.daysAgo} days old)`);
+        console.log(`    Day${day}_Check: Should be N/A (only ${tradingDays} trading days have passed)`);
       }
     }
   });
