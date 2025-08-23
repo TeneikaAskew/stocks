@@ -1049,7 +1049,7 @@ function EW_checkAllSheetsColumns() {
     'All sheets already have all required columns';
   
   EW_trace('COLUMNS', msg, true);
-  SpreadsheetApp.getUi().alert('Column Check Complete', msg, SpreadsheetApp.getUi().ButtonSet.OK);
+  EW_safeAlert('Column Check Complete', msg, SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
 /**
@@ -1129,7 +1129,7 @@ function EW_generateSuccessReport() {
   reportSheet.autoResizeColumns(1, reportHeaders.length);
   
   EW_trace('REPORT', 'Success report generated successfully!', true);
-  SpreadsheetApp.getUi().alert('Success Report', 'Strategy success report has been generated in the "Success_Report" sheet.', SpreadsheetApp.getUi().ButtonSet.OK);
+  EW_safeAlert('Success Report', 'Strategy success report has been generated in the "Success_Report" sheet.', SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
 /**
