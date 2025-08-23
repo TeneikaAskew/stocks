@@ -352,8 +352,9 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
       // Update Exp_Result if position has expired
       if (hdrMap.expResultCol && position.expDate && today >= position.expDate) {
         const existing = row[hdrMap.expResultCol - 1];
-        if (!existing) {
-          const expResult = result.hit ? 'HIT' : 'Not profitable at closing';
+        if (!existing && result.lastClose) {
+          // Store the closing price at expiration
+          const expResult = result.lastClose.toFixed(2);
           dataRange.getCell(result.rowIndex + 1, hdrMap.expResultCol).setValue(expResult);
           updatedCount++;
         }

@@ -2,6 +2,38 @@
  * Historical Backfill - Functions to populate tracking data for historical positions
  * Uses Yahoo Finance historical data to retroactively fill tracking columns
  * Only processes positions with Days_To_Exp < 0 (expired positions)
+ * 
+ * COLUMN UPDATE CONSISTENCY:
+ * All backfill functions MUST update the following columns when data is available:
+ * 
+ * 1. Day Checks:
+ *    - Day0_Check through Day5_Check: Daily price values
+ *    
+ * 2. Arrays (stored as JSON strings):
+ *    - Max_Favorable: Array of daily max favorable price moves from strike
+ *    - Min_Unfavorable: Array of daily max unfavorable price moves from strike
+ *    - Strike_Hit: Array of percentage moves when strike was hit each day
+ *    
+ * 3. Indicator Arrays (stored as JSON strings):
+ *    - Hit_RSI, Hit_SMA20, Hit_SMA50, Hit_EMA9, Hit_EMA21
+ *    - Hit_VWAP, Hit_RVOL, Hit_ATR
+ *    - Hit_PriceVsSMA20, Hit_PriceVsVWAP (no % signs, just decimals)
+ *    
+ * 4. Result Columns:
+ *    - Exp_Result: Closing price at expiration for expired positions
+ *    - Risk_Reward: Calculated from max favorable/unfavorable arrays
+ *    - Historical_High: Highest price during position lifetime
+ *    - Historical_Low: Lowest price during position lifetime
+ *    - First_Hit_Date: Date when strike was first hit
+ * 
+ * CENTRALIZED UPDATE FUNCTION:
+ * Use EW_updateBackfillColumns() to ensure all backfill functions update columns consistently.
+ * This prevents missing columns like what happened with EW_backfillSelectedRows.
+ * 
+ * Functions using centralized updates:
+ * - EW_backfillSelectedRows: Uses EW_updateBackfillColumns()
+ * - EW_testHistoricalBackfill: Uses EW_updateBackfillColumns()
+ * - EW_backfillStrategyTracking: Uses EW_updateBackfillColumns() with conditional updates
  */
 
 /**
@@ -39,6 +71,9 @@ function EW_backfillHistoricalTracking() {
 
 /**
  * Backfill historical tracking data for a specific strategy
+ * REFACTORED: Now uses centralized EW_updateBackfillColumns() function to ensure
+ * all columns are consistently updated. This prevents issues where some functions
+ * were missing columns like Exp_Result, Risk_Reward, or Historical_High/Low.
  * @param {SpreadsheetApp.Spreadsheet} ss - The spreadsheet
  * @param {string} strategyName - Name of the strategy/sheet
  * @returns {number} Number of positions processed
@@ -188,202 +223,42 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       // Analyze historical data with raw data for indicators
       const analysis = EW_analyzeHistoricalData(ticker, strategyName, strike, yahooResult.data, runDate, shortStrike, yahooResult.raw);
       
-      // Update tracking columns with historical analysis
-      let updated = false;
+      // Check which fields need updating (only update if not already filled)
+      const needsUpdate = {
+        strikeHit: !hasStrikeHit && analysis.strikeHitArray.length > 0,
+        dayChecks: !hasDay0 || !hasDay1 || !hasDay2 || !hasDay3 || !hasDay4 || !hasDay5,
+        indicators: !hasIndicators && analysis.dailyIndicators && analysis.dailyIndicators.rsi.length > 0,
+        expResult: expDate && expDate <= today && !row[hdrMap.expResultCol - 1],
+        riskReward: !row[hdrMap.riskRewardCol - 1],
+        maxFavorable: !row[hdrMap.maxFavorableCol - 1],
+        minUnfavorable: !row[hdrMap.minUnfavorableCol - 1],
+        historicalHighLow: !row[hdrMap.historicalHighCol - 1] || !row[hdrMap.historicalLowCol - 1]
+      };
       
-      // Update Strike_Hit column with array of percentage moves
-      if (hdrMap.strikeHitCol && !hasStrikeHit) {
-        EW_trace('BACKFILL', `${ticker} Strike_Hit update check - Column: ${hdrMap.strikeHitCol}, Array length: ${analysis.strikeHitArray.length}`);
-        EW_trace('BACKFILL', `${ticker} Strike_Hit array contents: ${JSON.stringify(analysis.strikeHitArray)}`);
-        if (analysis.strikeHitArray.length > 0) {
-          // Store as JSON array
-          const strikeHitJson = JSON.stringify(analysis.strikeHitArray);
-          dataRange.getCell(rowIndex + 1, hdrMap.strikeHitCol).setValue(strikeHitJson);
-          EW_trace('BACKFILL', `${ticker} Strike_Hit SET in cell row ${rowIndex + 1}, col ${hdrMap.strikeHitCol}: ${strikeHitJson}`);
-          // Force immediate write
-          SpreadsheetApp.flush();
-          updated = true;
-        } else {
-          EW_trace('BACKFILL', `${ticker} Strike_Hit array is empty - not updating`);
-        }
-      } else if (!hdrMap.strikeHitCol) {
-        EW_trace('BACKFILL', `${ticker} No Strike_Hit column found in header map`);
-      } else if (hasStrikeHit) {
-        EW_trace('BACKFILL', `${ticker} Strike_Hit column already has data: "${row[hdrMap.strikeHitCol - 1]}" - skipping update`);
+      // Only proceed if something needs updating
+      const anythingToUpdate = Object.values(needsUpdate).some(v => v);
+      if (!anythingToUpdate) {
+        EW_trace('BACKFILL', `${ticker} - All columns already filled, skipping`);
+        return;
       }
       
-      // Update Hit_Date
-      if (hdrMap.hitDateCol && analysis.firstHitDate) {
-        const existing = row[hdrMap.hitDateCol - 1];
-        if (!existing) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitDateCol).setValue(analysis.firstHitDate);
-          updated = true;
-        }
-      }
-      
-      // Update Day1_Check through Day5_Check
-      const dayChecks = [
-        { col: hdrMap.day0CheckCol, day: 0, value: analysis.day0Hit },
-        { col: hdrMap.day1CheckCol, day: 1, value: analysis.day1Hit },
-        { col: hdrMap.day2CheckCol, day: 2, value: analysis.day2Hit },
-        { col: hdrMap.day3CheckCol, day: 3, value: analysis.day3Hit },
-        { col: hdrMap.day4CheckCol, day: 4, value: analysis.day4Hit },
-        { col: hdrMap.day5CheckCol, day: 5, value: analysis.day5Hit }
-      ];
-      
-      for (const check of dayChecks) {
-        if (check.col && check.value !== null) {
-          const existing = row[check.col - 1];
-          if (!existing) {
-            // Add debug logging for Day5_Check specifically
-            if (check.day === 5) {
-              EW_trace('BACKFILL', `Setting Day5_Check: col=${check.col}, value=${check.value}, rowIndex=${rowIndex + 1}`);
+      // Create a temporary sheet object wrapper for the dataRange cell updates
+      const cellUpdater = {
+        getRange: (row, col) => {
+          return {
+            setValue: (value) => {
+              dataRange.getCell(row - 1, col).setValue(value);
             }
-            // Ensure clean value writing
-            const cleanValue = String(check.value).trim();
-            dataRange.getCell(rowIndex + 1, check.col).setValue(cleanValue);
-            updated = true;
-          }
+          };
         }
-      }
+      };
       
-      // Update Max_Favorable with array
-      if (hdrMap.maxFavorableCol && analysis.maxFavorableArray.length > 0) {
-        const existing = row[hdrMap.maxFavorableCol - 1];
-        if (!existing) {
-          // Store as JSON array
-          const maxFavorableJson = JSON.stringify(analysis.maxFavorableArray);
-          dataRange.getCell(rowIndex + 1, hdrMap.maxFavorableCol).setValue(maxFavorableJson);
-          EW_trace('BACKFILL', `${ticker} Max_Favorable updated with array: ${maxFavorableJson}`);
-          updated = true;
-        }
-      }
-      
-      // Update Min_Unfavorable with array
-      if (hdrMap.minUnfavorableCol && analysis.minUnfavorableArray.length > 0) {
-        const existing = row[hdrMap.minUnfavorableCol - 1];
-        if (!existing) {
-          // Store as JSON array
-          const minUnfavorableJson = JSON.stringify(analysis.minUnfavorableArray);
-          dataRange.getCell(rowIndex + 1, hdrMap.minUnfavorableCol).setValue(minUnfavorableJson);
-          EW_trace('BACKFILL', `${ticker} Min_Unfavorable updated with array: ${minUnfavorableJson}`);
-          updated = true;
-        }
-      }
-      
-      // Update Exp_Result if expired
-      if (hdrMap.expResultCol && expDate && expDate <= today && analysis.expResult) {
-        const existing = row[hdrMap.expResultCol - 1];
-        if (!existing) {
-          // Debug log to check column alignment
-          EW_trace('BACKFILL', `Setting Exp_Result: col=${hdrMap.expResultCol}, value=${analysis.expResult}, day5Col=${hdrMap.day5CheckCol}`);
-          dataRange.getCell(rowIndex + 1, hdrMap.expResultCol).setValue(analysis.expResult);
-          updated = true;
-        }
-      }
-      
-      // Peak_Profit_Date removed - using daily indicator arrays instead
-      
-      
-      // Calculate and update Risk_Reward based on array values
-      if (hdrMap.riskRewardCol && analysis.maxFavorableArray.length > 0 && analysis.minUnfavorableArray.length > 0) {
-        const existing = row[hdrMap.riskRewardCol - 1];
-        if (!existing) {
-          // Find the maximum favorable and unfavorable from the arrays
-          const maxFav = Math.max(...analysis.maxFavorableArray.map(v => parseFloat(v)));
-          const maxUnfav = Math.max(...analysis.minUnfavorableArray.map(v => parseFloat(v)));
-          
-          if (maxUnfav > 0) {
-            const riskReward = (maxFav / maxUnfav).toFixed(2);
-            dataRange.getCell(rowIndex + 1, hdrMap.riskRewardCol).setValue(riskReward);
-            EW_trace('BACKFILL', `${ticker} Risk_Reward calculated: ${maxFav}/${maxUnfav} = ${riskReward}`);
-            updated = true;
-          }
-        }
-      }
-      
-      // Update indicator columns with arrays
-      if (analysis.dailyIndicators && analysis.dailyIndicators.rsi.length > 0 && !hasIndicators) {
-        // Build indicator arrays using helper function
-        const indicatorArrays = EW_buildIndicatorArrays(analysis.dailyIndicators);
-        EW_trace('BACKFILL', `${ticker} Indicator arrays built - RSI length: ${analysis.dailyIndicators.rsi.length}`);
-        EW_trace('BACKFILL', `${ticker} Raw RSI values: ${JSON.stringify(analysis.dailyIndicators.rsi)}`);
-        EW_trace('BACKFILL', `${ticker} Formatted RSI array: ${indicatorArrays.rsi}`);
-        EW_trace('BACKFILL', `${ticker} All indicator arrays: ${JSON.stringify(Object.keys(indicatorArrays))}`);
-        
-        // Update each indicator if not already present
-        if (hdrMap.hitRSICol && !row[hdrMap.hitRSICol - 1] && indicatorArrays.rsi) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitRSICol).setValue(indicatorArrays.rsi);
-          EW_trace('BACKFILL', `${ticker} RSI SET in cell row ${rowIndex + 1}, col ${hdrMap.hitRSICol}: ${indicatorArrays.rsi}`);
-          SpreadsheetApp.flush();
-          updated = true;
-        } else if (!hdrMap.hitRSICol) {
-          EW_trace('BACKFILL', `${ticker} No Hit_RSI column found in header map`);
-        } else if (row[hdrMap.hitRSICol - 1]) {
-          EW_trace('BACKFILL', `${ticker} Hit_RSI already has data: "${row[hdrMap.hitRSICol - 1]}" - skipping`);
-        }
-        if (hdrMap.hitSMA20Col && !row[hdrMap.hitSMA20Col - 1] && indicatorArrays.sma20) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitSMA20Col).setValue(indicatorArrays.sma20);
-          updated = true;
-        }
-        if (hdrMap.hitSMA50Col && !row[hdrMap.hitSMA50Col - 1] && indicatorArrays.sma50) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitSMA50Col).setValue(indicatorArrays.sma50);
-          updated = true;
-        }
-        if (hdrMap.hitEMA9Col && !row[hdrMap.hitEMA9Col - 1] && indicatorArrays.ema9) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitEMA9Col).setValue(indicatorArrays.ema9);
-          updated = true;
-        }
-        if (hdrMap.hitEMA21Col && !row[hdrMap.hitEMA21Col - 1] && indicatorArrays.ema21) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitEMA21Col).setValue(indicatorArrays.ema21);
-          updated = true;
-        }
-        if (hdrMap.hitVWAPCol && !row[hdrMap.hitVWAPCol - 1] && indicatorArrays.vwap) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitVWAPCol).setValue(indicatorArrays.vwap);
-          updated = true;
-        }
-        if (hdrMap.hitRVOLCol && !row[hdrMap.hitRVOLCol - 1] && indicatorArrays.rvol) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitRVOLCol).setValue(indicatorArrays.rvol);
-          updated = true;
-        }
-        if (hdrMap.hitATRCol && !row[hdrMap.hitATRCol - 1] && indicatorArrays.atr) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitATRCol).setValue(indicatorArrays.atr);
-          updated = true;
-        }
-        if (hdrMap.hitPriceVsSMA20Col && !row[hdrMap.hitPriceVsSMA20Col - 1] && indicatorArrays.priceVsSMA20) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitPriceVsSMA20Col).setValue(indicatorArrays.priceVsSMA20);
-          updated = true;
-        }
-        if (hdrMap.hitPriceVsVWAPCol && !row[hdrMap.hitPriceVsVWAPCol - 1] && indicatorArrays.priceVsVWAP) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitPriceVsVWAPCol).setValue(indicatorArrays.priceVsVWAP);
-          updated = true;
-        }
-      } else if (!analysis.dailyIndicators || analysis.dailyIndicators.rsi.length === 0) {
-        EW_trace('BACKFILL', `${ticker} No indicator data available to store`);
-      }
+      // Use centralized update function with the cell updater and existing row data
+      const updated = EW_updateBackfillColumns(cellUpdater, rowIndex + 2, analysis, hdrMap, ticker, expDate, row);
       
       if (updated) {
         processedCount++;
-        EW_trace('BACKFILL', `${ticker} Successfully updated tracking data`);
-        
-        // Update Historical_High and Historical_Low if needed
-        if (hdrMap.historicalHighCol) {
-          const existing = row[hdrMap.historicalHighCol - 1];
-          if (!existing || existing < analysis.historicalHigh) {
-            dataRange.getCell(rowIndex + 1, hdrMap.historicalHighCol).setValue(analysis.historicalHigh);
-          }
-        }
-        
-        if (hdrMap.historicalLowCol) {
-          const existing = row[hdrMap.historicalLowCol - 1];
-          if (!existing || existing > analysis.historicalLow) {
-            dataRange.getCell(rowIndex + 1, hdrMap.historicalLowCol).setValue(analysis.historicalLow);
-          }
-        }
-        
-        // Force save after each row update
-        SpreadsheetApp.flush();
-        EW_trace('BACKFILL', `${ticker} Changes flushed to sheet`);
+        EW_trace('BACKFILL', `${ticker} Successfully updated tracking data via centralized function`);
       } else {
         EW_trace('BACKFILL', `${ticker} No updates made - all fields already filled or no data available`);
       }
@@ -902,23 +777,8 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
   if (historicalData.length > 0) {
     const lastDay = historicalData[historicalData.length - 1];
     
-    if (isSpread && shortStrike) {
-      // For spreads, check if closing price is in profitable range
-      if (isBullSpread) {
-        analysis.expResult = (lastDay.close >= strike && lastDay.close < shortStrike) ? 
-          lastDay.close.toFixed(2) : 'Not profitable at closing';
-      } else if (isBearSpread) {
-        analysis.expResult = (lastDay.close <= strike && lastDay.close > shortStrike) ? 
-          lastDay.close.toFixed(2) : 'Not profitable at closing';
-      }
-    } else {
-      // Single strike strategies
-      if (isBullish) {
-        analysis.expResult = lastDay.close >= strike ? lastDay.close.toFixed(2) : 'Not profitable at closing';
-      } else if (isBearish) {
-        analysis.expResult = lastDay.close <= strike ? lastDay.close.toFixed(2) : 'Not profitable at closing';
-      }
-    }
+    // Set expResult to the closing price at expiration
+    analysis.expResult = lastDay.close ? lastDay.close.toFixed(2) : null;
   }
   
   // Note: Indicators are now calculated daily and stored in arrays
@@ -983,6 +843,7 @@ function EW_backfillSelectedRows() {
   
   // Debug: Log array columns
   EW_trace('BACKFILL', `Array columns - Strike_Hit: ${hdrMap.strikeHitCol}, Hit_RSI: ${hdrMap.hitRSICol}, Hit_SMA20: ${hdrMap.hitSMA20Col}`);
+  EW_trace('BACKFILL', `Result columns - Exp_Result: ${hdrMap.expResultCol}, Risk_Reward: ${hdrMap.riskRewardCol}, Historical_High: ${hdrMap.historicalHighCol}, Historical_Low: ${hdrMap.historicalLowCol}`);
   
   // Get the data for all selected rows at once
   const dataRange = sheet.getRange(startRow, 1, numRows, sheet.getLastColumn());
@@ -1003,86 +864,173 @@ function EW_backfillSelectedRows() {
     if (ticker && runDate && strike) {
       const analysis = EW_backfillSinglePosition(ticker, sheet.getName(), strike, runDate, expDate);
       
-      // Update cells
-      if (hdrMap.hitDateCol && analysis.firstHitDate) {
-        sheet.getRange(rowNum, hdrMap.hitDateCol).setValue(analysis.firstHitDate);
-      }
-      if (hdrMap.day0CheckCol && analysis.day0Hit) {
-        sheet.getRange(rowNum, hdrMap.day0CheckCol).setValue(analysis.day0Hit);
-      }
-      if (hdrMap.day1CheckCol && analysis.day1Hit) {
-        sheet.getRange(rowNum, hdrMap.day1CheckCol).setValue(analysis.day1Hit);
-      }
-      if (hdrMap.day2CheckCol && analysis.day2Hit) {
-        sheet.getRange(rowNum, hdrMap.day2CheckCol).setValue(analysis.day2Hit);
-      }
-      if (hdrMap.day3CheckCol && analysis.day3Hit) {
-        sheet.getRange(rowNum, hdrMap.day3CheckCol).setValue(analysis.day3Hit);
-      }
-      if (hdrMap.day4CheckCol && analysis.day4Hit) {
-        sheet.getRange(rowNum, hdrMap.day4CheckCol).setValue(analysis.day4Hit);
-      }
-      if (hdrMap.day5CheckCol && analysis.day5Hit) {
-        sheet.getRange(rowNum, hdrMap.day5CheckCol).setValue(analysis.day5Hit);
-      }
-      if (hdrMap.maxFavorableCol && analysis.maxFavorableArray.length > 0) {
-        sheet.getRange(rowNum, hdrMap.maxFavorableCol).setValue(JSON.stringify(analysis.maxFavorableArray));
-      }
-      if (hdrMap.minUnfavorableCol && analysis.minUnfavorableArray.length > 0) {
-        sheet.getRange(rowNum, hdrMap.minUnfavorableCol).setValue(JSON.stringify(analysis.minUnfavorableArray));
-      }
+      // Convert expDate to Date object if it's a string
+      const expDateObj = expDate ? new Date(expDate) : null;
       
-      // Add Strike_Hit array
-      if (hdrMap.strikeHitCol && analysis.strikeHitArray.length > 0) {
-        sheet.getRange(rowNum, hdrMap.strikeHitCol).setValue(JSON.stringify(analysis.strikeHitArray));
-        EW_trace('BACKFILL', `${ticker} Strike_Hit updated in row ${rowNum}`);
-      }
+      // Add debug logging
+      EW_trace('BACKFILL', `Row ${rowNum} - Ticker: ${ticker}, ExpDate: ${expDate}, ExpDateObj: ${expDateObj}, ExpResult: ${analysis.expResult}`);
+      EW_trace('BACKFILL', `Row ${rowNum} - MaxFav array: ${JSON.stringify(analysis.maxFavorableArray)}, MinUnfav array: ${JSON.stringify(analysis.minUnfavorableArray)}`);
       
-      // Add indicator arrays
-      if (analysis.dailyIndicators && analysis.dailyIndicators.rsi.length > 0) {
-        const indicatorArrays = EW_buildIndicatorArrays(analysis.dailyIndicators);
-        
-        if (hdrMap.hitRSICol && indicatorArrays.rsi) {
-          sheet.getRange(rowNum, hdrMap.hitRSICol).setValue(indicatorArrays.rsi);
-        }
-        if (hdrMap.hitSMA20Col && indicatorArrays.sma20) {
-          sheet.getRange(rowNum, hdrMap.hitSMA20Col).setValue(indicatorArrays.sma20);
-        }
-        if (hdrMap.hitSMA50Col && indicatorArrays.sma50) {
-          sheet.getRange(rowNum, hdrMap.hitSMA50Col).setValue(indicatorArrays.sma50);
-        }
-        if (hdrMap.hitEMA9Col && indicatorArrays.ema9) {
-          sheet.getRange(rowNum, hdrMap.hitEMA9Col).setValue(indicatorArrays.ema9);
-        }
-        if (hdrMap.hitEMA21Col && indicatorArrays.ema21) {
-          sheet.getRange(rowNum, hdrMap.hitEMA21Col).setValue(indicatorArrays.ema21);
-        }
-        if (hdrMap.hitVWAPCol && indicatorArrays.vwap) {
-          sheet.getRange(rowNum, hdrMap.hitVWAPCol).setValue(indicatorArrays.vwap);
-        }
-        if (hdrMap.hitRVOLCol && indicatorArrays.rvol) {
-          sheet.getRange(rowNum, hdrMap.hitRVOLCol).setValue(indicatorArrays.rvol);
-        }
-        if (hdrMap.hitATRCol && indicatorArrays.atr) {
-          sheet.getRange(rowNum, hdrMap.hitATRCol).setValue(indicatorArrays.atr);
-        }
-        if (hdrMap.hitPriceVsSMA20Col && indicatorArrays.priceVsSMA20) {
-          sheet.getRange(rowNum, hdrMap.hitPriceVsSMA20Col).setValue(indicatorArrays.priceVsSMA20);
-        }
-        if (hdrMap.hitPriceVsVWAPCol && indicatorArrays.priceVsVWAP) {
-          sheet.getRange(rowNum, hdrMap.hitPriceVsVWAPCol).setValue(indicatorArrays.priceVsVWAP);
-        }
-        
-        EW_trace('BACKFILL', `${ticker} Indicators updated in row ${rowNum}`);
-      }
+      // Use centralized update function with Date object
+      const wasUpdated = EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDateObj, rowData);
       
-      processedCount++;
+      if (wasUpdated) {
+        processedCount++;
+      }
     }
   }
   
   SpreadsheetApp.flush();
   const message = 'Processed ' + processedCount + ' of ' + numRows + ' selected rows';
   EW_safeAlert('Backfill Complete', message);
+}
+
+/**
+ * Centralized function to update all backfill columns
+ * Ensures consistency across all backfill functions
+ * @param {Sheet} sheet - The sheet to update
+ * @param {number} rowNum - Row number to update (1-based)
+ * @param {Object} analysis - Analysis results from EW_backfillSinglePosition
+ * @param {Object} hdrMap - Header mapping object
+ * @param {string} ticker - Ticker symbol for logging
+ * @param {Date} expDate - Expiration date (optional)
+ * @param {Array} existingRowData - Optional existing row data to check for already filled values
+ * @returns {boolean} True if any updates were made
+ */
+function EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDate = null, existingRowData = null) {
+  let updated = false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  // Helper function to check if value already exists
+  const shouldUpdate = (columnIndex, newValue) => {
+    if (!columnIndex || newValue === null || newValue === undefined) return false;
+    if (!existingRowData) return true; // If no existing data provided, always update
+    const existingValue = existingRowData[columnIndex - 1];
+    return !existingValue || existingValue === '';
+  };
+  
+  // Update First_Hit_Date
+  if (shouldUpdate(hdrMap.hitDateCol, analysis.firstHitDate)) {
+    sheet.getRange(rowNum, hdrMap.hitDateCol).setValue(analysis.firstHitDate);
+    updated = true;
+  }
+  
+  // Update Day0_Check through Day5_Check
+  const dayChecks = [
+    { col: hdrMap.day0CheckCol, value: analysis.day0Hit },
+    { col: hdrMap.day1CheckCol, value: analysis.day1Hit },
+    { col: hdrMap.day2CheckCol, value: analysis.day2Hit },
+    { col: hdrMap.day3CheckCol, value: analysis.day3Hit },
+    { col: hdrMap.day4CheckCol, value: analysis.day4Hit },
+    { col: hdrMap.day5CheckCol, value: analysis.day5Hit }
+  ];
+  
+  for (const check of dayChecks) {
+    if (shouldUpdate(check.col, check.value)) {
+      sheet.getRange(rowNum, check.col).setValue(check.value);
+      updated = true;
+    }
+  }
+  
+  // Update Max_Favorable array
+  if (shouldUpdate(hdrMap.maxFavorableCol, analysis.maxFavorableArray) && analysis.maxFavorableArray.length > 0) {
+    sheet.getRange(rowNum, hdrMap.maxFavorableCol).setValue(JSON.stringify(analysis.maxFavorableArray));
+    updated = true;
+  }
+  
+  // Update Min_Unfavorable array
+  if (shouldUpdate(hdrMap.minUnfavorableCol, analysis.minUnfavorableArray) && analysis.minUnfavorableArray.length > 0) {
+    sheet.getRange(rowNum, hdrMap.minUnfavorableCol).setValue(JSON.stringify(analysis.minUnfavorableArray));
+    updated = true;
+  }
+  
+  // Update Strike_Hit array
+  if (shouldUpdate(hdrMap.strikeHitCol, analysis.strikeHitArray) && analysis.strikeHitArray.length > 0) {
+    sheet.getRange(rowNum, hdrMap.strikeHitCol).setValue(JSON.stringify(analysis.strikeHitArray));
+    EW_trace('BACKFILL', `${ticker} Strike_Hit array updated: ${JSON.stringify(analysis.strikeHitArray)}`);
+    updated = true;
+  }
+  
+  // Update all indicator arrays
+  if (analysis.dailyIndicators && analysis.dailyIndicators.rsi && analysis.dailyIndicators.rsi.length > 0) {
+    // Use the new array formatter from 13_ArrayBuilders.js
+    const indicatorArrays = EW_formatIndicatorArraysForStorage(analysis.dailyIndicators);
+    
+    const indicatorMappings = [
+      { col: hdrMap.hitRSICol, value: indicatorArrays.rsi, name: 'RSI' },
+      { col: hdrMap.hitSMA20Col, value: indicatorArrays.sma20, name: 'SMA20' },
+      { col: hdrMap.hitSMA50Col, value: indicatorArrays.sma50, name: 'SMA50' },
+      { col: hdrMap.hitEMA9Col, value: indicatorArrays.ema9, name: 'EMA9' },
+      { col: hdrMap.hitEMA21Col, value: indicatorArrays.ema21, name: 'EMA21' },
+      { col: hdrMap.hitVWAPCol, value: indicatorArrays.vwap, name: 'VWAP' },
+      { col: hdrMap.hitRVOLCol, value: indicatorArrays.rvol, name: 'RVOL' },
+      { col: hdrMap.hitATRCol, value: indicatorArrays.atr, name: 'ATR' },
+      { col: hdrMap.hitPriceVsSMA20Col, value: indicatorArrays.priceVsSMA20, name: 'PriceVsSMA20' },
+      { col: hdrMap.hitPriceVsVWAPCol, value: indicatorArrays.priceVsVWAP, name: 'PriceVsVWAP' }
+    ];
+    
+    for (const indicator of indicatorMappings) {
+      if (shouldUpdate(indicator.col, indicator.value)) {
+        sheet.getRange(rowNum, indicator.col).setValue(indicator.value);
+        updated = true;
+      }
+    }
+    
+    if (updated) {
+      EW_trace('BACKFILL', `${ticker} Indicators updated`);
+    }
+  }
+  
+  // Update Exp_Result if expired
+  const expResultShouldUpdate = shouldUpdate(hdrMap.expResultCol, analysis.expResult);
+  const isExpired = expDate && expDate <= today;
+  EW_trace('BACKFILL', `${ticker} Exp_Result check - Column: ${hdrMap.expResultCol}, ShouldUpdate: ${expResultShouldUpdate}, ExpDate: ${expDate}, Today: ${today}, IsExpired: ${isExpired}, ExpResult: ${analysis.expResult}`);
+  
+  if (expResultShouldUpdate && isExpired && analysis.expResult) {
+    sheet.getRange(rowNum, hdrMap.expResultCol).setValue(analysis.expResult);
+    EW_trace('BACKFILL', `${ticker} Exp_Result UPDATED: ${analysis.expResult}`);
+    updated = true;
+  } else {
+    EW_trace('BACKFILL', `${ticker} Exp_Result NOT updated - Missing condition`);
+  }
+  
+  // Calculate and update Risk_Reward
+  const riskRewardShouldUpdate = shouldUpdate(hdrMap.riskRewardCol, 'check');
+  const hasArrays = analysis.maxFavorableArray && analysis.minUnfavorableArray && 
+                    analysis.maxFavorableArray.length > 0 && analysis.minUnfavorableArray.length > 0;
+  EW_trace('BACKFILL', `${ticker} Risk_Reward check - Column: ${hdrMap.riskRewardCol}, ShouldUpdate: ${riskRewardShouldUpdate}, HasArrays: ${hasArrays}`);
+  
+  if (riskRewardShouldUpdate && hasArrays) {
+    const maxFav = Math.max(...analysis.maxFavorableArray.map(v => parseFloat(v)));
+    const maxUnfav = Math.max(...analysis.minUnfavorableArray.map(v => parseFloat(v)));
+    if (maxUnfav > 0) {
+      const riskReward = (maxFav / maxUnfav).toFixed(2);
+      sheet.getRange(rowNum, hdrMap.riskRewardCol).setValue(riskReward);
+      EW_trace('BACKFILL', `${ticker} Risk_Reward UPDATED: ${maxFav}/${maxUnfav} = ${riskReward}`);
+      updated = true;
+    } else {
+      EW_trace('BACKFILL', `${ticker} Risk_Reward NOT updated - maxUnfav is 0`);
+    }
+  } else {
+    EW_trace('BACKFILL', `${ticker} Risk_Reward NOT updated - Missing condition`);
+  }
+  
+  // Update Historical High/Low
+  if (shouldUpdate(hdrMap.historicalHighCol, analysis.historicalHigh)) {
+    sheet.getRange(rowNum, hdrMap.historicalHighCol).setValue(analysis.historicalHigh);
+    updated = true;
+  }
+  if (shouldUpdate(hdrMap.historicalLowCol, analysis.historicalLow) && analysis.historicalLow < Infinity) {
+    sheet.getRange(rowNum, hdrMap.historicalLowCol).setValue(analysis.historicalLow);
+    updated = true;
+  }
+  
+  if (updated) {
+    SpreadsheetApp.flush(); // Force immediate save
+  }
+  
+  return updated;
 }
 
 /**
@@ -1255,7 +1203,7 @@ function EW_testHistoricalBackfill() {
               
               // Test building formatted arrays
               if (analysis.dailyIndicators && analysis.dailyIndicators.rsi.length > 0) {
-                const testArrays = EW_buildIndicatorArrays(analysis.dailyIndicators);
+                const testArrays = EW_formatIndicatorArraysForStorage(analysis.dailyIndicators);
                 console.log('\nFormatted Arrays for Storage:');
                 console.log(`  RSI String: ${testArrays.rsi}`);
                 console.log(`  SMA20 String: ${testArrays.sma20}`);
@@ -1272,133 +1220,41 @@ function EW_testHistoricalBackfill() {
               console.log('\n=== Updating All Columns (Like Real Backfill) ===');
               const actualRow = rowIndex + 2;
               
-              // Update Hit_Date
-              if (hdrMap.hitDateCol && analysis.firstHitDate) {
-                sheet.getRange(actualRow, hdrMap.hitDateCol).setValue(analysis.firstHitDate);
-                console.log(`✓ Hit_Date updated: ${analysis.firstHitDate}`);
-              }
+              // Use centralized update function
+              const wasUpdated = EW_updateBackfillColumns(sheet, actualRow, analysis, hdrMap, ticker, expDate);
               
-              // Update Day checks
-              if (hdrMap.day0CheckCol && analysis.day0Hit) {
-                sheet.getRange(actualRow, hdrMap.day0CheckCol).setValue(analysis.day0Hit);
-              }
-              if (hdrMap.day1CheckCol && analysis.day1Hit) {
-                sheet.getRange(actualRow, hdrMap.day1CheckCol).setValue(analysis.day1Hit);
-              }
-              if (hdrMap.day2CheckCol && analysis.day2Hit) {
-                sheet.getRange(actualRow, hdrMap.day2CheckCol).setValue(analysis.day2Hit);
-              }
-              if (hdrMap.day3CheckCol && analysis.day3Hit) {
-                sheet.getRange(actualRow, hdrMap.day3CheckCol).setValue(analysis.day3Hit);
-              }
-              if (hdrMap.day4CheckCol && analysis.day4Hit) {
-                sheet.getRange(actualRow, hdrMap.day4CheckCol).setValue(analysis.day4Hit);
-              }
-              if (hdrMap.day5CheckCol && analysis.day5Hit) {
-                sheet.getRange(actualRow, hdrMap.day5CheckCol).setValue(analysis.day5Hit);
-              }
-              console.log(`✓ Day checks updated: ${analysis.day0Hit}, ${analysis.day1Hit}, ${analysis.day2Hit}, ${analysis.day3Hit}, ${analysis.day4Hit}, ${analysis.day5Hit || 'N/A'}`);
-              
-              // Update Max/Min Favorable arrays
-              if (hdrMap.maxFavorableCol && analysis.maxFavorableArray.length > 0) {
-                sheet.getRange(actualRow, hdrMap.maxFavorableCol).setValue(JSON.stringify(analysis.maxFavorableArray));
-                console.log(`✓ Max_Favorable array updated: ${JSON.stringify(analysis.maxFavorableArray)}`);
-              }
-              if (hdrMap.minUnfavorableCol && analysis.minUnfavorableArray.length > 0) {
-                sheet.getRange(actualRow, hdrMap.minUnfavorableCol).setValue(JSON.stringify(analysis.minUnfavorableArray));
-                console.log(`✓ Min_Unfavorable array updated: ${JSON.stringify(analysis.minUnfavorableArray)}`);
-              }
-              
-              // Update Strike_Hit array
-              if (hdrMap.strikeHitCol && analysis.strikeHitArray.length > 0) {
-                sheet.getRange(actualRow, hdrMap.strikeHitCol).setValue(JSON.stringify(analysis.strikeHitArray));
-                console.log(`✓ Strike_Hit array updated: ${JSON.stringify(analysis.strikeHitArray)}`);
-              }
-              
-              // Update Exp_Result
-              if (hdrMap.expResultCol && analysis.expResult) {
-                sheet.getRange(actualRow, hdrMap.expResultCol).setValue(analysis.expResult);
-                console.log(`✓ Exp_Result updated: ${analysis.expResult}`);
-              }
-              
-              // Calculate and update Risk_Reward
-              if (hdrMap.riskRewardCol && analysis.maxFavorableArray.length > 0 && analysis.minUnfavorableArray.length > 0) {
-                const maxFav = Math.max(...analysis.maxFavorableArray.map(v => parseFloat(v)));
-                const maxUnfav = Math.max(...analysis.minUnfavorableArray.map(v => parseFloat(v)));
-                if (maxUnfav > 0) {
-                  const riskReward = (maxFav / maxUnfav).toFixed(2);
-                  sheet.getRange(actualRow, hdrMap.riskRewardCol).setValue(riskReward);
-                  console.log(`✓ Risk_Reward updated: ${riskReward}`);
-                }
-              }
-              
-              // Update ALL indicator arrays
-              if (analysis.dailyIndicators && analysis.dailyIndicators.rsi.length > 0) {
-                const indicatorArrays = EW_buildIndicatorArrays(analysis.dailyIndicators);
-                console.log('\nUpdating indicator arrays:');
+              if (wasUpdated) {
+                console.log('\n✓ All columns updated successfully');
                 
-                if (hdrMap.hitRSICol && indicatorArrays.rsi) {
-                  sheet.getRange(actualRow, hdrMap.hitRSICol).setValue(indicatorArrays.rsi);
-                  console.log(`✓ Hit_RSI: ${indicatorArrays.rsi}`);
+                // Log summary of what was updated
+                console.log('\nUpdated values:');
+                if (analysis.firstHitDate) console.log(`  Hit_Date: ${analysis.firstHitDate}`);
+                if (analysis.day0Hit) console.log(`  Day0_Check: ${analysis.day0Hit}`);
+                if (analysis.day1Hit) console.log(`  Day1_Check: ${analysis.day1Hit}`);
+                if (analysis.day2Hit) console.log(`  Day2_Check: ${analysis.day2Hit}`);
+                if (analysis.day3Hit) console.log(`  Day3_Check: ${analysis.day3Hit}`);
+                if (analysis.day4Hit) console.log(`  Day4_Check: ${analysis.day4Hit}`);
+                if (analysis.day5Hit) console.log(`  Day5_Check: ${analysis.day5Hit}`);
+                if (analysis.maxFavorableArray.length > 0) console.log(`  Max_Favorable: ${JSON.stringify(analysis.maxFavorableArray)}`);
+                if (analysis.minUnfavorableArray.length > 0) console.log(`  Min_Unfavorable: ${JSON.stringify(analysis.minUnfavorableArray)}`);
+                if (analysis.strikeHitArray.length > 0) console.log(`  Strike_Hit: ${JSON.stringify(analysis.strikeHitArray)}`);
+                if (analysis.expResult) console.log(`  Exp_Result: ${analysis.expResult}`);
+                if (analysis.historicalHigh) console.log(`  Historical_High: ${analysis.historicalHigh}`);
+                if (analysis.historicalLow < Infinity) console.log(`  Historical_Low: ${analysis.historicalLow}`);
+                
+                // Log indicator arrays
+                if (analysis.dailyIndicators && analysis.dailyIndicators.rsi.length > 0) {
+                  const indicatorArrays = EW_formatIndicatorArraysForStorage(analysis.dailyIndicators);
+                  console.log('\nIndicator arrays:');
+                  console.log(`  Hit_RSI: ${indicatorArrays.rsi}`);
+                  console.log(`  Hit_SMA20: ${indicatorArrays.sma20}`);
+                  console.log(`  Hit_VWAP: ${indicatorArrays.vwap}`);
+                  console.log(`  Hit_PriceVsSMA20: ${indicatorArrays.priceVsSMA20}`);
+                  console.log(`  Hit_PriceVsVWAP: ${indicatorArrays.priceVsVWAP}`);
                 }
-                if (hdrMap.hitSMA20Col && indicatorArrays.sma20) {
-                  sheet.getRange(actualRow, hdrMap.hitSMA20Col).setValue(indicatorArrays.sma20);
-                  console.log(`✓ Hit_SMA20: ${indicatorArrays.sma20}`);
-                }
-                if (hdrMap.hitSMA50Col && indicatorArrays.sma50) {
-                  sheet.getRange(actualRow, hdrMap.hitSMA50Col).setValue(indicatorArrays.sma50);
-                  console.log(`✓ Hit_SMA50: ${indicatorArrays.sma50}`);
-                }
-                if (hdrMap.hitEMA9Col && indicatorArrays.ema9) {
-                  sheet.getRange(actualRow, hdrMap.hitEMA9Col).setValue(indicatorArrays.ema9);
-                  console.log(`✓ Hit_EMA9: ${indicatorArrays.ema9}`);
-                }
-                if (hdrMap.hitEMA21Col && indicatorArrays.ema21) {
-                  sheet.getRange(actualRow, hdrMap.hitEMA21Col).setValue(indicatorArrays.ema21);
-                  console.log(`✓ Hit_EMA21: ${indicatorArrays.ema21}`);
-                }
-                if (hdrMap.hitVWAPCol && indicatorArrays.vwap) {
-                  sheet.getRange(actualRow, hdrMap.hitVWAPCol).setValue(indicatorArrays.vwap);
-                  console.log(`✓ Hit_VWAP: ${indicatorArrays.vwap}`);
-                }
-                if (hdrMap.hitRVOLCol && indicatorArrays.rvol) {
-                  sheet.getRange(actualRow, hdrMap.hitRVOLCol).setValue(indicatorArrays.rvol);
-                  console.log(`✓ Hit_RVOL: ${indicatorArrays.rvol}`);
-                }
-                if (hdrMap.hitATRCol && indicatorArrays.atr) {
-                  sheet.getRange(actualRow, hdrMap.hitATRCol).setValue(indicatorArrays.atr);
-                  console.log(`✓ Hit_ATR: ${indicatorArrays.atr}`);
-                }
-                if (hdrMap.hitPriceVsSMA20Col && indicatorArrays.priceVsSMA20) {
-                  sheet.getRange(actualRow, hdrMap.hitPriceVsSMA20Col).setValue(indicatorArrays.priceVsSMA20);
-                  console.log(`✓ Hit_PriceVsSMA20: ${indicatorArrays.priceVsSMA20}`);
-                }
-                if (hdrMap.hitPriceVsVWAPCol && indicatorArrays.priceVsVWAP) {
-                  sheet.getRange(actualRow, hdrMap.hitPriceVsVWAPCol).setValue(indicatorArrays.priceVsVWAP);
-                  console.log(`✓ Hit_PriceVsVWAP: ${indicatorArrays.priceVsVWAP}`);
-                }
+              } else {
+                console.log('\n⚠️ No updates were made');
               }
-              
-              // Update Historical_High and Historical_Low if needed
-              if (hdrMap.historicalHighCol && analysis.historicalHigh) {
-                const existing = row[hdrMap.historicalHighCol - 1];
-                if (!existing || existing < analysis.historicalHigh) {
-                  sheet.getRange(actualRow, hdrMap.historicalHighCol).setValue(analysis.historicalHigh);
-                  console.log(`✓ Historical_High updated: ${analysis.historicalHigh}`);
-                }
-              }
-              
-              if (hdrMap.historicalLowCol && analysis.historicalLow < Infinity) {
-                const existing = row[hdrMap.historicalLowCol - 1];
-                if (!existing || existing > analysis.historicalLow) {
-                  sheet.getRange(actualRow, hdrMap.historicalLowCol).setValue(analysis.historicalLow);
-                  console.log(`✓ Historical_Low updated: ${analysis.historicalLow}`);
-                }
-              }
-              
-              // Force save all changes
-              SpreadsheetApp.flush();
-              console.log('\n✓ All columns updated and flushed to sheet');
             }
             
             testResults.push({
