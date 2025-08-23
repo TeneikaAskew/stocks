@@ -7,10 +7,15 @@ All indicator columns now store arrays of daily values (Day0-Day5) instead of si
 
 ### Strike_Hit Array
 ```json
-["0.013823", "0.012456", "0.011234", "-0.006912", "0.029178", "0.007523"]
+["0.026609", "0.021275", "0.052464", "0.069072", "0.062725"]
 ```
-Each value shows the decimal move from that day's closing price to the strike (not percentage).
-To convert to percentage, multiply by 100.
+Each value shows the decimal move from that day's closing price relative to the strike.
+- **Bullish strategies**: (close - strike) / strike (positive when price > strike)
+- **Bearish strategies**: (strike - close) / strike (positive when price < strike)
+- To convert to percentage, multiply by 100.
+
+Example with strike = 172.5:
+- Day 0: Close = 177.09, Move = (177.09 - 172.5) / 172.5 = 0.026609 (2.66% above strike)
 
 ### Indicator Arrays
 

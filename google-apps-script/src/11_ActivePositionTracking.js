@@ -189,15 +189,17 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
             const strategyUpper = position.strategy.toUpperCase();
             
             if (strategyUpper.includes('BULL') || strategyUpper.includes('LONG CALL')) {
-              // For bullish strategies: (strike - day0Price) / day0Price
-              percentMove = ((strike - day0Price) / day0Price).toFixed(6);
+              // For bullish strategies: (day0Price - strike) / strike (positive when above strike)
+              percentMove = ((day0Price - strike) / strike).toFixed(6);
             } else if (strategyUpper.includes('BEAR') || strategyUpper.includes('LONG PUT')) {
-              // For bearish strategies: (day0Price - strike) / day0Price
-              percentMove = ((day0Price - strike) / day0Price).toFixed(6);
+              // For bearish strategies: (strike - day0Price) / strike (positive when below strike)
+              percentMove = ((strike - day0Price) / strike).toFixed(6);
             } else {
               // Default for other strategies
-              percentMove = ((strike - day0Price) / day0Price).toFixed(6);
+              percentMove = ((day0Price - strike) / strike).toFixed(6);
             }
+            
+            console.log(`ACTIVE TRACKING: ${position.ticker} - Strike: ${strike}, Price: ${day0Price}, Move: ${percentMove}`);
           }
         } catch (e) {
           console.log(`ACTIVE TRACKING: Could not fetch Day0 price for ${position.ticker}: ${e.message}`);
@@ -310,28 +312,16 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         if (check.col && position.daysSinceEntry >= check.day) {
           const existingCheck = row[check.col - 1];
           if (!existingCheck) {
-            // Use actual price if hit, otherwise 'None'
+            // Always show the actual closing price
             let dayCheckValue = 'None';
             
-            if (result.hit && result.dayHigh && result.dayLow) {
-              // Determine which price to show based on strategy
-              const strategyUpper = position.strategy.toUpperCase();
-              const strike = position.strike || position.longStrike || 0;
-              
-              if (strategyUpper.includes('BULL') || strategyUpper.includes('LONG CALL')) {
-                // For bullish strategies, show the price if it went above strike
-                if (result.dayHigh >= strike) {
-                  dayCheckValue = strike.toFixed(2);
-                }
-              } else if (strategyUpper.includes('BEAR') || strategyUpper.includes('LONG PUT')) {
-                // For bearish strategies, show the price if it went below strike
-                if (result.dayLow <= strike) {
-                  dayCheckValue = strike.toFixed(2);
-                }
-              } else if (result.hit) {
-                // For other strategies, just show the strike if hit
-                dayCheckValue = strike.toFixed(2);
-              }
+            // Use the last close price if available, otherwise average of high/low
+            if (result.lastClose) {
+              dayCheckValue = result.lastClose.toFixed(2);
+            } else if (result.dayHigh && result.dayLow) {
+              // If no close price, use average of high and low
+              const avgPrice = (parseFloat(result.dayHigh) + parseFloat(result.dayLow)) / 2;
+              dayCheckValue = avgPrice.toFixed(2);
             }
             
             dataRange.getCell(result.rowIndex + 1, check.col).setValue(dayCheckValue);
