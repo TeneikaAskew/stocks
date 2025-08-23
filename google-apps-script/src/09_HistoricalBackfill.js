@@ -88,16 +88,24 @@ function EW_backfillStrategyTracking(ss, strategyName) {
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(headers);
   
+  // Get all data
+  const lastRow = sheet.getLastRow();
+  const dataRange = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
+  const data = dataRange.getValues();
+  
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  // Check required columns - handle spreads differently
+  const isSpread = strategyName.toUpperCase().includes('SPREAD');
+  const strikeColumn = isSpread ? 'longStrikeCol' : 'strikeCol';
+  
   // Verify column order for Day5_Check and Exp_Result
   if (hdrMap.day5CheckCol && hdrMap.expResultCol) {
     const day5Header = headers[hdrMap.day5CheckCol - 1];
     const expResultHeader = headers[hdrMap.expResultCol - 1];
     EW_trace('BACKFILL', `Column verification - Day5_Check: col ${hdrMap.day5CheckCol}='${day5Header}', Exp_Result: col ${hdrMap.expResultCol}='${expResultHeader}'`);
   }
-  
-  // Check required columns - handle spreads differently
-  const isSpread = strategyName.toUpperCase().includes('SPREAD');
-  const strikeColumn = isSpread ? 'longStrikeCol' : 'strikeCol';
   
   const requiredCols = ['tickerCol', 'runDateCol', strikeColumn, 'daysToExpCol'];
   for (const col of requiredCols) {
@@ -107,15 +115,10 @@ function EW_backfillStrategyTracking(ss, strategyName) {
     }
   }
   
-  // Get all data
-  const lastRow = sheet.getLastRow();
-  const dataRange = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
-  const data = dataRange.getValues();
-  
   let processedCount = 0;
   let skippedCount = 0;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  let emptyStrikeHitProcessed = 0;
+  let emptyStrikeHitSkipped = 0;
   
   // Process each row
   data.forEach((row, rowIndex) => {
@@ -130,11 +133,6 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       
       if (!ticker || !runDateStr || !strike) return;
       
-      // ONLY process expired positions (Days_To_Exp < 0)
-      if (daysToExp >= 0) {
-        return; // Skip positions that haven't expired yet
-      }
-      
       // Check which day values are already filled
       const hasDay0 = hdrMap.day0CheckCol && row[hdrMap.day0CheckCol - 1];
       const hasDay1 = hdrMap.day1CheckCol && row[hdrMap.day1CheckCol - 1];
@@ -145,16 +143,6 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       const hasStrikeHit = hdrMap.strikeHitCol && row[hdrMap.strikeHitCol - 1];
       const hasIndicators = hdrMap.hitRSICol && row[hdrMap.hitRSICol - 1];
       
-      // Debug logging for existing values
-      if (ticker) {
-        EW_trace('BACKFILL', `${ticker} Current values check:`);
-        EW_trace('BACKFILL', `  Run Date: ${runDateStr}`);
-        EW_trace('BACKFILL', `  Day0_Check (${hdrMap.day0CheckCol}): "${row[hdrMap.day0CheckCol - 1] || 'EMPTY'}"`);
-        EW_trace('BACKFILL', `  Day1_Check (${hdrMap.day1CheckCol}): "${row[hdrMap.day1CheckCol - 1] || 'EMPTY'}"`);
-        EW_trace('BACKFILL', `  Strike_Hit (${hdrMap.strikeHitCol}): "${row[hdrMap.strikeHitCol - 1] || 'EMPTY'}"`);
-        EW_trace('BACKFILL', `  Hit_RSI (${hdrMap.hitRSICol}): "${row[hdrMap.hitRSICol - 1] || 'EMPTY'}"`);
-        EW_trace('BACKFILL', `  Has values: Day0=${hasDay0}, Day1=${hasDay1}, StrikeHit=${hasStrikeHit}, Indicators=${hasIndicators}`);
-      }
       
       // Skip if ALL day values AND arrays are already filled
       if (hasDay0 && hasDay1 && hasDay2 && hasDay3 && hasDay4 && hasDay5 && hasStrikeHit && hasIndicators) {
@@ -186,27 +174,61 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       // Skip if run date is in the future
       if (runDate > today) {
         EW_trace('BACKFILL', `Skipping ${ticker}: Run date is in the future`);
+        if (!hasStrikeHit) emptyStrikeHitSkipped++;
         return;
       }
       
       // Determine end date (expiration or today, whichever is earlier)
       const endDate = expDate && expDate < today ? expDate : today;
       
-      EW_trace('BACKFILL', `Processing expired position: ${ticker} from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (Exp: ${expDateStr || 'none'})`);
+      EW_trace('BACKFILL', `Processing position: ${ticker} from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (Exp: ${expDateStr || 'none'})`);
       
       // Check if runDate is more than 7 days old
       const daysSinceRun = Math.floor((today - runDate) / (1000 * 60 * 60 * 24));
-      const useDaily = daysSinceRun > 7;
+      
+      // Log for empty Strike_Hit rows
+      if (!hasStrikeHit) {
+        EW_trace('BACKFILL', `  ${ticker}: Processing empty Strike_Hit row, ${daysSinceRun} days old`);
+      }
       
       let yahooResult;
       
-      if (useDaily) {
-        EW_trace('BACKFILL', `${ticker}: Using daily data (${daysSinceRun} days old)`);
-        // For daily data, we need to create a custom function or modify existing one
-        yahooResult = EW_getYahooHistoricalRangeWithInterval(ticker, runDate, endDate, '1d', true);
-      } else {
-        // Get minute data for recent dates
+      // Always try to get minute data first for the last 7 days
+      const sevenDaysAgo = new Date(today);
+      sevenDaysAgo.setDate(today.getDate() - 7);
+      
+      if (runDate >= sevenDaysAgo) {
+        // Position is within 7 days, use only minute data
+        EW_trace('BACKFILL', `${ticker}: Using minute data (within 7 days)`);
         yahooResult = EW_getYahooHistoricalRange(ticker, runDate, endDate, true);
+      } else {
+        // Position is older than 7 days, need hybrid approach
+        EW_trace('BACKFILL', `${ticker}: Using hybrid data (${daysSinceRun} days old)`);
+        
+        // Get daily data for the older period (runDate to 7 days ago)
+        const dailyResult = EW_getYahooHistoricalRangeWithInterval(ticker, runDate, sevenDaysAgo, '1d', true);
+        
+        // Get minute data for recent period (7 days ago to endDate)
+        const minuteResult = EW_getYahooHistoricalRange(ticker, sevenDaysAgo, endDate, true);
+        
+        // Combine the results
+        yahooResult = {
+          data: [],
+          raw: null
+        };
+        
+        if (dailyResult && dailyResult.data) {
+          yahooResult.data = yahooResult.data.concat(dailyResult.data);
+        }
+        
+        if (minuteResult && minuteResult.data) {
+          yahooResult.data = yahooResult.data.concat(minuteResult.data);
+        }
+        
+        // Sort by date
+        yahooResult.data.sort((a, b) => a.date - b.date);
+        
+        EW_trace('BACKFILL', `${ticker}: Combined ${dailyResult?.data?.length || 0} daily + ${minuteResult?.data?.length || 0} minute data points`);
       }
       
       if (!yahooResult || !yahooResult.data || yahooResult.data.length === 0) {
@@ -275,6 +297,7 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       
       if (updated) {
         processedCount++;
+        if (!hasStrikeHit) emptyStrikeHitProcessed++;
         EW_trace('BACKFILL', `${ticker} Successfully updated tracking data via centralized function`);
       } else {
         EW_trace('BACKFILL', `${ticker} No updates made - all fields already filled or no data available`);
@@ -298,7 +321,11 @@ function EW_backfillStrategyTracking(ss, strategyName) {
     }
   }
   
-  EW_trace('BACKFILL', `${strategyName}: Processed ${processedCount} positions, skipped ${skippedCount} (no 1-minute data)`);
+  EW_trace('BACKFILL', `${strategyName}: FINAL SUMMARY:`);
+  EW_trace('BACKFILL', `  - Processed ${processedCount} positions total`);
+  EW_trace('BACKFILL', `  - Empty Strike_Hit processed: ${emptyStrikeHitProcessed}`);
+  EW_trace('BACKFILL', `  - Skipped ${skippedCount} positions (no data available)`);
+  EW_trace('BACKFILL', `  - Empty Strike_Hit in skipped: ${emptyStrikeHitSkipped}`);
   return processedCount;
 }
 
