@@ -53,6 +53,13 @@ function EW_backfillStrategyTracking(ss, strategyName) {
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(headers);
   
+  // Verify column order for Day5_Check and Exp_Result
+  if (hdrMap.day5CheckCol && hdrMap.expResultCol) {
+    const day5Header = headers[hdrMap.day5CheckCol - 1];
+    const expResultHeader = headers[hdrMap.expResultCol - 1];
+    EW_trace('BACKFILL', `Column verification - Day5_Check: col ${hdrMap.day5CheckCol}='${day5Header}', Exp_Result: col ${hdrMap.expResultCol}='${expResultHeader}'`);
+  }
+  
   // Check required columns - handle spreads differently
   const isSpread = strategyName.toUpperCase().includes('SPREAD');
   const strikeColumn = isSpread ? 'longStrikeCol' : 'strikeCol';
@@ -92,6 +99,16 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         return; // Skip positions that haven't expired yet
       }
       
+      // Skip if already has tracking data (check key tracking columns)
+      const hasStrikeHit = hdrMap.strikeHitCol && row[hdrMap.strikeHitCol - 1];
+      const hasDay1Check = hdrMap.day1CheckCol && row[hdrMap.day1CheckCol - 1];
+      const hasLastUpdate = hdrMap.lastUpdateCol && row[hdrMap.lastUpdateCol - 1];
+      
+      if (hasStrikeHit && hasDay1Check && hasLastUpdate) {
+        EW_trace('BACKFILL', `Skipping ${ticker} - already has tracking data`);
+        return; // Skip if already processed
+      }
+      
       // Parse dates
       const runDate = new Date(runDateStr);
       runDate.setHours(0, 0, 0, 0);
@@ -113,16 +130,20 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         return;
       }
       
+      // Get short strike for spreads
+      const shortStrike = isSpread && hdrMap.shortStrikeCol ? 
+        parseFloat(row[hdrMap.shortStrikeCol - 1]) || null : null;
+      
       // Analyze historical data
-      const analysis = EW_analyzeHistoricalData(strategyName, strike, historicalData, runDate);
+      const analysis = EW_analyzeHistoricalData(strategyName, strike, historicalData, runDate, shortStrike);
       
       // Update tracking columns with historical analysis
       let updated = false;
       
-      // Update Strike_Hit column based on analysis
+      // Update Strike_Hit column with actual price or 'None'
       if (hdrMap.strikeHitCol) {
-        const strikeHitStatus = analysis.firstHitDate ? 'HIT' : 'NO';
-        dataRange.getCell(rowIndex + 1, hdrMap.strikeHitCol).setValue(strikeHitStatus);
+        const strikeHitValue = analysis.firstHitPrice ? analysis.firstHitPrice.toFixed(2) : 'None';
+        dataRange.getCell(rowIndex + 1, hdrMap.strikeHitCol).setValue(strikeHitValue);
         updated = true;
       }
       
@@ -149,7 +170,13 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         if (check.col && check.value !== null) {
           const existing = row[check.col - 1];
           if (!existing) {
-            dataRange.getCell(rowIndex + 1, check.col).setValue(check.value);
+            // Add debug logging for Day5_Check specifically
+            if (check.day === 5) {
+              EW_trace('BACKFILL', `Setting Day5_Check: col=${check.col}, value=${check.value}, rowIndex=${rowIndex + 1}`);
+            }
+            // Ensure clean value writing
+            const cleanValue = String(check.value).trim();
+            dataRange.getCell(rowIndex + 1, check.col).setValue(cleanValue);
             updated = true;
           }
         }
@@ -177,6 +204,8 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       if (hdrMap.expResultCol && expDate && expDate <= today && analysis.expResult) {
         const existing = row[hdrMap.expResultCol - 1];
         if (!existing) {
+          // Debug log to check column alignment
+          EW_trace('BACKFILL', `Setting Exp_Result: col=${hdrMap.expResultCol}, value=${analysis.expResult}, day5Col=${hdrMap.day5CheckCol}`);
           dataRange.getCell(rowIndex + 1, hdrMap.expResultCol).setValue(analysis.expResult);
           updated = true;
         }
@@ -253,14 +282,16 @@ function EW_countTradingDays(startDate, endDate) {
 /**
  * Analyze historical price data to determine tracking values
  * @param {string} strategy - Strategy name
- * @param {number} strike - Strike price
+ * @param {number} strike - Strike price (or longStrike for spreads)
  * @param {Array} historicalData - Array of price data
  * @param {Date} runDate - Entry date
+ * @param {number} shortStrike - Short strike for spread strategies (optional)
  * @returns {Object} Analysis results
  */
-function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate) {
+function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, shortStrike = null) {
   const analysis = {
     firstHitDate: null,
+    firstHitPrice: null,
     day0Hit: null,
     day1Hit: null,
     day2Hit: null,
@@ -278,8 +309,11 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate) {
   if (!historicalData || historicalData.length === 0) return analysis;
   
   const strategyUpper = strategy.toUpperCase();
-  const isBullish = strategyUpper.includes('LONG CALL') || strategyUpper.includes('BULL');
-  const isBearish = strategyUpper.includes('LONG PUT') || strategyUpper.includes('BEAR');
+  const isSpread = strategyUpper.includes('SPREAD');
+  const isBullSpread = strategyUpper.includes('BULL SPREAD');
+  const isBearSpread = strategyUpper.includes('BEAR SPREAD');
+  const isBullish = strategyUpper.includes('LONG CALL') || (strategyUpper.includes('BULL') && !isSpread);
+  const isBearish = strategyUpper.includes('LONG PUT') || (strategyUpper.includes('BEAR') && !isSpread);
   
   let maxProfit = -Infinity;
   let maxLoss = Infinity;
@@ -332,32 +366,60 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate) {
     
     // Check if strike was hit
     let dayHit = false;
-    if (isBullish) {
-      dayHit = dayData.high >= strike;
-    } else if (isBearish) {
-      dayHit = dayData.low <= strike;
+    let hitPrice = null;
+    
+    if (isSpread && shortStrike) {
+      // For spreads, check if price is in the profitable range
+      if (isBullSpread) {
+        // Bull spread: profitable when price >= longStrike AND < shortStrike
+        if (dayData.high >= strike && dayData.high < shortStrike) {
+          dayHit = true;
+          hitPrice = dayData.high;
+        }
+      } else if (isBearSpread) {
+        // Bear spread: profitable when price <= longStrike AND > shortStrike  
+        if (dayData.low <= strike && dayData.low > shortStrike) {
+          dayHit = true;
+          hitPrice = dayData.low;
+        }
+      }
+    } else {
+      // Single strike strategies
+      if (isBullish) {
+        if (dayData.high >= strike) {
+          dayHit = true;
+          hitPrice = dayData.high;
+        }
+      } else if (isBearish) {
+        if (dayData.low <= strike) {
+          dayHit = true;
+          hitPrice = dayData.low;
+        }
+      }
     }
     
-    // Record first hit date
+    // Record first hit date and price
     if (dayHit && !hitDetected) {
       analysis.firstHitDate = dayData.date.toISOString().split('T')[0];
+      analysis.firstHitPrice = hitPrice;
       hitDetected = true;
     }
     
     // Check specific day milestones based on trading days
     // tradingDaysSinceEntry starts at 0 for the entry date (same day)
+    // Store the actual hit price or 'None' instead of HIT/NO
     if (tradingDaysSinceEntry === 0) {
-      analysis.day0Hit = dayHit ? 'HIT' : 'NO';
+      analysis.day0Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
     } else if (tradingDaysSinceEntry === 1) {
-      analysis.day1Hit = dayHit ? 'HIT' : 'NO';
+      analysis.day1Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
     } else if (tradingDaysSinceEntry === 2) {
-      analysis.day2Hit = dayHit ? 'HIT' : 'NO';
+      analysis.day2Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
     } else if (tradingDaysSinceEntry === 3) {
-      analysis.day3Hit = dayHit ? 'HIT' : 'NO';
+      analysis.day3Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
     } else if (tradingDaysSinceEntry === 4) {
-      analysis.day4Hit = dayHit ? 'HIT' : 'NO';
+      analysis.day4Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
     } else if (tradingDaysSinceEntry === 5) {
-      analysis.day5Hit = dayHit ? 'HIT' : 'NO';
+      analysis.day5Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
     }
     
     // Calculate profit/loss for the day
@@ -386,10 +448,23 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate) {
   // Set expiration result (last day's status)
   if (historicalData.length > 0) {
     const lastDay = historicalData[historicalData.length - 1];
-    if (isBullish) {
-      analysis.expResult = lastDay.close >= strike ? 'HIT' : 'NO';
-    } else if (isBearish) {
-      analysis.expResult = lastDay.close <= strike ? 'HIT' : 'NO';
+    
+    if (isSpread && shortStrike) {
+      // For spreads, check if closing price is in profitable range
+      if (isBullSpread) {
+        analysis.expResult = (lastDay.close >= strike && lastDay.close < shortStrike) ? 
+          lastDay.close.toFixed(2) : 'None';
+      } else if (isBearSpread) {
+        analysis.expResult = (lastDay.close <= strike && lastDay.close > shortStrike) ? 
+          lastDay.close.toFixed(2) : 'None';
+      }
+    } else {
+      // Single strike strategies
+      if (isBullish) {
+        analysis.expResult = lastDay.close >= strike ? lastDay.close.toFixed(2) : 'None';
+      } else if (isBearish) {
+        analysis.expResult = lastDay.close <= strike ? lastDay.close.toFixed(2) : 'None';
+      }
     }
   }
   
