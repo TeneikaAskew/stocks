@@ -155,7 +155,7 @@ function EW_ensureRequiredHeaders(header, strategyName) {
  */
 function EW_addGFHeaders(header) {
   const gfHeaders = [
-    'Days_To_Exp', 'HV_30D', 'RVOL_10D', 'Stock_Price', 'Strike_Hit', 
+    'Days_To_Exp', 'HV_30D', 'RVOL_10D', 'Strike_Hit', 
     'Success_Score', 'Historical_High', 'Historical_Low', 'Ever_Hit_Strike',
     'First_Hit_Date', 'Last_Update', 'Total_Hit_Days', 'Peak_Profit_Date'
   ];

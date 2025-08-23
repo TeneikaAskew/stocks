@@ -1171,19 +1171,24 @@ function EW_completeSheetRepair() {
       const allData = sheet.getRange(1, 1, lastRow, lastCol).getValues();
       const headers = allData[0];
       
-      // List of ALL formula columns from EW_setGFArrayFormulas
-      const formulaColumns = [
+      // List of ALL Google Finance and tracking columns (both formula and plain text)
+      // These will be removed and re-added in the correct order
+      const allGFAndTrackingColumns = [
+        // Google Finance columns (with formulas)
         'GF_Name', 'GF_Price', 'GF_ChangePct', 'GF_High', 'GF_Low', 
         'GF_High52', 'GF_Low52', 'GF_Volume', 'GF_AvgVol10', 'GF_MktCap', 
-        'GF_PE', 'GF_Beta', 'HV_30D', 'RVOL_10', 'Ret_5D', 'Ret_20D', 
-        'GapPct', 'Historical_High', 'Historical_Low', 'Ever_Hit_Strike',
-        'First_Hit_Date', 'Last_Update', 'Total_Hit_Days', 'Peak_Profit_Date',
-        'Days_To_Exp', 'Strike_Hit', 'Hit_Date', 'Max_Favorable', 
-        'Min_Unfavorable', 'Day1_Check', 'Day2_Check', 'Day3_Check', 
-        'Day5_Check', 'Exp_Result', 'Success_Score', 'Profit_Potential', 
-        'Risk_Reward', 'Stock_Price'
+        'GF_PE', 'GF_Beta', 'HV_30D', 'RVOL_10', 'Ret_5D', 'Ret_20D', 'GapPct',
+        // Tracking columns with formulas
+        'Historical_High', 'Historical_Low', 'Ever_Hit_Strike', 
+        'First_Hit_Date', 'Last_Update', 'Total_Hit_Days',
+        'Days_To_Exp', 'Strike_Hit', 'Success_Score',
+        // Plain text tracking columns (for success reports)
+        'Hit_Date', 'Max_Favorable', 'Min_Unfavorable', 
+        'Day1_Check', 'Day2_Check', 'Day3_Check', 'Day5_Check',
+        'Exp_Result', 'Profit_Potential', 'Risk_Reward', 
+        'Peak_Profit_Date'
       ];
-      const formulaColumnsLower = formulaColumns.map(c => c.toLowerCase());
+      const columnsToRemoveLower = allGFAndTrackingColumns.map(c => c.toLowerCase());
       
       // Identify columns to keep (not formula columns or errors)
       const columnsToKeep = [];
@@ -1191,7 +1196,7 @@ function EW_completeSheetRepair() {
         const headerStr = header ? header.toString() : '';
         const headerLower = headerStr.toLowerCase();
         
-        if (!headerStr.startsWith('#') && !formulaColumnsLower.includes(headerLower)) {
+        if (!headerStr.startsWith('#') && !columnsToRemoveLower.includes(headerLower)) {
           columnsToKeep.push(index);
         } else {
           EW_trace('REPAIR', `${tabName}: Removing column "${header}" at position ${index + 1}`);
@@ -1229,29 +1234,36 @@ function EW_completeSheetRepair() {
         sheet.getRange(1, 1, updatedData.length, updatedData[0].length).setValues(updatedData);
       }
       
-      // Don't add headers as plain text - let formulas create them
+      // Get current headers after modifications
       const cleanedHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
       
-      // Create a complete header map including all expected columns
+      // Define all columns in the correct order
       const allGFColumns = [
         'GF_Name','GF_Price','GF_ChangePct','GF_High','GF_Low','GF_High52','GF_Low52',
         'GF_Volume','GF_AvgVol10','GF_MktCap','GF_PE','GF_Beta',
         'HV_30D','RVOL_10','Ret_5D','Ret_20D','GapPct'
       ];
       
-      const allTrackingColumns = [
-        'Days_To_Exp','Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
-        'Day1_Check','Day2_Check','Day3_Check','Day5_Check','Exp_Result',
-        'Success_Score','Profit_Potential','Risk_Reward','Historical_High','Historical_Low',
-        'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days','Peak_Profit_Date',
-        'Stock_Price'
+      const trackingFormulaColumns = [
+        'Days_To_Exp','Strike_Hit','Success_Score','Historical_High','Historical_Low',
+        'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days'
       ];
       
+      const trackingPlainTextColumns = [
+        'Hit_Date','Max_Favorable','Min_Unfavorable',
+        'Day1_Check','Day2_Check','Day3_Check','Day5_Check',
+        'Exp_Result','Profit_Potential','Risk_Reward','Peak_Profit_Date'
+      ];
+      
+      // Add plain text headers first (these won't have formulas)
+      const headersWithPlainText = [...cleanedHeaders, ...trackingPlainTextColumns];
+      sheet.getRange(1, 1, 1, headersWithPlainText.length).setValues([headersWithPlainText]);
+      
       // Create header map with all columns for formula application
-      const withAllColumns = [...cleanedHeaders, ...allGFColumns, ...allTrackingColumns];
+      const withAllColumns = [...cleanedHeaders, ...allGFColumns, ...trackingFormulaColumns, ...trackingPlainTextColumns];
       const finalHdrMap = EW_headerMap(withAllColumns);
       
-      // Apply formulas - this will create the headers as formulas
+      // Apply formulas - this will create the formula column headers
       EW_setGFArrayFormulas(sheet, finalHdrMap);
       
       sheetsRepaired++;
