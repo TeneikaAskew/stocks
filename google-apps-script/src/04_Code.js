@@ -41,6 +41,7 @@ function onOpen() {
     .addItem('Update Success Report', 'EW_updateSuccessReport')
     .addItem('Update Tracking Data', 'EW_updateTrackingData')
     .addItem('Check and add missing columns', 'EW_checkAllSheetsColumns')
+    .addItem('Fix: Add Strategy column (one-time)', 'EW_fixAddStrategyColumn')
     .addSeparator()
     .addSubMenu(ui.createMenu('Automation & Triggers')
       .addItem('Setup Full Auto Tracking', 'EW_setupAutoTracking')
@@ -450,12 +451,13 @@ function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
 
   // First run on this tab
   if (writeHeaderIfEmpty && lastRow === 0) {
-    const baseHeader   = EW_ensureRunDateInHeader(incomingHeader);
+    const baseHeader   = EW_ensureRequiredHeaders(incomingHeader, tabName);
     const headerWithGF = EW_addGFHeaders(baseHeader);
 
     const width = headerWithGF.length;
     const dataRows = incomingData.map(r => {
-      const row = [runDate, ...r];
+      // Add Run Date and Strategy at the beginning
+      const row = [runDate, tabName, ...r];
       if (row.length < width) row.push(...Array(width - row.length).fill(''));
       return row;
     });
@@ -505,6 +507,13 @@ function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
     } else if (sheetHeader[0] && String(sheetHeader[0]).toLowerCase().includes('run')) {
       // Fallback: if first column looks like Run Date but wasn't detected
       dst[0] = runDate;
+    }
+    
+    // Set Strategy - try mapped column first, then fallback to column 2
+    if (hdrMap.strategyCol) {
+      dst[hdrMap.strategyCol - 1] = tabName;
+    } else if (sheetHeader[1] && String(sheetHeader[1]).toLowerCase() === 'strategy') {
+      dst[1] = tabName;
     }
     
     for (const [name, src1] of Object.entries(mapFromIncoming.byName)) {
@@ -894,7 +903,7 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
      )`
   );
 
-  // Ever Hit Strike (permanent flag - once hit, stays TRUE)
+  // Ever Hit Strike (permanent flag - once hit, stays TRUE) - Uses Strategy column
   setHeaderArrayMultiCol(
     hdrMap.everHitStrikeCol, 'Ever_Hit_Strike',
     `LET(
@@ -982,23 +991,23 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
      )`
   );
 
-  // Current Strike Hit Status
+  // Current Strike Hit Status - Uses Strategy column
   setHeaderArrayMultiCol(
     hdrMap.strikeHitCol, 'Strike_Hit',
     `LET(
        ticker, INDEX(${tRange}, i),
-       strategy, INDEX($${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)}, i),
+       strategy, UPPER(INDEX($${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)}, i)),
        strike, INDEX($${EW_columnToLetter(hdrMap.strikeCol)}2:$${EW_columnToLetter(hdrMap.strikeCol)}, i),
        currentPrice, IFERROR(GOOGLEFINANCE(ticker,"price"),0),
        
        IF(OR(ticker="", strategy="", strike="", currentPrice=0), "",
-         IF(OR(REGEXMATCH(UPPER(strategy), "LONG CALL"), REGEXMATCH(UPPER(strategy), "BULL")),
+         IF(OR(REGEXMATCH(strategy, "LONG CALL"), REGEXMATCH(strategy, "BULL")),
            IF(currentPrice >= strike, "HIT", "NO"),
-           IF(OR(REGEXMATCH(UPPER(strategy), "LONG PUT"), REGEXMATCH(UPPER(strategy), "BEAR")),
+           IF(OR(REGEXMATCH(strategy, "LONG PUT"), REGEXMATCH(strategy, "BEAR")),
              IF(currentPrice <= strike, "HIT", "NO"),
-             IF(OR(REGEXMATCH(UPPER(strategy), "SHORT CALL"), REGEXMATCH(UPPER(strategy), "COVERED")),
+             IF(OR(REGEXMATCH(strategy, "SHORT CALL"), REGEXMATCH(strategy, "COVERED")),
                IF(currentPrice < strike, "FAVORABLE", IF(currentPrice >= strike, "UNFAVORABLE", "NEUTRAL")),
-               IF(REGEXMATCH(UPPER(strategy), "SHORT PUT"),
+               IF(REGEXMATCH(strategy, "SHORT PUT"),
                  IF(currentPrice > strike, "FAVORABLE", IF(currentPrice <= strike, "UNFAVORABLE", "NEUTRAL")),
                  "UNKNOWN"
                )
@@ -1075,6 +1084,87 @@ function EW_checkAllSheetsColumns() {
   
   EW_trace('COLUMNS', msg, true);
   EW_safeAlert('Column Check Complete', msg);
+}
+
+/**
+ * One-time fix function to add Strategy column to all existing sheets
+ * This will insert Strategy as the second column and populate it with the sheet name
+ * @returns {void}
+ */
+function EW_fixAddStrategyColumn() {
+  EW_trace('FIX', 'Starting one-time fix to add Strategy column', true);
+  const ss = SpreadsheetApp.getActive();
+  const endpoints = EW.STRATEGY_ENDPOINTS;
+  let sheetsFixed = 0;
+  
+  for (const tabName of Object.keys(endpoints)) {
+    const sheet = ss.getSheetByName(tabName);
+    if (!sheet || sheet.getLastRow() === 0) {
+      EW_trace('FIX', `Skipping ${tabName} - sheet empty or doesn't exist`);
+      continue;
+    }
+    
+    try {
+      const lastRow = sheet.getLastRow();
+      const lastCol = sheet.getLastColumn();
+      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      const hdrMap = EW_headerMap(headers);
+      
+      // Check if Strategy column already exists
+      if (hdrMap.strategyCol) {
+        EW_trace('FIX', `${tabName} already has Strategy column at position ${hdrMap.strategyCol}`);
+        continue;
+      }
+      
+      EW_trace('FIX', `Adding Strategy column to ${tabName}`);
+      
+      // Get all existing data
+      const allData = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+      
+      // Insert Strategy as second column
+      const newData = allData.map((row, rowIndex) => {
+        const newRow = [...row];
+        if (rowIndex === 0) {
+          // Header row - insert "Strategy" after Run Date
+          newRow.splice(1, 0, 'Strategy');
+        } else {
+          // Data rows - insert the sheet name (strategy)
+          newRow.splice(1, 0, tabName);
+        }
+        return newRow;
+      });
+      
+      // Clear sheet and write updated data
+      sheet.clear();
+      const newWidth = lastCol + 1;
+      sheet.getRange(1, 1, lastRow, newWidth).setValues(newData);
+      
+      // Update header map with new columns
+      const newHeaders = sheet.getRange(1, 1, 1, newWidth).getValues()[0];
+      const newHdrMap = EW_headerMap(newHeaders);
+      
+      // Ensure all other columns exist
+      const finalHdrMap = EW_ensureAllColumnsExist(sheet);
+      
+      // Re-apply formulas with updated header map
+      if (finalHdrMap) {
+        EW_setGFArrayFormulas(sheet, finalHdrMap);
+      }
+      
+      sheetsFixed++;
+      EW_trace('FIX', `Fixed ${tabName} - added Strategy column and refreshed formulas`);
+      
+    } catch (e) {
+      EW_trace('FIX', `Error fixing ${tabName}: ${e.message}`, true);
+    }
+  }
+  
+  const msg = sheetsFixed > 0 ? 
+    `Fixed ${sheetsFixed} sheets - added Strategy column and refreshed formulas` : 
+    'All sheets already have Strategy column or no sheets needed fixing';
+  
+  EW_trace('FIX', msg, true);
+  EW_safeAlert('Strategy Column Fix Complete', msg);
 }
 
 /**
