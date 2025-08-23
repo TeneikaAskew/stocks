@@ -152,12 +152,16 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       // Update Strike_Hit column with array of percentage moves
       if (hdrMap.strikeHitCol) {
         const existing = row[hdrMap.strikeHitCol - 1];
+        EW_trace('BACKFILL', `${ticker} Strike_Hit update check - Column: ${hdrMap.strikeHitCol}, Existing: "${existing}", Array length: ${analysis.strikeHitArray.length}`);
         if (!existing && analysis.strikeHitArray.length > 0) {
           // Store as JSON array
           const strikeHitJson = JSON.stringify(analysis.strikeHitArray);
           dataRange.getCell(rowIndex + 1, hdrMap.strikeHitCol).setValue(strikeHitJson);
+          EW_trace('BACKFILL', `${ticker} Strike_Hit updated with: ${strikeHitJson}`);
           updated = true;
         }
+      } else {
+        EW_trace('BACKFILL', `${ticker} No Strike_Hit column found in header map`);
       }
       
       // Update Hit_Date
@@ -245,9 +249,11 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       if (analysis.dailyIndicators && analysis.dailyIndicators.rsi.length > 0) {
         // Build indicator arrays using helper function
         const indicatorArrays = EW_buildIndicatorArrays(analysis.dailyIndicators);
+        EW_trace('BACKFILL', `${ticker} Indicator arrays built - RSI length: ${analysis.dailyIndicators.rsi.length}`);
         
         if (hdrMap.hitRSICol && !row[hdrMap.hitRSICol - 1] && indicatorArrays.rsi) {
           dataRange.getCell(rowIndex + 1, hdrMap.hitRSICol).setValue(indicatorArrays.rsi);
+          EW_trace('BACKFILL', `${ticker} RSI updated with: ${indicatorArrays.rsi.substring(0, 50)}...`);
           updated = true;
         }
         if (hdrMap.hitSMA20Col && !row[hdrMap.hitSMA20Col - 1] && indicatorArrays.sma20) {
@@ -288,8 +294,13 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         }
       }
       
+      } else {
+        EW_trace('BACKFILL', `${ticker} No indicator arrays to update or all columns already have data`);
+      }
+      
       if (updated) {
         processedCount++;
+        EW_trace('BACKFILL', `${ticker} Successfully updated tracking data`);
         
         // Update Historical_High and Historical_Low if needed
         if (hdrMap.historicalHighCol) {
@@ -563,7 +574,9 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
       
       // Log the strike for debugging
       if (tradingDaysSinceEntry === 0) {
-        EW_trace('BACKFILL', `${ticker} - Strike: ${strike}, Day0 Close: ${dayData.close}, Move: ${percentMove}`);
+        const dayPriceDisplay = dayPrice || dayData.close.toFixed(2);
+        const priceType = dayHit ? 'Hit' : (isBullish ? 'High' : (isBearish ? 'Low' : 'Close'));
+        EW_trace('BACKFILL', `${ticker} - Strike: ${strike}, Day0 ${priceType}: ${dayPriceDisplay}, Close: ${dayData.close}, Move: ${percentMove}`);
       }
       
       // Calculate indicators for this day if we have raw data
@@ -872,16 +885,16 @@ function EW_testHistoricalBackfill() {
         // Test Yahoo data fetch
         try {
           console.log('Fetching Yahoo historical data...');
-          const historicalData = EW_getYahooHistoricalRange(ticker, runDate, endDate);
+          const yahooResult = EW_getYahooHistoricalRange(ticker, runDate, endDate, true);
           
-          if (historicalData && historicalData.length > 0) {
-            console.log(`Retrieved ${historicalData.length} days of data`);
+          if (yahooResult && yahooResult.data && yahooResult.data.length > 0) {
+            console.log(`Retrieved ${yahooResult.data.length} days of data`);
             
             // Test analysis with raw data
-            const analysis = EW_analyzeHistoricalData(testConfig.ticker, testConfig.sheetName, strike, historicalData, runDate, null, raw);
+            const analysis = EW_analyzeHistoricalData(testConfig.ticker, testConfig.sheetName, strike, yahooResult.data, runDate, null, yahooResult.raw);
             
             if (testConfig.logDetails) {
-              console.log('Analysis results:');
+              console.log('\nAnalysis results:');
               console.log(`  First Hit Date: ${analysis.firstHitDate || 'Not hit'}`);
               console.log(`  Day 0 Check: ${analysis.day0Hit || 'N/A'}`);
               console.log(`  Day 1 Check: ${analysis.day1Hit || 'N/A'}`);
@@ -893,6 +906,20 @@ function EW_testHistoricalBackfill() {
               console.log(`  Min Unfavorable: ${analysis.minUnfavorable}%`);
               console.log(`  Historical High: ${analysis.historicalHigh}`);
               console.log(`  Historical Low: ${analysis.historicalLow}`);
+              
+              // Add full array output
+              console.log('\nArray Data:');
+              console.log(`  Strike_Hit Array: ${JSON.stringify(analysis.strikeHitArray)}`);
+              console.log(`  Daily Prices: ${JSON.stringify(analysis.dailyPrices)}`);
+              
+              // Add indicator arrays
+              console.log('\nIndicator Arrays:');
+              console.log(`  RSI: ${JSON.stringify(analysis.dailyIndicators.rsi)}`);
+              console.log(`  SMA20: ${JSON.stringify(analysis.dailyIndicators.sma20)}`);
+              console.log(`  SMA50: ${JSON.stringify(analysis.dailyIndicators.sma50)}`);
+              console.log(`  VWAP: ${JSON.stringify(analysis.dailyIndicators.vwap)}`);
+              console.log(`  RVOL: ${JSON.stringify(analysis.dailyIndicators.rvol)}`);
+              console.log(`  ATR: ${JSON.stringify(analysis.dailyIndicators.atr)}`);
               console.log(`  Exp Result: ${analysis.expResult || 'N/A'}`);
             }
             
