@@ -341,6 +341,42 @@ function EW_getStrategyType(strategy) {
 }
 
 /**
+ * Check if a strategy is a spread (has multiple strikes)
+ * @param {string} strategy - Strategy name
+ * @returns {boolean} True if strategy is a spread
+ */
+function EW_isSpreadStrategy(strategy) {
+  if (!strategy) return false;
+  const strategyUpper = strategy.toUpperCase();
+  return strategyUpper.includes('SPREAD') || 
+         strategyUpper.includes('STRANGLE') || 
+         strategyUpper.includes('STRADDLE') ||
+         strategyUpper.includes('IRON CONDOR') ||
+         strategyUpper.includes('BUTTERFLY');
+}
+
+/**
+ * Get strike columns for a strategy
+ * @param {string} strategy - Strategy name
+ * @returns {Object} Object with strike column names
+ */
+function EW_getStrikeColumns(strategy) {
+  if (EW_isSpreadStrategy(strategy)) {
+    return {
+      primary: 'longStrike',
+      secondary: 'shortStrike',
+      isSpread: true
+    };
+  } else {
+    return {
+      primary: 'strike',
+      secondary: null,
+      isSpread: false
+    };
+  }
+}
+
+/**
  * Validate date string
  * @param {string} dateStr - Date string to validate
  * @returns {boolean} True if valid date
