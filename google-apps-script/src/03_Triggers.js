@@ -67,6 +67,23 @@ function EW_setupTriggersIfMissing() {
       console.log(`Skipped existing trigger: ${EW_TRIGGER_FUNCTIONS.DAILY_REPORT}`);
     }
     
+    // Check and setup active position tracking trigger (5 PM)
+    if (!EW_triggerExists('EW_updateActiveStrikeHits')) {
+      ScriptApp.newTrigger('EW_updateActiveStrikeHits')
+        .timeBased()
+        .everyDays(1)
+        .atHour(17) // 5 PM
+        .inTimezone('America/New_York')
+        .create();
+      setupCount++;
+      messages.push(`✅ Created: Active position tracking (5 PM ET)`);
+      console.log(`Created trigger: EW_updateActiveStrikeHits`);
+    } else {
+      skippedCount++;
+      messages.push(`⏭️ Exists: Active position tracking (5 PM ET)`);
+      console.log(`Skipped existing trigger: EW_updateActiveStrikeHits`);
+    }
+    
     // Ensure success report exists
     EW_ensureSuccessReportExists();
     
@@ -131,12 +148,21 @@ function EW_setupAutoTracking() {
       .atHour(EW_AUTO_TRACKING.DAILY_DATA_HOUR)
       .create();
     
+    // Create active position tracking trigger (5 PM ET)
+    ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING)
+      .timeBased()
+      .everyDays(1)
+      .atHour(17) // 5 PM
+      .inTimezone('America/New_York')
+      .create();
+    
     EW_safeAlert(
       'Auto Tracking Setup Complete',
       'Automated schedule created:\n\n' +
-      `• ${EW_AUTO_TRACKING.DAILY_DATA_HOUR}:00 AM: Daily data fetch (EW_runAll)\n` +
+      `• ${EW_AUTO_TRACKING.DAILY_DATA_HOUR}:00 AM: Daily data fetch\n` +
       `• ${EW_AUTO_TRACKING.DAILY_REPORT_HOUR}:00 AM: Daily success report update\n` +
-      `• Every ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES} minutes: Tracking refresh (9 AM - 5 PM ET only)\n\n` +
+      `• Every ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES} minutes: Tracking refresh (9 AM - 5 PM ET only)\n` +
+      `• 5:00 PM ET: Active position tracking with Yahoo Finance\n\n` +
       'Historical data will be preserved permanently.\n' +
       'Note: 30-minute updates only run during market hours.'
     );
@@ -176,7 +202,7 @@ function EW_setupDailyDataTrigger() {
     );
     
     console.log('Daily data trigger created for 8 AM');
-    EW_trace('TRIGGERS', `Daily data fetch trigger setup - ${EW_AUTO_TRACKING.DAILY_DATA_HOUR}AM EW_runAll`);
+    EW_trace('TRIGGERS', `Daily data fetch trigger setup - ${EW_AUTO_TRACKING.DAILY_DATA_HOUR}AM EW_dailyDataFetch`);
     
   } catch (error) {
     console.error('Error setting up daily data trigger:', error);
@@ -200,7 +226,8 @@ function EW_stopAutoTracking() {
       let handlerFunction = trigger.getHandlerFunction();
       if (handlerFunction === EW_TRIGGER_FUNCTIONS.AUTO_UPDATE || 
           handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_REPORT ||
-          handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_DATA) {
+          handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_DATA ||
+          handlerFunction === EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING) {
         ScriptApp.deleteTrigger(trigger);
         deletedCount++;
         console.log(`Deleted trigger: ${handlerFunction}`);
@@ -214,7 +241,8 @@ function EW_stopAutoTracking() {
         'All automated functions have been disabled:\n' +
         `• Daily data fetch (${EW_AUTO_TRACKING.DAILY_DATA_HOUR} AM)\n` +
         `• Daily reports (${EW_AUTO_TRACKING.DAILY_REPORT_HOUR} AM)\n` +
-        `• ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES}-minute updates (9 AM - 5 PM ET)\n\n` +
+        `• ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES}-minute updates (9 AM - 5 PM ET)\n` +
+        `• Active position tracking (5 PM ET)\n\n` +
         'You can restart using "Setup Auto Tracking" from the menu.'
       );
       console.log(`Deleted ${deletedCount} auto tracking triggers`);
@@ -372,6 +400,8 @@ function EW_ensureSuccessReportExists() {
 
 /**
  * Automated daily data fetch function (called by 8 AM trigger)
+ * This is a wrapper around EW_runAll() that suppresses UI alerts for automated execution
+ * Use this for triggers to avoid interrupting users with popup dialogs
  */
 function EW_dailyDataFetch() {
   try {
@@ -518,7 +548,8 @@ function EW_validateTriggers() {
     let expectedTriggers = [
       EW_TRIGGER_FUNCTIONS.DAILY_DATA, 
       EW_TRIGGER_FUNCTIONS.DAILY_REPORT, 
-      EW_TRIGGER_FUNCTIONS.AUTO_UPDATE
+      EW_TRIGGER_FUNCTIONS.AUTO_UPDATE,
+      EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING
     ];
     let foundTriggers = triggers.map(t => t.getHandlerFunction());
     
@@ -605,4 +636,67 @@ function EW_removeActiveTrackingTrigger() {
     
   EW_trace('ACTIVE_TRACKING', msg, true);
   EW_safeAlert('Active Tracking Trigger Removed', msg);
+}
+
+/**
+ * Test function to verify all triggers are properly configured
+ * Shows detailed information about each trigger
+ */
+function EW_testAllTriggers() {
+  console.log('=== TRIGGER CONFIGURATION TEST ===');
+  
+  const expectedTriggers = [
+    { name: EW_TRIGGER_FUNCTIONS.DAILY_DATA, desc: '8 AM Daily data fetch', time: '8:00 AM' },
+    { name: EW_TRIGGER_FUNCTIONS.DAILY_REPORT, desc: '9 AM Success reports', time: '9:00 AM' },
+    { name: EW_TRIGGER_FUNCTIONS.AUTO_UPDATE, desc: '30-min updates (market hours)', time: 'Every 30 min (9-5 ET)' },
+    { name: EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING, desc: '5 PM Active tracking', time: '5:00 PM ET' }
+  ];
+  
+  const triggers = ScriptApp.getProjectTriggers();
+  const foundFunctions = triggers.map(t => t.getHandlerFunction());
+  
+  console.log(`\nExpected triggers: ${expectedTriggers.length}`);
+  console.log(`Found triggers: ${triggers.length}\n`);
+  
+  // Check each expected trigger
+  expectedTriggers.forEach(expected => {
+    const exists = foundFunctions.includes(expected.name);
+    const status = exists ? '✅ EXISTS' : '❌ MISSING';
+    console.log(`${status} | ${expected.desc} | Function: ${expected.name} | Schedule: ${expected.time}`);
+  });
+  
+  // Show any unexpected triggers
+  const unexpectedTriggers = foundFunctions.filter(func => 
+    !expectedTriggers.map(e => e.name).includes(func)
+  );
+  
+  if (unexpectedTriggers.length > 0) {
+    console.log('\n⚠️ Unexpected triggers found:');
+    unexpectedTriggers.forEach(func => {
+      console.log(`  - ${func}`);
+    });
+  }
+  
+  // Detailed trigger information
+  console.log('\n=== DETAILED TRIGGER INFO ===');
+  triggers.forEach((trigger, index) => {
+    console.log(`\nTrigger ${index + 1}:`);
+    console.log(`  Function: ${trigger.getHandlerFunction()}`);
+    console.log(`  Type: ${trigger.getEventType()}`);
+    console.log(`  Source: ${trigger.getTriggerSource()}`);
+    
+    // Try to get more details if possible
+    try {
+      console.log(`  ID: ${trigger.getUniqueId()}`);
+    } catch (e) {
+      // Some properties might not be accessible
+    }
+  });
+  
+  return {
+    expected: expectedTriggers.length,
+    found: triggers.length,
+    missing: expectedTriggers.filter(e => !foundFunctions.includes(e.name)).map(e => e.name),
+    unexpected: unexpectedTriggers
+  };
 }

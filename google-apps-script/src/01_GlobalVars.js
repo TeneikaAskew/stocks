@@ -103,7 +103,7 @@ const EW_AUTO_TRACKING = {
 // Trigger function names (for validation and management)
 const EW_TRIGGER_FUNCTIONS = {
   AUTO_UPDATE: 'EW_autoUpdateTracking',
-  DAILY_DATA: 'EW_runAll', 
+  DAILY_DATA: 'EW_dailyDataFetch',  // Wrapper for EW_runAll that suppresses UI alerts
   DAILY_REPORT: 'EW_generateSuccessReport',
-  DAILY_DATA_ALT: 'EW_dailyDataFetch'  // Alternative daily data function
+  ACTIVE_TRACKING: 'EW_updateActiveStrikeHits'  // 5 PM active position tracking
 };
