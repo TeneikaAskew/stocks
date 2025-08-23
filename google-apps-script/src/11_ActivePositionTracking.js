@@ -58,6 +58,14 @@ function EW_updateActiveStrikeHits() {
     EW_safeAlert('Active Position Update Complete', msg);
   }
   
+  // Create daily API report after tracking update
+  try {
+    EW_createDailyApiReport();
+    console.log('ACTIVE TRACKING: Daily API report created');
+  } catch (error) {
+    console.error(`ACTIVE TRACKING: Failed to create API report: ${error.message}`);
+  }
+  
   return { checked: totalChecked, updated: totalUpdated, duration: duration };
 }
 
