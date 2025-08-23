@@ -476,6 +476,145 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
 }
 
 /**
+ * Get historical price data from Yahoo Finance for a specific date range with custom interval
+ * @param {string} ticker - Stock ticker symbol
+ * @param {Date} startDate - Start date for data
+ * @param {Date} endDate - End date for data
+ * @param {string} interval - Time interval (1m, 5m, 15m, 30m, 60m, 1d, 1wk, 1mo)
+ * @param {boolean} includeRaw - Whether to include raw data for indicators
+ * @return {Object} Historical price data with high, low, close, volume and optionally raw data
+ */
+function EW_getYahooHistoricalRangeWithInterval(ticker, startDate, endDate, interval = '1m', includeRaw = false) {
+  const period1 = Math.floor(startDate.getTime() / 1000);
+  const period2 = Math.floor(endDate.getTime() / 1000);
+  
+  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=${interval}&events=history`;
+  
+  // Log API call attempt
+  const callStartTime = new Date();
+  const logEntry = {
+    ticker: ticker,
+    interval: interval,
+    startDate: startDate.toISOString().split('T')[0],
+    endDate: endDate.toISOString().split('T')[0],
+    url: url,
+    type: 'historical_range_interval'
+  };
+  
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    const responseCode = response.getResponseCode();
+    logEntry.responseCode = responseCode;
+    logEntry.duration = new Date() - callStartTime;
+    
+    if (responseCode !== 200) {
+      logEntry.error = `HTTP ${responseCode}`;
+      logEntry.success = false;
+      EW_logApiCall(logEntry, null);
+      return { data: [], raw: null };
+    }
+    
+    const data = JSON.parse(response.getContentText());
+    
+    if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
+      logEntry.error = `No ${interval} data available`;
+      logEntry.success = false;
+      EW_logApiCall(logEntry, data);
+      
+      // Calculate days since start date to provide context
+      const daysSince = Math.floor((new Date() - startDate) / (1000 * 60 * 60 * 24));
+      EW_trace('BACKFILL', `${ticker}: No ${interval} data available for period ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (${daysSince} days ago).`);
+      
+      return { data: [], raw: null };
+    }
+    
+    const result = data.chart.result[0];
+    const timestamps = result.timestamp;
+    const quotes = result.indicators.quote[0];
+    
+    if (!timestamps || timestamps.length === 0) {
+      logEntry.error = 'No price data in response';
+      logEntry.success = false;
+      EW_logApiCall(logEntry, data);
+      return { data: [], raw: null };
+    }
+    
+    logEntry.success = true;
+    logEntry.dataPoints = timestamps.length;
+    
+    // Convert data to our format
+    const priceData = [];
+    const volumes = [];
+    
+    // For daily data, we need to handle it differently
+    const isDailyOrHigher = ['1d', '1wk', '1mo'].includes(interval);
+    
+    for (let i = 0; i < timestamps.length; i++) {
+      const date = new Date(timestamps[i] * 1000);
+      const high = quotes.high[i];
+      const low = quotes.low[i];
+      const close = quotes.close[i];
+      const volume = quotes.volume ? quotes.volume[i] : 0;
+      
+      if (high !== null && low !== null && close !== null) {
+        priceData.push({
+          date: date,
+          timestamp: timestamps[i] * 1000,
+          high: high,
+          low: low,
+          close: close,
+          open: quotes.open[i],
+          volume: volume
+        });
+        volumes.push(volume || 0);
+      }
+    }
+    
+    EW_trace('BACKFILL', `${ticker}: Retrieved ${priceData.length} ${interval} data points`);
+    
+    // Log successful retrieval
+    logEntry.processedPoints = priceData.length;
+    EW_logApiCall(logEntry, { 
+      dataPoints: timestamps.length, 
+      processedPoints: priceData.length,
+      dateRange: `${priceData[0]?.date.toISOString()} to ${priceData[priceData.length - 1]?.date.toISOString()}`
+    });
+    
+    // Prepare result object
+    const resultObj = { data: priceData };
+    
+    // Include raw data for indicators if requested
+    if (includeRaw) {
+      resultObj.raw = {
+        timestamps: timestamps.map(ts => ts * 1000),
+        highs: quotes.high,
+        lows: quotes.low,
+        closes: quotes.close,
+        opens: quotes.open,
+        volumes: volumes,
+        interval: interval,
+        isDailyOrHigher: isDailyOrHigher
+      };
+    }
+    
+    return resultObj;
+    
+  } catch (error) {
+    logEntry.error = error.message;
+    logEntry.success = false;
+    logEntry.duration = new Date() - callStartTime;
+    EW_logApiCall(logEntry);
+    return { data: [], raw: null };
+  }
+}
+
+/**
  * Check if a strike was hit during a date range using Yahoo Finance data
  * @param {string} ticker - Stock ticker
  * @param {number} strike - Strike price
