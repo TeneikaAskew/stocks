@@ -701,7 +701,7 @@ function EW_headerMap(headerRow) {
     day0CheckCol, day1CheckCol, day2CheckCol, day3CheckCol, day4CheckCol, day5CheckCol, expResultCol,
     successScoreCol, riskRewardCol,
     historicalHighCol, historicalLowCol, everHitStrikeCol, firstHitDateCol,
-    lastUpdateCol, totalHitDaysCol, peakProfitDateCol,
+    lastUpdateCol, totalHitDaysCol,
     hitRSICol, hitSMA20Col, hitSMA50Col, hitEMA9Col, hitEMA21Col,
     hitVWAPCol, hitRVOLCol, hitATRCol, hitPriceVsSMA20Col, hitPriceVsVWAPCol,
     width: headerRow.length
@@ -1183,8 +1183,7 @@ function EW_completeSheetRepair() {
         'Strike_Hit', 'Hit_Date', 'Max_Favorable', 'Min_Unfavorable', 
         'Day0_Check', 'Day1_Check', 'Day2_Check', 'Day3_Check', 'Day4_Check', 'Day5_Check',
         'Exp_Result', 'Profit_Potential', 'Risk_Reward', 
-        'Peak_Profit_Date',
-        // Technical indicators at strike hit
+        // Technical indicators (now arrays for Day0-Day5)
         'Hit_RSI','Hit_SMA20','Hit_SMA50','Hit_EMA9','Hit_EMA21','Hit_VWAP',
         'Hit_RVOL','Hit_ATR','Hit_PriceVsSMA20','Hit_PriceVsVWAP'
       ];
@@ -1251,8 +1250,8 @@ function EW_completeSheetRepair() {
       const trackingPlainTextColumns = [
         'Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
         'Day0_Check','Day1_Check','Day2_Check','Day3_Check','Day4_Check','Day5_Check',
-        'Exp_Result','Profit_Potential','Risk_Reward','Peak_Profit_Date',
-        // Technical indicators at strike hit
+        'Exp_Result','Profit_Potential','Risk_Reward',
+        // Technical indicators (now arrays for Day0-Day5)
         'Hit_RSI','Hit_SMA20','Hit_SMA50','Hit_EMA9','Hit_EMA21','Hit_VWAP',
         'Hit_RVOL','Hit_ATR','Hit_PriceVsSMA20','Hit_PriceVsVWAP'
       ];
