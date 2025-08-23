@@ -25,18 +25,24 @@ EW.url = EW_url;
  * @returns {void}
  */
 function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu('EarningsWhispers')
+  if (!EW_isSpreadsheetEnvironment()) {
+    EW_trace('MENU', 'Not in spreadsheet environment, skipping menu creation');
+    return;
+  }
+  
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('EarningsWhispers')
     .addItem('Run all strategies', 'EW_runAll')
     .addItem('Debug one (prompt)', 'EW_debugOne')
     .addSeparator()
     .addItem('Test Login', 'EW_testLogin')
     .addSeparator()
     .addItem('Generate Success Report', 'EW_generateSuccessReport')
+    .addItem('Update Success Report', 'EW_updateSuccessReport')
     .addItem('Update Tracking Data', 'EW_updateTrackingData')
     .addItem('Check and add missing columns', 'EW_checkAllSheetsColumns')
     .addSeparator()
-    .addSubMenu(SpreadsheetApp.getUi().createMenu('Automation & Triggers')
+    .addSubMenu(ui.createMenu('Automation & Triggers')
       .addItem('Setup Full Auto Tracking', 'EW_setupAutoTracking')
       .addItem('Setup Daily Data Fetch (8AM)', 'EW_setupDailyDataTrigger')
       .addItem('Setup Missing Triggers Only', 'EW_setupTriggersIfMissing')
@@ -775,7 +781,17 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
   function setHeaderArray(colIndex, headerLabel, innerExpr) {
     if (!colIndex) return;
     const cell = sheet.getRange(1, colIndex);
-    cell.setFormula(`={"${headerLabel}"; MAP(${tRange}, LAMBDA(t, IF(t="",,${innerExpr})))}`);
+    // Use SEQUENCE to get row indices for proper column access
+    const numRows = `ROWS(${tRange})`;
+    cell.setFormula(`={"${headerLabel}"; MAP(SEQUENCE(${numRows}), LAMBDA(i, LET(t, INDEX(${tRange}, i), IF(t="",,${innerExpr}))))}`);
+  }
+  
+  // Helper for formulas that need to access multiple columns
+  function setHeaderArrayMultiCol(colIndex, headerLabel, formula) {
+    if (!colIndex) return;
+    const cell = sheet.getRange(1, colIndex);
+    const numRows = `ROWS(${tRange})`;
+    cell.setFormula(`={"${headerLabel}"; MAP(SEQUENCE(${numRows}), LAMBDA(i, ${formula}))}`);
   }
 
   // GOOGLEFINANCE attributes
@@ -857,48 +873,48 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
   // ===== ENHANCED HISTORICAL TRACKING FORMULAS =====
   
   // Historical High (never resets - captures peak favorable price)
-  setHeaderArray(
+  setHeaderArrayMultiCol(
     hdrMap.historicalHighCol, 'Historical_High',
     `LET(
-       currentPrice, IFERROR(GOOGLEFINANCE(t,"price"),),
-       prevHigh, INDEX($${EW_columnToLetter(hdrMap.historicalHighCol)}2:$${EW_columnToLetter(hdrMap.historicalHighCol)}, ROW(${tRange})-1),
-       IF(currentPrice="", prevHigh, MAX(IF(prevHigh="", currentPrice, prevHigh), currentPrice))
+       ticker, INDEX(${tRange}, i),
+       currentPrice, IFERROR(GOOGLEFINANCE(ticker,"price"),0),
+       prevHigh, INDEX($${EW_columnToLetter(hdrMap.historicalHighCol)}2:$${EW_columnToLetter(hdrMap.historicalHighCol)}, i),
+       IF(OR(ticker="", currentPrice=0), prevHigh, MAX(IF(prevHigh="", currentPrice, prevHigh), currentPrice))
      )`
   );
 
   // Historical Low (never resets - captures worst unfavorable price)
-  setHeaderArray(
+  setHeaderArrayMultiCol(
     hdrMap.historicalLowCol, 'Historical_Low',
     `LET(
-       currentPrice, IFERROR(GOOGLEFINANCE(t,"price"),),
-       prevLow, INDEX($${EW_columnToLetter(hdrMap.historicalLowCol)}2:$${EW_columnToLetter(hdrMap.historicalLowCol)}, ROW(${tRange})-1),
-       IF(currentPrice="", prevLow, MIN(IF(prevLow="", currentPrice, prevLow), currentPrice))
+       ticker, INDEX(${tRange}, i),
+       currentPrice, IFERROR(GOOGLEFINANCE(ticker,"price"),0),
+       prevLow, INDEX($${EW_columnToLetter(hdrMap.historicalLowCol)}2:$${EW_columnToLetter(hdrMap.historicalLowCol)}, i),
+       IF(OR(ticker="", currentPrice=0), prevLow, MIN(IF(prevLow="", currentPrice, prevLow), currentPrice))
      )`
   );
 
   // Ever Hit Strike (permanent flag - once hit, stays TRUE)
-  setHeaderArray(
+  setHeaderArrayMultiCol(
     hdrMap.everHitStrikeCol, 'Ever_Hit_Strike',
     `LET(
-       stratCol, $${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)},
-       strikeCol, $${EW_columnToLetter(hdrMap.strikeCol)}2:$${EW_columnToLetter(hdrMap.strikeCol)},
-       rowNum, ROW(${tRange})-1,
-       strategy, UPPER(INDEX(stratCol, rowNum)),
-       strike, INDEX(strikeCol, rowNum),
-       currentPrice, IFERROR(GOOGLEFINANCE(t,"price"),),
-       historicalHigh, INDEX($${EW_columnToLetter(hdrMap.historicalHighCol)}2:$${EW_columnToLetter(hdrMap.historicalHighCol)}, rowNum),
-       historicalLow, INDEX($${EW_columnToLetter(hdrMap.historicalLowCol)}2:$${EW_columnToLetter(hdrMap.historicalLowCol)}, rowNum),
-       prevEverHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, rowNum),
+       ticker, INDEX(${tRange}, i),
+       strategy, UPPER(INDEX($${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)}, i)),
+       strike, INDEX($${EW_columnToLetter(hdrMap.strikeCol)}2:$${EW_columnToLetter(hdrMap.strikeCol)}, i),
+       currentPrice, IFERROR(GOOGLEFINANCE(ticker,"price"),0),
+       historicalHigh, INDEX($${EW_columnToLetter(hdrMap.historicalHighCol)}2:$${EW_columnToLetter(hdrMap.historicalHighCol)}, i),
+       historicalLow, INDEX($${EW_columnToLetter(hdrMap.historicalLowCol)}2:$${EW_columnToLetter(hdrMap.historicalLowCol)}, i),
+       prevEverHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, i),
        
-       IF(OR(strategy="", strike="", currentPrice=""), prevEverHit,
+       IF(OR(ticker="", strategy="", strike="", currentPrice=0), prevEverHit,
          IF(prevEverHit="TRUE", "TRUE",
-           IF(OR(ISNUMBER(SEARCH("LONG CALL", strategy)), ISNUMBER(SEARCH("BULL", strategy))),
+           IF(OR(REGEXMATCH(strategy, "LONG CALL"), REGEXMATCH(strategy, "BULL")),
              IF(historicalHigh >= strike, "TRUE", "FALSE"),
-             IF(OR(ISNUMBER(SEARCH("LONG PUT", strategy)), ISNUMBER(SEARCH("BEAR", strategy))),
+             IF(OR(REGEXMATCH(strategy, "LONG PUT"), REGEXMATCH(strategy, "BEAR")),
                IF(historicalLow <= strike, "TRUE", "FALSE"),
-               IF(OR(ISNUMBER(SEARCH("SHORT CALL", strategy)), ISNUMBER(SEARCH("COVERED", strategy))),
+               IF(OR(REGEXMATCH(strategy, "SHORT CALL"), REGEXMATCH(strategy, "COVERED")),
                  IF(historicalHigh < strike, "FAVORABLE", "UNFAVORABLE"),
-                 IF(ISNUMBER(SEARCH("SHORT PUT", strategy)),
+                 IF(REGEXMATCH(strategy, "SHORT PUT"),
                    IF(historicalLow > strike, "FAVORABLE", "UNFAVORABLE"),
                    "UNKNOWN"
                  )
@@ -911,15 +927,18 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
   );
 
   // First Hit Date (permanent - never changes once set)
-  setHeaderArray(
+  setHeaderArrayMultiCol(
     hdrMap.firstHitDateCol, 'First_Hit_Date',
     `LET(
-       everHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, ROW(${tRange})-1),
-       prevFirstHit, INDEX($${EW_columnToLetter(hdrMap.firstHitDateCol)}2:$${EW_columnToLetter(hdrMap.firstHitDateCol)}, ROW(${tRange})-1),
+       ticker, INDEX(${tRange}, i),
+       everHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, i),
+       prevFirstHit, INDEX($${EW_columnToLetter(hdrMap.firstHitDateCol)}2:$${EW_columnToLetter(hdrMap.firstHitDateCol)}, i),
        
-       IF(AND(OR(everHit="TRUE", everHit="FAVORABLE"), prevFirstHit=""), 
-         TEXT(TODAY(), "yyyy-mm-dd"), 
-         prevFirstHit
+       IF(ticker="", "",
+         IF(AND(OR(everHit="TRUE", everHit="FAVORABLE"), prevFirstHit=""), 
+           TEXT(TODAY(), "yyyy-mm-dd"), 
+           prevFirstHit
+         )
        )
      )`
   );
@@ -931,50 +950,55 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
   );
 
   // Total Hit Days (count of days strike was favorable)
-  setHeaderArray(
+  setHeaderArrayMultiCol(
     hdrMap.totalHitDaysCol, 'Total_Hit_Days',
     `LET(
-       everHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, ROW(${tRange})-1),
-       prevTotal, INDEX($${EW_columnToLetter(hdrMap.totalHitDaysCol)}2:$${EW_columnToLetter(hdrMap.totalHitDaysCol)}, ROW(${tRange})-1),
-       currentHit, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, ROW(${tRange})-1),
+       ticker, INDEX(${tRange}, i),
+       everHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, i),
+       prevTotal, INDEX($${EW_columnToLetter(hdrMap.totalHitDaysCol)}2:$${EW_columnToLetter(hdrMap.totalHitDaysCol)}, i),
+       currentHit, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, i),
        
-       IF(OR(currentHit="HIT", currentHit="FAVORABLE"), 
-         IF(prevTotal="", 1, prevTotal + 1), 
-         IF(prevTotal="", 0, prevTotal)
+       IF(ticker="", "",
+         IF(OR(currentHit="HIT", currentHit="FAVORABLE"), 
+           IF(prevTotal="", 1, prevTotal + 1), 
+           IF(prevTotal="", 0, prevTotal)
+         )
        )
      )`
   );
 
   // Days to Expiration
-  setHeaderArray(
+  setHeaderArrayMultiCol(
     hdrMap.daysToExpCol, 'Days_To_Exp',
     `LET(
-       expCol, $${EW_columnToLetter(hdrMap.expDateCol)}2:$${EW_columnToLetter(hdrMap.expDateCol)},
-       rowNum, ROW(${tRange})-1,
-       expDate, INDEX(expCol, rowNum),
-       IF(expDate="",, MAX(0, expDate - TODAY()))
+       ticker, INDEX(${tRange}, i),
+       expDate, INDEX($${EW_columnToLetter(hdrMap.expDateCol)}2:$${EW_columnToLetter(hdrMap.expDateCol)}, i),
+       IF(OR(ticker="", expDate=""), "", 
+         IF(ISNUMBER(expDate), 
+           MAX(0, expDate - TODAY()), 
+           IFERROR(MAX(0, DATEVALUE(expDate) - TODAY()), 0)
+         )
+       )
      )`
   );
 
   // Current Strike Hit Status
-  setHeaderArray(
+  setHeaderArrayMultiCol(
     hdrMap.strikeHitCol, 'Strike_Hit',
     `LET(
-       stratCol, $${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)},
-       strikeCol, $${EW_columnToLetter(hdrMap.strikeCol)}2:$${EW_columnToLetter(hdrMap.strikeCol)},
-       rowNum, ROW(${tRange})-1,
-       strategy, UPPER(INDEX(stratCol, rowNum)),
-       strike, INDEX(strikeCol, rowNum),
-       currentPrice, IFERROR(GOOGLEFINANCE(t,"price"),),
+       ticker, INDEX(${tRange}, i),
+       strategy, INDEX($${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)}, i),
+       strike, INDEX($${EW_columnToLetter(hdrMap.strikeCol)}2:$${EW_columnToLetter(hdrMap.strikeCol)}, i),
+       currentPrice, IFERROR(GOOGLEFINANCE(ticker,"price"),0),
        
-       IF(OR(strategy="", strike="", currentPrice=""), "",
-         IF(OR(ISNUMBER(SEARCH("LONG CALL", strategy)), ISNUMBER(SEARCH("BULL", strategy))),
+       IF(OR(ticker="", strategy="", strike="", currentPrice=0), "",
+         IF(OR(REGEXMATCH(UPPER(strategy), "LONG CALL"), REGEXMATCH(UPPER(strategy), "BULL")),
            IF(currentPrice >= strike, "HIT", "NO"),
-           IF(OR(ISNUMBER(SEARCH("LONG PUT", strategy)), ISNUMBER(SEARCH("BEAR", strategy))),
+           IF(OR(REGEXMATCH(UPPER(strategy), "LONG PUT"), REGEXMATCH(UPPER(strategy), "BEAR")),
              IF(currentPrice <= strike, "HIT", "NO"),
-             IF(OR(ISNUMBER(SEARCH("SHORT CALL", strategy)), ISNUMBER(SEARCH("COVERED", strategy))),
+             IF(OR(REGEXMATCH(UPPER(strategy), "SHORT CALL"), REGEXMATCH(UPPER(strategy), "COVERED")),
                IF(currentPrice < strike, "FAVORABLE", IF(currentPrice >= strike, "UNFAVORABLE", "NEUTRAL")),
-               IF(ISNUMBER(SEARCH("SHORT PUT", strategy)),
+               IF(REGEXMATCH(UPPER(strategy), "SHORT PUT"),
                  IF(currentPrice > strike, "FAVORABLE", IF(currentPrice <= strike, "UNFAVORABLE", "NEUTRAL")),
                  "UNKNOWN"
                )
@@ -986,15 +1010,16 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
   );
 
   // Enhanced Success Score with historical data
-  setHeaderArray(
+  setHeaderArrayMultiCol(
     hdrMap.successScoreCol, 'Success_Score',
     `LET(
-       everHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, ROW(${tRange})-1),
-       daysToExp, INDEX($${EW_columnToLetter(hdrMap.daysToExpCol)}2:$${EW_columnToLetter(hdrMap.daysToExpCol)}, ROW(${tRange})-1),
-       totalHitDays, INDEX($${EW_columnToLetter(hdrMap.totalHitDaysCol)}2:$${EW_columnToLetter(hdrMap.totalHitDaysCol)}, ROW(${tRange})-1),
-       rvol, INDEX($${EW_columnToLetter(hdrMap.rvol10Col)}2:$${EW_columnToLetter(hdrMap.rvol10Col)}, ROW(${tRange})-1),
+       ticker, INDEX(${tRange}, i),
+       everHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, i),
+       daysToExp, INDEX($${EW_columnToLetter(hdrMap.daysToExpCol)}2:$${EW_columnToLetter(hdrMap.daysToExpCol)}, i),
+       totalHitDays, INDEX($${EW_columnToLetter(hdrMap.totalHitDaysCol)}2:$${EW_columnToLetter(hdrMap.totalHitDaysCol)}, i),
+       rvol, INDEX($${EW_columnToLetter(hdrMap.rvol10Col)}2:$${EW_columnToLetter(hdrMap.rvol10Col)}, i),
        
-       IF(OR(everHit="", daysToExp=""), "",
+       IF(OR(ticker="", everHit="", daysToExp=""), "",
          LET(
            hitScore, IF(OR(everHit="TRUE", everHit="FAVORABLE"), 60, 
                         IF(everHit="UNFAVORABLE", 20, 40)),
@@ -1049,7 +1074,39 @@ function EW_checkAllSheetsColumns() {
     'All sheets already have all required columns';
   
   EW_trace('COLUMNS', msg, true);
-  EW_safeAlert('Column Check Complete', msg, SpreadsheetApp.getUi().ButtonSet.OK);
+  EW_safeAlert('Column Check Complete', msg);
+}
+
+/**
+ * Updates the Success Report by first refreshing all formulas
+ * @returns {void}
+ */
+function EW_updateSuccessReport() {
+  EW_trace('REPORT', 'Updating success report - refreshing formulas first...', true);
+  
+  // First ensure all columns exist and formulas are up to date
+  const ss = SpreadsheetApp.getActive();
+  const endpoints = EW.STRATEGY_ENDPOINTS;
+  
+  for (const tabName of Object.keys(endpoints)) {
+    const sheet = ss.getSheetByName(tabName);
+    if (!sheet || sheet.getLastRow() === 0) continue;
+    
+    const updatedHdrMap = EW_ensureAllColumnsExist(sheet);
+    if (updatedHdrMap) {
+      // Re-apply Google Finance formulas with updated header map
+      EW_setGFArrayFormulas(sheet, updatedHdrMap);
+    }
+  }
+  
+  // Force recalculation by refreshing formulas
+  SpreadsheetApp.flush();
+  
+  // Give formulas time to calculate
+  Utilities.sleep(2000);
+  
+  // Now generate the report
+  EW_generateSuccessReport();
 }
 
 /**
@@ -1085,15 +1142,30 @@ function EW_generateSuccessReport() {
   
   strategies.forEach(strategy => {
     const sheet = ss.getSheetByName(strategy);
-    if (!sheet || sheet.getLastRow() < 2) return;
+    if (!sheet || sheet.getLastRow() < 2) {
+      EW_trace('REPORT', `Skipping ${strategy} - no sheet or no data`);
+      return;
+    }
     
     try {
       const data = sheet.getDataRange().getValues();
       const headers = data[0];
       const rows = data.slice(1);
       
+      EW_trace('REPORT', `Processing ${strategy} with ${rows.length} rows`);
+      
       const hdrMap = EW_headerMap(headers);
-      if (!hdrMap.strikeHitCol || !hdrMap.successScoreCol) return;
+      if (!hdrMap.strikeHitCol || !hdrMap.successScoreCol) {
+        EW_trace('REPORT', `Skipping ${strategy} - missing Strike_Hit or Success_Score columns`);
+        // Try to add missing columns
+        const updatedHdrMap = EW_ensureAllColumnsExist(sheet);
+        if (updatedHdrMap) {
+          // Re-apply formulas
+          EW_setGFArrayFormulas(sheet, updatedHdrMap);
+          EW_trace('REPORT', `Added missing columns to ${strategy}, please run report again`);
+        }
+        return;
+      }
       
       // Calculate statistics
       const stats = EW_calculateStrategyStats(rows, hdrMap, strategy);
@@ -1122,14 +1194,17 @@ function EW_generateSuccessReport() {
     ]);
     
     reportSheet.getRange(2, 1, reportRows.length, reportHeaders.length).setValues(reportRows);
+    
+    // Format the report
+    reportSheet.getRange(1, 1, 1, reportHeaders.length).setFontWeight('bold');
+    reportSheet.autoResizeColumns(1, reportHeaders.length);
+    
+    EW_trace('REPORT', `Success report generated with ${reportData.length} strategies!`, true);
+    EW_safeAlert('Success Report', `Strategy success report has been generated with data from ${reportData.length} strategies.`);
+  } else {
+    EW_trace('REPORT', 'No data found for success report - sheets may be missing required columns', true);
+    EW_safeAlert('No Data Found', 'No strategy data found for report. Please ensure sheets have Strike_Hit and Success_Score columns, then run "Check and add missing columns" first.');
   }
-  
-  // Format the report
-  reportSheet.getRange(1, 1, 1, reportHeaders.length).setFontWeight('bold');
-  reportSheet.autoResizeColumns(1, reportHeaders.length);
-  
-  EW_trace('REPORT', 'Success report generated successfully!', true);
-  EW_safeAlert('Success Report', 'Strategy success report has been generated in the "Success_Report" sheet.', SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
 /**
