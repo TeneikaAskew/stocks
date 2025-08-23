@@ -1,0 +1,93 @@
+/**
+ * Global Variables and Configuration
+ * Centralized configuration for EarningsWhispers Options Tracking
+ */
+
+// ======= MAIN CONFIGURATION OBJECT =======
+const EW = {
+  STRATEGY_ENDPOINTS: {
+    'Short Puts':   '/api/getshortput',
+    'Bull Spreads': '/api/getbullcallspread',
+    'Long Calls':   '/api/getlongcalls',
+    'Strangles':    '/api/getstrangle',  
+    'Covered Calls':'/api/getcoveredcall',
+    'Straddles':    '/api/getstraddle',   
+    'Short Calls':  '/api/getshortcalls',
+    'Bear Spreads': '/api/getbearputspread',
+    'Long Puts':    '/api/getlongput'
+  },
+
+  BASE: 'https://www.earningswhispers.com',
+  MATRIX_REFERRER: 'https://www.earningswhispers.com/optiontrades',
+  PROPS: PropertiesService.getScriptProperties(),
+
+  get p() {
+    return {
+      user: EW.PROPS.getProperty('EW_USER') || '',
+      pass: EW.PROPS.getProperty('EW_PASS') || '',
+      loginUrl: 'https://www.earningswhispers.com/login'
+    };
+  }
+};
+
+// ======= GLOBAL CONSTANTS =======
+
+// Default values for tracking
+const EW_DEFAULTS = {
+  SHEET_TIMEOUT: 30000,        // 30 seconds timeout for sheet operations
+  MAX_RETRIES: 3,              // Maximum retry attempts for API calls
+  BATCH_SIZE: 100,             // Default batch size for processing
+  LOG_RETENTION_DAYS: 30,      // Days to keep logs
+  AUTO_UPDATE_INTERVAL: 30     // Minutes between auto updates
+};
+
+// Column mapping constants
+const EW_COLUMN_TYPES = {
+  TEXT: 'text',
+  NUMBER: 'number', 
+  DATE: 'date',
+  FORMULA: 'formula',
+  BOOLEAN: 'boolean'
+};
+
+// Strategy type mappings
+const EW_STRATEGY_TYPES = {
+  BULLISH: ['Long Calls', 'Bull Spreads', 'Covered Calls'],
+  BEARISH: ['Long Puts', 'Bear Spreads', 'Short Calls'], 
+  NEUTRAL: ['Strangles', 'Straddles'],
+  INCOME: ['Short Puts', 'Covered Calls']
+};
+
+// Success score thresholds
+const EW_SCORE_THRESHOLDS = {
+  EXCELLENT: 80,
+  GOOD: 60,
+  FAIR: 40,
+  POOR: 20
+};
+
+// Error codes and messages
+const EW_ERRORS = {
+  API_TIMEOUT: 'API_TIMEOUT',
+  INVALID_RESPONSE: 'INVALID_RESPONSE',
+  SHEET_ACCESS: 'SHEET_ACCESS',
+  LOGIN_FAILED: 'LOGIN_FAILED',
+  QUOTA_EXCEEDED: 'QUOTA_EXCEEDED'
+};
+
+// Auto-tracking settings
+const EW_AUTO_TRACKING = {
+  TRIGGER_INTERVAL_MINUTES: 30,
+  DAILY_DATA_HOUR: 8,           // 8 AM daily data fetch
+  DAILY_REPORT_HOUR: 9,         // 9 AM daily reports
+  MAX_HISTORICAL_DAYS: 365,
+  CLEANUP_INTERVAL_DAYS: 7
+};
+
+// Trigger function names (for validation and management)
+const EW_TRIGGER_FUNCTIONS = {
+  AUTO_UPDATE: 'EW_autoUpdateTracking',
+  DAILY_DATA: 'EW_runAll', 
+  DAILY_REPORT: 'EW_generateSuccessReport',
+  DAILY_DATA_ALT: 'EW_dailyDataFetch'  // Alternative daily data function
+};
