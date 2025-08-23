@@ -147,9 +147,13 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         return;
       }
       
-      EW_trace('BACKFILL', `${ticker}: Got ${yahooResult.data.length} days of data from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
-      const lastDataDate = yahooResult.data[yahooResult.data.length - 1].date.toISOString().split('T')[0];
-      EW_trace('BACKFILL', `${ticker}: Last data point is ${lastDataDate}`);
+      EW_trace('BACKFILL', `${ticker}: Got ${yahooResult.data.length} data points from Yahoo Finance`);
+      if (yahooResult.raw) {
+        EW_trace('BACKFILL', `${ticker}: Raw data includes ${yahooResult.raw.timestamps.length} timestamps`);
+      }
+      const firstDataDate = yahooResult.data[0].date.toISOString();
+      const lastDataDate = yahooResult.data[yahooResult.data.length - 1].date.toISOString();
+      EW_trace('BACKFILL', `${ticker}: Data range: ${firstDataDate} to ${lastDataDate}`);
       
       // Get short strike for spreads
       const shortStrike = isSpread && hdrMap.shortStrikeCol ? 
@@ -380,7 +384,7 @@ function EW_countTradingDays(startDate, endDate) {
  * @param {string} ticker - Stock ticker symbol
  * @param {string} strategy - Strategy name
  * @param {number} strike - Strike price (or longStrike for spreads)
- * @param {Array} historicalData - Array of price data
+ * @param {Array} historicalData - Array of 1-minute price data
  * @param {Date} runDate - Entry date
  * @param {number} shortStrike - Short strike for spread strategies (optional)
  * @param {Object} rawData - Raw Yahoo data for indicator calculation (optional)
@@ -436,13 +440,65 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
   let maxLoss = 0; // Initialize to 0 instead of Infinity
   let hitDetected = false;
   
-  // Find the index where our run date data starts
-  let runDateIndex = -1;
+  // Group 1-minute data by trading day
+  const dailyGroups = {};
   const runDateStr = runDate.toISOString().split('T')[0];
   
-  for (let i = 0; i < historicalData.length; i++) {
-    if (historicalData[i].date.toISOString().split('T')[0] === runDateStr) {
+  // Log input data info
+  EW_trace('BACKFILL', `${ticker}: Received ${historicalData.length} 1-minute bars to process`);
+  if (historicalData.length > 0) {
+    EW_trace('BACKFILL', `${ticker}: Data range from ${historicalData[0].date.toISOString()} to ${historicalData[historicalData.length - 1].date.toISOString()}`);
+  }
+  
+  // First, group all 1-minute bars by date
+  historicalData.forEach((bar, barIndex) => {
+    const dateStr = bar.date.toISOString().split('T')[0];
+    if (!dailyGroups[dateStr]) {
+      dailyGroups[dateStr] = {
+        date: new Date(dateStr),
+        bars: [],
+        open: null,
+        high: -Infinity,
+        low: Infinity,
+        close: null
+      };
+    }
+    
+    dailyGroups[dateStr].bars.push(bar);
+    
+    // Update daily OHLC
+    if (dailyGroups[dateStr].open === null) {
+      dailyGroups[dateStr].open = bar.open;
+    }
+    dailyGroups[dateStr].high = Math.max(dailyGroups[dateStr].high, bar.high);
+    dailyGroups[dateStr].low = Math.min(dailyGroups[dateStr].low, bar.low);
+    dailyGroups[dateStr].close = bar.close; // Last bar's close
+    
+    // Log first few bars for debugging
+    if (barIndex < 3) {
+      EW_trace('BACKFILL', `${ticker}: Bar ${barIndex} - ${bar.date.toISOString()}, O:${bar.open}, H:${bar.high}, L:${bar.low}, C:${bar.close}`);
+    }
+  });
+  
+  // Convert to sorted array of days
+  const sortedDays = Object.keys(dailyGroups)
+    .sort()
+    .map(dateStr => dailyGroups[dateStr]);
+  
+  // Log daily grouping results
+  EW_trace('BACKFILL', `${ticker}: Grouped into ${sortedDays.length} trading days`);
+  sortedDays.forEach((day, idx) => {
+    if (idx < 3) { // Log first 3 days
+      EW_trace('BACKFILL', `${ticker}: Day ${idx} - ${day.date.toISOString().split('T')[0]}, ${day.bars.length} bars, OHLC: ${day.open.toFixed(2)}/${day.high.toFixed(2)}/${day.low.toFixed(2)}/${day.close.toFixed(2)}`);
+    }
+  });
+  
+  // Find the index where our run date data starts
+  let runDateIndex = -1;
+  for (let i = 0; i < sortedDays.length; i++) {
+    if (sortedDays[i].date.toISOString().split('T')[0] === runDateStr) {
       runDateIndex = i;
+      EW_trace('BACKFILL', `${ticker}: Found run date ${runDateStr} at index ${i}`);
       break;
     }
   }
@@ -450,8 +506,8 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
   if (runDateIndex === -1) {
     EW_trace('BACKFILL', `Warning: Run date ${runDateStr} not found in historical data`);
     // Try to find the first date after run date
-    for (let i = 0; i < historicalData.length; i++) {
-      if (historicalData[i].date >= runDate) {
+    for (let i = 0; i < sortedDays.length; i++) {
+      if (sortedDays[i].date >= runDate) {
         runDateIndex = i;
         break;
       }
@@ -463,7 +519,10 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     return analysis;
   }
   
-  historicalData.forEach((dayData, index) => {
+  // Log data summary
+  EW_trace('BACKFILL', `${ticker}: Processing ${historicalData.length} 1-minute bars grouped into ${sortedDays.length} trading days`);
+  
+  sortedDays.forEach((dayData, index) => {
     // Skip data before run date
     if (index < runDateIndex) {
       return;
@@ -498,38 +557,62 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     analysis.historicalHigh = Math.max(analysis.historicalHigh, dayData.high);
     analysis.historicalLow = Math.min(analysis.historicalLow, dayData.low);
     
-    // Check if strike was hit
+    // Check if strike was hit by examining all 1-minute bars for this day
     let dayHit = false;
     let hitPrice = null;
+    let hitTime = null;
+    let hitBarIndex = -1;
     
-    if (isSpread && shortStrike) {
-      // For spreads, check if price is in the profitable range
-      if (isBullSpread) {
-        // Bull spread: profitable when price >= longStrike AND < shortStrike
-        if (dayData.high >= strike && dayData.high < shortStrike) {
-          dayHit = true;
-          hitPrice = dayData.high;
+    // Loop through all 1-minute bars for this day
+    for (let barIdx = 0; barIdx < dayData.bars.length; barIdx++) {
+      const bar = dayData.bars[barIdx];
+      
+      if (isSpread && shortStrike) {
+        // For spreads, check if price is in the profitable range
+        if (isBullSpread) {
+          // Bull spread: profitable when price >= longStrike AND < shortStrike
+          if (bar.high >= strike && bar.high < shortStrike) {
+            dayHit = true;
+            hitPrice = bar.high;
+            hitTime = bar.date;
+            hitBarIndex = barIdx;
+            break; // Stop at first hit
+          }
+        } else if (isBearSpread) {
+          // Bear spread: profitable when price <= longStrike AND > shortStrike  
+          if (bar.low <= strike && bar.low > shortStrike) {
+            dayHit = true;
+            hitPrice = bar.low;
+            hitTime = bar.date;
+            hitBarIndex = barIdx;
+            break;
+          }
         }
-      } else if (isBearSpread) {
-        // Bear spread: profitable when price <= longStrike AND > shortStrike  
-        if (dayData.low <= strike && dayData.low > shortStrike) {
-          dayHit = true;
-          hitPrice = dayData.low;
+      } else {
+        // Single strike strategies
+        if (isBullish) {
+          if (bar.high >= strike) {
+            dayHit = true;
+            hitPrice = bar.high;
+            hitTime = bar.date;
+            hitBarIndex = barIdx;
+            break;
+          }
+        } else if (isBearish) {
+          if (bar.low <= strike) {
+            dayHit = true;
+            hitPrice = bar.low;
+            hitTime = bar.date;
+            hitBarIndex = barIdx;
+            break;
+          }
         }
       }
-    } else {
-      // Single strike strategies
-      if (isBullish) {
-        if (dayData.high >= strike) {
-          dayHit = true;
-          hitPrice = dayData.high;
-        }
-      } else if (isBearish) {
-        if (dayData.low <= strike) {
-          dayHit = true;
-          hitPrice = dayData.low;
-        }
-      }
+    }
+    
+    // Log hit detection for debugging
+    if (dayHit && tradingDaysSinceEntry <= 2) {
+      EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Strike ${strike} hit at ${hitTime.toISOString()} (bar ${hitBarIndex}/${dayData.bars.length}), price: ${hitPrice}`);
     }
     
     // Record first hit date and price
@@ -599,51 +682,48 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
         EW_trace('BACKFILL', `${ticker} - Strike: ${strike}, Day0 ${priceType}: ${dayPriceDisplay}, Close: ${dayData.close}, Move: ${percentMove}`);
       }
       
-      // Calculate indicators for this day if we have raw data
+      // Calculate indicators for this day
+      // Since we have 1-minute data, calculate indicators at the time of strike hit (if hit) or at market close
       if (rawData && rawData.timestamps && rawData.quotes) {
         try {
-          // Find the index in raw data that matches this date
-          const dayDateStr = dayData.date.toISOString().split('T')[0];
+          // Find the raw data index for indicator calculation
+          let targetTime = null;
           let rawDataIndex = -1;
           
-          // Debug: Log what date we're looking for
-          if (tradingDaysSinceEntry === 0) {
-            EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry} - Looking for date: ${dayDateStr} (from dayData.date: ${dayData.date.toISOString()})`);
+          if (dayHit && hitTime) {
+            // If strike was hit, calculate indicators at that exact time
+            targetTime = hitTime;
+            EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Calculating indicators at strike hit time ${targetTime.toISOString()}`);
+          } else {
+            // Otherwise use the last bar of the day (market close)
+            targetTime = dayData.bars[dayData.bars.length - 1].date;
+            if (tradingDaysSinceEntry <= 2) {
+              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: No strike hit, using close time ${targetTime.toISOString()}`);
+            }
           }
           
-          // Debug: Log first few timestamps to understand the data
-          if (tradingDaysSinceEntry === 0 && rawData.timestamps.length > 0) {
-            EW_trace('BACKFILL', `${ticker} Raw data has ${rawData.timestamps.length} timestamps, first: ${new Date(rawData.timestamps[0] * 1000).toISOString()}, last: ${new Date(rawData.timestamps[rawData.timestamps.length - 1] * 1000).toISOString()}`);
-            
-            // Log all raw data dates
-            const rawDates = rawData.timestamps.map(ts => new Date(ts * 1000).toISOString().split('T')[0]);
-            EW_trace('BACKFILL', `${ticker} Raw data dates: ${rawDates.join(', ')}`);
+          // Find the corresponding index in raw data
+          const targetTimestamp = Math.floor(targetTime.getTime() / 1000);
+          for (let ri = 0; ri < rawData.timestamps.length; ri++) {
+            if (rawData.timestamps[ri] === targetTimestamp) {
+              rawDataIndex = ri;
+              break;
+            }
           }
           
-          // Since we're using daily data, the indices should match
-          // The historicalData array and raw data arrays should have the same trading days
-          // Use the current index position to find corresponding raw data
-          rawDataIndex = index;
-          
-          // Verify the dates match as a safety check
-          if (rawDataIndex < rawData.timestamps.length) {
-            const timestamp = new Date(rawData.timestamps[rawDataIndex] * 1000);
-            const timestampDateStr = timestamp.toISOString().split('T')[0];
-            
-            if (timestampDateStr !== dayDateStr) {
-              // If dates don't match, fall back to searching
-              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Index mismatch, searching for ${dayDateStr}`);
-              rawDataIndex = -1;
-              for (let ri = 0; ri < rawData.timestamps.length; ri++) {
-                const ts = new Date(rawData.timestamps[ri] * 1000);
-                if (ts.toISOString().split('T')[0] === dayDateStr) {
-                  rawDataIndex = ri;
-                  break;
-                }
+          // If exact match not found, find the closest timestamp
+          if (rawDataIndex === -1) {
+            let minDiff = Infinity;
+            for (let ri = 0; ri < rawData.timestamps.length; ri++) {
+              const diff = Math.abs(rawData.timestamps[ri] - targetTimestamp);
+              if (diff < minDiff) {
+                minDiff = diff;
+                rawDataIndex = ri;
               }
             }
-          } else {
-            rawDataIndex = -1;
+            if (tradingDaysSinceEntry <= 2) {
+              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: No exact timestamp match, using closest (${minDiff} seconds difference)`);
+            }
           }
           
           if (rawDataIndex >= 0) {
@@ -667,16 +747,17 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
               analysis.dailyIndicators.priceVsSMA20.push(dayIndicators.priceVsSMA20);
               analysis.dailyIndicators.priceVsVWAP.push(dayIndicators.priceVsVWAP);
               
-              EW_trace('BACKFILL', `Calculated indicators for Day ${tradingDaysSinceEntry}: RSI=${dayIndicators.rsi?.toFixed(2)}`);
+              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Calculated indicators at index ${rawDataIndex} - RSI=${dayIndicators.rsi?.toFixed(2)}, SMA20=${dayIndicators.sma20?.toFixed(2)}, VWAP=${dayIndicators.vwap?.toFixed(2)}`);
             } else {
+              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Failed to calculate indicators at index ${rawDataIndex}`);
               // Push nulls if indicators couldn't be calculated
               Object.keys(analysis.dailyIndicators).forEach(key => {
                 analysis.dailyIndicators[key].push(null);
               });
             }
           } else {
-            // No matching raw data for this day
-            EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: No matching raw data found for ${dayDateStr}`);
+            // No matching raw data found
+            EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: No raw data index found for time ${targetTime.toISOString()}`);
             Object.keys(analysis.dailyIndicators).forEach(key => {
               analysis.dailyIndicators[key].push(null);
             });
@@ -941,7 +1022,17 @@ function EW_testHistoricalBackfill() {
           const yahooResult = EW_getYahooHistoricalRange(ticker, runDate, endDate, true);
           
           if (yahooResult && yahooResult.data && yahooResult.data.length > 0) {
-            console.log(`Retrieved ${yahooResult.data.length} days of data`);
+            console.log(`Retrieved ${yahooResult.data.length} data points`);
+            
+            // Log raw data details
+            if (yahooResult.raw) {
+              console.log(`Raw data: ${yahooResult.raw.timestamps.length} timestamps`);
+              if (yahooResult.raw.timestamps.length > 0) {
+                console.log(`Raw data range: ${new Date(yahooResult.raw.timestamps[0] * 1000).toISOString()} to ${new Date(yahooResult.raw.timestamps[yahooResult.raw.timestamps.length - 1] * 1000).toISOString()}`);
+              }
+            } else {
+              console.log('No raw data included in response');
+            }
             
             // Test analysis with raw data
             const analysis = EW_analyzeHistoricalData(testConfig.ticker, testConfig.sheetName, strike, yahooResult.data, runDate, null, yahooResult.raw);
