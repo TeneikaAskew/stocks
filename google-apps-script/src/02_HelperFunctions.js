@@ -796,7 +796,8 @@ function EW_buildIndicatorArrays(dailyIndicators) {
       const formattedArray = dailyIndicators[type].map(val => {
         if (val === null || val === undefined) return null;
         if (type === 'atr') return val.toFixed(4);
-        if (type === 'priceVsSMA20' || type === 'priceVsVWAP') return val.toFixed(2) + '%';
+        // Keep priceVsSMA20 and priceVsVWAP as decimals without % sign
+        if (type === 'priceVsSMA20' || type === 'priceVsVWAP') return val.toFixed(2);
         return val.toFixed(2);
       });
       arrays[type] = JSON.stringify(formattedArray);
