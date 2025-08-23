@@ -981,6 +981,13 @@ function EW_backfillSelectedRows() {
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(headers);
   
+  // Debug: Log array columns
+  EW_trace('BACKFILL', `Array columns - Strike_Hit: ${hdrMap.strikeHitCol}, Hit_RSI: ${hdrMap.hitRSICol}, Hit_SMA20: ${hdrMap.hitSMA20Col}`);
+  
+  // Get the data for all selected rows at once
+  const dataRange = sheet.getRange(startRow, 1, numRows, sheet.getLastColumn());
+  const allData = dataRange.getValues();
+  
   // Process selected rows
   let processedCount = 0;
   for (let i = 0; i < numRows; i++) {
@@ -1023,6 +1030,50 @@ function EW_backfillSelectedRows() {
       }
       if (hdrMap.minUnfavorableCol && analysis.minUnfavorableArray.length > 0) {
         sheet.getRange(rowNum, hdrMap.minUnfavorableCol).setValue(JSON.stringify(analysis.minUnfavorableArray));
+      }
+      
+      // Add Strike_Hit array
+      if (hdrMap.strikeHitCol && analysis.strikeHitArray.length > 0) {
+        sheet.getRange(rowNum, hdrMap.strikeHitCol).setValue(JSON.stringify(analysis.strikeHitArray));
+        EW_trace('BACKFILL', `${ticker} Strike_Hit updated in row ${rowNum}`);
+      }
+      
+      // Add indicator arrays
+      if (analysis.dailyIndicators && analysis.dailyIndicators.rsi.length > 0) {
+        const indicatorArrays = EW_buildIndicatorArrays(analysis.dailyIndicators);
+        
+        if (hdrMap.hitRSICol && indicatorArrays.rsi) {
+          sheet.getRange(rowNum, hdrMap.hitRSICol).setValue(indicatorArrays.rsi);
+        }
+        if (hdrMap.hitSMA20Col && indicatorArrays.sma20) {
+          sheet.getRange(rowNum, hdrMap.hitSMA20Col).setValue(indicatorArrays.sma20);
+        }
+        if (hdrMap.hitSMA50Col && indicatorArrays.sma50) {
+          sheet.getRange(rowNum, hdrMap.hitSMA50Col).setValue(indicatorArrays.sma50);
+        }
+        if (hdrMap.hitEMA9Col && indicatorArrays.ema9) {
+          sheet.getRange(rowNum, hdrMap.hitEMA9Col).setValue(indicatorArrays.ema9);
+        }
+        if (hdrMap.hitEMA21Col && indicatorArrays.ema21) {
+          sheet.getRange(rowNum, hdrMap.hitEMA21Col).setValue(indicatorArrays.ema21);
+        }
+        if (hdrMap.hitVWAPCol && indicatorArrays.vwap) {
+          sheet.getRange(rowNum, hdrMap.hitVWAPCol).setValue(indicatorArrays.vwap);
+        }
+        if (hdrMap.hitRVOLCol && indicatorArrays.rvol) {
+          sheet.getRange(rowNum, hdrMap.hitRVOLCol).setValue(indicatorArrays.rvol);
+        }
+        if (hdrMap.hitATRCol && indicatorArrays.atr) {
+          sheet.getRange(rowNum, hdrMap.hitATRCol).setValue(indicatorArrays.atr);
+        }
+        if (hdrMap.hitPriceVsSMA20Col && indicatorArrays.priceVsSMA20) {
+          sheet.getRange(rowNum, hdrMap.hitPriceVsSMA20Col).setValue(indicatorArrays.priceVsSMA20);
+        }
+        if (hdrMap.hitPriceVsVWAPCol && indicatorArrays.priceVsVWAP) {
+          sheet.getRange(rowNum, hdrMap.hitPriceVsVWAPCol).setValue(indicatorArrays.priceVsVWAP);
+        }
+        
+        EW_trace('BACKFILL', `${ticker} Indicators updated in row ${rowNum}`);
       }
       
       processedCount++;
