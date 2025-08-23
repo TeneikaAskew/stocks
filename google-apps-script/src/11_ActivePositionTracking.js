@@ -158,12 +158,51 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
       if (currentStatus !== newStatus) {
         dataRange.getCell(result.rowIndex + 1, hdrMap.strikeHitCol).setValue(newStatus);
         
-        // If hit, also update Hit_Date
-        if (result.hit && hdrMap.hitDateCol) {
-          const existingHitDate = data[result.rowIndex][hdrMap.hitDateCol - 1];
-          if (!existingHitDate) {
-            const hitDateStr = result.hitDate.toISOString().split('T')[0];
-            dataRange.getCell(result.rowIndex + 1, hdrMap.hitDateCol).setValue(hitDateStr);
+        // If hit, also update Hit_Date and indicators
+        if (result.hit) {
+          // Update Hit_Date if column exists
+          if (hdrMap.hitDateCol) {
+            const existingHitDate = data[result.rowIndex][hdrMap.hitDateCol - 1];
+            if (!existingHitDate) {
+              const hitDateStr = result.hitDate.toISOString().split('T')[0];
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitDateCol).setValue(hitDateStr);
+            }
+          }
+          
+          // Update indicator values at strike hit
+          if (result.indicators) {
+            const ind = result.indicators;
+            
+            if (hdrMap.hitRSICol && ind.rsi !== null) {
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitRSICol).setValue(ind.rsi.toFixed(2));
+            }
+            if (hdrMap.hitSMA20Col && ind.sma20 !== null) {
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitSMA20Col).setValue(ind.sma20.toFixed(2));
+            }
+            if (hdrMap.hitSMA50Col && ind.sma50 !== null) {
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitSMA50Col).setValue(ind.sma50.toFixed(2));
+            }
+            if (hdrMap.hitEMA9Col && ind.ema9 !== null) {
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitEMA9Col).setValue(ind.ema9.toFixed(2));
+            }
+            if (hdrMap.hitEMA21Col && ind.ema21 !== null) {
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitEMA21Col).setValue(ind.ema21.toFixed(2));
+            }
+            if (hdrMap.hitVWAPCol && ind.vwap !== null) {
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitVWAPCol).setValue(ind.vwap.toFixed(2));
+            }
+            if (hdrMap.hitRVOLCol && ind.rvol !== null) {
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitRVOLCol).setValue(ind.rvol.toFixed(2));
+            }
+            if (hdrMap.hitATRCol && ind.atr !== null) {
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitATRCol).setValue(ind.atr.toFixed(4));
+            }
+            if (hdrMap.hitPriceVsSMA20Col && ind.priceVsSMA20 !== null) {
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitPriceVsSMA20Col).setValue(ind.priceVsSMA20.toFixed(2) + '%');
+            }
+            if (hdrMap.hitPriceVsVWAPCol && ind.priceVsVWAP !== null) {
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitPriceVsVWAPCol).setValue(ind.priceVsVWAP.toFixed(2) + '%');
+            }
           }
         }
         

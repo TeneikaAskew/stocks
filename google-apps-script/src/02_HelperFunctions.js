@@ -162,6 +162,63 @@ function EW_addGFHeaders(header) {
   return [...header, ...gfHeaders];
 }
 
+/**
+ * Get all headers from each options strategy sheet
+ * Returns a 2D array showing sheet names and their headers for debugging/analysis
+ * Useful for verifying column consistency across different strategy sheets
+ * @returns {Array} 2D array with [sheet name, headers] for each strategy sheet
+ */
+function getOptionsSheetHeaders() {
+  const sheets = [
+    'Long Calls', 'Bull Spreads', 'Covered Calls',
+    'Long Puts', 'Bear Spreads', 'Short Calls', 
+    'Strangles', 'Straddles', 'Short Puts'
+  ];
+  
+  const result = [["Sheet Name", "Headers"]];
+  
+  console.log('=== Options Sheet Headers Analysis ===');
+  
+  sheets.forEach(sheetName => {
+    try {
+      const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+      if (sheet) {
+        const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+        const headerText = headers.filter(h => h !== "").join(" | ");
+        result.push([sheetName, headerText]);
+        
+        // Console logging
+        console.log(`\n${sheetName}:`);
+        console.log(`  Total columns: ${headers.length}`);
+        console.log(`  Non-empty columns: ${headers.filter(h => h !== "").length}`);
+        console.log(`  Headers: ${headerText}`);
+        
+        // Check for critical columns
+        const hasStrikeHit = headers.some(h => h === 'Strike_Hit');
+        const hasStrategy = headers.some(h => h === 'Strategy');
+        const hasRunDate = headers.some(h => h === 'Run Date');
+        
+        if (!hasStrikeHit) console.log(`  ⚠️ WARNING: Missing Strike_Hit column`);
+        if (!hasStrategy) console.log(`  ⚠️ WARNING: Missing Strategy column`);
+        if (!hasRunDate) console.log(`  ⚠️ WARNING: Missing Run Date column`);
+        
+      } else {
+        result.push([sheetName, "Sheet not found"]);
+        console.log(`\n${sheetName}: ❌ Sheet not found`);
+      }
+    } catch (e) {
+      result.push([sheetName, "Error: " + e.toString()]);
+      console.log(`\n${sheetName}: ❌ Error - ${e.toString()}`);
+    }
+  });
+  
+  console.log('\n=== Summary ===');
+  console.log(`Total sheets checked: ${sheets.length}`);
+  console.log(`Sheets found: ${result.filter(r => r[1] !== "Sheet not found" && !r[1].startsWith("Error")).length - 1}`);
+  
+  return result;
+}
+
 // ======= COOKIE AND SESSION UTILITIES =======
 
 /**

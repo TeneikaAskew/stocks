@@ -250,7 +250,8 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
               timestamp: hitTime,
               high: high,
               low: low,
-              close: close
+              close: close,
+              index: i  // Store index for indicator calculation
             };
             EW_trace('YAHOO', `🎯 TARGET HIT! ${ticker} hit ${targetPrice} at ${hitTime.toISOString()}`);
           }
@@ -259,11 +260,22 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
     }
     
     if (hitTime) {
+      // Calculate indicators at the point where strike was hit
+      const indicators = EW_calculateIndicatorsFromYahoo(timestamps, quotes, hitData.index);
+      
       logEntry.hitDetected = true;
       logEntry.hitPrice = targetPrice;
       logEntry.hitTime = hitTime.toISOString();
       logEntry.dayHigh = dayHigh;
       logEntry.dayLow = dayLow;
+      if (indicators) {
+        logEntry.indicatorsAtHit = {
+          rsi: indicators.rsi,
+          vwap: indicators.vwap,
+          rvol: indicators.rvol,
+          priceVsSMA20: indicators.priceVsSMA20
+        };
+      }
       EW_logApiCall(logEntry);
       
       return {
@@ -274,7 +286,8 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
         close: hitData.close,
         dayHigh: dayHigh,
         dayLow: dayLow,
-        interval: interval
+        interval: interval,
+        indicators: indicators  // Include full indicators object
       };
     }
     
@@ -508,7 +521,8 @@ function EW_batchCheckStrikeHits(positions) {
           fallbackUsed: intradayResult.fallbackUsed,
           dayHigh: intradayResult.dayHigh,
           dayLow: intradayResult.dayLow,
-          error: intradayResult.error
+          error: intradayResult.error,
+          indicators: intradayResult.indicators  // Pass through indicators
         });
         
       } catch (error) {
@@ -576,4 +590,200 @@ function EW_testYahooData() {
     rangeDataPoints: rangeData.length,
     directApiTest: testResult
   };
+}
+
+/**
+ * Calculate technical indicators from Yahoo price data
+ * @param {Array} timestamps - Array of timestamps
+ * @param {Object} quotes - Quote data with high, low, close, volume arrays
+ * @param {number} targetIndex - Index where strike was hit (optional)
+ * @returns {Object} Technical indicators at target time or latest values
+ */
+function EW_calculateIndicatorsFromYahoo(timestamps, quotes, targetIndex = null) {
+  try {
+    const closes = quotes.close || [];
+    const highs = quotes.high || [];
+    const lows = quotes.low || [];
+    const volumes = quotes.volume || [];
+    
+    if (closes.length < 20) {
+      return null; // Not enough data for meaningful indicators
+    }
+    
+    // If targetIndex provided, calculate indicators up to that point
+    const endIndex = targetIndex !== null ? Math.min(targetIndex + 1, closes.length) : closes.length;
+    
+    // Get data up to target point
+    const closesSlice = closes.slice(0, endIndex);
+    const highsSlice = highs.slice(0, endIndex);
+    const lowsSlice = lows.slice(0, endIndex);
+    const volumesSlice = volumes.slice(0, endIndex);
+    
+    // Calculate indicators
+    const rsi = EW_calculateRSI(closesSlice, 14);
+    const sma20 = EW_calculateSMA(closesSlice, 20);
+    const sma50 = EW_calculateSMA(closesSlice, 50);
+    const ema9 = EW_calculateEMA(closesSlice, 9);
+    const ema21 = EW_calculateEMA(closesSlice, 21);
+    const vwap = EW_calculateVWAP(closesSlice, highsSlice, lowsSlice, volumesSlice);
+    const atr = EW_calculateATR(highsSlice, lowsSlice, closesSlice, 14);
+    
+    // Calculate relative volume (current vs 20-period average)
+    const currentVolume = volumesSlice[volumesSlice.length - 1];
+    const avgVolume = volumesSlice.slice(-20).reduce((a, b) => a + b, 0) / Math.min(20, volumesSlice.length);
+    const rvol = currentVolume / avgVolume;
+    
+    // Price position relative to indicators
+    const currentPrice = closesSlice[closesSlice.length - 1];
+    const priceVsSMA20 = sma20 ? ((currentPrice - sma20) / sma20) * 100 : null;
+    const priceVsVWAP = vwap ? ((currentPrice - vwap) / vwap) * 100 : null;
+    
+    return {
+      price: currentPrice,
+      rsi: rsi,
+      sma20: sma20,
+      sma50: sma50,
+      ema9: ema9,
+      ema21: ema21,
+      vwap: vwap,
+      rvol: rvol,
+      atr: atr,
+      priceVsSMA20: priceVsSMA20,
+      priceVsVWAP: priceVsVWAP,
+      volume: currentVolume,
+      timestamp: targetIndex !== null ? new Date(timestamps[targetIndex] * 1000) : new Date()
+    };
+    
+  } catch (error) {
+    EW_trace('YAHOO', `Error calculating indicators: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Calculate Simple Moving Average
+ * @param {Array} prices - Array of prices
+ * @param {number} period - Period for SMA
+ * @returns {number} SMA value
+ */
+function EW_calculateSMA(prices, period) {
+  if (prices.length < period) return null;
+  const slice = prices.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
+/**
+ * Calculate Exponential Moving Average
+ * @param {Array} prices - Array of prices
+ * @param {number} period - Period for EMA
+ * @returns {number} EMA value
+ */
+function EW_calculateEMA(prices, period) {
+  if (prices.length < period) return null;
+  
+  const multiplier = 2 / (period + 1);
+  let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  
+  for (let i = period; i < prices.length; i++) {
+    ema = (prices[i] - ema) * multiplier + ema;
+  }
+  
+  return ema;
+}
+
+/**
+ * Calculate RSI (Relative Strength Index)
+ * @param {Array} closes - Array of closing prices
+ * @param {number} period - RSI period (default: 14)
+ * @returns {number} RSI value between 0 and 100
+ */
+function EW_calculateRSI(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  
+  const changes = [];
+  for (let i = 1; i < closes.length; i++) {
+    changes.push(closes[i] - closes[i - 1]);
+  }
+  
+  let avgGain = 0;
+  let avgLoss = 0;
+  
+  // Initial calculation
+  for (let i = 0; i < period; i++) {
+    if (changes[i] > 0) avgGain += changes[i];
+    else avgLoss -= changes[i];
+  }
+  
+  avgGain /= period;
+  avgLoss /= period;
+  
+  // Calculate RSI for the latest period
+  for (let i = period; i < changes.length; i++) {
+    const change = changes[i];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? -change : 0;
+    
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+  
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+/**
+ * Calculate VWAP (Volume Weighted Average Price)
+ * @param {Array} closes - Array of closing prices
+ * @param {Array} highs - Array of high prices  
+ * @param {Array} lows - Array of low prices
+ * @param {Array} volumes - Array of volume data
+ * @returns {number} VWAP value
+ */
+function EW_calculateVWAP(closes, highs, lows, volumes) {
+  if (closes.length !== highs.length || closes.length !== lows.length || closes.length !== volumes.length) {
+    return null;
+  }
+  
+  let totalVolume = 0;
+  let totalVolumePrice = 0;
+  
+  for (let i = 0; i < closes.length; i++) {
+    const typicalPrice = (highs[i] + lows[i] + closes[i]) / 3;
+    const volume = volumes[i];
+    
+    totalVolumePrice += typicalPrice * volume;
+    totalVolume += volume;
+  }
+  
+  return totalVolume > 0 ? totalVolumePrice / totalVolume : null;
+}
+
+/**
+ * Calculate ATR (Average True Range)
+ * @param {Array} highs - Array of high prices
+ * @param {Array} lows - Array of low prices
+ * @param {Array} closes - Array of closing prices
+ * @param {number} period - ATR period (default: 14)
+ * @returns {number} ATR value
+ */
+function EW_calculateATR(highs, lows, closes, period = 14) {
+  if (highs.length < period + 1) return null;
+  
+  const trueRanges = [];
+  
+  for (let i = 1; i < highs.length; i++) {
+    const high = highs[i];
+    const low = lows[i];
+    const prevClose = closes[i - 1];
+    
+    const tr1 = high - low;
+    const tr2 = Math.abs(high - prevClose);
+    const tr3 = Math.abs(low - prevClose);
+    
+    trueRanges.push(Math.max(tr1, tr2, tr3));
+  }
+  
+  // Calculate simple moving average of true ranges
+  const recentTR = trueRanges.slice(-period);
+  return recentTR.reduce((a, b) => a + b, 0) / recentTR.length;
 }
