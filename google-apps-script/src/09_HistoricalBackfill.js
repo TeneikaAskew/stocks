@@ -315,6 +315,14 @@ function EW_backfillStrategyTracking(ss, strategyName) {
   // Force save
   if (processedCount > 0) {
     SpreadsheetApp.flush();
+    
+    // Apply formatting to Day Check columns
+    try {
+      EW_formatDayCheckColumns(sheet, hdrMap, strategyName);
+      EW_trace('BACKFILL', `Applied Day Check formatting for ${strategyName}`);
+    } catch (e) {
+      EW_trace('BACKFILL', `Failed to apply formatting: ${e.message}`);
+    }
   }
   
   return processedCount;
@@ -404,7 +412,7 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
   const isBearish = strategyUpper.includes('LONG PUT') || (strategyUpper.includes('BEAR') && !isSpread);
   
   let maxProfit = -Infinity;
-  let maxLoss = Infinity;
+  let maxLoss = 0; // Initialize to 0 instead of Infinity
   let hitDetected = false;
   
   // Find the index where our run date data starts
@@ -501,21 +509,21 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
     
     // Check specific day milestones based on trading days
     // tradingDaysSinceEntry starts at 0 for the entry date (same day)
-    // Store the actual hit price or 'None' instead of HIT/NO
+    // Always store the closing price for each day
     if (tradingDaysSinceEntry === 0) {
-      analysis.day0Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
+      analysis.day0Hit = dayData.close.toFixed(2);
       // Store Day 0 closing price for Strike_Hit percentage calculation
       analysis.day0Price = dayData.close;
     } else if (tradingDaysSinceEntry === 1) {
-      analysis.day1Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
+      analysis.day1Hit = dayData.close.toFixed(2);
     } else if (tradingDaysSinceEntry === 2) {
-      analysis.day2Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
+      analysis.day2Hit = dayData.close.toFixed(2);
     } else if (tradingDaysSinceEntry === 3) {
-      analysis.day3Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
+      analysis.day3Hit = dayData.close.toFixed(2);
     } else if (tradingDaysSinceEntry === 4) {
-      analysis.day4Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
+      analysis.day4Hit = dayData.close.toFixed(2);
     } else if (tradingDaysSinceEntry === 5) {
-      analysis.day5Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
+      analysis.day5Hit = dayData.close.toFixed(2);
     }
     
     // Build arrays for new implementation
@@ -526,16 +534,21 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
       // Calculate and store decimal move from close to strike (no percentage conversion)
       let percentMove;
       if (isBullish || (strategyUpper.includes('BULL') && !isSpread)) {
-        // For bullish: (strike - close) / close
-        percentMove = ((strike - dayData.close) / dayData.close).toFixed(6);
+        // For bullish: (close - strike) / strike (positive when above strike)
+        percentMove = ((dayData.close - strike) / strike).toFixed(6);
       } else if (isBearish || (strategyUpper.includes('BEAR') && !isSpread)) {
-        // For bearish: (close - strike) / close
-        percentMove = ((dayData.close - strike) / dayData.close).toFixed(6);
+        // For bearish: (strike - close) / strike (positive when below strike)
+        percentMove = ((strike - dayData.close) / strike).toFixed(6);
       } else {
-        // Default: (strike - close) / close
-        percentMove = ((strike - dayData.close) / dayData.close).toFixed(6);
+        // Default: (close - strike) / strike
+        percentMove = ((dayData.close - strike) / strike).toFixed(6);
       }
       analysis.strikeHitArray.push(percentMove);
+      
+      // Log the strike for debugging
+      if (tradingDaysSinceEntry === 0) {
+        EW_trace('BACKFILL', `${ticker} - Strike: ${strike}, Day0 Close: ${dayData.close}, Move: ${percentMove}`);
+      }
       
       // Calculate indicators for this day if we have raw data
       if (rawData && rawData.timestamps && rawData.quotes) {
@@ -660,10 +673,18 @@ function EW_backfillSinglePosition(ticker, strategy, strike, runDate, expDate) {
   const startDate = new Date(runDate);
   const endDate = expDate ? new Date(expDate) : new Date();
   
-  const historicalData = EW_getYahooHistoricalRange(ticker, startDate, endDate);
-  const analysis = EW_analyzeHistoricalData(strategy, strike, historicalData, startDate);
+  // Get historical data with raw data for indicators
+  const yahooResult = EW_getYahooHistoricalRange(ticker, startDate, endDate, true);
   
-  return analysis;
+  if (yahooResult && yahooResult.data) {
+    const analysis = EW_analyzeHistoricalData(strategy, strike, yahooResult.data, startDate, null, yahooResult.raw);
+    return analysis;
+  } else {
+    // Fallback if includeRaw not supported
+    const historicalData = EW_getYahooHistoricalRange(ticker, startDate, endDate);
+    const analysis = EW_analyzeHistoricalData(strategy, strike, historicalData, startDate);
+    return analysis;
+  }
 }
 
 /**
@@ -840,8 +861,8 @@ function EW_testHistoricalBackfill() {
           if (historicalData && historicalData.length > 0) {
             console.log(`Retrieved ${historicalData.length} days of data`);
             
-            // Test analysis
-            const analysis = EW_analyzeHistoricalData(testConfig.sheetName, strike, historicalData, runDate);
+            // Test analysis with raw data
+            const analysis = EW_analyzeHistoricalData(testConfig.sheetName, strike, historicalData, runDate, null, raw);
             
             if (testConfig.logDetails) {
               console.log('Analysis results:');

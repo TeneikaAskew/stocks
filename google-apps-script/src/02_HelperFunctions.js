@@ -773,3 +773,63 @@ function EW_buildIndicatorArrays(dailyIndicators) {
   
   return arrays;
 }
+
+/**
+ * Apply conditional formatting to Day Check columns
+ * Red text for prices that haven't hit the strike
+ * @param {Sheet} sheet - The sheet to format
+ * @param {Object} hdrMap - Header mapping
+ * @param {string} strategy - Strategy name
+ */
+function EW_formatDayCheckColumns(sheet, hdrMap, strategy) {
+  if (!sheet || !hdrMap) return;
+  
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  
+  const strategyUpper = strategy.toUpperCase();
+  const isBullish = strategyUpper.includes('BULL') || strategyUpper.includes('LONG CALL');
+  const isBearish = strategyUpper.includes('BEAR') || strategyUpper.includes('LONG PUT');
+  
+  // Get data range
+  const dataRange = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
+  const data = dataRange.getValues();
+  
+  // Process each row
+  data.forEach((row, rowIndex) => {
+    const strike = row[hdrMap.strikeCol - 1] || row[hdrMap.longStrikeCol - 1] || 0;
+    if (!strike) return;
+    
+    // Format each day check column
+    const dayCheckCols = [
+      hdrMap.day0CheckCol, hdrMap.day1CheckCol, hdrMap.day2CheckCol,
+      hdrMap.day3CheckCol, hdrMap.day4CheckCol, hdrMap.day5CheckCol
+    ];
+    
+    dayCheckCols.forEach(col => {
+      if (col) {
+        const value = row[col - 1];
+        if (value && value !== 'None') {
+          const price = parseFloat(value);
+          if (!isNaN(price)) {
+            let shouldBeRed = false;
+            
+            if (isBullish) {
+              // For bullish: red if price < strike
+              shouldBeRed = price < strike;
+            } else if (isBearish) {
+              // For bearish: red if price > strike
+              shouldBeRed = price > strike;
+            }
+            
+            if (shouldBeRed) {
+              sheet.getRange(rowIndex + 2, col).setFontColor('#ff0000');
+            } else {
+              sheet.getRange(rowIndex + 2, col).setFontColor('#00aa00'); // Green
+            }
+          }
+        }
+      }
+    });
+  });
+}
