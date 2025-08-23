@@ -536,99 +536,44 @@ function EW_batchCheckStrikeHits(positions) {
 function EW_testYahooData() {
   console.log('=== Testing Yahoo Finance Data ===');
   
-  // Test current day hit
-  const today = new Date();
-  const result1 = EW_checkStockIntraday('IWM', 233.00, today);
-  console.log('IWM $233 today:', result1);
+  // Test with previous trading day (not today which may not have data yet)
+  const previousTradingDay = new Date();
+  const day = previousTradingDay.getDay();
   
-  // Test historical hit
-  const pastDate = new Date();
-  pastDate.setDate(pastDate.getDate() - 7);
-  const result2 = EW_checkStockIntraday('SPY', 450.00, pastDate);
-  console.log('SPY $450 last week:', result2);
+  // Adjust to previous trading day
+  if (day === 0) previousTradingDay.setDate(previousTradingDay.getDate() - 2); // Sunday -> Friday
+  else if (day === 6) previousTradingDay.setDate(previousTradingDay.getDate() - 1); // Saturday -> Friday
+  else if (day === 1) previousTradingDay.setDate(previousTradingDay.getDate() - 3); // Monday -> Friday
+  else previousTradingDay.setDate(previousTradingDay.getDate() - 1); // Any other day -> previous day
   
-  // Test range data
+  console.log(`Testing with previous trading day: ${previousTradingDay.toDateString()}`);
+  
+  // Test 1: Check if a strike was hit on previous trading day
+  const result1 = EW_checkStockIntraday('IWM', 235.00, previousTradingDay);
+  console.log('IWM $235 previous trading day:', result1);
+  
+  // Test 2: Historical hit from a week ago
+  const weekAgo = new Date(previousTradingDay);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  const result2 = EW_checkStockIntraday('SPY', 450.00, weekAgo);
+  console.log('SPY $450 from week ago:', result2);
+  
+  // Test 3: Range data for last 30 days
   const rangeStart = new Date();
   rangeStart.setDate(rangeStart.getDate() - 30);
-  const rangeData = EW_getYahooHistoricalRange('AAPL', rangeStart, today);
-  console.log(`AAPL historical data points: ${rangeData.length}`);
+  const rangeEnd = new Date();
+  const rangeData = EW_getYahooHistoricalRange('AAPL', rangeStart, rangeEnd);
+  console.log(`AAPL historical data points (30 days): ${rangeData.length}`);
+  
+  // Test 4: Direct API test with known working date
+  console.log('\n=== Direct API Test ===');
+  const testResult = EW_fetchYahooData('IWM', 235, previousTradingDay, '1m');
+  console.log('Direct fetch result:', testResult);
   
   return {
-    currentDay: result1,
+    previousTradingDay: result1,
     historical: result2,
-    rangeDataPoints: rangeData.length
+    rangeDataPoints: rangeData.length,
+    directApiTest: testResult
   };
-}
-
-/**
- * Debug function to test direct API call
- */
-function EW_debugYahooApi() {
-  console.log('=== Debug Yahoo API Call ===');
-  
-  // Test with exact timestamps like in the example
-  const ticker = 'IWM';
-  const period1 = 1755849600; // Example timestamp from user
-  const period2 = 1755936000; // Example timestamp from user
-  const interval = '1m';
-  
-  // Convert timestamps to dates to see what they represent
-  console.log(`Period1: ${new Date(period1 * 1000).toISOString()} (${period1})`);
-  console.log(`Period2: ${new Date(period2 * 1000).toISOString()} (${period2})`);
-  
-  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=${interval}&events=history`;
-  console.log(`Debug URL: ${url}`);
-  
-  try {
-    const response = UrlFetchApp.fetch(url, {
-      muteHttpExceptions: true,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-    
-    const responseCode = response.getResponseCode();
-    console.log(`Response Code: ${responseCode}`);
-    
-    if (responseCode === 200) {
-      const data = JSON.parse(response.getContentText());
-      console.log(`Success! Got ${data.chart.result[0].timestamp.length} data points`);
-      console.log(`First timestamp: ${new Date(data.chart.result[0].timestamp[0] * 1000).toISOString()}`);
-      console.log(`Last timestamp: ${new Date(data.chart.result[0].timestamp[data.chart.result[0].timestamp.length - 1] * 1000).toISOString()}`);
-      
-      // Check if target price was hit
-      const quotes = data.chart.result[0].indicators.quote[0];
-      let targetHit = false;
-      const targetPrice = 235;
-      
-      for (let i = 0; i < data.chart.result[0].timestamp.length; i++) {
-        if (quotes.high[i] >= targetPrice && quotes.low[i] <= targetPrice) {
-          console.log(`Target ${targetPrice} was hit at ${new Date(data.chart.result[0].timestamp[i] * 1000).toISOString()}`);
-          targetHit = true;
-          break;
-        }
-      }
-      
-      if (!targetHit) {
-        console.log(`Target ${targetPrice} was NOT hit during this period`);
-      }
-    } else {
-      console.error(`Failed with status ${responseCode}`);
-      console.error(`Response: ${response.getContentText()}`);
-    }
-  } catch (error) {
-    console.error(`Error: ${error.message}`);
-  }
-  
-  // Test with yesterday to ensure we have market data
-  console.log('\n=== Testing with yesterday ===');
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  // Skip weekends
-  if (yesterday.getDay() === 0) yesterday.setDate(yesterday.getDate() - 2); // Sunday -> Friday
-  if (yesterday.getDay() === 6) yesterday.setDate(yesterday.getDate() - 1); // Saturday -> Friday
-  
-  console.log(`Testing date: ${yesterday.toISOString()}`);
-  const result = EW_fetchYahooData('IWM', 235, yesterday, '1m');
-  console.log('Result:', result);
 }
