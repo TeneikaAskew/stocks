@@ -579,7 +579,10 @@ const EW_TRACKING_LABELS = [
   'Days_To_Exp','Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
   'Day1_Check','Day2_Check','Day3_Check','Day5_Check','Exp_Result',
   'Success_Score','Profit_Potential','Risk_Reward','Historical_High','Historical_Low',
-  'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days','Peak_Profit_Date'
+  'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days','Peak_Profit_Date',
+  // Technical indicators at strike hit
+  'Hit_RSI','Hit_SMA20','Hit_SMA50','Hit_EMA9','Hit_EMA21','Hit_VWAP',
+  'Hit_RVOL','Hit_ATR','Hit_PriceVsSMA20','Hit_PriceVsVWAP'
 ];
 
 /**
@@ -655,6 +658,18 @@ function EW_headerMap(headerRow) {
   const lastUpdateCol     = find(['Last_Update']);
   const totalHitDaysCol   = find(['Total_Hit_Days']);
   const peakProfitDateCol = find(['Peak_Profit_Date']);
+  
+  // Technical indicators at strike hit
+  const hitRSICol         = find(['Hit_RSI']);
+  const hitSMA20Col       = find(['Hit_SMA20']);
+  const hitSMA50Col       = find(['Hit_SMA50']);
+  const hitEMA9Col        = find(['Hit_EMA9']);
+  const hitEMA21Col       = find(['Hit_EMA21']);
+  const hitVWAPCol        = find(['Hit_VWAP']);
+  const hitRVOLCol        = find(['Hit_RVOL']);
+  const hitATRCol         = find(['Hit_ATR']);
+  const hitPriceVsSMA20Col = find(['Hit_PriceVsSMA20']);
+  const hitPriceVsVWAPCol = find(['Hit_PriceVsVWAP']);
 
   // Strategy and core data columns
   const strategyCol     = find(['strategy','Strategy']);
@@ -672,6 +687,8 @@ function EW_headerMap(headerRow) {
     successScoreCol, profitPotentialCol, riskRewardCol,
     historicalHighCol, historicalLowCol, everHitStrikeCol, firstHitDateCol,
     lastUpdateCol, totalHitDaysCol, peakProfitDateCol,
+    hitRSICol, hitSMA20Col, hitSMA50Col, hitEMA9Col, hitEMA21Col,
+    hitVWAPCol, hitRVOLCol, hitATRCol, hitPriceVsSMA20Col, hitPriceVsVWAPCol,
     width: headerRow.length
   };
 }
@@ -885,7 +902,7 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
      )`
   );
 
-  // Ever Hit Strike (permanent flag - once hit, stays TRUE) - Uses Strategy column
+  // Ever Hit Strike (uses Strike_Hit column to avoid circular dependency)
   setHeaderArrayMultiCol(
     hdrMap.everHitStrikeCol, 'Ever_Hit_Strike',
     `LET(
@@ -895,19 +912,22 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
        currentPrice, IFERROR(GOOGLEFINANCE(ticker,"price"),0),
        historicalHigh, INDEX($${EW_columnToLetter(hdrMap.historicalHighCol)}2:$${EW_columnToLetter(hdrMap.historicalHighCol)}, i),
        historicalLow, INDEX($${EW_columnToLetter(hdrMap.historicalLowCol)}2:$${EW_columnToLetter(hdrMap.historicalLowCol)}, i),
-       prevEverHit, INDEX($${EW_columnToLetter(hdrMap.everHitStrikeCol)}2:$${EW_columnToLetter(hdrMap.everHitStrikeCol)}, i),
+       strikeHit, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, i),
        
-       IF(OR(ticker="", strategy="", strike="", currentPrice=0), prevEverHit,
-         IF(prevEverHit="TRUE", "TRUE",
-           IF(OR(REGEXMATCH(strategy, "LONG CALL"), REGEXMATCH(strategy, "BULL")),
-             IF(historicalHigh >= strike, "TRUE", "FALSE"),
-             IF(OR(REGEXMATCH(strategy, "LONG PUT"), REGEXMATCH(strategy, "BEAR")),
-               IF(historicalLow <= strike, "TRUE", "FALSE"),
-               IF(OR(REGEXMATCH(strategy, "SHORT CALL"), REGEXMATCH(strategy, "COVERED")),
-                 IF(historicalHigh < strike, "FAVORABLE", "UNFAVORABLE"),
-                 IF(REGEXMATCH(strategy, "SHORT PUT"),
-                   IF(historicalLow > strike, "FAVORABLE", "UNFAVORABLE"),
-                   "UNKNOWN"
+       IF(OR(ticker="", strategy="", strike="", currentPrice=0), "",
+         IF(strikeHit="HIT", "TRUE",
+           IF(REGEXMATCH(strategy, "SPREAD"), 
+             "SPREAD_CALC_NEEDED",
+             IF(OR(REGEXMATCH(strategy, "LONG CALL"), REGEXMATCH(strategy, "BULL")),
+               IF(historicalHigh >= strike, "TRUE", "FALSE"),
+               IF(OR(REGEXMATCH(strategy, "LONG PUT"), REGEXMATCH(strategy, "BEAR")),
+                 IF(historicalLow <= strike, "TRUE", "FALSE"),
+                 IF(OR(REGEXMATCH(strategy, "SHORT CALL"), REGEXMATCH(strategy, "COVERED")),
+                   IF(historicalHigh < strike, "FAVORABLE", "UNFAVORABLE"),
+                   IF(REGEXMATCH(strategy, "SHORT PUT"),
+                     IF(historicalLow > strike, "FAVORABLE", "UNFAVORABLE"),
+                     "UNKNOWN"
+                   )
                  )
                )
              )
@@ -1196,14 +1216,17 @@ function EW_completeSheetRepair() {
       ];
       
       const trackingFormulaColumns = [
-        'Days_To_Exp','Strike_Hit','Success_Score','Historical_High','Historical_Low',
+        'Days_To_Exp','Success_Score','Historical_High','Historical_Low',
         'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days'
       ];
       
       const trackingPlainTextColumns = [
-        'Hit_Date','Max_Favorable','Min_Unfavorable',
+        'Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
         'Day1_Check','Day2_Check','Day3_Check','Day5_Check',
-        'Exp_Result','Profit_Potential','Risk_Reward','Peak_Profit_Date'
+        'Exp_Result','Profit_Potential','Risk_Reward','Peak_Profit_Date',
+        // Technical indicators at strike hit
+        'Hit_RSI','Hit_SMA20','Hit_SMA50','Hit_EMA9','Hit_EMA21','Hit_VWAP',
+        'Hit_RVOL','Hit_ATR','Hit_PriceVsSMA20','Hit_PriceVsVWAP'
       ];
       
       // Add plain text headers first (these won't have formulas)
