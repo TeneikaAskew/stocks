@@ -359,13 +359,13 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
   const period1 = Math.floor(startDate.getTime() / 1000);
   const period2 = Math.floor(endDate.getTime() / 1000);
   
-  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1d&events=history`;
+  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1m&events=history`;
   
   // Log API call attempt
   const callStartTime = new Date();
   const logEntry = {
     ticker: ticker,
-    interval: '1d',
+    interval: '1m',
     startDate: startDate.toISOString().split('T')[0],
     endDate: endDate.toISOString().split('T')[0],
     url: url,
@@ -394,9 +394,14 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
     const data = JSON.parse(response.getContentText());
     
     if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
-      logEntry.error = 'No data available';
+      logEntry.error = 'No 1-minute data available';
       logEntry.success = false;
       EW_logApiCall(logEntry, data);
+      
+      // Calculate days since start date to provide context
+      const daysSince = Math.floor((new Date() - startDate) / (1000 * 60 * 60 * 24));
+      EW_trace('BACKFILL', `${ticker}: No 1-minute data available for period ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (${daysSince} days ago). 1-minute data typically available for last 7 days only.`);
+      
       return [];
     }
     
@@ -404,6 +409,7 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
     const timestamps = result.timestamp || [];
     const quotes = result.indicators.quote[0];
     
+    // Keep 1-minute data as-is for detailed analysis
     const historicalData = [];
     
     for (let i = 0; i < timestamps.length; i++) {
@@ -424,6 +430,13 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
     logEntry.dataPoints = historicalData.length;
     EW_logApiCall(logEntry, data);
     
+    // Log data retrieval details
+    if (historicalData.length > 0) {
+      const firstDate = historicalData[0].date.toISOString();
+      const lastDate = historicalData[historicalData.length - 1].date.toISOString();
+      EW_trace('BACKFILL', `${ticker}: Retrieved ${historicalData.length} 1-minute data points from ${firstDate} to ${lastDate}`);
+    }
+    
     // Return with raw data if requested
     if (includeRaw) {
       return {
@@ -431,7 +444,8 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
         raw: {
           timestamps: timestamps,
           quotes: quotes
-        }
+        },
+        interval: '1m'
       };
     }
     
