@@ -294,10 +294,6 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         }
       }
       
-      } else {
-        EW_trace('BACKFILL', `${ticker} No indicator arrays to update or all columns already have data`);
-      }
-      
       if (updated) {
         processedCount++;
         EW_trace('BACKFILL', `${ticker} Successfully updated tracking data`);
@@ -463,6 +459,17 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     // Calculate trading days since entry (based on array position)
     const tradingDaysSinceEntry = index - runDateIndex;
     
+    // Log raw data status once at the beginning
+    if (tradingDaysSinceEntry === 0) {
+      if (!rawData) {
+        EW_trace('BACKFILL', `${ticker}: No raw data provided for indicator calculation`);
+      } else if (!rawData.timestamps || !rawData.quotes) {
+        EW_trace('BACKFILL', `${ticker}: Raw data missing timestamps or quotes`);
+      } else {
+        EW_trace('BACKFILL', `${ticker}: Raw data available with ${rawData.timestamps.length} timestamps`);
+      }
+    }
+    
     // Debug logging for first few days
     if (tradingDaysSinceEntry <= 5) {
       const dayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dayData.date.getDay()];
@@ -586,6 +593,11 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
           const dayDateStr = dayData.date.toISOString().split('T')[0];
           let rawDataIndex = -1;
           
+          // Debug: Log first few timestamps to understand the data
+          if (tradingDaysSinceEntry === 0 && rawData.timestamps.length > 0) {
+            EW_trace('BACKFILL', `${ticker} Raw data has ${rawData.timestamps.length} timestamps, first: ${new Date(rawData.timestamps[0] * 1000).toISOString()}, last: ${new Date(rawData.timestamps[rawData.timestamps.length - 1] * 1000).toISOString()}`);
+          }
+          
           for (let ri = 0; ri < rawData.timestamps.length; ri++) {
             const timestamp = new Date(rawData.timestamps[ri] * 1000);
             if (timestamp.toISOString().split('T')[0] === dayDateStr) {
@@ -624,6 +636,7 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
             }
           } else {
             // No matching raw data for this day
+            EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: No matching raw data found for ${dayDateStr}`);
             Object.keys(analysis.dailyIndicators).forEach(key => {
               analysis.dailyIndicators[key].push(null);
             });
@@ -929,7 +942,7 @@ function EW_testHistoricalBackfill() {
               strike: strike,
               status: 'SUCCESS',
               hitDetected: analysis.firstHitDate !== null,
-              dataPoints: historicalData.length
+              dataPoints: yahooResult.data.length
             });
           } else {
             console.log('No historical data available');

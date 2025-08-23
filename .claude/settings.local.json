@@ -29,7 +29,8 @@
       "Bash(docker exec:*)",
       "Bash(git checkout:*)",
       "Bash(tree:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(clasp push:*)"
     ],
     "deny": []
   }
