@@ -136,8 +136,9 @@ function EW_setupAutoTracking() {
       'Automated schedule created:\n\n' +
       `• ${EW_AUTO_TRACKING.DAILY_DATA_HOUR}:00 AM: Daily data fetch (EW_runAll)\n` +
       `• ${EW_AUTO_TRACKING.DAILY_REPORT_HOUR}:00 AM: Daily success report update\n` +
-      `• Every ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES} minutes: Tracking data refresh\n\n` +
-      'Historical data will be preserved permanently.'
+      `• Every ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES} minutes: Tracking refresh (9 AM - 5 PM ET only)\n\n` +
+      'Historical data will be preserved permanently.\n' +
+      'Note: 30-minute updates only run during market hours.'
     );
     
     console.log('Auto tracking triggers created successfully');
@@ -213,7 +214,7 @@ function EW_stopAutoTracking() {
         'All automated functions have been disabled:\n' +
         `• Daily data fetch (${EW_AUTO_TRACKING.DAILY_DATA_HOUR} AM)\n` +
         `• Daily reports (${EW_AUTO_TRACKING.DAILY_REPORT_HOUR} AM)\n` +
-        `• ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES}-minute tracking updates\n\n` +
+        `• ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES}-minute updates (9 AM - 5 PM ET)\n\n` +
         'You can restart using "Setup Auto Tracking" from the menu.'
       );
       console.log(`Deleted ${deletedCount} auto tracking triggers`);
@@ -311,11 +312,26 @@ function EW_listActiveTriggers() {
 
 /**
  * Automated update function called by 30-minute trigger
+ * Only runs during market hours (9 AM - 5 PM ET)
  */
 function EW_autoUpdateTracking() {
   try {
-    console.log('Auto tracking update started at:', new Date());
-    EW_trace('AUTO_UPDATE', 'Starting 30-minute tracking update');
+    const now = new Date();
+    console.log('Auto tracking update started at:', now);
+    
+    // Check if current time is within market hours (9 AM - 5 PM ET)
+    const easternTime = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
+    const hour = easternTime.getHours();
+    const dayOfWeek = easternTime.getDay();
+    
+    // Skip if outside market hours (before 9 AM or after 5 PM) or on weekends
+    if (hour < 9 || hour >= 17 || dayOfWeek === 0 || dayOfWeek === 6) {
+      console.log(`Skipping update - outside market hours. ET: ${easternTime.toLocaleString()}, Hour: ${hour}, Day: ${dayOfWeek}`);
+      EW_trace('AUTO_UPDATE', `Skipped - outside market hours (${hour}:00 ET, Day ${dayOfWeek})`);
+      return;
+    }
+    
+    EW_trace('AUTO_UPDATE', 'Starting 30-minute tracking update (market hours)');
     
     // Update all formulas to refresh data
     EW_setGFArrayFormulas();
@@ -541,53 +557,8 @@ function EW_validateTriggers() {
   }
 }
 
-/**
- * Setup trigger to run tracking updates daily
- * This creates a time-based trigger that runs every day at 4:30 PM ET
- */
-function EW_setupDailyTrackingTrigger() {
-  // Remove existing tracking triggers
-  const triggers = ScriptApp.getProjectTriggers();
-  triggers.forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'EW_updateAllTrackingData') {
-      ScriptApp.deleteTrigger(trigger);
-    }
-  });
-  
-  // Create new daily trigger at 4:30 PM ET (after market close)
-  ScriptApp.newTrigger('EW_updateAllTrackingData')
-    .timeBased()
-    .atHour(16) // 4 PM
-    .nearMinute(30) // 30 minutes past
-    .everyDays(1)
-    .inTimezone('America/New_York')
-    .create();
-    
-  EW_trace('TRACKING', 'Daily tracking trigger created for 4:30 PM ET', true);
-  EW_safeAlert('Tracking Trigger Created', 'Daily tracking updates will run at 4:30 PM ET');
-}
-
-/**
- * Remove daily tracking trigger
- */
-function EW_removeDailyTrackingTrigger() {
-  const triggers = ScriptApp.getProjectTriggers();
-  let removed = 0;
-  
-  triggers.forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'EW_updateAllTrackingData') {
-      ScriptApp.deleteTrigger(trigger);
-      removed++;
-    }
-  });
-  
-  const msg = removed > 0 ? 
-    `Removed ${removed} tracking trigger(s)` : 
-    'No tracking triggers found to remove';
-    
-  EW_trace('TRACKING', msg, true);
-  EW_safeAlert('Tracking Trigger Removed', msg);
-}
+// Note: The 4:30 PM tracking trigger has been consolidated into the 5 PM Yahoo-based active tracking.
+// All tracking updates are now handled by EW_updateActiveStrikeHits which runs at 5 PM ET.
 
 /**
  * Setup automated trigger for active position tracking
