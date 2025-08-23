@@ -280,13 +280,17 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         }
       }
       
-      // Calculate Profit_Potential if we have current price from indicators
-      if (hdrMap.profitPotentialCol && result.indicators && result.indicators.price) {
-        const existing = row[hdrMap.profitPotentialCol - 1];
-        if (!existing && (position.strike || position.longStrike) > 0) {
-          const potential = EW_calculateProfitPotential(strategyName, result.indicators.price, position.strike || position.longStrike);
-          if (potential !== null) {
-            dataRange.getCell(result.rowIndex + 1, hdrMap.profitPotentialCol).setValue(potential);
+      // Removed Profit_Potential calculation - duplicates Max_Favorable
+      
+      // Calculate and update Risk_Reward if we have both favorable and unfavorable
+      if (hdrMap.riskRewardCol && hdrMap.maxFavorableCol && hdrMap.minUnfavorableCol) {
+        const existing = row[hdrMap.riskRewardCol - 1];
+        if (!existing) {
+          const favorable = parseFloat(row[hdrMap.maxFavorableCol - 1]) || 0;
+          const unfavorable = parseFloat(row[hdrMap.minUnfavorableCol - 1]) || 0;
+          if (favorable > 0 && unfavorable > 0) {
+            const riskReward = (favorable / unfavorable).toFixed(2);
+            dataRange.getCell(result.rowIndex + 1, hdrMap.riskRewardCol).setValue(riskReward);
             updatedCount++;
           }
         }

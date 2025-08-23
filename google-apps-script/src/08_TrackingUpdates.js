@@ -160,17 +160,6 @@ function EW_updateStrategyTracking(ss, strategyName) {
         }
       }
       
-      // Calculate Profit_Potential (simplified - you may want to enhance this)
-      if (hdrMap.profitPotentialCol) {
-        const existing = row[hdrMap.profitPotentialCol - 1];
-        if (!existing && strike > 0) {
-          const potential = EW_calculateProfitPotential(strategyName, currentPrice, strike);
-          if (potential !== null) {
-            dataRange.getCell(rowIndex + 1, hdrMap.profitPotentialCol).setValue(potential);
-            updatedCount++;
-          }
-        }
-      }
       
       // Calculate Risk_Reward (simplified)
       if (hdrMap.riskRewardCol) {
@@ -295,32 +284,7 @@ function EW_calculateMinUnfavorable(strategy, strike, historicalHigh, historical
   return null;
 }
 
-/**
- * Calculate profit potential
- * @param {string} strategy - Strategy name
- * @param {number} currentPrice - Current price
- * @param {number} strike - Strike price
- * @returns {number|null} Profit potential percentage or null
- */
-function EW_calculateProfitPotential(strategy, currentPrice, strike) {
-  if (!currentPrice || !strike) return null;
-  
-  const strategyUpper = strategy.toUpperCase();
-  
-  if (strategyUpper.includes('LONG CALL') || strategyUpper.includes('BULL')) {
-    // Potential if price rises 10%
-    const targetPrice = currentPrice * 1.1;
-    return ((targetPrice - strike) / strike * 100).toFixed(2);
-  }
-  
-  if (strategyUpper.includes('LONG PUT') || strategyUpper.includes('BEAR')) {
-    // Potential if price falls 10%
-    const targetPrice = currentPrice * 0.9;
-    return ((strike - targetPrice) / strike * 100).toFixed(2);
-  }
-  
-  return null;
-}
+// Removed EW_calculateProfitPotential - use Max_Favorable instead
 
 /**
  * Calculate risk/reward ratio
