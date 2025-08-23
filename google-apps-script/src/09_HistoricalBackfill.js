@@ -132,9 +132,11 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       
       // Update Day1_Check through Day5_Check
       const dayChecks = [
+        { col: hdrMap.day0CheckCol, day: 0, value: analysis.day0Hit },
         { col: hdrMap.day1CheckCol, day: 1, value: analysis.day1Hit },
         { col: hdrMap.day2CheckCol, day: 2, value: analysis.day2Hit },
         { col: hdrMap.day3CheckCol, day: 3, value: analysis.day3Hit },
+        { col: hdrMap.day4CheckCol, day: 4, value: analysis.day4Hit },
         { col: hdrMap.day5CheckCol, day: 5, value: analysis.day5Hit }
       ];
       
@@ -230,9 +232,11 @@ function EW_backfillStrategyTracking(ss, strategyName) {
 function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate) {
   const analysis = {
     firstHitDate: null,
+    day0Hit: null,
     day1Hit: null,
     day2Hit: null,
     day3Hit: null,
+    day4Hit: null,
     day5Hit: null,
     maxFavorable: null,
     minUnfavorable: null,
@@ -255,6 +259,11 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate) {
   historicalData.forEach((dayData, index) => {
     const daysSinceEntry = Math.floor((dayData.date - runDate) / (1000 * 60 * 60 * 24));
     
+    // Debug logging for first few days
+    if (index < 5) {
+      EW_trace('BACKFILL', `Day ${index}: Date=${dayData.date.toISOString().split('T')[0]}, DaysSinceEntry=${daysSinceEntry}`);
+    }
+    
     // Track historical high/low
     analysis.historicalHigh = Math.max(analysis.historicalHigh, dayData.high);
     analysis.historicalLow = Math.min(analysis.historicalLow, dayData.low);
@@ -274,12 +283,17 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate) {
     }
     
     // Check specific day milestones
-    if (daysSinceEntry === 1) {
+    // Note: daysSinceEntry starts at 0 for the entry date (same day)
+    if (daysSinceEntry === 0) {
+      analysis.day0Hit = dayHit ? 'HIT' : 'NO';
+    } else if (daysSinceEntry === 1) {
       analysis.day1Hit = dayHit ? 'HIT' : 'NO';
     } else if (daysSinceEntry === 2) {
       analysis.day2Hit = dayHit ? 'HIT' : 'NO';
     } else if (daysSinceEntry === 3) {
       analysis.day3Hit = dayHit ? 'HIT' : 'NO';
+    } else if (daysSinceEntry === 4) {
+      analysis.day4Hit = dayHit ? 'HIT' : 'NO';
     } else if (daysSinceEntry === 5) {
       analysis.day5Hit = dayHit ? 'HIT' : 'NO';
     }
@@ -385,11 +399,20 @@ function EW_backfillSelectedRows() {
       if (hdrMap.hitDateCol && analysis.firstHitDate) {
         sheet.getRange(rowNum, hdrMap.hitDateCol).setValue(analysis.firstHitDate);
       }
+      if (hdrMap.day0CheckCol && analysis.day0Hit) {
+        sheet.getRange(rowNum, hdrMap.day0CheckCol).setValue(analysis.day0Hit);
+      }
       if (hdrMap.day1CheckCol && analysis.day1Hit) {
         sheet.getRange(rowNum, hdrMap.day1CheckCol).setValue(analysis.day1Hit);
       }
       if (hdrMap.day2CheckCol && analysis.day2Hit) {
         sheet.getRange(rowNum, hdrMap.day2CheckCol).setValue(analysis.day2Hit);
+      }
+      if (hdrMap.day3CheckCol && analysis.day3Hit) {
+        sheet.getRange(rowNum, hdrMap.day3CheckCol).setValue(analysis.day3Hit);
+      }
+      if (hdrMap.day4CheckCol && analysis.day4Hit) {
+        sheet.getRange(rowNum, hdrMap.day4CheckCol).setValue(analysis.day4Hit);
       }
       if (hdrMap.day5CheckCol && analysis.day5Hit) {
         sheet.getRange(rowNum, hdrMap.day5CheckCol).setValue(analysis.day5Hit);
@@ -504,9 +527,11 @@ function EW_testHistoricalBackfill() {
             if (testConfig.logDetails) {
               console.log('Analysis results:');
               console.log(`  First Hit Date: ${analysis.firstHitDate || 'Not hit'}`);
+              console.log(`  Day 0 Check: ${analysis.day0Hit || 'N/A'}`);
               console.log(`  Day 1 Check: ${analysis.day1Hit || 'N/A'}`);
               console.log(`  Day 2 Check: ${analysis.day2Hit || 'N/A'}`);
               console.log(`  Day 3 Check: ${analysis.day3Hit || 'N/A'}`);
+              console.log(`  Day 4 Check: ${analysis.day4Hit || 'N/A'}`);
               console.log(`  Day 5 Check: ${analysis.day5Hit || 'N/A'}`);
               console.log(`  Max Favorable: ${analysis.maxFavorable}%`);
               console.log(`  Min Unfavorable: ${analysis.minUnfavorable}%`);
@@ -584,6 +609,44 @@ function EW_testHistoricalBackfill() {
     console.error('Test failed:', error.message);
     console.error(error.stack);
   }
+}
+
+/**
+ * Test Day Check calculations to debug N/A issues
+ */
+function EW_testDayChecks() {
+  console.log('=== Testing Day Check Calculations ===');
+  
+  // Test with different date scenarios
+  const today = new Date();
+  const testScenarios = [
+    { name: 'Yesterday entry', daysAgo: 1 },
+    { name: '3 days ago entry', daysAgo: 3 },
+    { name: '7 days ago entry', daysAgo: 7 },
+    { name: '30 days ago entry', daysAgo: 30 }
+  ];
+  
+  testScenarios.forEach(scenario => {
+    const runDate = new Date(today);
+    runDate.setDate(runDate.getDate() - scenario.daysAgo);
+    
+    console.log(`\n${scenario.name}:`);
+    console.log(`  Run Date: ${runDate.toISOString().split('T')[0]}`);
+    console.log(`  Today: ${today.toISOString().split('T')[0]}`);
+    console.log(`  Days since entry: ${scenario.daysAgo}`);
+    
+    // Check which day checks should have values
+    console.log('  Expected day checks:');
+    for (let day = 0; day <= 5; day++) {
+      if (scenario.daysAgo >= day) {
+        console.log(`    Day${day}_Check: Should have value (position is ${scenario.daysAgo} days old)`);
+      } else {
+        console.log(`    Day${day}_Check: Should be N/A (position is only ${scenario.daysAgo} days old)`);
+      }
+    }
+  });
+  
+  return 'Test complete - check console for results';
 }
 
 /**

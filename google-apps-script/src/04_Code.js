@@ -577,7 +577,7 @@ const EW_GF_LABELS = [
 // Add tracking columns for strategy success monitoring
 const EW_TRACKING_LABELS = [
   'Days_To_Exp','Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
-  'Day1_Check','Day2_Check','Day3_Check','Day5_Check','Exp_Result',
+  'Day0_Check','Day1_Check','Day2_Check','Day3_Check','Day4_Check','Day5_Check','Exp_Result',
   'Success_Score','Profit_Potential','Risk_Reward','Historical_High','Historical_Low',
   'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days','Peak_Profit_Date',
   // Technical indicators at strike hit
@@ -641,9 +641,11 @@ function EW_headerMap(headerRow) {
   const hitDateCol      = find(['Hit_Date']);
   const maxFavorableCol = find(['Max_Favorable']);
   const minUnfavorableCol = find(['Min_Unfavorable']);
+  const day0CheckCol    = find(['Day0_Check']);
   const day1CheckCol    = find(['Day1_Check']);
   const day2CheckCol    = find(['Day2_Check']);
   const day3CheckCol    = find(['Day3_Check']);
+  const day4CheckCol    = find(['Day4_Check']);
   const day5CheckCol    = find(['Day5_Check']);
   const expResultCol    = find(['Exp_Result']);
   const successScoreCol = find(['Success_Score']);
@@ -675,15 +677,23 @@ function EW_headerMap(headerRow) {
   const strategyCol     = find(['strategy','Strategy']);
   const strikeCol       = find(['strike','Strike']);
   const expDateCol      = find(['expDate','expiration','Expiration']);
+  
+  // Spread-specific columns
+  const longStrikeCol   = find(['longStrike','long strike','Long Strike']);
+  const shortStrikeCol  = find(['shortStrike','short strike','Short Strike']);
+  const breakevenCol    = find(['breakeven','Breakeven']);
+  const maxProfitCol    = find(['maxProfit','max profit','Max Profit']);
+  const maxLossCol      = find(['maxLoss','max loss','Max Loss']);
 
   return {
     byName, byNorm,
     runDateCol, tickerCol, strategyCol, strikeCol, expDateCol,
+    longStrikeCol, shortStrikeCol, breakevenCol, maxProfitCol, maxLossCol,
     nameCol, priceCol, chgPctCol, highCol, lowCol, high52Col, low52Col,
     volCol, avgVol10Col, mcapCol, peCol, betaCol,
     hv30Col, rvol10Col, ret5Col, ret20Col, gapPctCol,
     daysToExpCol, strikeHitCol, hitDateCol, maxFavorableCol, minUnfavorableCol,
-    day1CheckCol, day2CheckCol, day3CheckCol, day5CheckCol, expResultCol,
+    day0CheckCol, day1CheckCol, day2CheckCol, day3CheckCol, day4CheckCol, day5CheckCol, expResultCol,
     successScoreCol, profitPotentialCol, riskRewardCol,
     historicalHighCol, historicalLowCol, everHitStrikeCol, firstHitDateCol,
     lastUpdateCol, totalHitDaysCol, peakProfitDateCol,
@@ -902,22 +912,34 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
      )`
   );
 
-  // Ever Hit Strike (uses Strike_Hit column to avoid circular dependency)
+  // Ever Hit Strike (handles both single strikes and spreads)
   setHeaderArrayMultiCol(
     hdrMap.everHitStrikeCol, 'Ever_Hit_Strike',
     `LET(
        ticker, INDEX(${tRange}, i),
        strategy, UPPER(INDEX($${EW_columnToLetter(hdrMap.strategyCol)}2:$${EW_columnToLetter(hdrMap.strategyCol)}, i)),
-       strike, INDEX($${EW_columnToLetter(hdrMap.strikeCol)}2:$${EW_columnToLetter(hdrMap.strikeCol)}, i),
+       strike, IF(${hdrMap.strikeCol ? 'TRUE' : 'FALSE'}, INDEX($${EW_columnToLetter(hdrMap.strikeCol || 1)}2:$${EW_columnToLetter(hdrMap.strikeCol || 1)}, i), ""),
+       longStrike, IF(${hdrMap.longStrikeCol ? 'TRUE' : 'FALSE'}, INDEX($${EW_columnToLetter(hdrMap.longStrikeCol || 1)}2:$${EW_columnToLetter(hdrMap.longStrikeCol || 1)}, i), ""),
+       shortStrike, IF(${hdrMap.shortStrikeCol ? 'TRUE' : 'FALSE'}, INDEX($${EW_columnToLetter(hdrMap.shortStrikeCol || 1)}2:$${EW_columnToLetter(hdrMap.shortStrikeCol || 1)}, i), ""),
        currentPrice, IFERROR(GOOGLEFINANCE(ticker,"price"),0),
        historicalHigh, INDEX($${EW_columnToLetter(hdrMap.historicalHighCol)}2:$${EW_columnToLetter(hdrMap.historicalHighCol)}, i),
        historicalLow, INDEX($${EW_columnToLetter(hdrMap.historicalLowCol)}2:$${EW_columnToLetter(hdrMap.historicalLowCol)}, i),
        strikeHit, INDEX($${EW_columnToLetter(hdrMap.strikeHitCol)}2:$${EW_columnToLetter(hdrMap.strikeHitCol)}, i),
        
-       IF(OR(ticker="", strategy="", strike="", currentPrice=0), "",
+       IF(ticker="", "",
          IF(strikeHit="HIT", "TRUE",
-           IF(REGEXMATCH(strategy, "SPREAD"), 
-             "SPREAD_CALC_NEEDED",
+           IF(OR(REGEXMATCH(strategy, "BULL SPREAD"), REGEXMATCH(strategy, "BEAR SPREAD")),
+             LET(
+               primaryStrike, IF(longStrike<>"", longStrike, strike),
+               secondaryStrike, shortStrike,
+               IF(REGEXMATCH(strategy, "BULL SPREAD"),
+                 IF(AND(historicalHigh >= primaryStrike, historicalHigh < secondaryStrike), "TRUE", "FALSE"),
+                 IF(REGEXMATCH(strategy, "BEAR SPREAD"),
+                   IF(AND(historicalLow <= primaryStrike, historicalLow > secondaryStrike), "TRUE", "FALSE"),
+                   "FALSE"
+                 )
+               )
+             ),
              IF(OR(REGEXMATCH(strategy, "LONG CALL"), REGEXMATCH(strategy, "BULL")),
                IF(historicalHigh >= strike, "TRUE", "FALSE"),
                IF(OR(REGEXMATCH(strategy, "LONG PUT"), REGEXMATCH(strategy, "BEAR")),
@@ -1138,9 +1160,8 @@ function EW_completeSheetRepair() {
         continue;
       }
       
-      // Get all data
-      const allData = sheet.getRange(1, 1, lastRow, lastCol).getValues();
-      const headers = allData[0];
+      // Get headers
+      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
       
       // List of ALL Google Finance and tracking columns (both formula and plain text)
       // These will be removed and re-added in the correct order
@@ -1155,54 +1176,56 @@ function EW_completeSheetRepair() {
         'Days_To_Exp', 'Success_Score',
         // Plain text tracking columns (for success reports and scripts)
         'Strike_Hit', 'Hit_Date', 'Max_Favorable', 'Min_Unfavorable', 
-        'Day1_Check', 'Day2_Check', 'Day3_Check', 'Day5_Check',
+        'Day0_Check', 'Day1_Check', 'Day2_Check', 'Day3_Check', 'Day4_Check', 'Day5_Check',
         'Exp_Result', 'Profit_Potential', 'Risk_Reward', 
-        'Peak_Profit_Date'
+        'Peak_Profit_Date',
+        // Technical indicators at strike hit
+        'Hit_RSI','Hit_SMA20','Hit_SMA50','Hit_EMA9','Hit_EMA21','Hit_VWAP',
+        'Hit_RVOL','Hit_ATR','Hit_PriceVsSMA20','Hit_PriceVsVWAP'
       ];
       const columnsToRemoveLower = allGFAndTrackingColumns.map(c => c.toLowerCase());
       
-      // Identify columns to keep (not formula columns or errors)
-      const columnsToKeep = [];
+      // Delete columns from right to left to maintain column indexes
+      const columnsToDelete = [];
       headers.forEach((header, index) => {
         const headerStr = header ? header.toString() : '';
         const headerLower = headerStr.toLowerCase();
         
-        if (!headerStr.startsWith('#') && !columnsToRemoveLower.includes(headerLower)) {
-          columnsToKeep.push(index);
-        } else {
-          EW_trace('REPAIR', `${tabName}: Removing column "${header}" at position ${index + 1}`);
+        if (headerStr.startsWith('#') || columnsToRemoveLower.includes(headerLower)) {
+          columnsToDelete.push(index + 1); // 1-based column number
+          EW_trace('REPAIR', `${tabName}: Will delete column "${header}" at position ${index + 1}`);
         }
       });
       
-      // Filter data to keep only non-formula columns
-      const filteredData = allData.map(row => columnsToKeep.map(i => row[i]));
+      // Sort columns to delete in reverse order (right to left)
+      columnsToDelete.sort((a, b) => b - a);
       
-      // Clear sheet and write filtered data
-      sheet.clear();
-      sheet.getRange(1, 1, lastRow, columnsToKeep.length).setValues(filteredData);
+      // Delete columns one by one from right to left
+      columnsToDelete.forEach(colNum => {
+        sheet.deleteColumn(colNum);
+      });
+      
+      EW_trace('REPAIR', `${tabName}: Deleted ${columnsToDelete.length} columns`);
       
       // Ensure Strategy column exists
-      let currentData = sheet.getDataRange().getValues();
-      let currentHeaders = currentData[0];
+      let currentHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
       let hdrMap = EW_headerMap(currentHeaders);
       
       if (!hdrMap.strategyCol) {
         EW_trace('REPAIR', `${tabName}: Adding Strategy column`);
         
-        // Insert Strategy as second column
-        const updatedData = currentData.map((row, rowIndex) => {
-          const newRow = [...row];
-          if (rowIndex === 0) {
-            newRow.splice(1, 0, 'Strategy');
-          } else {
-            newRow.splice(1, 0, tabName);
-          }
-          return newRow;
-        });
+        // Insert Strategy column as the second column
+        sheet.insertColumnBefore(2);
         
-        // Update sheet with Strategy column
-        sheet.clear();
-        sheet.getRange(1, 1, updatedData.length, updatedData[0].length).setValues(updatedData);
+        // Set header
+        sheet.getRange(1, 2).setValue('Strategy');
+        
+        // Fill Strategy column with the tab name
+        const dataRows = sheet.getLastRow() - 1;
+        if (dataRows > 0) {
+          const strategyValues = Array(dataRows).fill([tabName]);
+          sheet.getRange(2, 2, dataRows, 1).setValues(strategyValues);
+        }
       }
       
       // Get current headers after modifications
@@ -1222,7 +1245,7 @@ function EW_completeSheetRepair() {
       
       const trackingPlainTextColumns = [
         'Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
-        'Day1_Check','Day2_Check','Day3_Check','Day5_Check',
+        'Day0_Check','Day1_Check','Day2_Check','Day3_Check','Day4_Check','Day5_Check',
         'Exp_Result','Profit_Potential','Risk_Reward','Peak_Profit_Date',
         // Technical indicators at strike hit
         'Hit_RSI','Hit_SMA20','Hit_SMA50','Hit_EMA9','Hit_EMA21','Hit_VWAP',
@@ -1230,11 +1253,17 @@ function EW_completeSheetRepair() {
       ];
       
       // Add plain text headers first (these won't have formulas)
-      const headersWithPlainText = [...cleanedHeaders, ...trackingPlainTextColumns];
-      sheet.getRange(1, 1, 1, headersWithPlainText.length).setValues([headersWithPlainText]);
+      const currentColCount = sheet.getLastColumn();
+      const newHeaders = [...trackingPlainTextColumns];
+      
+      if (newHeaders.length > 0) {
+        // Append the new headers
+        sheet.getRange(1, currentColCount + 1, 1, newHeaders.length).setValues([newHeaders]);
+      }
       
       // Create header map with all columns for formula application
-      const withAllColumns = [...cleanedHeaders, ...allGFColumns, ...trackingFormulaColumns, ...trackingPlainTextColumns];
+      const updatedHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      const withAllColumns = [...updatedHeaders, ...allGFColumns, ...trackingFormulaColumns];
       const finalHdrMap = EW_headerMap(withAllColumns);
       
       // Apply formulas - this will create the formula column headers
@@ -1254,6 +1283,96 @@ function EW_completeSheetRepair() {
   
   EW_safeAlert('Sheet Repair Complete', msg);
   EW_trace('REPAIR', msg, true);
+}
+
+/**
+ * Targeted column removal - removes only specific formula columns without touching data
+ * This is a safer alternative to complete sheet repair
+ * @param {string} sheetName - Optional specific sheet name to repair
+ * @returns {void}
+ */
+function EW_removeFormulaColumns(sheetName = null) {
+  EW_trace('REMOVE_COLS', 'Starting targeted formula column removal', true);
+  const ss = SpreadsheetApp.getActive();
+  const endpoints = EW.STRATEGY_ENDPOINTS;
+  let sheetsProcessed = 0;
+  let totalColumnsRemoved = 0;
+  
+  const sheetsToProcess = sheetName ? [sheetName] : Object.keys(endpoints);
+  
+  for (const tabName of sheetsToProcess) {
+    const sheet = ss.getSheetByName(tabName);
+    if (!sheet || sheet.getLastRow() === 0) {
+      EW_trace('REMOVE_COLS', `Skipping ${tabName} - sheet empty or doesn't exist`);
+      continue;
+    }
+    
+    try {
+      const lastRow = sheet.getLastRow();
+      const lastCol = sheet.getLastColumn();
+      
+      if (lastRow === 0 || lastCol === 0) {
+        EW_trace('REMOVE_COLS', `${tabName} has no data, skipping`);
+        continue;
+      }
+      
+      // Get headers
+      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      
+      // Only formula columns to remove (not plain text tracking columns)
+      const formulaColumnsToRemove = [
+        // Google Finance columns (with formulas)
+        'GF_Name', 'GF_Price', 'GF_ChangePct', 'GF_High', 'GF_Low', 
+        'GF_High52', 'GF_Low52', 'GF_Volume', 'GF_AvgVol10', 'GF_MktCap', 
+        'GF_PE', 'GF_Beta', 'HV_30D', 'RVOL_10', 'Ret_5D', 'Ret_20D', 'GapPct',
+        // Tracking columns with formulas only
+        'Historical_High', 'Historical_Low', 'Ever_Hit_Strike', 
+        'First_Hit_Date', 'Last_Update', 'Total_Hit_Days',
+        'Days_To_Exp', 'Success_Score'
+      ];
+      const columnsToRemoveLower = formulaColumnsToRemove.map(c => c.toLowerCase());
+      
+      // Identify columns to delete
+      const columnsToDelete = [];
+      headers.forEach((header, index) => {
+        const headerStr = header ? header.toString() : '';
+        const headerLower = headerStr.toLowerCase();
+        
+        // Only remove formula columns or error columns
+        if (headerStr.startsWith('#') || columnsToRemoveLower.includes(headerLower)) {
+          columnsToDelete.push(index + 1); // 1-based column number
+          EW_trace('REMOVE_COLS', `${tabName}: Will delete column "${header}" at position ${index + 1}`);
+        }
+      });
+      
+      if (columnsToDelete.length === 0) {
+        EW_trace('REMOVE_COLS', `${tabName}: No formula columns found to remove`);
+        continue;
+      }
+      
+      // Sort columns to delete in reverse order (right to left)
+      columnsToDelete.sort((a, b) => b - a);
+      
+      // Delete columns one by one from right to left
+      columnsToDelete.forEach(colNum => {
+        sheet.deleteColumn(colNum);
+      });
+      
+      totalColumnsRemoved += columnsToDelete.length;
+      sheetsProcessed++;
+      EW_trace('REMOVE_COLS', `${tabName}: Removed ${columnsToDelete.length} formula columns`);
+      
+    } catch (e) {
+      EW_trace('REMOVE_COLS', `Error processing ${tabName}: ${e.message}`, true);
+    }
+  }
+  
+  const msg = sheetsProcessed > 0 ? 
+    `Successfully removed ${totalColumnsRemoved} formula columns from ${sheetsProcessed} sheets` :
+    'No formula columns found to remove';
+  
+  EW_trace('REMOVE_COLS', msg, true);
+  EW_safeAlert('Formula Column Removal Complete', msg);
 }
 
 /**
@@ -1309,7 +1428,7 @@ function EW_generateSuccessReport() {
   // Create report header
   const reportHeaders = [
     'Strategy', 'Total_Positions', 'Hits', 'Hit_Rate_%', 'Avg_Success_Score',
-    'Day1_Hit_Rate', 'Day2_Hit_Rate', 'Day5_Hit_Rate', 'Avg_Days_To_Hit',
+    'Day0_Hit_Rate', 'Day1_Hit_Rate', 'Day2_Hit_Rate', 'Day3_Hit_Rate', 'Day4_Hit_Rate', 'Day5_Hit_Rate', 'Avg_Days_To_Hit',
     'Best_Performers', 'Worst_Performers', 'Recommendations'
   ];
   
@@ -1363,8 +1482,11 @@ function EW_generateSuccessReport() {
       stat.hits,
       stat.hitRate,
       stat.avgSuccessScore,
+      stat.day0HitRate,
       stat.day1HitRate,
       stat.day2HitRate,
+      stat.day3HitRate,
+      stat.day4HitRate,
       stat.day5HitRate,
       stat.avgDaysToHit,
       stat.bestPerformers,
@@ -1401,8 +1523,11 @@ function EW_calculateStrategyStats(rows, hdrMap, strategyName) {
     hits: 0,
     hitRate: 0,
     avgSuccessScore: 0,
+    day0HitRate: 0,
     day1HitRate: 0,
     day2HitRate: 0,
+    day3HitRate: 0,
+    day4HitRate: 0,
     day5HitRate: 0,
     avgDaysToHit: 0,
     bestPerformers: '',
@@ -1411,7 +1536,7 @@ function EW_calculateStrategyStats(rows, hdrMap, strategyName) {
   };
   
   let totalSuccess = 0;
-  let day1Hits = 0, day2Hits = 0, day5Hits = 0;
+  let day0Hits = 0, day1Hits = 0, day2Hits = 0, day3Hits = 0, day4Hits = 0, day5Hits = 0;
   let daysToHitSum = 0, hitCount = 0;
   const performers = [];
   
@@ -1419,8 +1544,11 @@ function EW_calculateStrategyStats(rows, hdrMap, strategyName) {
     const ticker = row[hdrMap.tickerCol - 1] || '';
     const strikeHit = row[hdrMap.strikeHitCol - 1] || '';
     const successScore = parseFloat(row[hdrMap.successScoreCol - 1]) || 0;
+    const day0Check = row[hdrMap.day0CheckCol - 1] || '';
     const day1Check = row[hdrMap.day1CheckCol - 1] || '';
     const day2Check = row[hdrMap.day2CheckCol - 1] || '';
+    const day3Check = row[hdrMap.day3CheckCol - 1] || '';
+    const day4Check = row[hdrMap.day4CheckCol - 1] || '';
     const day5Check = row[hdrMap.day5CheckCol - 1] || '';
     const hitDate = row[hdrMap.hitDateCol - 1] || '';
     const runDate = row[hdrMap.runDateCol - 1] || '';
@@ -1436,8 +1564,11 @@ function EW_calculateStrategyStats(rows, hdrMap, strategyName) {
     }
     
     // Daily hit rates
+    if (day0Check === 'HIT' || day0Check === 'FAVORABLE') day0Hits++;
     if (day1Check === 'HIT' || day1Check === 'FAVORABLE') day1Hits++;
     if (day2Check === 'HIT' || day2Check === 'FAVORABLE') day2Hits++;
+    if (day3Check === 'HIT' || day3Check === 'FAVORABLE') day3Hits++;
+    if (day4Check === 'HIT' || day4Check === 'FAVORABLE') day4Hits++;
     if (day5Check === 'HIT' || day5Check === 'FAVORABLE') day5Hits++;
     
     totalSuccess += successScore;
@@ -1451,8 +1582,11 @@ function EW_calculateStrategyStats(rows, hdrMap, strategyName) {
   
   // Calculate percentages
   stats.hitRate = stats.totalPositions > 0 ? Math.round((stats.hits / stats.totalPositions) * 100) : 0;
+  stats.day0HitRate = stats.totalPositions > 0 ? Math.round((day0Hits / stats.totalPositions) * 100) : 0;
   stats.day1HitRate = stats.totalPositions > 0 ? Math.round((day1Hits / stats.totalPositions) * 100) : 0;
   stats.day2HitRate = stats.totalPositions > 0 ? Math.round((day2Hits / stats.totalPositions) * 100) : 0;
+  stats.day3HitRate = stats.totalPositions > 0 ? Math.round((day3Hits / stats.totalPositions) * 100) : 0;
+  stats.day4HitRate = stats.totalPositions > 0 ? Math.round((day4Hits / stats.totalPositions) * 100) : 0;
   stats.day5HitRate = stats.totalPositions > 0 ? Math.round((day5Hits / stats.totalPositions) * 100) : 0;
   stats.avgSuccessScore = stats.totalPositions > 0 ? Math.round(totalSuccess / stats.totalPositions) : 0;
   stats.avgDaysToHit = hitCount > 0 ? Math.round(daysToHitSum / hitCount * 10) / 10 : 0;

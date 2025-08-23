@@ -484,32 +484,73 @@ function EW_batchCheckStrikeHits(positions) {
     
     for (const position of batch) {
       try {
-        // Use checkStockIntraday to get 1m data with fallback tracking
-        const intradayResult = EW_checkStockIntraday(
-          position.ticker, 
-          position.strike, 
-          position.endDate
-        );
-        
-        // Determine if strike was hit based on strategy
         const strategyUpper = position.strategy.toUpperCase();
-        const isBullish = strategyUpper.includes('LONG CALL') || strategyUpper.includes('BULL');
-        const isBearish = strategyUpper.includes('LONG PUT') || strategyUpper.includes('BEAR');
+        const isSpread = strategyUpper.includes('SPREAD');
+        const isBullSpread = strategyUpper.includes('BULL SPREAD');
+        const isBearSpread = strategyUpper.includes('BEAR SPREAD');
         
         let hit = false;
         let hitDate = null;
+        let indicators = null;
         
-        if (intradayResult.hit) {
-          hit = true;
-          hitDate = intradayResult.timestamp;
-        } else if (intradayResult.dayHigh && intradayResult.dayLow) {
-          // Check based on day's range
-          if (isBullish && intradayResult.dayHigh >= position.strike) {
+        if (isSpread && position.longStrike && position.shortStrike) {
+          // For spreads, we need to check if price is in the profitable range
+          const longStrike = parseFloat(position.longStrike);
+          const shortStrike = parseFloat(position.shortStrike);
+          
+          // Get current price data
+          const intradayResult = EW_checkStockIntraday(
+            position.ticker, 
+            longStrike, // Use long strike as target for data fetch
+            position.endDate
+          );
+          
+          if (intradayResult.dayHigh && intradayResult.dayLow) {
+            if (isBullSpread) {
+              // Bull spread is profitable when price is above long strike but below short strike
+              hit = intradayResult.dayHigh >= longStrike && intradayResult.dayHigh < shortStrike;
+            } else if (isBearSpread) {
+              // Bear spread is profitable when price is below long strike but above short strike
+              hit = intradayResult.dayLow <= longStrike && intradayResult.dayLow > shortStrike;
+            }
+            
+            if (hit) {
+              hitDate = intradayResult.timestamp || position.endDate;
+              indicators = intradayResult.indicators;
+            }
+          }
+        } else {
+          // Single strike strategies
+          const strike = position.strike || position.longStrike || 0;
+          
+          // Use checkStockIntraday to get 1m data with fallback tracking
+          const intradayResult = EW_checkStockIntraday(
+            position.ticker, 
+            strike, 
+            position.endDate
+          );
+          
+          // Determine if strike was hit based on strategy
+          const isBullish = strategyUpper.includes('LONG CALL') || (strategyUpper.includes('BULL') && !isSpread);
+          const isBearish = strategyUpper.includes('LONG PUT') || (strategyUpper.includes('BEAR') && !isSpread);
+          
+          if (intradayResult.hit) {
             hit = true;
-            hitDate = position.endDate;
-          } else if (isBearish && intradayResult.dayLow <= position.strike) {
-            hit = true;
-            hitDate = position.endDate;
+            hitDate = intradayResult.timestamp;
+            indicators = intradayResult.indicators;
+          } else if (intradayResult.dayHigh && intradayResult.dayLow) {
+            // Check based on day's range
+            if (isBullish && intradayResult.dayHigh >= strike) {
+              hit = true;
+              hitDate = position.endDate;
+            } else if (isBearish && intradayResult.dayLow <= strike) {
+              hit = true;
+              hitDate = position.endDate;
+            }
+            
+            if (hit) {
+              indicators = intradayResult.indicators;
+            }
           }
         }
         
