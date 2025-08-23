@@ -783,6 +783,7 @@ function EW_appendIndicatorValue(currentValue, newValue) {
  * Build indicator arrays for all indicators from Day0 to Day5
  * @param {Object} dailyIndicators - Object with arrays of daily indicator values
  * @returns {Object} Object with JSON strings for each indicator array
+ * @deprecated Use EW_buildIndicatorArrays from 13_ArrayBuilders.js instead
  */
 function EW_buildIndicatorArrays(dailyIndicators) {
   const arrays = {};
