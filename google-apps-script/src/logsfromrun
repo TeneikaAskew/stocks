@@ -1,0 +1,513 @@
+Head	EW_runAll	Menu	Aug 22, 2025, 3:31:06 PM	3.218 s	
+Running
+Cloud logs
+Aug 22, 2025, 3:31:06 PM	Debug	[2025-08-22T19:31:06.604Z] [MAIN] EW_runAll() started
+Aug 22, 2025, 3:31:06 PM	Info	[2025-08-22T19:31:06.604Z] [MAIN] EW_runAll() started
+Aug 22, 2025, 3:31:08 PM	Debug	[2025-08-22T19:31:08.015Z] [LOGIN] Attempting login as msztee89@gmail.com
+Aug 22, 2025, 3:31:08 PM	Info	[2025-08-22T19:31:08.015Z] [LOGIN] Attempting login as msztee89@gmail.com
+Aug 22, 2025, 3:31:08 PM	Debug	[2025-08-22T19:31:08.089Z] [LOGIN] GET https://www.earningswhispers.com/login
+Aug 22, 2025, 3:31:08 PM	Info	[2025-08-22T19:31:08.089Z] [LOGIN] GET https://www.earningswhispers.com/login
+Aug 22, 2025, 3:31:08 PM	Debug	[2025-08-22T19:31:08.700Z] [LOGIN] res1 code=200 cookies=1
+Aug 22, 2025, 3:31:08 PM	Info	[2025-08-22T19:31:08.700Z] [LOGIN] res1 code=200 cookies=1
+Aug 22, 2025, 3:31:08 PM	Debug	[2025-08-22T19:31:08.704Z] [CSRF] No CSRF token found in HTML
+Aug 22, 2025, 3:31:08 PM	Info	[2025-08-22T19:31:08.704Z] [CSRF] No CSRF token found in HTML
+Aug 22, 2025, 3:31:08 PM	Debug	[2025-08-22T19:31:08.705Z] [LOGIN] POST https://www.earningswhispers.com/login
+Aug 22, 2025, 3:31:08 PM	Info	[2025-08-22T19:31:08.705Z] [LOGIN] POST https://www.earningswhispers.com/login
+Aug 22, 2025, 3:31:08 PM	Debug	[2025-08-22T19:31:08.955Z] [LOGIN] res2 code=302 cookies now=1
+Aug 22, 2025, 3:31:08 PM	Info	[2025-08-22T19:31:08.955Z] [LOGIN] res2 code=302 cookies now=1
+Aug 22, 2025, 3:31:08 PM	Debug	[2025-08-22T19:31:08.958Z] [LOGIN] Redirect -> /doh?statusCode=400
+Aug 22, 2025, 3:31:08 PM	Info	[2025-08-22T19:31:08.958Z] [LOGIN] Redirect -> /doh?statusCode=400
+Aug 22, 2025, 3:31:09 PM	Debug	[2025-08-22T19:31:09.009Z] [LOGIN] Login failed: Bad request: http:///doh?statusCode=400
+Aug 22, 2025, 3:31:09 PM	Info	[2025-08-22T19:31:09.009Z] [LOGIN] Login failed: Bad request: http:///doh?statusCode=400
+Aug 22, 2025, 3:31:09 PM	Debug	[2025-08-22T19:31:09.242Z] [MAIN] Fetching 9 endpoints
+Aug 22, 2025, 3:31:09 PM	Info	[2025-08-22T19:31:09.242Z] [MAIN] Fetching 9 endpoints
+Aug 22, 2025, 3:31:09 PM	Debug	[2025-08-22T19:31:09.244Z] [Short Puts] GET https://www.earningswhispers.com/api/getshortput
+Aug 22, 2025, 3:31:09 PM	Info	[2025-08-22T19:31:09.244Z] [Short Puts] GET https://www.earningswhispers.com/api/getshortput
+Aug 22, 2025, 3:31:09 PM	Debug	[2025-08-22T19:31:09.246Z] [HTTP] Fetching https://www.earningswhispers.com/api/getshortput
+Aug 22, 2025, 3:31:09 PM	Info	[2025-08-22T19:31:09.246Z] [HTTP] Fetching https://www.earningswhispers.com/api/getshortput
+Aug 22, 2025, 3:31:09 PM	Debug	[2025-08-22T19:31:09.415Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getshortput
+Aug 22, 2025, 3:31:09 PM	Info	[2025-08-22T19:31:09.415Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getshortput
+Aug 22, 2025, 3:31:09 PM	Debug	Logging output too large. Truncating output. Response: 
+ <!DOCTYPE html>
+<html lang="en">
+<head>
+
+    <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-7LKB78MJRT"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-7LKB78MJRT');
+</script>
+
+
+        <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script>
+        window.fbAsyncInit = function () {
+            FB.init({
+                appId: '832628011103348',
+                cookie: true,
+                xfbml: true,
+                version: 'v15.0'
+            });
+
+            FB.AppEvents.logPageView();
+
+        };
+
+        (function (d, s, id) {
+            var js, fjs = d.getElementsByTagName(s)[0];
+            if (d.getElementById(id)) { return; }
+            js = d.createElement(s); js.id = id;
+            js.src = "https://connect.facebook.net/en_US/sdk.js";
+            fjs.parentNode.insertBefore(js, fjs);
+        }(document, 'script', 'facebook-jssdk'));
+    </script>
+
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Doh! Earnings Whispers</title>
+    <link rel="stylesheet" href="/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="/css/site.css?v=dq-qzrCom8IKffQrAzKh7relHTz3GaWuSXFk63LrPDk" />
+    <link rel="stylesheet" href="/EW2023.styles.css?v=mC3snZh_Ma_324mzp1lkOUheJ5xN0YZcslXSrE46hSo" />
+
+        <link rel="stylesheet" href="/css/signin.css?v=4cwqdwSb0XnVEFkyNeVWZ8TD_fCkZPW8eOQIIYnfKKc" />
+
+
+    <link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.ico" sizes="any">
+    <meta name="norton-safeweb-site-verification" content="kpf4oy1ku-vmpefj2hvc-9huftrudbvrc-sitc59n95l3hmco6oxqh7olepoo29z2k9u61h5fb7u7--prfaw4tk-v59dwwvzp2a7q0m3aa7boapka36l4k2wpw171vft" />
+    
+    
+</head>
+<body>
+    <header b-5bvfnf2466>
+
+
+    <nav b-5bvfnf2466 class="navbar navbar-expand-lg navbar-toggleable-lg navbar-dark navbar-custom fixed-top">
+        <div b-5bvfnf2466 class="container-fluid">
+            <a class="navbar-brand ewlogo" title="Earnings Whispers" aria-label="Got to root directory for Earnings Whispers" href="/">
+                <svg b-5bvfnf2466 id="EW" data-name="EWLogo" role="img" title="Earnings Whispers" aria-label="Earnings Whispers Logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1755 515" width="170" height="50" class="ewlogo-svg d-sm-inline-block d-none"><path b-5bvfnf2466 fill="currentColor" d="M204.4,229.9H80.7V41.4H198.5V78.7H118V116h74.6v37.3H118v39.3h86.4Z" /><path b-5bvfnf2466 fill="currentColor" d="M443.2,169.1c0,6.9-10.3,12.7-30.8,17.5a5.64,5.64,0,0,0-4.4,4.8,63.74,63.74,0,0,0-.2,7.6,51,51,0,0,0,2,12.3c1.3,5.1,2,8.7,2,10.8H328.3c0-2.6.1-6.4.2-11.2.2-5.4.2-9.2.2-11.5,0-16.9-4.8-29-14.5-36.2q-16.05-12-22.5-26.7c-4.1-9.3-6.1-21.4-6.1-36.4q0-23.55,24-41.9,22.2-17.1,46.5-17.1h4.8q40.35,0,46.6,17.1c1.1,4.5,2.4,9.4,4,14.8a27.14,27.14,0,0,1,2.4,3.5,29.46,29.46,0,0,1,.1,4.2c0,5.4,1.4,9.4,4.1,11.7,1.3,1.1,4.6,2.7,10,4.6a31,31,0,0,1,12.1,7.1,3.1,3.1,0,0,1,.9,1.8c0,1.2-2.2,3.3-6.5,6.1s-6.5,5.5-6.5,7.9a5,5,0,0,0,2.2,4.3,28.77,28.77,0,0,1,2.7,2.2,102.87,102.87,0,0,0-9.2,8.3c-2,2.3-4.1,5.1-6.6,8.5a68.9,68.9,0,0,0,21.1,3.3c.7,0,1.1.5,1.1,1.6a13.39,13.39,0,0,1-1.7,6.2c-1.1,2.2-1.7,3.5-1.7,4.1,0,1.2,1.2,2.7,3.5,4.5S443.2,166.6,443.2,169.1Zm45.9-82.5-38,36-2.6-2.3,33.6-39.9Zm0,91.6-7,6.2-33.5-40,2.6-2.2Zm3.6-40.3-38.6-2.4v-4l38.6-4.6Z" /><path b-5bvfnf2466 fill="currentColor" d="M195.7,345.1c.2,14.7-4.1,28.7-12.7,42-8.9,11.8-17.7,23.6-26.6,35.5-2.9,4.2-5.6,10.1-8.3,17.6-3.7,9.9-6,16-7.1,18.3-5.9,12.5-16.5,18.8-31.6,19-15.7.3-23.6-10.7-23.6-32.8a103.08,103.08,0,0,1,2.3-21.4h7.4c-1.1,10-1.6,16.3-1.6,18.9,0,18.7,5.4,28.1,16.1,28.1,9.7-.1,17.1-3.9,22.1-11.4,2-2.8,5.3-10.8,10.1-23.8a92.13,92.13,0,0,1,8.4-18l24.3-33c8.5-12.7,12.7-25.4,12.6-38.2-.2-17.9-3.9-31.2-11.2-40.1q-12.45-15-40.2-15.3c-17.9-.1-30.7,7.1-38.4,21.4-5.4,9.9-8.1,22.7-8.1,38.2a104.92,104.92,0,0,0,1.1,15.8H82.6a109.27,109.27,0,0,1-1.2-17.1c0-16.9,3.1-30.8,9.4-41.8q13.65-23.85,44.9-23.8,32.25,0,46.6,16.5C191.1,309.7,195.5,324.8,195.7,345.1ZM177.2,348c0,7.8-3.2,18.4-9.5,31.7l-7.2-2.9q8.7-17.7,8.7-29.1c0-10.5-2.7-19.4-8.2-26.7-6.2-8.3-14.6-12.5-25.3-12.5a25,25,0,0,0-19.2,8.4,30,30,0,0,0-8,20.5c25.6,15,38.5,29.9,38.7,44.9a37.62,37.62,0,0,1-5.1,18.8l-10.3,16.6c-1.3,2.9-3.5,7.2-6.5,12.9-2.8,4.6-6.7,6.8-11.5,6.8-6.8,0-10.1-4.2-10.1-12.5,0-2.2.8-5.1,2.3-8.7s2.3-6.4,2.3-8.5a21.56,21.56,0,0,0-2.1-7.8,22.4,22.4,0,0,1-2-9.2c.3-7.5,4.1-11.1,11.2-10.8,6.7.3,9.8,4.6,9.4,12.9-.2,4.6-3.1,8.5-8.6,11.8a24.76,24.76,0,0,1-2.6,11.7,22.5,22.5,0,0,0-2.4,7.6c-.4,4.2.6,6.2,3,6.2,2.8,0,5-1.6,6.3-4.9a82.41,82.41,0,0,1,4.3-10.7l9.8-15.1a31,31,0,0,0,4.6-17.3c-.3-11.4-10.3-23.2-29.8-35.5,2.5,9.5,8.6,18.2,18.3,26l-4.5,5.4q-23-15-23-39.7c0-11.1,3.3-20.1,10-27.1s15.1-10.5,25.3-10.5c14,0,24.6,4.7,31.9,14C174,323.4,177.2,334.3,177.2,348Z" /><line b-5bvfnf2466 fill="none" stroke="currentColor" stroke-width="3" x1="263.4" y1="7.5" x2="263.4" y2="507.5" /><line b-5bvfnf2466 fill="none" stroke="currentColor" stroke-width="3" x1="8.4" y1="257.5" x2="508.4" y2="257.5" /><path b-5bvfnf2466 fill="currentColor" d="M508.4,285.4,429.8,480,389.2,379.3,348.6,480,270,285.4h40.3l38.3,94.9,40.7-100.8L430,380.2l38.3-94.9,40.1.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M647.4,248.8H534.9V77.3H642v33.9H568.8v33.9h67.9V179H568.8v35.7h78.6v34.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M808.3,248.8H778.1l-8-17.1h-56l-8,17.1H676l66.1-141.4Zm-50.7-44.3-15.5-32.7-15.3,32.7Z" /><path b-5bvfnf2466 fill="currentColor" d="M939.8,248.8H910.7l-20.8-51.4H864v51.4H836.8V111.6h60a43.08,43.08,0,0,1,42.9,42.9,41.12,41.12,0,0,1-6.2,22.2,42.92,42.92,0,0,1-16.6,15.6Zm-27.2-94.3a15.86,15.86,0,0,0-15.7-15.7H864v31.4h32.8A15.81,15.81,0,0,0,912.6,154.5Z" /><path b-5bvfnf2466 fill="currentColor" d="M1108,253.1l-100-86.4v82.1H980.9V107.3l100,86.4V111.6h27.2l-.1,141.5Z" /><path b-5bvfnf2466 fill="currentColor" d="M1183,248.8h-28.6V111.6H1183Z" /><path b-5bvfnf2466 fill="currentColor" d="M1356.5,253.1l-100-86.4v82.1h-27.1V107.3l100,86.4V111.6h27.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M1536.5,180.2q0,29.25-20.7,50t-50,20.7q-29.25,0-50-20.7t-20.7-50q0-29.25,20.7-50t50-20.7q29.25,0,50,20.7l-19.1,19.1a42.2,42.2,0,0,0-30.9-12.7,43.6,43.6,0,1,0,0,87.2c15.5,0,27.6-6.4,36.2-19.3h-24.8V177.4h59.3Z" /><path b-5bvfnf2466 fill="currentColor" d="M1678.5,207.7a40,40,0,0,1-22.3,35.9,67.16,67.16,0,0,1-61.1,0c-11.3-5.6-18.4-14.5-21.2-26.6l26.1-9.3a12.1,12.1,0,0,0,7.1,11.6,40.48,40.48,0,0,0,37.1,0,12.19,12.19,0,0,0,7.2-11.6c0-4.8-2.4-8.1-7.1-10l-42.8-17.4q-20.7-8.1-20.7-31.2c0-15.2,6.9-26.2,20.7-32.8a53.91,53.91,0,0,1,24.3-5.7,54.74,54.74,0,0,1,24.5,5.7,34.82,34.82,0,0,1,18.4,20.5l-25.5,9.1a8.77,8.77,0,0,0-4.6-5.2,27.92,27.92,0,0,0-12.7-3,27.27,27.27,0,0,0-12.2,2.8,9.1,9.1,0,0,0-5.6,8.7c0,3.2,1.7,5.5,5.2,6.8l43.2,17.3a34.73,34.73,0,0,1,16.3,13.5A40,40,0,0,1,1678.5,207.7Z" /><path b-5bvfnf2466 fill="currentColor" d="M826.5,260.8,755,437.7l-36.9-91.5-36.9,91.5L609.7,260.8h36.6L681.1,347l37-91.6,37,91.6,34.8-86.2Z" /><path b-5bvfnf2466 fill="currentColor" d="M957.9,432.3H930.8V376.5H882.2v55.8H855.1V295.1h27.1v54.3h48.6V295.1h27.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M1032.9,432.3h-28.6V295.1h28.6Z" /><path b-5bvfnf2466 fill="currentColor" d="M1181.3,391.2a40,40,0,0,1-22.3,35.9,67.16,67.16,0,0,1-61.1,0c-11.3-5.6-18.4-14.5-21.2-26.6l26.1-9.3a12.1,12.1,0,0,0,7.1,11.6,40.69,40.69,0,0,0,37.2,0,12,12,0,0,0,7.1-11.6c0-4.8-2.4-8.1-7.1-10l-42.8-17.4q-20.7-8.25-20.7-31.2c0-15.2,6.9-26.2,20.7-32.8a53.91,53.91,0,0,1,24.3-5.7,54.74,54.74,0,0,1,24.5,5.7,34.82,34.82,0,0,1,18.4,20.5l-25.5,9.1a8.62,8.62,0,0,0-4.7-5.2,27.92,27.92,0,0,0-12.7-3,27.27,27.27,0,0,0-12.2,2.8c-3.7,1.9-5.6,4.7-5.6,8.7,0,3.2,1.7,5.5,5.2,6.8l43.2,17.3a34.73,34.73,0,0,1,16.3,13.5A39,39,0,0,1,1181.3,391.2Z" /><path b-5bvfnf2466 fill="currentColor" d="M1326.1,337.9a43.06,43.06,0,0,1-42.8,42.9h-32.9v51.5h-27.1V295.1h60a43,43
+Aug 22, 2025, 3:31:09 PM	Debug	[2025-08-22T19:31:09.421Z] [HTTP] JSON parse error for https://www.earningswhispers.com/api/getshortput: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+Aug 22, 2025, 3:31:09 PM	Info	[2025-08-22T19:31:09.421Z] [HTTP] JSON parse error for https://www.earningswhispers.com/api/getshortput: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+Aug 22, 2025, 3:31:09 PM	Debug	[2025-08-22T19:31:09.423Z] [Short Puts] ERROR: Error: JSON parse error for https://www.earningswhispers.com/api/getshortput: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+    at EW_fetchJson (04_Code:175:11)
+    at EW_runOneInternal (04_Code:119:18)
+    at EW_runAll (04_Code:90:5)
+    at __GS_INTERNAL_top_function_call__.gs:1:8
+Aug 22, 2025, 3:31:09 PM	Info	[2025-08-22T19:31:09.423Z] [Short Puts] ERROR: Error: JSON parse error for https://www.earningswhispers.com/api/getshortput: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+    at EW_fetchJson (04_Code:175:11)
+    at EW_runOneInternal (04_Code:119:18)
+    at EW_runAll (04_Code:90:5)
+    at __GS_INTERNAL_top_function_call__.gs:1:8
+Aug 22, 2025, 3:31:09 PM	Debug	[2025-08-22T19:31:09.616Z] [Bull Spreads] GET https://www.earningswhispers.com/api/getbullcallspread
+Aug 22, 2025, 3:31:09 PM	Info	[2025-08-22T19:31:09.616Z] [Bull Spreads] GET https://www.earningswhispers.com/api/getbullcallspread
+Aug 22, 2025, 3:31:09 PM	Debug	[2025-08-22T19:31:09.618Z] [HTTP] Fetching https://www.earningswhispers.com/api/getbullcallspread
+Aug 22, 2025, 3:31:09 PM	Info	[2025-08-22T19:31:09.618Z] [HTTP] Fetching https://www.earningswhispers.com/api/getbullcallspread
+Aug 22, 2025, 3:31:11 PM	Debug	[2025-08-22T19:31:11.421Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getbullcallspread
+Aug 22, 2025, 3:31:11 PM	Info	[2025-08-22T19:31:11.421Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getbullcallspread
+Aug 22, 2025, 3:31:11 PM	Debug	Logging output too large. Truncating output. Response: 
+ [{"ticker":"ESTC","company":"Elastic N.V.","nextEPSDate":"2025-08-28T00:00:00","releaseTime":3,"confirmDate":"2025-08-14T16:15:57.753","expDate":"2025-09-19T00:00:00","lastTrade":77.5900,"breakeven":77.4500,"avgEPSMove":0.1541,"maxReturn":0.1617,"maxRisk":0.1604,"epsImpact":0.0922,"longStrike":65.0000,"shortBid":1.9500,"shortStrike":90.0000,"longAsk":14.4000,"maxProfit":12.5500,"maxLoss":12.4500,"ewRating":2.2300,"totRatings":5,"netRatings":1.0000},{"ticker":"PLAB","company":"Photronics, Inc.","nextEPSDate":"2025-08-27T00:00:00","releaseTime":1,"confirmDate":"2025-08-13T16:02:42.627","expDate":"2025-09-19T00:00:00","lastTrade":20.8900,"breakeven":21.8000,"avgEPSMove":0.0876,"maxReturn":0.1531,"maxRisk":0.0861,"epsImpact":0.1544,"longStrike":20.0000,"shortBid":0.1500,"shortStrike":25.0000,"longAsk":1.9500,"maxProfit":3.2000,"maxLoss":1.8000,"ewRating":1.1000,"totRatings":7,"netRatings":-1.0000},{"ticker":"DOMO","company":"Domo, Inc.","nextEPSDate":"2025-08-28T00:00:00","releaseTime":3,"confirmDate":"2025-08-11T16:22:55.27","expDate":"2025-09-19T00:00:00","lastTrade":13.5400,"breakeven":14.1000,"avgEPSMove":0.1335,"maxReturn":0.1403,"maxRisk":0.0812,"epsImpact":0.1422,"longStrike":13.0000,"shortBid":0.4500,"shortStrike":16.0000,"longAsk":1.5500,"maxProfit":1.9000,"maxLoss":1.1000,"ewRating":4.1400,"totRatings":7,"netRatings":5.0000},{"ticker":"SAIL","company":"SailPoint, Inc.","nextEPSDate":"2025-09-09T00:00:00","releaseTime":1,"confirmDate":"2025-08-12T09:34:17.957","expDate":"2025-09-19T00:00:00","lastTrade":19.5100,"breakeven":19.8500,"avgEPSMove":0.0792,"maxReturn":0.1358,"maxRisk":0.1204,"epsImpact":null,"longStrike":17.5000,"shortBid":0.5500,"shortStrike":22.5000,"longAsk":2.9000,"maxProfit":2.6500,"maxLoss":2.3500,"ewRating":4.5900,"totRatings":7,"netRatings":5.0000},{"ticker":"PVH","company":"PVH Corp.","nextEPSDate":"2025-08-26T00:00:00","releaseTime":3,"confirmDate":"2025-08-14T12:33:43.317","expDate":"2025-09-19T00:00:00","lastTrade":76.3700,"breakeven":79.8500,"avgEPSMove":0.1203,"maxReturn":0.1329,"maxRisk":0.0635,"epsImpact":0.0877,"longStrike":75.0000,"shortBid":0.7500,"shortStrike":90.0000,"longAsk":5.6000,"maxProfit":10.1500,"maxLoss":4.8500,"ewRating":2.9300,"totRatings":8,"netRatings":0.0000},{"ticker":"TITN","company":"Titan Machinery Inc.","nextEPSDate":"2025-08-28T00:00:00","releaseTime":1,"confirmDate":"2025-08-14T06:46:15.673","expDate":"2025-09-19T00:00:00","lastTrade":19.4350,"breakeven":19.9500,"avgEPSMove":0.0672,"maxReturn":0.1312,"maxRisk":0.1260,"epsImpact":0.3452,"longStrike":17.5000,"shortBid":0.2500,"shortStrike":22.5000,"longAsk":2.7000,"maxProfit":2.5500,"maxLoss":2.4500,"ewRating":1.8600,"totRatings":5,"netRatings":1.0000},{"ticker":"MDB","company":"MongoDB, Inc.","nextEPSDate":"2025-08-26T00:00:00","releaseTime":3,"confirmDate":"2025-08-05T16:11:16.19","expDate":"2025-08-29T00:00:00","lastTrade":211.9600,"breakeven":223.4000,"avgEPSMove":0.1764,"maxReturn":0.1254,"maxRisk":0.0632,"epsImpact":0.1693,"longStrike":210.0000,"shortBid":5.7000,"shortStrike":250.0000,"longAsk":19.1000,"maxProfit":26.6000,"maxLoss":13.4000,"ewRating":5.4900,"totRatings":8,"netRatings":6.0000},{"ticker":"BRZE","company":"Braze","nextEPSDate":"2025-09-04T00:00:00","releaseTime":3,"confirmDate":"2025-08-14T16:15:29.547","expDate":"2025-09-19T00:00:00","lastTrade":25.5350,"breakeven":26.9000,"avgEPSMove":0.0901,"maxReturn":0.1214,"maxRisk":0.0744,"epsImpact":0.1204,"longStrike":25.0000,"shortBid":0.6500,"shortStrike":30.0000,"longAsk":2.5500,"maxProfit":3.1000,"maxLoss":1.9000,"ewRating":-0.2100,"totRatings":5,"netRatings":-5.0000},{"ticker":"WSM","company":"Williams-Sonoma, Inc.","nextEPSDate":"2025-08-27T00:00:00","releaseTime":1,"confirmDate":"2025-08-20T09:41:10.74","expDate":"2025-09-19T00:00:00","lastTrade":197.2100,"breakeven":206.5000,"avgEPSMove":0.1225,"maxReturn":0.1191,"maxRisk":0.0583,"epsImpact":0.0745,"longStrike":195.0000,"shortBid":2.1000,"shortStrike":230.0000,"longAsk":13.6000,"maxProfit":23.5000,"maxLoss":11.5000,"ewRating":2.2200,"totRatings":8,"netRatings":4.0000},{"ticker":"AI","company":"C3.ai, Inc. ","nextEPSDate":"2025-09-03T00:00:00","releaseTime":3,"confirmDate":"2025-08-10T15:43:38.86","expDate":"2025-09-05T00:00:00","lastTrade":16.8600,"breakeven":17.5000,"avgEPSMove":0.1379,"maxReturn":0.1186,"maxRisk":0.0593,"epsImpact":0.0869,"longStrike":16.5000,"shortBid":0.3200,"shortStrike":19.5000,"longAsk":1.3200,"maxProfit":2.0000,"maxLoss":1.0000,"ewRating":1.6800,"totRatings":7,"netRatings":-1.0000},{"ticker":"PSTG","company":"Pure Storage, Inc.","nextEPSDate":"2025-08-27T00:00:00","releaseTime":3,"confirmDate":"2025-08-06T16:26:42.357","expDate":"2025-09-19T00:00:00","lastTrade":55.7300,"breakeven":58.5500,"avgEPSMove":0.1346,"maxReturn":0.1157,"maxRisk":0.0636,"epsImpact":0.1418,"longStrike":55.0000,"shortBid":1.1500,"shortStrike":65.0000,"longAsk":4.7000,"maxProfit":6.4500,"maxLoss":3.5500,"ewRating":3.9100,"totRatings":7,"netRatings":7.0000},{"ticker":"PATH","company":"UiPath, Inc.","nextEPSDate":"2025-09-04T00:00:00","releaseTime":3,"confirmDate":"2025-08-07T16:39:23.637","expDate":"2025-09-05T00:00:00","lastTrade":10.8900,"breakeven":11.2400,"avgEPSMove":0.1108,"maxReturn":0.1157,"maxRisk":0.0679,"epsImpact":0.0973,"longStrike":10.5000,"shortBid":0.2100,"shortStrike":12.5000,"longAsk":0.9500,"maxProfit":1.2600,"maxLoss":0.7400,"ewRating":5.3500,"totRatings":7,"netRatings":7.0000},{"ticker":"OKTA","company":"Okta, Inc.","nextEPSDate":"2025-08-26T00:00:00","releaseTime":3,"confirmDate":"2025-08-01T08:03:43.63","expDate":"2025-08-29T00:00:00","lastTrade":89.7800,"breakeven":93.6700,"avgEPSMove":0.1570,"maxReturn":0.1150,"maxRisk":0.0520,"epsImpact":0.1247,"longStrike":89.0000,"shortBid":1.3800,"shortStrike":104.0000,"longAsk":6.0500,"maxProfit":10.3300,"maxLoss":4.6700,"ewRating":3.8900,"totRatings":9,"netRatings":3.0000},{"ticker":"AFRM","company":"Affirm Holdings, Inc.","nextEPSDate":"2025-08-28T00:00:00","releaseTime":3,"confirmDate":"2025-07-31T16:11:15.287","expDate":"2025-08-29T00:00:00","lastTrade":74.4900,"breakeven":78.6000,"avgEPSMove":0.1556,"maxReturn":0.1127,"maxRisk":0.0617,"epsImpact":0.1477,"longStrike":74.0000,"shortBid":1.2000,"shortStrike":87.0000,"longAsk":5.8000,"maxProfit":8.4000,"maxLoss":4.6000,"ewRating":2.3100,"totRatings":8,"netRatings":4.0000},{"ticker":"SNOW","company":"Snowflake","nextEPSDate":"2025-08-27T00:00:00","releaseTime":3,"confirmDate":"2025-08-04T09:21:56.61","expDate":"2025-08-29T00:00:00","lastTrade":194.6800,"breakeven":203.1700,"avgEPSMove":0.1481,"maxReturn":0.1121,"maxRisk":0.0548,"epsImpact":0.1233,"longStrike":192.5000,"shortBid":2.5800,"shortStrike":225.0000,"longAsk":13.2500,"maxProfit":21.8300,"maxLoss":10.6700,"ewRating":5.2800,"totRatings":10,"netRatings":6.0000},{"ticker":"GAP","company":"Gap, Inc.","nextEPSDate":"2025-08-28T00:00:00","releaseTime":3,"confirmDate":"2025-08-07T16:29:29.207","expDate":"2025-08-29T00:00:00","lastTrade":21.2000,"breakeven":22.2200,"avgEPSMove":0.1506,"maxReturn":0.1075,"maxRisk":0.0575,"epsImpact":0.1318,"longStrike":21.0000,"shortBid":0.3200,"shortStrike":24.5000,"longAsk":1.5400,"maxProfit":2.2800,"maxLoss":1.2200,"ewRating":2.7200,"totRatings":10,"netRatings":0.0000},{"ticker":"AGX","company":"Argan Inc.","nextEPSDate":"2025-09-04T00:00:00","releaseTime":3,"confirmDate":"2025-08-21T08:56:07.647","expDate":"2025-09-19T00:00:00","lastTrade":218.2900,"breakeven":227.3000,"avgEPSMove":0.1443,"maxReturn":0.1039,"maxRisk":0.0792,"epsImpact":0.1182,"longStrike":210.0000,"shortBid":8.0000,"shortStrike":250.0000,"longAsk":25.3000,"maxProfit":22.7000,"maxLoss":17.3000,"ewRating":1.8900,"totRatings":5,"netRatings":3.0000},{"ticker":"LI","company":"Li Auto Inc.","nextEPSDate":"2025-08-28T00:00:00","releaseTime":1,"confirmDate":"2025-08-15T06:54:37.81","expDate":"2025-08-29T00:00:00","lastTrade":23.4600,"breakeven":24.0800,"avgEPSMove":0.1129,"maxReturn":0.1031,"maxRisk":0.0460,"epsImpact":0.0944,"longStrike":23.0000,"shortBid":0.2600,"shortStrike":26.5000,"longAsk":1.3400,"maxProfit":2.4200,"maxLoss":1.0800,"ewRating":4.6500,"totRatings":8,"netRatings":4.0000},{"ticker":"N
+Aug 22, 2025, 3:31:11 PM	Debug	[2025-08-22T19:31:11.427Z] [Bull Spreads] HTTP OK; JSON={61 keys: 0, 1, 2...}
+Aug 22, 2025, 3:31:11 PM	Info	[2025-08-22T19:31:11.427Z] [Bull Spreads] HTTP OK; JSON={61 keys: 0, 1, 2...}
+Aug 22, 2025, 3:31:11 PM	Debug	[2025-08-22T19:31:11.428Z] [PARSE] Array detected len=61
+Aug 22, 2025, 3:31:11 PM	Info	[2025-08-22T19:31:11.428Z] [PARSE] Array detected len=61
+Aug 22, 2025, 3:31:11 PM	Debug	[2025-08-22T19:31:11.431Z] [PARSE] headers=21 dataRows=61
+Aug 22, 2025, 3:31:11 PM	Info	[2025-08-22T19:31:11.431Z] [PARSE] headers=21 dataRows=61
+Aug 22, 2025, 3:31:11 PM	Debug	[2025-08-22T19:31:11.432Z] [Bull Spreads] Parsed rows=62
+Aug 22, 2025, 3:31:11 PM	Info	[2025-08-22T19:31:11.432Z] [Bull Spreads] Parsed rows=62
+Aug 22, 2025, 3:31:11 PM	Debug	[2025-08-22T19:31:11.553Z] [SHEET] Append -> "Bull Spreads" rows=62
+Aug 22, 2025, 3:31:11 PM	Info	[2025-08-22T19:31:11.553Z] [SHEET] Append -> "Bull Spreads" rows=62
+Aug 22, 2025, 3:31:11 PM	Debug	[2025-08-22T19:31:11.829Z] [SHEET] Appended 61 rows at row 110
+Aug 22, 2025, 3:31:11 PM	Info	[2025-08-22T19:31:11.829Z] [SHEET] Appended 61 rows at row 110
+Aug 22, 2025, 3:31:12 PM	Debug	[2025-08-22T19:31:12.213Z] [Bull Spreads] Wrote to sheet "Bull Spreads": +61 rows
+Aug 22, 2025, 3:31:12 PM	Info	[2025-08-22T19:31:12.213Z] [Bull Spreads] Wrote to sheet "Bull Spreads": +61 rows
+Aug 22, 2025, 3:31:12 PM	Debug	[2025-08-22T19:31:12.638Z] [Long Calls] GET https://www.earningswhispers.com/api/getlongcalls
+Aug 22, 2025, 3:31:12 PM	Info	[2025-08-22T19:31:12.638Z] [Long Calls] GET https://www.earningswhispers.com/api/getlongcalls
+Aug 22, 2025, 3:31:12 PM	Debug	[2025-08-22T19:31:12.642Z] [HTTP] Fetching https://www.earningswhispers.com/api/getlongcalls
+Aug 22, 2025, 3:31:12 PM	Info	[2025-08-22T19:31:12.642Z] [HTTP] Fetching https://www.earningswhispers.com/api/getlongcalls
+Aug 22, 2025, 3:31:12 PM	Debug	[2025-08-22T19:31:12.867Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getlongcalls
+Aug 22, 2025, 3:31:12 PM	Info	[2025-08-22T19:31:12.867Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getlongcalls
+Aug 22, 2025, 3:31:12 PM	Debug	Logging output too large. Truncating output. Response: 
+ [{"ticker":"MDB","company":"MongoDB, Inc.","nextEPSDate":"2025-08-26T00:00:00","releaseTime":3,"lastEPSTime":"2025-06-04T16:05:00","confirmDate":"2025-08-05T16:11:16.19","lastTrade":211.9600,"strike":210.0000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":182.0000,"volume":138.0000,"bid":18.5000,"ask":19.1000,"price":18.6500,"expDate":"2025-08-29T00:00:00","epsImpact":0.1693,"avgEPSMove":0.1764,"avgVolume":2382691.0370},{"ticker":"ANF","company":"Abercrombie & Fitch Co.","nextEPSDate":"2025-08-27T00:00:00","releaseTime":1,"lastEPSTime":"2025-05-28T07:30:00","confirmDate":"2025-08-01T08:03:35.177","lastTrade":92.8900,"strike":92.0000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":19.0000,"volume":17.0000,"bid":7.0000,"ask":8.0000,"price":6.9300,"expDate":"2025-08-29T00:00:00","epsImpact":0.1491,"avgEPSMove":0.1231,"avgVolume":2408594.4835},{"ticker":"NTAP","company":"NetApp","nextEPSDate":"2025-08-27T00:00:00","releaseTime":3,"lastEPSTime":"2025-05-29T16:01:00","confirmDate":"2025-07-31T16:05:50.957","lastTrade":107.7750,"strike":107.0000,"optionDate":"2025-08-21T00:00:00","score":4.0000,"openInterest":46.0000,"volume":17.0000,"bid":4.9000,"ask":5.1000,"price":5.1000,"expDate":"2025-08-29T00:00:00","epsImpact":0.0812,"avgEPSMove":0.0837,"avgVolume":1909089.3915},{"ticker":"NVDA","company":"NVIDIA Corp.","nextEPSDate":"2025-08-27T00:00:00","releaseTime":3,"lastEPSTime":"2025-05-28T16:20:00","confirmDate":"2025-07-30T17:05:27.227","lastTrade":174.9800,"strike":172.5000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":5868.0000,"volume":4802.0000,"bid":7.9500,"ask":8.0000,"price":7.9000,"expDate":"2025-08-29T00:00:00","epsImpact":0.0754,"avgEPSMove":0.0739,"avgVolume":195312181.2620},{"ticker":"SNOW","company":"Snowflake","nextEPSDate":"2025-08-27T00:00:00","releaseTime":3,"lastEPSTime":"2025-05-21T16:05:00","confirmDate":"2025-08-04T09:21:56.61","lastTrade":194.6800,"strike":192.5000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":178.0000,"volume":26.0000,"bid":13.0500,"ask":13.2500,"price":13.3000,"expDate":"2025-08-29T00:00:00","epsImpact":0.1233,"avgEPSMove":0.1481,"avgVolume":4335448.1202},{"ticker":"URBN","company":"Urban Outfitters, Inc","nextEPSDate":"2025-08-27T00:00:00","releaseTime":3,"lastEPSTime":"2025-05-21T16:05:00","confirmDate":"2025-08-10T20:42:04.767","lastTrade":73.8900,"strike":72.0000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":2.0000,"volume":10.0000,"bid":5.2000,"ask":5.4000,"price":5.2000,"expDate":"2025-08-29T00:00:00","epsImpact":0.1211,"avgEPSMove":0.1271,"avgVolume":2042942.3684},{"ticker":"LI","company":"Li Auto Inc.","nextEPSDate":"2025-08-28T00:00:00","releaseTime":1,"lastEPSTime":"2025-05-29T04:30:00","confirmDate":"2025-08-15T06:54:37.81","lastTrade":23.4600,"strike":23.0000,"optionDate":"2025-08-21T00:00:00","score":4.0000,"openInterest":14.0000,"volume":11.0000,"bid":1.2900,"ask":1.3400,"price":1.2700,"expDate":"2025-08-29T00:00:00","epsImpact":0.0944,"avgEPSMove":0.1129,"avgVolume":4472458.1058},{"ticker":"DG","company":"Dollar General Corporation","nextEPSDate":"2025-08-28T00:00:00","releaseTime":1,"lastEPSTime":"2025-06-03T06:50:00","confirmDate":"2025-07-31T07:27:37.86","lastTrade":112.4900,"strike":112.0000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":25.0000,"volume":21.0000,"bid":5.0500,"ask":5.3500,"price":5.2500,"expDate":"2025-08-29T00:00:00","epsImpact":0.0885,"avgEPSMove":0.1137,"avgVolume":3304676.9618},{"ticker":"BURL","company":"Burlington Stores Inc","nextEPSDate":"2025-08-28T00:00:00","releaseTime":1,"lastEPSTime":"2025-05-29T06:45:00","confirmDate":"2025-08-14T16:15:51.013","lastTrade":275.5900,"strike":270.0000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":1.0000,"volume":1.0000,"bid":16.8000,"ask":17.3000,"price":16.2000,"expDate":"2025-09-05T00:00:00","epsImpact":0.0798,"avgEPSMove":0.0700,"avgVolume":1096857.6675},{"ticker":"DELL","company":"Dell Technologies","nextEPSDate":"2025-08-28T00:00:00","releaseTime":3,"lastEPSTime":"2025-05-29T16:05:00","confirmDate":"2025-08-18T19:50:29.263","lastTrade":127.8300,"strike":127.0000,"optionDate":"2025-08-21T00:00:00","score":4.0000,"openInterest":70.0000,"volume":8.0000,"bid":6.7500,"ask":6.9500,"price":6.9000,"expDate":"2025-08-29T00:00:00","epsImpact":0.1019,"avgEPSMove":0.1214,"avgVolume":5661345.2162},{"ticker":"AFRM","company":"Affirm Holdings, Inc.","nextEPSDate":"2025-08-28T00:00:00","releaseTime":3,"lastEPSTime":"2025-05-08T16:05:00","confirmDate":"2025-07-31T16:11:15.287","lastTrade":74.4900,"strike":74.0000,"optionDate":"2025-08-21T00:00:00","score":4.0000,"openInterest":439.0000,"volume":352.0000,"bid":5.7000,"ask":5.8000,"price":5.7500,"expDate":"2025-08-29T00:00:00","epsImpact":0.1477,"avgEPSMove":0.1556,"avgVolume":6339452.9259},{"ticker":"MRVL","company":"Marvell Technology Group Ltd.","nextEPSDate":"2025-08-28T00:00:00","releaseTime":3,"lastEPSTime":"2025-05-29T16:05:00","confirmDate":"2025-08-04T09:21:43.633","lastTrade":71.2100,"strike":71.0000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":829.0000,"volume":1243.0000,"bid":4.3500,"ask":4.4500,"price":4.3500,"expDate":"2025-08-29T00:00:00","epsImpact":0.1208,"avgEPSMove":0.1326,"avgVolume":19014211.4768},{"ticker":"ULTA","company":"ULTA Beauty","nextEPSDate":"2025-08-28T00:00:00","releaseTime":3,"lastEPSTime":"2025-05-29T16:05:00","confirmDate":"2025-08-15T09:16:18.9","lastTrade":520.1800,"strike":520.0000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":40.0000,"volume":40.0000,"bid":19.7000,"ask":20.9000,"price":20.5000,"expDate":"2025-08-29T00:00:00","epsImpact":0.0830,"avgEPSMove":0.0769,"avgVolume":723682.3386},{"ticker":"ASO","company":"Academy Sports and Outdoors, Inc.","nextEPSDate":"2025-09-02T00:00:00","releaseTime":1,"lastEPSTime":"2025-06-10T08:00:00","confirmDate":"2025-08-21T08:55:56.763","lastTrade":51.6000,"strike":50.0000,"optionDate":"2025-08-21T00:00:00","score":4.0000,"openInterest":16.0000,"volume":49.0000,"bid":3.1000,"ask":3.6000,"price":3.3000,"expDate":"2025-09-05T00:00:00","epsImpact":0.0741,"avgEPSMove":0.0386,"avgVolume":1505517.6819},{"ticker":"DLTR","company":"Dollar Tree, Inc.","nextEPSDate":"2025-09-03T00:00:00","releaseTime":1,"lastEPSTime":"2025-06-04T06:30:00","confirmDate":"2025-08-13T16:10:05.667","lastTrade":112.5900,"strike":112.0000,"optionDate":"2025-08-21T00:00:00","score":4.0000,"openInterest":19.0000,"volume":50.0000,"bid":5.6500,"ask":5.8500,"price":5.5500,"expDate":"2025-09-05T00:00:00","epsImpact":0.0524,"avgEPSMove":0.0910,"avgVolume":3812177.9348},{"ticker":"HPE","company":"Hewlett Packard Enterprise","nextEPSDate":"2025-09-03T00:00:00","releaseTime":3,"lastEPSTime":"2025-06-03T16:05:00","confirmDate":"2025-08-13T08:29:27.627","lastTrade":21.8200,"strike":21.5000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":102.0000,"volume":2342.0000,"bid":1.2100,"ask":1.2600,"price":1.2400,"expDate":"2025-09-05T00:00:00","epsImpact":0.0637,"avgEPSMove":0.0705,"avgVolume":17828447.7638},{"ticker":"CRDO","company":"Credo Technology Group Holding Ltd","nextEPSDate":"2025-09-03T00:00:00","releaseTime":3,"lastEPSTime":"2025-06-02T16:05:00","confirmDate":"2025-08-13T09:17:53.43","lastTrade":110.8600,"strike":110.0000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":0.0000,"volume":109.0000,"bid":11.5000,"ask":11.9000,"price":11.7000,"expDate":"2025-09-12T00:00:00","epsImpact":0.0848,"avgEPSMove":0.1987,"avgVolume":4716331.0848},{"ticker":"CRM","company":"Salesforce","nextEPSDate":"2025-09-03T00:00:00","releaseTime":3,"lastEPSTime":"2025-05-28T16:02:00","confirmDate":"2025-08-07T16:33:57.76","lastTrade":245.8300,"strike":245.0000,"optionDate":"2025-08-21T00:00:00","score":5.0000,"openInterest":339.0000,"volume":42.0000,"bid":11.6500,"ask":11.9000,"price":11.8000,"expDate":"2025-09-05T00:00:00","epsImpact":0.0520,"avgEPSMove":0.0697,"avgVolume":7347998.9362},{"ticker":"AVGO","company":"Broadcom Inc.","nextEPSDate":"2025-09-04T00:00:00","releaseTime":3,"lastEPSTime":"2025-06-05T16:15:00","confirmDa
+Aug 22, 2025, 3:31:12 PM	Debug	[2025-08-22T19:31:12.871Z] [Long Calls] HTTP OK; JSON={29 keys: 0, 1, 2...}
+Aug 22, 2025, 3:31:12 PM	Info	[2025-08-22T19:31:12.871Z] [Long Calls] HTTP OK; JSON={29 keys: 0, 1, 2...}
+Aug 22, 2025, 3:31:12 PM	Debug	[2025-08-22T19:31:12.873Z] [PARSE] Array detected len=29
+Aug 22, 2025, 3:31:12 PM	Info	[2025-08-22T19:31:12.873Z] [PARSE] Array detected len=29
+Aug 22, 2025, 3:31:12 PM	Debug	[2025-08-22T19:31:12.874Z] [PARSE] headers=19 dataRows=29
+Aug 22, 2025, 3:31:12 PM	Info	[2025-08-22T19:31:12.874Z] [PARSE] headers=19 dataRows=29
+Aug 22, 2025, 3:31:12 PM	Debug	[2025-08-22T19:31:12.875Z] [Long Calls] Parsed rows=30
+Aug 22, 2025, 3:31:12 PM	Info	[2025-08-22T19:31:12.875Z] [Long Calls] Parsed rows=30
+Aug 22, 2025, 3:31:13 PM	Debug	[2025-08-22T19:31:13.489Z] [SHEET] Append -> "Long Calls" rows=30
+Aug 22, 2025, 3:31:13 PM	Info	[2025-08-22T19:31:13.489Z] [SHEET] Append -> "Long Calls" rows=30
+Aug 22, 2025, 3:31:13 PM	Debug	[2025-08-22T19:31:13.736Z] [SHEET] Appended 29 rows at row 30
+Aug 22, 2025, 3:31:13 PM	Info	[2025-08-22T19:31:13.736Z] [SHEET] Appended 29 rows at row 30
+Aug 22, 2025, 3:31:14 PM	Debug	[2025-08-22T19:31:14.989Z] [Long Calls] Wrote to sheet "Long Calls": +29 rows
+Aug 22, 2025, 3:31:14 PM	Info	[2025-08-22T19:31:14.989Z] [Long Calls] Wrote to sheet "Long Calls": +29 rows
+Aug 22, 2025, 3:31:15 PM	Debug	[2025-08-22T19:31:15.415Z] [Strangles] GET https://www.earningswhispers.com/api/getstrangle
+Aug 22, 2025, 3:31:15 PM	Info	[2025-08-22T19:31:15.415Z] [Strangles] GET https://www.earningswhispers.com/api/getstrangle
+Aug 22, 2025, 3:31:15 PM	Debug	[2025-08-22T19:31:15.417Z] [HTTP] Fetching https://www.earningswhispers.com/api/getstrangle
+Aug 22, 2025, 3:31:15 PM	Info	[2025-08-22T19:31:15.417Z] [HTTP] Fetching https://www.earningswhispers.com/api/getstrangle
+Aug 22, 2025, 3:31:15 PM	Debug	[2025-08-22T19:31:15.566Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getstrangle
+Aug 22, 2025, 3:31:15 PM	Info	[2025-08-22T19:31:15.566Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getstrangle
+Aug 22, 2025, 3:31:15 PM	Debug	Logging output too large. Truncating output. Response: 
+ <!DOCTYPE html>
+<html lang="en">
+<head>
+
+    <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-7LKB78MJRT"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-7LKB78MJRT');
+</script>
+
+
+        <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script>
+        window.fbAsyncInit = function () {
+            FB.init({
+                appId: '832628011103348',
+                cookie: true,
+                xfbml: true,
+                version: 'v15.0'
+            });
+
+            FB.AppEvents.logPageView();
+
+        };
+
+        (function (d, s, id) {
+            var js, fjs = d.getElementsByTagName(s)[0];
+            if (d.getElementById(id)) { return; }
+            js = d.createElement(s); js.id = id;
+            js.src = "https://connect.facebook.net/en_US/sdk.js";
+            fjs.parentNode.insertBefore(js, fjs);
+        }(document, 'script', 'facebook-jssdk'));
+    </script>
+
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Doh! Earnings Whispers</title>
+    <link rel="stylesheet" href="/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="/css/site.css?v=dq-qzrCom8IKffQrAzKh7relHTz3GaWuSXFk63LrPDk" />
+    <link rel="stylesheet" href="/EW2023.styles.css?v=mC3snZh_Ma_324mzp1lkOUheJ5xN0YZcslXSrE46hSo" />
+
+        <link rel="stylesheet" href="/css/signin.css?v=4cwqdwSb0XnVEFkyNeVWZ8TD_fCkZPW8eOQIIYnfKKc" />
+
+
+    <link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.ico" sizes="any">
+    <meta name="norton-safeweb-site-verification" content="kpf4oy1ku-vmpefj2hvc-9huftrudbvrc-sitc59n95l3hmco6oxqh7olepoo29z2k9u61h5fb7u7--prfaw4tk-v59dwwvzp2a7q0m3aa7boapka36l4k2wpw171vft" />
+    
+    
+</head>
+<body>
+    <header b-5bvfnf2466>
+
+
+    <nav b-5bvfnf2466 class="navbar navbar-expand-lg navbar-toggleable-lg navbar-dark navbar-custom fixed-top">
+        <div b-5bvfnf2466 class="container-fluid">
+            <a class="navbar-brand ewlogo" title="Earnings Whispers" aria-label="Got to root directory for Earnings Whispers" href="/">
+                <svg b-5bvfnf2466 id="EW" data-name="EWLogo" role="img" title="Earnings Whispers" aria-label="Earnings Whispers Logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1755 515" width="170" height="50" class="ewlogo-svg d-sm-inline-block d-none"><path b-5bvfnf2466 fill="currentColor" d="M204.4,229.9H80.7V41.4H198.5V78.7H118V116h74.6v37.3H118v39.3h86.4Z" /><path b-5bvfnf2466 fill="currentColor" d="M443.2,169.1c0,6.9-10.3,12.7-30.8,17.5a5.64,5.64,0,0,0-4.4,4.8,63.74,63.74,0,0,0-.2,7.6,51,51,0,0,0,2,12.3c1.3,5.1,2,8.7,2,10.8H328.3c0-2.6.1-6.4.2-11.2.2-5.4.2-9.2.2-11.5,0-16.9-4.8-29-14.5-36.2q-16.05-12-22.5-26.7c-4.1-9.3-6.1-21.4-6.1-36.4q0-23.55,24-41.9,22.2-17.1,46.5-17.1h4.8q40.35,0,46.6,17.1c1.1,4.5,2.4,9.4,4,14.8a27.14,27.14,0,0,1,2.4,3.5,29.46,29.46,0,0,1,.1,4.2c0,5.4,1.4,9.4,4.1,11.7,1.3,1.1,4.6,2.7,10,4.6a31,31,0,0,1,12.1,7.1,3.1,3.1,0,0,1,.9,1.8c0,1.2-2.2,3.3-6.5,6.1s-6.5,5.5-6.5,7.9a5,5,0,0,0,2.2,4.3,28.77,28.77,0,0,1,2.7,2.2,102.87,102.87,0,0,0-9.2,8.3c-2,2.3-4.1,5.1-6.6,8.5a68.9,68.9,0,0,0,21.1,3.3c.7,0,1.1.5,1.1,1.6a13.39,13.39,0,0,1-1.7,6.2c-1.1,2.2-1.7,3.5-1.7,4.1,0,1.2,1.2,2.7,3.5,4.5S443.2,166.6,443.2,169.1Zm45.9-82.5-38,36-2.6-2.3,33.6-39.9Zm0,91.6-7,6.2-33.5-40,2.6-2.2Zm3.6-40.3-38.6-2.4v-4l38.6-4.6Z" /><path b-5bvfnf2466 fill="currentColor" d="M195.7,345.1c.2,14.7-4.1,28.7-12.7,42-8.9,11.8-17.7,23.6-26.6,35.5-2.9,4.2-5.6,10.1-8.3,17.6-3.7,9.9-6,16-7.1,18.3-5.9,12.5-16.5,18.8-31.6,19-15.7.3-23.6-10.7-23.6-32.8a103.08,103.08,0,0,1,2.3-21.4h7.4c-1.1,10-1.6,16.3-1.6,18.9,0,18.7,5.4,28.1,16.1,28.1,9.7-.1,17.1-3.9,22.1-11.4,2-2.8,5.3-10.8,10.1-23.8a92.13,92.13,0,0,1,8.4-18l24.3-33c8.5-12.7,12.7-25.4,12.6-38.2-.2-17.9-3.9-31.2-11.2-40.1q-12.45-15-40.2-15.3c-17.9-.1-30.7,7.1-38.4,21.4-5.4,9.9-8.1,22.7-8.1,38.2a104.92,104.92,0,0,0,1.1,15.8H82.6a109.27,109.27,0,0,1-1.2-17.1c0-16.9,3.1-30.8,9.4-41.8q13.65-23.85,44.9-23.8,32.25,0,46.6,16.5C191.1,309.7,195.5,324.8,195.7,345.1ZM177.2,348c0,7.8-3.2,18.4-9.5,31.7l-7.2-2.9q8.7-17.7,8.7-29.1c0-10.5-2.7-19.4-8.2-26.7-6.2-8.3-14.6-12.5-25.3-12.5a25,25,0,0,0-19.2,8.4,30,30,0,0,0-8,20.5c25.6,15,38.5,29.9,38.7,44.9a37.62,37.62,0,0,1-5.1,18.8l-10.3,16.6c-1.3,2.9-3.5,7.2-6.5,12.9-2.8,4.6-6.7,6.8-11.5,6.8-6.8,0-10.1-4.2-10.1-12.5,0-2.2.8-5.1,2.3-8.7s2.3-6.4,2.3-8.5a21.56,21.56,0,0,0-2.1-7.8,22.4,22.4,0,0,1-2-9.2c.3-7.5,4.1-11.1,11.2-10.8,6.7.3,9.8,4.6,9.4,12.9-.2,4.6-3.1,8.5-8.6,11.8a24.76,24.76,0,0,1-2.6,11.7,22.5,22.5,0,0,0-2.4,7.6c-.4,4.2.6,6.2,3,6.2,2.8,0,5-1.6,6.3-4.9a82.41,82.41,0,0,1,4.3-10.7l9.8-15.1a31,31,0,0,0,4.6-17.3c-.3-11.4-10.3-23.2-29.8-35.5,2.5,9.5,8.6,18.2,18.3,26l-4.5,5.4q-23-15-23-39.7c0-11.1,3.3-20.1,10-27.1s15.1-10.5,25.3-10.5c14,0,24.6,4.7,31.9,14C174,323.4,177.2,334.3,177.2,348Z" /><line b-5bvfnf2466 fill="none" stroke="currentColor" stroke-width="3" x1="263.4" y1="7.5" x2="263.4" y2="507.5" /><line b-5bvfnf2466 fill="none" stroke="currentColor" stroke-width="3" x1="8.4" y1="257.5" x2="508.4" y2="257.5" /><path b-5bvfnf2466 fill="currentColor" d="M508.4,285.4,429.8,480,389.2,379.3,348.6,480,270,285.4h40.3l38.3,94.9,40.7-100.8L430,380.2l38.3-94.9,40.1.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M647.4,248.8H534.9V77.3H642v33.9H568.8v33.9h67.9V179H568.8v35.7h78.6v34.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M808.3,248.8H778.1l-8-17.1h-56l-8,17.1H676l66.1-141.4Zm-50.7-44.3-15.5-32.7-15.3,32.7Z" /><path b-5bvfnf2466 fill="currentColor" d="M939.8,248.8H910.7l-20.8-51.4H864v51.4H836.8V111.6h60a43.08,43.08,0,0,1,42.9,42.9,41.12,41.12,0,0,1-6.2,22.2,42.92,42.92,0,0,1-16.6,15.6Zm-27.2-94.3a15.86,15.86,0,0,0-15.7-15.7H864v31.4h32.8A15.81,15.81,0,0,0,912.6,154.5Z" /><path b-5bvfnf2466 fill="currentColor" d="M1108,253.1l-100-86.4v82.1H980.9V107.3l100,86.4V111.6h27.2l-.1,141.5Z" /><path b-5bvfnf2466 fill="currentColor" d="M1183,248.8h-28.6V111.6H1183Z" /><path b-5bvfnf2466 fill="currentColor" d="M1356.5,253.1l-100-86.4v82.1h-27.1V107.3l100,86.4V111.6h27.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M1536.5,180.2q0,29.25-20.7,50t-50,20.7q-29.25,0-50-20.7t-20.7-50q0-29.25,20.7-50t50-20.7q29.25,0,50,20.7l-19.1,19.1a42.2,42.2,0,0,0-30.9-12.7,43.6,43.6,0,1,0,0,87.2c15.5,0,27.6-6.4,36.2-19.3h-24.8V177.4h59.3Z" /><path b-5bvfnf2466 fill="currentColor" d="M1678.5,207.7a40,40,0,0,1-22.3,35.9,67.16,67.16,0,0,1-61.1,0c-11.3-5.6-18.4-14.5-21.2-26.6l26.1-9.3a12.1,12.1,0,0,0,7.1,11.6,40.48,40.48,0,0,0,37.1,0,12.19,12.19,0,0,0,7.2-11.6c0-4.8-2.4-8.1-7.1-10l-42.8-17.4q-20.7-8.1-20.7-31.2c0-15.2,6.9-26.2,20.7-32.8a53.91,53.91,0,0,1,24.3-5.7,54.74,54.74,0,0,1,24.5,5.7,34.82,34.82,0,0,1,18.4,20.5l-25.5,9.1a8.77,8.77,0,0,0-4.6-5.2,27.92,27.92,0,0,0-12.7-3,27.27,27.27,0,0,0-12.2,2.8,9.1,9.1,0,0,0-5.6,8.7c0,3.2,1.7,5.5,5.2,6.8l43.2,17.3a34.73,34.73,0,0,1,16.3,13.5A40,40,0,0,1,1678.5,207.7Z" /><path b-5bvfnf2466 fill="currentColor" d="M826.5,260.8,755,437.7l-36.9-91.5-36.9,91.5L609.7,260.8h36.6L681.1,347l37-91.6,37,91.6,34.8-86.2Z" /><path b-5bvfnf2466 fill="currentColor" d="M957.9,432.3H930.8V376.5H882.2v55.8H855.1V295.1h27.1v54.3h48.6V295.1h27.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M1032.9,432.3h-28.6V295.1h28.6Z" /><path b-5bvfnf2466 fill="currentColor" d="M1181.3,391.2a40,40,0,0,1-22.3,35.9,67.16,67.16,0,0,1-61.1,0c-11.3-5.6-18.4-14.5-21.2-26.6l26.1-9.3a12.1,12.1,0,0,0,7.1,11.6,40.69,40.69,0,0,0,37.2,0,12,12,0,0,0,7.1-11.6c0-4.8-2.4-8.1-7.1-10l-42.8-17.4q-20.7-8.25-20.7-31.2c0-15.2,6.9-26.2,20.7-32.8a53.91,53.91,0,0,1,24.3-5.7,54.74,54.74,0,0,1,24.5,5.7,34.82,34.82,0,0,1,18.4,20.5l-25.5,9.1a8.62,8.62,0,0,0-4.7-5.2,27.92,27.92,0,0,0-12.7-3,27.27,27.27,0,0,0-12.2,2.8c-3.7,1.9-5.6,4.7-5.6,8.7,0,3.2,1.7,5.5,5.2,6.8l43.2,17.3a34.73,34.73,0,0,1,16.3,13.5A39,39,0,0,1,1181.3,391.2Z" /><path b-5bvfnf2466 fill="currentColor" d="M1326.1,337.9a43.06,43.06,0,0,1-42.8,42.9h-32.9v51.5h-27.1V295.1h60a43,43
+Aug 22, 2025, 3:31:15 PM	Debug	[2025-08-22T19:31:15.572Z] [HTTP] JSON parse error for https://www.earningswhispers.com/api/getstrangle: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+Aug 22, 2025, 3:31:15 PM	Info	[2025-08-22T19:31:15.572Z] [HTTP] JSON parse error for https://www.earningswhispers.com/api/getstrangle: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+Aug 22, 2025, 3:31:15 PM	Debug	[2025-08-22T19:31:15.574Z] [Strangles] ERROR: Error: JSON parse error for https://www.earningswhispers.com/api/getstrangle: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+    at EW_fetchJson (04_Code:175:11)
+    at EW_runOneInternal (04_Code:119:18)
+    at EW_runAll (04_Code:90:5)
+    at __GS_INTERNAL_top_function_call__.gs:1:8
+Aug 22, 2025, 3:31:15 PM	Info	[2025-08-22T19:31:15.574Z] [Strangles] ERROR: Error: JSON parse error for https://www.earningswhispers.com/api/getstrangle: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+    at EW_fetchJson (04_Code:175:11)
+    at EW_runOneInternal (04_Code:119:18)
+    at EW_runAll (04_Code:90:5)
+    at __GS_INTERNAL_top_function_call__.gs:1:8
+Aug 22, 2025, 3:31:15 PM	Debug	[2025-08-22T19:31:15.759Z] [Covered Calls] GET https://www.earningswhispers.com/api/getcoveredcall
+Aug 22, 2025, 3:31:15 PM	Info	[2025-08-22T19:31:15.759Z] [Covered Calls] GET https://www.earningswhispers.com/api/getcoveredcall
+Aug 22, 2025, 3:31:15 PM	Debug	[2025-08-22T19:31:15.761Z] [HTTP] Fetching https://www.earningswhispers.com/api/getcoveredcall
+Aug 22, 2025, 3:31:15 PM	Info	[2025-08-22T19:31:15.761Z] [HTTP] Fetching https://www.earningswhispers.com/api/getcoveredcall
+Aug 22, 2025, 3:31:16 PM	Debug	[2025-08-22T19:31:16.840Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getcoveredcall
+Aug 22, 2025, 3:31:16 PM	Info	[2025-08-22T19:31:16.840Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getcoveredcall
+Aug 22, 2025, 3:31:16 PM	Debug	Logging output too large. Truncating output. Response: 
+ [{"ticker":"GASS","company":"StealthGas Inc","nextEPSDate":"2025-08-25T00:00:00","releaseTime":1,"expDate":"2025-09-19T00:00:00","cushion":0.0209,"lastTrade":7.1700,"avgEPSMove":0.0589,"epsImpact":null,"upTarget":7.5923,"strike":7.5000,"bid":0.1500,"callAway":7.6500,"breakeven":7.0200,"downTarget":6.7477,"callAwayReturn":0.0669,"ewRating":0.0000,"exDivDate":null,"payout":null},{"ticker":"HEI","company":"HEICO Corporation","nextEPSDate":"2025-08-25T00:00:00","releaseTime":3,"expDate":"2025-09-19T00:00:00","cushion":0.0350,"lastTrade":307.7200,"avgEPSMove":0.0111,"epsImpact":0.0466,"upTarget":311.1357,"strike":310.0000,"bid":10.8000,"callAway":320.8000,"breakeven":296.9200,"downTarget":304.3043,"callAwayReturn":0.0425,"ewRating":3.3000,"exDivDate":null,"payout":null},{"ticker":"ATAT","company":"Atour Lifestyle Holdings Limited","nextEPSDate":"2025-08-26T00:00:00","releaseTime":1,"expDate":"2025-09-19T00:00:00","cushion":0.0521,"lastTrade":34.4900,"avgEPSMove":0.0633,"epsImpact":0.0979,"upTarget":36.6732,"strike":35.0000,"bid":1.8000,"callAway":36.8000,"breakeven":32.6900,"downTarget":32.3068,"callAwayReturn":0.0669,"ewRating":1.8900,"exDivDate":null,"payout":null},{"ticker":"BNS","company":"Bank of Nova Scotia","nextEPSDate":"2025-08-26T00:00:00","releaseTime":1,"expDate":"2025-09-19T00:00:00","cushion":0.0105,"lastTrade":56.6100,"avgEPSMove":0.0201,"epsImpact":0.0371,"upTarget":57.7479,"strike":57.5000,"bid":0.6000,"callAway":58.1000,"breakeven":56.0100,"downTarget":55.4721,"callAwayReturn":0.0263,"ewRating":1.3000,"exDivDate":null,"payout":null},{"ticker":"GOTU","company":"GSX Techedu Inc.","nextEPSDate":"2025-08-26T00:00:00","releaseTime":1,"expDate":"2025-09-19T00:00:00","cushion":0.0540,"lastTrade":3.7000,"avgEPSMove":0.1261,"epsImpact":null,"upTarget":4.1666,"strike":4.0000,"bid":0.2000,"callAway":4.2000,"breakeven":3.5000,"downTarget":3.2334,"callAwayReturn":0.1351,"ewRating":0.4000,"exDivDate":null,"payout":null},{"ticker":"TUYA","company":"Tuya Inc.","nextEPSDate":"2025-08-26T00:00:00","releaseTime":3,"expDate":"2025-09-19T00:00:00","cushion":0.0836,"lastTrade":2.3900,"avgEPSMove":0.0561,"epsImpact":0.2301,"upTarget":2.5241,"strike":2.5000,"bid":0.2000,"callAway":2.7000,"breakeven":2.1900,"downTarget":2.2559,"callAwayReturn":0.1297,"ewRating":1.3700,"exDivDate":null,"payout":null},{"ticker":"PLAB","company":"Photronics, Inc.","nextEPSDate":"2025-08-27T00:00:00","releaseTime":1,"expDate":"2025-09-19T00:00:00","cushion":0.0335,"lastTrade":20.8900,"avgEPSMove":0.0876,"epsImpact":0.1544,"upTarget":22.7200,"strike":22.5000,"bid":0.7000,"callAway":23.2000,"breakeven":20.1900,"downTarget":19.0600,"callAwayReturn":0.1105,"ewRating":1.1000,"exDivDate":null,"payout":null},{"ticker":"ZH","company":"Zhihu Inc.","nextEPSDate":"2025-08-27T00:00:00","releaseTime":1,"expDate":"2025-09-19T00:00:00","cushion":0.0604,"lastTrade":4.9600,"avgEPSMove":0.0496,"epsImpact":null,"upTarget":5.2060,"strike":5.0000,"bid":0.3000,"callAway":5.3000,"breakeven":4.6600,"downTarget":4.7140,"callAwayReturn":0.0685,"ewRating":0.0000,"exDivDate":null,"payout":null},{"ticker":"A","company":"Agilent Technologies, Inc.","nextEPSDate":"2025-08-27T00:00:00","releaseTime":3,"expDate":"2025-09-19T00:00:00","cushion":0.0281,"lastTrade":117.1500,"avgEPSMove":0.0349,"epsImpact":0.0713,"upTarget":121.2385,"strike":120.0000,"bid":3.3000,"callAway":123.3000,"breakeven":113.8500,"downTarget":113.0615,"callAwayReturn":0.0524,"ewRating":4.4600,"exDivDate":null,"payout":null},{"ticker":"FIVE","company":"Five Below, Inc.","nextEPSDate":"2025-08-27T00:00:00","releaseTime":3,"expDate":"2025-09-19T00:00:00","cushion":0.0536,"lastTrade":141.7800,"avgEPSMove":0.0727,"epsImpact":0.0797,"upTarget":152.0874,"strike":145.0000,"bid":7.6000,"callAway":152.6000,"breakeven":134.1800,"downTarget":131.4726,"callAwayReturn":0.0763,"ewRating":6.0200,"exDivDate":null,"payout":null},{"ticker":"CM","company":"Canadian Imperial Bank of Commerce","nextEPSDate":"2025-08-28T00:00:00","releaseTime":1,"expDate":"2025-09-19T00:00:00","cushion":0.0109,"lastTrade":73.0700,"avgEPSMove":0.0347,"epsImpact":0.0363,"upTarget":75.6055,"strike":75.0000,"bid":0.8000,"callAway":75.8000,"breakeven":72.2700,"downTarget":70.5345,"callAwayReturn":0.0373,"ewRating":2.9900,"exDivDate":null,"payout":null},{"ticker":"TD","company":"TD Bank Group","nextEPSDate":"2025-08-28T00:00:00","releaseTime":1,"expDate":"2025-09-19T00:00:00","cushion":0.0129,"lastTrade":73.6400,"avgEPSMove":0.0255,"epsImpact":0.0397,"upTarget":75.5178,"strike":75.0000,"bid":0.9500,"callAway":75.9500,"breakeven":72.6900,"downTarget":71.7622,"callAwayReturn":0.0313,"ewRating":4.6600,"exDivDate":null,"payout":null},{"ticker":"TITN","company":"Titan Machinery Inc.","nextEPSDate":"2025-08-28T00:00:00","releaseTime":1,"expDate":"2025-09-19T00:00:00","cushion":0.0540,"lastTrade":19.4350,"avgEPSMove":0.0672,"epsImpact":0.3452,"upTarget":20.7410,"strike":20.0000,"bid":1.0500,"callAway":21.0500,"breakeven":18.3850,"downTarget":18.1290,"callAwayReturn":0.0830,"ewRating":1.8600,"exDivDate":null,"payout":null},{"ticker":"FRO","company":"Frontline Ltd.","nextEPSDate":"2025-08-29T00:00:00","releaseTime":1,"expDate":"2025-09-19T00:00:00","cushion":0.0270,"lastTrade":20.3000,"avgEPSMove":0.0430,"epsImpact":0.0628,"upTarget":21.1729,"strike":21.0000,"bid":0.5500,"callAway":21.5500,"breakeven":19.7500,"downTarget":19.4271,"callAwayReturn":0.0615,"ewRating":2.2400,"exDivDate":null,"payout":null},{"ticker":"ASO","company":"Academy Sports and Outdoors, Inc.","nextEPSDate":"2025-09-02T00:00:00","releaseTime":1,"expDate":"2025-09-05T00:00:00","cushion":0.0300,"lastTrade":51.6000,"avgEPSMove":0.0386,"epsImpact":0.0741,"upTarget":53.5918,"strike":53.0000,"bid":1.5500,"callAway":54.5500,"breakeven":50.0500,"downTarget":49.6082,"callAwayReturn":0.0571,"ewRating":2.8900,"exDivDate":null,"payout":null},{"ticker":"CPB","company":"Campbell Soup Co.","nextEPSDate":"2025-09-03T00:00:00","releaseTime":1,"expDate":"2025-09-05T00:00:00","cushion":0.0230,"lastTrade":32.5700,"avgEPSMove":0.0209,"epsImpact":0.0414,"upTarget":33.2507,"strike":33.0000,"bid":0.7500,"callAway":33.7500,"breakeven":31.8200,"downTarget":31.8893,"callAwayReturn":0.0362,"ewRating":1.2500,"exDivDate":null,"payout":null},{"ticker":"M","company":"Macy's, Inc.","nextEPSDate":"2025-09-03T00:00:00","releaseTime":1,"expDate":"2025-09-05T00:00:00","cushion":0.0494,"lastTrade":12.9400,"avgEPSMove":0.0388,"epsImpact":0.0808,"upTarget":13.4421,"strike":13.0000,"bid":0.6400,"callAway":13.6400,"breakeven":12.3000,"downTarget":12.4379,"callAwayReturn":0.0540,"ewRating":1.0600,"exDivDate":null,"payout":null},{"ticker":"REVG","company":"REV Group, Inc.","nextEPSDate":"2025-09-03T00:00:00","releaseTime":1,"expDate":"2025-09-19T00:00:00","cushion":0.0306,"lastTrade":50.5000,"avgEPSMove":0.0977,"epsImpact":0.0995,"upTarget":55.4339,"strike":55.0000,"bid":1.5500,"callAway":56.5500,"breakeven":48.9500,"downTarget":45.5662,"callAwayReturn":0.1198,"ewRating":3.8400,"exDivDate":null,"payout":null},{"ticker":"AEO","company":"American Eagle Outfitters, Inc.","nextEPSDate":"2025-09-03T00:00:00","releaseTime":3,"expDate":"2025-09-05T00:00:00","cushion":0.0570,"lastTrade":12.2600,"avgEPSMove":0.0568,"epsImpact":0.0958,"upTarget":12.9564,"strike":12.5000,"bid":0.7000,"callAway":13.2000,"breakeven":11.5600,"downTarget":11.5636,"callAwayReturn":0.0766,"ewRating":2.1900,"exDivDate":null,"payout":null},{"ticker":"BRZE","company":"Braze","nextEPSDate":"2025-09-04T00:00:00","releaseTime":3,"expDate":"2025-09-19T00:00:00","cushion":0.0509,"lastTrade":25.5350,"avgEPSMove":0.0901,"epsImpact":0.1204,"upTarget":27.8357,"strike":27.5000,"bid":1.3000,"callAway":28.8000,"breakeven":24.2350,"downTarget":23.2343,"callAwayReturn":0.1278,"ewRating":-0.2100,"exDivDate":null,"payout":null},{"ticker":"PHR","company":"Phreesia, Inc.","nextEPSDate":"2025-09-04T00:00:00","releaseTime":3,"expDate":"2025-09-19T00:00:00","cushion":0.0469,"lastTrade":28.7600,"avgEPSMove":0.0790,"epsImpact":0.2034,"upTarget":31.0320,"strike":30.0000,"bid":1.3500,"callAway":31.3500,"breakeven":27.4100,"downTarget":26.4880,"callAwayReturn":0.09
+Aug 22, 2025, 3:31:16 PM	Debug	[2025-08-22T19:31:16.843Z] [Covered Calls] HTTP OK; JSON={24 keys: 0, 1, 2...}
+Aug 22, 2025, 3:31:16 PM	Info	[2025-08-22T19:31:16.843Z] [Covered Calls] HTTP OK; JSON={24 keys: 0, 1, 2...}
+Aug 22, 2025, 3:31:16 PM	Debug	[2025-08-22T19:31:16.844Z] [PARSE] Array detected len=24
+Aug 22, 2025, 3:31:16 PM	Info	[2025-08-22T19:31:16.844Z] [PARSE] Array detected len=24
+Aug 22, 2025, 3:31:16 PM	Debug	[2025-08-22T19:31:16.846Z] [PARSE] headers=19 dataRows=24
+Aug 22, 2025, 3:31:16 PM	Info	[2025-08-22T19:31:16.846Z] [PARSE] headers=19 dataRows=24
+Aug 22, 2025, 3:31:16 PM	Debug	[2025-08-22T19:31:16.847Z] [Covered Calls] Parsed rows=25
+Aug 22, 2025, 3:31:16 PM	Info	[2025-08-22T19:31:16.847Z] [Covered Calls] Parsed rows=25
+Aug 22, 2025, 3:31:16 PM	Debug	[2025-08-22T19:31:16.967Z] [SHEET] Append -> "Covered Calls" rows=25
+Aug 22, 2025, 3:31:16 PM	Info	[2025-08-22T19:31:16.967Z] [SHEET] Append -> "Covered Calls" rows=25
+Aug 22, 2025, 3:31:17 PM	Debug	[2025-08-22T19:31:17.253Z] [SHEET] Appended 24 rows at row 29
+Aug 22, 2025, 3:31:17 PM	Info	[2025-08-22T19:31:17.253Z] [SHEET] Appended 24 rows at row 29
+Aug 22, 2025, 3:31:17 PM	Debug	[2025-08-22T19:31:17.614Z] [Covered Calls] Wrote to sheet "Covered Calls": +24 rows
+Aug 22, 2025, 3:31:17 PM	Info	[2025-08-22T19:31:17.614Z] [Covered Calls] Wrote to sheet "Covered Calls": +24 rows
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.035Z] [Straddles] GET https://www.earningswhispers.com/api/getstraddle
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.035Z] [Straddles] GET https://www.earningswhispers.com/api/getstraddle
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.036Z] [HTTP] Fetching https://www.earningswhispers.com/api/getstraddle
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.036Z] [HTTP] Fetching https://www.earningswhispers.com/api/getstraddle
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.183Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getstraddle
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.183Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getstraddle
+Aug 22, 2025, 3:31:18 PM	Debug	Logging output too large. Truncating output. Response: 
+ <!DOCTYPE html>
+<html lang="en">
+<head>
+
+    <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-7LKB78MJRT"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-7LKB78MJRT');
+</script>
+
+
+        <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script>
+        window.fbAsyncInit = function () {
+            FB.init({
+                appId: '832628011103348',
+                cookie: true,
+                xfbml: true,
+                version: 'v15.0'
+            });
+
+            FB.AppEvents.logPageView();
+
+        };
+
+        (function (d, s, id) {
+            var js, fjs = d.getElementsByTagName(s)[0];
+            if (d.getElementById(id)) { return; }
+            js = d.createElement(s); js.id = id;
+            js.src = "https://connect.facebook.net/en_US/sdk.js";
+            fjs.parentNode.insertBefore(js, fjs);
+        }(document, 'script', 'facebook-jssdk'));
+    </script>
+
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Doh! Earnings Whispers</title>
+    <link rel="stylesheet" href="/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="/css/site.css?v=dq-qzrCom8IKffQrAzKh7relHTz3GaWuSXFk63LrPDk" />
+    <link rel="stylesheet" href="/EW2023.styles.css?v=mC3snZh_Ma_324mzp1lkOUheJ5xN0YZcslXSrE46hSo" />
+
+        <link rel="stylesheet" href="/css/signin.css?v=4cwqdwSb0XnVEFkyNeVWZ8TD_fCkZPW8eOQIIYnfKKc" />
+
+
+    <link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.ico" sizes="any">
+    <meta name="norton-safeweb-site-verification" content="kpf4oy1ku-vmpefj2hvc-9huftrudbvrc-sitc59n95l3hmco6oxqh7olepoo29z2k9u61h5fb7u7--prfaw4tk-v59dwwvzp2a7q0m3aa7boapka36l4k2wpw171vft" />
+    
+    
+</head>
+<body>
+    <header b-5bvfnf2466>
+
+
+    <nav b-5bvfnf2466 class="navbar navbar-expand-lg navbar-toggleable-lg navbar-dark navbar-custom fixed-top">
+        <div b-5bvfnf2466 class="container-fluid">
+            <a class="navbar-brand ewlogo" title="Earnings Whispers" aria-label="Got to root directory for Earnings Whispers" href="/">
+                <svg b-5bvfnf2466 id="EW" data-name="EWLogo" role="img" title="Earnings Whispers" aria-label="Earnings Whispers Logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1755 515" width="170" height="50" class="ewlogo-svg d-sm-inline-block d-none"><path b-5bvfnf2466 fill="currentColor" d="M204.4,229.9H80.7V41.4H198.5V78.7H118V116h74.6v37.3H118v39.3h86.4Z" /><path b-5bvfnf2466 fill="currentColor" d="M443.2,169.1c0,6.9-10.3,12.7-30.8,17.5a5.64,5.64,0,0,0-4.4,4.8,63.74,63.74,0,0,0-.2,7.6,51,51,0,0,0,2,12.3c1.3,5.1,2,8.7,2,10.8H328.3c0-2.6.1-6.4.2-11.2.2-5.4.2-9.2.2-11.5,0-16.9-4.8-29-14.5-36.2q-16.05-12-22.5-26.7c-4.1-9.3-6.1-21.4-6.1-36.4q0-23.55,24-41.9,22.2-17.1,46.5-17.1h4.8q40.35,0,46.6,17.1c1.1,4.5,2.4,9.4,4,14.8a27.14,27.14,0,0,1,2.4,3.5,29.46,29.46,0,0,1,.1,4.2c0,5.4,1.4,9.4,4.1,11.7,1.3,1.1,4.6,2.7,10,4.6a31,31,0,0,1,12.1,7.1,3.1,3.1,0,0,1,.9,1.8c0,1.2-2.2,3.3-6.5,6.1s-6.5,5.5-6.5,7.9a5,5,0,0,0,2.2,4.3,28.77,28.77,0,0,1,2.7,2.2,102.87,102.87,0,0,0-9.2,8.3c-2,2.3-4.1,5.1-6.6,8.5a68.9,68.9,0,0,0,21.1,3.3c.7,0,1.1.5,1.1,1.6a13.39,13.39,0,0,1-1.7,6.2c-1.1,2.2-1.7,3.5-1.7,4.1,0,1.2,1.2,2.7,3.5,4.5S443.2,166.6,443.2,169.1Zm45.9-82.5-38,36-2.6-2.3,33.6-39.9Zm0,91.6-7,6.2-33.5-40,2.6-2.2Zm3.6-40.3-38.6-2.4v-4l38.6-4.6Z" /><path b-5bvfnf2466 fill="currentColor" d="M195.7,345.1c.2,14.7-4.1,28.7-12.7,42-8.9,11.8-17.7,23.6-26.6,35.5-2.9,4.2-5.6,10.1-8.3,17.6-3.7,9.9-6,16-7.1,18.3-5.9,12.5-16.5,18.8-31.6,19-15.7.3-23.6-10.7-23.6-32.8a103.08,103.08,0,0,1,2.3-21.4h7.4c-1.1,10-1.6,16.3-1.6,18.9,0,18.7,5.4,28.1,16.1,28.1,9.7-.1,17.1-3.9,22.1-11.4,2-2.8,5.3-10.8,10.1-23.8a92.13,92.13,0,0,1,8.4-18l24.3-33c8.5-12.7,12.7-25.4,12.6-38.2-.2-17.9-3.9-31.2-11.2-40.1q-12.45-15-40.2-15.3c-17.9-.1-30.7,7.1-38.4,21.4-5.4,9.9-8.1,22.7-8.1,38.2a104.92,104.92,0,0,0,1.1,15.8H82.6a109.27,109.27,0,0,1-1.2-17.1c0-16.9,3.1-30.8,9.4-41.8q13.65-23.85,44.9-23.8,32.25,0,46.6,16.5C191.1,309.7,195.5,324.8,195.7,345.1ZM177.2,348c0,7.8-3.2,18.4-9.5,31.7l-7.2-2.9q8.7-17.7,8.7-29.1c0-10.5-2.7-19.4-8.2-26.7-6.2-8.3-14.6-12.5-25.3-12.5a25,25,0,0,0-19.2,8.4,30,30,0,0,0-8,20.5c25.6,15,38.5,29.9,38.7,44.9a37.62,37.62,0,0,1-5.1,18.8l-10.3,16.6c-1.3,2.9-3.5,7.2-6.5,12.9-2.8,4.6-6.7,6.8-11.5,6.8-6.8,0-10.1-4.2-10.1-12.5,0-2.2.8-5.1,2.3-8.7s2.3-6.4,2.3-8.5a21.56,21.56,0,0,0-2.1-7.8,22.4,22.4,0,0,1-2-9.2c.3-7.5,4.1-11.1,11.2-10.8,6.7.3,9.8,4.6,9.4,12.9-.2,4.6-3.1,8.5-8.6,11.8a24.76,24.76,0,0,1-2.6,11.7,22.5,22.5,0,0,0-2.4,7.6c-.4,4.2.6,6.2,3,6.2,2.8,0,5-1.6,6.3-4.9a82.41,82.41,0,0,1,4.3-10.7l9.8-15.1a31,31,0,0,0,4.6-17.3c-.3-11.4-10.3-23.2-29.8-35.5,2.5,9.5,8.6,18.2,18.3,26l-4.5,5.4q-23-15-23-39.7c0-11.1,3.3-20.1,10-27.1s15.1-10.5,25.3-10.5c14,0,24.6,4.7,31.9,14C174,323.4,177.2,334.3,177.2,348Z" /><line b-5bvfnf2466 fill="none" stroke="currentColor" stroke-width="3" x1="263.4" y1="7.5" x2="263.4" y2="507.5" /><line b-5bvfnf2466 fill="none" stroke="currentColor" stroke-width="3" x1="8.4" y1="257.5" x2="508.4" y2="257.5" /><path b-5bvfnf2466 fill="currentColor" d="M508.4,285.4,429.8,480,389.2,379.3,348.6,480,270,285.4h40.3l38.3,94.9,40.7-100.8L430,380.2l38.3-94.9,40.1.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M647.4,248.8H534.9V77.3H642v33.9H568.8v33.9h67.9V179H568.8v35.7h78.6v34.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M808.3,248.8H778.1l-8-17.1h-56l-8,17.1H676l66.1-141.4Zm-50.7-44.3-15.5-32.7-15.3,32.7Z" /><path b-5bvfnf2466 fill="currentColor" d="M939.8,248.8H910.7l-20.8-51.4H864v51.4H836.8V111.6h60a43.08,43.08,0,0,1,42.9,42.9,41.12,41.12,0,0,1-6.2,22.2,42.92,42.92,0,0,1-16.6,15.6Zm-27.2-94.3a15.86,15.86,0,0,0-15.7-15.7H864v31.4h32.8A15.81,15.81,0,0,0,912.6,154.5Z" /><path b-5bvfnf2466 fill="currentColor" d="M1108,253.1l-100-86.4v82.1H980.9V107.3l100,86.4V111.6h27.2l-.1,141.5Z" /><path b-5bvfnf2466 fill="currentColor" d="M1183,248.8h-28.6V111.6H1183Z" /><path b-5bvfnf2466 fill="currentColor" d="M1356.5,253.1l-100-86.4v82.1h-27.1V107.3l100,86.4V111.6h27.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M1536.5,180.2q0,29.25-20.7,50t-50,20.7q-29.25,0-50-20.7t-20.7-50q0-29.25,20.7-50t50-20.7q29.25,0,50,20.7l-19.1,19.1a42.2,42.2,0,0,0-30.9-12.7,43.6,43.6,0,1,0,0,87.2c15.5,0,27.6-6.4,36.2-19.3h-24.8V177.4h59.3Z" /><path b-5bvfnf2466 fill="currentColor" d="M1678.5,207.7a40,40,0,0,1-22.3,35.9,67.16,67.16,0,0,1-61.1,0c-11.3-5.6-18.4-14.5-21.2-26.6l26.1-9.3a12.1,12.1,0,0,0,7.1,11.6,40.48,40.48,0,0,0,37.1,0,12.19,12.19,0,0,0,7.2-11.6c0-4.8-2.4-8.1-7.1-10l-42.8-17.4q-20.7-8.1-20.7-31.2c0-15.2,6.9-26.2,20.7-32.8a53.91,53.91,0,0,1,24.3-5.7,54.74,54.74,0,0,1,24.5,5.7,34.82,34.82,0,0,1,18.4,20.5l-25.5,9.1a8.77,8.77,0,0,0-4.6-5.2,27.92,27.92,0,0,0-12.7-3,27.27,27.27,0,0,0-12.2,2.8,9.1,9.1,0,0,0-5.6,8.7c0,3.2,1.7,5.5,5.2,6.8l43.2,17.3a34.73,34.73,0,0,1,16.3,13.5A40,40,0,0,1,1678.5,207.7Z" /><path b-5bvfnf2466 fill="currentColor" d="M826.5,260.8,755,437.7l-36.9-91.5-36.9,91.5L609.7,260.8h36.6L681.1,347l37-91.6,37,91.6,34.8-86.2Z" /><path b-5bvfnf2466 fill="currentColor" d="M957.9,432.3H930.8V376.5H882.2v55.8H855.1V295.1h27.1v54.3h48.6V295.1h27.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M1032.9,432.3h-28.6V295.1h28.6Z" /><path b-5bvfnf2466 fill="currentColor" d="M1181.3,391.2a40,40,0,0,1-22.3,35.9,67.16,67.16,0,0,1-61.1,0c-11.3-5.6-18.4-14.5-21.2-26.6l26.1-9.3a12.1,12.1,0,0,0,7.1,11.6,40.69,40.69,0,0,0,37.2,0,12,12,0,0,0,7.1-11.6c0-4.8-2.4-8.1-7.1-10l-42.8-17.4q-20.7-8.25-20.7-31.2c0-15.2,6.9-26.2,20.7-32.8a53.91,53.91,0,0,1,24.3-5.7,54.74,54.74,0,0,1,24.5,5.7,34.82,34.82,0,0,1,18.4,20.5l-25.5,9.1a8.62,8.62,0,0,0-4.7-5.2,27.92,27.92,0,0,0-12.7-3,27.27,27.27,0,0,0-12.2,2.8c-3.7,1.9-5.6,4.7-5.6,8.7,0,3.2,1.7,5.5,5.2,6.8l43.2,17.3a34.73,34.73,0,0,1,16.3,13.5A39,39,0,0,1,1181.3,391.2Z" /><path b-5bvfnf2466 fill="currentColor" d="M1326.1,337.9a43.06,43.06,0,0,1-42.8,42.9h-32.9v51.5h-27.1V295.1h60a43,43
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.189Z] [HTTP] JSON parse error for https://www.earningswhispers.com/api/getstraddle: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.189Z] [HTTP] JSON parse error for https://www.earningswhispers.com/api/getstraddle: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.191Z] [Straddles] ERROR: Error: JSON parse error for https://www.earningswhispers.com/api/getstraddle: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+    at EW_fetchJson (04_Code:175:11)
+    at EW_runOneInternal (04_Code:119:18)
+    at EW_runAll (04_Code:90:5)
+    at __GS_INTERNAL_top_function_call__.gs:1:8
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.191Z] [Straddles] ERROR: Error: JSON parse error for https://www.earningswhispers.com/api/getstraddle: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+    at EW_fetchJson (04_Code:175:11)
+    at EW_runOneInternal (04_Code:119:18)
+    at EW_runAll (04_Code:90:5)
+    at __GS_INTERNAL_top_function_call__.gs:1:8
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.388Z] [Short Calls] GET https://www.earningswhispers.com/api/getshortcalls
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.388Z] [Short Calls] GET https://www.earningswhispers.com/api/getshortcalls
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.390Z] [HTTP] Fetching https://www.earningswhispers.com/api/getshortcalls
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.390Z] [HTTP] Fetching https://www.earningswhispers.com/api/getshortcalls
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.768Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getshortcalls
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.768Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getshortcalls
+Aug 22, 2025, 3:31:18 PM	Debug	Logging output too large. Truncating output. Response: 
+ <!DOCTYPE html>
+<html lang="en">
+<head>
+
+    <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-7LKB78MJRT"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-7LKB78MJRT');
+</script>
+
+
+        <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script>
+        window.fbAsyncInit = function () {
+            FB.init({
+                appId: '832628011103348',
+                cookie: true,
+                xfbml: true,
+                version: 'v15.0'
+            });
+
+            FB.AppEvents.logPageView();
+
+        };
+
+        (function (d, s, id) {
+            var js, fjs = d.getElementsByTagName(s)[0];
+            if (d.getElementById(id)) { return; }
+            js = d.createElement(s); js.id = id;
+            js.src = "https://connect.facebook.net/en_US/sdk.js";
+            fjs.parentNode.insertBefore(js, fjs);
+        }(document, 'script', 'facebook-jssdk'));
+    </script>
+
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Doh! Earnings Whispers</title>
+    <link rel="stylesheet" href="/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="/css/site.css?v=dq-qzrCom8IKffQrAzKh7relHTz3GaWuSXFk63LrPDk" />
+    <link rel="stylesheet" href="/EW2023.styles.css?v=mC3snZh_Ma_324mzp1lkOUheJ5xN0YZcslXSrE46hSo" />
+
+        <link rel="stylesheet" href="/css/signin.css?v=4cwqdwSb0XnVEFkyNeVWZ8TD_fCkZPW8eOQIIYnfKKc" />
+
+
+    <link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.ico" sizes="any">
+    <meta name="norton-safeweb-site-verification" content="kpf4oy1ku-vmpefj2hvc-9huftrudbvrc-sitc59n95l3hmco6oxqh7olepoo29z2k9u61h5fb7u7--prfaw4tk-v59dwwvzp2a7q0m3aa7boapka36l4k2wpw171vft" />
+    
+    
+</head>
+<body>
+    <header b-5bvfnf2466>
+
+
+    <nav b-5bvfnf2466 class="navbar navbar-expand-lg navbar-toggleable-lg navbar-dark navbar-custom fixed-top">
+        <div b-5bvfnf2466 class="container-fluid">
+            <a class="navbar-brand ewlogo" title="Earnings Whispers" aria-label="Got to root directory for Earnings Whispers" href="/">
+                <svg b-5bvfnf2466 id="EW" data-name="EWLogo" role="img" title="Earnings Whispers" aria-label="Earnings Whispers Logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1755 515" width="170" height="50" class="ewlogo-svg d-sm-inline-block d-none"><path b-5bvfnf2466 fill="currentColor" d="M204.4,229.9H80.7V41.4H198.5V78.7H118V116h74.6v37.3H118v39.3h86.4Z" /><path b-5bvfnf2466 fill="currentColor" d="M443.2,169.1c0,6.9-10.3,12.7-30.8,17.5a5.64,5.64,0,0,0-4.4,4.8,63.74,63.74,0,0,0-.2,7.6,51,51,0,0,0,2,12.3c1.3,5.1,2,8.7,2,10.8H328.3c0-2.6.1-6.4.2-11.2.2-5.4.2-9.2.2-11.5,0-16.9-4.8-29-14.5-36.2q-16.05-12-22.5-26.7c-4.1-9.3-6.1-21.4-6.1-36.4q0-23.55,24-41.9,22.2-17.1,46.5-17.1h4.8q40.35,0,46.6,17.1c1.1,4.5,2.4,9.4,4,14.8a27.14,27.14,0,0,1,2.4,3.5,29.46,29.46,0,0,1,.1,4.2c0,5.4,1.4,9.4,4.1,11.7,1.3,1.1,4.6,2.7,10,4.6a31,31,0,0,1,12.1,7.1,3.1,3.1,0,0,1,.9,1.8c0,1.2-2.2,3.3-6.5,6.1s-6.5,5.5-6.5,7.9a5,5,0,0,0,2.2,4.3,28.77,28.77,0,0,1,2.7,2.2,102.87,102.87,0,0,0-9.2,8.3c-2,2.3-4.1,5.1-6.6,8.5a68.9,68.9,0,0,0,21.1,3.3c.7,0,1.1.5,1.1,1.6a13.39,13.39,0,0,1-1.7,6.2c-1.1,2.2-1.7,3.5-1.7,4.1,0,1.2,1.2,2.7,3.5,4.5S443.2,166.6,443.2,169.1Zm45.9-82.5-38,36-2.6-2.3,33.6-39.9Zm0,91.6-7,6.2-33.5-40,2.6-2.2Zm3.6-40.3-38.6-2.4v-4l38.6-4.6Z" /><path b-5bvfnf2466 fill="currentColor" d="M195.7,345.1c.2,14.7-4.1,28.7-12.7,42-8.9,11.8-17.7,23.6-26.6,35.5-2.9,4.2-5.6,10.1-8.3,17.6-3.7,9.9-6,16-7.1,18.3-5.9,12.5-16.5,18.8-31.6,19-15.7.3-23.6-10.7-23.6-32.8a103.08,103.08,0,0,1,2.3-21.4h7.4c-1.1,10-1.6,16.3-1.6,18.9,0,18.7,5.4,28.1,16.1,28.1,9.7-.1,17.1-3.9,22.1-11.4,2-2.8,5.3-10.8,10.1-23.8a92.13,92.13,0,0,1,8.4-18l24.3-33c8.5-12.7,12.7-25.4,12.6-38.2-.2-17.9-3.9-31.2-11.2-40.1q-12.45-15-40.2-15.3c-17.9-.1-30.7,7.1-38.4,21.4-5.4,9.9-8.1,22.7-8.1,38.2a104.92,104.92,0,0,0,1.1,15.8H82.6a109.27,109.27,0,0,1-1.2-17.1c0-16.9,3.1-30.8,9.4-41.8q13.65-23.85,44.9-23.8,32.25,0,46.6,16.5C191.1,309.7,195.5,324.8,195.7,345.1ZM177.2,348c0,7.8-3.2,18.4-9.5,31.7l-7.2-2.9q8.7-17.7,8.7-29.1c0-10.5-2.7-19.4-8.2-26.7-6.2-8.3-14.6-12.5-25.3-12.5a25,25,0,0,0-19.2,8.4,30,30,0,0,0-8,20.5c25.6,15,38.5,29.9,38.7,44.9a37.62,37.62,0,0,1-5.1,18.8l-10.3,16.6c-1.3,2.9-3.5,7.2-6.5,12.9-2.8,4.6-6.7,6.8-11.5,6.8-6.8,0-10.1-4.2-10.1-12.5,0-2.2.8-5.1,2.3-8.7s2.3-6.4,2.3-8.5a21.56,21.56,0,0,0-2.1-7.8,22.4,22.4,0,0,1-2-9.2c.3-7.5,4.1-11.1,11.2-10.8,6.7.3,9.8,4.6,9.4,12.9-.2,4.6-3.1,8.5-8.6,11.8a24.76,24.76,0,0,1-2.6,11.7,22.5,22.5,0,0,0-2.4,7.6c-.4,4.2.6,6.2,3,6.2,2.8,0,5-1.6,6.3-4.9a82.41,82.41,0,0,1,4.3-10.7l9.8-15.1a31,31,0,0,0,4.6-17.3c-.3-11.4-10.3-23.2-29.8-35.5,2.5,9.5,8.6,18.2,18.3,26l-4.5,5.4q-23-15-23-39.7c0-11.1,3.3-20.1,10-27.1s15.1-10.5,25.3-10.5c14,0,24.6,4.7,31.9,14C174,323.4,177.2,334.3,177.2,348Z" /><line b-5bvfnf2466 fill="none" stroke="currentColor" stroke-width="3" x1="263.4" y1="7.5" x2="263.4" y2="507.5" /><line b-5bvfnf2466 fill="none" stroke="currentColor" stroke-width="3" x1="8.4" y1="257.5" x2="508.4" y2="257.5" /><path b-5bvfnf2466 fill="currentColor" d="M508.4,285.4,429.8,480,389.2,379.3,348.6,480,270,285.4h40.3l38.3,94.9,40.7-100.8L430,380.2l38.3-94.9,40.1.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M647.4,248.8H534.9V77.3H642v33.9H568.8v33.9h67.9V179H568.8v35.7h78.6v34.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M808.3,248.8H778.1l-8-17.1h-56l-8,17.1H676l66.1-141.4Zm-50.7-44.3-15.5-32.7-15.3,32.7Z" /><path b-5bvfnf2466 fill="currentColor" d="M939.8,248.8H910.7l-20.8-51.4H864v51.4H836.8V111.6h60a43.08,43.08,0,0,1,42.9,42.9,41.12,41.12,0,0,1-6.2,22.2,42.92,42.92,0,0,1-16.6,15.6Zm-27.2-94.3a15.86,15.86,0,0,0-15.7-15.7H864v31.4h32.8A15.81,15.81,0,0,0,912.6,154.5Z" /><path b-5bvfnf2466 fill="currentColor" d="M1108,253.1l-100-86.4v82.1H980.9V107.3l100,86.4V111.6h27.2l-.1,141.5Z" /><path b-5bvfnf2466 fill="currentColor" d="M1183,248.8h-28.6V111.6H1183Z" /><path b-5bvfnf2466 fill="currentColor" d="M1356.5,253.1l-100-86.4v82.1h-27.1V107.3l100,86.4V111.6h27.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M1536.5,180.2q0,29.25-20.7,50t-50,20.7q-29.25,0-50-20.7t-20.7-50q0-29.25,20.7-50t50-20.7q29.25,0,50,20.7l-19.1,19.1a42.2,42.2,0,0,0-30.9-12.7,43.6,43.6,0,1,0,0,87.2c15.5,0,27.6-6.4,36.2-19.3h-24.8V177.4h59.3Z" /><path b-5bvfnf2466 fill="currentColor" d="M1678.5,207.7a40,40,0,0,1-22.3,35.9,67.16,67.16,0,0,1-61.1,0c-11.3-5.6-18.4-14.5-21.2-26.6l26.1-9.3a12.1,12.1,0,0,0,7.1,11.6,40.48,40.48,0,0,0,37.1,0,12.19,12.19,0,0,0,7.2-11.6c0-4.8-2.4-8.1-7.1-10l-42.8-17.4q-20.7-8.1-20.7-31.2c0-15.2,6.9-26.2,20.7-32.8a53.91,53.91,0,0,1,24.3-5.7,54.74,54.74,0,0,1,24.5,5.7,34.82,34.82,0,0,1,18.4,20.5l-25.5,9.1a8.77,8.77,0,0,0-4.6-5.2,27.92,27.92,0,0,0-12.7-3,27.27,27.27,0,0,0-12.2,2.8,9.1,9.1,0,0,0-5.6,8.7c0,3.2,1.7,5.5,5.2,6.8l43.2,17.3a34.73,34.73,0,0,1,16.3,13.5A40,40,0,0,1,1678.5,207.7Z" /><path b-5bvfnf2466 fill="currentColor" d="M826.5,260.8,755,437.7l-36.9-91.5-36.9,91.5L609.7,260.8h36.6L681.1,347l37-91.6,37,91.6,34.8-86.2Z" /><path b-5bvfnf2466 fill="currentColor" d="M957.9,432.3H930.8V376.5H882.2v55.8H855.1V295.1h27.1v54.3h48.6V295.1h27.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M1032.9,432.3h-28.6V295.1h28.6Z" /><path b-5bvfnf2466 fill="currentColor" d="M1181.3,391.2a40,40,0,0,1-22.3,35.9,67.16,67.16,0,0,1-61.1,0c-11.3-5.6-18.4-14.5-21.2-26.6l26.1-9.3a12.1,12.1,0,0,0,7.1,11.6,40.69,40.69,0,0,0,37.2,0,12,12,0,0,0,7.1-11.6c0-4.8-2.4-8.1-7.1-10l-42.8-17.4q-20.7-8.25-20.7-31.2c0-15.2,6.9-26.2,20.7-32.8a53.91,53.91,0,0,1,24.3-5.7,54.74,54.74,0,0,1,24.5,5.7,34.82,34.82,0,0,1,18.4,20.5l-25.5,9.1a8.62,8.62,0,0,0-4.7-5.2,27.92,27.92,0,0,0-12.7-3,27.27,27.27,0,0,0-12.2,2.8c-3.7,1.9-5.6,4.7-5.6,8.7,0,3.2,1.7,5.5,5.2,6.8l43.2,17.3a34.73,34.73,0,0,1,16.3,13.5A39,39,0,0,1,1181.3,391.2Z" /><path b-5bvfnf2466 fill="currentColor" d="M1326.1,337.9a43.06,43.06,0,0,1-42.8,42.9h-32.9v51.5h-27.1V295.1h60a43,43
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.774Z] [HTTP] JSON parse error for https://www.earningswhispers.com/api/getshortcalls: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.774Z] [HTTP] JSON parse error for https://www.earningswhispers.com/api/getshortcalls: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.776Z] [Short Calls] ERROR: Error: JSON parse error for https://www.earningswhispers.com/api/getshortcalls: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+    at EW_fetchJson (04_Code:175:11)
+    at EW_runOneInternal (04_Code:119:18)
+    at EW_runAll (04_Code:90:5)
+    at __GS_INTERNAL_top_function_call__.gs:1:8
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.776Z] [Short Calls] ERROR: Error: JSON parse error for https://www.earningswhispers.com/api/getshortcalls: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+    at EW_fetchJson (04_Code:175:11)
+    at EW_runOneInternal (04_Code:119:18)
+    at EW_runAll (04_Code:90:5)
+    at __GS_INTERNAL_top_function_call__.gs:1:8
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.948Z] [Bear Spreads] GET https://www.earningswhispers.com/api/getbearputspread
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.948Z] [Bear Spreads] GET https://www.earningswhispers.com/api/getbearputspread
+Aug 22, 2025, 3:31:18 PM	Debug	[2025-08-22T19:31:18.951Z] [HTTP] Fetching https://www.earningswhispers.com/api/getbearputspread
+Aug 22, 2025, 3:31:18 PM	Info	[2025-08-22T19:31:18.951Z] [HTTP] Fetching https://www.earningswhispers.com/api/getbearputspread
+Aug 22, 2025, 3:31:21 PM	Debug	[2025-08-22T19:31:21.195Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getbearputspread
+Aug 22, 2025, 3:31:21 PM	Info	[2025-08-22T19:31:21.195Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getbearputspread
+Aug 22, 2025, 3:31:21 PM	Debug	Response: 
+ [{"ticker":"COO","company":"CooperCompanies, Inc.","nextEPSDate":"2025-08-27T00:00:00","releaseTime":3,"confirmDate":"2025-07-24T16:19:23.66","expDate":"2025-09-19T00:00:00","lastTrade":73.0400,"breakeven":70.8000,"avgEPSMove":0.0852,"maxReturn":0.1478,"maxRisk":0.0575,"epsImpact":0.0743,"longStrike":75.0000,"shortBid":0.2000,"shortStrike":60.0000,"longAsk":4.4000,"maxProfit":10.8000,"maxLoss":4.2000,"ewRating":4.0900,"totRatings":7,"netRatings":5.0000},{"ticker":"TCOM","company":"Trip.com Group Limited","nextEPSDate":"2025-08-27T00:00:00","releaseTime":3,"confirmDate":"2025-08-15T08:15:48.09","expDate":"2025-09-19T00:00:00","lastTrade":63.6200,"breakeven":61.5500,"avgEPSMove":0.0609,"maxReturn":0.1029,"maxRisk":0.0542,"epsImpact":0.1053,"longStrike":65.0000,"shortBid":0.2500,"shortStrike":55.0000,"longAsk":3.7000,"maxProfit":6.5500,"maxLoss":3.4500,"ewRating":2.0800,"totRatings":10,"netRatings":-4.0000}]
+Aug 22, 2025, 3:31:21 PM	Debug	[2025-08-22T19:31:21.198Z] [Bear Spreads] HTTP OK; JSON={2 keys: 0, 1}
+Aug 22, 2025, 3:31:21 PM	Info	[2025-08-22T19:31:21.198Z] [Bear Spreads] HTTP OK; JSON={2 keys: 0, 1}
+Aug 22, 2025, 3:31:21 PM	Debug	[2025-08-22T19:31:21.199Z] [PARSE] Array detected len=2
+Aug 22, 2025, 3:31:21 PM	Info	[2025-08-22T19:31:21.199Z] [PARSE] Array detected len=2
+Aug 22, 2025, 3:31:21 PM	Debug	[2025-08-22T19:31:21.200Z] [PARSE] headers=21 dataRows=2
+Aug 22, 2025, 3:31:21 PM	Info	[2025-08-22T19:31:21.200Z] [PARSE] headers=21 dataRows=2
+Aug 22, 2025, 3:31:21 PM	Debug	[2025-08-22T19:31:21.201Z] [Bear Spreads] Parsed rows=3
+Aug 22, 2025, 3:31:21 PM	Info	[2025-08-22T19:31:21.201Z] [Bear Spreads] Parsed rows=3
+Aug 22, 2025, 3:31:21 PM	Debug	[2025-08-22T19:31:21.320Z] [SHEET] Append -> "Bear Spreads" rows=3
+Aug 22, 2025, 3:31:21 PM	Info	[2025-08-22T19:31:21.320Z] [SHEET] Append -> "Bear Spreads" rows=3
+Aug 22, 2025, 3:31:21 PM	Debug	[2025-08-22T19:31:21.589Z] [SHEET] Appended 2 rows at row 4
+Aug 22, 2025, 3:31:21 PM	Info	[2025-08-22T19:31:21.589Z] [SHEET] Appended 2 rows at row 4
+Aug 22, 2025, 3:31:21 PM	Debug	[2025-08-22T19:31:21.984Z] [Bear Spreads] Wrote to sheet "Bear Spreads": +2 rows
+Aug 22, 2025, 3:31:21 PM	Info	[2025-08-22T19:31:21.984Z] [Bear Spreads] Wrote to sheet "Bear Spreads": +2 rows
+Aug 22, 2025, 3:31:22 PM	Debug	[2025-08-22T19:31:22.413Z] [Long Puts] GET https://www.earningswhispers.com/api/getlongput
+Aug 22, 2025, 3:31:22 PM	Info	[2025-08-22T19:31:22.413Z] [Long Puts] GET https://www.earningswhispers.com/api/getlongput
+Aug 22, 2025, 3:31:22 PM	Debug	[2025-08-22T19:31:22.415Z] [HTTP] Fetching https://www.earningswhispers.com/api/getlongput
+Aug 22, 2025, 3:31:22 PM	Info	[2025-08-22T19:31:22.415Z] [HTTP] Fetching https://www.earningswhispers.com/api/getlongput
+Aug 22, 2025, 3:31:22 PM	Debug	[2025-08-22T19:31:22.619Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getlongput
+Aug 22, 2025, 3:31:22 PM	Info	[2025-08-22T19:31:22.619Z] [HTTP] Response 200 for https://www.earningswhispers.com/api/getlongput
+Aug 22, 2025, 3:31:22 PM	Debug	Logging output too large. Truncating output. Response: 
+ <!DOCTYPE html>
+<html lang="en">
+<head>
+
+    <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-7LKB78MJRT"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-7LKB78MJRT');
+</script>
+
+
+        <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script>
+        window.fbAsyncInit = function () {
+            FB.init({
+                appId: '832628011103348',
+                cookie: true,
+                xfbml: true,
+                version: 'v15.0'
+            });
+
+            FB.AppEvents.logPageView();
+
+        };
+
+        (function (d, s, id) {
+            var js, fjs = d.getElementsByTagName(s)[0];
+            if (d.getElementById(id)) { return; }
+            js = d.createElement(s); js.id = id;
+            js.src = "https://connect.facebook.net/en_US/sdk.js";
+            fjs.parentNode.insertBefore(js, fjs);
+        }(document, 'script', 'facebook-jssdk'));
+    </script>
+
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Doh! Earnings Whispers</title>
+    <link rel="stylesheet" href="/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="/css/site.css?v=dq-qzrCom8IKffQrAzKh7relHTz3GaWuSXFk63LrPDk" />
+    <link rel="stylesheet" href="/EW2023.styles.css?v=mC3snZh_Ma_324mzp1lkOUheJ5xN0YZcslXSrE46hSo" />
+
+        <link rel="stylesheet" href="/css/signin.css?v=4cwqdwSb0XnVEFkyNeVWZ8TD_fCkZPW8eOQIIYnfKKc" />
+
+
+    <link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" href="/favicon.ico" sizes="any">
+    <meta name="norton-safeweb-site-verification" content="kpf4oy1ku-vmpefj2hvc-9huftrudbvrc-sitc59n95l3hmco6oxqh7olepoo29z2k9u61h5fb7u7--prfaw4tk-v59dwwvzp2a7q0m3aa7boapka36l4k2wpw171vft" />
+    
+    
+</head>
+<body>
+    <header b-5bvfnf2466>
+
+
+    <nav b-5bvfnf2466 class="navbar navbar-expand-lg navbar-toggleable-lg navbar-dark navbar-custom fixed-top">
+        <div b-5bvfnf2466 class="container-fluid">
+            <a class="navbar-brand ewlogo" title="Earnings Whispers" aria-label="Got to root directory for Earnings Whispers" href="/">
+                <svg b-5bvfnf2466 id="EW" data-name="EWLogo" role="img" title="Earnings Whispers" aria-label="Earnings Whispers Logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1755 515" width="170" height="50" class="ewlogo-svg d-sm-inline-block d-none"><path b-5bvfnf2466 fill="currentColor" d="M204.4,229.9H80.7V41.4H198.5V78.7H118V116h74.6v37.3H118v39.3h86.4Z" /><path b-5bvfnf2466 fill="currentColor" d="M443.2,169.1c0,6.9-10.3,12.7-30.8,17.5a5.64,5.64,0,0,0-4.4,4.8,63.74,63.74,0,0,0-.2,7.6,51,51,0,0,0,2,12.3c1.3,5.1,2,8.7,2,10.8H328.3c0-2.6.1-6.4.2-11.2.2-5.4.2-9.2.2-11.5,0-16.9-4.8-29-14.5-36.2q-16.05-12-22.5-26.7c-4.1-9.3-6.1-21.4-6.1-36.4q0-23.55,24-41.9,22.2-17.1,46.5-17.1h4.8q40.35,0,46.6,17.1c1.1,4.5,2.4,9.4,4,14.8a27.14,27.14,0,0,1,2.4,3.5,29.46,29.46,0,0,1,.1,4.2c0,5.4,1.4,9.4,4.1,11.7,1.3,1.1,4.6,2.7,10,4.6a31,31,0,0,1,12.1,7.1,3.1,3.1,0,0,1,.9,1.8c0,1.2-2.2,3.3-6.5,6.1s-6.5,5.5-6.5,7.9a5,5,0,0,0,2.2,4.3,28.77,28.77,0,0,1,2.7,2.2,102.87,102.87,0,0,0-9.2,8.3c-2,2.3-4.1,5.1-6.6,8.5a68.9,68.9,0,0,0,21.1,3.3c.7,0,1.1.5,1.1,1.6a13.39,13.39,0,0,1-1.7,6.2c-1.1,2.2-1.7,3.5-1.7,4.1,0,1.2,1.2,2.7,3.5,4.5S443.2,166.6,443.2,169.1Zm45.9-82.5-38,36-2.6-2.3,33.6-39.9Zm0,91.6-7,6.2-33.5-40,2.6-2.2Zm3.6-40.3-38.6-2.4v-4l38.6-4.6Z" /><path b-5bvfnf2466 fill="currentColor" d="M195.7,345.1c.2,14.7-4.1,28.7-12.7,42-8.9,11.8-17.7,23.6-26.6,35.5-2.9,4.2-5.6,10.1-8.3,17.6-3.7,9.9-6,16-7.1,18.3-5.9,12.5-16.5,18.8-31.6,19-15.7.3-23.6-10.7-23.6-32.8a103.08,103.08,0,0,1,2.3-21.4h7.4c-1.1,10-1.6,16.3-1.6,18.9,0,18.7,5.4,28.1,16.1,28.1,9.7-.1,17.1-3.9,22.1-11.4,2-2.8,5.3-10.8,10.1-23.8a92.13,92.13,0,0,1,8.4-18l24.3-33c8.5-12.7,12.7-25.4,12.6-38.2-.2-17.9-3.9-31.2-11.2-40.1q-12.45-15-40.2-15.3c-17.9-.1-30.7,7.1-38.4,21.4-5.4,9.9-8.1,22.7-8.1,38.2a104.92,104.92,0,0,0,1.1,15.8H82.6a109.27,109.27,0,0,1-1.2-17.1c0-16.9,3.1-30.8,9.4-41.8q13.65-23.85,44.9-23.8,32.25,0,46.6,16.5C191.1,309.7,195.5,324.8,195.7,345.1ZM177.2,348c0,7.8-3.2,18.4-9.5,31.7l-7.2-2.9q8.7-17.7,8.7-29.1c0-10.5-2.7-19.4-8.2-26.7-6.2-8.3-14.6-12.5-25.3-12.5a25,25,0,0,0-19.2,8.4,30,30,0,0,0-8,20.5c25.6,15,38.5,29.9,38.7,44.9a37.62,37.62,0,0,1-5.1,18.8l-10.3,16.6c-1.3,2.9-3.5,7.2-6.5,12.9-2.8,4.6-6.7,6.8-11.5,6.8-6.8,0-10.1-4.2-10.1-12.5,0-2.2.8-5.1,2.3-8.7s2.3-6.4,2.3-8.5a21.56,21.56,0,0,0-2.1-7.8,22.4,22.4,0,0,1-2-9.2c.3-7.5,4.1-11.1,11.2-10.8,6.7.3,9.8,4.6,9.4,12.9-.2,4.6-3.1,8.5-8.6,11.8a24.76,24.76,0,0,1-2.6,11.7,22.5,22.5,0,0,0-2.4,7.6c-.4,4.2.6,6.2,3,6.2,2.8,0,5-1.6,6.3-4.9a82.41,82.41,0,0,1,4.3-10.7l9.8-15.1a31,31,0,0,0,4.6-17.3c-.3-11.4-10.3-23.2-29.8-35.5,2.5,9.5,8.6,18.2,18.3,26l-4.5,5.4q-23-15-23-39.7c0-11.1,3.3-20.1,10-27.1s15.1-10.5,25.3-10.5c14,0,24.6,4.7,31.9,14C174,323.4,177.2,334.3,177.2,348Z" /><line b-5bvfnf2466 fill="none" stroke="currentColor" stroke-width="3" x1="263.4" y1="7.5" x2="263.4" y2="507.5" /><line b-5bvfnf2466 fill="none" stroke="currentColor" stroke-width="3" x1="8.4" y1="257.5" x2="508.4" y2="257.5" /><path b-5bvfnf2466 fill="currentColor" d="M508.4,285.4,429.8,480,389.2,379.3,348.6,480,270,285.4h40.3l38.3,94.9,40.7-100.8L430,380.2l38.3-94.9,40.1.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M647.4,248.8H534.9V77.3H642v33.9H568.8v33.9h67.9V179H568.8v35.7h78.6v34.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M808.3,248.8H778.1l-8-17.1h-56l-8,17.1H676l66.1-141.4Zm-50.7-44.3-15.5-32.7-15.3,32.7Z" /><path b-5bvfnf2466 fill="currentColor" d="M939.8,248.8H910.7l-20.8-51.4H864v51.4H836.8V111.6h60a43.08,43.08,0,0,1,42.9,42.9,41.12,41.12,0,0,1-6.2,22.2,42.92,42.92,0,0,1-16.6,15.6Zm-27.2-94.3a15.86,15.86,0,0,0-15.7-15.7H864v31.4h32.8A15.81,15.81,0,0,0,912.6,154.5Z" /><path b-5bvfnf2466 fill="currentColor" d="M1108,253.1l-100-86.4v82.1H980.9V107.3l100,86.4V111.6h27.2l-.1,141.5Z" /><path b-5bvfnf2466 fill="currentColor" d="M1183,248.8h-28.6V111.6H1183Z" /><path b-5bvfnf2466 fill="currentColor" d="M1356.5,253.1l-100-86.4v82.1h-27.1V107.3l100,86.4V111.6h27.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M1536.5,180.2q0,29.25-20.7,50t-50,20.7q-29.25,0-50-20.7t-20.7-50q0-29.25,20.7-50t50-20.7q29.25,0,50,20.7l-19.1,19.1a42.2,42.2,0,0,0-30.9-12.7,43.6,43.6,0,1,0,0,87.2c15.5,0,27.6-6.4,36.2-19.3h-24.8V177.4h59.3Z" /><path b-5bvfnf2466 fill="currentColor" d="M1678.5,207.7a40,40,0,0,1-22.3,35.9,67.16,67.16,0,0,1-61.1,0c-11.3-5.6-18.4-14.5-21.2-26.6l26.1-9.3a12.1,12.1,0,0,0,7.1,11.6,40.48,40.48,0,0,0,37.1,0,12.19,12.19,0,0,0,7.2-11.6c0-4.8-2.4-8.1-7.1-10l-42.8-17.4q-20.7-8.1-20.7-31.2c0-15.2,6.9-26.2,20.7-32.8a53.91,53.91,0,0,1,24.3-5.7,54.74,54.74,0,0,1,24.5,5.7,34.82,34.82,0,0,1,18.4,20.5l-25.5,9.1a8.77,8.77,0,0,0-4.6-5.2,27.92,27.92,0,0,0-12.7-3,27.27,27.27,0,0,0-12.2,2.8,9.1,9.1,0,0,0-5.6,8.7c0,3.2,1.7,5.5,5.2,6.8l43.2,17.3a34.73,34.73,0,0,1,16.3,13.5A40,40,0,0,1,1678.5,207.7Z" /><path b-5bvfnf2466 fill="currentColor" d="M826.5,260.8,755,437.7l-36.9-91.5-36.9,91.5L609.7,260.8h36.6L681.1,347l37-91.6,37,91.6,34.8-86.2Z" /><path b-5bvfnf2466 fill="currentColor" d="M957.9,432.3H930.8V376.5H882.2v55.8H855.1V295.1h27.1v54.3h48.6V295.1h27.1Z" /><path b-5bvfnf2466 fill="currentColor" d="M1032.9,432.3h-28.6V295.1h28.6Z" /><path b-5bvfnf2466 fill="currentColor" d="M1181.3,391.2a40,40,0,0,1-22.3,35.9,67.16,67.16,0,0,1-61.1,0c-11.3-5.6-18.4-14.5-21.2-26.6l26.1-9.3a12.1,12.1,0,0,0,7.1,11.6,40.69,40.69,0,0,0,37.2,0,12,12,0,0,0,7.1-11.6c0-4.8-2.4-8.1-7.1-10l-42.8-17.4q-20.7-8.25-20.7-31.2c0-15.2,6.9-26.2,20.7-32.8a53.91,53.91,0,0,1,24.3-5.7,54.74,54.74,0,0,1,24.5,5.7,34.82,34.82,0,0,1,18.4,20.5l-25.5,9.1a8.62,8.62,0,0,0-4.7-5.2,27.92,27.92,0,0,0-12.7-3,27.27,27.27,0,0,0-12.2,2.8c-3.7,1.9-5.6,4.7-5.6,8.7,0,3.2,1.7,5.5,5.2,6.8l43.2,17.3a34.73,34.73,0,0,1,16.3,13.5A39,39,0,0,1,1181.3,391.2Z" /><path b-5bvfnf2466 fill="currentColor" d="M1326.1,337.9a43.06,43.06,0,0,1-42.8,42.9h-32.9v51.5h-27.1V295.1h60a43,43
+Aug 22, 2025, 3:31:22 PM	Debug	[2025-08-22T19:31:22.626Z] [HTTP] JSON parse error for https://www.earningswhispers.com/api/getlongput: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+Aug 22, 2025, 3:31:22 PM	Info	[2025-08-22T19:31:22.626Z] [HTTP] JSON parse error for https://www.earningswhispers.com/api/getlongput: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+Aug 22, 2025, 3:31:22 PM	Debug	[2025-08-22T19:31:22.627Z] [Long Puts] ERROR: Error: JSON parse error for https://www.earningswhispers.com/api/getlongput: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+    at EW_fetchJson (04_Code:175:11)
+    at EW_runOneInternal (04_Code:119:18)
+    at EW_runAll (04_Code:90:5)
+    at __GS_INTERNAL_top_function_call__.gs:1:8
+Aug 22, 2025, 3:31:22 PM	Info	[2025-08-22T19:31:22.627Z] [Long Puts] ERROR: Error: JSON parse error for https://www.earningswhispers.com/api/getlongput: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+    at EW_fetchJson (04_Code:175:11)
+    at EW_runOneInternal (04_Code:119:18)
+    at EW_runAll (04_Code:90:5)
+    at __GS_INTERNAL_top_function_call__.gs:1:8
+Aug 22, 2025, 3:31:22 PM	Debug	[2025-08-22T19:31:22.820Z] [MAIN] EW_runAll() finished
+Aug 22, 2025, 3:31:22 PM	Info	[2025-08-22T19:31:22.820Z] [MAIN] EW_runAll() finished
