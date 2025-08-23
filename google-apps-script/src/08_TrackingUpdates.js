@@ -92,7 +92,9 @@ function EW_updateStrategyTracking(ss, strategyName) {
       
       // Get current data from formula columns (if available)
       const currentPrice = hdrMap.priceCol ? parseFloat(row[hdrMap.priceCol - 1]) || 0 : 0;
-      const strikeHit = hdrMap.strikeHitCol ? row[hdrMap.strikeHitCol - 1] : '';
+      const strikeHitRaw = hdrMap.strikeHitCol ? row[hdrMap.strikeHitCol - 1] : '';
+      const strikeHitArray = EW_parseStrikeHitArray(strikeHitRaw);
+      const strikeHit = strikeHitArray.length > 0 ? 'HIT' : '';  // Check if any hits in array
       const historicalHigh = hdrMap.historicalHighCol ? parseFloat(row[hdrMap.historicalHighCol - 1]) || 0 : 0;
       const historicalLow = hdrMap.historicalLowCol ? parseFloat(row[hdrMap.historicalLowCol - 1]) || 0 : 0;
       

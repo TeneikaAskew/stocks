@@ -149,24 +149,13 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       // Update tracking columns with historical analysis
       let updated = false;
       
-      // Update Strike_Hit column with percentage move from Day0 to strike
+      // Update Strike_Hit column with array of percentage moves
       if (hdrMap.strikeHitCol) {
         const existing = row[hdrMap.strikeHitCol - 1];
-        if (!existing && analysis.day0Price) {
-          let percentMove;
-          
-          if (strategyName.toUpperCase().includes('BULL') || strategyName.toUpperCase().includes('LONG CALL')) {
-            // For bullish strategies: (strike - day0Price) / day0Price * 100
-            percentMove = ((strike - analysis.day0Price) / analysis.day0Price * 100).toFixed(2);
-          } else if (strategyName.toUpperCase().includes('BEAR') || strategyName.toUpperCase().includes('LONG PUT')) {
-            // For bearish strategies: (day0Price - strike) / day0Price * 100
-            percentMove = ((analysis.day0Price - strike) / analysis.day0Price * 100).toFixed(2);
-          } else {
-            // Default for other strategies
-            percentMove = ((strike - analysis.day0Price) / analysis.day0Price * 100).toFixed(2);
-          }
-          
-          dataRange.getCell(rowIndex + 1, hdrMap.strikeHitCol).setValue(percentMove + '%');
+        if (!existing && analysis.strikeHitArray.length > 0) {
+          // Store as JSON array
+          const strikeHitJson = JSON.stringify(analysis.strikeHitArray);
+          dataRange.getCell(rowIndex + 1, hdrMap.strikeHitCol).setValue(strikeHitJson);
           updated = true;
         }
       }
@@ -235,14 +224,7 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         }
       }
       
-      // Update Peak_Profit_Date
-      if (hdrMap.peakProfitDateCol && analysis.peakProfitDate) {
-        const existing = row[hdrMap.peakProfitDateCol - 1];
-        if (!existing) {
-          dataRange.getCell(rowIndex + 1, hdrMap.peakProfitDateCol).setValue(analysis.peakProfitDate);
-          updated = true;
-        }
-      }
+      // Peak_Profit_Date removed - using daily indicator arrays instead
       
       
       // Calculate and update Risk_Reward
@@ -259,48 +241,49 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         }
       }
       
-      // Update technical indicators if available
-      if (analysis.indicators) {
-        const ind = analysis.indicators;
+      // Update indicator columns with arrays
+      if (analysis.dailyIndicators && analysis.dailyIndicators.rsi.length > 0) {
+        // Build indicator arrays using helper function
+        const indicatorArrays = EW_buildIndicatorArrays(analysis.dailyIndicators);
         
-        if (hdrMap.hitRSICol && ind.rsi !== null && !row[hdrMap.hitRSICol - 1]) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitRSICol).setValue(ind.rsi.toFixed(2));
+        if (hdrMap.hitRSICol && !row[hdrMap.hitRSICol - 1] && indicatorArrays.rsi) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitRSICol).setValue(indicatorArrays.rsi);
           updated = true;
         }
-        if (hdrMap.hitSMA20Col && ind.sma20 !== null && !row[hdrMap.hitSMA20Col - 1]) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitSMA20Col).setValue(ind.sma20.toFixed(2));
+        if (hdrMap.hitSMA20Col && !row[hdrMap.hitSMA20Col - 1] && indicatorArrays.sma20) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitSMA20Col).setValue(indicatorArrays.sma20);
           updated = true;
         }
-        if (hdrMap.hitSMA50Col && ind.sma50 !== null && !row[hdrMap.hitSMA50Col - 1]) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitSMA50Col).setValue(ind.sma50.toFixed(2));
+        if (hdrMap.hitSMA50Col && !row[hdrMap.hitSMA50Col - 1] && indicatorArrays.sma50) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitSMA50Col).setValue(indicatorArrays.sma50);
           updated = true;
         }
-        if (hdrMap.hitEMA9Col && ind.ema9 !== null && !row[hdrMap.hitEMA9Col - 1]) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitEMA9Col).setValue(ind.ema9.toFixed(2));
+        if (hdrMap.hitEMA9Col && !row[hdrMap.hitEMA9Col - 1] && indicatorArrays.ema9) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitEMA9Col).setValue(indicatorArrays.ema9);
           updated = true;
         }
-        if (hdrMap.hitEMA21Col && ind.ema21 !== null && !row[hdrMap.hitEMA21Col - 1]) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitEMA21Col).setValue(ind.ema21.toFixed(2));
+        if (hdrMap.hitEMA21Col && !row[hdrMap.hitEMA21Col - 1] && indicatorArrays.ema21) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitEMA21Col).setValue(indicatorArrays.ema21);
           updated = true;
         }
-        if (hdrMap.hitVWAPCol && ind.vwap !== null && !row[hdrMap.hitVWAPCol - 1]) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitVWAPCol).setValue(ind.vwap.toFixed(2));
+        if (hdrMap.hitVWAPCol && !row[hdrMap.hitVWAPCol - 1] && indicatorArrays.vwap) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitVWAPCol).setValue(indicatorArrays.vwap);
           updated = true;
         }
-        if (hdrMap.hitRVOLCol && ind.rvol !== null && !row[hdrMap.hitRVOLCol - 1]) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitRVOLCol).setValue(ind.rvol.toFixed(2));
+        if (hdrMap.hitRVOLCol && !row[hdrMap.hitRVOLCol - 1] && indicatorArrays.rvol) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitRVOLCol).setValue(indicatorArrays.rvol);
           updated = true;
         }
-        if (hdrMap.hitATRCol && ind.atr !== null && !row[hdrMap.hitATRCol - 1]) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitATRCol).setValue(ind.atr.toFixed(2));
+        if (hdrMap.hitATRCol && !row[hdrMap.hitATRCol - 1] && indicatorArrays.atr) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitATRCol).setValue(indicatorArrays.atr);
           updated = true;
         }
-        if (hdrMap.hitPriceVsSMA20Col && ind.priceVsSMA20 !== null && !row[hdrMap.hitPriceVsSMA20Col - 1]) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitPriceVsSMA20Col).setValue(ind.priceVsSMA20.toFixed(2));
+        if (hdrMap.hitPriceVsSMA20Col && !row[hdrMap.hitPriceVsSMA20Col - 1] && indicatorArrays.priceVsSMA20) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitPriceVsSMA20Col).setValue(indicatorArrays.priceVsSMA20);
           updated = true;
         }
-        if (hdrMap.hitPriceVsVWAPCol && ind.priceVsVWAP !== null && !row[hdrMap.hitPriceVsVWAPCol - 1]) {
-          dataRange.getCell(rowIndex + 1, hdrMap.hitPriceVsVWAPCol).setValue(ind.priceVsVWAP.toFixed(2));
+        if (hdrMap.hitPriceVsVWAPCol && !row[hdrMap.hitPriceVsVWAPCol - 1] && indicatorArrays.priceVsVWAP) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitPriceVsVWAPCol).setValue(indicatorArrays.priceVsVWAP);
           updated = true;
         }
       }
@@ -388,12 +371,27 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
     maxFavorable: null,
     minUnfavorable: null,
     expResult: null,
-    peakProfitDate: null,
-    peakProfitIndex: null,  // Store index for indicator calculation
     historicalHigh: 0,
     historicalLow: Infinity,
     // Technical indicators at peak profit
-    indicators: null
+    indicators: null,
+    // New fields for array implementation
+    dailyPrices: [],  // Track daily closing prices
+    strikeHitArray: [],  // Array of percentage moves to strike
+    indicatorDates: [],  // Dates when indicators were calculated
+    // Daily indicator arrays
+    dailyIndicators: {
+      rsi: [],
+      sma20: [],
+      sma50: [],
+      ema9: [],
+      ema21: [],
+      vwap: [],
+      rvol: [],
+      atr: [],
+      priceVsSMA20: [],
+      priceVsVWAP: []
+    }
   };
   
   if (!historicalData || historicalData.length === 0) return analysis;
@@ -520,6 +518,84 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
       analysis.day5Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
     }
     
+    // Build arrays for new implementation
+    if (tradingDaysSinceEntry >= 0 && tradingDaysSinceEntry <= 5) {
+      // Store daily closing price
+      analysis.dailyPrices.push(dayData.close);
+      
+      // Calculate and store decimal move from close to strike (no percentage conversion)
+      let percentMove;
+      if (isBullish || (strategyUpper.includes('BULL') && !isSpread)) {
+        // For bullish: (strike - close) / close
+        percentMove = ((strike - dayData.close) / dayData.close).toFixed(6);
+      } else if (isBearish || (strategyUpper.includes('BEAR') && !isSpread)) {
+        // For bearish: (close - strike) / close
+        percentMove = ((dayData.close - strike) / dayData.close).toFixed(6);
+      } else {
+        // Default: (strike - close) / close
+        percentMove = ((strike - dayData.close) / dayData.close).toFixed(6);
+      }
+      analysis.strikeHitArray.push(percentMove);
+      
+      // Calculate indicators for this day if we have raw data
+      if (rawData && rawData.timestamps && rawData.quotes) {
+        try {
+          // Find the index in raw data that matches this date
+          const dayDateStr = dayData.date.toISOString().split('T')[0];
+          let rawDataIndex = -1;
+          
+          for (let ri = 0; ri < rawData.timestamps.length; ri++) {
+            const timestamp = new Date(rawData.timestamps[ri] * 1000);
+            if (timestamp.toISOString().split('T')[0] === dayDateStr) {
+              rawDataIndex = ri;
+              break;
+            }
+          }
+          
+          if (rawDataIndex >= 0) {
+            // Calculate indicators for this day
+            const dayIndicators = EW_calculateIndicatorsFromYahoo(
+              rawData.timestamps,
+              rawData.quotes,
+              rawDataIndex
+            );
+            
+            if (dayIndicators) {
+              // Store each indicator value
+              analysis.dailyIndicators.rsi.push(dayIndicators.rsi);
+              analysis.dailyIndicators.sma20.push(dayIndicators.sma20);
+              analysis.dailyIndicators.sma50.push(dayIndicators.sma50);
+              analysis.dailyIndicators.ema9.push(dayIndicators.ema9);
+              analysis.dailyIndicators.ema21.push(dayIndicators.ema21);
+              analysis.dailyIndicators.vwap.push(dayIndicators.vwap);
+              analysis.dailyIndicators.rvol.push(dayIndicators.rvol);
+              analysis.dailyIndicators.atr.push(dayIndicators.atr);
+              analysis.dailyIndicators.priceVsSMA20.push(dayIndicators.priceVsSMA20);
+              analysis.dailyIndicators.priceVsVWAP.push(dayIndicators.priceVsVWAP);
+              
+              EW_trace('BACKFILL', `Calculated indicators for Day ${tradingDaysSinceEntry}: RSI=${dayIndicators.rsi?.toFixed(2)}`);
+            } else {
+              // Push nulls if indicators couldn't be calculated
+              Object.keys(analysis.dailyIndicators).forEach(key => {
+                analysis.dailyIndicators[key].push(null);
+              });
+            }
+          } else {
+            // No matching raw data for this day
+            Object.keys(analysis.dailyIndicators).forEach(key => {
+              analysis.dailyIndicators[key].push(null);
+            });
+          }
+        } catch (error) {
+          EW_trace('BACKFILL', `Failed to calculate daily indicators: ${error.message}`);
+          // Push nulls on error
+          Object.keys(analysis.dailyIndicators).forEach(key => {
+            analysis.dailyIndicators[key].push(null);
+          });
+        }
+      }
+    }
+    
     // Calculate profit/loss for the day
     let dayProfit = 0;
     if (isBullish) {
@@ -532,11 +608,9 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
       maxLoss = Math.min(maxLoss, -dayLoss);
     }
     
-    // Track peak profit
+    // Track max profit for favorable calculation
     if (dayProfit > maxProfit) {
       maxProfit = dayProfit;
-      analysis.peakProfitDate = dayData.date.toISOString().split('T')[0];
-      analysis.peakProfitIndex = index;  // Store the index for indicator calculation
     }
   });
   
@@ -567,24 +641,8 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
     }
   }
   
-  // Calculate technical indicators at peak profit if we have raw data
-  if (rawData && analysis.peakProfitIndex !== null) {
-    try {
-      // Calculate indicators at the peak profit point
-      const indicators = EW_calculateIndicatorsFromYahoo(
-        rawData.timestamps, 
-        rawData.quotes, 
-        analysis.peakProfitIndex
-      );
-      
-      if (indicators) {
-        analysis.indicators = indicators;
-        EW_trace('BACKFILL', `Calculated indicators at peak profit date ${analysis.peakProfitDate}`);
-      }
-    } catch (error) {
-      EW_trace('BACKFILL', `Failed to calculate indicators: ${error.message}`);
-    }
-  }
+  // Note: Indicators are now calculated daily and stored in arrays
+  // The dailyIndicators object contains arrays for each indicator type
   
   return analysis;
 }

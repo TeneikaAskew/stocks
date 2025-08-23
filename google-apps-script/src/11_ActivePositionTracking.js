@@ -169,9 +169,54 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         Logger.log(`ACTIVE TRACKING FALLBACK: ${strategyName}/${result.ticker} used ${result.fallbackUsed} interval`);
       }
       
-      // Only update if status changed
-      if (currentStatus !== newStatus) {
-        dataRange.getCell(result.rowIndex + 1, hdrMap.strikeHitCol).setValue(newStatus);
+      // Calculate percentage move from Day0 to strike
+      let percentMove = null;
+      const position = positionsToCheck[results.indexOf(result)];
+      const strike = position.strike || position.longStrike || 0;
+      
+      // Get Day0 price by fetching historical data for the entry date
+      if (strike && position.startDate) {
+        try {
+          // Fetch day 0 closing price
+          const entryDateData = EW_getYahooHistoricalRange(
+            position.ticker,
+            position.startDate,
+            position.startDate
+          );
+          
+          if (entryDateData && entryDateData.length > 0 && entryDateData[0].close) {
+            const day0Price = entryDateData[0].close;
+            const strategyUpper = position.strategy.toUpperCase();
+            
+            if (strategyUpper.includes('BULL') || strategyUpper.includes('LONG CALL')) {
+              // For bullish strategies: (strike - day0Price) / day0Price
+              percentMove = ((strike - day0Price) / day0Price).toFixed(6);
+            } else if (strategyUpper.includes('BEAR') || strategyUpper.includes('LONG PUT')) {
+              // For bearish strategies: (day0Price - strike) / day0Price
+              percentMove = ((day0Price - strike) / day0Price).toFixed(6);
+            } else {
+              // Default for other strategies
+              percentMove = ((strike - day0Price) / day0Price).toFixed(6);
+            }
+          }
+        } catch (e) {
+          console.log(`ACTIVE TRACKING: Could not fetch Day0 price for ${position.ticker}: ${e.message}`);
+        }
+      }
+      
+      // Update Strike_Hit with array format
+      let updatedValue;
+      if (percentMove !== null) {
+        // Append to existing array or create new one (no % suffix)
+        updatedValue = EW_appendStrikeHit(currentStatus, percentMove);
+      } else {
+        // Fallback - create array with status
+        updatedValue = EW_appendStrikeHit(currentStatus, newStatus);
+      }
+      
+      // Only update if value changed
+      if (currentStatus !== updatedValue) {
+        dataRange.getCell(result.rowIndex + 1, hdrMap.strikeHitCol).setValue(updatedValue);
         
         // If hit, also update Hit_Date and indicators
         if (result.hit) {
@@ -184,49 +229,71 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
             }
           }
           
-          // Update indicator values at strike hit
+          // Update indicator arrays - always append for daily tracking
           if (result.indicators) {
             const ind = result.indicators;
             
+            // Append to each indicator array
             if (hdrMap.hitRSICol && ind.rsi !== null) {
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitRSICol).setValue(ind.rsi.toFixed(2));
+              const currentValue = row[hdrMap.hitRSICol - 1] || '';
+              const updatedValue = EW_appendIndicatorValue(currentValue, ind.rsi);
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitRSICol).setValue(updatedValue);
             }
             if (hdrMap.hitSMA20Col && ind.sma20 !== null) {
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitSMA20Col).setValue(ind.sma20.toFixed(2));
+              const currentValue = row[hdrMap.hitSMA20Col - 1] || '';
+              const updatedValue = EW_appendIndicatorValue(currentValue, ind.sma20);
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitSMA20Col).setValue(updatedValue);
             }
             if (hdrMap.hitSMA50Col && ind.sma50 !== null) {
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitSMA50Col).setValue(ind.sma50.toFixed(2));
+              const currentValue = row[hdrMap.hitSMA50Col - 1] || '';
+              const updatedValue = EW_appendIndicatorValue(currentValue, ind.sma50);
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitSMA50Col).setValue(updatedValue);
             }
             if (hdrMap.hitEMA9Col && ind.ema9 !== null) {
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitEMA9Col).setValue(ind.ema9.toFixed(2));
+              const currentValue = row[hdrMap.hitEMA9Col - 1] || '';
+              const updatedValue = EW_appendIndicatorValue(currentValue, ind.ema9);
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitEMA9Col).setValue(updatedValue);
             }
             if (hdrMap.hitEMA21Col && ind.ema21 !== null) {
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitEMA21Col).setValue(ind.ema21.toFixed(2));
+              const currentValue = row[hdrMap.hitEMA21Col - 1] || '';
+              const updatedValue = EW_appendIndicatorValue(currentValue, ind.ema21);
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitEMA21Col).setValue(updatedValue);
             }
             if (hdrMap.hitVWAPCol && ind.vwap !== null) {
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitVWAPCol).setValue(ind.vwap.toFixed(2));
+              const currentValue = row[hdrMap.hitVWAPCol - 1] || '';
+              const updatedValue = EW_appendIndicatorValue(currentValue, ind.vwap);
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitVWAPCol).setValue(updatedValue);
             }
             if (hdrMap.hitRVOLCol && ind.rvol !== null) {
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitRVOLCol).setValue(ind.rvol.toFixed(2));
+              const currentValue = row[hdrMap.hitRVOLCol - 1] || '';
+              const updatedValue = EW_appendIndicatorValue(currentValue, ind.rvol);
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitRVOLCol).setValue(updatedValue);
             }
             if (hdrMap.hitATRCol && ind.atr !== null) {
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitATRCol).setValue(ind.atr.toFixed(4));
+              const currentValue = row[hdrMap.hitATRCol - 1] || '';
+              const updatedValue = EW_appendIndicatorValue(currentValue, ind.atr.toFixed(4));
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitATRCol).setValue(updatedValue);
             }
             if (hdrMap.hitPriceVsSMA20Col && ind.priceVsSMA20 !== null) {
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitPriceVsSMA20Col).setValue(ind.priceVsSMA20.toFixed(2) + '%');
+              const currentValue = row[hdrMap.hitPriceVsSMA20Col - 1] || '';
+              const updatedValue = EW_appendIndicatorValue(currentValue, ind.priceVsSMA20.toFixed(2) + '%');
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitPriceVsSMA20Col).setValue(updatedValue);
             }
             if (hdrMap.hitPriceVsVWAPCol && ind.priceVsVWAP !== null) {
-              dataRange.getCell(result.rowIndex + 1, hdrMap.hitPriceVsVWAPCol).setValue(ind.priceVsVWAP.toFixed(2) + '%');
+              const currentValue = row[hdrMap.hitPriceVsVWAPCol - 1] || '';
+              const updatedValue = EW_appendIndicatorValue(currentValue, ind.priceVsVWAP.toFixed(2) + '%');
+              dataRange.getCell(result.rowIndex + 1, hdrMap.hitPriceVsVWAPCol).setValue(updatedValue);
             }
+            
+            console.log(`ACTIVE TRACKING: Updated indicator arrays for ${result.ticker}`);
           }
         }
         
         updatedCount++;
-        console.log(`ACTIVE TRACKING: ${strategyName} - Updated ${result.ticker} to ${newStatus}`);
+        console.log(`ACTIVE TRACKING: ${strategyName} - Updated ${result.ticker} Strike_Hit`);
       }
       
       // Additional tracking updates (from 4:30 PM function)
-      const position = positionsToCheck[results.indexOf(result)];
       const row = position.row;
       
       // Update Day0_Check through Day5_Check
@@ -243,9 +310,31 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         if (check.col && position.daysSinceEntry >= check.day) {
           const existingCheck = row[check.col - 1];
           if (!existingCheck) {
-            // Use the hit status from Yahoo data
-            const dayCheckStatus = result.hit ? 'HIT' : 'NO';
-            dataRange.getCell(result.rowIndex + 1, check.col).setValue(dayCheckStatus);
+            // Use actual price if hit, otherwise 'None'
+            let dayCheckValue = 'None';
+            
+            if (result.hit && result.dayHigh && result.dayLow) {
+              // Determine which price to show based on strategy
+              const strategyUpper = position.strategy.toUpperCase();
+              const strike = position.strike || position.longStrike || 0;
+              
+              if (strategyUpper.includes('BULL') || strategyUpper.includes('LONG CALL')) {
+                // For bullish strategies, show the price if it went above strike
+                if (result.dayHigh >= strike) {
+                  dayCheckValue = strike.toFixed(2);
+                }
+              } else if (strategyUpper.includes('BEAR') || strategyUpper.includes('LONG PUT')) {
+                // For bearish strategies, show the price if it went below strike
+                if (result.dayLow <= strike) {
+                  dayCheckValue = strike.toFixed(2);
+                }
+              } else if (result.hit) {
+                // For other strategies, just show the strike if hit
+                dayCheckValue = strike.toFixed(2);
+              }
+            }
+            
+            dataRange.getCell(result.rowIndex + 1, check.col).setValue(dayCheckValue);
             updatedCount++;
           }
         }
@@ -274,7 +363,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
       if (hdrMap.expResultCol && position.expDate && today >= position.expDate) {
         const existing = row[hdrMap.expResultCol - 1];
         if (!existing) {
-          const expResult = result.hit ? 'HIT' : 'NO';
+          const expResult = result.hit ? 'HIT' : 'Not profitable at closing';
           dataRange.getCell(result.rowIndex + 1, hdrMap.expResultCol).setValue(expResult);
           updatedCount++;
         }
