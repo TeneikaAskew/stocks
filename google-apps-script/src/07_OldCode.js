@@ -10,6 +10,169 @@
 //  * 4. Legacy utility functions
 //  */
 
+// // ==================== HARDCODED VALUES THAT WERE REMOVED ====================
+
+// /**
+//  * In EW_runSingle function, there was a hardcoded line that was overriding the parameter:
+//  * tabName = 'Bull Spreads'
+//  * This was removed to allow the function to work with any strategy passed as parameter
+//  */
+
+// // ==================== COMMENTED OUT FORMULA IMPLEMENTATIONS ====================
+
+// /**
+//  * Original formula implementations that were commented out
+//  * These used DROP/TAKE functions that may not be available in all Google Sheets environments
+//  */
+
+// // HV_30D formula with commented implementation
+//   setHeaderArray(
+//     hdrMap.hv30Col, 'HV_30D',
+//     `LET(
+//        d, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-60,TODAY()),),
+//        n, ROWS(d),
+//        IF(n<32,,LET(
+//          p, TAKE(DROP(INDEX(d,0,2),1),-30),
+//          r, MAP(SEQUENCE(29), LAMBDA(i, LN(INDEX(p,i+1)/INDEX(p,i)))),
+//          st,   IFERROR(STDEV(r),),
+//          IF(st="",,SQRT(252)*st*100)
+//        ))
+//      )`
+//   );
+
+//   // RVOL_10: live volume / 10-day avg volume
+//   setHeaderArray(
+//     hdrMap.rvol10Col, 'RVOL_10',
+//     `LET(
+//        cv, IFERROR(GOOGLEFINANCE(t,"volume"),),
+//        vh, IFERROR(GOOGLEFINANCE(t,"volume",TODAY()-20,TODAY()),),
+//        vd, IF(ROWS(vh)<2,,DROP(vh,1)),
+//        av, IF(ROWS(vd)<10,,AVERAGE(TAKE(vd,-10))),
+//        IF(OR(cv="",av=""),,cv/av)
+//      )`
+//   );
+
+//   // Ret_5D: (last close / close 5 trading days ago - 1) * 100
+//   setHeaderArray(
+//     hdrMap.ret5Col, 'Ret_5D',
+//     `LET(
+//        d, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-15,TODAY()),),
+//        c, IF(ROWS(d)<2,,DROP(INDEX(d,0,2),1)),
+//        n, ROWS(c),
+//        IF(n<6,,(INDEX(c,n)/INDEX(c,n-5)-1)*100)
+//      )`
+//   );
+
+//   // Ret_20D: (last close / close 20 trading days ago - 1) * 100
+//   setHeaderArray(
+//     hdrMap.ret20Col, 'Ret_20D',
+//     `LET(
+//        d, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-35,TODAY()),),
+//        c, IF(ROWS(d)<2,,DROP(INDEX(d,0,2),1)),
+//        n, ROWS(c),
+//        IF(n<21,,(INDEX(c,n)/INDEX(c,n-20)-1)*100)
+//      )`
+//   );
+
+//   // GapPct: (price - open)/open * 100  (intraday gap check)
+//   setHeaderArray(
+//     hdrMap.gapPctCol, 'GapPct',
+//     `LET(px, IFERROR(GOOGLEFINANCE(t,"price"),),
+//          op, IFERROR(GOOGLEFINANCE(t,"priceopen"),),
+//          IF(OR(px="",op=""),,(px-op)/op*100))`
+//   );
+
+//   EW_trace('GF', 'ARRAYFORMULAs set for all eval columns');
+// }
+
+// // ==================== REMOVED REDUNDANT FUNCTIONS ====================
+
+// /**
+//  * EW_fixCorruptedHeaders was removed because EW_completeSheetRepair handles everything:
+//  * - Removes corrupted headers (#ERROR!, #REF!)
+//  * - Removes all formula columns
+//  * - Ensures Strategy column exists
+//  * - Re-applies all formulas fresh
+//  * 
+//  * The complete repair function is more thorough and handles all cases.
+//  */
+
+// function EW_fixCorruptedHeaders() {
+//   EW_trace('FIX', 'Fixing corrupted headers in all sheets', true);
+//   const ss = SpreadsheetApp.getActive();
+//   const endpoints = EW.STRATEGY_ENDPOINTS;
+//   let sheetsFixed = 0;
+//   
+//   for (const tabName of Object.keys(endpoints)) {
+//     const sheet = ss.getSheetByName(tabName);
+//     if (!sheet || sheet.getLastRow() === 0) continue;
+//     
+//     try {
+//       const lastCol = sheet.getLastColumn();
+//       const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+//       let hasCorrupted = false;
+//       
+//       // Map expected columns to their positions
+//       const expectedColumns = [...EW_GF_LABELS, ...EW_TRACKING_LABELS];
+//       const columnMap = new Map();
+//       let nextExpectedIndex = 0;
+//       
+//       // Find and fix corrupted headers
+//       const fixedHeaders = headers.map((header, index) => {
+//         if (header && header.toString().startsWith('#')) {
+//           hasCorrupted = true;
+//           // Try to determine what this column should be based on position
+//           // Skip past already found columns
+//           while (nextExpectedIndex < expectedColumns.length && 
+//                  columnMap.has(expectedColumns[nextExpectedIndex])) {
+//             nextExpectedIndex++;
+//           }
+//           
+//           if (nextExpectedIndex < expectedColumns.length) {
+//             const expectedColumn = expectedColumns[nextExpectedIndex];
+//             columnMap.set(expectedColumn, index);
+//             nextExpectedIndex++;
+//             EW_trace('FIX', `${tabName}: Replacing ${header} with ${expectedColumn} at column ${index + 1}`);
+//             return expectedColumn;
+//           }
+//         } else if (header) {
+//           // Track which expected columns we've found
+//           const headerLower = header.toString().toLowerCase();
+//           for (const expected of expectedColumns) {
+//             if (expected.toLowerCase() === headerLower) {
+//               columnMap.set(expected, index);
+//               break;
+//             }
+//           }
+//         }
+//         return header;
+//       });
+//       
+//       if (hasCorrupted) {
+//         // Update the header row
+//         sheet.getRange(1, 1, 1, lastCol).setValues([fixedHeaders]);
+//         
+//         // Re-apply formulas with corrected headers
+//         const hdrMap = EW_headerMap(fixedHeaders);
+//         EW_setGFArrayFormulas(sheet, hdrMap);
+//         
+//         sheetsFixed++;
+//         EW_trace('FIX', `Fixed corrupted headers in ${tabName}`);
+//       }
+//       
+//     } catch (e) {
+//       EW_trace('FIX', `Error fixing ${tabName}: ${e.message}`, true);
+//     }
+//   }
+//   
+//   const msg = sheetsFixed > 0 ? 
+//     `Fixed corrupted headers in ${sheetsFixed} sheets` : 
+//     'No corrupted headers found';
+//   
+//   EW_trace('FIX', msg, true);
+//   EW_safeAlert('Header Fix Complete', msg);
+// }
+
 // // ==================== ORIGINAL EW_appendToTab IMPLEMENTATIONS ====================
 
 // /**

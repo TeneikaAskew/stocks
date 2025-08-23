@@ -42,7 +42,6 @@ function onOpen() {
     .addItem('Update Tracking Data', 'EW_updateTrackingData')
     .addItem('Check and add missing columns', 'EW_checkAllSheetsColumns')
     .addItem('Fix: Add Strategy column (one-time)', 'EW_fixAddStrategyColumn')
-    .addItem('Fix: Repair corrupted headers', 'EW_fixCorruptedHeaders')
     .addItem('Fix: Complete sheet repair', 'EW_completeSheetRepair')
     .addSeparator()
     .addSubMenu(ui.createMenu('Automation & Triggers')
@@ -160,7 +159,6 @@ function EW_runAll() {
  * @returns {void}
  */
 function EW_runSingle(tabName) {
-  tabName = 'Bull Spreads'
   EW_trace('MAIN', `EW_runSingle(${tabName})`);
   const path = EW.STRATEGY_ENDPOINTS[tabName];
   if (!path) {
@@ -453,10 +451,10 @@ function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
 
   // First run on this tab
   if (writeHeaderIfEmpty && lastRow === 0) {
-    const baseHeader   = EW_ensureRequiredHeaders(incomingHeader, tabName);
-    const headerWithGF = EW_addGFHeaders(baseHeader);
+    const baseHeader = EW_ensureRequiredHeaders(incomingHeader, tabName);
+    // Don't use EW_addGFHeaders - it adds plain text headers
 
-    const width = headerWithGF.length;
+    const width = baseHeader.length;
     const dataRows = incomingData.map(r => {
       // Add Run Date and Strategy at the beginning
       const row = [runDate, tabName, ...r];
@@ -464,7 +462,7 @@ function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
       return row;
     });
 
-    sheet.getRange(1, 1, 1, width).setValues([headerWithGF]);
+    sheet.getRange(1, 1, 1, width).setValues([baseHeader]);
     EW_trace('SHEET', `Wrote header (${width} cols)`);
 
     if (dataRows.length) {
@@ -472,9 +470,15 @@ function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
       EW_trace('SHEET', `Wrote ${dataRows.length} data rows`);
     }
 
-    // Plant ARRAYFORMULAs once
-    const hdrMap = EW_headerMap(headerWithGF);
+    // Don't add GF headers as plain text - let the formulas create them
+    // Create a header map that includes all expected columns
+    const allLabels = [...EW_GF_LABELS, ...EW_TRACKING_LABELS];
+    const fullHeaders = [...baseHeader, ...allLabels];
+    const hdrMap = EW_headerMap(fullHeaders);
+    
+    // Plant ARRAYFORMULAs which will create the column headers
     EW_setGFArrayFormulas(sheet, hdrMap);
+    EW_trace('SHEET', 'Applied Google Finance formulas');
     return;
   }
 
@@ -679,11 +683,12 @@ function EW_ensureAllColumnsExist(sheet) {
   let hdrMap = EW_headerMap(currentHeaders);
   
   // Check if we need to add columns
-  const allLabels = [...EW_GF_LABELS, ...EW_TRACKING_LABELS];
+  // IMPORTANT: Don't add Google Finance columns here - they should be formulas, not plain text
+  const nonFormulaColumns = ['Strategy', 'Run Date']; // Only add non-formula columns as plain text
   const missingColumns = [];
   
-  // Check each expected column
-  for (const label of allLabels) {
+  // Check each expected non-formula column
+  for (const label of nonFormulaColumns) {
     let found = false;
     
     // Check if column exists (case-insensitive)
@@ -743,56 +748,6 @@ function EW_ensureAllColumnsExist(sheet) {
  * @param {Object} hdrMap - Header mapping object from EW_headerMap function
  * @returns {void}
  */
-//        st,   IFERROR(STDEV(r),),
-//        IF(st="",,SQRT(252)*st*100)
-//      )`
-//   );
-
-//   // RVOL_10: live volume / 10-day avg volume
-//   setHeaderArray(
-//     hdrMap.rvol10Col, 'RVOL_10',
-//     `LET(
-//        cv, IFERROR(GOOGLEFINANCE(t,"volume"),),
-//        vh, IFERROR(GOOGLEFINANCE(t,"volume",TODAY()-20,TODAY()),),
-//        vd, IF(ROWS(vh)<2,,DROP(vh,1)),
-//        av, IF(ROWS(vd)<10,,AVERAGE(TAKE(vd,-10))),
-//        IF(OR(cv="",av=""),,cv/av)
-//      )`
-//   );
-
-//   // Ret_5D: (last close / close 5 trading days ago - 1) * 100
-//   setHeaderArray(
-//     hdrMap.ret5Col, 'Ret_5D',
-//     `LET(
-//        d, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-15,TODAY()),),
-//        c, IF(ROWS(d)<2,,DROP(INDEX(d,0,2),1)),
-//        n, ROWS(c),
-//        IF(n<6,,(INDEX(c,n)/INDEX(c,n-5)-1)*100)
-//      )`
-//   );
-
-//   // Ret_20D: (last close / close 20 trading days ago - 1) * 100
-//   setHeaderArray(
-//     hdrMap.ret20Col, 'Ret_20D',
-//     `LET(
-//        d, IFERROR(GOOGLEFINANCE(t,"price",TODAY()-35,TODAY()),),
-//        c, IF(ROWS(d)<2,,DROP(INDEX(d,0,2),1)),
-//        n, ROWS(c),
-//        IF(n<21,,(INDEX(c,n)/INDEX(c,n-20)-1)*100)
-//      )`
-//   );
-
-//   // GapPct: (price - open)/open * 100  (intraday gap check)
-//   setHeaderArray(
-//     hdrMap.gapPctCol, 'GapPct',
-//     `LET(px, IFERROR(GOOGLEFINANCE(t,"price"),),
-//          op, IFERROR(GOOGLEFINANCE(t,"priceopen"),),
-//          IF(OR(px="",op=""),,(px-op)/op*100))`
-//   );
-
-//   EW_trace('GF', 'ARRAYFORMULAs set for all eval columns');
-// }
-
 function EW_setGFArrayFormulas(sheet, hdrMap) {
   if (!hdrMap.tickerCol) {
     EW_trace('GF', 'No "ticker" column found; skipping ARRAYFORMULAs');
@@ -1100,85 +1055,6 @@ function EW_checkAllSheetsColumns() {
   EW_safeAlert('Column Check Complete', msg);
 }
 
-/**
- * Fix corrupted column headers (like #ERROR!, #REF!)
- * @returns {void}
- */
-function EW_fixCorruptedHeaders() {
-  EW_trace('FIX', 'Fixing corrupted headers in all sheets', true);
-  const ss = SpreadsheetApp.getActive();
-  const endpoints = EW.STRATEGY_ENDPOINTS;
-  let sheetsFixed = 0;
-  
-  for (const tabName of Object.keys(endpoints)) {
-    const sheet = ss.getSheetByName(tabName);
-    if (!sheet || sheet.getLastRow() === 0) continue;
-    
-    try {
-      const lastCol = sheet.getLastColumn();
-      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-      let hasCorrupted = false;
-      
-      // Map expected columns to their positions
-      const expectedColumns = [...EW_GF_LABELS, ...EW_TRACKING_LABELS];
-      const columnMap = new Map();
-      let nextExpectedIndex = 0;
-      
-      // Find and fix corrupted headers
-      const fixedHeaders = headers.map((header, index) => {
-        if (header && header.toString().startsWith('#')) {
-          hasCorrupted = true;
-          // Try to determine what this column should be based on position
-          // Skip past already found columns
-          while (nextExpectedIndex < expectedColumns.length && 
-                 columnMap.has(expectedColumns[nextExpectedIndex])) {
-            nextExpectedIndex++;
-          }
-          
-          if (nextExpectedIndex < expectedColumns.length) {
-            const expectedColumn = expectedColumns[nextExpectedIndex];
-            columnMap.set(expectedColumn, index);
-            nextExpectedIndex++;
-            EW_trace('FIX', `${tabName}: Replacing ${header} with ${expectedColumn} at column ${index + 1}`);
-            return expectedColumn;
-          }
-        } else if (header) {
-          // Track which expected columns we've found
-          const headerLower = header.toString().toLowerCase();
-          for (const expected of expectedColumns) {
-            if (expected.toLowerCase() === headerLower) {
-              columnMap.set(expected, index);
-              break;
-            }
-          }
-        }
-        return header;
-      });
-      
-      if (hasCorrupted) {
-        // Update the header row
-        sheet.getRange(1, 1, 1, lastCol).setValues([fixedHeaders]);
-        
-        // Re-apply formulas with corrected headers
-        const hdrMap = EW_headerMap(fixedHeaders);
-        EW_setGFArrayFormulas(sheet, hdrMap);
-        
-        sheetsFixed++;
-        EW_trace('FIX', `Fixed corrupted headers in ${tabName}`);
-      }
-      
-    } catch (e) {
-      EW_trace('FIX', `Error fixing ${tabName}: ${e.message}`, true);
-    }
-  }
-  
-  const msg = sheetsFixed > 0 ? 
-    `Fixed corrupted headers in ${sheetsFixed} sheets` : 
-    'No corrupted headers found';
-  
-  EW_trace('FIX', msg, true);
-  EW_safeAlert('Header Fix Complete', msg);
-}
 
 /**
  * One-time fix function to add Strategy column to all existing sheets
@@ -1353,17 +1229,16 @@ function EW_completeSheetRepair() {
         sheet.getRange(1, 1, updatedData.length, updatedData[0].length).setValues(updatedData);
       }
       
-      // Now add ALL GF and tracking headers back
+      // Don't add headers as plain text - let formulas create them
       const cleanedHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
       
-      // Add ALL Google Finance columns
+      // Create a complete header map including all expected columns
       const allGFColumns = [
         'GF_Name','GF_Price','GF_ChangePct','GF_High','GF_Low','GF_High52','GF_Low52',
         'GF_Volume','GF_AvgVol10','GF_MktCap','GF_PE','GF_Beta',
         'HV_30D','RVOL_10','Ret_5D','Ret_20D','GapPct'
       ];
       
-      // Add ALL tracking columns
       const allTrackingColumns = [
         'Days_To_Exp','Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
         'Day1_Check','Day2_Check','Day3_Check','Day5_Check','Exp_Result',
@@ -1372,14 +1247,11 @@ function EW_completeSheetRepair() {
         'Stock_Price'
       ];
       
-      // Combine all headers
+      // Create header map with all columns for formula application
       const withAllColumns = [...cleanedHeaders, ...allGFColumns, ...allTrackingColumns];
-      
-      // Update header row
-      sheet.getRange(1, 1, 1, withAllColumns.length).setValues([withAllColumns]);
-      
-      // Apply formulas
       const finalHdrMap = EW_headerMap(withAllColumns);
+      
+      // Apply formulas - this will create the headers as formulas
       EW_setGFArrayFormulas(sheet, finalHdrMap);
       
       sheetsRepaired++;
