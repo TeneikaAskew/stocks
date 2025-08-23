@@ -42,6 +42,8 @@ function onOpen() {
     .addItem('Update Tracking Data', 'EW_updateTrackingData')
     .addItem('Check and add missing columns', 'EW_checkAllSheetsColumns')
     .addItem('Fix: Add Strategy column (one-time)', 'EW_fixAddStrategyColumn')
+    .addItem('Fix: Repair corrupted headers', 'EW_fixCorruptedHeaders')
+    .addItem('Fix: Complete sheet repair', 'EW_completeSheetRepair')
     .addSeparator()
     .addSubMenu(ui.createMenu('Automation & Triggers')
       .addItem('Setup Full Auto Tracking', 'EW_setupAutoTracking')
@@ -680,9 +682,21 @@ function EW_ensureAllColumnsExist(sheet) {
   const allLabels = [...EW_GF_LABELS, ...EW_TRACKING_LABELS];
   const missingColumns = [];
   
+  // Check each expected column
   for (const label of allLabels) {
+    let found = false;
+    
+    // Check if column exists (case-insensitive)
     const colIndex = hdrMap.byName[label.toLowerCase()];
-    if (!colIndex) {
+    if (colIndex) {
+      // Check if the header is corrupted (#ERROR!, #REF!, etc)
+      const actualHeader = currentHeaders[colIndex - 1];
+      if (actualHeader && !actualHeader.toString().startsWith('#')) {
+        found = true;
+      }
+    }
+    
+    if (!found) {
       missingColumns.push(label);
     }
   }
@@ -1087,6 +1101,86 @@ function EW_checkAllSheetsColumns() {
 }
 
 /**
+ * Fix corrupted column headers (like #ERROR!, #REF!)
+ * @returns {void}
+ */
+function EW_fixCorruptedHeaders() {
+  EW_trace('FIX', 'Fixing corrupted headers in all sheets', true);
+  const ss = SpreadsheetApp.getActive();
+  const endpoints = EW.STRATEGY_ENDPOINTS;
+  let sheetsFixed = 0;
+  
+  for (const tabName of Object.keys(endpoints)) {
+    const sheet = ss.getSheetByName(tabName);
+    if (!sheet || sheet.getLastRow() === 0) continue;
+    
+    try {
+      const lastCol = sheet.getLastColumn();
+      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      let hasCorrupted = false;
+      
+      // Map expected columns to their positions
+      const expectedColumns = [...EW_GF_LABELS, ...EW_TRACKING_LABELS];
+      const columnMap = new Map();
+      let nextExpectedIndex = 0;
+      
+      // Find and fix corrupted headers
+      const fixedHeaders = headers.map((header, index) => {
+        if (header && header.toString().startsWith('#')) {
+          hasCorrupted = true;
+          // Try to determine what this column should be based on position
+          // Skip past already found columns
+          while (nextExpectedIndex < expectedColumns.length && 
+                 columnMap.has(expectedColumns[nextExpectedIndex])) {
+            nextExpectedIndex++;
+          }
+          
+          if (nextExpectedIndex < expectedColumns.length) {
+            const expectedColumn = expectedColumns[nextExpectedIndex];
+            columnMap.set(expectedColumn, index);
+            nextExpectedIndex++;
+            EW_trace('FIX', `${tabName}: Replacing ${header} with ${expectedColumn} at column ${index + 1}`);
+            return expectedColumn;
+          }
+        } else if (header) {
+          // Track which expected columns we've found
+          const headerLower = header.toString().toLowerCase();
+          for (const expected of expectedColumns) {
+            if (expected.toLowerCase() === headerLower) {
+              columnMap.set(expected, index);
+              break;
+            }
+          }
+        }
+        return header;
+      });
+      
+      if (hasCorrupted) {
+        // Update the header row
+        sheet.getRange(1, 1, 1, lastCol).setValues([fixedHeaders]);
+        
+        // Re-apply formulas with corrected headers
+        const hdrMap = EW_headerMap(fixedHeaders);
+        EW_setGFArrayFormulas(sheet, hdrMap);
+        
+        sheetsFixed++;
+        EW_trace('FIX', `Fixed corrupted headers in ${tabName}`);
+      }
+      
+    } catch (e) {
+      EW_trace('FIX', `Error fixing ${tabName}: ${e.message}`, true);
+    }
+  }
+  
+  const msg = sheetsFixed > 0 ? 
+    `Fixed corrupted headers in ${sheetsFixed} sheets` : 
+    'No corrupted headers found';
+  
+  EW_trace('FIX', msg, true);
+  EW_safeAlert('Header Fix Complete', msg);
+}
+
+/**
  * One-time fix function to add Strategy column to all existing sheets
  * This will insert Strategy as the second column and populate it with the sheet name
  * @returns {void}
@@ -1165,6 +1259,103 @@ function EW_fixAddStrategyColumn() {
   
   EW_trace('FIX', msg, true);
   EW_safeAlert('Strategy Column Fix Complete', msg);
+}
+
+/**
+ * Complete sheet repair - fixes all known issues in one go
+ * 1. Fixes corrupted headers
+ * 2. Adds Strategy column if missing
+ * 3. Ensures all required columns exist
+ * 4. Re-applies all formulas
+ * @returns {void}
+ */
+function EW_completeSheetRepair() {
+  EW_trace('REPAIR', 'Starting complete sheet repair', true);
+  const ss = SpreadsheetApp.getActive();
+  const endpoints = EW.STRATEGY_ENDPOINTS;
+  let sheetsRepaired = 0;
+  
+  for (const tabName of Object.keys(endpoints)) {
+    const sheet = ss.getSheetByName(tabName);
+    if (!sheet || sheet.getLastRow() === 0) {
+      EW_trace('REPAIR', `Skipping ${tabName} - sheet empty or doesn't exist`);
+      continue;
+    }
+    
+    try {
+      let needsRepair = false;
+      let lastRow = sheet.getLastRow();
+      let lastCol = sheet.getLastColumn();
+      let headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      
+      // Step 1: Fix corrupted headers (#ERROR!, #REF!, etc)
+      const fixedHeaders = headers.map((header, index) => {
+        if (header && header.toString().startsWith('#')) {
+          needsRepair = true;
+          EW_trace('REPAIR', `${tabName}: Found corrupted header "${header}" at column ${index + 1}`);
+          // These will be replaced when we ensure all columns exist
+          return '';
+        }
+        return header;
+      });
+      
+      if (needsRepair) {
+        sheet.getRange(1, 1, 1, lastCol).setValues([fixedHeaders]);
+        headers = fixedHeaders;
+      }
+      
+      // Step 2: Check if Strategy column exists
+      let hdrMap = EW_headerMap(headers);
+      if (!hdrMap.strategyCol) {
+        EW_trace('REPAIR', `${tabName}: Adding Strategy column`);
+        needsRepair = true;
+        
+        // Get all data
+        const allData = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+        
+        // Insert Strategy as second column
+        const newData = allData.map((row, rowIndex) => {
+          const newRow = [...row];
+          if (rowIndex === 0) {
+            newRow.splice(1, 0, 'Strategy');
+          } else {
+            newRow.splice(1, 0, tabName);
+          }
+          return newRow;
+        });
+        
+        // Clear and rewrite
+        sheet.clear();
+        lastCol = lastCol + 1;
+        sheet.getRange(1, 1, lastRow, lastCol).setValues(newData);
+      }
+      
+      // Step 3: Ensure all columns exist (this also fixes corrupted headers)
+      const finalHdrMap = EW_ensureAllColumnsExist(sheet);
+      if (finalHdrMap) {
+        needsRepair = true;
+      }
+      
+      // Step 4: Re-apply all formulas
+      if (needsRepair && finalHdrMap) {
+        EW_setGFArrayFormulas(sheet, finalHdrMap);
+        sheetsRepaired++;
+        EW_trace('REPAIR', `Repaired ${tabName} successfully`);
+      } else if (!needsRepair) {
+        EW_trace('REPAIR', `${tabName} is already in good shape`);
+      }
+      
+    } catch (e) {
+      EW_trace('REPAIR', `Error repairing ${tabName}: ${e.message}`, true);
+    }
+  }
+  
+  const msg = sheetsRepaired > 0 ? 
+    `Successfully repaired ${sheetsRepaired} sheets` : 
+    'All sheets are already in good condition';
+  
+  EW_trace('REPAIR', msg, true);
+  EW_safeAlert('Complete Sheet Repair', msg);
 }
 
 /**
