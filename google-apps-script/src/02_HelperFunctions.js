@@ -47,7 +47,7 @@ function EW_norm(s) {
 function EW_trace(scope, msg, alsoSheet = false) {
   const line = `[${new Date().toISOString()}] [${scope}] ${msg}`;
   try { console.log(line); } catch (_) {}
-  try { Logger.log(line); } catch (_) {}
+  // try { Logger.log(line); } catch (_) {}
   if (alsoSheet) {
     try {
       const ss = SpreadsheetApp.getActive();

@@ -53,8 +53,11 @@ function EW_backfillStrategyTracking(ss, strategyName) {
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(headers);
   
-  // Check required columns
-  const requiredCols = ['tickerCol', 'runDateCol', 'strikeCol', 'daysToExpCol'];
+  // Check required columns - handle spreads differently
+  const isSpread = strategyName.toUpperCase().includes('SPREAD');
+  const strikeColumn = isSpread ? 'longStrikeCol' : 'strikeCol';
+  
+  const requiredCols = ['tickerCol', 'runDateCol', strikeColumn, 'daysToExpCol'];
   for (const col of requiredCols) {
     if (!hdrMap[col]) {
       EW_trace('BACKFILL', `${strategyName}: Missing required column ${col}`);
@@ -76,7 +79,9 @@ function EW_backfillStrategyTracking(ss, strategyName) {
     try {
       const ticker = row[hdrMap.tickerCol - 1];
       const runDateStr = row[hdrMap.runDateCol - 1];
-      const strike = parseFloat(row[hdrMap.strikeCol - 1]) || 0;
+      // For spreads, use longStrike; otherwise use strike
+      const strikeCol = isSpread ? hdrMap.longStrikeCol : hdrMap.strikeCol;
+      const strike = parseFloat(row[strikeCol - 1]) || 0;
       const expDateStr = hdrMap.expDateCol ? row[hdrMap.expDateCol - 1] : null;
       const daysToExp = parseFloat(row[hdrMap.daysToExpCol - 1]) || 0;
       
@@ -519,8 +524,11 @@ function EW_testHistoricalBackfill() {
     const hdrMap = EW_headerMap(headers);
     console.log('Header columns found:', Object.keys(hdrMap).filter(k => hdrMap[k]).join(', '));
     
-    // Check required columns
-    const requiredCols = ['tickerCol', 'runDateCol', 'strikeCol', 'daysToExpCol'];
+    // Check required columns - handle spreads differently
+    const isSpread = testConfig.sheetName.toUpperCase().includes('SPREAD');
+    const strikeColumn = isSpread ? 'longStrikeCol' : 'strikeCol';
+    
+    const requiredCols = ['tickerCol', 'runDateCol', strikeColumn, 'daysToExpCol'];
     const missingCols = requiredCols.filter(col => !hdrMap[col]);
     if (missingCols.length > 0) {
       console.error('Missing required columns:', missingCols.join(', '));
@@ -544,7 +552,9 @@ function EW_testHistoricalBackfill() {
     data.forEach((row, rowIndex) => {
       const ticker = row[hdrMap.tickerCol - 1];
       const runDateStr = row[hdrMap.runDateCol - 1];
-      const strike = parseFloat(row[hdrMap.strikeCol - 1]) || 0;
+      // For spreads, use longStrike; otherwise use strike
+      const strikeCol = isSpread ? hdrMap.longStrikeCol : hdrMap.strikeCol;
+      const strike = parseFloat(row[strikeCol - 1]) || 0;
       const expDateStr = hdrMap.expDateCol ? row[hdrMap.expDateCol - 1] : null;
       const daysToExp = parseFloat(row[hdrMap.daysToExpCol - 1]) || 0;
       
