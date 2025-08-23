@@ -99,14 +99,16 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         return; // Skip positions that haven't expired yet
       }
       
-      // Skip if already has tracking data (check key tracking columns)
+      // Skip if already has COMPLETE tracking data (all key columns filled)
       const hasStrikeHit = hdrMap.strikeHitCol && row[hdrMap.strikeHitCol - 1];
-      const hasDay1Check = hdrMap.day1CheckCol && row[hdrMap.day1CheckCol - 1];
+      const hasDay5Check = hdrMap.day5CheckCol && row[hdrMap.day5CheckCol - 1];
+      const hasIndicators = hdrMap.hitRSICol && row[hdrMap.hitRSICol - 1];
       const hasLastUpdate = hdrMap.lastUpdateCol && row[hdrMap.lastUpdateCol - 1];
       
-      if (hasStrikeHit && hasDay1Check && hasLastUpdate) {
-        EW_trace('BACKFILL', `Skipping ${ticker} - already has tracking data`);
-        return; // Skip if already processed
+      // Only skip if ALL critical columns are already filled
+      if (hasStrikeHit && hasDay5Check && hasIndicators && hasLastUpdate) {
+        EW_trace('BACKFILL', `Skipping ${ticker} - already has complete tracking data`);
+        return; // Skip only if fully processed
       }
       
       // Parse dates
@@ -119,9 +121,12 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       const endDate = expDate && expDate < today ? expDate : today;
       
       // Skip if run date is in the future or invalid
-      if (runDate > today || runDate > endDate) return;
+      if (runDate > today || runDate > endDate) {
+        EW_trace('BACKFILL', `Skipping ${ticker}: Invalid date range`);
+        return;
+      }
       
-      EW_trace('BACKFILL', `Processing expired position: ${ticker} from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+      EW_trace('BACKFILL', `Processing expired position: ${ticker} from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (Exp: ${expDateStr || 'none'})`);
       
       // Get historical price data using Yahoo Finance with raw data for indicators
       const yahooResult = EW_getYahooHistoricalRange(ticker, runDate, endDate, true);
@@ -129,6 +134,10 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         EW_trace('BACKFILL', `No historical data for ${ticker}`);
         return;
       }
+      
+      EW_trace('BACKFILL', `${ticker}: Got ${yahooResult.data.length} days of data from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+      const lastDataDate = yahooResult.data[yahooResult.data.length - 1].date.toISOString().split('T')[0];
+      EW_trace('BACKFILL', `${ticker}: Last data point is ${lastDataDate}`);
       
       // Get short strike for spreads
       const shortStrike = isSpread && hdrMap.shortStrikeCol ? 
@@ -140,11 +149,26 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       // Update tracking columns with historical analysis
       let updated = false;
       
-      // Update Strike_Hit column with actual price or 'None'
+      // Update Strike_Hit column with percentage move from Day0 to strike
       if (hdrMap.strikeHitCol) {
-        const strikeHitValue = analysis.firstHitPrice ? analysis.firstHitPrice.toFixed(2) : 'None';
-        dataRange.getCell(rowIndex + 1, hdrMap.strikeHitCol).setValue(strikeHitValue);
-        updated = true;
+        const existing = row[hdrMap.strikeHitCol - 1];
+        if (!existing && analysis.day0Price) {
+          let percentMove;
+          
+          if (strategyName.toUpperCase().includes('BULL') || strategyName.toUpperCase().includes('LONG CALL')) {
+            // For bullish strategies: (strike - day0Price) / day0Price * 100
+            percentMove = ((strike - analysis.day0Price) / analysis.day0Price * 100).toFixed(2);
+          } else if (strategyName.toUpperCase().includes('BEAR') || strategyName.toUpperCase().includes('LONG PUT')) {
+            // For bearish strategies: (day0Price - strike) / day0Price * 100
+            percentMove = ((analysis.day0Price - strike) / analysis.day0Price * 100).toFixed(2);
+          } else {
+            // Default for other strategies
+            percentMove = ((strike - analysis.day0Price) / analysis.day0Price * 100).toFixed(2);
+          }
+          
+          dataRange.getCell(rowIndex + 1, hdrMap.strikeHitCol).setValue(percentMove + '%');
+          updated = true;
+        }
       }
       
       // Update Hit_Date
@@ -354,6 +378,7 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
   const analysis = {
     firstHitDate: null,
     firstHitPrice: null,
+    day0Price: null,  // Track Day 0 price for percentage calculation
     day0Hit: null,
     day1Hit: null,
     day2Hit: null,
@@ -422,7 +447,13 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
     
     // Debug logging for first few days
     if (tradingDaysSinceEntry <= 5) {
-      EW_trace('BACKFILL', `Trading Day ${tradingDaysSinceEntry}: Date=${dayData.date.toISOString().split('T')[0]}, Index=${index}, RunDateIndex=${runDateIndex}`);
+      const dayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dayData.date.getDay()];
+      EW_trace('BACKFILL', `Trading Day ${tradingDaysSinceEntry}: ${dayData.date.toISOString().split('T')[0]} (${dayOfWeek}), Index=${index}`);
+    }
+    
+    // Skip data after Day 5
+    if (tradingDaysSinceEntry > 5) {
+      return;
     }
     
     // Track historical high/low
@@ -475,6 +506,8 @@ function EW_analyzeHistoricalData(strategy, strike, historicalData, runDate, sho
     // Store the actual hit price or 'None' instead of HIT/NO
     if (tradingDaysSinceEntry === 0) {
       analysis.day0Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
+      // Store Day 0 closing price for Strike_Hit percentage calculation
+      analysis.day0Price = dayData.close;
     } else if (tradingDaysSinceEntry === 1) {
       analysis.day1Hit = dayHit && hitPrice ? String(hitPrice.toFixed(2)) : 'None';
     } else if (tradingDaysSinceEntry === 2) {
