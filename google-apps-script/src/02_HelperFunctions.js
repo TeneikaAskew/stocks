@@ -36,6 +36,38 @@ function EW_norm(s) {
     .trim();
 }
 
+// ======= DATE AND TIME UTILITIES =======
+
+/**
+ * Convert UTC Date to EDT/EST string
+ * @param {Date} date - UTC date to convert
+ * @returns {string} Formatted EDT/EST datetime string
+ */
+function EW_toEDT(date) {
+  if (!date || !(date instanceof Date)) return '';
+  
+  // Create formatter for Eastern Time
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+  
+  const parts = formatter.formatToParts(date);
+  const values = {};
+  parts.forEach(part => {
+    values[part.type] = part.value;
+  });
+  
+  // Format as YYYY-MM-DD HH:MM:SS EDT
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second} ET`;
+}
+
 // ======= LOGGING AND DEBUGGING =======
 
 /**
