@@ -402,7 +402,7 @@ function EW_testActivePositionTracking() {
   const existingArrays = {
     maxFavorable: dayIndex > 0 ? Array(dayIndex).fill(null).map((_, i) => (Math.random() * 5).toFixed(2)) : [],
     minUnfavorable: dayIndex > 0 ? Array(dayIndex).fill(null).map((_, i) => (Math.random() * 3).toFixed(2)) : [],
-    strikeHit: dayIndex > 0 ? Array(dayIndex).fill("NO") : [],
+    strikeHit: dayIndex > 0 ? Array(dayIndex).fill(null) : [],
     indicators: {
       rsi: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (40 + Math.random() * 40).toFixed(2)) : [],
       sma20: dayIndex > 0 ? Array(dayIndex).fill(null).map(() => (225 + Math.random() * 10).toFixed(2)) : [],

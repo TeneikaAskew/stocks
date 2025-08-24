@@ -678,17 +678,20 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
       // Store daily closing price
       analysis.dailyPrices.push(dayData.close);
       
-      // Calculate and store decimal move from close to strike (no percentage conversion)
-      let percentMove;
-      if (isBullish || (strategyUpper.includes('BULL') && !isSpread)) {
-        // For bullish: (close - strike) / strike (positive when above strike)
-        percentMove = ((dayData.close - strike) / strike).toFixed(6);
-      } else if (isBearish || (strategyUpper.includes('BEAR') && !isSpread)) {
-        // For bearish: (strike - close) / strike (positive when below strike)
-        percentMove = ((strike - dayData.close) / strike).toFixed(6);
-      } else {
-        // Default: (close - strike) / strike
-        percentMove = ((dayData.close - strike) / strike).toFixed(6);
+      // Calculate and store decimal move from close to strike when hit
+      let percentMove = null;
+      if (dayHit) {
+        // Store the percentage move when strike was hit (as decimal, not percentage)
+        if (isBullish || (strategyUpper.includes('BULL') && !isSpread)) {
+          // For bullish: (hit price - strike) / strike
+          percentMove = ((hitPrice - strike) / strike).toFixed(6);
+        } else if (isBearish || (strategyUpper.includes('BEAR') && !isSpread)) {
+          // For bearish: (strike - hit price) / strike
+          percentMove = ((strike - hitPrice) / strike).toFixed(6);
+        } else {
+          // Default: (hit price - strike) / strike
+          percentMove = ((hitPrice - strike) / strike).toFixed(6);
+        }
       }
       analysis.strikeHitArray.push(percentMove);
       
@@ -696,7 +699,7 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
       if (tradingDaysSinceEntry === 0) {
         const dayPriceDisplay = dayPrice || dayData.close.toFixed(2);
         const priceType = dayHit ? 'Hit' : (isBullish ? 'High' : (isBearish ? 'Low' : 'Close'));
-        EW_trace('BACKFILL', `${ticker} - Strike: ${strike}, Day0 ${priceType}: ${dayPriceDisplay}, Close: ${dayData.close}, Move: ${percentMove}`);
+        EW_trace('BACKFILL', `${ticker} - Strike: ${strike}, Day0 ${priceType}: ${dayPriceDisplay}, Close: ${dayData.close}, Percent Move: ${percentMove || 'Not Hit'}`);
       }
       
       // Calculate indicators for this day
