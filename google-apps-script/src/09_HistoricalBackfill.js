@@ -413,8 +413,13 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
   const isSpread = strategyUpper.includes('SPREAD');
   const isBullSpread = strategyUpper.includes('BULL SPREAD');
   const isBearSpread = strategyUpper.includes('BEAR SPREAD');
-  const isBullish = strategyUpper.includes('LONG CALL') || (strategyUpper.includes('BULL') && !isSpread);
-  const isBearish = strategyUpper.includes('LONG PUT') || (strategyUpper.includes('BEAR') && !isSpread);
+  // Handle both singular and plural forms
+  const isBullish = (strategyUpper.includes('LONG CALL') || strategyUpper.includes('LONG CALLS')) || (strategyUpper.includes('BULL') && !isSpread);
+  const isBearish = (strategyUpper.includes('LONG PUT') || strategyUpper.includes('LONG PUTS')) || (strategyUpper.includes('BEAR') && !isSpread);
+  
+  // Debug strategy detection
+  EW_trace('BACKFILL', `${ticker} Strategy: "${strategy}" -> Upper: "${strategyUpper}"`);
+  EW_trace('BACKFILL', `${ticker} Strategy detection: isBullish=${isBullish}, isBearish=${isBearish}, isSpread=${isSpread}`);
   
   let maxProfit = -Infinity;
   let maxLoss = 0; // Initialize to 0 instead of Infinity
@@ -806,6 +811,27 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
       // For bearish: favorable = (strike - low) / strike, unfavorable = (high - strike) / strike
       dayMaxFavorable = Math.max(0, (strike - dayData.low) / strike);
       dayMinUnfavorable = Math.max(0, (dayData.high - strike) / strike);
+    } else if (isBullSpread && shortStrike) {
+      // For bull spreads: max profit when price >= short strike, max loss when price <= long strike
+      // Favorable: min(high, shortStrike) - strike (capped at spread width)
+      // Unfavorable: strike - low (when price below long strike)
+      const maxPossibleProfit = (shortStrike - strike) / strike;
+      dayMaxFavorable = Math.min(Math.max(0, (dayData.high - strike) / strike), maxPossibleProfit);
+      dayMinUnfavorable = Math.max(0, (strike - dayData.low) / strike);
+    } else if (isBearSpread && shortStrike) {
+      // For bear spreads: max profit when price <= short strike, max loss when price >= long strike
+      // Favorable: strike - max(low, shortStrike) (capped at spread width)
+      // Unfavorable: high - strike (when price above long strike)
+      const maxPossibleProfit = (strike - shortStrike) / strike;
+      dayMaxFavorable = Math.min(Math.max(0, (strike - dayData.low) / strike), maxPossibleProfit);
+      dayMinUnfavorable = Math.max(0, (dayData.high - strike) / strike);
+    }
+    
+    // Debug logging for day 0-2
+    if (tradingDaysSinceEntry <= 2) {
+      EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: high=${dayData.high}, low=${dayData.low}, strike=${strike}`);
+      EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: isBullish=${isBullish}, isBearish=${isBearish}`);
+      EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: maxFav=${dayMaxFavorable}, minUnfav=${dayMinUnfavorable}`);
     }
     
     // Add to arrays if within Day 0-5 range
