@@ -56,6 +56,11 @@ function EW_generateSuccessReport() {
   // Create report sheet
   EW_createReportSheet(ss, insights, allTrades);
   
+  // Store data for web app access
+  if (typeof storeSuccessReportData === 'function') {
+    storeSuccessReportData(insights);
+  }
+  
   const duration = Math.round((new Date() - startTime) / 1000);
   console.log(`Success report generated in ${duration} seconds`);
   

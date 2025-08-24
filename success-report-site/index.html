@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Success Report Dashboard</title>
+    <link rel="stylesheet" href="src/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/date-fns@2.29.3/index.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <header class="header">
+            <h1>Trading Success Report Dashboard</h1>
+            <div class="header-controls">
+                <button id="refreshData" class="btn btn-primary">Refresh Data</button>
+                <span id="lastUpdated" class="last-updated"></span>
+            </div>
+        </header>
+        
+        <nav class="nav-tabs">
+            <button class="tab-btn active" data-tab="overview">Overview</button>
+            <button class="tab-btn" data-tab="multiday">Multi-Day Analysis</button>
+            <button class="tab-btn" data-tab="indicators">Indicator Effectiveness</button>
+            <button class="tab-btn" data-tab="earnings">Earnings Timing</button>
+            <button class="tab-btn" data-tab="strategies">Strategy Performance</button>
+            <button class="tab-btn" data-tab="topplays">Top Plays</button>
+        </nav>
+        
+        <main class="content">
+            <!-- Overview Tab -->
+            <div id="overview" class="tab-content active">
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <h3>Hit Rate</h3>
+                        <div class="metric-value" id="hitRate">--</div>
+                        <div class="metric-label">of strikes hit</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Profitable Rate</h3>
+                        <div class="metric-value" id="profitableRate">--</div>
+                        <div class="metric-label">profitable trades</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Avg Risk/Reward</h3>
+                        <div class="metric-value" id="avgRiskReward">--</div>
+                        <div class="metric-label">risk/reward ratio</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Avg Days to Hit</h3>
+                        <div class="metric-value" id="avgDaysToHit">--</div>
+                        <div class="metric-label">days</div>
+                    </div>
+                </div>
+                
+                <div class="chart-container">
+                    <canvas id="overviewChart"></canvas>
+                </div>
+            </div>
+            
+            <!-- Multi-Day Analysis Tab -->
+            <div id="multiday" class="tab-content">
+                <div class="section-header">
+                    <h2>Multi-Day Profitability Analysis</h2>
+                    <p>Trades that remained profitable for consecutive days</p>
+                </div>
+                <div class="chart-container">
+                    <canvas id="multiDayChart"></canvas>
+                </div>
+                <div id="multiDayTable" class="data-table-container"></div>
+            </div>
+            
+            <!-- Indicator Effectiveness Tab -->
+            <div id="indicators" class="tab-content">
+                <div class="section-header">
+                    <h2>Indicator Effectiveness Analysis</h2>
+                    <p>Correlation between indicators and profitability</p>
+                </div>
+                <div class="indicators-grid" id="indicatorsGrid"></div>
+            </div>
+            
+            <!-- Earnings Timing Tab -->
+            <div id="earnings" class="tab-content">
+                <div class="section-header">
+                    <h2>Earnings Timing Analysis</h2>
+                    <p>Pre vs Post earnings performance patterns</p>
+                </div>
+                <div class="chart-container">
+                    <canvas id="earningsChart"></canvas>
+                </div>
+                <div id="earningsInsights" class="insights-container"></div>
+            </div>
+            
+            <!-- Strategy Performance Tab -->
+            <div id="strategies" class="tab-content">
+                <div class="section-header">
+                    <h2>Strategy Performance Comparison</h2>
+                    <p>Performance metrics across different strategies</p>
+                </div>
+                <div class="chart-container">
+                    <canvas id="strategyChart"></canvas>
+                </div>
+                <div id="strategyTable" class="data-table-container"></div>
+            </div>
+            
+            <!-- Top Plays Tab -->
+            <div id="topplays" class="tab-content">
+                <div class="section-header">
+                    <h2>Top 20 Winning Plays</h2>
+                    <p>Best performing trades with key indicators</p>
+                </div>
+                <div id="topPlaysTable" class="data-table-container"></div>
+            </div>
+        </main>
+    </div>
+    
+    <script src="src/config.js"></script>
+    <script src="src/app.js"></script>
+</body>
+</html>
