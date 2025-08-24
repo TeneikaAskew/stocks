@@ -784,9 +784,9 @@ function EW_createReportSheet(ss, insights, allTrades) {
   const profitRanges = reportSheet.getDataRange();
   const rule = SpreadsheetApp.newConditionalFormatRule()
     .whenTextContains('%')
-    .setGradientMinpoint('#FF0000', SpreadsheetApp.InterpolationType.NUMBER, '-5')
-    .setGradientMidpoint('#FFFFFF', SpreadsheetApp.InterpolationType.NUMBER, '0')
-    .setGradientMaxpoint('#00FF00', SpreadsheetApp.InterpolationType.NUMBER, '5')
+    .setGradientMinpoint('#FF0000', SpreadsheetApp.InterpolationType.NUMBER, -5)
+    .setGradientMidpoint('#FFFFFF', SpreadsheetApp.InterpolationType.NUMBER, 0)
+    .setGradientMaxpoint('#00FF00', SpreadsheetApp.InterpolationType.NUMBER, 5)
     .setRanges([profitRanges])
     .build();
   
