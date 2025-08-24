@@ -104,23 +104,24 @@ function EW_buildStrikeHitArray(existingArray = [], dayIndex, strategy, strike, 
   }
   
   if (strikeHit) {
-    // Calculate percentage move when strike was hit
+    // Calculate percentage move when strike was hit (as decimal)
     const strategyUpper = strategy.toUpperCase();
     const isBullish = strategyUpper.includes('BULL') || strategyUpper.includes('LONG CALL');
     const isBearish = strategyUpper.includes('BEAR') || strategyUpper.includes('LONG PUT');
     
     let percentMove = null;
     if (isBullish) {
-      // For bullish: use high price vs strike
-      percentMove = ((dayHigh - strike) / strike * 100).toFixed(2);
+      // For bullish: (high - strike) / strike
+      percentMove = ((dayHigh - strike) / strike).toFixed(6);
     } else if (isBearish) {
-      // For bearish: use low price vs strike
-      percentMove = ((strike - dayLow) / strike * 100).toFixed(2);
+      // For bearish: (strike - low) / strike
+      percentMove = ((strike - dayLow) / strike).toFixed(6);
     }
     
-    array[dayIndex] = percentMove || "HIT";
+    array[dayIndex] = percentMove;
   } else {
-    array[dayIndex] = "NO";
+    // Store null when strike not hit
+    array[dayIndex] = null;
   }
   
   return array;
@@ -208,12 +209,12 @@ function EW_calculateMaxFavorableForDay(strategy, strike, dayHigh, dayLow) {
   
   if (strategyUpper.includes('LONG CALL') || strategyUpper.includes('BULL')) {
     // Favorable is when price goes up - use day high
-    return ((dayHigh - strike) / strike * 100).toFixed(2);
+    return ((dayHigh - strike) / strike).toFixed(6);
   }
   
   if (strategyUpper.includes('LONG PUT') || strategyUpper.includes('BEAR')) {
     // Favorable is when price goes down - use day low
-    return dayLow ? ((strike - dayLow) / strike * 100).toFixed(2) : null;
+    return dayLow ? ((strike - dayLow) / strike).toFixed(6) : null;
   }
   
   return null;
@@ -234,12 +235,12 @@ function EW_calculateMinUnfavorableForDay(strategy, strike, dayHigh, dayLow) {
   
   if (strategyUpper.includes('LONG CALL') || strategyUpper.includes('BULL')) {
     // Unfavorable is when price goes down - use day low
-    return ((strike - dayLow) / strike * 100).toFixed(2);
+    return ((strike - dayLow) / strike).toFixed(6);
   }
   
   if (strategyUpper.includes('LONG PUT') || strategyUpper.includes('BEAR')) {
     // Unfavorable is when price goes up - use day high
-    return dayHigh ? ((dayHigh - strike) / strike * 100).toFixed(2) : null;
+    return dayHigh ? ((dayHigh - strike) / strike).toFixed(6) : null;
   }
   
   return null;
@@ -368,8 +369,8 @@ function EW_determineWinLoss(strikeHitArray, isExpired) {
     return null;
   }
   
-  // Check if any day had a hit (not "NO")
-  const hasHit = strikeHitArray.some(value => value && value !== "NO" && value !== null);
+  // Check if any day had a hit (has a percentage value)
+  const hasHit = strikeHitArray.some(value => value !== null && value !== undefined && value !== "");
   
   return hasHit ? "WIN" : "LOSS";
 }
