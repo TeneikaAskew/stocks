@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <base target="_top">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Success Report Dashboard</title>
+    
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --success-color: #10b981;
+            --danger-color: #ef4444;
+            --warning-color: #f59e0b;
+            --bg-primary: #ffffff;
+            --bg-secondary: #f3f4f6;
+            --text-primary: #111827;
+            --text-secondary: #6b7280;
+            --border-color: #e5e7eb;
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        .app-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: var(--bg-primary);
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            color: var(--text-primary);
+        }
+
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #1d4ed8;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .last-updated {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .nav-tabs {
+            background: var(--bg-primary);
+            padding: 8px;
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            margin-bottom: 24px;
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+        }
+
+        .tab-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+
+        .tab-btn:hover {
+            background: var(--bg-secondary);
+        }
+
+        .tab-btn.active {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .content {
+            background: var(--bg-primary);
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            min-height: 600px;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        .error {
+            text-align: center;
+            padding: 40px;
+            color: var(--danger-color);
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 20px;
+            margin-bottom: 32px;
+        }
+
+        .metric-card {
+            background: var(--bg-secondary);
+            padding: 24px;
+            border-radius: 12px;
+            text-align: center;
+        }
+
+        .metric-card h3 {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .metric-value {
+            font-size: 36px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .metric-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin-bottom: 32px;
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        .data-table th {
+            background: var(--bg-secondary);
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: var(--text-primary);
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        .data-table td {
+            padding: 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .data-table tr:hover {
+            background: var(--bg-secondary);
+        }
+
+        .indicators-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .indicator-card {
+            background: var(--bg-secondary);
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid transparent;
+        }
+
+        .indicator-card.high {
+            border-left-color: var(--success-color);
+        }
+
+        .indicator-card.medium {
+            border-left-color: var(--warning-color);
+        }
+
+        .indicator-card.low {
+            border-left-color: var(--text-secondary);
+        }
+
+        .indicator-name {
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .indicator-stats {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 12px;
+            font-size: 14px;
+        }
+
+        .insights-container {
+            background: var(--bg-secondary);
+            padding: 24px;
+            border-radius: 8px;
+            margin-top: 24px;
+        }
+
+        .insight-item {
+            display: flex;
+            align-items: flex-start;
+            margin-bottom: 16px;
+        }
+
+        .insight-icon {
+            margin-right: 12px;
+            flex-shrink: 0;
+        }
+
+        .text-success { color: var(--success-color); }
+        .text-danger { color: var(--danger-color); }
+        .text-warning { color: var(--warning-color); }
+        .text-muted { color: var(--text-secondary); }
+
+        .section-header {
+            margin-bottom: 24px;
+        }
+
+        .section-header h2 {
+            font-size: 24px;
+            margin-bottom: 8px;
+        }
+
+        .section-header p {
+            color: var(--text-secondary);
+        }
+
+        @media (max-width: 768px) {
+            .header {
+                flex-direction: column;
+                text-align: center;
+            }
+            
+            .metrics-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .chart-container {
+                height: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <header class="header">
+            <h1>Trading Success Report Dashboard</h1>
+            <div class="header-controls">
+                <button id="refreshData" class="btn btn-primary" onclick="refreshData()">Refresh Data</button>
+                <span id="lastUpdated" class="last-updated">Loading...</span>
+            </div>
+        </header>
+        
+        <nav class="nav-tabs">
+            <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
+            <button class="tab-btn" data-tab="multiday" onclick="switchTab('multiday')">Multi-Day Analysis</button>
+            <button class="tab-btn" data-tab="indicators" onclick="switchTab('indicators')">Indicator Effectiveness</button>
+            <button class="tab-btn" data-tab="earnings" onclick="switchTab('earnings')">Earnings Timing</button>
+            <button class="tab-btn" data-tab="strategies" onclick="switchTab('strategies')">Strategy Performance</button>
+            <button class="tab-btn" data-tab="topplays" onclick="switchTab('topplays')">Top Plays</button>
+        </nav>
+        
+        <main class="content">
+            <div id="loading" class="loading">Loading report data...</div>
+            <div id="error" class="error" style="display: none;"></div>
+            
+            <!-- Overview Tab -->
+            <div id="overview" class="tab-content">
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <h3>Hit Rate</h3>
+                        <div class="metric-value" id="hitRate">--</div>
+                        <div class="metric-label">of strikes hit</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Profitable Rate</h3>
+                        <div class="metric-value" id="profitableRate">--</div>
+                        <div class="metric-label">profitable trades</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Avg Risk/Reward</h3>
+                        <div class="metric-value" id="avgRiskReward">--</div>
+                        <div class="metric-label">risk/reward ratio</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Avg Days to Hit</h3>
+                        <div class="metric-value" id="avgDaysToHit">--</div>
+                        <div class="metric-label">days</div>
+                    </div>
+                </div>
+                
+                <div class="chart-container">
+                    <canvas id="overviewChart"></canvas>
+                </div>
+            </div>
+            
+            <!-- Multi-Day Analysis Tab -->
+            <div id="multiday" class="tab-content">
+                <div class="section-header">
+                    <h2>Multi-Day Profitability Analysis</h2>
+                    <p>Trades that remained profitable for consecutive days</p>
+                </div>
+                <div class="chart-container">
+                    <canvas id="multiDayChart"></canvas>
+                </div>
+                <div id="multiDayTable" class="data-table-container"></div>
+            </div>
+            
+            <!-- Indicator Effectiveness Tab -->
+            <div id="indicators" class="tab-content">
+                <div class="section-header">
+                    <h2>Indicator Effectiveness Analysis</h2>
+                    <p>Correlation between indicators and profitability</p>
+                </div>
+                <div class="indicators-grid" id="indicatorsGrid"></div>
+            </div>
+            
+            <!-- Earnings Timing Tab -->
+            <div id="earnings" class="tab-content">
+                <div class="section-header">
+                    <h2>Earnings Timing Analysis</h2>
+                    <p>Pre vs Post earnings performance patterns</p>
+                </div>
+                <div class="chart-container">
+                    <canvas id="earningsChart"></canvas>
+                </div>
+                <div id="earningsInsights" class="insights-container"></div>
+            </div>
+            
+            <!-- Strategy Performance Tab -->
+            <div id="strategies" class="tab-content">
+                <div class="section-header">
+                    <h2>Strategy Performance Comparison</h2>
+                    <p>Performance metrics across different strategies</p>
+                </div>
+                <div class="chart-container">
+                    <canvas id="strategyChart"></canvas>
+                </div>
+                <div id="strategyTable" class="data-table-container"></div>
+            </div>
+            
+            <!-- Top Plays Tab -->
+            <div id="topplays" class="tab-content">
+                <div class="section-header">
+                    <h2>Top 20 Winning Plays</h2>
+                    <p>Best performing trades with key indicators</p>
+                </div>
+                <div id="topPlaysTable" class="data-table-container"></div>
+            </div>
+        </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <script>
+        // Global variables
+        let reportData = null;
+        let charts = {};
+        
+        // Initialize on load
+        window.onload = function() {
+            loadData();
+        };
+        
+        // Load data from Apps Script backend
+        function loadData() {
+            showLoading(true);
+            google.script.run
+                .withSuccessHandler(handleDataSuccess)
+                .withFailureHandler(handleDataError)
+                .getSuccessReportDataForWeb();
+        }
+        
+        // Refresh data
+        function refreshData() {
+            const btn = document.getElementById('refreshData');
+            btn.disabled = true;
+            btn.textContent = 'Refreshing...';
+            
+            showLoading(true);
+            google.script.run
+                .withSuccessHandler(function(result) {
+                    if (result.success) {
+                        handleDataSuccess(result.data);
+                    } else {
+                        handleDataError(result.error);
+                    }
+                    btn.disabled = false;
+                    btn.textContent = 'Refresh Data';
+                })
+                .withFailureHandler(function(error) {
+                    handleDataError(error);
+                    btn.disabled = false;
+                    btn.textContent = 'Refresh Data';
+                })
+                .refreshAndGetData();
+        }
+        
+        // Handle successful data load
+        function handleDataSuccess(data) {
+            reportData = data;
+            showLoading(false);
+            updateLastUpdated();
+            renderAllTabs();
+            
+            // Show overview tab by default
+            switchTab('overview');
+        }
+        
+        // Handle data load error
+        function handleDataError(error) {
+            showLoading(false);
+            showError('Failed to load report data: ' + error);
+        }
+        
+        // Show/hide loading state
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+            document.getElementById('error').style.display = 'none';
+            
+            // Hide all tab content when loading
+            if (show) {
+                document.querySelectorAll('.tab-content').forEach(tab => {
+                    tab.classList.remove('active');
+                });
+            }
+        }
+        
+        // Show error message
+        function showError(message) {
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
+        }
+        
+        // Update last updated timestamp
+        function updateLastUpdated() {
+            const lastUpdated = document.getElementById('lastUpdated');
+            if (reportData && reportData.lastUpdated) {
+                const date = new Date(reportData.lastUpdated);
+                lastUpdated.textContent = 'Last updated: ' + date.toLocaleString();
+            }
+        }
+        
+        // Switch between tabs
+        function switchTab(tabId) {
+            // Update active tab button
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.tab === tabId);
+            });
+            
+            // Update active tab content
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.toggle('active', content.id === tabId);
+            });
+            
+            // Re-render charts when switching tabs (to handle canvas sizing)
+            if (reportData) {
+                setTimeout(() => {
+                    switch(tabId) {
+                        case 'overview':
+                            renderOverview();
+                            break;
+                        case 'multiday':
+                            renderMultiDay();
+                            break;
+                        case 'earnings':
+                            renderEarnings();
+                            break;
+                        case 'strategies':
+                            renderStrategies();
+                            break;
+                    }
+                }, 100);
+            }
+        }
+        
+        // Render all tabs
+        function renderAllTabs() {
+            if (!reportData) return;
+            
+            renderOverview();
+            renderMultiDay();
+            renderIndicators();
+            renderEarnings();
+            renderStrategies();
+            renderTopPlays();
+        }
+        
+        // Render overview tab
+        function renderOverview() {
+            const overview = reportData.overview;
+            
+            // Update metric cards
+            document.getElementById('hitRate').textContent = (overview.hitRate * 100).toFixed(1) + '%';
+            document.getElementById('profitableRate').textContent = (overview.profitableRate * 100).toFixed(1) + '%';
+            document.getElementById('avgRiskReward').textContent = overview.avgRiskReward.toFixed(2);
+            document.getElementById('avgDaysToHit').textContent = overview.avgDaysToHit.toFixed(1);
+            
+            // Create overview chart
+            const ctx = document.getElementById('overviewChart').getContext('2d');
+            
+            if (charts.overview) {
+                charts.overview.destroy();
+            }
+            
+            charts.overview = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['Total Trades', 'Strikes Hit', 'Profitable', 'Multi-Day Winners'],
+                    datasets: [{
+                        label: 'Count',
+                        data: [
+                            overview.totalTrades,
+                            overview.totalHits,
+                            overview.profitableTrades,
+                            overview.multiDayWinners
+                        ],
+                        backgroundColor: ['#3b82f6', '#10b981', '#22c55e', '#f59e0b']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Render multi-day analysis
+        function renderMultiDay() {
+            const multiDay = reportData.multiDayProfitability;
+            
+            // Create chart
+            const ctx = document.getElementById('multiDayChart').getContext('2d');
+            
+            if (charts.multiDay) {
+                charts.multiDay.destroy();
+            }
+            
+            charts.multiDay = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: multiDay.profitabilityByDay.map(d => 'Day ' + d.day),
+                    datasets: [{
+                        label: 'Profitability Rate',
+                        data: multiDay.profitabilityByDay.map(d => d.rate * 100),
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {
+                                callback: function(value) {
+                                    return value + '%';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Create table
+            let tableHtml = '<table class="data-table"><thead><tr>' +
+                '<th>Days Profitable</th><th>Trade Count</th><th>Success Rate</th><th>Avg Profit</th>' +
+                '</tr></thead><tbody>';
+            
+            multiDay.sustainedWinners.forEach(row => {
+                tableHtml += '<tr>' +
+                    '<td>' + row.days + '+ days</td>' +
+                    '<td>' + row.count + '</td>' +
+                    '<td class="text-success">' + (row.successRate * 100).toFixed(1) + '%</td>' +
+                    '<td class="' + (row.avgProfit >= 0 ? 'text-success' : 'text-danger') + '">' +
+                    row.avgProfit.toFixed(2) + '%</td>' +
+                    '</tr>';
+            });
+            
+            tableHtml += '</tbody></table>';
+            document.getElementById('multiDayTable').innerHTML = tableHtml;
+        }
+        
+        // Render indicators
+        function renderIndicators() {
+            const indicators = reportData.indicatorEffectiveness;
+            
+            let gridHtml = '';
+            indicators.forEach(ind => {
+                const significanceClass = 
+                    ind.correlation > 0.3 ? 'high' : 
+                    ind.correlation > 0.15 ? 'medium' : 'low';
+                
+                gridHtml += '<div class="indicator-card ' + significanceClass + '">' +
+                    '<div class="indicator-name">' + ind.name + '</div>' +
+                    '<div>Correlation: ' + ind.correlation.toFixed(3) + '</div>' +
+                    '<div>Profitable Range: ' + ind.profitableRange + '</div>' +
+                    '<div class="indicator-stats">' +
+                    '<span>Hit Rate: ' + (ind.hitRate * 100).toFixed(1) + '%</span>' +
+                    '<span class="' + (ind.avgProfit >= 0 ? 'text-success' : 'text-danger') + '">' +
+                    'Avg: ' + ind.avgProfit.toFixed(2) + '%</span>' +
+                    '</div></div>';
+            });
+            
+            document.getElementById('indicatorsGrid').innerHTML = gridHtml;
+        }
+        
+        // Render earnings timing
+        function renderEarnings() {
+            const earnings = reportData.earningsTiming;
+            
+            // Create chart
+            const ctx = document.getElementById('earningsChart').getContext('2d');
+            
+            if (charts.earnings) {
+                charts.earnings.destroy();
+            }
+            
+            charts.earnings = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['Pre-Earnings', 'Post-Earnings'],
+                    datasets: [{
+                        label: 'Hit Rate %',
+                        data: [
+                            earnings.preEarnings.hitRate * 100,
+                            earnings.postEarnings.hitRate * 100
+                        ],
+                        backgroundColor: ['#3b82f6', '#10b981']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {
+                                callback: function(value) {
+                                    return value + '%';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Render insights
+            const insightsHtml = 
+                '<div class="insight-item">' +
+                '<span class="insight-icon">📊</span>' +
+                '<div><strong>Pre-Earnings Performance:</strong> ' +
+                (earnings.preEarnings.hitRate > earnings.postEarnings.hitRate ? 
+                    'Higher hit rate before earnings announcements' : 
+                    'Lower hit rate before earnings') +
+                '</div></div>' +
+                '<div class="insight-item">' +
+                '<span class="insight-icon">⏱️</span>' +
+                '<div><strong>Optimal Entry:</strong> ' +
+                earnings.optimalDaysBeforeEarnings + ' days before earnings</div>' +
+                '</div>' +
+                '<div class="insight-item">' +
+                '<span class="insight-icon">💡</span>' +
+                '<div><strong>Recommendation:</strong> ' +
+                earnings.recommendation + '</div>' +
+                '</div>';
+            
+            document.getElementById('earningsInsights').innerHTML = insightsHtml;
+        }
+        
+        // Render strategy performance
+        function renderStrategies() {
+            const strategies = reportData.strategyPerformance;
+            
+            // Create chart
+            const ctx = document.getElementById('strategyChart').getContext('2d');
+            
+            if (charts.strategy) {
+                charts.strategy.destroy();
+            }
+            
+            charts.strategy = new Chart(ctx, {
+                type: 'radar',
+                data: {
+                    labels: strategies.map(s => s.strategy),
+                    datasets: [{
+                        label: 'Hit Rate %',
+                        data: strategies.map(s => s.hitRate * 100),
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.2)'
+                    }, {
+                        label: 'Profit Factor',
+                        data: strategies.map(s => s.profitFactor * 20),
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.2)'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        r: {
+                            beginAtZero: true,
+                            max: 100
+                        }
+                    }
+                }
+            });
+            
+            // Create table
+            let tableHtml = '<table class="data-table"><thead><tr>' +
+                '<th>Strategy</th><th>Trades</th><th>Hit Rate</th><th>Profit Factor</th><th>Avg Days to Hit</th>' +
+                '</tr></thead><tbody>';
+            
+            strategies.forEach(row => {
+                tableHtml += '<tr>' +
+                    '<td>' + row.strategy + '</td>' +
+                    '<td>' + row.tradeCount + '</td>' +
+                    '<td class="text-success">' + (row.hitRate * 100).toFixed(1) + '%</td>' +
+                    '<td class="' + (row.profitFactor >= 1 ? 'text-success' : 'text-danger') + '">' +
+                    row.profitFactor.toFixed(2) + '</td>' +
+                    '<td>' + row.avgDaysToHit.toFixed(1) + '</td>' +
+                    '</tr>';
+            });
+            
+            tableHtml += '</tbody></table>';
+            document.getElementById('strategyTable').innerHTML = tableHtml;
+        }
+        
+        // Render top plays
+        function renderTopPlays() {
+            const topPlays = reportData.topPlays;
+            
+            let tableHtml = '<table class="data-table"><thead><tr>' +
+                '<th>Symbol</th><th>Entry Date</th><th>Strategy</th><th>Max Profit</th>' +
+                '<th>Days to Hit</th><th>RSI</th><th>Price vs SMA20</th><th>RVOL</th>' +
+                '</tr></thead><tbody>';
+            
+            topPlays.forEach(play => {
+                const entryDate = new Date(play.entryDate).toLocaleDateString();
+                tableHtml += '<tr>' +
+                    '<td><strong>' + play.symbol + '</strong></td>' +
+                    '<td>' + entryDate + '</td>' +
+                    '<td>' + play.strategy + '</td>' +
+                    '<td class="text-success">' + play.maxProfit.toFixed(2) + '%</td>' +
+                    '<td>' + play.daysToHit + '</td>' +
+                    '<td>' + (play.rsi ? play.rsi.toFixed(1) : '-') + '</td>' +
+                    '<td class="' + (play.priceVsSMA20 >= 0 ? 'text-success' : 'text-danger') + '">' +
+                    (play.priceVsSMA20 ? play.priceVsSMA20.toFixed(2) + '%' : '-') + '</td>' +
+                    '<td>' + (play.rvol ? play.rvol.toFixed(2) : '-') + '</td>' +
+                    '</tr>';
+            });
+            
+            tableHtml += '</tbody></table>';
+            document.getElementById('topPlaysTable').innerHTML = tableHtml;
+        }
+    </script>
+</body>
+</html>
