@@ -18,6 +18,29 @@
  */
 
 /**
+ * Helper function to format dates for report display
+ */
+function EW_formatDateForReport(dateValue) {
+  if (!dateValue) return 'N/A';
+  
+  try {
+    if (dateValue instanceof Date) {
+      return dateValue.toISOString().split('T')[0]; // YYYY-MM-DD format
+    } else if (typeof dateValue === 'string') {
+      // If already a string, try to parse and reformat
+      const date = new Date(dateValue);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString().split('T')[0];
+      }
+      return dateValue; // Return as-is if can't parse
+    }
+    return 'N/A';
+  } catch (e) {
+    return 'N/A';
+  }
+}
+
+/**
  * Main function to generate comprehensive success report
  * Creates a new sheet with deep insights and analysis
  */
@@ -84,6 +107,22 @@ function EW_updateSuccessReport() {
 }
 
 /**
+ * Format date for display in reports
+ * @param {Date|string} date - The date to format
+ * @return {string} Formatted date string or 'N/A'
+ */
+function EW_formatDateForReport(date) {
+  if (!date) return 'N/A';
+  try {
+    const d = new Date(date);
+    if (isNaN(d.getTime())) return 'N/A';
+    return d.toLocaleDateString();
+  } catch (e) {
+    return 'N/A';
+  }
+}
+
+/**
  * Extract and parse all trade data from a sheet
  */
 function EW_extractTradeData(sheet, strategy) {
@@ -111,7 +150,7 @@ function EW_extractTradeData(sheet, strategy) {
         
         // Dates
         nextEPSDate: row[hdrMap.nextEPSDateCol - 1],
-        releaseTime: row[hdrMap.releaseTimeCol - 1] || 0,
+        releaseTime: parseFloat(row[hdrMap.releaseTimeCol - 1]) || 0,
         hitDate: row[hdrMap.hitDateCol - 1],
         firstHitDate: row[hdrMap.firstHitDateCol - 1],
         
@@ -154,7 +193,13 @@ function EW_extractTradeData(sheet, strategy) {
       };
       
       // Calculate derived fields
-      trade.wasHit = trade.strikeHit.some(hit => hit !== "NO" && hit !== null);
+      // Check for hits - Strike_Hit contains decimal percentage values when hit, null when not hit
+      trade.wasHit = trade.strikeHit && trade.strikeHit.length > 0 && 
+        trade.strikeHit.some(hit => {
+          // Hit is a decimal percentage value, null means not hit
+          return hit !== null && hit !== undefined && hit !== "" && !isNaN(parseFloat(hit));
+        });
+      
       trade.maxFavorableValue = Math.max(...trade.maxFavorable.filter(v => v !== null).map(v => parseFloat(v) || 0));
       trade.maxUnfavorableValue = Math.max(...trade.minUnfavorable.filter(v => v !== null).map(v => parseFloat(v) || 0));
       trade.profitableDays = trade.maxFavorable.filter(v => v !== null && parseFloat(v) > 0).length;
@@ -164,6 +209,12 @@ function EW_extractTradeData(sheet, strategy) {
         const hit = new Date(trade.firstHitDate);
         const run = new Date(trade.runDate);
         trade.daysToHit = Math.floor((hit - run) / (1000 * 60 * 60 * 24));
+      } else if (trade.wasHit && trade.strikeHit) {
+        // Alternative: find first day with a hit percentage in Strike_Hit array
+        const firstHitIndex = trade.strikeHit.findIndex(pct => pct !== null && pct !== undefined && pct !== "");
+        if (firstHitIndex !== -1) {
+          trade.daysToHit = firstHitIndex; // Day 0 = same day, Day 1 = next day, etc.
+        }
       }
       
       trades.push(trade);
@@ -171,6 +222,10 @@ function EW_extractTradeData(sheet, strategy) {
       console.error(`Error parsing trade at row ${idx + 2}: ${e.message}`);
     }
   });
+  
+  // Debug logging for hit rates
+  const hitCount = trades.filter(t => t.wasHit).length;
+  console.log(`Strategy: ${strategy}, Total trades: ${trades.length}, Hit trades: ${hitCount}, Hit rate: ${(hitCount/trades.length*100).toFixed(1)}%`);
   
   return trades;
 }
@@ -185,8 +240,8 @@ function EW_analyzeOverview(trades) {
   // A trade is profitable if it was hit AND has positive net profit
   const profitableTrades = trades.filter(t => {
     if (!t.wasHit) return false;
-    // Find the first day it was hit
-    const hitIndex = t.strikeHit.findIndex(hit => hit !== null && hit !== "NO" && parseFloat(hit) > 0);
+    // Find the first day it was hit (when we have a percentage value)
+    const hitIndex = t.strikeHit.findIndex(hit => hit !== null && hit !== undefined && hit !== "");
     if (hitIndex === -1) return false;
     // Compare favorable vs unfavorable at that day
     const favorable = parseFloat(t.maxFavorable[hitIndex]) || 0;
@@ -203,7 +258,7 @@ function EW_analyzeOverview(trades) {
     const strategyHits = strategyTrades.filter(t => t.wasHit).length;
     const strategyProfitable = strategyTrades.filter(t => {
       if (!t.wasHit) return false;
-      const hitIndex = t.strikeHit.findIndex(hit => hit !== null && hit !== "NO" && parseFloat(hit) > 0);
+      const hitIndex = t.strikeHit.findIndex(hit => hit !== null && hit !== undefined && hit !== "");
       if (hitIndex === -1) return false;
       const favorable = parseFloat(t.maxFavorable[hitIndex]) || 0;
       const unfavorable = parseFloat(t.minUnfavorable[hitIndex]) || 0;
@@ -658,10 +713,10 @@ function EW_analyzeStrategyPerformance(trades) {
  * Identify top performing plays
  */
 function EW_identifyTopPlays(trades) {
-  // Filter for successful trades - using decimal values so > 0.05 for 5%
+  // Filter for successful trades - values are stored as decimals so > 0.05 for 5%
   const successfulTrades = trades.filter(t => {
     if (!t.wasHit) return false;
-    // Check if any day had > 5% profit
+    // Check if any day had > 5% profit (values stored as decimals)
     return t.maxFavorable.some(v => v !== null && parseFloat(v) > 0.05);
   });
   
@@ -679,19 +734,43 @@ function EW_identifyTopPlays(trades) {
       }
     });
     
+    // Get the strike price
+    const strikePrice = trade.strike > 0 ? parseFloat(trade.strike).toFixed(2) : 
+                       (trade.longStrike > 0 ? parseFloat(trade.longStrike).toFixed(2) : 'N/A');
+    
+    // Get the hit price from the actual day price data
+    let hitPrice = 'N/A';
+    if (trade.strikeHit && trade.strikeHit.length > 0) {
+      // Find the first day where strike was hit
+      const hitDayIndex = trade.strikeHit.findIndex(val => val !== null && val !== undefined && val !== "");
+      
+      if (hitDayIndex !== -1) {
+        // Get the price from the corresponding day check
+        if (trade.dayChecks && trade.dayChecks[hitDayIndex]) {
+          const dayPrice = parseFloat(trade.dayChecks[hitDayIndex]);
+          if (!isNaN(dayPrice) && dayPrice > 0) {
+            hitPrice = dayPrice.toFixed(2);
+          }
+        }
+      }
+    }
+    
     return {
-      ticker: trade.ticker,
-      strategy: trade.strategy,
-      entryDate: trade.runDate,
-      strike: trade.strike > 0 ? trade.strike : (trade.longStrike > 0 ? trade.longStrike : 'N/A'),
-      maxProfit: (trade.maxFavorableValue * 100).toFixed(2) + '%',
-      daysToHit: trade.daysToHit || 'N/A',
-      profitableDays: trade.profitableDays,
-      riskReward: trade.riskReward ? trade.riskReward.toFixed(2) : 'N/A',
+      ticker: trade.ticker || 'N/A',
+      strategy: trade.strategy || 'N/A',
+      entryDate: EW_formatDateForReport(trade.runDate),
+      strike: strikePrice,
+      hitPrice: hitPrice,
+      strikeAndHit: `${strikePrice} → ${hitPrice}`, // Combined display
+      maxProfit: trade.maxFavorableValue ? (trade.maxFavorableValue * 100).toFixed(2) + '%' : 'N/A',
+      daysToHit: trade.daysToHit !== undefined && trade.daysToHit !== null ? trade.daysToHit : 'N/A',
+      profitableDays: trade.profitableDays || 0,
+      riskReward: trade.riskReward && !isNaN(trade.riskReward) ? trade.riskReward.toFixed(2) : 'N/A',
       indicators: indicatorSnapshot,
-      multiDayProfile: trade.maxFavorable.map((v, i) => 
-        v !== null ? `D${i}:${(parseFloat(v) * 100).toFixed(1)}%` : null
-      ).filter(v => v !== null).join(', ')
+      multiDayProfile: trade.maxFavorable && trade.maxFavorable.length > 0 ? 
+        trade.maxFavorable.map((v, i) => 
+          v !== null && !isNaN(parseFloat(v)) ? `D${i}:${(parseFloat(v) * 100).toFixed(1)}%` : null
+        ).filter(v => v !== null).join(', ') : 'N/A'
     };
   });
   
@@ -949,14 +1028,20 @@ function EW_createReportSheet(ss, insights, allTrades) {
   reportSheet.getRange(currentRow, 1).setValue('TOP 20 WINNING PLAYS').setFontSize(14).setFontWeight('bold');
   currentRow++;
   
-  const topHeaders = ['Ticker', 'Strategy', 'Entry Date', 'Strike', 'Max Profit', 'Days to Hit', 'Risk/Reward', 'Multi-Day Profile'];
+  const topHeaders = ['Ticker', 'Strategy', 'Entry Date', 'Strike → Hit', 'Max Profit', 'Days to Hit', 'Risk/Reward', 'Multi-Day Profile'];
   reportSheet.getRange(currentRow, 1, 1, topHeaders.length).setValues([topHeaders]).setFontWeight('bold');
   currentRow++;
   
   insights.topPlays.forEach(play => {
     reportSheet.getRange(currentRow, 1, 1, 8).setValues([[
-      play.ticker, play.strategy, play.entryDate, play.strike,
-      play.maxProfit, play.daysToHit, play.riskReward, play.multiDayProfile
+      play.ticker || '', 
+      play.strategy || '', 
+      play.entryDate || 'N/A', 
+      play.strikeAndHit || 'N/A',
+      play.maxProfit || 'N/A', 
+      play.daysToHit !== undefined && play.daysToHit !== null ? play.daysToHit : 'N/A', 
+      play.riskReward || 'N/A', 
+      play.multiDayProfile || 'N/A'
     ]]);
     currentRow++;
   });
@@ -1084,16 +1169,23 @@ function EW_showTopWinningPlays() {
   sheet.getRange(1, 2).setValue(new Date().toLocaleString());
   
   // Headers
-  const headers = ['Rank', 'Ticker', 'Strategy', 'Entry Date', 'Strike', 'Max Profit', 
+  const headers = ['Rank', 'Ticker', 'Strategy', 'Entry Date', 'Strike → Hit', 'Max Profit', 
                    'Days to Hit', 'Profitable Days', 'Risk/Reward', 'Multi-Day Profile'];
   sheet.getRange(3, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
   
   // Data
   topPlays.forEach((play, idx) => {
     sheet.getRange(idx + 4, 1, 1, 10).setValues([[
-      idx + 1, play.ticker, play.strategy, play.entryDate, play.strike,
-      play.maxProfit, play.daysToHit, play.profitableDays, play.riskReward,
-      play.multiDayProfile
+      idx + 1, 
+      play.ticker || '', 
+      play.strategy || '', 
+      play.entryDate || 'N/A', 
+      play.strikeAndHit || 'N/A',
+      play.maxProfit || 'N/A', 
+      play.daysToHit !== undefined && play.daysToHit !== null ? play.daysToHit : 'N/A', 
+      play.profitableDays !== undefined && play.profitableDays !== null ? play.profitableDays : 0, 
+      play.riskReward || 'N/A',
+      play.multiDayProfile || 'N/A'
     ]]);
   });
   
@@ -1292,7 +1384,8 @@ function EW_showEarningsTimingReport() {
     .forEach(trade => {
       sheet.getRange(row, 1, 1, 5).setValues([[
         trade.ticker, trade.strategy, trade.daysToEarnings,
-        trade.daysToHit, trade.maxProfit.toFixed(2) + '%'
+        trade.daysToHit !== undefined && trade.daysToHit !== null ? trade.daysToHit : 'N/A', 
+        (trade.maxProfit * 100).toFixed(2) + '%'
       ]]);
       row++;
     });
@@ -1311,7 +1404,8 @@ function EW_showEarningsTimingReport() {
     .forEach(trade => {
       sheet.getRange(row, 1, 1, 5).setValues([[
         trade.ticker, trade.strategy, trade.daysToEarnings,
-        trade.daysToHit, trade.maxProfit.toFixed(2) + '%'
+        trade.daysToHit !== undefined && trade.daysToHit !== null ? trade.daysToHit : 'N/A', 
+        (trade.maxProfit * 100).toFixed(2) + '%'
       ]]);
       row++;
     });
