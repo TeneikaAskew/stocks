@@ -454,15 +454,17 @@ function EW_createEarningsSheet(ss, earnings) {
   
   // Add performance by days to earnings
   if (earnings.byDaysToEarnings) {
-    earnings.byDaysToEarnings.forEach(window => {
-      data.push([
-        window.window,
-        window.trades,
-        window.hits,
-        `${(window.hitRate * 100).toFixed(1)}%`,
-        `${window.avgProfit.toFixed(2)}%`,
-        window.avgDaysToHit.toFixed(1)
-      ]);
+    Object.entries(earnings.byDaysToEarnings).forEach(([bucket, bucketData]) => {
+      if (bucketData.trades > 0) {
+        data.push([
+          bucket + ' days',
+          bucketData.trades,
+          bucketData.hits,
+          bucketData.hitRate.toFixed(1) + '%',
+          bucketData.avgProfit > 0 ? (bucketData.avgProfit * 100).toFixed(2) + '%' : 'N/A',
+          bucketData.avgDaysToHit > 0 ? bucketData.avgDaysToHit.toFixed(1) : 'N/A'
+        ]);
+      }
     });
   }
   
