@@ -406,20 +406,40 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
   // Convert to sorted array of days
   const sortedDays = Object.keys(dailyGroups)
     .sort()
-    .map(dateStr => dailyGroups[dateStr]);
+    .map(dateStr => {
+      const dayGroup = dailyGroups[dateStr];
+      // Fix any -Infinity values that weren't replaced due to all null bars
+      if (dayGroup.high === -Infinity) {
+        const validBars = dayGroup.bars.filter(b => b.high !== null);
+        if (validBars.length > 0) {
+          dayGroup.high = Math.max(...validBars.map(b => b.high));
+          EW_trace('BACKFILL', `${ticker} Fixed -Infinity high for ${dateStr}, new high: ${dayGroup.high}`);
+        }
+      }
+      if (dayGroup.low === Infinity) {
+        const validBars = dayGroup.bars.filter(b => b.low !== null);
+        if (validBars.length > 0) {
+          dayGroup.low = Math.min(...validBars.map(b => b.low));
+          EW_trace('BACKFILL', `${ticker} Fixed Infinity low for ${dateStr}, new low: ${dayGroup.low}`);
+        }
+      }
+      return dayGroup;
+    });
     
-  // Debug logging for first day's data
-  if (sortedDays.length > 0 && sortedDays[0].bars.length > 0) {
-    const firstDay = sortedDays[0];
-    const validBars = firstDay.bars.filter(b => b.high !== null);
-    if (validBars.length > 0) {
-      const actualMaxHigh = Math.max(...validBars.map(b => b.high));
-      EW_trace('BACKFILL', `${ticker} First day aggregated high: ${firstDay.high}, actual max from bars: ${actualMaxHigh}`);
-      if (Math.abs(firstDay.high - actualMaxHigh) > 0.001) {
-        EW_trace('BACKFILL', `${ticker} WARNING: Aggregated high (${firstDay.high}) differs from actual max (${actualMaxHigh})`);
+  // Debug logging for each day's aggregated vs actual values
+  sortedDays.forEach((day, idx) => {
+    if (idx < 3) {  // Log first 3 days
+      const validBars = day.bars.filter(b => b.high !== null);
+      if (validBars.length > 0) {
+        const actualMaxHigh = Math.max(...validBars.map(b => b.high));
+        EW_trace('BACKFILL', `${ticker} Day ${idx} (${day.date.toISOString().split('T')[0]}): bars=${day.bars.length}, valid=${validBars.length}, aggregated high=${day.high}, actual max=${actualMaxHigh}`);
+        
+        // Find which bar has the highest value
+        const highestBar = validBars.reduce((max, bar) => bar.high > max.high ? bar : max);
+        EW_trace('BACKFILL', `${ticker} Day ${idx}: Highest bar at ${EW_toEDT(highestBar.date)} with high=${highestBar.high}, volume=${highestBar.volume}`);
       }
     }
-  }
+  });
   
   // Log daily grouping results
   EW_trace('BACKFILL', `${ticker}: Grouped into ${sortedDays.length} trading days`);
@@ -435,12 +455,21 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
   const runDateOnly = new Date(runDate);
   runDateOnly.setHours(0, 0, 0, 0);
   
+  // Also get the date string for more reliable comparison
+  const runDateCompareStr = runDateOnly.toISOString().split('T')[0];
+  
   for (let i = 0; i < sortedDays.length; i++) {
     const dayDateOnly = new Date(sortedDays[i].date);
     dayDateOnly.setHours(0, 0, 0, 0);
+    const dayDateStr = dayDateOnly.toISOString().split('T')[0];
     
-    // Find first trading day on or after run date
-    if (dayDateOnly >= runDateOnly) {
+    // Debug: Log the comparison
+    if (i < 3) {
+      EW_trace('BACKFILL', `${ticker}: Comparing run date ${runDateCompareStr} (${runDateOnly.getTime()}) with day ${i}: ${dayDateStr} (${dayDateOnly.getTime()})`);
+    }
+    
+    // Find first trading day on or after run date - use string comparison for reliability
+    if (dayDateStr >= runDateCompareStr) {
       runDateIndex = i;
       EW_trace('BACKFILL', `${ticker}: Run date ${runDateStr} mapped to trading day ${sortedDays[i].date.toISOString().split('T')[0]} at index ${i}`);
       break;
