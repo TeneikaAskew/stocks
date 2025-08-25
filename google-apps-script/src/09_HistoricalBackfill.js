@@ -177,10 +177,20 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         return;
       }
       
-      // Determine end date (expiration or today, whichever is earlier)
-      const endDate = expDate && expDate < today ? expDate : today;
+      // Adjust run date to market hours for Day 0 first
+      const marketRunDate = EW_adjustToMarketHours(runDate);
+      EW_trace('BACKFILL', `${ticker}: Original run date: ${runDate.toISOString()}, Adjusted to market hours: ${marketRunDate.toISOString()}`);
       
-      EW_trace('BACKFILL', `Processing position: ${ticker} from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (Exp: ${expDateStr || 'none'})`);
+      // Determine end date (expiration or today, whichever is earlier)
+      // But ensure it's at least equal to or after the adjusted market run date
+      let endDate = expDate && expDate < today ? expDate : today;
+      if (endDate < marketRunDate) {
+        endDate = new Date(marketRunDate);
+        endDate.setHours(16, 0, 0, 0); // Set to market close
+        EW_trace('BACKFILL', `${ticker}: Adjusted end date to match market run date: ${endDate.toISOString()}`);
+      }
+      
+      EW_trace('BACKFILL', `Processing position: ${ticker} from ${marketRunDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (Exp: ${expDateStr || 'none'})`);
       EW_trace('BACKFILL', `Raw run date string: "${runDateStr}", Parsed: ${runDate.toISOString()}`);
       
       // Check if runDate is more than 7 days old
@@ -197,10 +207,6 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       // Always try to get minute data first for the last 7 days
       const sevenDaysAgo = new Date(today);
       sevenDaysAgo.setDate(today.getDate() - 7);
-      
-      // Adjust run date to market hours for Day 0
-      const marketRunDate = EW_adjustToMarketHours(runDate);
-      EW_trace('BACKFILL', `${ticker}: Original run date: ${runDate.toISOString()}, Adjusted to market hours: ${marketRunDate.toISOString()}`);
       
       if (marketRunDate >= sevenDaysAgo) {
         // Position is within 7 days, use only minute data
@@ -462,29 +468,24 @@ function EW_adjustToMarketHours(date) {
   const hours = adjusted.getHours();
   const minutes = adjusted.getMinutes();
   
-  // If weekend, move to Monday
-  if (dayOfWeek === 0) { // Sunday
+  // First, handle if the time is after market close (4:00 PM)
+  // This needs to be done BEFORE weekend adjustment
+  if (hours >= 16) {
+    // Move to next day
     adjusted.setDate(adjusted.getDate() + 1);
-    dayOfWeek = 1;
-  } else if (dayOfWeek === 6) { // Saturday
-    adjusted.setDate(adjusted.getDate() + 2);
-    dayOfWeek = 1;
+    adjusted.setHours(9, 30, 0, 0);
+    dayOfWeek = adjusted.getDay();
   }
   
-  // Check if before market open (9:30 AM)
-  if (hours < 9 || (hours === 9 && minutes < 30)) {
-    adjusted.setHours(9, 30, 0, 0);
-  } 
-  // Check if after market close (4:00 PM)
-  else if (hours >= 16) {
-    // Move to next trading day at 9:30 AM
+  // Now handle weekends
+  if (dayOfWeek === 0) { // Sunday
     adjusted.setDate(adjusted.getDate() + 1);
-    dayOfWeek = adjusted.getDay();
-    if (dayOfWeek === 0) { // Sunday
-      adjusted.setDate(adjusted.getDate() + 1);
-    } else if (dayOfWeek === 6) { // Saturday
-      adjusted.setDate(adjusted.getDate() + 2);
-    }
+    adjusted.setHours(9, 30, 0, 0);
+  } else if (dayOfWeek === 6) { // Saturday
+    adjusted.setDate(adjusted.getDate() + 2);
+    adjusted.setHours(9, 30, 0, 0);
+  } else if (hours < 9 || (hours === 9 && minutes < 30)) {
+    // Weekday before market open
     adjusted.setHours(9, 30, 0, 0);
   }
   
@@ -1126,10 +1127,20 @@ function EW_processBackfillPosition(params) {
       return { success: false, reason: 'future_date' };
     }
     
-    // Determine end date (expiration or today, whichever is earlier)
-    const endDate = expDate && expDate < today ? expDate : today;
+    // Adjust run date to market hours for Day 0 first
+    const marketRunDate = EW_adjustToMarketHours(runDate);
+    EW_trace('BACKFILL', `${ticker}: Original run date: ${runDate.toISOString()}, Adjusted to market hours: ${marketRunDate.toISOString()}`);
     
-    EW_trace('BACKFILL', `Processing position: ${ticker} from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (Exp: ${expDateStr || 'none'})`);
+    // Determine end date (expiration or today, whichever is earlier)
+    // But ensure it's at least equal to or after the adjusted market run date
+    let endDate = expDate && expDate < today ? expDate : today;
+    if (endDate < marketRunDate) {
+      endDate = new Date(marketRunDate);
+      endDate.setHours(16, 0, 0, 0); // Set to market close
+      EW_trace('BACKFILL', `${ticker}: Adjusted end date to match market run date: ${endDate.toISOString()}`);
+    }
+    
+    EW_trace('BACKFILL', `Processing position: ${ticker} from ${marketRunDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (Exp: ${expDateStr || 'none'})`);
     EW_trace('BACKFILL', `Raw run date string: "${runDateStr}", Parsed: ${runDate.toISOString()}`);
     
     // Check if runDate is more than 7 days old
@@ -1141,10 +1152,6 @@ function EW_processBackfillPosition(params) {
     // Always try to get minute data first for the last 7 days
     const sevenDaysAgo = new Date(today);
     sevenDaysAgo.setDate(today.getDate() - 7);
-    
-    // Adjust run date to market hours for Day 0
-    const marketRunDate = EW_adjustToMarketHours(runDate);
-    EW_trace('BACKFILL', `${ticker}: Original run date: ${runDate.toISOString()}, Adjusted to market hours: ${marketRunDate.toISOString()}`);
     
     if (marketRunDate >= sevenDaysAgo) {
       // Position is within 7 days, use only minute data
@@ -1757,16 +1764,25 @@ function EW_testHistoricalBackfill() {
       if (daysToExp < 0) {
         console.log('Position is EXPIRED - testing historical backfill');
         
+        // Adjust run date to market hours first
+        const marketRunDate = EW_adjustToMarketHours(runDate);
+        console.log(`Adjusted run date to market hours: ${marketRunDate.toISOString()}`);
+        
         // Determine end date
         const expDate = expDateStr ? new Date(expDateStr) : null;
-        const endDate = expDate && expDate < today ? expDate : today;
+        let endDate = expDate && expDate < today ? expDate : today;
+        if (endDate < marketRunDate) {
+          endDate = new Date(marketRunDate);
+          endDate.setHours(16, 0, 0, 0); // Set to market close
+          console.log(`Adjusted end date to match market run date: ${endDate.toISOString()}`);
+        }
         
-        console.log(`Date range: ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+        console.log(`Date range: ${marketRunDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
         
         // Test Yahoo data fetch
         try {
           console.log('Fetching Yahoo historical data...');
-          const yahooResult = EW_getYahooHistoricalRange(ticker, runDate, endDate, true);
+          const yahooResult = EW_getYahooHistoricalRange(ticker, marketRunDate, endDate, true);
           
           if (yahooResult && yahooResult.data && yahooResult.data.length > 0) {
             console.log(`Retrieved ${yahooResult.data.length} data points`);
