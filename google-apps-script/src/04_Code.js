@@ -700,6 +700,53 @@ function EW_headerMap(headerRow) {
   const breakevenCol    = find(['breakeven','Breakeven']);
   const maxProfitCol    = find(['maxProfit','max profit','Max Profit']);
   const maxLossCol      = find(['maxLoss','max loss','Max Loss']);
+  
+  // API columns that vary by strategy
+  const companyCol      = find(['company','Company']);
+  const lastTradeCol    = find(['lastTrade','last trade','Last Trade']);
+  const bidCol          = find(['bid','Bid']);
+  const askCol          = find(['ask','Ask']);
+  const openInterestCol = find(['openInterest','open interest','Open Interest']);
+  const volumeCol       = find(['volume','Volume']);
+  const nextEPSDateCol  = find(['nextEPSDate','next eps date','Next EPS Date']);
+  const releaseTimeCol  = find(['releaseTime','release time','Release Time']);
+  const lastEPSTimeCol  = find(['lastEPSTime','last eps time','Last EPS Time']);
+  const confirmDateCol  = find(['confirmDate','confirm date','Confirm Date']);
+  const optionDateCol   = find(['optionDate','option date','Option Date']);
+  const scoreCol        = find(['score','Score']);
+  const epsImpactCol    = find(['epsImpact','eps impact','EPS Impact']);
+  const avgEPSMoveCol   = find(['avgEPSMove','avg eps move','Avg EPS Move']);
+  const avgVolumeCol    = find(['avgVolume','avg volume','Avg Volume']);
+  
+  // Covered Call specific
+  const cushionCol      = find(['cushion','Cushion']);
+  const upTargetCol     = find(['upTarget','up target','Up Target']);
+  const callAwayCol     = find(['callAway','call away','Call Away']);
+  const downTargetCol   = find(['downTarget','down target','Down Target']);
+  const callAwayReturnCol = find(['callAwayReturn','call away return','Call Away Return']);
+  const ewRatingCol     = find(['ewRating','ew rating','EW Rating']);
+  const exDivDateCol    = find(['exDivDate','ex div date','Ex Div Date']);
+  const payoutCol       = find(['payout','Payout']);
+  
+  // Bull/Bear Spread specific
+  const maxReturnCol    = find(['maxReturn','max return','Max Return']);
+  const maxRiskCol      = find(['maxRisk','max risk','Max Risk']);
+  const shortBidCol     = find(['shortBid','short bid','Short Bid']);
+  const longAskCol      = find(['longAsk','long ask','Long Ask']);
+  const totRatingsCol   = find(['totRatings','tot ratings','Tot Ratings']);
+  const netRatingsCol   = find(['netRatings','net ratings','Net Ratings']);
+  
+  // Entry indicators (not from API, added by our processing)
+  const entryRSICol     = find(['Entry_RSI']);
+  const entryEMA9Col    = find(['Entry_EMA9']);
+  const entryEMA21Col   = find(['Entry_EMA21']);
+  const entrySMA20Col   = find(['Entry_SMA20']);
+  const entrySMA50Col   = find(['Entry_SMA50']);
+  const entryVWAPCol    = find(['Entry_VWAP']);
+  const entryRVOLCol    = find(['Entry_RVOL']);
+  const entryATRCol     = find(['Entry_ATR']);
+  const entryPriceVsSMA20Col = find(['Entry_PriceVsSMA20']);
+  const entryPriceVsVWAPCol = find(['Entry_PriceVsVWAP']);
 
   return {
     byName, byNorm,
@@ -715,6 +762,18 @@ function EW_headerMap(headerRow) {
     lastUpdateCol, totalHitDaysCol,
     hitRSICol, hitSMA20Col, hitSMA50Col, hitEMA9Col, hitEMA21Col,
     hitVWAPCol, hitRVOLCol, hitATRCol, hitPriceVsSMA20Col, hitPriceVsVWAPCol,
+    // API columns
+    companyCol, lastTradeCol, bidCol, askCol, openInterestCol, volumeCol,
+    nextEPSDateCol, releaseTimeCol, lastEPSTimeCol, confirmDateCol, optionDateCol,
+    scoreCol, epsImpactCol, avgEPSMoveCol, avgVolumeCol,
+    // Covered Call specific
+    cushionCol, upTargetCol, callAwayCol, downTargetCol, callAwayReturnCol,
+    ewRatingCol, exDivDateCol, payoutCol,
+    // Bull/Bear Spread specific
+    maxReturnCol, maxRiskCol, shortBidCol, longAskCol, totRatingsCol, netRatingsCol,
+    // Entry indicators
+    entryRSICol, entryEMA9Col, entryEMA21Col, entrySMA20Col, entrySMA50Col,
+    entryVWAPCol, entryRVOLCol, entryATRCol, entryPriceVsSMA20Col, entryPriceVsVWAPCol,
     width: headerRow.length
   };
 }

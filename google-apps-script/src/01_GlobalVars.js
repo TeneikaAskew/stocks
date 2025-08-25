@@ -105,5 +105,6 @@ const EW_TRIGGER_FUNCTIONS = {
   AUTO_UPDATE: 'EW_autoUpdateTracking',
   DAILY_DATA: 'EW_dailyDataFetch',  // Wrapper for EW_runAll that suppresses UI alerts
   DAILY_REPORT: 'EW_generateSuccessReport',
-  ACTIVE_TRACKING: 'EW_updateActiveStrikeHits'  // 5 PM active position tracking
+  ACTIVE_TRACKING: 'EW_updateActiveStrikeHits', // 5 PM active position tracking
+  REMOVE_EMPTY_ROWS: 'EW_removeEmptyRowsDaily'  // 6 AM daily empty row removal
 };

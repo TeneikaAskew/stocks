@@ -3,7 +3,6 @@
  * Centralized trigger setup, management, and automated execution functions
  */
 
-// ===== TRIGGER SETUP AND MANAGEMENT =====
 
 /**
  * Setup triggers only if they don't already exist (safe initialization)
@@ -83,6 +82,23 @@ function EW_setupTriggersIfMissing() {
       messages.push(`⏭️ Exists: Active position tracking (5 PM ET)`);
       console.log(`Skipped existing trigger: EW_updateActiveStrikeHits`);
     }
+
+      // Check and setup daily empty row removal trigger (6 AM)
+      if (!EW_triggerExists(EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS)) {
+        ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS)
+          .timeBased()
+          .everyDays(1)
+          .atHour(6) // 6 AM
+          .inTimezone('America/New_York')
+          .create();
+        setupCount++;
+        messages.push(`✅ Created: Daily empty row removal (6 AM ET)`);
+        console.log(`Created trigger: ${EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS}`);
+      } else {
+        skippedCount++;
+        messages.push(`⏭️ Exists: Daily empty row removal (6 AM ET)`);
+        console.log(`Skipped existing trigger: ${EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS}`);
+      }
     
     // Ensure success report exists
     EW_ensureSuccessReportExists();
@@ -155,6 +171,14 @@ function EW_setupAutoTracking() {
       .atHour(17) // 5 PM
       .inTimezone('America/New_York')
       .create();
+
+      // Create daily empty row removal trigger (6 AM ET)
+      ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS)
+        .timeBased()
+        .everyDays(1)
+        .atHour(6) // 6 AM
+        .inTimezone('America/New_York')
+        .create();
     
     EW_safeAlert(
       'Auto Tracking Setup Complete',
@@ -224,10 +248,11 @@ function EW_stopAutoTracking() {
     
     triggers.forEach(trigger => {
       let handlerFunction = trigger.getHandlerFunction();
-      if (handlerFunction === EW_TRIGGER_FUNCTIONS.AUTO_UPDATE || 
-          handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_REPORT ||
-          handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_DATA ||
-          handlerFunction === EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING) {
+    if (handlerFunction === EW_TRIGGER_FUNCTIONS.AUTO_UPDATE || 
+      handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_REPORT ||
+      handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_DATA ||
+      handlerFunction === EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING ||
+      handlerFunction === EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS) {
         ScriptApp.deleteTrigger(trigger);
         deletedCount++;
         console.log(`Deleted trigger: ${handlerFunction}`);
@@ -549,7 +574,8 @@ function EW_validateTriggers() {
       EW_TRIGGER_FUNCTIONS.DAILY_DATA, 
       EW_TRIGGER_FUNCTIONS.DAILY_REPORT, 
       EW_TRIGGER_FUNCTIONS.AUTO_UPDATE,
-      EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING
+      EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING,
+      EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS
     ];
     let foundTriggers = triggers.map(t => t.getHandlerFunction());
     
@@ -588,6 +614,40 @@ function EW_validateTriggers() {
   }
 }
 
+
+    /**
+     * Remove empty rows from all strategy sheets
+     * Runs daily at 6 AM ET
+     */
+    function EW_removeEmptyRowsDaily() {
+      try {
+        const ss = SpreadsheetApp.getActiveSpreadsheet();
+        const sheets = ss.getSheets();
+        let totalRemoved = 0;
+        sheets.forEach(sheet => {
+          // Skip non-strategy sheets (e.g., Success_Report)
+          const name = sheet.getName();
+          if (name === 'Success_Report' || name.startsWith('Config') || name.startsWith('Log')) return;
+          const data = sheet.getDataRange().getValues();
+          let rowsToDelete = [];
+          for (let i = 1; i < data.length; i++) { // skip header row
+            if (data[i].every(cell => cell === '' || cell === null)) {
+              rowsToDelete.push(i + 1); // 1-based row index
+            }
+          }
+          // Delete from bottom up to avoid shifting
+          rowsToDelete.reverse().forEach(rowNum => {
+            sheet.deleteRow(rowNum);
+            totalRemoved++;
+          });
+        });
+        EW_trace('EMPTY_ROW_REMOVAL', `Removed ${totalRemoved} empty rows from all sheets.`);
+        console.log(`Removed ${totalRemoved} empty rows from all sheets.`);
+      } catch (error) {
+        EW_trace('EMPTY_ROW_REMOVAL', `Error removing empty rows: ${error.toString()}`);
+        console.error('Error removing empty rows:', error);
+      }
+    }
 // Note: The 4:30 PM tracking trigger has been consolidated into the 5 PM Yahoo-based active tracking.
 // All tracking updates are now handled by EW_updateActiveStrikeHits which runs at 5 PM ET.
 
