@@ -105,17 +105,20 @@ function EW_buildStrikeHitArray(existingArray = [], dayIndex, strategy, strike, 
   
   if (strikeHit) {
     // Calculate percentage move when strike was hit (as decimal)
-    const strategyUpper = strategy.toUpperCase();
-    const isBullish = strategyUpper.includes('BULL') || strategyUpper.includes('LONG CALL');
-    const isBearish = strategyUpper.includes('BEAR') || strategyUpper.includes('LONG PUT');
+    const strategyType = EW_getStrategyType(strategy);
     
     let percentMove = null;
-    if (isBullish) {
+    if (strategyType === 'bullish') {
       // For bullish: (high - strike) / strike
       percentMove = ((dayHigh - strike) / strike).toFixed(6);
-    } else if (isBearish) {
+    } else if (strategyType === 'bearish') {
       // For bearish: (strike - low) / strike
       percentMove = ((strike - dayLow) / strike).toFixed(6);
+    } else if (strategyType === 'neutral') {
+      // For neutral strategies, calculate the best move (largest absolute)
+      const upMove = (dayHigh - strike) / strike;
+      const downMove = (strike - dayLow) / strike;
+      percentMove = Math.abs(upMove) > Math.abs(downMove) ? upMove.toFixed(6) : (-downMove).toFixed(6);
     }
     
     array[dayIndex] = percentMove;
@@ -205,16 +208,23 @@ function EW_buildIndicatorArraysForDay(existingIndicators = {}, dayIndex, dayInd
 function EW_calculateMaxFavorableForDay(strategy, strike, dayHigh, dayLow) {
   if (!strike || !dayHigh) return null;
   
-  const strategyUpper = strategy.toUpperCase();
+  const strategyType = EW_getStrategyType(strategy);
   
-  if (strategyUpper.includes('LONG CALL') || strategyUpper.includes('BULL')) {
+  if (strategyType === 'bullish') {
     // Favorable is when price goes up - use day high
     return ((dayHigh - strike) / strike).toFixed(6);
   }
   
-  if (strategyUpper.includes('LONG PUT') || strategyUpper.includes('BEAR')) {
+  if (strategyType === 'bearish') {
     // Favorable is when price goes down - use day low
     return dayLow ? ((strike - dayLow) / strike).toFixed(6) : null;
+  }
+  
+  if (strategyType === 'neutral') {
+    // For neutral strategies, calculate the best move (largest absolute)
+    const upMove = (dayHigh - strike) / strike;
+    const downMove = dayLow ? (strike - dayLow) / strike : 0;
+    return Math.abs(upMove) > Math.abs(downMove) ? upMove.toFixed(6) : downMove.toFixed(6);
   }
   
   return null;
@@ -231,16 +241,23 @@ function EW_calculateMaxFavorableForDay(strategy, strike, dayHigh, dayLow) {
 function EW_calculateMinUnfavorableForDay(strategy, strike, dayHigh, dayLow) {
   if (!strike || !dayLow) return null;
   
-  const strategyUpper = strategy.toUpperCase();
+  const strategyType = EW_getStrategyType(strategy);
   
-  if (strategyUpper.includes('LONG CALL') || strategyUpper.includes('BULL')) {
+  if (strategyType === 'bullish') {
     // Unfavorable is when price goes down - use day low
     return ((strike - dayLow) / strike).toFixed(6);
   }
   
-  if (strategyUpper.includes('LONG PUT') || strategyUpper.includes('BEAR')) {
+  if (strategyType === 'bearish') {
     // Unfavorable is when price goes up - use day high
     return dayHigh ? ((dayHigh - strike) / strike).toFixed(6) : null;
+  }
+  
+  if (strategyType === 'neutral') {
+    // For neutral strategies, unfavorable is minimal move (closer to strike)
+    const upMove = dayHigh ? Math.abs((dayHigh - strike) / strike) : Infinity;
+    const downMove = Math.abs((strike - dayLow) / strike);
+    return Math.min(upMove, downMove).toFixed(6);
   }
   
   return null;
