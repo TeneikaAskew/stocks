@@ -165,11 +165,10 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         EW_trace('BACKFILL', `${ticker} needs filling: ${needsFilling.join(', ')}`);
       }
       
-      // Parse dates
+      // Parse dates - Keep original run date time for proper Day 0 calculation
       const runDate = new Date(runDateStr);
-      runDate.setHours(0, 0, 0, 0);
       const expDate = expDateStr ? new Date(expDateStr) : null;
-      if (expDate) expDate.setHours(0, 0, 0, 0);
+      if (expDate) expDate.setHours(16, 0, 0, 0); // Set to market close for expiration
       
       // Skip if run date is in the future
       if (runDate > today) {
@@ -182,9 +181,11 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       const endDate = expDate && expDate < today ? expDate : today;
       
       EW_trace('BACKFILL', `Processing position: ${ticker} from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (Exp: ${expDateStr || 'none'})`);
+      EW_trace('BACKFILL', `Raw run date string: "${runDateStr}", Parsed: ${runDate.toISOString()}`);
       
       // Check if runDate is more than 7 days old
       const daysSinceRun = Math.floor((today - runDate) / (1000 * 60 * 60 * 24));
+      EW_trace('BACKFILL', `Days since run: ${daysSinceRun} (today: ${today.toISOString()}, runDate: ${runDate.toISOString()})`)
       
       // Log for empty Strike_Hit rows
       if (!hasStrikeHit) {
@@ -197,42 +198,114 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       const sevenDaysAgo = new Date(today);
       sevenDaysAgo.setDate(today.getDate() - 7);
       
-      if (runDate >= sevenDaysAgo) {
+      // Adjust run date to market hours for Day 0
+      const marketRunDate = EW_adjustToMarketHours(runDate);
+      EW_trace('BACKFILL', `${ticker}: Original run date: ${runDate.toISOString()}, Adjusted to market hours: ${marketRunDate.toISOString()}`);
+      
+      if (marketRunDate >= sevenDaysAgo) {
         // Position is within 7 days, use only minute data
         EW_trace('BACKFILL', `${ticker}: Using minute data (within 7 days)`);
-        yahooResult = EW_getYahooHistoricalRange(ticker, runDate, endDate, true);
+        EW_trace('BACKFILL', `${ticker}: Date range for API: ${marketRunDate.toISOString()} to ${endDate.toISOString()}`);
+        yahooResult = EW_getYahooHistoricalRange(ticker, marketRunDate, endDate, true);
       } else {
         // Position is older than 7 days, need hybrid approach
         EW_trace('BACKFILL', `${ticker}: Using hybrid data (${daysSinceRun} days old)`);
+        EW_trace('BACKFILL', `${ticker}: Fetching daily data from ${marketRunDate.toISOString().split('T')[0]} to ${sevenDaysAgo.toISOString().split('T')[0]}`);
+        EW_trace('BACKFILL', `${ticker}: Fetching minute data from ${sevenDaysAgo.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
         
-        // Get daily data for the older period (runDate to 7 days ago)
-        const dailyResult = EW_getYahooHistoricalRangeWithInterval(ticker, runDate, sevenDaysAgo, '1d', true);
+        // Get daily data for the older period (marketRunDate to 7 days ago)
+        const dailyResult = EW_getYahooHistoricalRangeWithInterval(ticker, marketRunDate, sevenDaysAgo, '1d', true);
         
         // Get minute data for recent period (7 days ago to endDate)
         const minuteResult = EW_getYahooHistoricalRange(ticker, sevenDaysAgo, endDate, true);
         
-        // Combine the results
+        // Combine the results - match Yahoo API structure
         yahooResult = {
           data: [],
-          raw: null
+          raw: {
+            timestamps: [],  // Changed from timestamp to timestamps
+            quotes: {        // Changed from indicators.quote[0] to quotes
+              open: [],
+              high: [],
+              low: [],
+              close: [],
+              volume: []
+            }
+          }
         };
         
+        // Combine daily data
         if (dailyResult && dailyResult.data) {
+          EW_trace('BACKFILL', `${ticker}: Daily data received - ${dailyResult.data.length} data points`);
           yahooResult.data = yahooResult.data.concat(dailyResult.data);
+          
+          // Also combine raw data if available
+          if (dailyResult.raw && dailyResult.raw.timestamp) {
+            EW_trace('BACKFILL', `${ticker}: Daily raw data structure - timestamps: ${dailyResult.raw.timestamp.length}, has indicators: ${!!dailyResult.raw.indicators}`);
+            // Append timestamps
+            yahooResult.raw.timestamps = yahooResult.raw.timestamps.concat(dailyResult.raw.timestamp);
+            // Get quote data from indicators structure
+            const quote = dailyResult.raw.indicators.quote[0];
+            yahooResult.raw.quotes.open = yahooResult.raw.quotes.open.concat(quote.open || []);
+            yahooResult.raw.quotes.high = yahooResult.raw.quotes.high.concat(quote.high || []);
+            yahooResult.raw.quotes.low = yahooResult.raw.quotes.low.concat(quote.low || []);
+            yahooResult.raw.quotes.close = yahooResult.raw.quotes.close.concat(quote.close || []);
+            yahooResult.raw.quotes.volume = yahooResult.raw.quotes.volume.concat(quote.volume || []);
+          } else {
+            EW_trace('BACKFILL', `${ticker}: No raw data in daily result`);
+          }
+        } else {
+          EW_trace('BACKFILL', `${ticker}: No daily data received`);
         }
         
+        // Combine minute data
         if (minuteResult && minuteResult.data) {
+          EW_trace('BACKFILL', `${ticker}: Minute data received - ${minuteResult.data.length} data points`);
           yahooResult.data = yahooResult.data.concat(minuteResult.data);
+          
+          // Also combine raw data if available
+          if (minuteResult.raw && minuteResult.raw.timestamps) {
+            EW_trace('BACKFILL', `${ticker}: Minute raw data structure - timestamps: ${minuteResult.raw.timestamps.length}, has quotes: ${!!minuteResult.raw.quotes}`);
+            // Append timestamps
+            yahooResult.raw.timestamps = yahooResult.raw.timestamps.concat(minuteResult.raw.timestamps);
+            // Get quote data directly from quotes structure
+            const quote = minuteResult.raw.quotes;
+            yahooResult.raw.quotes.open = yahooResult.raw.quotes.open.concat(quote.open || []);
+            yahooResult.raw.quotes.high = yahooResult.raw.quotes.high.concat(quote.high || []);
+            yahooResult.raw.quotes.low = yahooResult.raw.quotes.low.concat(quote.low || []);
+            yahooResult.raw.quotes.close = yahooResult.raw.quotes.close.concat(quote.close || []);
+            yahooResult.raw.quotes.volume = yahooResult.raw.quotes.volume.concat(quote.volume || []);
+          } else {
+            EW_trace('BACKFILL', `${ticker}: No raw data in minute result`);
+          }
+        } else {
+          EW_trace('BACKFILL', `${ticker}: No minute data received`);
         }
         
         // Sort by date
         yahooResult.data.sort((a, b) => a.date - b.date);
         
+        // If no raw data was collected, set to null to avoid empty structure
+        if (yahooResult.raw.timestamps.length === 0) {
+          yahooResult.raw = null;
+        } else {
+          EW_trace('BACKFILL', `${ticker}: Combined raw data - ${yahooResult.raw.timestamps.length} timestamps total`);
+        }
+        
         EW_trace('BACKFILL', `${ticker}: Combined ${dailyResult?.data?.length || 0} daily + ${minuteResult?.data?.length || 0} minute data points`);
       }
       
       if (!yahooResult || !yahooResult.data || yahooResult.data.length === 0) {
-        EW_trace('BACKFILL', `No data available for ${ticker} - skipping position`);
+        // More specific logging about what's missing
+        if (!yahooResult) {
+          EW_trace('BACKFILL', `${ticker}: No Yahoo result returned at all - API call may have failed`);
+        } else if (!yahooResult.data) {
+          EW_trace('BACKFILL', `${ticker}: Yahoo result exists but data field is missing/null`);
+        } else if (yahooResult.data.length === 0) {
+          EW_trace('BACKFILL', `${ticker}: Yahoo returned empty data array`);
+        }
+        
+        EW_trace('BACKFILL', `${ticker}: No data available - Requested: ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (${daysSinceRun} days old)`);
         
         // Mark the position as having no data available
         const strikeHitValue = JSON.stringify(['NO_DATA']);
@@ -240,7 +313,8 @@ function EW_backfillStrategyTracking(ss, strategyName) {
         
         // Add note about data unavailability
         if (hdrMap.notesCol) {
-          dataRange.getCell(rowIndex + 1, hdrMap.notesCol).setValue(`No ${useDaily ? 'daily' : '1-minute'} data available`);
+          const interval = daysSinceRun > 7 ? 'hybrid (daily+minute)' : '1-minute';
+          dataRange.getCell(rowIndex + 1, hdrMap.notesCol).setValue(`No ${interval} data available for ${daysSinceRun}-day-old position`);
         }
         
         skippedCount++;
@@ -249,7 +323,26 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       
       EW_trace('BACKFILL', `${ticker}: Got ${yahooResult.data.length} data points from Yahoo Finance`);
       if (yahooResult.raw) {
-        EW_trace('BACKFILL', `${ticker}: Raw data includes ${yahooResult.raw.timestamps.length} timestamps`);
+        if (!yahooResult.raw.timestamps) {
+          EW_trace('BACKFILL', `${ticker}: WARNING - Raw data exists but timestamps array is missing`);
+        } else if (!yahooResult.raw.quotes) {
+          EW_trace('BACKFILL', `${ticker}: WARNING - Raw data exists but quotes structure is malformed`);
+          EW_trace('BACKFILL', `${ticker}: Raw data structure: ${JSON.stringify(Object.keys(yahooResult.raw))}`);
+        } else {
+          EW_trace('BACKFILL', `${ticker}: Raw data includes ${yahooResult.raw.timestamps.length} timestamps`);
+          const quote = yahooResult.raw.quotes;
+          const missingFields = [];
+          if (!quote.open || quote.open.length === 0) missingFields.push('open');
+          if (!quote.high || quote.high.length === 0) missingFields.push('high');
+          if (!quote.low || quote.low.length === 0) missingFields.push('low');
+          if (!quote.close || quote.close.length === 0) missingFields.push('close');
+          if (!quote.volume || quote.volume.length === 0) missingFields.push('volume');
+          if (missingFields.length > 0) {
+            EW_trace('BACKFILL', `${ticker}: WARNING - Raw quote data missing or empty fields: ${missingFields.join(', ')}`);
+          }
+        }
+      } else {
+        EW_trace('BACKFILL', `${ticker}: WARNING - No raw data included for indicator calculation`);
       }
       const firstDataDate = EW_toEDT(yahooResult.data[0].date);
       const lastDataDate = EW_toEDT(yahooResult.data[yahooResult.data.length - 1].date);
@@ -259,8 +352,8 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       const shortStrike = isSpread && hdrMap.shortStrikeCol ? 
         parseFloat(row[hdrMap.shortStrikeCol - 1]) || null : null;
       
-      // Analyze historical data with raw data for indicators
-      const analysis = EW_analyzeHistoricalData(ticker, strategyName, strike, yahooResult.data, runDate, shortStrike, yahooResult.raw);
+      // Analyze historical data with raw data for indicators - use market-adjusted run date
+      const analysis = EW_analyzeHistoricalData(ticker, strategyName, strike, yahooResult.data, marketRunDate, shortStrike, yahooResult.raw);
       
       // Check which fields need updating (only update if not already filled)
       const needsUpdate = {
@@ -354,6 +447,48 @@ function EW_countTradingDays(startDate, endDate) {
   }
   
   return count;
+}
+
+/**
+ * Adjust a date to market hours (9:30 AM - 4:00 PM ET)
+ * If before 9:30 AM, set to 9:30 AM
+ * If after 4:00 PM or on weekend, move to next trading day at 9:30 AM
+ * @param {Date} date - Date to adjust
+ * @returns {Date} Adjusted date
+ */
+function EW_adjustToMarketHours(date) {
+  const adjusted = new Date(date);
+  let dayOfWeek = adjusted.getDay();
+  const hours = adjusted.getHours();
+  const minutes = adjusted.getMinutes();
+  
+  // If weekend, move to Monday
+  if (dayOfWeek === 0) { // Sunday
+    adjusted.setDate(adjusted.getDate() + 1);
+    dayOfWeek = 1;
+  } else if (dayOfWeek === 6) { // Saturday
+    adjusted.setDate(adjusted.getDate() + 2);
+    dayOfWeek = 1;
+  }
+  
+  // Check if before market open (9:30 AM)
+  if (hours < 9 || (hours === 9 && minutes < 30)) {
+    adjusted.setHours(9, 30, 0, 0);
+  } 
+  // Check if after market close (4:00 PM)
+  else if (hours >= 16) {
+    // Move to next trading day at 9:30 AM
+    adjusted.setDate(adjusted.getDate() + 1);
+    dayOfWeek = adjusted.getDay();
+    if (dayOfWeek === 0) { // Sunday
+      adjusted.setDate(adjusted.getDate() + 1);
+    } else if (dayOfWeek === 6) { // Saturday
+      adjusted.setDate(adjusted.getDate() + 2);
+    }
+    adjusted.setHours(9, 30, 0, 0);
+  }
+  
+  return adjusted;
 }
 
 /**
@@ -498,33 +633,61 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
   });
   
   // Find the index where our run date data starts
+  // Need to find the first trading day on or after the run date
   let runDateIndex = -1;
+  const runDateOnly = new Date(runDate);
+  runDateOnly.setHours(0, 0, 0, 0);
+  
   for (let i = 0; i < sortedDays.length; i++) {
-    if (sortedDays[i].date.toISOString().split('T')[0] === runDateStr) {
+    const dayDateOnly = new Date(sortedDays[i].date);
+    dayDateOnly.setHours(0, 0, 0, 0);
+    
+    // Find first trading day on or after run date
+    if (dayDateOnly >= runDateOnly) {
       runDateIndex = i;
-      EW_trace('BACKFILL', `${ticker}: Found run date ${runDateStr} at index ${i}`);
+      EW_trace('BACKFILL', `${ticker}: Run date ${runDateStr} mapped to trading day ${sortedDays[i].date.toISOString().split('T')[0]} at index ${i}`);
       break;
     }
   }
   
   if (runDateIndex === -1) {
-    EW_trace('BACKFILL', `Warning: Run date ${runDateStr} not found in historical data`);
-    // Try to find the first date after run date
-    for (let i = 0; i < sortedDays.length; i++) {
-      if (sortedDays[i].date >= runDate) {
-        runDateIndex = i;
-        break;
-      }
-    }
+    EW_trace('BACKFILL', `Warning: No trading day found on or after run date ${runDateStr}`);
   }
   
   if (runDateIndex === -1) {
-    EW_trace('BACKFILL', `Error: No data found on or after run date ${runDateStr}`);
-    return analysis;
+    EW_trace('BACKFILL', `Error: No data found on or after run date ${runDateStr} for ${ticker}`);
+    EW_trace('BACKFILL', `Available dates in data: ${sortedDays.map(d => d.dateStr).join(', ')}`);
+    EW_trace('BACKFILL', `Run date: ${runDateStr}, Data range: ${sortedDays[0]?.dateStr} to ${sortedDays[sortedDays.length-1]?.dateStr}`);
+    
+    // If we have data but can't find the run date, use the first available date
+    if (sortedDays.length > 0) {
+      EW_trace('BACKFILL', `Using first available date ${sortedDays[0].dateStr} instead of run date ${runDateStr}`);
+      runDateIndex = 0;
+    } else {
+      return analysis;
+    }
   }
   
   // Log data summary
   EW_trace('BACKFILL', `${ticker}: Processing ${historicalData.length} 1-minute bars grouped into ${sortedDays.length} trading days`);
+  
+  // Log expected trading days
+  if (runDateIndex >= 0) {
+    EW_trace('BACKFILL', `${ticker}: Expected trading days from run date ${runDateStr}:`);
+    let expectedDate = new Date(runDate);
+    expectedDate.setHours(0, 0, 0, 0);
+    for (let i = 0; i <= 5; i++) {
+      // Skip weekends
+      while (expectedDate.getDay() === 0 || expectedDate.getDay() === 6) {
+        expectedDate.setDate(expectedDate.getDate() + 1);
+      }
+      const dayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][expectedDate.getDay()];
+      EW_trace('BACKFILL', `  Day ${i}: ${expectedDate.toISOString().split('T')[0]} (${dayOfWeek})`);
+      if (i < 5) {
+        expectedDate.setDate(expectedDate.getDate() + 1);
+      }
+    }
+  }
   
   sortedDays.forEach((dayData, index) => {
     // Skip data before run date
@@ -549,7 +712,7 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     // Debug logging for first few days
     if (tradingDaysSinceEntry <= 5) {
       const dayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dayData.date.getDay()];
-      EW_trace('BACKFILL', `Trading Day ${tradingDaysSinceEntry}: ${dayData.date.toISOString().split('T')[0]} (${dayOfWeek}), Index=${index}`);
+      EW_trace('BACKFILL', `Actual Trading Day ${tradingDaysSinceEntry}: ${dayData.date.toISOString().split('T')[0]} (${dayOfWeek}), Index=${index}`);
     }
     
     // Skip data after Day 5
@@ -703,22 +866,51 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
       }
       
       // Calculate indicators for this day
-      // Since we have 1-minute data, calculate indicators at the time of strike hit (if hit) or at market close
+      // Use the time of the day's extreme value (high for bullish, low for bearish)
       if (rawData && rawData.timestamps && rawData.quotes) {
         try {
           // Find the raw data index for indicator calculation
           let targetTime = null;
           let rawDataIndex = -1;
           
-          if (dayHit && hitTime) {
-            // If strike was hit, calculate indicators at that exact time
-            targetTime = hitTime;
-            EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Calculating indicators at strike hit time ${EW_toEDT(targetTime)}`);
+          // Always use the time of the day's extreme value for consistent volume tracking
+          if (isBullish) {
+            // Find the bar with the day's high - CRITICAL: This ensures volume matches the high price
+            let highBarVolume = null;
+            for (let barIdx = 0; barIdx < dayData.bars.length; barIdx++) {
+              if (dayData.bars[barIdx].high === dayData.high) {
+                targetTime = dayData.bars[barIdx].date;
+                highBarVolume = dayData.bars[barIdx].volume;
+                if (tradingDaysSinceEntry <= 2) {
+                  EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Found day's high ${dayData.high} at ${EW_toEDT(targetTime)} with volume ${highBarVolume}`);
+                }
+                break;
+              }
+            }
+            if (tradingDaysSinceEntry <= 2) {
+              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Using time of day's high (${dayData.high}) for indicators - VOLUME LOCKED to ${highBarVolume}`);
+            }
+          } else if (isBearish) {
+            // Find the bar with the day's low - CRITICAL: This ensures volume matches the low price
+            let lowBarVolume = null;
+            for (let barIdx = 0; barIdx < dayData.bars.length; barIdx++) {
+              if (dayData.bars[barIdx].low === dayData.low) {
+                targetTime = dayData.bars[barIdx].date;
+                lowBarVolume = dayData.bars[barIdx].volume;
+                if (tradingDaysSinceEntry <= 2) {
+                  EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Found day's low ${dayData.low} at ${EW_toEDT(targetTime)} with volume ${lowBarVolume}`);
+                }
+                break;
+              }
+            }
+            if (tradingDaysSinceEntry <= 2) {
+              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Using time of day's low (${dayData.low}) for indicators - VOLUME LOCKED to ${lowBarVolume}`);
+            }
           } else {
-            // Otherwise use the last bar of the day (market close)
+            // For other strategies, use close time
             targetTime = dayData.bars[dayData.bars.length - 1].date;
             if (tradingDaysSinceEntry <= 2) {
-              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: No strike hit, using close time ${EW_toEDT(targetTime)}`);
+              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Using close time for indicators`);
             }
           }
           
@@ -777,7 +969,20 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
               analysis.dailyIndicators.priceVsSMA20.push(dayIndicators.priceVsSMA20);
               analysis.dailyIndicators.priceVsVWAP.push(dayIndicators.priceVsVWAP);
               
-              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Calculated indicators at index ${rawDataIndex} - RSI=${dayIndicators.rsi?.toFixed(2)}, SMA20=${dayIndicators.sma20?.toFixed(2)}, VWAP=${dayIndicators.vwap?.toFixed(2)}`);
+              // Log the volume at this specific time to confirm we're getting the right data
+              const volumeAtTime = rawData.quotes.volume ? rawData.quotes.volume[rawDataIndex] : 0;
+              const priceAtTime = rawData.quotes.close[rawDataIndex];
+              const highAtTime = rawData.quotes.high[rawDataIndex];
+              const lowAtTime = rawData.quotes.low[rawDataIndex];
+              
+              // CRITICAL VALIDATION: Ensure the volume matches the expected price point
+              if (isBullish && Math.abs(highAtTime - dayData.high) > 0.01) {
+                EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: WARNING - High price mismatch! Expected ${dayData.high}, got ${highAtTime} at index ${rawDataIndex}`);
+              } else if (isBearish && Math.abs(lowAtTime - dayData.low) > 0.01) {
+                EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: WARNING - Low price mismatch! Expected ${dayData.low}, got ${lowAtTime} at index ${rawDataIndex}`);
+              }
+              
+              EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Calculated indicators at index ${rawDataIndex} - H=${highAtTime?.toFixed(2)}, L=${lowAtTime?.toFixed(2)}, C=${priceAtTime?.toFixed(2)}, V=${volumeAtTime}, RSI=${dayIndicators.rsi?.toFixed(2)}, RVOL=${dayIndicators.rvol?.toFixed(2)}`);
             } else {
               EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: Failed to calculate indicators at index ${rawDataIndex}`);
               // Push nulls if indicators couldn't be calculated
@@ -788,6 +993,13 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
           } else {
             // No matching raw data found
             EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: No raw data index found for time ${EW_toEDT(targetTime)}`);
+            // Log timestamp search details
+            if (rawData && rawData.timestamps && rawData.timestamps.length > 0) {
+              const firstTime = new Date(rawData.timestamps[0] * 1000).toISOString();
+              const lastTime = new Date(rawData.timestamps[rawData.timestamps.length - 1] * 1000).toISOString();
+              EW_trace('BACKFILL', `${ticker}: Raw data time range: ${firstTime} to ${lastTime}`);
+              EW_trace('BACKFILL', `${ticker}: Target time ${targetTime.toISOString()} (${targetTimestamp}) not in range`);
+            }
             Object.keys(analysis.dailyIndicators).forEach(key => {
               analysis.dailyIndicators[key].push(null);
             });
@@ -880,6 +1092,216 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
 }
 
 /**
+ * Process a single position for backfill - shared logic for both single and batch processing
+ * @param {Object} params - Parameters object containing all needed data
+ * @param {string} params.ticker - Ticker symbol
+ * @param {string} params.strategyName - Strategy name
+ * @param {number} params.strike - Strike price
+ * @param {string} params.runDateStr - Run date as string
+ * @param {string} params.expDateStr - Expiration date as string (optional)
+ * @param {number} params.shortStrike - Short strike for spreads (optional)
+ * @param {Object} params.hdrMap - Header mapping object
+ * @param {Array} params.row - Full row data array
+ * @param {number} params.rowIndex - Row index (0-based)
+ * @param {Object} params.sheet - Sheet object or cell updater
+ * @param {boolean} params.isSpread - Whether this is a spread strategy
+ * @returns {Object} Object with success flag and analysis results
+ */
+function EW_processBackfillPosition(params) {
+  const { ticker, strategyName, strike, runDateStr, expDateStr, shortStrike, hdrMap, row, rowIndex, sheet, isSpread } = params;
+  
+  try {
+    // Parse dates - Keep original run date time for proper Day 0 calculation
+    const runDate = new Date(runDateStr);
+    const expDate = expDateStr ? new Date(expDateStr) : null;
+    if (expDate) expDate.setHours(16, 0, 0, 0); // Set to market close for expiration
+    
+    // Get today's date for comparison
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+    
+    // Skip if run date is in the future
+    if (runDate > today) {
+      EW_trace('BACKFILL', `Skipping ${ticker}: Run date is in the future`);
+      return { success: false, reason: 'future_date' };
+    }
+    
+    // Determine end date (expiration or today, whichever is earlier)
+    const endDate = expDate && expDate < today ? expDate : today;
+    
+    EW_trace('BACKFILL', `Processing position: ${ticker} from ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (Exp: ${expDateStr || 'none'})`);
+    EW_trace('BACKFILL', `Raw run date string: "${runDateStr}", Parsed: ${runDate.toISOString()}`);
+    
+    // Check if runDate is more than 7 days old
+    const daysSinceRun = Math.floor((today - runDate) / (1000 * 60 * 60 * 24));
+    EW_trace('BACKFILL', `Days since run: ${daysSinceRun} (today: ${today.toISOString()}, runDate: ${runDate.toISOString()})`)
+    
+    let yahooResult;
+    
+    // Always try to get minute data first for the last 7 days
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(today.getDate() - 7);
+    
+    // Adjust run date to market hours for Day 0
+    const marketRunDate = EW_adjustToMarketHours(runDate);
+    EW_trace('BACKFILL', `${ticker}: Original run date: ${runDate.toISOString()}, Adjusted to market hours: ${marketRunDate.toISOString()}`);
+    
+    if (marketRunDate >= sevenDaysAgo) {
+      // Position is within 7 days, use only minute data
+      EW_trace('BACKFILL', `${ticker}: Using minute data (within 7 days)`);
+      EW_trace('BACKFILL', `${ticker}: Date range for API: ${marketRunDate.toISOString()} to ${endDate.toISOString()}`);
+      yahooResult = EW_getYahooHistoricalRange(ticker, marketRunDate, endDate, true);
+    } else {
+      // Position is older than 7 days, need hybrid approach
+      EW_trace('BACKFILL', `${ticker}: Using hybrid data (${daysSinceRun} days old)`);
+      EW_trace('BACKFILL', `${ticker}: Fetching daily data from ${marketRunDate.toISOString().split('T')[0]} to ${sevenDaysAgo.toISOString().split('T')[0]}`);
+      EW_trace('BACKFILL', `${ticker}: Fetching minute data from ${sevenDaysAgo.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+      
+      // Get daily data for the older period (marketRunDate to 7 days ago)
+      const dailyResult = EW_getYahooHistoricalRangeWithInterval(ticker, marketRunDate, sevenDaysAgo, '1d', true);
+      
+      // Get minute data for recent period (7 days ago to endDate)
+      const minuteResult = EW_getYahooHistoricalRange(ticker, sevenDaysAgo, endDate, true);
+      
+      // Combine the results - match Yahoo API structure
+      yahooResult = {
+        data: [],
+        raw: {
+          timestamps: [],  // Changed from timestamp to timestamps
+          quotes: {        // Changed from indicators.quote[0] to quotes
+            open: [],
+            high: [],
+            low: [],
+            close: [],
+            volume: []
+          }
+        }
+      };
+      
+      // Combine daily data
+      if (dailyResult && dailyResult.data) {
+        EW_trace('BACKFILL', `${ticker}: Daily data received - ${dailyResult.data.length} data points`);
+        yahooResult.data = yahooResult.data.concat(dailyResult.data);
+        
+        // Also combine raw data if available
+        if (dailyResult.raw && dailyResult.raw.timestamp) {
+          EW_trace('BACKFILL', `${ticker}: Daily raw data structure - timestamps: ${dailyResult.raw.timestamp.length}, has indicators: ${!!dailyResult.raw.indicators}`);
+          // Append timestamps
+          yahooResult.raw.timestamps = yahooResult.raw.timestamps.concat(dailyResult.raw.timestamp);
+          // Get quote data from indicators structure
+          const quote = dailyResult.raw.indicators.quote[0];
+          yahooResult.raw.quotes.open = yahooResult.raw.quotes.open.concat(quote.open || []);
+          yahooResult.raw.quotes.high = yahooResult.raw.quotes.high.concat(quote.high || []);
+          yahooResult.raw.quotes.low = yahooResult.raw.quotes.low.concat(quote.low || []);
+          yahooResult.raw.quotes.close = yahooResult.raw.quotes.close.concat(quote.close || []);
+          yahooResult.raw.quotes.volume = yahooResult.raw.quotes.volume.concat(quote.volume || []);
+        } else {
+          EW_trace('BACKFILL', `${ticker}: No raw data in daily result`);
+        }
+      } else {
+        EW_trace('BACKFILL', `${ticker}: No daily data received`);
+      }
+      
+      // Combine minute data
+      if (minuteResult && minuteResult.data) {
+        EW_trace('BACKFILL', `${ticker}: Minute data received - ${minuteResult.data.length} data points`);
+        yahooResult.data = yahooResult.data.concat(minuteResult.data);
+        
+        // Also combine raw data if available
+        if (minuteResult.raw && minuteResult.raw.timestamps) {
+          EW_trace('BACKFILL', `${ticker}: Minute raw data structure - timestamps: ${minuteResult.raw.timestamps.length}, has quotes: ${!!minuteResult.raw.quotes}`);
+          // Append timestamps
+          yahooResult.raw.timestamps = yahooResult.raw.timestamps.concat(minuteResult.raw.timestamps);
+          // Get quote data directly from quotes structure
+          const quote = minuteResult.raw.quotes;
+          yahooResult.raw.quotes.open = yahooResult.raw.quotes.open.concat(quote.open || []);
+          yahooResult.raw.quotes.high = yahooResult.raw.quotes.high.concat(quote.high || []);
+          yahooResult.raw.quotes.low = yahooResult.raw.quotes.low.concat(quote.low || []);
+          yahooResult.raw.quotes.close = yahooResult.raw.quotes.close.concat(quote.close || []);
+          yahooResult.raw.quotes.volume = yahooResult.raw.quotes.volume.concat(quote.volume || []);
+        } else {
+          EW_trace('BACKFILL', `${ticker}: No raw data in minute result`);
+        }
+      } else {
+        EW_trace('BACKFILL', `${ticker}: No minute data received`);
+      }
+      
+      // Sort by date
+      yahooResult.data.sort((a, b) => a.date - b.date);
+      
+      // If no raw data was collected, set to null to avoid empty structure
+      if (yahooResult.raw.timestamps.length === 0) {
+        yahooResult.raw = null;
+      } else {
+        EW_trace('BACKFILL', `${ticker}: Combined raw data - ${yahooResult.raw.timestamps.length} timestamps total`);
+      }
+      
+      EW_trace('BACKFILL', `${ticker}: Combined ${dailyResult?.data?.length || 0} daily + ${minuteResult?.data?.length || 0} minute data points`);
+    }
+    
+    if (!yahooResult || !yahooResult.data || yahooResult.data.length === 0) {
+      // More specific logging about what's missing
+      if (!yahooResult) {
+        EW_trace('BACKFILL', `${ticker}: No Yahoo result returned at all - API call may have failed`);
+      } else if (!yahooResult.data) {
+        EW_trace('BACKFILL', `${ticker}: Yahoo result exists but data field is missing/null`);
+      } else if (yahooResult.data.length === 0) {
+        EW_trace('BACKFILL', `${ticker}: Yahoo returned empty data array`);
+      }
+      
+      EW_trace('BACKFILL', `${ticker}: No data available - Requested: ${runDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (${daysSinceRun} days old)`);
+      
+      // Mark the position as having no data available
+      const strikeHitValue = JSON.stringify(['NO_DATA']);
+      if (sheet && sheet.getRange) {
+        sheet.getRange(rowIndex + 2, hdrMap.strikeHitCol).setValue(strikeHitValue);
+      }
+      
+      return { success: false, reason: 'no_data', analysis: null };
+    }
+    
+    EW_trace('BACKFILL', `${ticker}: Got ${yahooResult.data.length} data points from Yahoo Finance`);
+    
+    // Log raw data structure for debugging
+    if (yahooResult.raw) {
+      if (!yahooResult.raw.timestamps) {
+        EW_trace('BACKFILL', `${ticker}: WARNING - Raw data exists but timestamps array is missing`);
+      } else if (!yahooResult.raw.quotes) {
+        EW_trace('BACKFILL', `${ticker}: WARNING - Raw data exists but quotes structure is malformed`);
+        EW_trace('BACKFILL', `${ticker}: Raw data structure: ${JSON.stringify(Object.keys(yahooResult.raw))}`);
+      } else {
+        EW_trace('BACKFILL', `${ticker}: Raw data includes ${yahooResult.raw.timestamps.length} timestamps`);
+        const quote = yahooResult.raw.quotes;
+        const missingFields = [];
+        if (!quote.open || quote.open.length === 0) missingFields.push('open');
+        if (!quote.high || quote.high.length === 0) missingFields.push('high');
+        if (!quote.low || quote.low.length === 0) missingFields.push('low');
+        if (!quote.close || quote.close.length === 0) missingFields.push('close');
+        if (!quote.volume || quote.volume.length === 0) missingFields.push('volume');
+        if (missingFields.length > 0) {
+          EW_trace('BACKFILL', `${ticker}: WARNING - Raw quote data missing or empty fields: ${missingFields.join(', ')}`);
+        }
+      }
+    } else {
+      EW_trace('BACKFILL', `${ticker}: WARNING - No raw data included for indicator calculation`);
+    }
+    
+    const firstDataDate = EW_toEDT(yahooResult.data[0].date);
+    const lastDataDate = EW_toEDT(yahooResult.data[yahooResult.data.length - 1].date);
+    EW_trace('BACKFILL', `${ticker}: Data range: ${firstDataDate} to ${lastDataDate}`);
+    
+    // Analyze historical data with raw data for indicators - use market-adjusted run date
+    const analysis = EW_analyzeHistoricalData(ticker, strategyName, strike, yahooResult.data, marketRunDate, shortStrike, yahooResult.raw);
+    
+    return { success: true, analysis: analysis };
+    
+  } catch (e) {
+    EW_trace('BACKFILL', `Error processing ${ticker}: ${e.message}`);
+    return { success: false, reason: 'error', error: e.message, analysis: null };
+  }
+}
+
+/**
  * Backfill tracking for a single position (can be called from cell)
  * @param {string} ticker - Ticker symbol
  * @param {string} strategy - Strategy name
@@ -889,21 +1311,23 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
  * @returns {Object} Tracking data object
  */
 function EW_backfillSinglePosition(ticker, strategy, strike, runDate, expDate) {
-  const startDate = new Date(runDate);
-  const endDate = expDate ? new Date(expDate) : new Date();
+  // Use the shared processing function
+  const params = {
+    ticker: ticker,
+    strategyName: strategy,
+    strike: strike,
+    runDateStr: runDate,
+    expDateStr: expDate,
+    shortStrike: null,
+    hdrMap: {},  // Empty header map for single position
+    row: [],
+    rowIndex: 0,
+    sheet: null,
+    isSpread: strategy.toUpperCase().includes('SPREAD')
+  };
   
-  // Get historical data with raw data for indicators
-  const yahooResult = EW_getYahooHistoricalRange(ticker, startDate, endDate, true);
-  
-  if (yahooResult && yahooResult.data) {
-    const analysis = EW_analyzeHistoricalData(ticker, strategy, strike, yahooResult.data, startDate, null, yahooResult.raw);
-    return analysis;
-  } else {
-    // Fallback if includeRaw not supported
-    const historicalData = EW_getYahooHistoricalRange(ticker, startDate, endDate);
-    const analysis = EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, startDate);
-    return analysis;
-  }
+  const result = EW_processBackfillPosition(params);
+  return result.analysis || {};
 }
 
 /**
@@ -933,6 +1357,10 @@ function EW_backfillSelectedRows() {
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(headers);
   
+  // DEBUG: Log headers and column mapping
+  console.log(`[BACKFILL] Selected rows - Headers:`, headers.slice(0, 10));
+  console.log(`[BACKFILL] Selected rows - runDateCol mapped to column ${hdrMap.runDateCol} which has header: "${headers[hdrMap.runDateCol - 1]}"`);
+  
   // Debug: Log array columns
   EW_trace('BACKFILL', `Array columns - Strike_Hit: ${hdrMap.strikeHitCol}, Hit_RSI: ${hdrMap.hitRSICol}, Hit_SMA20: ${hdrMap.hitSMA20Col}`);
   EW_trace('BACKFILL', `Result columns - Exp_Result: ${hdrMap.expResultCol}, Risk_Reward: ${hdrMap.riskRewardCol}, Historical_High: ${hdrMap.historicalHighCol}, Historical_Low: ${hdrMap.historicalLowCol}`);
@@ -950,24 +1378,49 @@ function EW_backfillSelectedRows() {
     // Get required data
     const ticker = hdrMap.tickerCol ? rowData[hdrMap.tickerCol - 1] : null;
     const runDate = hdrMap.runDateCol ? rowData[hdrMap.runDateCol - 1] : null;
+    
+    // DEBUG: Log what we're reading
+    console.log(`[BACKFILL] Row ${rowNum} - runDateCol: ${hdrMap.runDateCol}, ticker: ${ticker}, runDate value: "${runDate}"`);
+    console.log(`[BACKFILL] First 10 columns of row ${rowNum}:`, rowData.slice(0, 10));
     const strike = hdrMap.strikeCol ? parseFloat(rowData[hdrMap.strikeCol - 1]) : null;
     const expDate = hdrMap.expDateCol ? rowData[hdrMap.expDateCol - 1] : null;
     
     if (ticker && runDate && strike) {
-      const analysis = EW_backfillSinglePosition(ticker, sheet.getName(), strike, runDate, expDate);
+      // Get short strike for spreads if available
+      const shortStrike = hdrMap.shortStrikeCol ? parseFloat(rowData[hdrMap.shortStrikeCol - 1]) : null;
+      const isSpread = sheet.getName().toUpperCase().includes('SPREAD');
       
-      // Convert expDate to Date object if it's a string
-      const expDateObj = expDate ? new Date(expDate) : null;
+      // Use the new shared processing function
+      const params = {
+        ticker: ticker,
+        strategyName: sheet.getName(),
+        strike: strike,
+        runDateStr: runDate,
+        expDateStr: expDate,
+        shortStrike: shortStrike,
+        hdrMap: hdrMap,
+        row: rowData,
+        rowIndex: rowNum - 2,  // Convert to 0-based index
+        sheet: sheet,
+        isSpread: isSpread
+      };
       
-      // Add debug logging
-      EW_trace('BACKFILL', `Row ${rowNum} - Ticker: ${ticker}, ExpDate: ${expDate}, ExpDateObj: ${expDateObj}, ExpResult: ${analysis.expResult}`);
-      EW_trace('BACKFILL', `Row ${rowNum} - MaxFav array: ${JSON.stringify(analysis.maxFavorableArray)}, MinUnfav array: ${JSON.stringify(analysis.minUnfavorableArray)}`);
+      const result = EW_processBackfillPosition(params);
       
-      // Use centralized update function with Date object
-      const wasUpdated = EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDateObj, rowData);
-      
-      if (wasUpdated) {
-        processedCount++;
+      if (result.success && result.analysis) {
+        // Convert expDate to Date object if it's a string
+        const expDateObj = expDate ? new Date(expDate) : null;
+        
+        // Add debug logging
+        EW_trace('BACKFILL', `Row ${rowNum} - Ticker: ${ticker}, ExpDate: ${expDate}, ExpDateObj: ${expDateObj}, ExpResult: ${result.analysis.expResult}`);
+        EW_trace('BACKFILL', `Row ${rowNum} - MaxFav array: ${JSON.stringify(result.analysis.maxFavorableArray)}, MinUnfav array: ${JSON.stringify(result.analysis.minUnfavorableArray)}`);
+        
+        // Use centralized update function with Date object
+        const wasUpdated = EW_updateBackfillColumns(sheet, rowNum, result.analysis, hdrMap, ticker, expDateObj, rowData);
+        
+        if (wasUpdated) {
+          processedCount++;
+        }
       }
     }
   }
@@ -1052,10 +1505,18 @@ function EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDa
     sheet.getRange(rowNum, hdrMap.strikeHitCol).setValue(JSON.stringify(mergedArray));
     EW_trace('BACKFILL', `${ticker} Strike_Hit array merged: ${JSON.stringify(mergedArray)} (was: ${existingStrikeHit})`);
     updated = true;
+  } else {
+    // Log why Strike_Hit wasn't updated
+    const reasons = [];
+    if (!hdrMap.strikeHitCol) reasons.push('Column not found');
+    if (!analysis.strikeHitArray) reasons.push('No strikeHitArray in analysis');
+    if (analysis.strikeHitArray && analysis.strikeHitArray.length === 0) reasons.push('strikeHitArray is empty');
+    EW_trace('BACKFILL', `${ticker} Strike_Hit NOT updated - Reasons: ${reasons.join(', ')}`);
   }
   
   // Update all indicator arrays
   if (analysis.dailyIndicators && analysis.dailyIndicators.rsi && analysis.dailyIndicators.rsi.length > 0) {
+    EW_trace('BACKFILL', `${ticker} Formatting indicator arrays - RSI length: ${analysis.dailyIndicators.rsi.length}`);
     // Use the new array formatter from 13_ArrayBuilders.js
     const indicatorArrays = EW_formatIndicatorArraysForStorage(analysis.dailyIndicators);
     
@@ -1088,40 +1549,85 @@ function EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDa
     if (updated) {
       EW_trace('BACKFILL', `${ticker} Indicators updated`);
     }
+  } else {
+    // Log why indicators weren't updated
+    const reasons = [];
+    if (!analysis.dailyIndicators) reasons.push('No dailyIndicators in analysis');
+    if (analysis.dailyIndicators && !analysis.dailyIndicators.rsi) reasons.push('No RSI array');
+    if (analysis.dailyIndicators && analysis.dailyIndicators.rsi && analysis.dailyIndicators.rsi.length === 0) reasons.push('RSI array is empty');
+    EW_trace('BACKFILL', `${ticker} Indicators NOT updated - Reasons: ${reasons.join(', ')}`);
   }
   
   // Update Exp_Result if expired
   const expResultShouldUpdate = shouldUpdate(hdrMap.expResultCol, analysis.expResult);
   const isExpired = expDate && expDate <= today;
-  EW_trace('BACKFILL', `${ticker} Exp_Result check - Column: ${hdrMap.expResultCol}, ShouldUpdate: ${expResultShouldUpdate}, ExpDate: ${expDate}, Today: ${today}, IsExpired: ${isExpired}, ExpResult: ${analysis.expResult}`);
+  
+  // Detailed logging for Exp_Result update decision
+  const expResultDetails = {
+    column: hdrMap.expResultCol || 'NOT_FOUND',
+    shouldUpdate: expResultShouldUpdate,
+    expDate: expDate ? expDate.toISOString().split('T')[0] : 'NULL',
+    today: today.toISOString().split('T')[0],
+    isExpired: isExpired,
+    analysisExpResult: analysis.expResult || 'NULL',
+    currentValue: existingRowData && hdrMap.expResultCol ? existingRowData[hdrMap.expResultCol - 1] : 'NO_DATA'
+  };
+  
+  EW_trace('BACKFILL', `${ticker} Exp_Result check - ${JSON.stringify(expResultDetails)}`);
   
   if (expResultShouldUpdate && isExpired && analysis.expResult) {
     sheet.getRange(rowNum, hdrMap.expResultCol).setValue(analysis.expResult);
     EW_trace('BACKFILL', `${ticker} Exp_Result UPDATED: ${analysis.expResult}`);
     updated = true;
   } else {
-    EW_trace('BACKFILL', `${ticker} Exp_Result NOT updated - Missing condition`);
+    const reasons = [];
+    if (!hdrMap.expResultCol) reasons.push('Column not found in headers');
+    if (!expResultShouldUpdate) reasons.push('Value already exists or column missing');
+    if (!isExpired) reasons.push('Position not expired yet');
+    if (!analysis.expResult) reasons.push('No expiration result in analysis');
+    EW_trace('BACKFILL', `${ticker} Exp_Result NOT updated - Reasons: ${reasons.join(', ')}`);
   }
   
   // Calculate and update Risk_Reward
   const riskRewardShouldUpdate = shouldUpdate(hdrMap.riskRewardCol, 'check');
   const hasArrays = analysis.maxFavorableArray && analysis.minUnfavorableArray && 
                     analysis.maxFavorableArray.length > 0 && analysis.minUnfavorableArray.length > 0;
-  EW_trace('BACKFILL', `${ticker} Risk_Reward check - Column: ${hdrMap.riskRewardCol}, ShouldUpdate: ${riskRewardShouldUpdate}, HasArrays: ${hasArrays}`);
+  
+  // Detailed logging for Risk_Reward calculation
+  const riskRewardDetails = {
+    column: hdrMap.riskRewardCol || 'NOT_FOUND',
+    shouldUpdate: riskRewardShouldUpdate,
+    hasMaxFavArray: !!analysis.maxFavorableArray,
+    maxFavArrayLength: analysis.maxFavorableArray ? analysis.maxFavorableArray.length : 0,
+    hasMinUnfavArray: !!analysis.minUnfavorableArray,
+    minUnfavArrayLength: analysis.minUnfavorableArray ? analysis.minUnfavorableArray.length : 0,
+    currentValue: existingRowData && hdrMap.riskRewardCol ? existingRowData[hdrMap.riskRewardCol - 1] : 'NO_DATA'
+  };
+  
+  EW_trace('BACKFILL', `${ticker} Risk_Reward check - ${JSON.stringify(riskRewardDetails)}`);
   
   if (riskRewardShouldUpdate && hasArrays) {
     const maxFav = Math.max(...analysis.maxFavorableArray.map(v => parseFloat(v)));
     const maxUnfav = Math.max(...analysis.minUnfavorableArray.map(v => parseFloat(v)));
+    EW_trace('BACKFILL', `${ticker} Risk_Reward calculation - MaxFav: ${maxFav}, MaxUnfav: ${maxUnfav}`);
+    
     if (maxUnfav > 0) {
       const riskReward = (maxFav / maxUnfav).toFixed(2);
       sheet.getRange(rowNum, hdrMap.riskRewardCol).setValue(riskReward);
       EW_trace('BACKFILL', `${ticker} Risk_Reward UPDATED: ${maxFav}/${maxUnfav} = ${riskReward}`);
       updated = true;
     } else {
-      EW_trace('BACKFILL', `${ticker} Risk_Reward NOT updated - maxUnfav is 0`);
+      EW_trace('BACKFILL', `${ticker} Risk_Reward NOT updated - maxUnfav is 0 (no unfavorable moves detected)`);
     }
   } else {
-    EW_trace('BACKFILL', `${ticker} Risk_Reward NOT updated - Missing condition`);
+    const reasons = [];
+    if (!hdrMap.riskRewardCol) reasons.push('Column not found in headers');
+    if (!riskRewardShouldUpdate) reasons.push('Value already exists or column missing');
+    if (!analysis.maxFavorableArray) reasons.push('No max favorable array');
+    if (!analysis.minUnfavorableArray) reasons.push('No min unfavorable array');
+    if (analysis.maxFavorableArray && analysis.maxFavorableArray.length === 0) reasons.push('Max favorable array is empty');
+    if (analysis.minUnfavorableArray && analysis.minUnfavorableArray.length === 0) reasons.push('Min unfavorable array is empty');
+    EW_trace('BACKFILL', `${ticker} Risk_Reward NOT updated - Reasons: ${reasons.join(', ')}`);
   }
   
   // Update Historical High/Low

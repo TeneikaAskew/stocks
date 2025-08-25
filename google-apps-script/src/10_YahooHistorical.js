@@ -1,6 +1,9 @@
 /**
  * Yahoo Finance Historical Data Functions
  * Fetches intraday and daily historical price data to check if strike prices were hit
+ * https://query1.finance.yahoo.com/v1/test/getcrumb
+ * https://query2.finance.yahoo.com/v10/finance/quoteSummary/AAPL?modules=calendarEvents,earnings,earningsHistory,earningsTrend&crumb=sJmS2ROIZZp
+ * https://query2.finance.yahoo.com/v8/finance/chart/AAPL?period1=1755849600&period2=1755936000&interval=1m&events=history
  */
 
 /**
@@ -372,6 +375,9 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
     type: 'historical_range'
   };
   
+  // DEBUG: Log URL for Cloud Logging
+  console.log(`[YAHOO] Fetching URL: ${url}`);
+  
   try {
     const response = UrlFetchApp.fetch(url, {
       muteHttpExceptions: true,
@@ -381,41 +387,95 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
     });
     
     const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
     logEntry.responseCode = responseCode;
     logEntry.duration = new Date() - callStartTime;
+    
+    // DEBUG: Log response for Cloud Logging
+    console.log(`[YAHOO] Response Code: ${responseCode}`);
+    if (responseCode !== 200) {
+      console.log(`[YAHOO] Error Response: ${responseText.substring(0, 500)}`);
+    }
     
     if (responseCode !== 200) {
       logEntry.error = `HTTP ${responseCode}`;
       logEntry.success = false;
-      EW_logApiCall(logEntry, data);
-      return [];
+      EW_logApiCall(logEntry, null);
+      return includeRaw ? { data: [], raw: null } : [];
     }
     
-    const data = JSON.parse(response.getContentText());
+    const data = JSON.parse(responseText);
     
     if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
       logEntry.error = 'No 1-minute data available';
       logEntry.success = false;
       EW_logApiCall(logEntry, data);
       
+      // DEBUG: Log empty data response
+      console.log(`[YAHOO] Empty data response for ${ticker}: ${JSON.stringify(data).substring(0, 500)}`);
+      
       // Calculate days since start date to provide context
       const daysSince = Math.floor((new Date() - startDate) / (1000 * 60 * 60 * 24));
+      const currentTime = new Date();
+      console.log(`[YAHOO] Current time: ${currentTime.toISOString()}, Request range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+      console.log(`[YAHOO] Days since start: ${daysSince}, Period1: ${period1}, Period2: ${period2}`);
+      
       EW_trace('BACKFILL', `${ticker}: No 1-minute data available for period ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (${daysSince} days ago). 1-minute data typically available for last 7 days only.`);
       
-      return [];
+      return includeRaw ? { data: [], raw: null } : [];
     }
     
     const result = data.chart.result[0];
     const timestamps = result.timestamp || [];
     const quotes = result.indicators.quote[0];
     
-    // Validate data structure
-    if (!timestamps || !quotes || !quotes.high || !quotes.low || !quotes.close) {
-      EW_trace('YAHOO', `Invalid data structure for ${ticker}: missing required fields`);
-      logEntry.error = 'Invalid data structure';
+    // DEBUG: Log the actual result structure
+    console.log(`[YAHOO] Result for ${ticker}: has timestamps: ${!!result.timestamp}, timestamp count: ${timestamps.length}`);
+    if (result.indicators) {
+      console.log(`[YAHOO] Indicators present: ${JSON.stringify(Object.keys(result.indicators))}`);
+      if (result.indicators.quote && result.indicators.quote[0]) {
+        const q = result.indicators.quote[0];
+        console.log(`[YAHOO] Quote arrays: open=${Array.isArray(q.open)}, high=${Array.isArray(q.high)}, low=${Array.isArray(q.low)}, close=${Array.isArray(q.close)}`);
+      }
+    }
+    
+    // Validate data structure - check for arrays with data, not just existence
+    const hasValidData = timestamps && timestamps.length > 0 && 
+                        quotes && 
+                        quotes.high && quotes.high.length > 0 &&
+                        quotes.low && quotes.low.length > 0 &&
+                        quotes.close && quotes.close.length > 0;
+    
+    if (!hasValidData) {
+      const missingFields = [];
+      if (!timestamps || timestamps.length === 0) missingFields.push('timestamps (empty)');
+      if (!quotes) missingFields.push('quotes object');
+      if (quotes) {
+        if (!quotes.high || quotes.high.length === 0) missingFields.push('quotes.high (empty)');
+        if (!quotes.low || quotes.low.length === 0) missingFields.push('quotes.low (empty)');
+        if (!quotes.close || quotes.close.length === 0) missingFields.push('quotes.close (empty)');
+        if (!quotes.open || quotes.open.length === 0) missingFields.push('quotes.open (empty)');
+        if (!quotes.volume || quotes.volume.length === 0) missingFields.push('quotes.volume (empty)');
+      }
+      
+      EW_trace('YAHOO', `Invalid/empty data for ${ticker}: ${missingFields.join(', ')}`);
+      EW_trace('YAHOO', `Data structure: timestamps=${timestamps ? timestamps.length : 0} items, quotes=${!!quotes}, arrays=${quotes ? Object.keys(quotes).map(k => `${k}:${quotes[k] ? quotes[k].length : 0}`).join(', ') : 'N/A'}`);
+      
+      // DEBUG: Log the actual data structure for debugging
+      console.log(`[YAHOO] Invalid data structure for ${ticker}:`);
+      console.log(`[YAHOO] - timestamps: ${timestamps ? `array(${timestamps.length})` : 'null/undefined'}`);
+      console.log(`[YAHOO] - quotes object: ${quotes ? JSON.stringify(Object.keys(quotes)) : 'null/undefined'}`);
+      if (quotes) {
+        Object.keys(quotes).forEach(key => {
+          const arr = quotes[key];
+          console.log(`[YAHOO] - quotes.${key}: ${Array.isArray(arr) ? `array(${arr.length})` : typeof arr}`);
+        });
+      }
+      
+      logEntry.error = `Invalid/empty data - ${missingFields.join(', ')}`;
       logEntry.success = false;
       EW_logApiCall(logEntry, data);
-      return [];
+      return includeRaw ? { data: [], raw: null } : [];
     }
     
     // Keep 1-minute data as-is for detailed analysis
@@ -453,6 +513,9 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
     
     // Return with raw data if requested
     if (includeRaw) {
+      // Log raw data structure for debugging
+      EW_trace('YAHOO', `${ticker}: Including raw data - timestamps: ${timestamps.length}, quotes fields: ${Object.keys(quotes).join(', ')}`);
+      
       return {
         data: historicalData,
         raw: {
@@ -471,7 +534,7 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
     logEntry.success = false;
     logEntry.duration = new Date() - callStartTime;
     EW_logApiCall(logEntry);
-    return [];
+    return includeRaw ? { data: [], raw: null } : [];
   }
 }
 
@@ -501,6 +564,9 @@ function EW_getYahooHistoricalRangeWithInterval(ticker, startDate, endDate, inte
     type: 'historical_range_interval'
   };
   
+  // DEBUG: Log URL for Cloud Logging
+  console.log(`[YAHOO] Fetching URL (${interval}): ${url}`);
+  
   try {
     const response = UrlFetchApp.fetch(url, {
       muteHttpExceptions: true,
@@ -510,8 +576,15 @@ function EW_getYahooHistoricalRangeWithInterval(ticker, startDate, endDate, inte
     });
     
     const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
     logEntry.responseCode = responseCode;
     logEntry.duration = new Date() - callStartTime;
+    
+    // DEBUG: Log response for Cloud Logging
+    console.log(`[YAHOO] Response Code (${interval}): ${responseCode}`);
+    if (responseCode !== 200) {
+      console.log(`[YAHOO] Error Response: ${responseText.substring(0, 500)}`);
+    }
     
     if (responseCode !== 200) {
       logEntry.error = `HTTP ${responseCode}`;
@@ -520,12 +593,15 @@ function EW_getYahooHistoricalRangeWithInterval(ticker, startDate, endDate, inte
       return { data: [], raw: null };
     }
     
-    const data = JSON.parse(response.getContentText());
+    const data = JSON.parse(responseText);
     
     if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
       logEntry.error = `No ${interval} data available`;
       logEntry.success = false;
       EW_logApiCall(logEntry, data);
+      
+      // DEBUG: Log empty data response
+      console.log(`[YAHOO] Empty data response for ${ticker} (${interval}): ${JSON.stringify(data).substring(0, 500)}`);
       
       // Calculate days since start date to provide context
       const daysSince = Math.floor((new Date() - startDate) / (1000 * 60 * 60 * 24));
@@ -591,13 +667,21 @@ function EW_getYahooHistoricalRangeWithInterval(ticker, startDate, endDate, inte
     
     // Include raw data for indicators if requested
     if (includeRaw) {
+      // Log what we're returning for raw data
+      EW_trace('BACKFILL', `${ticker}: Including raw data for ${interval} - timestamps: ${timestamps.length}, data points: ${priceData.length}`);
+      
+      // Match the expected format from Yahoo Finance API
       resultObj.raw = {
-        timestamps: timestamps.map(ts => ts * 1000),
-        highs: quotes.high,
-        lows: quotes.low,
-        closes: quotes.close,
-        opens: quotes.open,
-        volumes: volumes,
+        timestamp: timestamps,
+        indicators: {
+          quote: [{
+            open: quotes.open,
+            high: quotes.high,
+            low: quotes.low,
+            close: quotes.close,
+            volume: quotes.volume || volumes
+          }]
+        },
         interval: interval,
         isDailyOrHigher: isDailyOrHigher
       };
@@ -848,7 +932,16 @@ function EW_calculateIndicatorsFromYahoo(timestamps, quotes, targetIndex = null)
     const volumes = quotes.volume || [];
     
     if (closes.length < 20) {
+      EW_trace('YAHOO', `Not enough data for indicators - closes: ${closes.length}, need at least 20`);
       return null; // Not enough data for meaningful indicators
+    }
+    
+    // Validate data at target index if provided
+    if (targetIndex !== null) {
+      if (!closes[targetIndex] || !highs[targetIndex] || !lows[targetIndex]) {
+        EW_trace('YAHOO', `Missing data at target index ${targetIndex} - close: ${closes[targetIndex]}, high: ${highs[targetIndex]}, low: ${lows[targetIndex]}`);
+        return null;
+      }
     }
     
     // If targetIndex provided, calculate indicators up to that point

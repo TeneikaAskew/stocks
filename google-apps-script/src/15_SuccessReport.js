@@ -40,6 +40,25 @@ function EW_formatDateForReport(dateValue) {
   }
 }
 
+
+/**
+ * Calculate profit factor from observations
+ */
+function SR_calculateProfitFactor(observations) {
+  let sumWins = 0;
+  let sumLosses = 0;
+  
+  observations.forEach(obs => {
+    if (obs.profit > 0) {
+      sumWins += obs.profit;
+    } else {
+      sumLosses += Math.abs(obs.profit);
+    }
+  });
+  
+  return sumLosses > 0 ? sumWins / sumLosses : null;
+}
+
 /**
  * Main function to generate comprehensive success report
  * Creates a new sheet with deep insights and analysis
@@ -67,6 +86,8 @@ function EW_generateSuccessReport() {
   // Perform analyses
   const insights = {
     overview: EW_analyzeOverview(allTrades),
+    dataQuality: EW_analyzeDataQuality(allTrades),
+    holdingPeriod: EW_analyzeHoldingPeriod(allTrades),
     multiDayProfitability: EW_analyzeMultiDayProfitability(allTrades),
     indicatorEffectiveness: EW_analyzeIndicatorEffectiveness(allTrades),
     earningsTiming: EW_analyzeEarningsTiming(allTrades),
@@ -78,6 +99,10 @@ function EW_generateSuccessReport() {
   
   // Create report sheet
   EW_createReportSheet(ss, insights, allTrades);
+  
+  // Create individual analysis sheets
+  insights.allTrades = allTrades; // Add trades to insights for data quality analysis
+  EW_createIndividualSheets(ss, insights);
   
   // Store data for web app access
   if (typeof storeSuccessReportData === 'function') {
@@ -106,21 +131,6 @@ function EW_updateSuccessReport() {
   EW_generateSuccessReport();
 }
 
-/**
- * Format date for display in reports
- * @param {Date|string} date - The date to format
- * @return {string} Formatted date string or 'N/A'
- */
-function EW_formatDateForReport(date) {
-  if (!date) return 'N/A';
-  try {
-    const d = new Date(date);
-    if (isNaN(d.getTime())) return 'N/A';
-    return d.toLocaleDateString();
-  } catch (e) {
-    return 'N/A';
-  }
-}
 
 /**
  * Extract and parse all trade data from a sheet
@@ -134,19 +144,63 @@ function EW_extractTradeData(sheet, strategy) {
   if (lastRow < 2) return [];
   
   const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  console.log(`Extracting data from ${strategy} sheet: ${lastRow} total rows, ${data.length} data rows`);
+  
   const trades = [];
   
+  let skippedRows = 0;
+  let emptyRows = 0;
+  
   data.forEach((row, idx) => {
+    // Skip empty rows (no ticker)
+    if (!row[hdrMap.tickerCol - 1] || row[hdrMap.tickerCol - 1] === '') {
+      emptyRows++;
+      return;
+    }
+    
+    // Skip rows without Run Date (these are not valid trades)
+    if (!row[hdrMap.runDateCol - 1] || row[hdrMap.runDateCol - 1] === '') {
+      skippedRows++;
+      return;
+    }
+    
     try {
       const trade = {
         // Basic info
         strategy: strategy,
         ticker: row[hdrMap.tickerCol - 1],
+        company: row[hdrMap.companyCol - 1] || row[hdrMap.tickerCol - 1], // Fallback to ticker if no company
         runDate: row[hdrMap.runDateCol - 1],
         expDate: row[hdrMap.expDateCol - 1],
         strike: parseFloat(row[hdrMap.strikeCol - 1]) || 0,
         longStrike: parseFloat(row[hdrMap.longStrikeCol - 1]) || 0,
         shortStrike: parseFloat(row[hdrMap.shortStrikeCol - 1]) || 0,
+        
+        // Pricing context at entry
+        price: parseFloat(row[hdrMap.priceCol - 1]) || 0,
+        lastTrade: parseFloat(row[hdrMap.lastTradeCol - 1]) || 0,
+        bid: parseFloat(row[hdrMap.bidCol - 1]) || 0,
+        ask: parseFloat(row[hdrMap.askCol - 1]) || 0,
+        openInterest: parseFloat(row[hdrMap.openInterestCol - 1]) || 0,
+        volume: parseFloat(row[hdrMap.volumeCol - 1]) || 0,
+        
+        // GoogleFinance snapshot fields
+        gfPrice: parseFloat(row[hdrMap.priceCol - 1]) || 0,
+        gfChangePct: parseFloat(row[hdrMap.chgPctCol - 1]) || 0,
+        gfVolume: parseFloat(row[hdrMap.volCol - 1]) || 0,
+        gfAvgVol10: parseFloat(row[hdrMap.avgVol10Col - 1]) || 0,
+        gfHigh52: parseFloat(row[hdrMap.high52Col - 1]) || 0,
+        gfLow52: parseFloat(row[hdrMap.low52Col - 1]) || 0,
+        gfMktCap: parseFloat(row[hdrMap.mcapCol - 1]) || 0,
+        gfPE: parseFloat(row[hdrMap.peCol - 1]) || 0,
+        gfBeta: parseFloat(row[hdrMap.betaCol - 1]) || 0,
+        
+        // Volatility & returns
+        hv30D: parseFloat(row[hdrMap.hv30Col - 1]) || 0,
+        rvol10: parseFloat(row[hdrMap.rvol10Col - 1]) || 0,
+        ret5D: parseFloat(row[hdrMap.ret5Col - 1]) || 0,
+        ret20D: parseFloat(row[hdrMap.ret20Col - 1]) || 0,
+        gapPct: parseFloat(row[hdrMap.gapPctCol - 1]) || 0,
         
         // Dates
         nextEPSDate: row[hdrMap.nextEPSDateCol - 1],
@@ -173,7 +227,21 @@ function EW_extractTradeData(sheet, strategy) {
         expResult: row[hdrMap.expResultCol - 1],
         riskReward: parseFloat(row[hdrMap.riskRewardCol - 1]) || 0,
         
-        // Indicators (parsed arrays)
+        // Entry-time indicators (single values)
+        entryIndicators: {
+          rsi: parseFloat(row[hdrMap.entryRSICol - 1]) || null,
+          ema9: parseFloat(row[hdrMap.entryEMA9Col - 1]) || null,
+          ema21: parseFloat(row[hdrMap.entryEMA21Col - 1]) || null,
+          sma20: parseFloat(row[hdrMap.entrySMA20Col - 1]) || null,
+          sma50: parseFloat(row[hdrMap.entrySMA50Col - 1]) || null,
+          vwap: parseFloat(row[hdrMap.entryVWAPCol - 1]) || null,
+          rvol: parseFloat(row[hdrMap.entryRVOLCol - 1]) || null,
+          atr: parseFloat(row[hdrMap.entryATRCol - 1]) || null,
+          priceVsSMA20: parseFloat(row[hdrMap.entryPriceVsSMA20Col - 1]) || null,
+          priceVsVWAP: parseFloat(row[hdrMap.entryPriceVsVWAPCol - 1]) || null
+        },
+        
+        // Hit-time indicators (parsed arrays)
         indicators: {
           rsi: EW_parseArrayFromCell(row[hdrMap.hitRSICol - 1]),
           sma20: EW_parseArrayFromCell(row[hdrMap.hitSMA20Col - 1]),
@@ -193,15 +261,39 @@ function EW_extractTradeData(sheet, strategy) {
       };
       
       // Calculate derived fields
-      // Check for hits - Strike_Hit contains decimal percentage values when hit, null when not hit
+      // Check for hits - Strike_Hit contains decimal percentage values or null when not hit
+      // For bullish: positive values are hits (price went above strike)
+      // For bearish: positive values are hits (price went below strike - stored as positive in backfill)
+      // For neutral: any non-null value is a hit
+      const strategyType = EW_getStrategyType(trade.strategy);
+      
       trade.wasHit = trade.strikeHit && trade.strikeHit.length > 0 && 
         trade.strikeHit.some(hit => {
-          // Hit is a decimal percentage value, null means not hit
-          return hit !== null && hit !== undefined && hit !== "" && !isNaN(parseFloat(hit));
+          // Null means strike was not hit on that day
+          if (hit === null || hit === undefined || hit === "") return false;
+          
+          const pctMove = parseFloat(hit);
+          if (isNaN(pctMove)) return false;
+          
+          // Any non-null, non-zero value indicates a hit occurred
+          // The backfill stores positive values when strike is hit regardless of direction
+          return pctMove !== 0;
         });
       
-      trade.maxFavorableValue = Math.max(...trade.maxFavorable.filter(v => v !== null).map(v => parseFloat(v) || 0));
-      trade.maxUnfavorableValue = Math.max(...trade.minUnfavorable.filter(v => v !== null).map(v => parseFloat(v) || 0));
+      // Calculate max favorable value - handle both decimal and percentage formats
+      const maxFavValues = trade.maxFavorable.filter(v => v !== null).map(v => {
+        const val = parseFloat(v) || 0;
+        // If value is greater than 1, it's likely stored as percentage, convert to decimal
+        return val > 1 ? val / 100 : val;
+      });
+      trade.maxFavorableValue = maxFavValues.length > 0 ? Math.max(...maxFavValues) : 0;
+      
+      // Same for unfavorable
+      const minUnfavValues = trade.minUnfavorable.filter(v => v !== null).map(v => {
+        const val = parseFloat(v) || 0;
+        return val > 1 ? val / 100 : val;
+      });
+      trade.maxUnfavorableValue = minUnfavValues.length > 0 ? Math.max(...minUnfavValues) : 0;
       trade.profitableDays = trade.maxFavorable.filter(v => v !== null && parseFloat(v) > 0).length;
       
       // Days to hit
@@ -220,12 +312,49 @@ function EW_extractTradeData(sheet, strategy) {
       trades.push(trade);
     } catch (e) {
       console.error(`Error parsing trade at row ${idx + 2}: ${e.message}`);
+      skippedRows++;
     }
   });
+  
+  if (emptyRows > 0 || skippedRows > 0) {
+    console.log(`  ${strategy}: Skipped ${emptyRows} empty rows (no ticker) and ${skippedRows} rows without Run Date`);
+  }
   
   // Debug logging for hit rates
   const hitCount = trades.filter(t => t.wasHit).length;
   console.log(`Strategy: ${strategy}, Total trades: ${trades.length}, Hit trades: ${hitCount}, Hit rate: ${(hitCount/trades.length*100).toFixed(1)}%`);
+  
+  // Additional debug info for first few trades and hit analysis
+  if (trades.length > 0) {
+    // Sample trades for debugging
+    const sampleTrades = trades.slice(0, 3);
+    sampleTrades.forEach((trade, idx) => {
+      const strikeHitPreview = trade.strikeHit.slice(0, 3).map(v => v === null ? 'null' : v).join(',');
+      console.log(`  Sample trade ${idx + 1}: Strike=${trade.strike || trade.longStrike}, StrikeHit=[${strikeHitPreview}...], wasHit=${trade.wasHit}`);
+    });
+    
+    // Analyze hit patterns
+    const tradesWithArrays = trades.filter(t => t.strikeHit && t.strikeHit.length > 0);
+    const tradesWithNonNullValues = trades.filter(t => 
+      t.strikeHit && t.strikeHit.some(v => v !== null && v !== undefined && v !== "")
+    );
+    const tradesWithPositiveValues = trades.filter(t => 
+      t.strikeHit && t.strikeHit.some(v => v !== null && parseFloat(v) > 0)
+    );
+    
+    console.log(`  Strike_Hit array stats: ${tradesWithArrays.length} have arrays, ${tradesWithNonNullValues.length} have non-null values, ${tradesWithPositiveValues.length} have positive values`);
+    
+    // Check for trades that might be duplicates or haven't been backfilled
+    const tradesWithoutArrays = trades.filter(t => !t.strikeHit || t.strikeHit.length === 0);
+    if (tradesWithoutArrays.length > 0) {
+      console.log(`  WARNING: ${tradesWithoutArrays.length} trades have no Strike_Hit data (not backfilled yet?)`);
+      // Show a few examples
+      const examples = tradesWithoutArrays.slice(0, 3);
+      examples.forEach((trade, idx) => {
+        console.log(`    Example ${idx + 1}: ${trade.ticker}, Strike=${trade.strike || trade.longStrike}, RunDate=${trade.runDate}`);
+      });
+    }
+  }
   
   return trades;
 }
@@ -235,52 +364,208 @@ function EW_extractTradeData(sheet, strategy) {
  */
 function EW_analyzeOverview(trades) {
   const totalTrades = trades.length;
-  const hitTrades = trades.filter(t => t.wasHit).length;
   
-  // A trade is profitable if it was hit AND has positive net profit
-  const profitableTrades = trades.filter(t => {
-    if (!t.wasHit) return false;
-    // Find the first day it was hit (when we have a percentage value)
-    const hitIndex = t.strikeHit.findIndex(hit => hit !== null && hit !== undefined && hit !== "");
-    if (hitIndex === -1) return false;
-    // Compare favorable vs unfavorable at that day
-    const favorable = parseFloat(t.maxFavorable[hitIndex]) || 0;
-    const unfavorable = parseFloat(t.minUnfavorable[hitIndex]) || 0;
-    return favorable > unfavorable;
+  // Calculate based on day-observations, not just trades
+  let totalObservations = 0;
+  let profitableObservations = 0;
+  let hitObservations = 0;
+  let sumProfits = 0;
+  let sumLosses = 0;
+  let profitCount = 0;
+  let lossCount = 0;
+  
+  // Collect all observations
+  const observations = [];
+  
+  trades.forEach(trade => {
+    // Use array length to determine how many days have been tracked
+    // Arrays like ["0.038494"] have 1 observation (day0)
+    // Arrays like ["0.002500","0.011000","-0.024167","-0.025611","-0.027939","-0.011167"] have 6 observations (day0-day5)
+    const observationCount = Math.max(
+      trade.maxFavorable.filter(v => v !== null && v !== undefined).length,
+      trade.minUnfavorable.filter(v => v !== null && v !== undefined).length,
+      trade.strikeHit.filter(v => v !== null && v !== undefined && v !== "").length
+    );
+    
+    // Process each observation based on array length
+    for (let i = 0; i < observationCount; i++) {
+      totalObservations++;
+      
+      const favorable = parseFloat(trade.maxFavorable[i]) || 0;
+      const unfavorable = parseFloat(trade.minUnfavorable[i]) || 0;
+      const netProfit = favorable - unfavorable;
+      
+      observations.push({
+        trade: trade,
+        day: i,
+        favorable: favorable,
+        unfavorable: unfavorable,
+        profit: netProfit,
+        strikeHit: trade.strikeHit[i] !== null && trade.strikeHit[i] !== undefined && trade.strikeHit[i] !== "",
+        dayCheck: trade.dayChecks[i] // Keep for reference but don't use for counting
+      });
+      
+      // Count profitable observations (favorable > unfavorable)
+      if (favorable > unfavorable) {
+        profitableObservations++;
+        sumProfits += netProfit;
+        profitCount++;
+      } else if (unfavorable > favorable) {
+        sumLosses += Math.abs(netProfit);
+        lossCount++;
+      }
+      
+      // Count hit observations (strike was reached)
+      if (trade.strikeHit[i] !== null && trade.strikeHit[i] !== undefined && trade.strikeHit[i] !== "") {
+        hitObservations++;
+      }
+    }
+  });
+  
+  // Calculate metrics
+  const profitFactor = sumLosses > 0 ? sumProfits / sumLosses : null;
+  const avgProfit = profitCount > 0 ? sumProfits / profitCount : 0;
+  const avgLoss = lossCount > 0 ? sumLosses / lossCount : 0;
+  const avgRiskReward = avgLoss > 0 ? avgProfit / avgLoss : null;
+  
+  // Count trades that hit their strike at any point
+  const tradesWithHits = trades.filter(trade => {
+    if (!trade.strikeHit || !Array.isArray(trade.strikeHit)) return false;
+    
+    const strategyUpper = (trade.strategy || '').toUpperCase();
+    const isBullish = strategyUpper.includes('BULL') || strategyUpper.includes('LONG CALL') || strategyUpper.includes('CALL');
+    const isBearish = strategyUpper.includes('BEAR') || strategyUpper.includes('LONG PUT') || strategyUpper.includes('PUT');
+    
+    // Check if any day has a valid hit based on strategy
+    return trade.strikeHit.some(hit => {
+      if (hit === null || hit === undefined || hit === "" || hit === "NO" || hit === "NO_DATA") {
+        return false;
+      }
+      
+      // Parse the hit value (it's stored as a decimal percentage)
+      const hitValue = parseFloat(hit);
+      if (isNaN(hitValue)) return false;
+      
+      // The backfill stores positive values for both bullish and bearish hits
+      // Any non-zero value indicates a hit occurred
+      return hitValue !== 0;
+    });
   }).length;
   
-  // Calculate by strategy type
+  // Calculate average days to hit
+  const tradesWithDaysToHit = trades.filter(t => t.daysToHit !== undefined && t.daysToHit !== null);
+  const avgDaysToHit = tradesWithDaysToHit.length > 0 ? 
+    tradesWithDaysToHit.reduce((sum, t) => sum + t.daysToHit, 0) / tradesWithDaysToHit.length : 0;
+  
+  // Calculate by strategy type using observations
   const byStrategy = {};
   const strategies = [...new Set(trades.map(t => t.strategy))];
   
   strategies.forEach(strategy => {
     const strategyTrades = trades.filter(t => t.strategy === strategy);
-    const strategyHits = strategyTrades.filter(t => t.wasHit).length;
-    const strategyProfitable = strategyTrades.filter(t => {
-      if (!t.wasHit) return false;
-      const hitIndex = t.strikeHit.findIndex(hit => hit !== null && hit !== undefined && hit !== "");
-      if (hitIndex === -1) return false;
-      const favorable = parseFloat(t.maxFavorable[hitIndex]) || 0;
-      const unfavorable = parseFloat(t.minUnfavorable[hitIndex]) || 0;
-      return favorable > unfavorable;
+    let strategyObservations = 0;
+    let strategyProfitableObs = 0;
+    
+    // Count trades that hit (not observations)
+    const strategyHits = strategyTrades.filter(trade => {
+      if (!trade.strikeHit || !Array.isArray(trade.strikeHit)) return false;
+      
+      // Check if any day has a valid hit (non-null, non-zero value)
+      // The backfill stores positive values for both bullish and bearish hits
+      return trade.strikeHit.some(hit => {
+        if (hit === null || hit === undefined || hit === "" || hit === "NO" || hit === "NO_DATA") {
+          return false;
+        }
+        
+        const hitValue = parseFloat(hit);
+        return !isNaN(hitValue) && hitValue !== 0;
+      });
     }).length;
+    
+    strategyTrades.forEach(trade => {
+      // Use array length to determine observation count
+      const observationCount = Math.max(
+        trade.maxFavorable.filter(v => v !== null && v !== undefined).length,
+        trade.minUnfavorable.filter(v => v !== null && v !== undefined).length,
+        trade.strikeHit.filter(v => v !== null && v !== undefined && v !== "").length
+      );
+      
+      for (let i = 0; i < observationCount; i++) {
+        strategyObservations++;
+        
+        const favorable = parseFloat(trade.maxFavorable[i]) || 0;
+        const unfavorable = parseFloat(trade.minUnfavorable[i]) || 0;
+        
+        if (favorable > unfavorable) {
+          strategyProfitableObs++;
+        }
+      }
+    });
+    
+    // Calculate profit factor and avg win/loss for strategy
+    let strategyWins = 0;
+    let strategyLosses = 0;
+    let strategyWinCount = 0;
+    let strategyLossCount = 0;
+    
+    const strategyObs = observations.filter(o => o.trade.strategy === strategy);
+    strategyObs.forEach(o => {
+      if (o.profit > 0) {
+        strategyWins += o.profit;
+        strategyWinCount++;
+      } else if (o.profit < 0) {
+        strategyLosses += Math.abs(o.profit);
+        strategyLossCount++;
+      }
+    });
+    
+    const strategyProfitFactor = strategyLosses > 0 ? strategyWins / strategyLosses : 0;
+    const strategyAvgWin = strategyWinCount > 0 ? strategyWins / strategyWinCount : 0;
+    const strategyAvgLoss = strategyLossCount > 0 ? strategyLosses / strategyLossCount : 0;
     
     byStrategy[strategy] = {
       totalTrades: strategyTrades.length,
-      hitRate: strategyTrades.length > 0 ? (strategyHits / strategyTrades.length * 100).toFixed(2) + '%' : '0%',
-      profitableRate: strategyTrades.length > 0 ? (strategyProfitable / strategyTrades.length * 100).toFixed(2) + '%' : '0%',
+      totalObservations: strategyObservations,
+      hitRate: strategyTrades.length > 0 ? (strategyHits / strategyTrades.length * 100).toFixed(2) + '%' : '0%', // Changed to trade-based
+      profitableRate: strategyObservations > 0 ? (strategyProfitableObs / strategyObservations * 100).toFixed(2) + '%' : '0%',
+      profitFactor: strategyProfitFactor.toFixed(2),
+      avgWin: (strategyAvgWin * 100).toFixed(2) + '%',
+      avgLoss: (strategyAvgLoss * 100).toFixed(2) + '%',
       avgRiskReward: strategyTrades.length > 0 ? (strategyTrades.reduce((sum, t) => sum + (t.riskReward || 0), 0) / strategyTrades.length).toFixed(2) : '0'
     };
   });
   
+  // Find best holding day
+  const holdingDayStats = {};
+  for (let day = 0; day < 6; day++) {
+    const dayObs = observations.filter(o => o.day === day);
+    if (dayObs.length > 0) {
+      const dayProfitable = dayObs.filter(o => o.profit > 0).length;
+      holdingDayStats[day] = {
+        profitableRate: (dayProfitable / dayObs.length * 100).toFixed(2),
+        avgProfit: dayObs.reduce((sum, o) => sum + o.profit, 0) / dayObs.length
+      };
+    }
+  }
+  
+  const bestHoldingDay = Object.entries(holdingDayStats)
+    .sort((a, b) => parseFloat(b[1].profitableRate) - parseFloat(a[1].profitableRate))[0];
+  
   return {
     totalTrades: totalTrades,
-    hitRate: (hitTrades / totalTrades * 100).toFixed(2) + '%',
-    profitableRate: (profitableTrades / totalTrades * 100).toFixed(2) + '%',
-    avgRiskReward: (trades.reduce((sum, t) => sum + (t.riskReward || 0), 0) / totalTrades).toFixed(2),
-    avgDaysToHit: (trades.filter(t => t.daysToHit !== undefined)
-      .reduce((sum, t) => sum + t.daysToHit, 0) / hitTrades).toFixed(1),
-    byStrategy: byStrategy
+    totalObservations: totalObservations,
+    strikeHits: tradesWithHits,
+    profitableTrades: profitableObservations,
+    hitRate: totalTrades > 0 ? tradesWithHits / totalTrades : 0, // Changed to trade-based calculation
+    profitableRate: totalObservations > 0 ? profitableObservations / totalObservations : 0,
+    profitFactor: profitFactor || 0,
+    avgProfit: avgProfit,
+    avgLoss: avgLoss,
+    avgRiskReward: avgRiskReward || 0,
+    avgDaysToHit: avgDaysToHit,
+    bestHoldingDay: bestHoldingDay ? `Day ${bestHoldingDay[0]}` : 'Day 1',
+    byStrategy: byStrategy,
+    observations: observations // For use in other analyses
   };
 }
 
@@ -397,20 +682,38 @@ function EW_analyzeMultiDayProfitability(trades) {
 }
 
 /**
- * Analyze indicator effectiveness
+ * Analyze indicator effectiveness with enhanced insights
  */
 function EW_analyzeIndicatorEffectiveness(trades) {
-  const indicators = ['rsi', 'sma20', 'sma50', 'ema9', 'ema21', 'vwap', 'rvol', 'atr', 'priceVsSMA20', 'priceVsVWAP'];
+  const hitIndicators = ['rsi', 'sma20', 'sma50', 'ema9', 'ema21', 'vwap', 'rvol', 'atr', 'priceVsSMA20', 'priceVsVWAP'];
+  const entryIndicators = ['rsi', 'sma20', 'sma50', 'ema9', 'ema21', 'vwap', 'rvol', 'atr', 'priceVsSMA20', 'priceVsVWAP'];
   const analysis = {};
   
-  indicators.forEach(indicator => {
-    const profitableRanges = EW_findProfitableIndicatorRanges(trades, indicator);
-    const correlation = EW_calculateIndicatorCorrelation(trades, indicator);
+  // Analyze hit-time indicators
+  hitIndicators.forEach(indicator => {
+    const profitableRanges = EW_findProfitableIndicatorRanges(trades, indicator, 'hit');
+    const correlation = EW_calculateIndicatorCorrelation(trades, indicator, 'hit');
     
-    analysis[indicator] = {
+    analysis[`hit_${indicator}`] = {
+      type: 'hit',
       profitableRanges: profitableRanges,
       correlationWithProfit: correlation,
-      significance: Math.abs(correlation) > 0.3 ? 'HIGH' : (Math.abs(correlation) > 0.15 ? 'MEDIUM' : 'LOW')
+      significance: Math.abs(correlation) > 0.3 ? 'HIGH' : (Math.abs(correlation) > 0.15 ? 'MEDIUM' : 'LOW'),
+      dataCompleteness: EW_calculateDataCompleteness(trades, indicator, 'hit')
+    };
+  });
+  
+  // Analyze entry-time indicators
+  entryIndicators.forEach(indicator => {
+    const profitableRanges = EW_findProfitableIndicatorRanges(trades, indicator, 'entry');
+    const correlation = EW_calculateIndicatorCorrelation(trades, indicator, 'entry');
+    
+    analysis[`entry_${indicator}`] = {
+      type: 'entry',
+      profitableRanges: profitableRanges,
+      correlationWithProfit: correlation,
+      significance: Math.abs(correlation) > 0.3 ? 'HIGH' : (Math.abs(correlation) > 0.15 ? 'MEDIUM' : 'LOW'),
+      dataCompleteness: EW_calculateDataCompleteness(trades, indicator, 'entry')
     };
   });
   
@@ -420,7 +723,7 @@ function EW_analyzeIndicatorEffectiveness(trades) {
 /**
  * Find profitable ranges for an indicator
  */
-function EW_findProfitableIndicatorRanges(trades, indicatorName) {
+function EW_findProfitableIndicatorRanges(trades, indicatorName, type = 'hit') {
   const ranges = {
     bullish: { min: null, max: null, count: 0, avgProfit: 0 },
     bearish: { min: null, max: null, count: 0, avgProfit: 0 }
@@ -431,14 +734,24 @@ function EW_findProfitableIndicatorRanges(trades, indicatorName) {
   );
   
   profitableTrades.forEach(trade => {
-    const indicatorValues = trade.indicators[indicatorName];
-    if (!indicatorValues || indicatorValues.length === 0) return;
+    let value;
     
-    // Get value at hit time (first non-null value)
-    const hitValue = indicatorValues.find(v => v !== null);
-    if (!hitValue) return;
+    if (type === 'entry') {
+      // Get entry-time indicator value
+      if (!trade.entryIndicators || trade.entryIndicators[indicatorName] === null) return;
+      value = parseFloat(trade.entryIndicators[indicatorName]);
+    } else {
+      // Get hit-time indicator value (first non-null value)
+      const indicatorValues = trade.indicators[indicatorName];
+      if (!indicatorValues || indicatorValues.length === 0) return;
+      
+      const hitValue = indicatorValues.find(v => v !== null);
+      if (!hitValue) return;
+      value = parseFloat(hitValue);
+    }
     
-    const value = parseFloat(hitValue);
+    if (isNaN(value)) return;
+    
     const isBullish = trade.strategy.toUpperCase().includes('BULL') || 
                       trade.strategy.toUpperCase().includes('LONG CALL');
     
@@ -452,10 +765,10 @@ function EW_findProfitableIndicatorRanges(trades, indicatorName) {
   
   // Calculate averages
   if (ranges.bullish.count > 0) {
-    ranges.bullish.avgProfit = (ranges.bullish.avgProfit / ranges.bullish.count).toFixed(2);
+    ranges.bullish.avgProfit = ((ranges.bullish.avgProfit / ranges.bullish.count) * 100).toFixed(2);
   }
   if (ranges.bearish.count > 0) {
-    ranges.bearish.avgProfit = (ranges.bearish.avgProfit / ranges.bearish.count).toFixed(2);
+    ranges.bearish.avgProfit = ((ranges.bearish.avgProfit / ranges.bearish.count) * 100).toFixed(2);
   }
   
   return ranges;
@@ -464,18 +777,30 @@ function EW_findProfitableIndicatorRanges(trades, indicatorName) {
 /**
  * Calculate correlation between indicator and profitability
  */
-function EW_calculateIndicatorCorrelation(trades, indicatorName) {
+function EW_calculateIndicatorCorrelation(trades, indicatorName, type = 'hit') {
   const pairs = [];
   
   trades.forEach(trade => {
-    const indicatorValues = trade.indicators[indicatorName];
-    if (!indicatorValues || indicatorValues.length === 0) return;
+    let value;
     
-    const firstValue = indicatorValues.find(v => v !== null);
-    if (!firstValue) return;
+    if (type === 'entry') {
+      // Get entry-time indicator value
+      if (!trade.entryIndicators || trade.entryIndicators[indicatorName] === null) return;
+      value = parseFloat(trade.entryIndicators[indicatorName]);
+    } else {
+      // Get hit-time indicator value
+      const indicatorValues = trade.indicators[indicatorName];
+      if (!indicatorValues || indicatorValues.length === 0) return;
+      
+      const firstValue = indicatorValues.find(v => v !== null);
+      if (!firstValue) return;
+      value = parseFloat(firstValue);
+    }
+    
+    if (isNaN(value)) return;
     
     pairs.push({
-      indicator: parseFloat(firstValue),
+      indicator: value,
       profit: trade.maxFavorableValue - trade.maxUnfavorableValue
     });
   });
@@ -493,11 +818,328 @@ function EW_calculateIndicatorCorrelation(trades, indicatorName) {
   const correlation = (n * sumXY - sumX * sumY) / 
     Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
   
-  return isNaN(correlation) ? 0 : correlation.toFixed(3);
+  return isNaN(correlation) ? 0 : parseFloat(correlation.toFixed(3));
 }
 
 /**
- * Analyze earnings timing patterns
+ * Calculate data completeness for an indicator
+ */
+function EW_calculateDataCompleteness(trades, indicatorName, type = 'hit') {
+  let withData = 0;
+  let total = trades.length;
+  
+  trades.forEach(trade => {
+    if (type === 'entry') {
+      if (trade.entryIndicators && trade.entryIndicators[indicatorName] !== null) {
+        withData++;
+      }
+    } else {
+      if (trade.indicators && trade.indicators[indicatorName]) {
+        const hasData = trade.indicators[indicatorName].some(v => v !== null);
+        if (hasData) withData++;
+      }
+    }
+  });
+  
+  return ((withData / total) * 100).toFixed(1) + '%';
+}
+
+/**
+ * Analyze data quality and completeness
+ */
+function EW_analyzeDataQuality(trades) {
+  const quality = {
+    totalTrades: trades.length,
+    missingData: {
+      company: 0,
+      nextEPSDate: 0,
+      releaseTime: 0,
+      entryIndicators: 0,
+      hitIndicators: 0,
+      maxFavorable: 0,
+      strikeHit: 0,
+      dayChecks: 0,
+      firstHitDate: 0
+    },
+    dataCompleteness: {},
+    recommendations: []
+  };
+  
+  // Check each trade for missing data
+  trades.forEach(trade => {
+    // Basic fields
+    if (!trade.company || trade.company === trade.ticker) quality.missingData.company++;
+    if (!trade.nextEPSDate || trade.nextEPSDate === '') quality.missingData.nextEPSDate++;
+    if (trade.releaseTime === undefined || trade.releaseTime === null || trade.releaseTime === '') quality.missingData.releaseTime++;
+    if (!trade.firstHitDate && trade.wasHit) quality.missingData.firstHitDate++;
+    
+    // Entry indicators
+    const hasEntryIndicators = trade.entryIndicators && 
+      Object.values(trade.entryIndicators).some(v => v !== null);
+    if (!hasEntryIndicators) quality.missingData.entryIndicators++;
+    
+    // Hit indicators
+    const hasHitIndicators = trade.indicators && 
+      Object.values(trade.indicators).some(arr => arr && arr.some(v => v !== null));
+    if (!hasHitIndicators) quality.missingData.hitIndicators++;
+    
+    // Arrays
+    if (!trade.maxFavorable || trade.maxFavorable.every(v => v === null)) {
+      quality.missingData.maxFavorable++;
+    }
+    if (!trade.strikeHit || trade.strikeHit.every(v => v === null)) {
+      quality.missingData.strikeHit++;
+    }
+    if (!trade.dayChecks || trade.dayChecks.every(v => !v)) {
+      quality.missingData.dayChecks++;
+    }
+  });
+  
+  // Calculate completeness percentages
+  Object.entries(quality.missingData).forEach(([field, count]) => {
+    const percentage = ((quality.totalTrades - count) / quality.totalTrades * 100).toFixed(1);
+    quality.dataCompleteness[field] = percentage + '%';
+  });
+  
+  // Generate recommendations
+  if (quality.missingData.company > quality.totalTrades * 0.5) {
+    quality.recommendations.push('Company names are missing for >50% of trades. Consider adding company lookup.');
+  }
+  if (quality.missingData.nextEPSDate > quality.totalTrades * 0.3) {
+    quality.recommendations.push('Earnings dates missing for >30% of trades. This limits earnings timing analysis.');
+  }
+  if (quality.missingData.entryIndicators > quality.totalTrades * 0.2) {
+    quality.recommendations.push('Entry indicators missing for >20% of trades. Run indicator calculation on entry.');
+  }
+  if (quality.missingData.strikeHit > quality.totalTrades * 0.1) {
+    quality.recommendations.push('Strike hit data missing. Ensure backfill is running properly.');
+  }
+  
+  // Calculate overall data quality score
+  const totalFields = Object.keys(quality.missingData).length;
+  const totalMissing = Object.values(quality.missingData).reduce((sum, count) => sum + count, 0);
+  const maxPossibleMissing = quality.totalTrades * totalFields;
+  quality.overallScore = ((1 - totalMissing / maxPossibleMissing) * 100).toFixed(1) + '%';
+  
+  return quality;
+}
+
+/**
+ * Analyze holding period performance
+ */
+function EW_analyzeHoldingPeriod(trades) {
+  const analysis = {
+    byDay: {},
+    byStrategy: {},
+    optimalExitTiming: {},
+    averageDecayRate: {},
+    recommendations: []
+  };
+  
+  // Initialize day analysis
+  for (let day = 0; day <= 5; day++) {
+    analysis.byDay[`Day${day}`] = {
+      totalObservations: 0,
+      profitable: 0,
+      avgProfit: 0,
+      avgLoss: 0,
+      hitRate: 0,
+      avgMove: 0,
+      profitSum: 0,
+      lossSum: 0,
+      profitCount: 0,
+      lossCount: 0
+    };
+  }
+  
+  // Analyze each trade's performance by day
+  trades.forEach(trade => {
+    if (!trade.maxFavorable || !trade.minUnfavorable) return;
+    
+    // Use array length to determine how many observations exist
+    const observationCount = Math.max(
+      trade.maxFavorable.filter(v => v !== null && v !== undefined).length,
+      trade.minUnfavorable.filter(v => v !== null && v !== undefined).length,
+      trade.strikeHit.filter(v => v !== null && v !== undefined && v !== "").length
+    );
+    
+    for (let day = 0; day < observationCount; day++) {
+      const favorable = parseFloat(trade.maxFavorable[day]) || 0;
+      const unfavorable = parseFloat(trade.minUnfavorable[day]) || 0;
+      
+      // Only count if we have data for this day (at least one array has a value)
+      if (trade.maxFavorable[day] !== null || trade.minUnfavorable[day] !== null || 
+          (trade.strikeHit[day] !== null && trade.strikeHit[day] !== "")) {
+        const dayKey = `Day${day}`;
+        const dayStats = analysis.byDay[dayKey];
+        const netMove = favorable - unfavorable;
+        
+        dayStats.totalObservations++;
+        dayStats.avgMove += netMove;
+        
+        if (netMove > 0) {
+          dayStats.profitable++;
+          dayStats.profitSum += netMove;
+          dayStats.profitCount++;
+        } else {
+          dayStats.lossSum += Math.abs(netMove);
+          dayStats.lossCount++;
+        }
+        
+        // Track hit rate
+        if (trade.strikeHit && trade.strikeHit[day] !== null && trade.strikeHit[day] !== "") {
+          dayStats.hitRate++;
+        }
+      }
+    }
+  });
+  
+  // Calculate averages and rates
+  Object.entries(analysis.byDay).forEach(([day, stats]) => {
+    if (stats.totalObservations > 0) {
+      stats.profitableRate = ((stats.profitable / stats.totalObservations) * 100).toFixed(2) + '%';
+      stats.hitRate = ((stats.hitRate / stats.totalObservations) * 100).toFixed(2) + '%';
+      stats.avgMove = ((stats.avgMove / stats.totalObservations) * 100).toFixed(2) + '%';
+      
+      if (stats.profitCount > 0) {
+        stats.avgProfit = ((stats.profitSum / stats.profitCount) * 100).toFixed(2) + '%';
+      }
+      if (stats.lossCount > 0) {
+        stats.avgLoss = ((stats.lossSum / stats.lossCount) * 100).toFixed(2) + '%';
+      }
+      
+      stats.profitFactor = stats.lossSum > 0 ? (stats.profitSum / stats.lossSum).toFixed(2) : 'N/A';
+    }
+  });
+  
+  // Analyze by strategy
+  const strategies = [...new Set(trades.map(t => t.strategy))];
+  strategies.forEach(strategy => {
+    analysis.byStrategy[strategy] = {
+      byDay: {}
+    };
+    
+    // Initialize days for this strategy
+    for (let day = 0; day <= 5; day++) {
+      analysis.byStrategy[strategy].byDay[`Day${day}`] = {
+        totalObservations: 0,
+        profitable: 0,
+        profitableRate: '0%',
+        avgMove: 0
+      };
+    }
+    
+    // Process trades for this strategy
+    const strategyTrades = trades.filter(t => t.strategy === strategy);
+    strategyTrades.forEach(trade => {
+      if (!trade.maxFavorable || !trade.minUnfavorable) return;
+      
+      // Use array length to determine observation count
+      const observationCount = Math.max(
+        trade.maxFavorable.filter(v => v !== null && v !== undefined).length,
+        trade.minUnfavorable.filter(v => v !== null && v !== undefined).length,
+        trade.strikeHit.filter(v => v !== null && v !== undefined && v !== "").length
+      );
+      
+      for (let day = 0; day < observationCount; day++) {
+        const favorable = parseFloat(trade.maxFavorable[day]) || 0;
+        const unfavorable = parseFloat(trade.minUnfavorable[day]) || 0;
+        
+        if (favorable !== 0 || unfavorable !== 0) {
+          const dayKey = `Day${day}`;
+          const dayStats = analysis.byStrategy[strategy].byDay[dayKey];
+          const netMove = favorable - unfavorable;
+          
+          dayStats.totalObservations++;
+          dayStats.avgMove += netMove;
+          
+          if (netMove > 0) {
+            dayStats.profitable++;
+          }
+        }
+      }
+    });
+    
+    // Calculate averages for this strategy
+    Object.entries(analysis.byStrategy[strategy].byDay).forEach(([day, stats]) => {
+      if (stats.totalObservations > 0) {
+        stats.profitableRate = ((stats.profitable / stats.totalObservations) * 100).toFixed(2) + '%';
+        stats.avgMove = ((stats.avgMove / stats.totalObservations) * 100).toFixed(2) + '%';
+      }
+    });
+  });
+  
+  // Find optimal exit timing
+  let maxProfitDay = null;
+  let maxProfitRate = 0;
+  
+  Object.entries(analysis.byDay).forEach(([day, stats]) => {
+    const rate = parseFloat(stats.profitableRate) || 0;
+    if (rate > maxProfitRate) {
+      maxProfitRate = rate;
+      maxProfitDay = day;
+    }
+  });
+  
+  analysis.optimalExitTiming = {
+    bestDay: maxProfitDay,
+    profitableRate: maxProfitRate + '%',
+    recommendation: maxProfitDay ? `Consider exiting positions on ${maxProfitDay} for optimal profit rate` : 'Insufficient data'
+  };
+  
+  // Calculate average decay rate (how profit deteriorates over time)
+  const profitRates = [];
+  for (let day = 0; day <= 5; day++) {
+    const rate = parseFloat(analysis.byDay[`Day${day}`].profitableRate) || 0;
+    profitRates.push(rate);
+  }
+  
+  // Find peak and calculate decay
+  const peakDay = profitRates.indexOf(Math.max(...profitRates));
+  if (peakDay < 5) {
+    const decayRates = [];
+    for (let i = peakDay + 1; i < profitRates.length; i++) {
+      const decay = profitRates[peakDay] - profitRates[i];
+      decayRates.push(decay);
+    }
+    
+    if (decayRates.length > 0) {
+      const avgDecay = decayRates.reduce((sum, d) => sum + d, 0) / decayRates.length;
+      analysis.averageDecayRate = {
+        peakDay: `Day${peakDay}`,
+        avgDecayPerDay: avgDecay.toFixed(2) + '%',
+        recommendation: avgDecay > 5 ? 'Significant profit decay after peak - consider earlier exits' : 'Profits hold relatively well over time'
+      };
+    }
+  }
+  
+  // Generate recommendations
+  if (maxProfitDay) {
+    analysis.recommendations.push(`Optimal exit timing appears to be ${maxProfitDay} with ${maxProfitRate}% profitable rate`);
+  }
+  
+  if (analysis.averageDecayRate && analysis.averageDecayRate.avgDecayPerDay) {
+    const decay = parseFloat(analysis.averageDecayRate.avgDecayPerDay);
+    if (decay > 10) {
+      analysis.recommendations.push('Profit decay is significant - consider tighter exit rules');
+    }
+  }
+  
+  // Check for strategies that perform better with longer holds
+  Object.entries(analysis.byStrategy).forEach(([strategy, data]) => {
+    const day0Rate = parseFloat(data.byDay.Day0.profitableRate) || 0;
+    const day3Rate = parseFloat(data.byDay.Day3.profitableRate) || 0;
+    
+    if (day3Rate > day0Rate * 1.2) {
+      analysis.recommendations.push(`${strategy} performs better with longer holds (3+ days)`);
+    }
+  });
+  
+  return analysis;
+}
+
+/**
+ * Analyze earnings timing patterns with enhanced insights
  */
 function EW_analyzeEarningsTiming(trades) {
   const analysis = {
@@ -505,58 +1147,192 @@ function EW_analyzeEarningsTiming(trades) {
     postEarningsHits: [],
     noEarningsData: 0,
     earningsImpact: {},
-    optimalEntryTiming: {}
+    optimalEntryTiming: {},
+    byReleaseTime: {
+      beforeOpen: { hits: 0, total: 0, avgProfit: 0, avgDaysToHit: 0 },
+      afterClose: { hits: 0, total: 0, avgProfit: 0, avgDaysToHit: 0 },
+      unknown: { hits: 0, total: 0, avgProfit: 0, avgDaysToHit: 0 }
+    },
+    byDaysToEarnings: {}
   };
   
+  // Initialize days to earnings buckets
+  const dayBuckets = ['0-2', '3-5', '6-10', '11-20', '21+'];
+  dayBuckets.forEach(bucket => {
+    analysis.byDaysToEarnings[bucket] = {
+      trades: 0,
+      hits: 0,
+      avgProfit: 0,
+      avgDaysToHit: 0,
+      profitSum: 0,
+      daysSum: 0
+    };
+  });
+  
   trades.forEach(trade => {
-    // Skip if no earnings date or trade wasn't hit
-    if (!trade.nextEPSDate || !trade.wasHit) {
-      if (!trade.nextEPSDate) analysis.noEarningsData++;
+    // Skip if no earnings date
+    if (!trade.nextEPSDate || trade.nextEPSDate === '') {
+      analysis.noEarningsData++;
       return;
     }
     
-    // Skip if no first hit date
-    if (!trade.firstHitDate) return;
-    
     const epsDate = new Date(trade.nextEPSDate);
-    const hitDate = new Date(trade.firstHitDate);
     const runDate = new Date(trade.runDate);
+    const daysToEarnings = Math.floor((epsDate - runDate) / (1000 * 60 * 60 * 24));
     
-    // Adjust earnings date based on release time
-    // releaseTime: 1 = before market open, 3 = after market close
+    // Determine bucket
+    let bucket;
+    if (daysToEarnings <= 2) bucket = '0-2';
+    else if (daysToEarnings <= 5) bucket = '3-5';
+    else if (daysToEarnings <= 10) bucket = '6-10';
+    else if (daysToEarnings <= 20) bucket = '11-20';
+    else bucket = '21+';
+    
+    analysis.byDaysToEarnings[bucket].trades++;
+    
+    // Analyze release time impact
     const releaseTime = trade.releaseTime || 0;
+    let timeCategory = 'unknown';
+    if (releaseTime === 1) timeCategory = 'beforeOpen';
+    else if (releaseTime === 3) timeCategory = 'afterClose';
     
-    let effectiveEarningsDate = new Date(epsDate);
-    if (releaseTime === 1) {
-      // Before market open - affects same day trading
-      effectiveEarningsDate.setHours(9, 30, 0, 0);
-    } else if (releaseTime === 3) {
-      // After market close - affects next trading day
-      effectiveEarningsDate.setDate(effectiveEarningsDate.getDate() + 1);
-      effectiveEarningsDate.setHours(9, 30, 0, 0);
+    analysis.byReleaseTime[timeCategory].total++;
+    
+    if (trade.wasHit) {
+      analysis.byDaysToEarnings[bucket].hits++;
+      analysis.byDaysToEarnings[bucket].profitSum += trade.maxFavorableValue || 0;
+      analysis.byDaysToEarnings[bucket].daysSum += trade.daysToHit || 0;
+      
+      analysis.byReleaseTime[timeCategory].hits++;
     }
     
-    const daysToEarnings = Math.floor((epsDate - runDate) / (1000 * 60 * 60 * 24));
-    const hitBeforeEarnings = hitDate < effectiveEarningsDate;
+    // Analyze pre/post earnings for all trades with data
+    // releaseTime: 1 = before market open, 3 = after market close
+    // For releaseTime = 1: earnings affect same day
+    // For releaseTime = 3: earnings affect next trading day
     
-    const tradeInfo = {
-      ticker: trade.ticker,
-      strategy: trade.strategy,
-      daysToEarnings: daysToEarnings,
-      daysToHit: trade.daysToHit || 0,
-      maxProfit: trade.maxFavorableValue,
-      hitBeforeEarnings: hitBeforeEarnings,
-      releaseTime: releaseTime
-    };
+    // Calculate which days are pre/post earnings
+    const earningsImpactDay = (() => {
+      // How many days from run date until earnings impact trading
+      if (releaseTime === 1) {
+        // Before open: impacts same day as earnings
+        return daysToEarnings;
+      } else if (releaseTime === 3) {
+        // After close: impacts next trading day
+        return daysToEarnings + 1;
+      }
+      return daysToEarnings; // Default
+    })();
     
-    if (hitBeforeEarnings) {
-      analysis.preEarningsHits.push(tradeInfo);
-    } else {
-      analysis.postEarningsHits.push(tradeInfo);
+    // Track pre/post earnings observations
+    let preEarningsObservations = [];
+    let postEarningsObservations = [];
+    
+    // Use array length to determine observation count
+    const observationCount = Math.max(
+      trade.maxFavorable.filter(v => v !== null && v !== undefined).length,
+      trade.minUnfavorable.filter(v => v !== null && v !== undefined).length,
+      trade.strikeHit.filter(v => v !== null && v !== undefined && v !== "").length
+    );
+    
+    // Check each day's data based on array length
+    for (let dayIndex = 0; dayIndex < observationCount; dayIndex++) {
+      if (trade.maxFavorable[dayIndex] !== null && trade.maxFavorable[dayIndex] !== undefined) {
+        const favorable = parseFloat(trade.maxFavorable[dayIndex]) || 0;
+        const unfavorable = parseFloat(trade.minUnfavorable[dayIndex]) || 0;
+        const profit = favorable - unfavorable;
+        
+        // Day 0 = run date, Day 1 = run date + 1, etc.
+        // If earnings impact day is 2, then Day 0 and Day 1 are pre-earnings
+        if (dayIndex < earningsImpactDay) {
+          preEarningsObservations.push({
+            day: dayIndex,
+            profit: profit,
+            favorable: favorable,
+            hit: trade.strikeHit[dayIndex] !== null && trade.strikeHit[dayIndex] !== ''
+          });
+        } else {
+          postEarningsObservations.push({
+            day: dayIndex,
+            profit: profit,
+            favorable: favorable,
+            hit: trade.strikeHit[dayIndex] !== null && trade.strikeHit[dayIndex] !== ''
+          });
+        }
+      }
+    }
+    
+    // Add pre-earnings observations to analysis
+    if (preEarningsObservations.length > 0 && trade.wasHit) {
+      // Check if any pre-earnings day had a hit
+      const preEarningsHit = preEarningsObservations.some(obs => obs.hit);
+      if (preEarningsHit) {
+        const hitDay = preEarningsObservations.find(obs => obs.hit)?.day || 0;
+        analysis.preEarningsHits.push({
+          ticker: trade.ticker,
+          strategy: trade.strategy,
+          daysToEarnings: daysToEarnings,
+          daysToHit: hitDay,
+          maxProfit: Math.max(...preEarningsObservations.map(o => o.favorable)),
+          releaseTime: releaseTime,
+          releaseTimeCategory: timeCategory,
+          earningsImpactDay: earningsImpactDay
+        });
+      }
+    }
+    
+    // Add post-earnings observations to analysis
+    if (postEarningsObservations.length > 0 && trade.wasHit) {
+      // Check if any post-earnings day had a hit
+      const postEarningsHit = postEarningsObservations.some(obs => obs.hit);
+      if (postEarningsHit) {
+        const hitDay = postEarningsObservations.find(obs => obs.hit)?.day || 0;
+        analysis.postEarningsHits.push({
+          ticker: trade.ticker,
+          strategy: trade.strategy,
+          daysToEarnings: daysToEarnings,
+          daysToHit: hitDay,
+          maxProfit: Math.max(...postEarningsObservations.map(o => o.favorable)),
+          releaseTime: releaseTime,
+          releaseTimeCategory: timeCategory,
+          earningsImpactDay: earningsImpactDay
+        });
+      }
     }
   });
   
-  // Analyze patterns
+  // Calculate averages for buckets
+  Object.keys(analysis.byDaysToEarnings).forEach(bucket => {
+    const data = analysis.byDaysToEarnings[bucket];
+    if (data.hits > 0) {
+      data.avgProfit = data.profitSum / data.hits;
+      data.avgDaysToHit = data.daysSum / data.hits;
+    }
+    data.hitRate = data.trades > 0 ? (data.hits / data.trades * 100) : 0;
+  });
+  
+  // Calculate averages for release times
+  Object.keys(analysis.byReleaseTime).forEach(timeCategory => {
+    const data = analysis.byReleaseTime[timeCategory];
+    if (data.total > 0) {
+      data.hitRate = (data.hits / data.total * 100);
+      // Calculate avg profit and days for this category
+      const relevantTrades = trades.filter(t => {
+        const rt = t.releaseTime || 0;
+        return (timeCategory === 'beforeOpen' && rt === 1) ||
+               (timeCategory === 'afterClose' && rt === 3) ||
+               (timeCategory === 'unknown' && rt !== 1 && rt !== 3);
+      });
+      
+      const hitTrades = relevantTrades.filter(t => t.wasHit);
+      if (hitTrades.length > 0) {
+        data.avgProfit = hitTrades.reduce((sum, t) => sum + (t.maxFavorableValue || 0), 0) / hitTrades.length;
+        data.avgDaysToHit = hitTrades.reduce((sum, t) => sum + (t.daysToHit || 0), 0) / hitTrades.length;
+      }
+    }
+  });
+  
+  // Existing analysis calculations
   const preEarningsAvgDays = analysis.preEarningsHits.length > 0 ?
     analysis.preEarningsHits.reduce((sum, t) => sum + t.daysToHit, 0) / analysis.preEarningsHits.length : 0;
   
@@ -573,6 +1349,20 @@ function EW_analyzeEarningsTiming(trades) {
   const avgProfitPostEarnings = analysis.postEarningsHits.length > 0 ?
     analysis.postEarningsHits.reduce((sum, t) => sum + t.maxProfit, 0) / analysis.postEarningsHits.length : 0;
   
+  // Find optimal entry timing
+  let optimalBucket = '';
+  let maxScore = 0;
+  Object.entries(analysis.byDaysToEarnings).forEach(([bucket, data]) => {
+    if (data.trades >= 5) { // Minimum sample size
+      // Score based on hit rate and avg profit
+      const score = (data.hitRate * 0.4) + (data.avgProfit * 100 * 0.6);
+      if (score > maxScore) {
+        maxScore = score;
+        optimalBucket = bucket;
+      }
+    }
+  });
+  
   analysis.earningsImpact = {
     totalTradesAnalyzed: totalTradesAnalyzed,
     tradesWithEarningsData: totalEarningsTrades,
@@ -586,6 +1376,7 @@ function EW_analyzeEarningsTiming(trades) {
     avgDaysToHitPostEarnings: postEarningsAvgDays > 0 ? postEarningsAvgDays.toFixed(1) + ' days' : 'N/A',
     avgProfitPreEarnings: avgProfitPreEarnings > 0 ? (avgProfitPreEarnings * 100).toFixed(2) + '%' : 'N/A',
     avgProfitPostEarnings: avgProfitPostEarnings > 0 ? (avgProfitPostEarnings * 100).toFixed(2) + '%' : 'N/A',
+    optimalEntryWindow: optimalBucket ? `${optimalBucket} days before earnings` : 'Insufficient data',
     recommendation: totalEarningsTrades > 10 ? 
       (preEarningsAvgDays < postEarningsAvgDays && avgProfitPreEarnings > avgProfitPostEarnings ? 
         'Enter positions 3-5 days before earnings for faster hits and higher profits' : 
@@ -625,7 +1416,7 @@ function EW_analyzeRiskRewardPatterns(trades) {
     analysis.byRiskRewardRatio[range] = {
       count: groupTrades.length,
       hitRate: (hitRate * 100).toFixed(2) + '%',
-      avgMaxProfit: avgProfit.toFixed(2) + '%',
+      avgMaxProfit: (avgProfit * 100).toFixed(2) + '%',
       recommendation: hitRate > 0.7 ? 'FAVORABLE' : (hitRate > 0.5 ? 'MODERATE' : 'RISKY')
     };
   });
@@ -684,10 +1475,10 @@ function EW_analyzeStrategyPerformance(trades) {
     }
     
     // Track best performers
-    if (netProfit > 5) { // Over 5% profit
+    if (netProfit > 0.05) { // Over 5% profit (decimal)
       stats.bestPerformers.push({
         ticker: trade.ticker,
-        profit: netProfit.toFixed(2) + '%',
+        profit: (netProfit * 100).toFixed(2) + '%',
         daysHeld: trade.profitableDays
       });
     }
@@ -696,8 +1487,8 @@ function EW_analyzeStrategyPerformance(trades) {
   // Calculate final stats
   Object.entries(strategies).forEach(([strategy, stats]) => {
     stats.hitRate = (stats.hitTrades / stats.totalTrades * 100).toFixed(2) + '%';
-    stats.avgProfit = (stats.totalProfit / stats.totalTrades).toFixed(2) + '%';
-    stats.avgLoss = (stats.totalLoss / stats.totalTrades).toFixed(2) + '%';
+    stats.avgProfit = (stats.totalProfit / stats.totalTrades * 100).toFixed(2) + '%';
+    stats.avgLoss = (stats.totalLoss / stats.totalTrades * 100).toFixed(2) + '%';
     stats.profitFactor = stats.totalLoss > 0 ? (stats.totalProfit / stats.totalLoss).toFixed(2) : 'N/A';
     stats.avgDaysToHit = stats.hitTrades > 0 ? (stats.avgDaysToHit / stats.hitTrades).toFixed(1) : 'N/A';
     
@@ -725,31 +1516,74 @@ function EW_identifyTopPlays(trades) {
   
   // Get top 20
   const topPlays = successfulTrades.slice(0, 20).map(trade => {
-    // Find common patterns in indicators
-    const indicatorSnapshot = {};
+    // Get comprehensive indicator profiles (both entry and hit)
+    const entryIndicators = {};
+    const hitIndicators = {};
+    
+    // Entry indicators
+    if (trade.entryIndicators) {
+      Object.entries(trade.entryIndicators).forEach(([name, value]) => {
+        if (value !== null && value !== undefined) {
+          entryIndicators[name] = parseFloat(value).toFixed(2);
+        }
+      });
+    }
+    
+    // Hit indicators (first non-null value)
     Object.entries(trade.indicators).forEach(([name, values]) => {
       if (values && values.length > 0) {
         const firstValue = values.find(v => v !== null);
-        if (firstValue) indicatorSnapshot[name] = parseFloat(firstValue).toFixed(2);
+        if (firstValue) hitIndicators[name] = parseFloat(firstValue).toFixed(2);
       }
     });
+    
+    // Create indicator profile string
+    const keyIndicators = ['rsi', 'priceVsSMA20', 'priceVsVWAP', 'rvol'];
+    const indicatorProfile = keyIndicators
+      .map(ind => {
+        const entry = entryIndicators[ind] || 'N/A';
+        const hit = hitIndicators[ind] || 'N/A';
+        return `${ind.toUpperCase()}: ${entry}→${hit}`;
+      })
+      .join(', ');
     
     // Get the strike price
     const strikePrice = trade.strike > 0 ? parseFloat(trade.strike).toFixed(2) : 
                        (trade.longStrike > 0 ? parseFloat(trade.longStrike).toFixed(2) : 'N/A');
     
-    // Get the hit price from the actual day price data
+    // Calculate the hit price based on strike and percentage move
     let hitPrice = 'N/A';
-    if (trade.strikeHit && trade.strikeHit.length > 0) {
+    if (trade.strikeHit && trade.strikeHit.length > 0 && trade.wasHit) {
+      const strategyType = EW_getStrategyType(trade.strategy);
+      
       // Find the first day where strike was hit
-      const hitDayIndex = trade.strikeHit.findIndex(val => val !== null && val !== undefined && val !== "");
+      // The backfill stores positive values for both bullish and bearish hits
+      const hitDayIndex = trade.strikeHit.findIndex(val => {
+        if (val === null || val === undefined || val === "") return false;
+        const pctMove = parseFloat(val);
+        if (isNaN(pctMove)) return false;
+        
+        // Any non-zero value indicates a hit
+        return pctMove !== 0;
+      });
       
       if (hitDayIndex !== -1) {
-        // Get the price from the corresponding day check
-        if (trade.dayChecks && trade.dayChecks[hitDayIndex]) {
-          const dayPrice = parseFloat(trade.dayChecks[hitDayIndex]);
-          if (!isNaN(dayPrice) && dayPrice > 0) {
-            hitPrice = dayPrice.toFixed(2);
+        const strike = parseFloat(strikePrice);
+        const pctMove = parseFloat(trade.strikeHit[hitDayIndex]);
+        
+        if (!isNaN(strike) && !isNaN(pctMove) && strike > 0) {
+          // Calculate hit price based on strategy type and how percentMove was calculated
+          if (strategyType === 'bullish') {
+            // For bullish: percentMove = (hitPrice - strike) / strike
+            // So: hitPrice = strike * (1 + percentMove)
+            hitPrice = (strike * (1 + pctMove)).toFixed(2);
+          } else if (strategyType === 'bearish') {
+            // For bearish: percentMove = (strike - hitPrice) / strike  
+            // So: hitPrice = strike * (1 - percentMove)
+            hitPrice = (strike * (1 - pctMove)).toFixed(2);
+          } else {
+            // For neutral/other: use bullish formula as default
+            hitPrice = (strike * (1 + pctMove)).toFixed(2);
           }
         }
       }
@@ -766,7 +1600,9 @@ function EW_identifyTopPlays(trades) {
       daysToHit: trade.daysToHit !== undefined && trade.daysToHit !== null ? trade.daysToHit : 'N/A',
       profitableDays: trade.profitableDays || 0,
       riskReward: trade.riskReward && !isNaN(trade.riskReward) ? trade.riskReward.toFixed(2) : 'N/A',
-      indicators: indicatorSnapshot,
+      indicators: hitIndicators,
+      entryIndicators: entryIndicators,
+      indicatorProfile: indicatorProfile,
       multiDayProfile: trade.maxFavorable && trade.maxFavorable.length > 0 ? 
         trade.maxFavorable.map((v, i) => 
           v !== null && !isNaN(parseFloat(v)) ? `D${i}:${(parseFloat(v) * 100).toFixed(1)}%` : null
@@ -775,6 +1611,525 @@ function EW_identifyTopPlays(trades) {
   });
   
   return topPlays;
+}
+
+/**
+ * Create individual sheets for each analysis section
+ */
+function EW_createIndividualSheets(ss, insights, allTrades) {
+  console.log('Creating individual analysis sheets...');
+  
+  // Create each specialized sheet
+  EW_createOverviewSheet(ss, insights.overview);
+  EW_createDataQualitySheet(ss, insights.dataQuality);
+  EW_createHoldingPeriodSheet(ss, insights.holdingPeriod);
+  EW_createMultiDaySheet(ss, insights.multiDayProfitability);
+  EW_createIndicatorsSheet(ss, insights.indicatorEffectiveness);
+  EW_createEarningsSheet(ss, insights.earningsTiming);
+  EW_createStrategiesSheet(ss, insights.strategyPerformance);
+  EW_createTopPlaysSheet(ss, insights.topPlays);
+  EW_createRiskRewardSheet(ss, insights.riskRewardPatterns);
+}
+
+/**
+ * Create Overview sheet with structured data
+ */
+function EW_createOverviewSheet(ss, overviewData) {
+  let sheet = ss.getSheetByName('SR_Overview');
+  if (!sheet) {
+    sheet = ss.insertSheet('SR_Overview');
+  } else {
+    sheet.clear();
+  }
+  
+  // Headers for main metrics
+  const headers = ['Metric', 'Value', 'Description'];
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  
+  // Write main metrics
+  const metrics = [
+    ['Total Trades', overviewData.totalTrades, 'Number of unique trades analyzed'],
+    ['Total Observations', overviewData.totalObservations, 'Total day-observations (trades × days)'],
+    ['Hit Rate', overviewData.hitRate, 'Percentage of observations where strike was hit'],
+    ['Profitable Rate', overviewData.profitableRate, 'Percentage of profitable observations'],
+    ['Profit Factor', overviewData.profitFactor, 'Sum of wins / Sum of losses'],
+    ['Avg Profit', overviewData.avgProfit, 'Average profit when profitable'],
+    ['Avg Loss', overviewData.avgLoss, 'Average loss when unprofitable'],
+    ['Avg Risk/Reward', overviewData.avgRiskReward, 'Average risk/reward ratio'],
+    ['Avg Days to Hit', overviewData.avgDaysToHit, 'Average days until strike hit'],
+    ['Best Holding Day', overviewData.bestHoldingDay, 'Optimal day to exit positions']
+  ];
+  
+  sheet.getRange(2, 1, metrics.length, 3).setValues(metrics);
+  
+  // Strategy breakdown section
+  let row = metrics.length + 4;
+  sheet.getRange(row, 1).setValue('STRATEGY BREAKDOWN').setFontWeight('bold');
+  row++;
+  
+  const stratHeaders = ['Strategy', 'Trades', 'Observations', 'Hit Rate', 'Profitable', 'Profit Factor', 'Avg Win', 'Avg Loss'];
+  sheet.getRange(row, 1, 1, stratHeaders.length).setValues([stratHeaders]).setFontWeight('bold');
+  row++;
+  
+  Object.entries(overviewData.byStrategy).forEach(([strategy, stats]) => {
+    sheet.getRange(row, 1, 1, 8).setValues([[
+      strategy,
+      stats.totalTrades,
+      stats.totalObservations,
+      stats.hitRate,
+      stats.profitableRate,
+      stats.profitFactor || 'N/A',
+      stats.avgProfit || 'N/A',
+      stats.avgLoss || 'N/A'
+    ]]);
+    row++;
+  });
+  
+  sheet.autoResizeColumns(1, 8);
+}
+
+/**
+ * Create Data Quality sheet
+ */
+function EW_createDataQualitySheet(ss, qualityData) {
+  let sheet = ss.getSheetByName('SR_DataQuality');
+  if (!sheet) {
+    sheet = ss.insertSheet('SR_DataQuality');
+  } else {
+    sheet.clear();
+  }
+  
+  // Overall score
+  sheet.getRange(1, 1).setValue('Overall Data Quality Score').setFontWeight('bold');
+  sheet.getRange(1, 2).setValue(qualityData.overallScore);
+  
+  // Field completeness
+  sheet.getRange(3, 1).setValue('FIELD COMPLETENESS').setFontWeight('bold');
+  const headers = ['Field', 'Completeness %', 'Missing Count', 'Status'];
+  sheet.getRange(4, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  
+  let row = 5;
+  Object.entries(qualityData.dataCompleteness).forEach(([field, percentage]) => {
+    const pct = parseFloat(percentage);
+    const missing = qualityData.missingData[field];
+    const status = pct >= 90 ? 'Good' : pct >= 70 ? 'Fair' : 'Poor';
+    
+    sheet.getRange(row, 1, 1, 4).setValues([[
+      field.replace(/([A-Z])/g, ' $1').trim(),
+      percentage,
+      missing,
+      status
+    ]]);
+    
+    // Color code status
+    const statusCell = sheet.getRange(row, 4);
+    if (status === 'Good') statusCell.setBackground('#ccffcc');
+    else if (status === 'Fair') statusCell.setBackground('#ffffcc');
+    else statusCell.setBackground('#ffcccc');
+    
+    row++;
+  });
+  
+  // Recommendations
+  row += 2;
+  sheet.getRange(row, 1).setValue('RECOMMENDATIONS').setFontWeight('bold');
+  row++;
+  
+  qualityData.recommendations.forEach((rec, idx) => {
+    sheet.getRange(row + idx, 1).setValue(`${idx + 1}. ${rec}`);
+  });
+  
+  sheet.autoResizeColumns(1, 4);
+}
+
+/**
+ * Create Holding Period sheet
+ */
+function EW_createHoldingPeriodSheet(ss, holdingData) {
+  let sheet = ss.getSheetByName('SR_HoldingPeriod');
+  if (!sheet) {
+    sheet = ss.insertSheet('SR_HoldingPeriod');
+  } else {
+    sheet.clear();
+  }
+  
+  // Optimal exit
+  sheet.getRange(1, 1).setValue('OPTIMAL EXIT TIMING').setFontWeight('bold');
+  sheet.getRange(2, 1).setValue('Best Day');
+  sheet.getRange(2, 2).setValue(holdingData.optimalExitTiming.bestDay);
+  sheet.getRange(3, 1).setValue('Profitable Rate');
+  sheet.getRange(3, 2).setValue(holdingData.optimalExitTiming.profitableRate);
+  sheet.getRange(4, 1).setValue('Recommendation');
+  sheet.getRange(4, 2).setValue(holdingData.optimalExitTiming.recommendation);
+  
+  // Day-by-day analysis
+  sheet.getRange(6, 1).setValue('DAY-BY-DAY PERFORMANCE').setFontWeight('bold');
+  const headers = ['Day', 'Total Obs', 'Profitable', 'Hit Rate', 'Profitable %', 'Avg Win', 'Avg Loss', 'Profit Factor', 'Avg Move'];
+  sheet.getRange(7, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  
+  let row = 8;
+  Object.entries(holdingData.byDay).forEach(([day, stats]) => {
+    if (stats.totalObservations > 0) {
+      sheet.getRange(row, 1, 1, 9).setValues([[
+        day,
+        stats.totalObservations,
+        stats.profitable,
+        stats.hitRate,
+        stats.profitableRate,
+        stats.avgProfit || 'N/A',
+        stats.avgLoss || 'N/A',
+        stats.profitFactor || 'N/A',
+        stats.avgMove
+      ]]);
+      row++;
+    }
+  });
+  
+  // Decay analysis
+  if (holdingData.averageDecayRate) {
+    row += 2;
+    sheet.getRange(row, 1).setValue('PROFIT DECAY ANALYSIS').setFontWeight('bold');
+    row++;
+    sheet.getRange(row, 1).setValue('Peak Day');
+    sheet.getRange(row, 2).setValue(holdingData.averageDecayRate.peakDay);
+    row++;
+    sheet.getRange(row, 1).setValue('Avg Decay/Day');
+    sheet.getRange(row, 2).setValue(holdingData.averageDecayRate.avgDecayPerDay);
+    row++;
+    sheet.getRange(row, 1).setValue('Analysis');
+    sheet.getRange(row, 2).setValue(holdingData.averageDecayRate.recommendation);
+  }
+  
+  sheet.autoResizeColumns(1, 9);
+}
+
+/**
+ * Create Multi-Day Profitability sheet
+ */
+function EW_createMultiDaySheet(ss, multiDayData) {
+  let sheet = ss.getSheetByName('SR_MultiDay');
+  if (!sheet) {
+    sheet = ss.insertSheet('SR_MultiDay');
+  } else {
+    sheet.clear();
+  }
+  
+  // Sustained profitable trades
+  sheet.getRange(1, 1).setValue('SUSTAINED PROFITABLE TRADES').setFontWeight('bold');
+  const headers = ['Ticker', 'Strategy', 'Consecutive Days', 'Peak Day', 'Peak Value', 'Strike'];
+  sheet.getRange(2, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  
+  let row = 3;
+  multiDayData.sustainedProfitability.forEach(trade => {
+    sheet.getRange(row, 1, 1, 6).setValues([[
+      trade.ticker,
+      trade.strategy,
+      trade.consecutiveDays,
+      `Day ${trade.peakDay}`,
+      trade.peakValue,
+      trade.strike
+    ]]);
+    row++;
+  });
+  
+  // Overall profitability by day
+  row += 2;
+  sheet.getRange(row, 1).setValue('PROFITABILITY BY DAY').setFontWeight('bold');
+  row++;
+  
+  const dayHeaders = ['Day', 'Total Trades', 'Profitable', 'Success Rate', 'Avg Profit'];
+  sheet.getRange(row, 1, 1, dayHeaders.length).setValues([dayHeaders]).setFontWeight('bold');
+  row++;
+  
+  Object.entries(multiDayData.profitabilityByDay).forEach(([day, stats]) => {
+    sheet.getRange(row, 1, 1, 5).setValues([[
+      day,
+      stats.totalTrades,
+      stats.profitableCount,
+      stats.profitableRate,
+      stats.avgProfit
+    ]]);
+    row++;
+  });
+  
+  sheet.autoResizeColumns(1, 6);
+}
+
+/**
+ * Create Indicators sheet
+ */
+function EW_createIndicatorsSheet(ss, indicatorData) {
+  let sheet = ss.getSheetByName('SR_Indicators');
+  if (!sheet) {
+    sheet = ss.insertSheet('SR_Indicators');
+  } else {
+    sheet.clear();
+  }
+  
+  // High impact indicators
+  sheet.getRange(1, 1).setValue('HIGH IMPACT INDICATORS').setFontWeight('bold');
+  const headers = ['Type', 'Indicator', 'Correlation', 'Data %', 'Bullish Range', 'Bearish Range'];
+  sheet.getRange(2, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  
+  let row = 3;
+  Object.entries(indicatorData)
+    .filter(([name, data]) => data.significance === 'HIGH')
+    .sort((a, b) => Math.abs(b[1].correlationWithProfit) - Math.abs(a[1].correlationWithProfit))
+    .forEach(([name, data]) => {
+      const [type, ...indicatorParts] = name.split('_');
+      const indicatorName = indicatorParts.join('_').toUpperCase();
+      
+      const bullishRange = data.profitableRanges.bullish.count > 0 ?
+        `${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} (${data.profitableRanges.bullish.avgProfit}%)` : 'N/A';
+      const bearishRange = data.profitableRanges.bearish.count > 0 ?
+        `${data.profitableRanges.bearish.min?.toFixed(2)}-${data.profitableRanges.bearish.max?.toFixed(2)} (${data.profitableRanges.bearish.avgProfit}%)` : 'N/A';
+      
+      sheet.getRange(row, 1, 1, 6).setValues([[
+        type.toUpperCase(),
+        indicatorName,
+        data.correlationWithProfit,
+        data.dataCompleteness,
+        bullishRange,
+        bearishRange
+      ]]);
+      row++;
+    });
+  
+  // Medium impact indicators
+  row += 2;
+  sheet.getRange(row, 1).setValue('MEDIUM IMPACT INDICATORS').setFontWeight('bold');
+  row++;
+  
+  const medHeaders = ['Type', 'Indicator', 'Correlation', 'Data %'];
+  sheet.getRange(row, 1, 1, medHeaders.length).setValues([medHeaders]).setFontWeight('bold');
+  row++;
+  
+  Object.entries(indicatorData)
+    .filter(([name, data]) => data.significance === 'MEDIUM')
+    .forEach(([name, data]) => {
+      const [type, ...indicatorParts] = name.split('_');
+      const indicatorName = indicatorParts.join('_').toUpperCase();
+      
+      sheet.getRange(row, 1, 1, 4).setValues([[
+        type.toUpperCase(),
+        indicatorName,
+        data.correlationWithProfit,
+        data.dataCompleteness
+      ]]);
+      row++;
+    });
+  
+  sheet.autoResizeColumns(1, 6);
+}
+
+/**
+ * Create Earnings sheet
+ */
+function EW_createEarningsSheet(ss, earningsData) {
+  let sheet = ss.getSheetByName('SR_Earnings');
+  if (!sheet) {
+    sheet = ss.insertSheet('SR_Earnings');
+  } else {
+    sheet.clear();
+  }
+  
+  // Summary metrics
+  sheet.getRange(1, 1).setValue('EARNINGS TIMING SUMMARY').setFontWeight('bold');
+  
+  let row = 2;
+  Object.entries(earningsData.earningsImpact).forEach(([key, value]) => {
+    const label = key.replace(/([A-Z])/g, ' $1').trim();
+    sheet.getRange(row, 1).setValue(label);
+    sheet.getRange(row, 2).setValue(value);
+    row++;
+  });
+  
+  // Performance by days to earnings
+  row += 2;
+  sheet.getRange(row, 1).setValue('PERFORMANCE BY DAYS TO EARNINGS').setFontWeight('bold');
+  row++;
+  
+  const bucketHeaders = ['Entry Window', 'Total Trades', 'Hits', 'Hit Rate', 'Avg Profit', 'Avg Days to Hit'];
+  sheet.getRange(row, 1, 1, bucketHeaders.length).setValues([bucketHeaders]).setFontWeight('bold');
+  row++;
+  
+  Object.entries(earningsData.byDaysToEarnings).forEach(([bucket, data]) => {
+    if (data.trades > 0) {
+      sheet.getRange(row, 1, 1, 6).setValues([[
+        bucket + ' days',
+        data.trades,
+        data.hits,
+        data.hitRate.toFixed(1) + '%',
+        data.avgProfit > 0 ? (data.avgProfit * 100).toFixed(2) + '%' : 'N/A',
+        data.avgDaysToHit > 0 ? data.avgDaysToHit.toFixed(1) : 'N/A'
+      ]]);
+      row++;
+    }
+  });
+  
+  // Release time analysis
+  row += 2;
+  sheet.getRange(row, 1).setValue('PERFORMANCE BY RELEASE TIME').setFontWeight('bold');
+  row++;
+  
+  const timeHeaders = ['Release Time', 'Total', 'Hits', 'Hit Rate', 'Avg Profit', 'Avg Days'];
+  sheet.getRange(row, 1, 1, timeHeaders.length).setValues([timeHeaders]).setFontWeight('bold');
+  row++;
+  
+  Object.entries(earningsData.byReleaseTime).forEach(([timeCategory, data]) => {
+    if (data.total > 0) {
+      const displayName = timeCategory === 'beforeOpen' ? 'Before Market Open' :
+                         timeCategory === 'afterClose' ? 'After Market Close' : 'Unknown';
+      sheet.getRange(row, 1, 1, 6).setValues([[
+        displayName,
+        data.total,
+        data.hits,
+        data.hitRate.toFixed(1) + '%',
+        data.avgProfit > 0 ? (data.avgProfit * 100).toFixed(2) + '%' : 'N/A',
+        data.avgDaysToHit > 0 ? data.avgDaysToHit.toFixed(1) : 'N/A'
+      ]]);
+      row++;
+    }
+  });
+  
+  sheet.autoResizeColumns(1, 6);
+}
+
+/**
+ * Create Strategies sheet
+ */
+function EW_createStrategiesSheet(ss, strategyData) {
+  let sheet = ss.getSheetByName('SR_Strategies');
+  if (!sheet) {
+    sheet = ss.insertSheet('SR_Strategies');
+  } else {
+    sheet.clear();
+  }
+  
+  // Strategy performance
+  sheet.getRange(1, 1).setValue('STRATEGY PERFORMANCE ANALYSIS').setFontWeight('bold');
+  
+  const headers = ['Strategy', 'Total Trades', 'Hit Count', 'Hit Rate', 'Avg Profit', 'Avg Loss', 
+                   'Profit Factor', 'Avg Days to Hit', 'Total Profit', 'Total Loss'];
+  sheet.getRange(2, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  
+  let row = 3;
+  Object.entries(strategyData).forEach(([strategy, stats]) => {
+    sheet.getRange(row, 1, 1, 10).setValues([[
+      strategy,
+      stats.totalTrades,
+      stats.hitTrades,
+      stats.hitRate,
+      stats.avgProfit,
+      stats.avgLoss,
+      stats.profitFactor || 'N/A',
+      stats.avgDaysToHit || 'N/A',
+      stats.totalProfit.toFixed(2) + '%',
+      stats.totalLoss.toFixed(2) + '%'
+    ]]);
+    row++;
+  });
+  
+  sheet.autoResizeColumns(1, 10);
+}
+
+/**
+ * Create Top Plays sheet
+ */
+function EW_createTopPlaysSheet(ss, topPlaysData) {
+  let sheet = ss.getSheetByName('SR_TopPlays');
+  if (!sheet) {
+    sheet = ss.insertSheet('SR_TopPlays');
+  } else {
+    sheet.clear();
+  }
+  
+  // Top plays
+  sheet.getRange(1, 1).setValue('TOP 20 WINNING PLAYS').setFontWeight('bold');
+  
+  const headers = ['Rank', 'Ticker', 'Strategy', 'Entry Date', 'Strike', 'Hit Price', 
+                   'Max Profit', 'Days to Hit', 'Risk/Reward', 'Profitable Days'];
+  sheet.getRange(2, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  
+  let row = 3;
+  topPlaysData.forEach((play, idx) => {
+    sheet.getRange(row, 1, 1, 10).setValues([[
+      idx + 1,
+      play.ticker,
+      play.strategy,
+      play.entryDate,
+      play.strike,
+      play.hitPrice,
+      play.maxProfit,
+      play.daysToHit !== undefined && play.daysToHit !== null ? play.daysToHit : 'N/A',
+      play.riskReward,
+      play.profitableDays
+    ]]);
+    row++;
+  });
+  
+  // Indicator profiles section
+  row += 2;
+  sheet.getRange(row, 1).setValue('INDICATOR PROFILES (TOP 5)').setFontWeight('bold');
+  row++;
+  
+  const indHeaders = ['Ticker', 'Max Profit', 'Entry→Hit Indicators', 'Multi-Day Profile'];
+  sheet.getRange(row, 1, 1, indHeaders.length).setValues([indHeaders]).setFontWeight('bold');
+  row++;
+  
+  topPlaysData.slice(0, 5).forEach(play => {
+    sheet.getRange(row, 1, 1, 4).setValues([[
+      play.ticker,
+      play.maxProfit,
+      play.indicatorProfile,
+      play.multiDayProfile
+    ]]);
+    row++;
+  });
+  
+  sheet.autoResizeColumns(1, 10);
+}
+
+/**
+ * Create Risk/Reward sheet
+ */
+function EW_createRiskRewardSheet(ss, riskRewardData) {
+  let sheet = ss.getSheetByName('SR_RiskReward');
+  if (!sheet) {
+    sheet = ss.insertSheet('SR_RiskReward');
+  } else {
+    sheet.clear();
+  }
+  
+  // Risk/Reward analysis
+  sheet.getRange(1, 1).setValue('RISK/REWARD ANALYSIS').setFontWeight('bold');
+  
+  let row = 2;
+  Object.entries(riskRewardData.overview).forEach(([key, value]) => {
+    const label = key.replace(/([A-Z])/g, ' $1').trim();
+    sheet.getRange(row, 1).setValue(label);
+    sheet.getRange(row, 2).setValue(value);
+    row++;
+  });
+  
+  // Distribution
+  row += 2;
+  sheet.getRange(row, 1).setValue('RISK/REWARD DISTRIBUTION').setFontWeight('bold');
+  row++;
+  
+  const distHeaders = ['Range', 'Count', 'Percentage'];
+  sheet.getRange(row, 1, 1, distHeaders.length).setValues([distHeaders]).setFontWeight('bold');
+  row++;
+  
+  Object.entries(riskRewardData.distribution).forEach(([range, count]) => {
+    const total = Object.values(riskRewardData.distribution).reduce((sum, c) => sum + c, 0);
+    const percentage = ((count / total) * 100).toFixed(1) + '%';
+    
+    sheet.getRange(row, 1, 1, 3).setValues([[range, count, percentage]]);
+    row++;
+  });
+  
+  sheet.autoResizeColumns(1, 3);
 }
 
 /**
@@ -858,11 +2213,21 @@ function EW_createReportSheet(ss, insights, allTrades) {
   reportSheet.getRange(currentRow, 1).setValue('OVERVIEW STATISTICS').setFontSize(14).setFontWeight('bold');
   currentRow++;
   
+  // Add explanation
+  reportSheet.getRange(currentRow, 1).setValue('Note: Rates are calculated based on day-observations (trades × days with data)').setFontStyle('italic');
+  currentRow++;
+  
   // Show overall stats first
-  const mainStats = ['totalTrades', 'hitRate', 'profitableRate', 'avgRiskReward', 'avgDaysToHit'];
+  const mainStats = ['totalTrades', 'totalObservations', 'hitRate', 'profitableRate', 
+                    'profitFactor', 'avgProfit', 'avgLoss', 'avgRiskReward', 
+                    'avgDaysToHit', 'bestHoldingDay'];
   mainStats.forEach(key => {
-    if (insights.overview[key]) {
-      reportSheet.getRange(currentRow, 1).setValue(key.replace(/([A-Z])/g, ' $1').trim());
+    if (insights.overview[key] !== undefined) {
+      let label = key.replace(/([A-Z])/g, ' $1').trim();
+      if (key === 'hitRate' || key === 'profitableRate') {
+        label += ' (by observation)';
+      }
+      reportSheet.getRange(currentRow, 1).setValue(label);
       reportSheet.getRange(currentRow, 2).setValue(insights.overview[key]);
       currentRow++;
     }
@@ -874,12 +2239,21 @@ function EW_createReportSheet(ss, insights, allTrades) {
     reportSheet.getRange(currentRow, 1).setValue('BY STRATEGY:').setFontWeight('bold');
     currentRow++;
     
+    // Strategy headers
+    const stratHeaders = ['Strategy', 'Trades/Obs', 'Hit Rate', 'Profitable', 'Profit Factor', 'Avg Win', 'Avg Loss'];
+    reportSheet.getRange(currentRow, 1, 1, stratHeaders.length).setValues([stratHeaders]).setFontWeight('bold');
+    currentRow++;
+    
     Object.entries(insights.overview.byStrategy).forEach(([strategy, stats]) => {
-      reportSheet.getRange(currentRow, 1).setValue(strategy);
-      reportSheet.getRange(currentRow, 2).setValue(`${stats.totalTrades} trades`);
-      reportSheet.getRange(currentRow, 3).setValue(`Hit: ${stats.hitRate}`);
-      reportSheet.getRange(currentRow, 4).setValue(`Profitable: ${stats.profitableRate}`);
-      reportSheet.getRange(currentRow, 5).setValue(`RR: ${stats.avgRiskReward}`);
+      reportSheet.getRange(currentRow, 1, 1, 7).setValues([[
+        strategy,
+        `${stats.totalTrades} (${stats.totalObservations})`,
+        stats.hitRate,
+        stats.profitableRate,
+        stats.profitFactor || 'N/A',
+        stats.avgProfit || 'N/A',
+        stats.avgLoss || 'N/A'
+      ]]);
       currentRow++;
     });
   }
@@ -967,6 +2341,106 @@ function EW_createReportSheet(ss, insights, allTrades) {
   });
   currentRow += 2;
   
+  // Holding Period Analysis Section
+  reportSheet.getRange(currentRow, 1).setValue('HOLDING PERIOD ANALYSIS').setFontSize(14).setFontWeight('bold');
+  currentRow++;
+  
+  // Optimal exit timing
+  if (insights.holdingPeriod.optimalExitTiming) {
+    reportSheet.getRange(currentRow, 1).setValue('Optimal Exit: ' + insights.holdingPeriod.optimalExitTiming.bestDay + 
+      ' (' + insights.holdingPeriod.optimalExitTiming.profitableRate + ')').setFontWeight('bold');
+    currentRow++;
+  }
+  
+  // Day-by-day performance
+  reportSheet.getRange(currentRow, 1).setValue('Performance by Holding Day:');
+  currentRow++;
+  
+  const holdingHeaders = ['Day', 'Total Obs', 'Hit Rate', 'Profitable', 'Avg Win', 'Avg Loss', 'Profit Factor'];
+  reportSheet.getRange(currentRow, 1, 1, holdingHeaders.length).setValues([holdingHeaders]).setFontWeight('bold');
+  currentRow++;
+  
+  Object.entries(insights.holdingPeriod.byDay).forEach(([day, stats]) => {
+    if (stats.totalObservations > 0) {
+      reportSheet.getRange(currentRow, 1, 1, 7).setValues([[
+        day,
+        stats.totalObservations,
+        stats.hitRate,
+        stats.profitableRate,
+        stats.avgProfit || 'N/A',
+        stats.avgLoss || 'N/A',
+        stats.profitFactor || 'N/A'
+      ]]);
+      currentRow++;
+    }
+  });
+  
+  // Decay rate analysis
+  if (insights.holdingPeriod.averageDecayRate) {
+    currentRow++;
+    reportSheet.getRange(currentRow, 1).setValue('Profit Decay Analysis:').setFontWeight('bold');
+    currentRow++;
+    reportSheet.getRange(currentRow, 1).setValue('Peak Day: ' + insights.holdingPeriod.averageDecayRate.peakDay);
+    reportSheet.getRange(currentRow, 2).setValue('Avg Decay/Day: ' + insights.holdingPeriod.averageDecayRate.avgDecayPerDay);
+    currentRow++;
+    reportSheet.getRange(currentRow, 1).setValue(insights.holdingPeriod.averageDecayRate.recommendation).setFontStyle('italic');
+    currentRow++;
+  }
+  
+  // Holding period recommendations
+  if (insights.holdingPeriod.recommendations.length > 0) {
+    currentRow++;
+    reportSheet.getRange(currentRow, 1).setValue('Recommendations:').setFontWeight('bold');
+    currentRow++;
+    insights.holdingPeriod.recommendations.forEach(rec => {
+      reportSheet.getRange(currentRow, 1).setValue('• ' + rec);
+      currentRow++;
+    });
+  }
+  
+  currentRow += 2;
+  
+  // Data Quality Section
+  reportSheet.getRange(currentRow, 1).setValue('DATA QUALITY ANALYSIS').setFontSize(14).setFontWeight('bold');
+  currentRow++;
+  
+  reportSheet.getRange(currentRow, 1).setValue('Overall Data Quality Score: ' + insights.dataQuality.overallScore).setFontWeight('bold');
+  currentRow++;
+  
+  // Data completeness table
+  reportSheet.getRange(currentRow, 1).setValue('Field Completeness:');
+  currentRow++;
+  
+  Object.entries(insights.dataQuality.dataCompleteness).forEach(([field, percentage]) => {
+    const displayName = field.replace(/([A-Z])/g, ' $1').trim();
+    reportSheet.getRange(currentRow, 1).setValue(displayName);
+    reportSheet.getRange(currentRow, 2).setValue(percentage);
+    // Color code based on completeness
+    const pct = parseFloat(percentage);
+    if (pct < 50) {
+      reportSheet.getRange(currentRow, 2).setBackground('#ffcccc'); // Red
+    } else if (pct < 80) {
+      reportSheet.getRange(currentRow, 2).setBackground('#ffffcc'); // Yellow
+    } else {
+      reportSheet.getRange(currentRow, 2).setBackground('#ccffcc'); // Green
+    }
+    currentRow++;
+  });
+  
+  // Recommendations
+  if (insights.dataQuality.recommendations.length > 0) {
+    currentRow++;
+    reportSheet.getRange(currentRow, 1).setValue('Recommendations:').setFontWeight('bold');
+    currentRow++;
+    
+    insights.dataQuality.recommendations.forEach(rec => {
+      reportSheet.getRange(currentRow, 1).setValue('• ' + rec);
+      currentRow++;
+    });
+  }
+  
+  currentRow += 2;
+  
   // Indicator Effectiveness Section
   reportSheet.getRange(currentRow, 1).setValue('INDICATOR EFFECTIVENESS ANALYSIS').setFontSize(14).setFontWeight('bold');
   currentRow++;
@@ -1028,24 +2502,44 @@ function EW_createReportSheet(ss, insights, allTrades) {
   reportSheet.getRange(currentRow, 1).setValue('TOP 20 WINNING PLAYS').setFontSize(14).setFontWeight('bold');
   currentRow++;
   
-  const topHeaders = ['Ticker', 'Strategy', 'Entry Date', 'Strike → Hit', 'Max Profit', 'Days to Hit', 'Risk/Reward', 'Multi-Day Profile'];
+  const topHeaders = ['Ticker', 'Strategy', 'Entry Date', 'Strike → Hit', 'Max Profit', 'Days to Hit', 'Risk/Reward'];
   reportSheet.getRange(currentRow, 1, 1, topHeaders.length).setValues([topHeaders]).setFontWeight('bold');
   currentRow++;
   
   insights.topPlays.forEach(play => {
-    reportSheet.getRange(currentRow, 1, 1, 8).setValues([[
+    reportSheet.getRange(currentRow, 1, 1, 7).setValues([[
       play.ticker || '', 
       play.strategy || '', 
       play.entryDate || 'N/A', 
       play.strikeAndHit || 'N/A',
       play.maxProfit || 'N/A', 
       play.daysToHit !== undefined && play.daysToHit !== null ? play.daysToHit : 'N/A', 
-      play.riskReward || 'N/A', 
-      play.multiDayProfile || 'N/A'
+      play.riskReward || 'N/A'
     ]]);
     currentRow++;
   });
-  currentRow += 2;
+  
+  // Indicator profiles for top 5
+  currentRow++;
+  reportSheet.getRange(currentRow, 1).setValue('INDICATOR PROFILES (TOP 5)').setFontWeight('bold');
+  currentRow++;
+  
+  insights.topPlays.slice(0, 5).forEach(play => {
+    reportSheet.getRange(currentRow, 1).setValue(`${play.ticker} (${play.maxProfit}):`).setFontWeight('bold');
+    currentRow++;
+    
+    // Show key indicator movement
+    reportSheet.getRange(currentRow, 1).setValue('Entry→Hit:');
+    reportSheet.getRange(currentRow, 2, 1, 6).setValue(play.indicatorProfile);
+    currentRow++;
+    
+    // Show multi-day profit profile
+    reportSheet.getRange(currentRow, 1).setValue('Profit Profile:');
+    reportSheet.getRange(currentRow, 2, 1, 6).setValue(play.multiDayProfile);
+    currentRow += 2;
+  });
+  
+  currentRow += 1;
   
   // ML Recommendations
   reportSheet.getRange(currentRow, 1).setValue('MACHINE LEARNING RECOMMENDATIONS').setFontSize(14).setFontWeight('bold');
@@ -1288,41 +2782,74 @@ function EW_showIndicatorAnalysis() {
   sheet.getRange(1, 1).setValue('INDICATOR EFFECTIVENESS ANALYSIS').setFontSize(16).setFontWeight('bold');
   sheet.getRange(1, 2).setValue(new Date().toLocaleString());
   
-  // High impact indicators
-  sheet.getRange(3, 1).setValue('High-Impact Indicators (Correlation > 0.3)').setFontWeight('bold');
+  // Entry-time indicators
+  sheet.getRange(3, 1).setValue('Entry-Time Indicators (High Impact)').setFontWeight('bold');
   
   let row = 4;
-  const headers = ['Indicator', 'Correlation', 'Significance', 'Bullish Range', 'Bearish Range'];
+  const headers = ['Indicator', 'Correlation', 'Data %', 'Bullish Range', 'Bearish Range'];
   sheet.getRange(row, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
   row++;
   
   Object.entries(analysis)
-    .filter(([name, data]) => data.significance === 'HIGH')
+    .filter(([name, data]) => data.type === 'entry' && data.significance === 'HIGH')
     .sort((a, b) => Math.abs(b[1].correlationWithProfit) - Math.abs(a[1].correlationWithProfit))
     .forEach(([name, data]) => {
+      const indicatorName = name.replace('entry_', '').toUpperCase();
       const bullishRange = data.profitableRanges.bullish.count > 0 ?
         `${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} (${data.profitableRanges.bullish.avgProfit}%)` : 'N/A';
       const bearishRange = data.profitableRanges.bearish.count > 0 ?
         `${data.profitableRanges.bearish.min?.toFixed(2)}-${data.profitableRanges.bearish.max?.toFixed(2)} (${data.profitableRanges.bearish.avgProfit}%)` : 'N/A';
       
       sheet.getRange(row, 1, 1, 5).setValues([[
-        name.toUpperCase(), data.correlationWithProfit, data.significance,
+        indicatorName, data.correlationWithProfit, data.dataCompleteness,
         bullishRange, bearishRange
       ]]);
       row++;
     });
   
-  // Medium impact indicators
+  // Hit-time indicators
   row += 2;
-  sheet.getRange(row, 1).setValue('Medium-Impact Indicators (0.15 < Correlation < 0.3)').setFontWeight('bold');
+  sheet.getRange(row, 1).setValue('Hit-Time Indicators (High Impact)').setFontWeight('bold');
+  row++;
+  
+  sheet.getRange(row, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  row++;
+  
+  Object.entries(analysis)
+    .filter(([name, data]) => data.type === 'hit' && data.significance === 'HIGH')
+    .sort((a, b) => Math.abs(b[1].correlationWithProfit) - Math.abs(a[1].correlationWithProfit))
+    .forEach(([name, data]) => {
+      const indicatorName = name.replace('hit_', '').toUpperCase();
+      const bullishRange = data.profitableRanges.bullish.count > 0 ?
+        `${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} (${data.profitableRanges.bullish.avgProfit}%)` : 'N/A';
+      const bearishRange = data.profitableRanges.bearish.count > 0 ?
+        `${data.profitableRanges.bearish.min?.toFixed(2)}-${data.profitableRanges.bearish.max?.toFixed(2)} (${data.profitableRanges.bearish.avgProfit}%)` : 'N/A';
+      
+      sheet.getRange(row, 1, 1, 5).setValues([[
+        indicatorName, data.correlationWithProfit, data.dataCompleteness,
+        bullishRange, bearishRange
+      ]]);
+      row++;
+    });
+  
+  // Medium impact summary
+  row += 2;
+  sheet.getRange(row, 1).setValue('Medium-Impact Indicators Summary').setFontWeight('bold');
+  row++;
+  
+  const mediumHeaders = ['Type', 'Indicator', 'Correlation', 'Data %'];
+  sheet.getRange(row, 1, 1, mediumHeaders.length).setValues([mediumHeaders]).setFontWeight('bold');
   row++;
   
   Object.entries(analysis)
     .filter(([name, data]) => data.significance === 'MEDIUM')
+    .sort((a, b) => Math.abs(b[1].correlationWithProfit) - Math.abs(a[1].correlationWithProfit))
     .forEach(([name, data]) => {
-      sheet.getRange(row, 1).setValue(name.toUpperCase());
-      sheet.getRange(row, 2).setValue(data.correlationWithProfit);
-      sheet.getRange(row, 3).setValue(data.significance);
+      const [type, ...indicatorParts] = name.split('_');
+      const indicatorName = indicatorParts.join('_').toUpperCase();
+      sheet.getRange(row, 1, 1, 4).setValues([[
+        type.toUpperCase(), indicatorName, data.correlationWithProfit, data.dataCompleteness
+      ]]);
       row++;
     });
   
@@ -1367,6 +2894,52 @@ function EW_showEarningsTimingReport() {
     sheet.getRange(row, 1).setValue(key.replace(/([A-Z])/g, ' $1').trim());
     sheet.getRange(row, 2).setValue(value);
     row++;
+  });
+  
+  // Performance by Days to Earnings
+  row += 2;
+  sheet.getRange(row, 1).setValue('Performance by Days to Earnings').setFontWeight('bold');
+  row++;
+  
+  const bucketHeaders = ['Entry Window', 'Total Trades', 'Hit Rate', 'Avg Profit', 'Avg Days to Hit'];
+  sheet.getRange(row, 1, 1, bucketHeaders.length).setValues([bucketHeaders]).setFontWeight('bold');
+  row++;
+  
+  Object.entries(analysis.byDaysToEarnings).forEach(([bucket, data]) => {
+    if (data.trades > 0) {
+      sheet.getRange(row, 1, 1, 5).setValues([[
+        bucket + ' days',
+        data.trades,
+        data.hitRate.toFixed(1) + '%',
+        data.avgProfit > 0 ? (data.avgProfit * 100).toFixed(2) + '%' : 'N/A',
+        data.avgDaysToHit > 0 ? data.avgDaysToHit.toFixed(1) : 'N/A'
+      ]]);
+      row++;
+    }
+  });
+  
+  // Performance by Release Time
+  row += 2;
+  sheet.getRange(row, 1).setValue('Performance by Release Time').setFontWeight('bold');
+  row++;
+  
+  const timeHeaders = ['Release Time', 'Total Trades', 'Hit Rate', 'Avg Profit', 'Avg Days to Hit'];
+  sheet.getRange(row, 1, 1, timeHeaders.length).setValues([timeHeaders]).setFontWeight('bold');
+  row++;
+  
+  Object.entries(analysis.byReleaseTime).forEach(([timeCategory, data]) => {
+    if (data.total > 0) {
+      const displayName = timeCategory === 'beforeOpen' ? 'Before Market Open' :
+                         timeCategory === 'afterClose' ? 'After Market Close' : 'Unknown';
+      sheet.getRange(row, 1, 1, 5).setValues([[
+        displayName,
+        data.total,
+        data.hitRate.toFixed(1) + '%',
+        data.avgProfit > 0 ? (data.avgProfit * 100).toFixed(2) + '%' : 'N/A',
+        data.avgDaysToHit > 0 ? data.avgDaysToHit.toFixed(1) : 'N/A'
+      ]]);
+      row++;
+    }
   });
   
   // Pre-earnings hits
@@ -1505,4 +3078,95 @@ function EW_collectAllTrades(ss) {
   }
   
   return allTrades;
+}
+
+/**
+ * Test observation counting logic
+ * This function verifies that observation counting is working correctly
+ * based on array lengths instead of Day_Check fields
+ */
+function EW_testObservationCounting() {
+  console.log('=== Testing Observation Counting Logic ===');
+  
+  // Sample test data
+  const testTrade = {
+    ticker: 'TEST',
+    strategy: 'Long Calls',
+    maxFavorable: ["0.0485", "0.0563", "0.1642", "0.1515", "0.1180", "0.1338"],
+    minUnfavorable: ["0.0100", "0.0200", "0.0150", "0.0250", "0.0300", "0.0180"],
+    strikeHit: ["0.0485", "0.0563", "0.1642", null, null, null],
+    dayChecks: ["238.50", "239.20", "243.40", null, null, null] // Only 3 days of Day_Check data
+  };
+  
+  // Calculate observation count using array length
+  const observationCount = Math.max(
+    testTrade.maxFavorable.filter(v => v !== null && v !== undefined).length,
+    testTrade.minUnfavorable.filter(v => v !== null && v !== undefined).length,
+    testTrade.strikeHit.filter(v => v !== null && v !== undefined && v !== "").length
+  );
+  
+  console.log(`Test trade arrays:`);
+  console.log(`  maxFavorable length: ${testTrade.maxFavorable.length}`);
+  console.log(`  minUnfavorable length: ${testTrade.minUnfavorable.length}`);
+  console.log(`  strikeHit non-null values: ${testTrade.strikeHit.filter(v => v !== null && v !== undefined && v !== "").length}`);
+  console.log(`  dayChecks non-null values: ${testTrade.dayChecks.filter(v => v !== null && v !== undefined && v !== "").length}`);
+  console.log(`\nCalculated observation count: ${observationCount} (should be 6)`);
+  
+  // Test with partial data
+  const partialTrade = {
+    ticker: 'PARTIAL',
+    strategy: 'Long Calls',
+    maxFavorable: ["0.038494"],
+    minUnfavorable: ["0.005000"],
+    strikeHit: ["0.038494"],
+    dayChecks: ["235.00", null, null, null, null, null]
+  };
+  
+  const partialObservationCount = Math.max(
+    partialTrade.maxFavorable.filter(v => v !== null && v !== undefined).length,
+    partialTrade.minUnfavorable.filter(v => v !== null && v !== undefined).length,
+    partialTrade.strikeHit.filter(v => v !== null && v !== undefined && v !== "").length
+  );
+  
+  console.log(`\nPartial trade arrays:`);
+  console.log(`  maxFavorable length: ${partialTrade.maxFavorable.length}`);
+  console.log(`  minUnfavorable length: ${partialTrade.minUnfavorable.length}`);
+  console.log(`  strikeHit non-null values: ${partialTrade.strikeHit.filter(v => v !== null && v !== undefined && v !== "").length}`);
+  console.log(`  dayChecks non-null values: ${partialTrade.dayChecks.filter(v => v !== null && v !== undefined && v !== "").length}`);
+  console.log(`\nCalculated observation count: ${partialObservationCount} (should be 1)`);
+  
+  // Test observation counting with real data
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName('Long Calls');
+    if (sheet) {
+      const allTrades = EW_extractTradesFromSheets(['Long Calls']);
+      const analysis = EW_analyzeOverview(allTrades);
+      
+      console.log(`\nReal data analysis:`);
+      console.log(`  Total trades: ${analysis.totalTrades}`);
+      console.log(`  Total observations: ${analysis.totalObservations}`);
+      console.log(`  Expected ratio: Each trade can have 1-6 observations`);
+      
+      // Count trades by observation count
+      const observationCounts = {};
+      allTrades.forEach(trade => {
+        const count = Math.max(
+          trade.maxFavorable.filter(v => v !== null && v !== undefined).length,
+          trade.minUnfavorable.filter(v => v !== null && v !== undefined).length,
+          trade.strikeHit.filter(v => v !== null && v !== undefined && v !== "").length
+        );
+        observationCounts[count] = (observationCounts[count] || 0) + 1;
+      });
+      
+      console.log(`\nTrades by observation count:`);
+      Object.entries(observationCounts).sort((a, b) => a[0] - b[0]).forEach(([count, trades]) => {
+        console.log(`  ${count} observations: ${trades} trades`);
+      });
+    }
+  } catch (e) {
+    console.log(`Error testing with real data: ${e.message}`);
+  }
+  
+  console.log('\n=== Test Complete ===');
 }
