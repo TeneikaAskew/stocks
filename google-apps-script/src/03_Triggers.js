@@ -67,20 +67,35 @@ function EW_setupTriggersIfMissing() {
     }
     
     // Check and setup active position tracking trigger (5 PM)
-    if (!EW_triggerExists('EW_updateActiveStrikeHits')) {
-      ScriptApp.newTrigger('EW_updateActiveStrikeHits')
+    // Use continuation version if enabled in settings
+    const useContinuation = true; // Set to true to use continuation support
+    const activeTrackingFunction = useContinuation ? 'EW_updateActiveStrikeHitsWithContinuation' : 'EW_updateActiveStrikeHits';
+    
+    // Remove old trigger if switching between versions
+    if (useContinuation && EW_triggerExists('EW_updateActiveStrikeHits')) {
+      const triggers = ScriptApp.getProjectTriggers();
+      triggers.forEach(trigger => {
+        if (trigger.getHandlerFunction() === 'EW_updateActiveStrikeHits') {
+          ScriptApp.deleteTrigger(trigger);
+          console.log('Removed old non-continuation trigger');
+        }
+      });
+    }
+    
+    if (!EW_triggerExists(activeTrackingFunction)) {
+      ScriptApp.newTrigger(activeTrackingFunction)
         .timeBased()
         .everyDays(1)
         .atHour(17) // 5 PM
         .inTimezone('America/New_York')
         .create();
       setupCount++;
-      messages.push(`✅ Created: Active position tracking (5 PM ET)`);
-      console.log(`Created trigger: EW_updateActiveStrikeHits`);
+      messages.push(`✅ Created: Active position tracking with ${useContinuation ? 'continuation' : 'standard'} (5 PM ET)`);
+      console.log(`Created trigger: ${activeTrackingFunction}`);
     } else {
       skippedCount++;
       messages.push(`⏭️ Exists: Active position tracking (5 PM ET)`);
-      console.log(`Skipped existing trigger: EW_updateActiveStrikeHits`);
+      console.log(`Skipped existing trigger: ${activeTrackingFunction}`);
     }
 
       // Check and setup daily empty row removal trigger (6 AM)

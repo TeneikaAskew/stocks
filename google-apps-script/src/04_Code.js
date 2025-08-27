@@ -58,6 +58,8 @@ function onOpen() {
     .addItem('Backfill Historical Tracking (All)', 'EW_backfillHistoricalTracking')
     .addItem('Backfill Selected Rows', 'EW_backfillSelectedRows')
     .addItem('Update Active Position Strikes', 'EW_updateActiveStrikeHits')
+    .addItem('Update Active (with Continuation)', 'EW_updateActiveStrikeHitsWithContinuation')
+    .addItem('Reset Continuation State', 'EW_resetContinuation')
     .addSeparator()
     .addSubMenu(ui.createMenu('API Logging & Debug')
       .addItem('View Today\'s API Summary', 'EW_showApiSummary')
