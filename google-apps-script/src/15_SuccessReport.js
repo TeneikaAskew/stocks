@@ -526,12 +526,12 @@ function EW_analyzeOverview(trades) {
     byStrategy[strategy] = {
       totalTrades: strategyTrades.length,
       totalObservations: strategyObservations,
-      hitRate: strategyTrades.length > 0 ? (strategyHits / strategyTrades.length * 100).toFixed(2) + '%' : '0%', // Changed to trade-based
-      profitableRate: strategyObservations > 0 ? (strategyProfitableObs / strategyObservations * 100).toFixed(2) + '%' : '0%',
-      profitFactor: strategyProfitFactor.toFixed(2),
-      avgWin: (strategyAvgWin * 100).toFixed(2) + '%',
-      avgLoss: (strategyAvgLoss * 100).toFixed(2) + '%',
-      avgRiskReward: strategyTrades.length > 0 ? (strategyTrades.reduce((sum, t) => sum + (t.riskReward || 0), 0) / strategyTrades.length).toFixed(2) : '0'
+      hitRate: strategyTrades.length > 0 ? strategyHits / strategyTrades.length : 0, // Keep as decimal
+      profitableRate: strategyObservations > 0 ? strategyProfitableObs / strategyObservations : 0,
+      profitFactor: strategyProfitFactor,
+      avgWin: strategyAvgWin,  // Keep as decimal
+      avgLoss: strategyAvgLoss,  // Keep as decimal
+      avgRiskReward: strategyTrades.length > 0 ? strategyTrades.reduce((sum, t) => sum + (t.riskReward || 0), 0) / strategyTrades.length : 0
     };
   });
   
@@ -618,7 +618,7 @@ function EW_analyzeMultiDayProfitability(trades) {
         strategy: trade.strategy,
         consecutiveDays: maxConsecutive,
         peakDay: peakDay,
-        peakValue: (peakValue * 100).toFixed(2) + '%',
+        peakValue: peakValue * 100,  // Convert to percentage but keep as number
         strike: trade.strike || trade.longStrike
       };
       
@@ -651,8 +651,8 @@ function EW_analyzeMultiDayProfitability(trades) {
     analysis.profitabilityByDay[`Day${day}`] = {
       totalTrades: dayTrades.length,
       profitableCount: profitable,
-      profitableRate: (profitable / dayTrades.length * 100).toFixed(2) + '%',
-      avgProfit: (avgProfit * 100).toFixed(2) + '%'
+      profitableRate: (profitable / dayTrades.length) * 100,  // Keep as number
+      avgProfit: avgProfit * 100  // Keep as number
     };
     
     // By strategy
@@ -671,8 +671,8 @@ function EW_analyzeMultiDayProfitability(trades) {
         analysis.profitabilityByStrategy[strategy].byDay[`Day${day}`] = {
           totalTrades: strategyDayTrades.length,
           profitableCount: stratProfitable,
-          profitableRate: (stratProfitable / strategyDayTrades.length * 100).toFixed(2) + '%',
-          avgProfit: (stratAvgProfit * 100).toFixed(2) + '%'
+          profitableRate: (stratProfitable / strategyDayTrades.length) * 100,  // Keep as number
+          avgProfit: stratAvgProfit * 100  // Keep as number
         };
       }
     });
@@ -763,12 +763,12 @@ function EW_findProfitableIndicatorRanges(trades, indicatorName, type = 'hit') {
     range.avgProfit += trade.maxFavorableValue;
   });
   
-  // Calculate averages
+  // Calculate averages (keep as numbers)
   if (ranges.bullish.count > 0) {
-    ranges.bullish.avgProfit = ((ranges.bullish.avgProfit / ranges.bullish.count) * 100).toFixed(2);
+    ranges.bullish.avgProfit = (ranges.bullish.avgProfit / ranges.bullish.count) * 100;  // Keep as number
   }
   if (ranges.bearish.count > 0) {
-    ranges.bearish.avgProfit = ((ranges.bearish.avgProfit / ranges.bearish.count) * 100).toFixed(2);
+    ranges.bearish.avgProfit = (ranges.bearish.avgProfit / ranges.bearish.count) * 100;  // Keep as number
   }
   
   return ranges;
@@ -997,15 +997,15 @@ function EW_analyzeHoldingPeriod(trades) {
   // Calculate averages and rates
   Object.entries(analysis.byDay).forEach(([day, stats]) => {
     if (stats.totalObservations > 0) {
-      stats.profitableRate = ((stats.profitable / stats.totalObservations) * 100).toFixed(2) + '%';
-      stats.hitRate = ((stats.hitRate / stats.totalObservations) * 100).toFixed(2) + '%';
-      stats.avgMove = ((stats.avgMove / stats.totalObservations) * 100).toFixed(2) + '%';
+      stats.profitableRate = (stats.profitable / stats.totalObservations) * 100;  // Keep as number
+      stats.hitRate = (stats.hitRate / stats.totalObservations) * 100;  // Keep as number
+      stats.avgMove = (stats.avgMove / stats.totalObservations) * 100;  // Keep as number
       
       if (stats.profitCount > 0) {
-        stats.avgProfit = ((stats.profitSum / stats.profitCount) * 100).toFixed(2) + '%';
+        stats.avgProfit = (stats.profitSum / stats.profitCount) * 100;  // Keep as number
       }
       if (stats.lossCount > 0) {
-        stats.avgLoss = ((stats.lossSum / stats.lossCount) * 100).toFixed(2) + '%';
+        stats.avgLoss = (stats.lossSum / stats.lossCount) * 100;  // Keep as number
       }
       
       stats.profitFactor = stats.lossSum > 0 ? (stats.profitSum / stats.lossSum).toFixed(2) : 'N/A';
@@ -1107,7 +1107,7 @@ function EW_analyzeHoldingPeriod(trades) {
       const avgDecay = decayRates.reduce((sum, d) => sum + d, 0) / decayRates.length;
       analysis.averageDecayRate = {
         peakDay: `Day${peakDay}`,
-        avgDecayPerDay: avgDecay.toFixed(2) + '%',
+        avgDecayPerDay: avgDecay,  // Keep as number
         recommendation: avgDecay > 5 ? 'Significant profit decay after peak - consider earlier exits' : 'Profits hold relatively well over time'
       };
     }
@@ -1374,8 +1374,8 @@ function EW_analyzeEarningsTiming(trades) {
       (analysis.preEarningsHits.length / totalEarningsTrades * 100).toFixed(2) + '%' : 'N/A',
     avgDaysToHitPreEarnings: preEarningsAvgDays > 0 ? preEarningsAvgDays.toFixed(1) + ' days' : 'N/A',
     avgDaysToHitPostEarnings: postEarningsAvgDays > 0 ? postEarningsAvgDays.toFixed(1) + ' days' : 'N/A',
-    avgProfitPreEarnings: avgProfitPreEarnings > 0 ? (avgProfitPreEarnings * 100).toFixed(2) + '%' : 'N/A',
-    avgProfitPostEarnings: avgProfitPostEarnings > 0 ? (avgProfitPostEarnings * 100).toFixed(2) + '%' : 'N/A',
+    avgProfitPreEarnings: avgProfitPreEarnings * 100,  // Keep as number
+    avgProfitPostEarnings: avgProfitPostEarnings * 100,  // Keep as number
     optimalEntryWindow: optimalBucket ? `${optimalBucket} days before earnings` : 'Insufficient data',
     recommendation: totalEarningsTrades > 10 ? 
       (preEarningsAvgDays < postEarningsAvgDays && avgProfitPreEarnings > avgProfitPostEarnings ? 
@@ -1415,8 +1415,8 @@ function EW_analyzeRiskRewardPatterns(trades) {
     
     analysis.byRiskRewardRatio[range] = {
       count: groupTrades.length,
-      hitRate: (hitRate * 100).toFixed(2) + '%',
-      avgMaxProfit: (avgProfit * 100).toFixed(2) + '%',
+      hitRate: hitRate * 100,  // Keep as number
+      avgMaxProfit: avgProfit * 100,  // Keep as number
       recommendation: hitRate > 0.7 ? 'FAVORABLE' : (hitRate > 0.5 ? 'MODERATE' : 'RISKY')
     };
   });
@@ -1429,7 +1429,7 @@ function EW_analyzeRiskRewardPatterns(trades) {
     
     if (dayProfits.length > 0) {
       analysis.exitTimingAnalysis[`Day${day}`] = {
-        avgProfit: (dayProfits.reduce((sum, p) => sum + p, 0) / dayProfits.length).toFixed(2) + '%',
+        avgProfit: (dayProfits.reduce((sum, p) => sum + p, 0) / dayProfits.length) * 100,  // Keep as number
         profitableTrades: dayProfits.filter(p => p > 0).length,
         totalTrades: dayProfits.length
       };
@@ -1484,13 +1484,13 @@ function EW_analyzeStrategyPerformance(trades) {
     }
   });
   
-  // Calculate final stats
+  // Calculate final stats (keep as numbers for further processing)
   Object.entries(strategies).forEach(([strategy, stats]) => {
-    stats.hitRate = (stats.hitTrades / stats.totalTrades * 100).toFixed(2) + '%';
-    stats.avgProfit = (stats.totalProfit / stats.totalTrades * 100).toFixed(2) + '%';
-    stats.avgLoss = (stats.totalLoss / stats.totalTrades * 100).toFixed(2) + '%';
-    stats.profitFactor = stats.totalLoss > 0 ? (stats.totalProfit / stats.totalLoss).toFixed(2) : 'N/A';
-    stats.avgDaysToHit = stats.hitTrades > 0 ? (stats.avgDaysToHit / stats.hitTrades).toFixed(1) : 'N/A';
+    stats.hitRate = stats.hitTrades / stats.totalTrades;  // Keep as decimal (0.18 instead of "18%")
+    stats.avgProfit = stats.totalProfit / stats.totalTrades;  // Keep as decimal
+    stats.avgLoss = stats.totalLoss / stats.totalTrades;  // Keep as decimal  
+    stats.profitFactor = stats.totalLoss > 0 ? stats.totalProfit / stats.totalLoss : 0;
+    stats.avgDaysToHit = stats.hitTrades > 0 ? stats.avgDaysToHit / stats.hitTrades : 0;
     
     // Sort and limit best performers
     stats.bestPerformers.sort((a, b) => parseFloat(b.profit) - parseFloat(a.profit));
@@ -1596,7 +1596,7 @@ function EW_identifyTopPlays(trades) {
       strike: strikePrice,
       hitPrice: hitPrice,
       strikeAndHit: `${strikePrice} → ${hitPrice}`, // Combined display
-      maxProfit: trade.maxFavorableValue ? (trade.maxFavorableValue * 100).toFixed(2) + '%' : 'N/A',
+      maxProfit: trade.maxFavorableValue ? trade.maxFavorableValue * 100 : 0,  // Keep as number
       daysToHit: trade.daysToHit !== undefined && trade.daysToHit !== null ? trade.daysToHit : 'N/A',
       profitableDays: trade.profitableDays || 0,
       riskReward: trade.riskReward && !isNaN(trade.riskReward) ? trade.riskReward.toFixed(2) : 'N/A',
@@ -1880,9 +1880,9 @@ function EW_createIndicatorsSheet(ss, indicatorData) {
       const indicatorName = indicatorParts.join('_').toUpperCase();
       
       const bullishRange = data.profitableRanges.bullish.count > 0 ?
-        `${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} (${data.profitableRanges.bullish.avgProfit}%)` : 'N/A';
+        `${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} (${(data.profitableRanges.bullish.avgProfit || 0).toFixed(2)}%)` : 'N/A';
       const bearishRange = data.profitableRanges.bearish.count > 0 ?
-        `${data.profitableRanges.bearish.min?.toFixed(2)}-${data.profitableRanges.bearish.max?.toFixed(2)} (${data.profitableRanges.bearish.avgProfit}%)` : 'N/A';
+        `${data.profitableRanges.bearish.min?.toFixed(2)}-${data.profitableRanges.bearish.max?.toFixed(2)} (${(data.profitableRanges.bearish.avgProfit || 0).toFixed(2)}%)` : 'N/A';
       
       sheet.getRange(row, 1, 1, 6).setValues([[
         type.toUpperCase(),
@@ -2462,7 +2462,7 @@ function EW_createReportSheet(ss, insights, allTrades) {
       if (data.profitableRanges.bullish.count > 0) {
         reportSheet.getRange(currentRow, 2).setValue(
           `Bullish Range: ${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} ` +
-          `(${data.profitableRanges.bullish.count} trades, avg ${data.profitableRanges.bullish.avgProfit}% profit)`
+          `(${data.profitableRanges.bullish.count} trades, avg ${(data.profitableRanges.bullish.avgProfit || 0).toFixed(2)}% profit)`
         );
         currentRow++;
       }
@@ -2796,9 +2796,9 @@ function EW_showIndicatorAnalysis() {
     .forEach(([name, data]) => {
       const indicatorName = name.replace('entry_', '').toUpperCase();
       const bullishRange = data.profitableRanges.bullish.count > 0 ?
-        `${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} (${data.profitableRanges.bullish.avgProfit}%)` : 'N/A';
+        `${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} (${(data.profitableRanges.bullish.avgProfit || 0).toFixed(2)}%)` : 'N/A';
       const bearishRange = data.profitableRanges.bearish.count > 0 ?
-        `${data.profitableRanges.bearish.min?.toFixed(2)}-${data.profitableRanges.bearish.max?.toFixed(2)} (${data.profitableRanges.bearish.avgProfit}%)` : 'N/A';
+        `${data.profitableRanges.bearish.min?.toFixed(2)}-${data.profitableRanges.bearish.max?.toFixed(2)} (${(data.profitableRanges.bearish.avgProfit || 0).toFixed(2)}%)` : 'N/A';
       
       sheet.getRange(row, 1, 1, 5).setValues([[
         indicatorName, data.correlationWithProfit, data.dataCompleteness,
@@ -2821,9 +2821,9 @@ function EW_showIndicatorAnalysis() {
     .forEach(([name, data]) => {
       const indicatorName = name.replace('hit_', '').toUpperCase();
       const bullishRange = data.profitableRanges.bullish.count > 0 ?
-        `${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} (${data.profitableRanges.bullish.avgProfit}%)` : 'N/A';
+        `${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} (${(data.profitableRanges.bullish.avgProfit || 0).toFixed(2)}%)` : 'N/A';
       const bearishRange = data.profitableRanges.bearish.count > 0 ?
-        `${data.profitableRanges.bearish.min?.toFixed(2)}-${data.profitableRanges.bearish.max?.toFixed(2)} (${data.profitableRanges.bearish.avgProfit}%)` : 'N/A';
+        `${data.profitableRanges.bearish.min?.toFixed(2)}-${data.profitableRanges.bearish.max?.toFixed(2)} (${(data.profitableRanges.bearish.avgProfit || 0).toFixed(2)}%)` : 'N/A';
       
       sheet.getRange(row, 1, 1, 5).setValues([[
         indicatorName, data.correlationWithProfit, data.dataCompleteness,
