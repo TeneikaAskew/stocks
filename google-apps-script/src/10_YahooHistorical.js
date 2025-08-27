@@ -772,6 +772,7 @@ function EW_batchCheckStrikeHits(positions) {
         let hit = false;
         let hitDate = null;
         let indicators = null;
+        let intradayResult = null; // Declare at outer scope
         
         if (isSpread && position.longStrike && position.shortStrike) {
           // For spreads, we need to check if price is in the profitable range
@@ -779,7 +780,7 @@ function EW_batchCheckStrikeHits(positions) {
           const shortStrike = parseFloat(position.shortStrike);
           
           // Get current price data
-          const intradayResult = EW_checkStockIntraday(
+          intradayResult = EW_checkStockIntraday(
             position.ticker, 
             longStrike, // Use long strike as target for data fetch
             position.endDate
@@ -807,7 +808,7 @@ function EW_batchCheckStrikeHits(positions) {
           const strike = position.strike || position.longStrike || 0;
           
           // Use checkStockIntraday to get 1m data with fallback tracking
-          const intradayResult = EW_checkStockIntraday(
+          intradayResult = EW_checkStockIntraday(
             position.ticker, 
             strike, 
             position.endDate
@@ -842,12 +843,15 @@ function EW_batchCheckStrikeHits(positions) {
           ...position,
           hit: hit,
           hitDate: hitDate,
+          hitTime: intradayResult?.timestamp || null,
+          hitPrice: intradayResult?.hitPrice || null,
           status: hit ? 'HIT' : 'NO',
-          fallbackUsed: intradayResult.fallbackUsed,
-          dayHigh: intradayResult.dayHigh,
-          dayLow: intradayResult.dayLow,
-          error: intradayResult.error,
-          indicators: intradayResult.indicators  // Pass through indicators
+          fallbackUsed: intradayResult?.fallbackUsed || null,
+          dayHigh: intradayResult?.dayHigh || null,
+          dayLow: intradayResult?.dayLow || null,
+          lastClose: intradayResult?.lastClose || null,
+          error: intradayResult?.error || null,
+          indicators: indicators || intradayResult?.indicators || null  // Use collected indicators or fallback
         });
         
       } catch (error) {
