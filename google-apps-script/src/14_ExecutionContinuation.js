@@ -299,15 +299,21 @@ function EW_testContinuation() {
  * Use this if the system gets stuck
  */
 function EW_resetContinuation() {
-  // Clear state
-  EW_clearContinuationState();
-  console.log('Cleared continuation state');
+  // Clear all continuation states
+  const scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.deleteProperty('ACTIVE_TRACKING_STATE');
+  scriptProperties.deleteProperty('BACKFILL_STATE');
+  scriptProperties.deleteProperty('BACKFILL_SELECTED_STATE');
+  console.log('Cleared all continuation states');
   
   // Remove continuation triggers
   const triggers = ScriptApp.getProjectTriggers();
   let removed = 0;
   triggers.forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'EW_continuationTrigger') {
+    const func = trigger.getHandlerFunction();
+    if (func === 'EW_continuationTrigger' || 
+        func === 'EW_backfillContinuationTrigger' || 
+        func === 'EW_backfillSelectedContinuationTrigger') {
       ScriptApp.deleteTrigger(trigger);
       removed++;
     }
@@ -316,4 +322,424 @@ function EW_resetContinuation() {
   console.log(`Removed ${removed} continuation triggers`);
   
   return { stateCleared: true, triggersRemoved: removed };
+}
+
+/**
+ * Save continuation state for backfill
+ * @param {Object} state - Current execution state
+ * @param {string} stateKey - Key to identify the state (BACKFILL_STATE or BACKFILL_SELECTED_STATE)
+ */
+function EW_saveBackfillState(state, stateKey = 'BACKFILL_STATE') {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.setProperty(stateKey, JSON.stringify({
+    ...state,
+    lastSaved: new Date().toISOString()
+  }));
+}
+
+/**
+ * Get backfill continuation state
+ * @param {string} stateKey - Key to identify the state
+ * @returns {Object|null} Saved state or null if none exists
+ */
+function EW_getBackfillState(stateKey = 'BACKFILL_STATE') {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const stateStr = scriptProperties.getProperty(stateKey);
+  
+  if (!stateStr) return null;
+  
+  try {
+    const state = JSON.parse(stateStr);
+    
+    // Check if state is too old (more than 2 hours)
+    const lastSaved = new Date(state.lastSaved);
+    const now = new Date();
+    const hoursElapsed = (now - lastSaved) / (1000 * 60 * 60);
+    
+    if (hoursElapsed > 2) {
+      console.log('Backfill state is too old, discarding');
+      scriptProperties.deleteProperty(stateKey);
+      return null;
+    }
+    
+    return state;
+  } catch (error) {
+    console.error('Error parsing backfill state:', error);
+    return null;
+  }
+}
+
+/**
+ * Clear backfill continuation state
+ * @param {string} stateKey - Key to identify the state
+ */
+function EW_clearBackfillState(stateKey = 'BACKFILL_STATE') {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.deleteProperty(stateKey);
+}
+
+/**
+ * Enhanced version of EW_backfillHistoricalTracking with continuation support
+ * Automatically resumes from where it left off if time limit is approaching
+ */
+function EW_backfillHistoricalTrackingWithContinuation() {
+  const MAX_RUNTIME_MS = 25 * 60 * 1000; // 25 minutes (leaving 5 min buffer)
+  const startTime = new Date();
+  
+  // Check for existing state
+  const savedState = EW_getBackfillState('BACKFILL_STATE');
+  let currentStrategyIndex = savedState ? savedState.currentStrategyIndex : 0;
+  let totalBackfilled = savedState ? savedState.totalBackfilled : 0;
+  let processedStrategies = savedState ? savedState.processedStrategies : [];
+  
+  if (savedState) {
+    console.log(`BACKFILL: Resuming from strategy index ${currentStrategyIndex}`);
+    console.log(`BACKFILL: Already processed: ${processedStrategies.join(', ')}`);
+    EW_trace('BACKFILL', `Resuming from saved state. Already backfilled ${totalBackfilled} positions`, true);
+  } else {
+    console.log(`BACKFILL: Starting fresh run at ${startTime.toISOString()}`);
+    EW_trace('BACKFILL', 'Starting historical tracking backfill', true);
+  }
+  
+  const ss = SpreadsheetApp.getActive();
+  const strategies = Object.keys(EW.STRATEGY_ENDPOINTS);
+  let errors = [];
+  
+  // Process strategies starting from where we left off
+  for (let i = currentStrategyIndex; i < strategies.length; i++) {
+    const strategy = strategies[i];
+    
+    // Check if we're approaching time limit
+    const elapsedMs = new Date() - startTime;
+    if (elapsedMs > MAX_RUNTIME_MS) {
+      console.log(`BACKFILL: Approaching time limit after ${Math.round(elapsedMs / 1000)}s`);
+      
+      // Save state
+      const state = {
+        currentStrategyIndex: i,
+        totalBackfilled: totalBackfilled,
+        processedStrategies: processedStrategies,
+        errors: errors,
+        startTime: savedState ? savedState.startTime : startTime.toISOString(),
+        continuationCount: (savedState?.continuationCount || 0) + 1
+      };
+      
+      EW_saveBackfillState(state, 'BACKFILL_STATE');
+      
+      // Schedule continuation trigger
+      EW_scheduleBackfillContinuation();
+      
+      const msg = `Partial backfill due to time limit.\n` +
+        `Processed: ${processedStrategies.length} of ${strategies.length} strategies\n` +
+        `Backfilled: ${totalBackfilled} positions\n` +
+        `Continuation scheduled for remaining strategies`;
+      
+      console.log(`BACKFILL: ${msg}`);
+      EW_trace('BACKFILL', msg, true);
+      
+      if (EW_isSpreadsheetEnvironment()) {
+        EW_safeAlert('Historical Backfill - Partial', msg);
+      }
+      
+      return { 
+        backfilled: totalBackfilled,
+        partial: true,
+        continuationScheduled: true 
+      };
+    }
+    
+    try {
+      console.log(`BACKFILL: Processing ${strategy} sheet...`);
+      const backfilled = EW_backfillStrategyTracking(ss, strategy);
+      if (backfilled > 0) {
+        totalBackfilled += backfilled;
+        processedStrategies.push(strategy);
+        EW_trace('BACKFILL', `Backfilled ${backfilled} positions in ${strategy}`);
+        console.log(`BACKFILL: ${strategy} - Backfilled ${backfilled} positions`);
+      } else {
+        console.log(`BACKFILL: ${strategy} - No positions to backfill`);
+      }
+      
+      // Update current index for next iteration
+      currentStrategyIndex = i + 1;
+      
+    } catch (e) {
+      errors.push(`${strategy}: ${e.message}`);
+      EW_trace('BACKFILL', `Error backfilling ${strategy}: ${e.message}`, true);
+      console.error(`BACKFILL ERROR: ${strategy} - ${e.message}`);
+    }
+  }
+  
+  // All strategies processed - clear state
+  EW_clearBackfillState('BACKFILL_STATE');
+  
+  const endTime = new Date();
+  const duration = Math.round((endTime - startTime) / 1000);
+  
+  const msg = `Historical backfill complete.\n` +
+    `Processed ${totalBackfilled} positions across ${processedStrategies.length} strategies.\n` +
+    `Duration: ${duration} seconds` +
+    (errors.length > 0 ? `\n\nErrors:\n${errors.join('\n')}` : '');
+  
+  console.log(`BACKFILL: Completed in ${duration} seconds`);
+  EW_trace('BACKFILL', msg, true);
+  
+  if (EW_isSpreadsheetEnvironment()) {
+    EW_safeAlert('Historical Backfill Complete', msg);
+  }
+  
+  return { backfilled: totalBackfilled, duration: duration, complete: true };
+}
+
+/**
+ * Schedule a backfill continuation trigger
+ */
+function EW_scheduleBackfillContinuation() {
+  // Delete any existing backfill continuation triggers first
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'EW_backfillContinuationTrigger') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // Create new trigger to run in 1 minute
+  ScriptApp.newTrigger('EW_backfillContinuationTrigger')
+    .timeBased()
+    .after(1 * 60 * 1000) // 1 minute
+    .create();
+    
+  console.log('BACKFILL: Continuation trigger scheduled for 1 minute from now');
+}
+
+/**
+ * Backfill continuation trigger function
+ */
+function EW_backfillContinuationTrigger() {
+  console.log('BACKFILL: Continuation trigger fired');
+  
+  // Check if there's a state to continue from
+  const state = EW_getBackfillState('BACKFILL_STATE');
+  if (!state) {
+    console.log('BACKFILL: No continuation state found, trigger removed');
+    return;
+  }
+  
+  console.log(`BACKFILL: Continuing from strategy index ${state.currentStrategyIndex}`);
+  console.log(`BACKFILL: This is continuation #${state.continuationCount + 1}`);
+  
+  // Continue the backfill process
+  EW_backfillHistoricalTrackingWithContinuation();
+}
+
+/**
+ * Enhanced version of EW_backfillSelectedRows with continuation support
+ * Processes selected rows with automatic resume if time limit is reached
+ */
+function EW_backfillSelectedRowsWithContinuation() {
+  const MAX_RUNTIME_MS = 25 * 60 * 1000; // 25 minutes (leaving 5 min buffer)
+  const startTime = new Date();
+  
+  // Get saved state or initialize new selection
+  const savedState = EW_getBackfillState('BACKFILL_SELECTED_STATE');
+  
+  let sheet, startRow, numRows, currentRowIndex;
+  
+  if (savedState) {
+    // Resuming from saved state
+    sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(savedState.sheetName);
+    startRow = savedState.startRow;
+    numRows = savedState.numRows;
+    currentRowIndex = savedState.currentRowIndex;
+    
+    console.log(`BACKFILL SELECTED: Resuming from row ${currentRowIndex + 1} of ${numRows}`);
+    EW_trace('BACKFILL', `Resuming selected rows backfill from row ${currentRowIndex + 1} of ${numRows}`, true);
+  } else {
+    // New selection
+    sheet = SpreadsheetApp.getActiveSheet();
+    const range = sheet.getActiveRange();
+    
+    if (!range) {
+      EW_safeAlert('No Selection', 'Please select rows to backfill');
+      return;
+    }
+    
+    startRow = range.getRow();
+    numRows = range.getNumRows();
+    currentRowIndex = 0;
+    
+    // Skip if header row is selected
+    if (startRow === 1) {
+      EW_safeAlert('Invalid Selection', 'Please select data rows, not the header row');
+      return;
+    }
+    
+    console.log(`BACKFILL SELECTED: Starting backfill of ${numRows} rows from row ${startRow}`);
+    EW_trace('BACKFILL', `Backfilling ${numRows} selected rows starting at row ${startRow}`, true);
+  }
+  
+  // Get headers
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
+  
+  // Get the data range
+  const dataRange = sheet.getRange(startRow, 1, numRows, sheet.getLastColumn());
+  
+  // Process rows starting from where we left off
+  let processedCount = savedState ? savedState.processedCount : 0;
+  let errors = savedState ? savedState.errors : [];
+  
+  for (let i = currentRowIndex; i < numRows; i++) {
+    // Check if we're approaching time limit
+    const elapsedMs = new Date() - startTime;
+    if (elapsedMs > MAX_RUNTIME_MS) {
+      console.log(`BACKFILL SELECTED: Approaching time limit after ${Math.round(elapsedMs / 1000)}s`);
+      
+      // Save state
+      const state = {
+        sheetName: sheet.getName(),
+        startRow: startRow,
+        numRows: numRows,
+        currentRowIndex: i,
+        processedCount: processedCount,
+        errors: errors,
+        startTime: savedState ? savedState.startTime : startTime.toISOString(),
+        continuationCount: (savedState?.continuationCount || 0) + 1
+      };
+      
+      EW_saveBackfillState(state, 'BACKFILL_SELECTED_STATE');
+      
+      // Schedule continuation
+      EW_scheduleSelectedBackfillContinuation();
+      
+      const msg = `Partial backfill due to time limit.\n` +
+        `Processed: ${processedCount} of ${numRows} rows\n` +
+        `Continuation scheduled to resume at row ${i + 1}`;
+      
+      console.log(`BACKFILL SELECTED: ${msg}`);
+      EW_trace('BACKFILL', msg, true);
+      
+      if (EW_isSpreadsheetEnvironment()) {
+        EW_safeAlert('Selected Rows Backfill - Partial', msg);
+      }
+      
+      return {
+        processed: processedCount,
+        partial: true,
+        continuationScheduled: true
+      };
+    }
+    
+    const rowNum = startRow + i;
+    const rowData = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
+    
+    try {
+      // Get required data
+      const ticker = hdrMap.tickerCol ? rowData[hdrMap.tickerCol - 1] : null;
+      const runDate = hdrMap.runDateCol ? rowData[hdrMap.runDateCol - 1] : null;
+      const strike = hdrMap.strikeCol ? parseFloat(rowData[hdrMap.strikeCol - 1]) : null;
+      const expDate = hdrMap.expDateCol ? rowData[hdrMap.expDateCol - 1] : null;
+      const strategy = sheet.getName();
+      
+      if (!ticker || !runDate) {
+        console.log(`Row ${rowNum}: Skipping - missing ticker or run date`);
+        continue;
+      }
+      
+      // Process the row (existing backfill logic)
+      const runDateObj = new Date(runDate);
+      const expDateObj = expDate ? new Date(expDate) : new Date();
+      
+      // Get historical data from Yahoo
+      const yahoData = EW_getYahooHistoricalRange(ticker, runDateObj, expDateObj, true);
+      
+      if (yahoData && yahoData.data && yahoData.data.length > 0) {
+        // Analyze the data
+        const analysis = EW_analyzeHistoricalData(
+          ticker, strategy, strike, yahoData.data, runDateObj, null, yahoData.raw
+        );
+        
+        // Update the row using centralized function
+        EW_updateBackfillColumns(dataRange, i, hdrMap, analysis);
+        
+        processedCount++;
+        console.log(`Row ${rowNum}: Backfilled ${ticker}`);
+      } else {
+        console.log(`Row ${rowNum}: No data available for ${ticker}`);
+      }
+      
+    } catch (error) {
+      const errorMsg = `Row ${rowNum}: Error - ${error.message}`;
+      errors.push(errorMsg);
+      console.error(errorMsg);
+      EW_trace('BACKFILL', errorMsg);
+    }
+    
+    // Update for next iteration
+    currentRowIndex = i + 1;
+  }
+  
+  // All rows processed - clear state
+  EW_clearBackfillState('BACKFILL_SELECTED_STATE');
+  
+  const endTime = new Date();
+  const duration = Math.round((endTime - startTime) / 1000);
+  
+  const msg = `Selected rows backfill complete.\n` +
+    `Processed: ${processedCount} of ${numRows} rows\n` +
+    `Duration: ${duration} seconds` +
+    (errors.length > 0 ? `\n\nErrors:\n${errors.slice(0, 5).join('\n')}` : '');
+  
+  console.log(`BACKFILL SELECTED: Completed in ${duration} seconds`);
+  EW_trace('BACKFILL', msg, true);
+  
+  if (EW_isSpreadsheetEnvironment()) {
+    EW_safeAlert('Selected Rows Backfill Complete', msg);
+  }
+  
+  // Force sheet refresh
+  SpreadsheetApp.flush();
+  
+  return { processed: processedCount, duration: duration, complete: true };
+}
+
+/**
+ * Schedule a continuation trigger for selected rows backfill
+ */
+function EW_scheduleSelectedBackfillContinuation() {
+  // Delete any existing triggers first
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'EW_backfillSelectedContinuationTrigger') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // Create new trigger to run in 1 minute
+  ScriptApp.newTrigger('EW_backfillSelectedContinuationTrigger')
+    .timeBased()
+    .after(1 * 60 * 1000) // 1 minute
+    .create();
+    
+  console.log('BACKFILL SELECTED: Continuation trigger scheduled for 1 minute from now');
+}
+
+/**
+ * Continuation trigger for selected rows backfill
+ */
+function EW_backfillSelectedContinuationTrigger() {
+  console.log('BACKFILL SELECTED: Continuation trigger fired');
+  
+  // Check if there's a state to continue from
+  const state = EW_getBackfillState('BACKFILL_SELECTED_STATE');
+  if (!state) {
+    console.log('BACKFILL SELECTED: No continuation state found, trigger removed');
+    return;
+  }
+  
+  console.log(`BACKFILL SELECTED: Continuing from row ${state.currentRowIndex + 1} of ${state.numRows}`);
+  console.log(`BACKFILL SELECTED: This is continuation #${state.continuationCount + 1}`);
+  
+  // Continue the backfill process
+  EW_backfillSelectedRowsWithContinuation();
 }

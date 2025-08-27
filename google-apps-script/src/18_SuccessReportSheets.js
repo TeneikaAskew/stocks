@@ -296,7 +296,7 @@ function EW_createMultiDaySheet(ss, multiDay) {
         trade.strategy,
         trade.consecutiveDays,
         `Day ${trade.peakDay}`,
-        `${trade.peakValue.toFixed(2)}%`,
+        `${(Number(trade.peakValue) || 0).toFixed(2)}%`,
         trade.strike
       ]);
     });
@@ -314,7 +314,7 @@ function EW_createMultiDaySheet(ss, multiDay) {
         day.count,
         day.profitable,
         `${(day.rate * 100).toFixed(1)}%`,
-        `${day.avgProfit.toFixed(2)}%`
+        `${(Number(day.avgProfit) || 0).toFixed(2)}%`
       ]);
     });
   }
@@ -480,8 +480,8 @@ function EW_createEarningsSheet(ss, earnings) {
         stats.count,
         stats.hits,
         `${(stats.hitRate * 100).toFixed(1)}%`,
-        `${stats.avgProfit.toFixed(2)}%`,
-        stats.avgDaysToHit.toFixed(1)
+        `${(Number(stats.avgProfit) || 0).toFixed(2)}%`,
+        (Number(stats.avgDaysToHit) || 0).toFixed(1)
       ]);
     });
   }
@@ -532,12 +532,12 @@ function EW_createStrategiesSheet(ss, strategies) {
         stats.count || 0,
         stats.hits || 0,
         `${((stats.hitRate || 0) * 100).toFixed(1)}%`,
-        `${(stats.avgProfit || 0).toFixed(2)}%`,
-        `${(stats.avgLoss || 0).toFixed(2)}%`,
-        (stats.profitFactor || 0).toFixed(2),
-        (stats.avgDaysToHit || 0).toFixed(1),
-        (stats.totalProfit || 0).toFixed(2),
-        (stats.totalLoss || 0).toFixed(2)
+        `${(Number(stats.avgProfit) || 0).toFixed(2)}%`,
+        `${(Number(stats.avgLoss) || 0).toFixed(2)}%`,
+        (Number(stats.profitFactor) || 0).toFixed(2),
+        (Number(stats.avgDaysToHit) || 0).toFixed(1),
+        (Number(stats.totalProfit) || 0).toFixed(2),
+        (Number(stats.totalLoss) || 0).toFixed(2)
       ]);
     });
   }
@@ -603,9 +603,9 @@ function EW_createTopPlaysSheet(ss, topPlays) {
         play.entryDate,
         play.strike,
         play.hitPrice || 'N/A',
-        `${(play.maxProfit || 0).toFixed(2)}%`,
+        `${(Number(play.maxProfit) || 0).toFixed(2)}%`,
         play.daysToHit || 'N/A',
-        (play.riskReward || 0).toFixed(2),
+        (Number(play.riskReward) || 0).toFixed(2),
         play.profitableDays || 0
       ]);
     });
@@ -619,14 +619,14 @@ function EW_createTopPlaysSheet(ss, topPlays) {
   if (topPlays && topPlays.length > 0) {
     topPlays.slice(0, 5).forEach((play, index) => {
       const indicators = [];
-      if (play.rsi) indicators.push(`RSI: ${play.rsi.toFixed(1)}`);
-      if (play.priceVsSMA20) indicators.push(`SMA20: ${play.priceVsSMA20.toFixed(2)}%`);
-      if (play.rvol) indicators.push(`RVOL: ${play.rvol.toFixed(2)}`);
+      if (play.rsi) indicators.push(`RSI: ${(Number(play.rsi) || 0).toFixed(1)}`);
+      if (play.priceVsSMA20) indicators.push(`SMA20: ${(Number(play.priceVsSMA20) || 0).toFixed(2)}%`);
+      if (play.rvol) indicators.push(`RVOL: ${(Number(play.rvol) || 0).toFixed(2)}`);
       
       const multiDay = [];
       if (play.profitDays) {
         play.profitDays.forEach((profit, day) => {
-          if (profit > 0) multiDay.push(`Day ${day}: ${profit.toFixed(2)}%`);
+          if (profit > 0) multiDay.push(`Day ${day}: ${(Number(profit) || 0).toFixed(2)}%`);
         });
       }
       
