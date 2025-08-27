@@ -18,9 +18,15 @@ function EW_checkStockIntraday(ticker, targetPrice, date = new Date()) {
   // Default to 1-minute intervals for full day data
   const defaultInterval = '1m';
   
+  console.log(`\n=== EW_checkStockIntraday START for ${ticker} ===`);
+  console.log(`Target Price: ${targetPrice}, Date: ${date.toISOString()}`);
+  
   try {
     const result = EW_fetchYahooData(ticker, targetPrice, date, defaultInterval);
     if (result && !result.error) {
+      console.log(`\n=== EW_checkStockIntraday SUCCESS for ${ticker} ===`);
+      console.log(`Result properties: ${Object.keys(result).join(', ')}`);
+      console.log(`=== END checkStockIntraday ===\n`);
       return result;
     }
   } catch (error) {
@@ -55,6 +61,11 @@ function EW_checkStockIntraday(ticker, targetPrice, date = new Date()) {
           reason: 'Original 1m interval failed',
           timestamp: new Date().toISOString()
         });
+        
+        console.log(`\n=== EW_checkStockIntraday FALLBACK SUCCESS for ${ticker} ===`);
+        console.log(`Fallback interval: ${interval}`);
+        console.log(`Result properties: ${Object.keys(result).join(', ')}`);
+        console.log(`=== END checkStockIntraday ===\n`);
         
         return result;
       }
@@ -182,6 +193,12 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
     
     const data = JSON.parse(response.getContentText());
     
+    // DEBUG: Log the full JSON response structure
+    console.log(`\n=== YAHOO API JSON RESPONSE for ${ticker} ===`);
+    console.log(`Full response structure:`);
+    console.log(JSON.stringify(data, null, 2).substring(0, 2000));
+    console.log(`=== END JSON RESPONSE ===\n`);
+    
     // Check for errors in response
     if (data.chart && data.chart.error) {
       EW_trace('YAHOO', `API Error: ${data.chart.error.description}`);
@@ -297,17 +314,27 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       }
       EW_logApiCall(logEntry, data);
       
-      return {
+      const returnObj = {
         hit: true,
         timestamp: hitTime,
+        hitPrice: targetPrice,  // Add the actual hit price
+        hitTime: hitTime,       // Add explicit hitTime
         high: hitData.high,
         low: hitData.low,
         close: hitData.close,
+        lastClose: hitData.close,  // Add lastClose
         dayHigh: dayHigh,
         dayLow: dayLow,
         interval: interval,
         indicators: hitIndicators  // Include full indicators object
       };
+      
+      // DEBUG: Log the return object structure
+      console.log(`\n=== EW_fetchYahooData RETURN OBJECT (HIT) for ${ticker} ===`);
+      console.log(JSON.stringify(returnObj, null, 2));
+      console.log(`=== END RETURN OBJECT ===\n`);
+      
+      return returnObj;
     }
     
     // Get last close for the day
@@ -329,8 +356,11 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
     logEntry.lastClose = lastClose;
     EW_logApiCall(logEntry, data);
     
-    return { 
+    const returnObj = { 
       hit: false, 
+      timestamp: null,  // No hit, so no timestamp
+      hitPrice: null,   // No hit, so no hit price
+      hitTime: null,    // No hit, so no hit time
       dayHigh: dayHigh === 0 ? null : dayHigh,
       dayLow: dayLow === Infinity ? null : dayLow,
       lastClose: lastClose,
@@ -339,6 +369,13 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       indicators: indicators,  // Include indicators even when no exact hit
       message: `Target ${targetPrice} not hit. Range: ${dayLow.toFixed(2)} - ${dayHigh.toFixed(2)}`
     };
+    
+    // DEBUG: Log the return object structure
+    console.log(`\n=== EW_fetchYahooData RETURN OBJECT (NO HIT) for ${ticker} ===`);
+    console.log(JSON.stringify(returnObj, null, 2));
+    console.log(`=== END RETURN OBJECT ===\n`);
+    
+    return returnObj;
     
   } catch (error) {
     EW_trace('YAHOO', `Fetch error: ${error.message}`);
@@ -839,7 +876,7 @@ function EW_batchCheckStrikeHits(positions) {
           }
         }
         
-        results.push({
+        const resultObj = {
           ...position,
           hit: hit,
           hitDate: hitDate,
@@ -852,7 +889,20 @@ function EW_batchCheckStrikeHits(positions) {
           lastClose: intradayResult?.lastClose || null,
           error: intradayResult?.error || null,
           indicators: indicators || intradayResult?.indicators || null  // Use collected indicators or fallback
-        });
+        };
+        
+        // DEBUG: Log the batch result object
+        console.log(`\n=== EW_batchCheckStrikeHits RESULT for ${position.ticker} ===`);
+        console.log(`Position properties: ${Object.keys(position).join(', ')}`);
+        console.log(`Result properties: ${Object.keys(resultObj).join(', ')}`);
+        if (intradayResult) {
+          console.log(`Intraday result properties: ${Object.keys(intradayResult).join(', ')}`);
+        } else {
+          console.log(`Intraday result is null/undefined`);
+        }
+        console.log(`=== END BATCH RESULT ===\n`);
+        
+        results.push(resultObj);
         
       } catch (error) {
         EW_trace('YAHOO', `Error checking ${position.ticker}: ${error.message}`);
