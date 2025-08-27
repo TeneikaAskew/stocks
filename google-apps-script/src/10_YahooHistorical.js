@@ -18,15 +18,15 @@ function EW_checkStockIntraday(ticker, targetPrice, date = new Date()) {
   // Default to 1-minute intervals for full day data
   const defaultInterval = '1m';
   
-  console.log(`\n=== EW_checkStockIntraday START for ${ticker} ===`);
-  console.log(`Target Price: ${targetPrice}, Date: ${date.toISOString()}`);
+  // console.log(`\n=== EW_checkStockIntraday START for ${ticker} ===`);
+  // console.log(`Target Price: ${targetPrice}, Date: ${date.toISOString()}`);
   
   try {
     const result = EW_fetchYahooData(ticker, targetPrice, date, defaultInterval);
     if (result && !result.error) {
-      console.log(`\n=== EW_checkStockIntraday SUCCESS for ${ticker} ===`);
-      console.log(`Result properties: ${Object.keys(result).join(', ')}`);
-      console.log(`=== END checkStockIntraday ===\n`);
+      // console.log(`\n=== EW_checkStockIntraday SUCCESS for ${ticker} ===`);
+      // console.log(`Result properties: ${Object.keys(result).join(', ')}`);
+      // console.log(`=== END checkStockIntraday ===\n`);
       return result;
     }
   } catch (error) {
@@ -62,10 +62,10 @@ function EW_checkStockIntraday(ticker, targetPrice, date = new Date()) {
           timestamp: new Date().toISOString()
         });
         
-        console.log(`\n=== EW_checkStockIntraday FALLBACK SUCCESS for ${ticker} ===`);
-        console.log(`Fallback interval: ${interval}`);
-        console.log(`Result properties: ${Object.keys(result).join(', ')}`);
-        console.log(`=== END checkStockIntraday ===\n`);
+        // console.log(`\n=== EW_checkStockIntraday FALLBACK SUCCESS for ${ticker} ===`);
+        // console.log(`Fallback interval: ${interval}`);
+        // console.log(`Result properties: ${Object.keys(result).join(', ')}`);
+        // console.log(`=== END checkStockIntraday ===\n`);
         
         return result;
       }
@@ -193,11 +193,11 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
     
     const data = JSON.parse(response.getContentText());
     
-    // DEBUG: Log the full JSON response structure
-    console.log(`\n=== YAHOO API JSON RESPONSE for ${ticker} ===`);
-    console.log(`Full response structure:`);
-    console.log(JSON.stringify(data, null, 2).substring(0, 2000));
-    console.log(`=== END JSON RESPONSE ===\n`);
+    // DEBUG: Log the full JSON response structure (commented for production)
+    // console.log(`\n=== YAHOO API JSON RESPONSE for ${ticker} ===`);
+    // console.log(`Full response structure:`);
+    // console.log(JSON.stringify(data, null, 2).substring(0, 2000));
+    // console.log(`=== END JSON RESPONSE ===\n`);
     
     // Check for errors in response
     if (data.chart && data.chart.error) {
@@ -329,10 +329,10 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
         indicators: hitIndicators  // Include full indicators object
       };
       
-      // DEBUG: Log the return object structure
-      console.log(`\n=== EW_fetchYahooData RETURN OBJECT (HIT) for ${ticker} ===`);
-      console.log(JSON.stringify(returnObj, null, 2));
-      console.log(`=== END RETURN OBJECT ===\n`);
+      // DEBUG: Log the return object structure (commented for production)
+      // console.log(`\n=== EW_fetchYahooData RETURN OBJECT (HIT) for ${ticker} ===`);
+      // console.log(JSON.stringify(returnObj, null, 2));
+      // console.log(`=== END RETURN OBJECT ===\n`);
       
       return returnObj;
     }
@@ -370,10 +370,10 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       message: `Target ${targetPrice} not hit. Range: ${dayLow.toFixed(2)} - ${dayHigh.toFixed(2)}`
     };
     
-    // DEBUG: Log the return object structure
-    console.log(`\n=== EW_fetchYahooData RETURN OBJECT (NO HIT) for ${ticker} ===`);
-    console.log(JSON.stringify(returnObj, null, 2));
-    console.log(`=== END RETURN OBJECT ===\n`);
+    // DEBUG: Log the return object structure (commented for production)
+    // console.log(`\n=== EW_fetchYahooData RETURN OBJECT (NO HIT) for ${ticker} ===`);
+    // console.log(JSON.stringify(returnObj, null, 2));
+    // console.log(`=== END RETURN OBJECT ===\n`);
     
     return returnObj;
     
@@ -891,16 +891,16 @@ function EW_batchCheckStrikeHits(positions) {
           indicators: indicators || intradayResult?.indicators || null  // Use collected indicators or fallback
         };
         
-        // DEBUG: Log the batch result object
-        console.log(`\n=== EW_batchCheckStrikeHits RESULT for ${position.ticker} ===`);
-        console.log(`Position properties: ${Object.keys(position).join(', ')}`);
-        console.log(`Result properties: ${Object.keys(resultObj).join(', ')}`);
-        if (intradayResult) {
-          console.log(`Intraday result properties: ${Object.keys(intradayResult).join(', ')}`);
-        } else {
-          console.log(`Intraday result is null/undefined`);
-        }
-        console.log(`=== END BATCH RESULT ===\n`);
+        // DEBUG: Log the batch result object (commented for production)
+        // console.log(`\n=== EW_batchCheckStrikeHits RESULT for ${position.ticker} ===`);
+        // console.log(`Position properties: ${Object.keys(position).join(', ')}`);
+        // console.log(`Result properties: ${Object.keys(resultObj).join(', ')}`);
+        // if (intradayResult) {
+        //   console.log(`Intraday result properties: ${Object.keys(intradayResult).join(', ')}`);
+        // } else {
+        //   console.log(`Intraday result is null/undefined`);
+        // }
+        // console.log(`=== END BATCH RESULT ===\n`);
         
         results.push(resultObj);
         
