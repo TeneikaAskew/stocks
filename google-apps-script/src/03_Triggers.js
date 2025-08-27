@@ -618,36 +618,37 @@ function EW_validateTriggers() {
     /**
      * Remove empty rows from all strategy sheets
      * Runs daily at 6 AM ET
+     * DEPRECATED: Now handled by EW_cleanupEmptyRows() in main code which runs before each data fetch
      */
-    function EW_removeEmptyRowsDaily() {
-      try {
-        const ss = SpreadsheetApp.getActiveSpreadsheet();
-        const sheets = ss.getSheets();
-        let totalRemoved = 0;
-        sheets.forEach(sheet => {
-          // Skip non-strategy sheets (e.g., Success_Report)
-          const name = sheet.getName();
-          if (name === 'Success_Report' || name.startsWith('Config') || name.startsWith('Log')) return;
-          const data = sheet.getDataRange().getValues();
-          let rowsToDelete = [];
-          for (let i = 1; i < data.length; i++) { // skip header row
-            if (data[i].every(cell => cell === '' || cell === null)) {
-              rowsToDelete.push(i + 1); // 1-based row index
-            }
-          }
-          // Delete from bottom up to avoid shifting
-          rowsToDelete.reverse().forEach(rowNum => {
-            sheet.deleteRow(rowNum);
-            totalRemoved++;
-          });
-        });
-        EW_trace('EMPTY_ROW_REMOVAL', `Removed ${totalRemoved} empty rows from all sheets.`);
-        console.log(`Removed ${totalRemoved} empty rows from all sheets.`);
-      } catch (error) {
-        EW_trace('EMPTY_ROW_REMOVAL', `Error removing empty rows: ${error.toString()}`);
-        console.error('Error removing empty rows:', error);
-      }
-    }
+    // function EW_removeEmptyRowsDaily() {
+    //   try {
+    //     const ss = SpreadsheetApp.getActiveSpreadsheet();
+    //     const sheets = ss.getSheets();
+    //     let totalRemoved = 0;
+    //     sheets.forEach(sheet => {
+    //       // Skip non-strategy sheets (e.g., Success_Report)
+    //       const name = sheet.getName();
+    //       if (name === 'Success_Report' || name.startsWith('Config') || name.startsWith('Log')) return;
+    //       const data = sheet.getDataRange().getValues();
+    //       let rowsToDelete = [];
+    //       for (let i = 1; i < data.length; i++) { // skip header row
+    //         if (data[i].every(cell => cell === '' || cell === null)) {
+    //           rowsToDelete.push(i + 1); // 1-based row index
+    //         }
+    //       }
+    //       // Delete from bottom up to avoid shifting
+    //       rowsToDelete.reverse().forEach(rowNum => {
+    //         sheet.deleteRow(rowNum);
+    //         totalRemoved++;
+    //       });
+    //     });
+    //     EW_trace('EMPTY_ROW_REMOVAL', `Removed ${totalRemoved} empty rows from all sheets.`);
+    //     console.log(`Removed ${totalRemoved} empty rows from all sheets.`);
+    //   } catch (error) {
+    //     EW_trace('EMPTY_ROW_REMOVAL', `Error removing empty rows: ${error.toString()}`);
+    //     console.error('Error removing empty rows:', error);
+    //   }
+    // }
 // Note: The 4:30 PM tracking trigger has been consolidated into the 5 PM Yahoo-based active tracking.
 // All tracking updates are now handled by EW_updateActiveStrikeHits which runs at 5 PM ET.
 
