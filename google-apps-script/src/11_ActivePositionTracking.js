@@ -90,7 +90,7 @@ function EW_updateActiveStrikeHits() {
 function EW_updateStrategyActiveStrikes(ss, strategyName) {
   const sheet = ss.getSheetByName(strategyName);
   if (!sheet || sheet.getLastRow() < 2) {
-    return 0;
+    return { checked: 0, updated: 0 };
   }
   
   // Get header map
@@ -102,7 +102,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
   for (const col of requiredCols) {
     if (!hdrMap[col]) {
       EW_trace('ACTIVE_TRACKING', `${strategyName}: Missing required column ${col}`);
-      return 0;
+      return { checked: 0, updated: 0 };
     }
   }
   
@@ -170,9 +170,9 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
   const results = EW_batchCheckStrikeHits(positionsToCheck);
   
   // Update cells with results
-  results.forEach(result => {
+  results.forEach((result, index) => {
     if (!result.error) {
-      const position = positionsToCheck[results.indexOf(result)];
+      const position = positionsToCheck[index];
       const row = position.row;
       const strike = position.strike || position.longStrike || 0;
       const dayIndex = Math.min(position.daysSinceEntry, 5); // Cap at day 5
@@ -233,28 +233,28 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
       
       // Update arrays in sheet
       if (hdrMap.maxFavorableCol) {
-        dataRange.getCell(result.rowIndex + 1, hdrMap.maxFavorableCol)
+        dataRange.getCell(position.rowIndex + 1, hdrMap.maxFavorableCol)
           .setValue(EW_arrayToJson(updatedMaxFav));
       }
       
       if (hdrMap.minUnfavorableCol) {
-        dataRange.getCell(result.rowIndex + 1, hdrMap.minUnfavorableCol)
+        dataRange.getCell(position.rowIndex + 1, hdrMap.minUnfavorableCol)
           .setValue(EW_arrayToJson(updatedMinUnfav));
       }
       
       if (hdrMap.strikeHitCol) {
-        dataRange.getCell(result.rowIndex + 1, hdrMap.strikeHitCol)
+        dataRange.getCell(position.rowIndex + 1, hdrMap.strikeHitCol)
           .setValue(EW_arrayToJson(updatedStrikeHit));
       }
       
       // Update historical high/low
       if (hdrMap.historicalHighCol && updatedHistorical.high !== existingHistoricalHigh) {
-        dataRange.getCell(result.rowIndex + 1, hdrMap.historicalHighCol)
+        dataRange.getCell(position.rowIndex + 1, hdrMap.historicalHighCol)
           .setValue(updatedHistorical.high);
       }
       
       if (hdrMap.historicalLowCol && updatedHistorical.low !== existingHistoricalLow) {
-        dataRange.getCell(result.rowIndex + 1, hdrMap.historicalLowCol)
+        dataRange.getCell(position.rowIndex + 1, hdrMap.historicalLowCol)
           .setValue(updatedHistorical.low);
       }
       
@@ -274,7 +274,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
       
       indicatorMappings.forEach(mapping => {
         if (mapping.col && mapping.data.length > 0) {
-          dataRange.getCell(result.rowIndex + 1, mapping.col)
+          dataRange.getCell(position.rowIndex + 1, mapping.col)
             .setValue(EW_arrayToJson(mapping.data));
         }
       });
@@ -285,14 +285,14 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         
         // Update Hit_Date (most recent hit)
         if (hdrMap.hitDateCol) {
-          dataRange.getCell(result.rowIndex + 1, hdrMap.hitDateCol).setValue(hitDateStr);
+          dataRange.getCell(position.rowIndex + 1, hdrMap.hitDateCol).setValue(hitDateStr);
         }
         
         // Update First_Hit_Date (only if not already set)
         if (hdrMap.firstHitDateCol) {
           const existingFirstHit = row[hdrMap.firstHitDateCol - 1];
           if (!existingFirstHit) {
-            dataRange.getCell(result.rowIndex + 1, hdrMap.firstHitDateCol).setValue(hitDateStr);
+            dataRange.getCell(position.rowIndex + 1, hdrMap.firstHitDateCol).setValue(hitDateStr);
           }
         }
       }
@@ -324,7 +324,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
             dayCheckValue = avgPrice.toFixed(2);
           }
           
-          dataRange.getCell(result.rowIndex + 1, check.col).setValue(dayCheckValue);
+          dataRange.getCell(position.rowIndex + 1, check.col).setValue(dayCheckValue);
         }
       }
       
@@ -334,7 +334,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         if (!existing && result.lastClose) {
           // Store the closing price at expiration
           const expResult = result.lastClose.toFixed(2);
-          dataRange.getCell(result.rowIndex + 1, hdrMap.expResultCol).setValue(expResult);
+          dataRange.getCell(position.rowIndex + 1, hdrMap.expResultCol).setValue(expResult);
         }
       }
       
@@ -344,7 +344,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
         if (!existing) {
           const riskReward = EW_calculateRiskRewardFromArrays(updatedMaxFav, updatedMinUnfav);
           if (riskReward) {
-            dataRange.getCell(result.rowIndex + 1, hdrMap.riskRewardCol).setValue(riskReward);
+            dataRange.getCell(position.rowIndex + 1, hdrMap.riskRewardCol).setValue(riskReward);
           }
         }
       }

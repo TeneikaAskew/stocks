@@ -157,6 +157,10 @@ function EW_testLogin() {
 function EW_runAll() {
   EW_trace('MAIN', 'EW_runAll() started', true);
 
+  // Clean up empty rows before starting to prevent accumulation
+  EW_trace('MAIN', 'Cleaning up empty rows before data fetch...', false);
+  EW_cleanupEmptyRows();
+
   let cookies = {};
   if (EW.p.user && EW.p.pass) {
     try {
@@ -455,6 +459,85 @@ function EW_objectsToRows(arr) {
 // ======= SHEET MANAGEMENT =======
 
 /**
+ * Removes empty rows from all strategy sheets
+ * Helps prevent accumulation of empty rows that can cause issues
+ * @returns {void}
+ */
+function EW_cleanupEmptyRows() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const endpoints = EW.STRATEGY_ENDPOINTS;
+    let totalRemoved = 0;
+    
+    for (const tabName of Object.keys(endpoints)) {
+      const sheet = ss.getSheetByName(tabName);
+      if (!sheet || sheet.getLastRow() <= 1) continue; // Skip if no sheet or only header
+      
+      // Get data from columns that should have actual values (not formulas)
+      const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      const hdrMap = EW_headerMap(headers);
+      
+      // Use ticker column as the primary indicator of real data
+      const checkCol = hdrMap.tickerCol || hdrMap.runDateCol || 1;
+      const lastRow = sheet.getLastRow();
+      
+      if (lastRow <= 1) continue; // Only header, nothing to clean
+      
+      // Get all values from the check column
+      const colData = sheet.getRange(2, checkCol, lastRow - 1, 1).getValues();
+      
+      // Find rows to delete (empty rows)
+      const rowsToDelete = [];
+      for (let i = 0; i < colData.length; i++) {
+        if (colData[i][0] === '' || colData[i][0] === null) {
+          // Check if entire row is empty (not just this column)
+          const rowNum = i + 2; // Convert to 1-based row number
+          const rowData = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
+          
+          // Check if all non-formula columns are empty
+          const isEmptyRow = rowData.every((cell, idx) => {
+            // Skip formula columns (they might have values from formulas)
+            const header = headers[idx];
+            if (header && (header.toString().startsWith('GF_') || 
+                          header.toString().includes('Days_To_Exp') ||
+                          header.toString().includes('Success_Score') ||
+                          header.toString().includes('Historical_') ||
+                          header.toString().includes('Ever_Hit') ||
+                          header.toString().includes('First_Hit') ||
+                          header.toString().includes('Last_Update') ||
+                          header.toString().includes('Total_Hit'))) {
+              return true; // Ignore formula columns
+            }
+            return cell === '' || cell === null;
+          });
+          
+          if (isEmptyRow) {
+            rowsToDelete.push(rowNum);
+          }
+        }
+      }
+      
+      // Delete rows from bottom to top to avoid index shifting
+      rowsToDelete.reverse();
+      for (const rowNum of rowsToDelete) {
+        sheet.deleteRow(rowNum);
+        totalRemoved++;
+      }
+      
+      if (rowsToDelete.length > 0) {
+        EW_trace('CLEANUP', `Removed ${rowsToDelete.length} empty rows from ${tabName}`);
+      }
+    }
+    
+    if (totalRemoved > 0) {
+      EW_trace('CLEANUP', `Total empty rows removed: ${totalRemoved}`, false);
+    }
+  } catch (error) {
+    EW_trace('CLEANUP', `Error during empty row cleanup: ${error.toString()}`, false);
+  }
+}
+
+/**
  * Main function to append data rows to a strategy sheet
  * Handles sheet creation, header management, and GOOGLEFINANCE formula setup
  * @param {Spreadsheet} ss - Google Sheets spreadsheet object
@@ -570,10 +653,31 @@ function EW_appendToTab(ss, tabName, rows, writeHeaderIfEmpty) {
     EW_setGFArrayFormulas(sheet, hdrMap);
   }
 
+  // Find the actual last row with data (not just formulas)
+  // Check first few columns for actual data to determine the real last row
+  let actualLastRow = 1; // Start at header row
+  if (sheet.getLastRow() > 1) {
+    // Get data from columns that should have actual values (not formulas)
+    // Check columns like Run Date, Strategy, Ticker which are actual data columns
+    const checkCols = [hdrMap.runDateCol, hdrMap.strategyCol, hdrMap.tickerCol].filter(c => c);
+    if (checkCols.length > 0) {
+      const maxRows = sheet.getLastRow();
+      const checkCol = checkCols[0]; // Use first available column
+      const colData = sheet.getRange(2, checkCol, maxRows - 1, 1).getValues();
+      
+      // Find last non-empty row
+      for (let i = colData.length - 1; i >= 0; i--) {
+        if (colData[i][0] !== '' && colData[i][0] !== null) {
+          actualLastRow = i + 2; // +2 because we started at row 2
+          break;
+        }
+      }
+    }
+  }
 
-  const start = sheet.getLastRow() + 1;
+  const start = actualLastRow + 1;
   sheet.getRange(start, 1, aligned.length, width).setValues(aligned);
-  EW_trace('SHEET', `Appended ${aligned.length} rows at row ${start}`);
+  EW_trace('SHEET', `Appended ${aligned.length} rows at row ${start} (actual last data row: ${actualLastRow})`);
 
   // Do NOT call any filler here; array formulas spill automatically.
 }

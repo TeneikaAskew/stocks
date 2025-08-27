@@ -6,15 +6,16 @@
 // ======= MAIN CONFIGURATION OBJECT =======
 const EW = {
   STRATEGY_ENDPOINTS: {
+    
+    'Long Calls':   '/api/getlongcalls', //Y
+    'Long Puts':    '/api/getlongput', //E
     'Short Puts':   '/api/getshortput', //E
     'Bull Spreads': '/api/getbullcallspread', //Y
-    'Long Calls':   '/api/getlongcalls', //Y
     'Strangles':    '/api/getstrangle',  //E
     'Covered Calls':'/api/getcoveredcall', //Y
     'Straddles':    '/api/getstraddle',   //E
     'Short Calls':  '/api/getshortcalls', //E
-    'Bear Spreads': '/api/getbearputspread', //Y
-    'Long Puts':    '/api/getlongput' //E
+    'Bear Spreads': '/api/getbearputspread' //Y
   },
 
   BASE: 'https://www.earningswhispers.com',
@@ -106,5 +107,5 @@ const EW_TRIGGER_FUNCTIONS = {
   DAILY_DATA: 'EW_dailyDataFetch',  // Wrapper for EW_runAll that suppresses UI alerts
   DAILY_REPORT: 'EW_generateSuccessReport',
   ACTIVE_TRACKING: 'EW_updateActiveStrikeHits', // 5 PM active position tracking
-  REMOVE_EMPTY_ROWS: 'EW_removeEmptyRowsDaily'  // 6 AM daily empty row removal
+  // REMOVE_EMPTY_ROWS: 'EW_removeEmptyRowsDaily'  // DEPRECATED - now handled by EW_cleanupEmptyRows() before each data fetch
 };
