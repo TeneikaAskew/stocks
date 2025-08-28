@@ -53,13 +53,22 @@ function EW_updateStrategyTracking(ss, strategyName) {
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(headers);
   
-  // Check required columns exist
-  const requiredCols = ['tickerCol', 'runDateCol', 'strikeCol', 'expDateCol'];
-  for (const col of requiredCols) {
+  // Check required columns exist - handle spreads that have longStrike/shortStrike instead of strike
+  const baseRequiredCols = ['tickerCol', 'runDateCol', 'expDateCol'];
+  for (const col of baseRequiredCols) {
     if (!hdrMap[col]) {
       EW_trace('TRACKING', `${strategyName}: Missing required column ${col}`);
       return 0;
     }
+  }
+  
+  // Check for strike columns - must have either strike OR (longStrike AND shortStrike)
+  const hasStrikeCol = hdrMap.strikeCol;
+  const hasSpreadCols = hdrMap.longStrikeCol && hdrMap.shortStrikeCol;
+  
+  if (!hasStrikeCol && !hasSpreadCols) {
+    EW_trace('TRACKING', `${strategyName}: Missing strike column(s) - needs either 'strike' or both 'longStrike' and 'shortStrike'`);
+    return 0;
   }
   
   // Get all data
@@ -76,10 +85,15 @@ function EW_updateStrategyTracking(ss, strategyName) {
     try {
       const ticker = row[hdrMap.tickerCol - 1];
       const runDateStr = row[hdrMap.runDateCol - 1];
-      const strike = parseFloat(row[hdrMap.strikeCol - 1]) || 0;
+      const strike = hdrMap.strikeCol ? parseFloat(row[hdrMap.strikeCol - 1]) || 0 : 0;
+      const longStrike = hdrMap.longStrikeCol ? parseFloat(row[hdrMap.longStrikeCol - 1]) || 0 : 0;
+      const shortStrike = hdrMap.shortStrikeCol ? parseFloat(row[hdrMap.shortStrikeCol - 1]) || 0 : 0;
       const expDateStr = row[hdrMap.expDateCol - 1];
       
-      if (!ticker || !runDateStr || !strike) return;
+      // Check if position has valid strike data
+      const hasValidStrike = strike || (longStrike && shortStrike);
+      
+      if (!ticker || !runDateStr || !hasValidStrike) return;
       
       // Parse dates
       const runDate = new Date(runDateStr);
@@ -126,7 +140,9 @@ function EW_updateStrategyTracking(ss, strategyName) {
           const existingCheck = row[check.col - 1];
           if (!existingCheck) {
             // Check if strike was hit by this day
-            const hitStatus = EW_checkStrikeHit(strategyName, currentPrice, strike, historicalHigh, historicalLow);
+            // For spreads, use the primary strike (long strike for bull/bear spreads)
+            const primaryStrike = longStrike || strike;
+            const hitStatus = EW_checkStrikeHit(strategyName, currentPrice, primaryStrike, historicalHigh, historicalLow);
             dataRange.getCell(rowIndex + 1, check.col).setValue(hitStatus);
             updatedCount++;
           }
@@ -134,8 +150,11 @@ function EW_updateStrategyTracking(ss, strategyName) {
       }
       
       // Update Max_Favorable and Min_Unfavorable
+      // For spreads, use the primary strike (long strike for bull/bear spreads)
+      const primaryStrike = longStrike || strike;
+      
       if (hdrMap.maxFavorableCol && historicalHigh > 0) {
-        const maxFav = EW_calculateMaxFavorable(strategyName, strike, historicalHigh, historicalLow);
+        const maxFav = EW_calculateMaxFavorable(strategyName, primaryStrike, historicalHigh, historicalLow);
         const existing = row[hdrMap.maxFavorableCol - 1];
         if (!existing && maxFav !== null) {
           dataRange.getCell(rowIndex + 1, hdrMap.maxFavorableCol).setValue(maxFav);
@@ -144,7 +163,7 @@ function EW_updateStrategyTracking(ss, strategyName) {
       }
       
       if (hdrMap.minUnfavorableCol && historicalLow > 0) {
-        const minUnfav = EW_calculateMinUnfavorable(strategyName, strike, historicalHigh, historicalLow);
+        const minUnfav = EW_calculateMinUnfavorable(strategyName, primaryStrike, historicalHigh, historicalLow);
         const existing = row[hdrMap.minUnfavorableCol - 1];
         if (!existing && minUnfav !== null) {
           dataRange.getCell(rowIndex + 1, hdrMap.minUnfavorableCol).setValue(minUnfav);

@@ -68,6 +68,8 @@ function EW_updateActiveStrikeHitsWithContinuation() {
   let currentStrategyIndex = savedState ? savedState.currentStrategyIndex : 0;
   let totalChecked = savedState ? savedState.totalChecked : 0;
   let totalUpdated = savedState ? savedState.totalUpdated : 0;
+  let totalSkipped = savedState ? savedState.totalSkipped : 0;
+  let totalExpired = savedState ? savedState.totalExpired : 0;
   let processedStrategies = savedState ? savedState.processedStrategies : [];
   
   if (savedState) {
@@ -98,6 +100,8 @@ function EW_updateActiveStrikeHitsWithContinuation() {
         currentStrategyIndex: i,
         totalChecked: totalChecked,
         totalUpdated: totalUpdated,
+        totalSkipped: totalSkipped,
+        totalExpired: totalExpired,
         processedStrategies: processedStrategies,
         errors: errors,
         startTime: savedState ? savedState.startTime : startTime.toISOString(),
@@ -113,6 +117,7 @@ function EW_updateActiveStrikeHitsWithContinuation() {
         `Processed: ${processedStrategies.length} of ${strategies.length} strategies\n` +
         `Checked: ${totalChecked} positions\n` +
         `Updated: ${totalUpdated} positions\n` +
+        `Skipped: ${totalSkipped} positions (already updated)\n` +
         `Continuation scheduled for remaining strategies`;
       
       console.log(`ACTIVE TRACKING: ${msg}`);
@@ -135,13 +140,19 @@ function EW_updateActiveStrikeHitsWithContinuation() {
       const result = EW_updateStrategyActiveStrikes(ss, strategy);
       totalChecked += result.checked;
       totalUpdated += result.updated;
+      totalSkipped += (result.skipped || 0);
+      totalExpired += (result.expired || 0);
       processedStrategies.push(strategy);
       
       if (result.updated > 0) {
-        EW_trace('ACTIVE_TRACKING', `Updated ${result.updated} of ${result.checked} active positions in ${strategy}`);
-        console.log(`ACTIVE TRACKING: ${strategy} - Updated ${result.updated}/${result.checked} positions`);
+        EW_trace('ACTIVE_TRACKING', `Updated ${result.updated} of ${result.checked} active positions in ${strategy}` + 
+          (result.skipped > 0 ? ` (skipped ${result.skipped} already updated)` : ''));
+        console.log(`ACTIVE TRACKING: ${strategy} - Updated ${result.updated}/${result.checked} positions` +
+          (result.skipped > 0 ? `, skipped ${result.skipped}` : ''));
       } else if (result.checked > 0) {
         console.log(`ACTIVE TRACKING: ${strategy} - Checked ${result.checked} positions, no updates needed`);
+      } else if (result.skipped > 0) {
+        console.log(`ACTIVE TRACKING: ${strategy} - All ${result.skipped} positions already updated today`);
       }
       
       // Update current index for next iteration
@@ -163,6 +174,8 @@ function EW_updateActiveStrikeHitsWithContinuation() {
   const msg = `Active position update complete.\n` +
     `Checked: ${totalChecked} positions\n` +
     `Updated: ${totalUpdated} positions\n` +
+    `Skipped: ${totalSkipped} positions (already updated)\n` +
+    `Expired: ${totalExpired} positions (>7 days old)\n` +
     `Strategies: ${processedStrategies.length}\n` +
     `Duration: ${duration} seconds` +
     (errors.length > 0 ? `\n\nErrors:\n${errors.join('\n')}` : '');

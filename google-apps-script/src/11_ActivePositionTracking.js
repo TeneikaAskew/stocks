@@ -18,6 +18,8 @@ function EW_updateActiveStrikeHits() {
   const strategies = Object.keys(EW.STRATEGY_ENDPOINTS);
   let totalUpdated = 0;
   let totalChecked = 0;
+  let totalSkipped = 0;
+  let totalExpired = 0;
   let errors = [];
   
   for (const strategy of strategies) {
@@ -26,12 +28,18 @@ function EW_updateActiveStrikeHits() {
       const result = EW_updateStrategyActiveStrikes(ss, strategy);
       totalChecked += result.checked;
       totalUpdated += result.updated;
+      totalSkipped += (result.skipped || 0);
+      totalExpired += (result.expired || 0);
       
       if (result.updated > 0) {
-        EW_trace('ACTIVE_TRACKING', `Updated ${result.updated} of ${result.checked} active positions in ${strategy}`);
-        console.log(`ACTIVE TRACKING: ${strategy} - Updated ${result.updated}/${result.checked} positions`);
+        EW_trace('ACTIVE_TRACKING', `Updated ${result.updated} of ${result.checked} active positions in ${strategy}` + 
+          (result.skipped > 0 ? ` (skipped ${result.skipped} already updated)` : ''));
+        console.log(`ACTIVE TRACKING: ${strategy} - Updated ${result.updated}/${result.checked} positions` +
+          (result.skipped > 0 ? `, skipped ${result.skipped}` : ''));
       } else if (result.checked > 0) {
         console.log(`ACTIVE TRACKING: ${strategy} - Checked ${result.checked} positions, no updates needed`);
+      } else if (result.skipped > 0) {
+        console.log(`ACTIVE TRACKING: ${strategy} - All ${result.skipped} positions already updated today`);
       }
     } catch (e) {
       errors.push(`${strategy}: ${e.message}`);
@@ -46,6 +54,8 @@ function EW_updateActiveStrikeHits() {
   const msg = `Active position update complete.\n` +
     `Checked: ${totalChecked} positions\n` +
     `Updated: ${totalUpdated} positions\n` +
+    `Skipped: ${totalSkipped} positions (already updated)\n` +
+    `Expired: ${totalExpired} positions (>7 days old)\n` +
     `Strategies: ${strategies.length}\n` +
     `Duration: ${duration} seconds` +
     (errors.length > 0 ? `\n\nErrors:\n${errors.join('\n')}` : '');
@@ -97,13 +107,22 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(headers);
   
-  // Check required columns
-  const requiredCols = ['tickerCol', 'runDateCol', 'strikeCol', 'daysToExpCol', 'strikeHitCol'];
-  for (const col of requiredCols) {
+  // Check required columns - handle spreads that have longStrike/shortStrike instead of strike
+  const baseRequiredCols = ['tickerCol', 'runDateCol', 'daysToExpCol', 'strikeHitCol'];
+  for (const col of baseRequiredCols) {
     if (!hdrMap[col]) {
       EW_trace('ACTIVE_TRACKING', `${strategyName}: Missing required column ${col}`);
       return { checked: 0, updated: 0 };
     }
+  }
+  
+  // Check for strike columns - must have either strike OR (longStrike AND shortStrike)
+  const hasStrikeCol = hdrMap.strikeCol;
+  const hasSpreadCols = hdrMap.longStrikeCol && hdrMap.shortStrikeCol;
+  
+  if (!hasStrikeCol && !hasSpreadCols) {
+    EW_trace('ACTIVE_TRACKING', `${strategyName}: Missing strike column(s) - needs either 'strike' or both 'longStrike' and 'shortStrike'`);
+    return { checked: 0, updated: 0 };
   }
   
   // Get all data
@@ -117,6 +136,10 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
   
   // Batch positions for efficiency
   const positionsToCheck = [];
+  
+  // Track statistics
+  let skippedAlreadyUpdated = 0;
+  let skippedNotActive = 0;
   
   // Process all positions (both active and recently expired)
   data.forEach((row, rowIndex) => {
@@ -138,26 +161,77 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
     runDate.setHours(0, 0, 0, 0);
     const expDate = expDateStr ? new Date(expDateStr) : null;
     const daysSinceEntry = Math.floor((today - runDate) / (1000 * 60 * 60 * 24));
+    const dayIndex = Math.min(daysSinceEntry, 5); // Cap at day 5
+    
+    // Skip if not active (expired more than 7 days ago)
+    if (daysToExp <= -7) {
+      skippedNotActive++;
+      return;
+    }
+    
+    // Check if current day's data already exists
+    const checkCurrentDay = () => {
+      // Check the specific day check column
+      const dayCheckCols = [
+        hdrMap.day0CheckCol, hdrMap.day1CheckCol, hdrMap.day2CheckCol,
+        hdrMap.day3CheckCol, hdrMap.day4CheckCol, hdrMap.day5CheckCol
+      ];
+      
+      if (dayIndex < dayCheckCols.length && dayCheckCols[dayIndex]) {
+        const dayCheckValue = row[dayCheckCols[dayIndex] - 1];
+        if (dayCheckValue && dayCheckValue !== '' && dayCheckValue !== 'None') {
+          return true; // Day already has data
+        }
+      }
+      
+      // Also check if arrays have data at current index
+      if (hdrMap.strikeHitCol) {
+        const strikeHitArray = EW_parseArrayFromCell(row[hdrMap.strikeHitCol - 1]);
+        if (strikeHitArray && strikeHitArray.length > dayIndex && strikeHitArray[dayIndex] !== null) {
+          return true; // Array already has data for this day
+        }
+      }
+      
+      return false;
+    };
+    
+    // Skip if current day already has data (unless it's an expired position needing final update)
+    if (daysToExp > 0 && checkCurrentDay()) {
+      skippedAlreadyUpdated++;
+      // Log only first few skips to avoid spam
+      if (skippedAlreadyUpdated <= 3) {
+        console.log(`ACTIVE TRACKING: Skipping ${ticker} - Day ${dayIndex} already has data`);
+      }
+      return;
+    }
     
     // Process active positions and recently expired (within last 7 days)
-    if (daysToExp > -7) {
-      positionsToCheck.push({
-        rowIndex: rowIndex,
-        ticker: ticker,
-        strike: strike,
-        longStrike: longStrike,
-        shortStrike: shortStrike,
-        strategy: strategyName,
-        startDate: runDate,
-        endDate: today,
-        daysToExp: daysToExp,
-        daysSinceEntry: daysSinceEntry,
-        expDate: expDate,
-        currentStrikeHit: currentStrikeHit,
-        row: row  // Pass entire row for additional updates
-      });
-    }
+    positionsToCheck.push({
+      rowIndex: rowIndex,
+      ticker: ticker,
+      strike: strike,
+      longStrike: longStrike,
+      shortStrike: shortStrike,
+      strategy: strategyName,
+      startDate: runDate,
+      endDate: today,
+      daysToExp: daysToExp,
+      daysSinceEntry: daysSinceEntry,
+      expDate: expDate,
+      currentStrikeHit: currentStrikeHit,
+      row: row  // Pass entire row for additional updates
+    });
   });
+  
+  // Log skip statistics
+  if (skippedAlreadyUpdated > 0) {
+    console.log(`ACTIVE TRACKING: ${strategyName} - Skipped ${skippedAlreadyUpdated} positions with current day data`);
+    EW_trace('ACTIVE_TRACKING', `${strategyName}: Skipped ${skippedAlreadyUpdated} positions already updated today`);
+  }
+  
+  if (skippedNotActive > 0) {
+    console.log(`ACTIVE TRACKING: ${strategyName} - Skipped ${skippedNotActive} expired positions (>7 days)`);
+  }
   
   if (positionsToCheck.length === 0) {
     return { checked: 0, updated: 0 };
@@ -358,7 +432,12 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
     SpreadsheetApp.flush();
   }
   
-  return { checked: positionsToCheck.length, updated: updatedCount };
+  return { 
+    checked: positionsToCheck.length, 
+    updated: updatedCount,
+    skipped: skippedAlreadyUpdated,
+    expired: skippedNotActive
+  };
 }
 
 // Note: Trigger functions have been moved to 03_Triggers.js
