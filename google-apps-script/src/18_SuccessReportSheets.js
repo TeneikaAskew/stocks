@@ -357,14 +357,31 @@ function EW_createIndicatorsSheet(ss, indicators) {
   // Sort indicators by correlation
   if (indicators) {
     Object.entries(indicators).forEach(([name, stats]) => {
+      // Handle the actual data structure from EW_analyzeIndicatorEffectiveness
+      const correlation = stats.correlationWithProfit || stats.correlation || 0;
+      const dataCompleteness = stats.dataCompleteness || 
+        (stats.dataPoints && stats.totalTrades ? 
+          `${Math.round(stats.dataPoints / stats.totalTrades * 100)}%` : 'N/A');
+      
+      // Format profitable ranges if available
+      let profitableRange = 'N/A';
+      if (stats.profitableRanges) {
+        if (stats.profitableRanges.bullish && stats.profitableRanges.bullish.count > 0) {
+          profitableRange = `${(stats.profitableRanges.bullish.min || 0).toFixed(2)}-${(stats.profitableRanges.bullish.max || 0).toFixed(2)}`;
+        } else if (stats.profitableRanges.bearish && stats.profitableRanges.bearish.count > 0) {
+          profitableRange = `${(stats.profitableRanges.bearish.min || 0).toFixed(2)}-${(stats.profitableRanges.bearish.max || 0).toFixed(2)}`;
+        }
+      }
+      
       const indicator = {
-        type: name.includes('RSI') ? 'Momentum' : 
-              name.includes('SMA') || name.includes('VWAP') ? 'Trend' : 
-              name.includes('RVOL') ? 'Volume' : 'Other',
-        name: name,
-        correlation: stats.correlation || 0,
-        dataCompleteness: `${Math.round(stats.dataPoints / stats.totalTrades * 100)}%`,
-        profitableRange: stats.profitableRange || 'N/A',
+        type: name.includes('rsi') || name.includes('RSI') ? 'Momentum' : 
+              name.includes('sma') || name.includes('SMA') || name.includes('vwap') || name.includes('VWAP') ? 'Trend' : 
+              name.includes('rvol') || name.includes('RVOL') ? 'Volume' : 'Other',
+        name: name.replace('hit_', '').replace('entry_', '').toUpperCase(),
+        correlation: correlation,
+        dataCompleteness: dataCompleteness,
+        profitableRange: profitableRange,
+        profitableRanges: stats.profitableRanges,
         hitRate: stats.hitRate || 0
       };
       
@@ -379,12 +396,28 @@ function EW_createIndicatorsSheet(ss, indicators) {
   // Add high impact indicators
   highImpact.sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation));
   highImpact.forEach(ind => {
-    const bullishRange = ind.correlation > 0 ? ind.profitableRange : 'N/A';
-    const bearishRange = ind.correlation < 0 ? ind.profitableRange : 'N/A';
+    let bullishRange = 'N/A';
+    let bearishRange = 'N/A';
+    
+    if (ind.profitableRanges) {
+      if (ind.profitableRanges.bullish && ind.profitableRanges.bullish.count > 0) {
+        bullishRange = `${(ind.profitableRanges.bullish.min || 0).toFixed(2)}-${(ind.profitableRanges.bullish.max || 0).toFixed(2)}`;
+        if (ind.profitableRanges.bullish.avgProfit) {
+          bullishRange += ` (${(ind.profitableRanges.bullish.avgProfit || 0).toFixed(1)}%)`;
+        }
+      }
+      if (ind.profitableRanges.bearish && ind.profitableRanges.bearish.count > 0) {
+        bearishRange = `${(ind.profitableRanges.bearish.min || 0).toFixed(2)}-${(ind.profitableRanges.bearish.max || 0).toFixed(2)}`;
+        if (ind.profitableRanges.bearish.avgProfit) {
+          bearishRange += ` (${(ind.profitableRanges.bearish.avgProfit || 0).toFixed(1)}%)`;
+        }
+      }
+    }
+    
     data.push([
       ind.type,
       ind.name,
-      ind.correlation.toFixed(3),
+      (Number(ind.correlation) || 0).toFixed(3),
       ind.dataCompleteness,
       bullishRange,
       bearishRange
@@ -400,7 +433,7 @@ function EW_createIndicatorsSheet(ss, indicators) {
       data.push([
         ind.type,
         ind.name,
-        ind.correlation.toFixed(3),
+        (Number(ind.correlation) || 0).toFixed(3),
         ind.dataCompleteness
       ]);
     });

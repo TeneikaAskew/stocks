@@ -130,115 +130,37 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
   const dataRange = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
   const data = dataRange.getValues();
   
+  // Use batch checking to determine which positions need updating
+  const batchCheck = EW_batchCheckActivePositions(sheet, hdrMap, data, strategyName);
+  
+  // Log the summary once
+  EW_trace('ACTIVE_TRACKING', batchCheck.summary, true);
+  
+  if (batchCheck.needsChecking === 0) {
+    EW_trace('ACTIVE_TRACKING', `${strategyName}: No active positions need updating`);
+    return { 
+      checked: batchCheck.totalRows, 
+      updated: 0,
+      skipped: batchCheck.skippedAlreadyUpdated.length,
+      expired: batchCheck.skippedExpired.length
+    };
+  }
+  
   let updatedCount = 0;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   
-  // Batch positions for efficiency
-  const positionsToCheck = [];
-  
-  // Track statistics
-  let skippedAlreadyUpdated = 0;
-  let skippedNotActive = 0;
-  
-  // Process all positions (both active and recently expired)
-  data.forEach((row, rowIndex) => {
-    const ticker = row[hdrMap.tickerCol - 1];
-    const runDateStr = row[hdrMap.runDateCol - 1];
-    const strike = hdrMap.strikeCol ? parseFloat(row[hdrMap.strikeCol - 1]) || 0 : 0;
-    const longStrike = hdrMap.longStrikeCol ? parseFloat(row[hdrMap.longStrikeCol - 1]) || 0 : 0;
-    const shortStrike = hdrMap.shortStrikeCol ? parseFloat(row[hdrMap.shortStrikeCol - 1]) || 0 : 0;
-    const daysToExp = parseFloat(row[hdrMap.daysToExpCol - 1]) || 0;
-    const currentStrikeHit = row[hdrMap.strikeHitCol - 1];
-    const expDateStr = hdrMap.expDateCol ? row[hdrMap.expDateCol - 1] : null;
-    
-    // Check if position has valid strike data
-    const hasValidStrike = strike || (longStrike && shortStrike);
-    
-    if (!ticker || !runDateStr || !hasValidStrike) return;
-    
-    const runDate = new Date(runDateStr);
-    runDate.setHours(0, 0, 0, 0);
-    const expDate = expDateStr ? new Date(expDateStr) : null;
-    const daysSinceEntry = Math.floor((today - runDate) / (1000 * 60 * 60 * 24));
-    const dayIndex = Math.min(daysSinceEntry, 5); // Cap at day 5
-    
-    // Skip if not active (expired more than 7 days ago)
-    if (daysToExp <= -7) {
-      skippedNotActive++;
-      return;
-    }
-    
-    // Check if current day's data already exists
-    const checkCurrentDay = () => {
-      // Check the specific day check column
-      const dayCheckCols = [
-        hdrMap.day0CheckCol, hdrMap.day1CheckCol, hdrMap.day2CheckCol,
-        hdrMap.day3CheckCol, hdrMap.day4CheckCol, hdrMap.day5CheckCol
-      ];
-      
-      if (dayIndex < dayCheckCols.length && dayCheckCols[dayIndex]) {
-        const dayCheckValue = row[dayCheckCols[dayIndex] - 1];
-        if (dayCheckValue && dayCheckValue !== '' && dayCheckValue !== 'None') {
-          return true; // Day already has data
-        }
-      }
-      
-      // Also check if arrays have data at current index
-      if (hdrMap.strikeHitCol) {
-        const strikeHitArray = EW_parseArrayFromCell(row[hdrMap.strikeHitCol - 1]);
-        if (strikeHitArray && strikeHitArray.length > dayIndex && strikeHitArray[dayIndex] !== null) {
-          return true; // Array already has data for this day
-        }
-      }
-      
-      return false;
-    };
-    
-    // Skip if current day already has data (unless it's an expired position needing final update)
-    if (daysToExp > 0 && checkCurrentDay()) {
-      skippedAlreadyUpdated++;
-      // Log only first few skips to avoid spam
-      if (skippedAlreadyUpdated <= 3) {
-        console.log(`ACTIVE TRACKING: Skipping ${ticker} - Day ${dayIndex} already has data`);
-      }
-      return;
-    }
-    
-    // Process active positions and recently expired (within last 7 days)
-    positionsToCheck.push({
-      rowIndex: rowIndex,
-      ticker: ticker,
-      strike: strike,
-      longStrike: longStrike,
-      shortStrike: shortStrike,
-      strategy: strategyName,
-      startDate: runDate,
-      endDate: today,
-      daysToExp: daysToExp,
-      daysSinceEntry: daysSinceEntry,
-      expDate: expDate,
-      currentStrikeHit: currentStrikeHit,
-      row: row  // Pass entire row for additional updates
-    });
-  });
-  
-  // Log skip statistics
-  if (skippedAlreadyUpdated > 0) {
-    console.log(`ACTIVE TRACKING: ${strategyName} - Skipped ${skippedAlreadyUpdated} positions with current day data`);
-    EW_trace('ACTIVE_TRACKING', `${strategyName}: Skipped ${skippedAlreadyUpdated} positions already updated today`);
-  }
-  
-  if (skippedNotActive > 0) {
-    console.log(`ACTIVE TRACKING: ${strategyName} - Skipped ${skippedNotActive} expired positions (>7 days)`);
-  }
-  
-  if (positionsToCheck.length === 0) {
-    return { checked: 0, updated: 0 };
-  }
-  
-  console.log(`ACTIVE TRACKING: ${strategyName} - Checking ${positionsToCheck.length} active positions`);
-  EW_trace('ACTIVE_TRACKING', `Checking ${positionsToCheck.length} active positions in ${strategyName}`);
+  // Process all positions that need checking
+  const positionsToCheck = batchCheck.positionsToCheck.map(pos => ({
+    ...pos,
+    strategy: strategyName,
+    startDate: pos.runDate,
+    endDate: today,
+    daysSinceEntry: pos.dayIndex,
+    currentStrikeHit: data[pos.rowIndex][hdrMap.strikeHitCol - 1],
+    row: data[pos.rowIndex],
+    expDate: data[pos.rowIndex][hdrMap.expDateCol - 1] ? new Date(data[pos.rowIndex][hdrMap.expDateCol - 1]) : null
+  }));
   
   // Batch check strike hits
   const results = EW_batchCheckStrikeHits(positionsToCheck);
@@ -432,11 +354,15 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
     SpreadsheetApp.flush();
   }
   
+  // Log final summary with progress
+  const finalSummary = `${strategyName} Complete: Updated ${updatedCount}/${positionsToCheck.length} positions`;
+  EW_trace('ACTIVE_TRACKING', finalSummary, true);
+  
   return { 
     checked: positionsToCheck.length, 
     updated: updatedCount,
-    skipped: skippedAlreadyUpdated,
-    expired: skippedNotActive
+    skipped: batchCheck.skippedAlreadyUpdated.length,
+    expired: batchCheck.skippedExpired.length
   };
 }
 

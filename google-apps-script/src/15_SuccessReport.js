@@ -1171,12 +1171,24 @@ function EW_analyzeEarningsTiming(trades) {
   
   trades.forEach(trade => {
     // Skip if no earnings date
-    if (!trade.nextEPSDate || trade.nextEPSDate === '') {
+    if (!trade.nextEPSDate || trade.nextEPSDate === '' || trade.nextEPSDate === 'N/A') {
       analysis.noEarningsData++;
       return;
     }
     
-    const epsDate = new Date(trade.nextEPSDate);
+    // Try to parse the earnings date
+    let epsDate;
+    try {
+      epsDate = new Date(trade.nextEPSDate);
+      if (isNaN(epsDate.getTime())) {
+        analysis.noEarningsData++;
+        return;
+      }
+    } catch (e) {
+      analysis.noEarningsData++;
+      return;
+    }
+    
     const runDate = new Date(trade.runDate);
     const daysToEarnings = Math.floor((epsDate - runDate) / (1000 * 60 * 60 * 24));
     

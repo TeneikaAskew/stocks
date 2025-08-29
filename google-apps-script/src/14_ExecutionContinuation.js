@@ -486,6 +486,27 @@ function EW_backfillHistoricalTrackingWithContinuation() {
   // All strategies processed - clear state
   EW_clearBackfillState('BACKFILL_STATE');
   
+  // Apply formatting to all processed sheets
+  if (totalBackfilled > 0) {
+    EW_trace('BACKFILL', 'Applying Day Check formatting to all processed sheets...', true);
+    for (const strategy of processedStrategies) {
+      try {
+        const sheet = ss.getSheetByName(strategy);
+        if (sheet && sheet.getLastRow() > 1) {
+          const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+          const hdrMap = EW_headerMap(headers);
+          if (hdrMap.day0CheckCol || hdrMap.day1CheckCol) {
+            EW_formatDayCheckColumns(sheet, hdrMap, strategy);
+            EW_trace('BACKFILL', `Applied formatting to ${strategy}`);
+          }
+        }
+      } catch (e) {
+        EW_trace('BACKFILL', `Failed to apply formatting to ${strategy}: ${e.message}`);
+      }
+    }
+    SpreadsheetApp.flush();
+  }
+  
   const endTime = new Date();
   const duration = Math.round((endTime - startTime) / 1000);
   
@@ -694,6 +715,17 @@ function EW_backfillSelectedRowsWithContinuation() {
   
   // All rows processed - clear state
   EW_clearBackfillState('BACKFILL_SELECTED_STATE');
+  
+  // Apply formatting to the sheet if any rows were processed
+  if (processedCount > 0) {
+    try {
+      EW_formatDayCheckColumns(sheet, hdrMap, sheet.getName());
+      EW_trace('BACKFILL', `Applied Day Check formatting for selected rows`);
+    } catch (e) {
+      EW_trace('BACKFILL', `Failed to apply formatting: ${e.message}`);
+    }
+    SpreadsheetApp.flush();
+  }
   
   const endTime = new Date();
   const duration = Math.round((endTime - startTime) / 1000);
