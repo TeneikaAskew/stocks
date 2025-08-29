@@ -60,6 +60,13 @@ function onOpen() {
     .addItem('Backfill Selected Rows', 'EW_backfillSelectedRows')
     .addItem('Backfill Selected (with Continuation)', 'EW_backfillSelectedRowsWithContinuation')
     .addSeparator()
+    .addItem('Recalculate Indicators (Selected)', 'EW_recalculateIndicatorsForSelected')
+    .addItem('Recalculate Indicators (Sheet)', 'EW_recalculateIndicatorsForSheet')
+    .addItem('Check Missing Indicators', 'EW_checkMissingIndicators')
+    .addSeparator()
+    .addItem('Apply Day Check Formatting (Current)', 'EW_applyDayCheckFormatting')
+    .addItem('Apply Day Check Formatting (All)', 'EW_applyDayCheckFormattingToAll')
+    .addSeparator()
     .addItem('Update Active Position Strikes', 'EW_updateActiveStrikeHits')
     .addItem('Update Active (with Continuation)', 'EW_updateActiveStrikeHitsWithContinuation')
     .addSeparator()
@@ -840,8 +847,8 @@ function EW_headerMap(headerRow) {
   const askCol          = find(['ask','Ask']);
   const openInterestCol = find(['openInterest','open interest','Open Interest']);
   const volumeCol       = find(['volume','Volume']);
-  const nextEPSDateCol  = find(['nextEPSDate','next eps date','Next EPS Date']);
-  const releaseTimeCol  = find(['releaseTime','release time','Release Time']);
+  const nextEPSDateCol  = find(['earningsDate','earnings date','Earnings Date','nextEPSDate','next eps date','Next EPS Date']);
+  const releaseTimeCol  = find(['earningsTime','earnings time','Earnings Time','releaseTime','release time','Release Time']);
   const lastEPSTimeCol  = find(['lastEPSTime','last eps time','Last EPS Time']);
   const confirmDateCol  = find(['confirmDate','confirm date','Confirm Date']);
   const optionDateCol   = find(['optionDate','option date','Option Date']);
