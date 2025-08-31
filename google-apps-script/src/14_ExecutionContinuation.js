@@ -527,8 +527,9 @@ function EW_backfillHistoricalTrackingWithContinuation() {
 
 /**
  * Schedule a backfill continuation trigger
+ * @param {string} functionName - The function to continue (used for logging and state management)
  */
-function EW_scheduleBackfillContinuation() {
+function EW_scheduleBackfillContinuation(functionName = 'EW_backfillHistoricalTracking') {
   // Delete any existing backfill continuation triggers first
   const triggers = ScriptApp.getProjectTriggers();
   triggers.forEach(trigger => {
@@ -537,13 +538,17 @@ function EW_scheduleBackfillContinuation() {
     }
   });
   
+  // Store the function name in properties so the trigger knows what to call
+  const scriptProperties = PropertiesService.getScriptProperties();
+  scriptProperties.setProperty('BACKFILL_FUNCTION', functionName);
+  
   // Create new trigger to run in 1 minute
   ScriptApp.newTrigger('EW_backfillContinuationTrigger')
     .timeBased()
     .after(1 * 60 * 1000) // 1 minute
     .create();
     
-  console.log('BACKFILL: Continuation trigger scheduled for 1 minute from now');
+  console.log(`BACKFILL: Continuation trigger scheduled for ${functionName} in 1 minute`);
 }
 
 /**
@@ -552,18 +557,30 @@ function EW_scheduleBackfillContinuation() {
 function EW_backfillContinuationTrigger() {
   console.log('BACKFILL: Continuation trigger fired');
   
+  // Get the function name to continue
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const functionName = scriptProperties.getProperty('BACKFILL_FUNCTION') || 'EW_backfillHistoricalTracking';
+  
   // Check if there's a state to continue from
   const state = EW_getBackfillState('BACKFILL_STATE');
   if (!state) {
     console.log('BACKFILL: No continuation state found, trigger removed');
+    scriptProperties.deleteProperty('BACKFILL_FUNCTION');
     return;
   }
   
-  console.log(`BACKFILL: Continuing from strategy index ${state.currentStrategyIndex}`);
+  console.log(`BACKFILL: Continuing ${functionName} from strategy index ${state.currentStrategyIndex}`);
   console.log(`BACKFILL: This is continuation #${state.continuationCount + 1}`);
   
-  // Continue the backfill process
-  EW_backfillHistoricalTrackingWithContinuation();
+  // Continue the appropriate backfill process
+  if (functionName === 'EW_backfillHistoricalTracking') {
+    EW_backfillHistoricalTracking();
+  } else if (functionName === 'EW_backfillHistoricalTrackingWithContinuation') {
+    EW_backfillHistoricalTrackingWithContinuation();
+  }
+  
+  // Clean up the function name property after use
+  scriptProperties.deleteProperty('BACKFILL_FUNCTION');
 }
 
 /**
