@@ -112,15 +112,12 @@ function EW_generateSuccessReport() {
   const duration = Math.round((new Date() - startTime) / 1000);
   console.log(`Success report generated in ${duration} seconds`);
   
-  // Only show alert if in spreadsheet environment (not triggered)
-  if (EW_isSpreadsheetEnvironment()) {
-    SpreadsheetApp.getUi().alert(
-      'Success Report Generated',
-      `Analysis complete. Processed ${allTrades.length} trades in ${duration} seconds.\n\n` +
-      `Check the "Success_Report" sheet for insights.`,
-      SpreadsheetApp.getUi().ButtonSet.OK
-    );
-  }
+  // Use safe alert that handles trigger context properly
+  EW_safeAlert(
+    'Success Report Generated',
+    `Analysis complete. Processed ${allTrades.length} trades in ${duration} seconds.\n\n` +
+    `Check the "Success_Report" sheet for insights.`
+  );
 }
 
 /**
@@ -2642,12 +2639,11 @@ function EW_exportMLData() {
     mlSheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
   }
   
-  SpreadsheetApp.getUi().alert(
+  EW_safeAlert(
     'ML Data Exported',
     `Exported ${mlData.data.length} trades to "ML_Export" sheet.\n\n` +
     `Features: ${mlData.features.length}\n` +
-    `Ready for analysis in Python, R, or your preferred ML platform.`,
-    SpreadsheetApp.getUi().ButtonSet.OK
+    `Ready for analysis in Python, R, or your preferred ML platform.`
   );
 }
 
@@ -2711,10 +2707,9 @@ function EW_showTopWinningPlays() {
   sheet.autoResizeColumns(1, 10);
   SpreadsheetApp.setActiveSheet(sheet);
   
-  SpreadsheetApp.getUi().alert(
+  EW_safeAlert(
     'Top Plays Report Generated',
-    `Found ${topPlays.length} winning plays with >5% profit.\n\nCheck the "Top_Winning_Plays" sheet.`,
-    SpreadsheetApp.getUi().ButtonSet.OK
+    `Found ${topPlays.length} winning plays with >5% profit.\n\nCheck the "Top_Winning_Plays" sheet.`
   );
 }
 
@@ -2766,11 +2761,10 @@ function EW_showMultiDayReport() {
   sheet.autoResizeColumns(1, 6);
   SpreadsheetApp.setActiveSheet(sheet);
   
-  SpreadsheetApp.getUi().alert(
+  EW_safeAlert(
     'Multi-Day Analysis Complete',
     `Found ${analysis.sustainedProfitability.length} trades with sustained profitability.\n\n` +
-    `Check the "Multi_Day_Analysis" sheet.`,
-    SpreadsheetApp.getUi().ButtonSet.OK
+    `Check the "Multi_Day_Analysis" sheet.`
   );
 }
 
@@ -2870,11 +2864,10 @@ function EW_showIndicatorAnalysis() {
   
   const highImpact = Object.values(analysis).filter(d => d.significance === 'HIGH').length;
   
-  SpreadsheetApp.getUi().alert(
+  EW_safeAlert(
     'Indicator Analysis Complete',
     `Found ${highImpact} high-impact indicators with strong correlation to profitability.\n\n` +
-    `Check the "Indicator_Analysis" sheet.`,
-    SpreadsheetApp.getUi().ButtonSet.OK
+    `Check the "Indicator_Analysis" sheet.`
   );
 }
 
@@ -2998,12 +2991,11 @@ function EW_showEarningsTimingReport() {
   sheet.autoResizeColumns(1, 5);
   SpreadsheetApp.setActiveSheet(sheet);
   
-  SpreadsheetApp.getUi().alert(
+  EW_safeAlert(
     'Earnings Timing Analysis Complete',
     `Analyzed ${analysis.preEarningsHits.length + analysis.postEarningsHits.length} trades with earnings data.\n\n` +
     `${analysis.earningsImpact.recommendation}\n\n` +
-    `Check the "Earnings_Timing" sheet.`,
-    SpreadsheetApp.getUi().ButtonSet.OK
+    `Check the "Earnings_Timing" sheet.`
   );
 }
 
@@ -3067,11 +3059,10 @@ function EW_showStrategyPerformance() {
   const bestStrategy = Object.entries(analysis)
     .sort((a, b) => parseFloat(b[1].profitFactor) - parseFloat(a[1].profitFactor))[0];
   
-  SpreadsheetApp.getUi().alert(
+  EW_safeAlert(
     'Strategy Performance Analysis Complete',
     `Best performing strategy: ${bestStrategy[0]} with profit factor ${bestStrategy[1].profitFactor}\n\n` +
-    `Check the "Strategy_Performance" sheet.`,
-    SpreadsheetApp.getUi().ButtonSet.OK
+    `Check the "Strategy_Performance" sheet.`
   );
 }
 
