@@ -39,21 +39,63 @@
 /**
  * Main function to backfill historical tracking data for all sheets
  * This analyzes historical prices from run date to expiration/today
+ * Now includes continuation support for long-running processes
  */
 function EW_backfillHistoricalTracking() {
-  EW_trace('BACKFILL', 'Starting historical tracking backfill', true);
+  const MAX_RUNTIME_MS = 25 * 60 * 1000; // 25 minutes (leaving 5 min buffer)
+  const startTime = new Date();
+  
+  // Check for existing state from previous run
+  const savedState = EW_getBackfillState ? EW_getBackfillState('BACKFILL_STATE') : null;
+  let currentStrategyIndex = savedState ? savedState.currentStrategyIndex : 0;
+  let totalBackfilled = savedState ? savedState.totalBackfilled : 0;
+  let errors = savedState ? savedState.errors : [];
+  let processedStrategies = savedState ? savedState.processedStrategies : [];
+  
+  if (savedState) {
+    EW_trace('BACKFILL', `Resuming from strategy index ${currentStrategyIndex}. Already processed: ${processedStrategies.join(', ')}`, true);
+  } else {
+    EW_trace('BACKFILL', 'Starting historical tracking backfill', true);
+  }
+  
   const ss = SpreadsheetApp.getActive();
   const strategies = Object.keys(EW.STRATEGY_ENDPOINTS);
-  let totalBackfilled = 0;
-  let errors = [];
   
-  for (const strategy of strategies) {
+  // Process strategies starting from where we left off
+  for (let i = currentStrategyIndex; i < strategies.length; i++) {
+    const strategy = strategies[i];
+    
+    // Check if we're approaching time limit
+    const elapsedMs = new Date() - startTime;
+    if (elapsedMs > MAX_RUNTIME_MS) {
+      EW_trace('BACKFILL', `Approaching time limit after ${Math.round(elapsedMs / 1000)}s. Saving state and scheduling continuation...`, true);
+      
+      // Save state for continuation
+      if (EW_saveBackfillState) {
+        const state = {
+          currentStrategyIndex: i,
+          totalBackfilled: totalBackfilled,
+          errors: errors,
+          processedStrategies: processedStrategies,
+          startTime: startTime.toISOString(),
+          continuationCount: (savedState?.continuationCount || 0) + 1
+        };
+        EW_saveBackfillState(state, 'BACKFILL_STATE');
+        
+        // Schedule continuation trigger
+        EW_scheduleBackfillContinuation('EW_backfillHistoricalTracking');
+      }
+      
+      return; // Exit to let continuation handle the rest
+    }
+    
     try {
       const backfilled = EW_backfillStrategyTracking(ss, strategy);
       if (backfilled > 0) {
         totalBackfilled += backfilled;
         EW_trace('BACKFILL', `Backfilled ${backfilled} positions in ${strategy}`);
       }
+      processedStrategies.push(strategy);
     } catch (e) {
       // Log the full error with stack trace for debugging
       console.error(`BACKFILL ERROR: ${strategy} - ${e.message}`);
@@ -84,6 +126,11 @@ function EW_backfillHistoricalTracking() {
       }
     }
     SpreadsheetApp.flush();
+  }
+  
+  // Clear continuation state since we're done
+  if (EW_clearBackfillState) {
+    EW_clearBackfillState('BACKFILL_STATE');
   }
   
   const msg = `Historical backfill complete. Processed ${totalBackfilled} positions across ${strategies.length} strategies.` +
@@ -1277,6 +1324,11 @@ function EW_backfillSelectedRows() {
         }
       }
     }
+  }
+  
+  // Clear continuation state since we're done
+  if (EW_clearBackfillState) {
+    EW_clearBackfillState('BACKFILL_SELECTED_STATE');
   }
   
   SpreadsheetApp.flush();
