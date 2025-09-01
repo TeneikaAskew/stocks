@@ -1,0 +1,81 @@
+name: Fetch Daily Market Data
+
+on:
+  schedule:
+    # Run at 5:00 PM EST (10:00 PM UTC) every weekday after market close
+    - cron: '0 22 * * 1-5'
+  workflow_dispatch:  # Allow manual triggering
+    inputs:
+      tickers:
+        description: 'Tickers to fetch (IWM SPY QQQ SPX or ALL)'
+        required: false
+        default: 'ALL'
+        type: string
+
+jobs:
+  fetch-market-data:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-market-data-${{ hashFiles('requirements-data.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-market-data-
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install yfinance pandas pyarrow pytz
+    
+    - name: Determine tickers to fetch
+      id: tickers
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tickers }}" ]; then
+          echo "TICKERS=${{ github.event.inputs.tickers }}" >> $GITHUB_OUTPUT
+        else
+          echo "TICKERS=ALL" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Fetch market data
+      run: |
+        if [ "${{ steps.tickers.outputs.TICKERS }}" = "ALL" ]; then
+          python scripts/fetch_market_data.py --tickers ALL
+        else
+          python scripts/fetch_market_data.py --tickers ${{ steps.tickers.outputs.TICKERS }}
+        fi
+    
+    - name: Commit and push data
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Add all parquet and json files in data directory
+        git add data/*.parquet data/*.json data/minute/*.parquet || true
+        
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          # Create commit message with ticker list
+          COMMIT_MSG="Update market data - $(date +'%Y-%m-%d')"
+          if [ "${{ steps.tickers.outputs.TICKERS }}" != "ALL" ]; then
+            COMMIT_MSG="$COMMIT_MSG (${{ steps.tickers.outputs.TICKERS }})"
+          fi
+          
+          git commit -m "$COMMIT_MSG"
+          git push
+        fi
