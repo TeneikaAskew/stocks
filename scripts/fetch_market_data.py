@@ -133,9 +133,9 @@ def fetch_minute_data_for_date(ticker, date):
     """
     eastern = pytz.timezone('US/Eastern')
     
-    # Create timestamps for the date
-    start_time = datetime.combine(date, time(0, 0))
-    end_time = datetime.combine(date, time(23, 59))
+    # Create timestamps for the date - set to market hours
+    start_time = datetime.combine(date, time(9, 30))  # Market open
+    end_time = datetime.combine(date, time(16, 0))    # Market close
     
     start_time = eastern.localize(start_time)
     end_time = eastern.localize(end_time)
@@ -148,10 +148,40 @@ def fetch_minute_data_for_date(ticker, date):
             end=end_time + timedelta(minutes=1),
             interval="1m",
             progress=False,
-            prepost=False  # Only regular market hours
+            prepost=False,  # Only regular market hours
+            group_by=None,
+            auto_adjust=True,
+            threads=False
         )
         
         if not df.empty:
+            # Handle multi-level columns from yfinance
+            if isinstance(df.columns, pd.MultiIndex):
+                # For single ticker, yfinance returns columns like ('SPY', 'Open')
+                # We need to flatten to just 'Open', 'Close', etc. - use level 1!
+                df.columns = df.columns.get_level_values(1)
+            
+            # Standardize column names to match expected format
+            expected_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            if not all(col in df.columns for col in expected_columns):
+                # Try to map columns if they're different case or format
+                column_mapping = {}
+                for col in df.columns:
+                    col_lower = str(col).lower()
+                    if 'open' in col_lower:
+                        column_mapping[col] = 'Open'
+                    elif 'high' in col_lower:
+                        column_mapping[col] = 'High'
+                    elif 'low' in col_lower:
+                        column_mapping[col] = 'Low'
+                    elif 'close' in col_lower:
+                        column_mapping[col] = 'Close'
+                    elif 'volume' in col_lower:
+                        column_mapping[col] = 'Volume'
+                
+                if column_mapping:
+                    df = df.rename(columns=column_mapping)
+            
             # Ensure timezone awareness
             if df.index.tz is None:
                 df.index = df.index.tz_localize('US/Eastern')
@@ -285,12 +315,63 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None):
             if Path(minute_file).exists():
                 print(f"  Loading existing minute data from {minute_file}")
                 minute_df = pd.read_parquet(minute_file)
+                
+                # Handle multi-level columns if present in saved file
+                if isinstance(minute_df.columns, pd.MultiIndex):
+                    # Use level 1 which contains the price types (Open, High, Low, etc.)
+                    minute_df.columns = minute_df.columns.get_level_values(1)
+                
+                # Standardize column names
+                column_mapping = {}
+                for col in minute_df.columns:
+                    col_lower = str(col).lower()
+                    if 'open' in col_lower:
+                        column_mapping[col] = 'Open'
+                    elif 'high' in col_lower:
+                        column_mapping[col] = 'High'
+                    elif 'low' in col_lower:
+                        column_mapping[col] = 'Low'
+                    elif 'close' in col_lower:
+                        column_mapping[col] = 'Close'
+                    elif 'volume' in col_lower:
+                        column_mapping[col] = 'Volume'
+                
+                if column_mapping:
+                    minute_df = minute_df.rename(columns=column_mapping)
+                
+                # Validate loaded data has required columns
+                required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                missing_columns = [col for col in required_columns if col not in minute_df.columns]
+                
+                if missing_columns:
+                    print(f"  WARNING: Loaded file missing columns: {missing_columns}")
+                    print(f"  Available columns: {list(minute_df.columns)}")
+                    print(f"  Attempting to re-fetch data for {fetch_date}")
+                    minute_df = fetch_minute_data_for_date(ticker_symbol, fetch_date)
+                    
+                    if not minute_df.empty and all(col in minute_df.columns for col in required_columns):
+                        # Re-save with correct format
+                        minute_df.to_parquet(minute_file, compression='snappy')
+                        print(f"  Re-saved {len(minute_df)} minute bars with correct format")
+                    else:
+                        print(f"  Failed to get valid data for {fetch_date}")
+                        continue
             else:
                 # Fetch new minute data
                 minute_df = fetch_minute_data_for_date(ticker_symbol, fetch_date)
                 
                 if not minute_df.empty:
-                    # Save minute data
+                    # Validate that we have the required columns
+                    required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                    missing_columns = [col for col in required_columns if col not in minute_df.columns]
+                    
+                    if missing_columns:
+                        print(f"  ERROR: Missing required columns: {missing_columns}")
+                        print(f"  Available columns: {list(minute_df.columns)}")
+                        print(f"  Skipping {fetch_date} due to invalid data format")
+                        continue
+                    
+                    # Save minute data only if valid
                     minute_df.to_parquet(minute_file, compression='snappy')
                     print(f"  Saved {len(minute_df)} minute bars to {minute_file}")
                 else:
