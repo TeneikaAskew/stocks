@@ -1,0 +1,3215 @@
+Head
+	EW_updateActiveStrikeHits
+	Time-Driven
+	Aug 31, 2025, 5:42:08 PM
+	1802.091 s
+	
+Timed Out
+Cloud logs
+Aug 31, 2025, 6:01:26 PM
+Debug
+[2025-08-31T22:01:26.806Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:01:29 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for PATH
+Aug 31, 2025, 6:01:29 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for PATH on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:01:29 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:01:29 PM
+Debug
+[2025-08-31T22:01:29.221Z] [YAHOO] Fetching PATH with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:01:29 PM
+Debug
+[2025-08-31T22:01:29.223Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:01:29 PM
+Debug
+[2025-08-31T22:01:29.313Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:01:32 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for PATH
+Aug 31, 2025, 6:01:32 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for PATH on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:01:32 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:01:32 PM
+Debug
+[2025-08-31T22:01:32.104Z] [YAHOO] Fetching PATH with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:01:32 PM
+Debug
+[2025-08-31T22:01:32.106Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:01:32 PM
+Debug
+[2025-08-31T22:01:32.201Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:01:34 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for PATH
+Aug 31, 2025, 6:01:34 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for PATH on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:01:34 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:01:34 PM
+Debug
+[2025-08-31T22:01:34.522Z] [YAHOO] Fetching PATH with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:01:34 PM
+Debug
+[2025-08-31T22:01:34.526Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:01:34 PM
+Debug
+[2025-08-31T22:01:34.630Z] [YAHOO] Got 21 data points for PATH (1d)
+Aug 31, 2025, 6:01:34 PM
+Debug
+[2025-08-31T22:01:34.631Z] [YAHOO] PATH range: Infinity - 0.00, Target 11 NOT hit
+Aug 31, 2025, 6:01:38 PM
+Debug
+API RESPONSE SAVED: PATH_2025-08-31_22-01-35.json
+Aug 31, 2025, 6:01:38 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for PATH
+Aug 31, 2025, 6:01:38 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for PATH
+Aug 31, 2025, 6:01:41 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:01:41 PM
+Debug
+[2025-08-31T22:01:41.319Z] [YAHOO] Fetching PL with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:01:41 PM
+Debug
+[2025-08-31T22:01:41.325Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:01:41 PM
+Debug
+[2025-08-31T22:01:41.434Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:01:44 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for PL
+Aug 31, 2025, 6:01:44 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for PL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:01:44 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:01:44 PM
+Debug
+[2025-08-31T22:01:44.346Z] [YAHOO] Fetching PL with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:01:44 PM
+Debug
+[2025-08-31T22:01:44.348Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:01:44 PM
+Debug
+[2025-08-31T22:01:44.452Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:01:46 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for PL
+Aug 31, 2025, 6:01:46 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for PL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:01:46 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:01:46 PM
+Debug
+[2025-08-31T22:01:46.930Z] [YAHOO] Fetching PL with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:01:46 PM
+Debug
+[2025-08-31T22:01:46.931Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:01:47 PM
+Debug
+[2025-08-31T22:01:47.011Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:01:50 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for PL
+Aug 31, 2025, 6:01:50 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for PL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:01:50 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:01:50 PM
+Debug
+[2025-08-31T22:01:50.802Z] [YAHOO] Fetching PL with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:01:50 PM
+Debug
+[2025-08-31T22:01:50.811Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:01:50 PM
+Debug
+[2025-08-31T22:01:50.904Z] [YAHOO] Got 21 data points for PL (1d)
+Aug 31, 2025, 6:01:50 PM
+Debug
+[2025-08-31T22:01:50.907Z] [YAHOO] PL range: Infinity - 0.00, Target 7 NOT hit
+Aug 31, 2025, 6:01:54 PM
+Debug
+API RESPONSE SAVED: PL_2025-08-31_22-01-51.json
+Aug 31, 2025, 6:01:54 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for PL
+Aug 31, 2025, 6:01:54 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for PL
+Aug 31, 2025, 6:01:56 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:01:56 PM
+Debug
+[2025-08-31T22:01:56.833Z] [YAHOO] Fetching CASY with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:01:56 PM
+Debug
+[2025-08-31T22:01:56.839Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:01:56 PM
+Debug
+[2025-08-31T22:01:56.971Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:01:59 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for CASY
+Aug 31, 2025, 6:01:59 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for CASY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:01:59 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:01:59 PM
+Debug
+[2025-08-31T22:01:59.384Z] [YAHOO] Fetching CASY with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:01:59 PM
+Debug
+[2025-08-31T22:01:59.385Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:01:59 PM
+Debug
+[2025-08-31T22:01:59.497Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:02:02 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for CASY
+Aug 31, 2025, 6:02:02 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for CASY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:02:02 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:02:02 PM
+Debug
+[2025-08-31T22:02:02.390Z] [YAHOO] Fetching CASY with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:02:02 PM
+Debug
+[2025-08-31T22:02:02.393Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:02:02 PM
+Debug
+[2025-08-31T22:02:02.500Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:02:04 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for CASY
+Aug 31, 2025, 6:02:04 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for CASY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:02:04 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:02:04 PM
+Debug
+[2025-08-31T22:02:04.852Z] [YAHOO] Fetching CASY with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:02:04 PM
+Debug
+[2025-08-31T22:02:04.854Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:02:04 PM
+Debug
+[2025-08-31T22:02:04.987Z] [YAHOO] Got 21 data points for CASY (1d)
+Aug 31, 2025, 6:02:04 PM
+Debug
+[2025-08-31T22:02:04.989Z] [YAHOO] CASY range: Infinity - 0.00, Target 490 NOT hit
+Aug 31, 2025, 6:02:08 PM
+Debug
+API RESPONSE SAVED: CASY_2025-08-31_22-02-06.json
+Aug 31, 2025, 6:02:08 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for CASY
+Aug 31, 2025, 6:02:08 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for CASY
+Aug 31, 2025, 6:02:11 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:02:11 PM
+Debug
+[2025-08-31T22:02:11.653Z] [YAHOO] Fetching AVAV with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:02:11 PM
+Debug
+[2025-08-31T22:02:11.655Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:02:11 PM
+Debug
+[2025-08-31T22:02:11.783Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:02:14 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for AVAV
+Aug 31, 2025, 6:02:14 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for AVAV on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:02:14 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:02:14 PM
+Debug
+[2025-08-31T22:02:14.451Z] [YAHOO] Fetching AVAV with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:02:14 PM
+Debug
+[2025-08-31T22:02:14.452Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:02:14 PM
+Debug
+[2025-08-31T22:02:14.549Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:02:17 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for AVAV
+Aug 31, 2025, 6:02:17 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for AVAV on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:02:17 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:02:17 PM
+Debug
+[2025-08-31T22:02:17.092Z] [YAHOO] Fetching AVAV with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:02:17 PM
+Debug
+[2025-08-31T22:02:17.094Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:02:17 PM
+Debug
+[2025-08-31T22:02:17.203Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:02:19 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for AVAV
+Aug 31, 2025, 6:02:19 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for AVAV on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:02:19 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:02:19 PM
+Debug
+[2025-08-31T22:02:19.629Z] [YAHOO] Fetching AVAV with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:02:19 PM
+Debug
+[2025-08-31T22:02:19.630Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:02:19 PM
+Debug
+[2025-08-31T22:02:19.718Z] [YAHOO] Got 21 data points for AVAV (1d)
+Aug 31, 2025, 6:02:19 PM
+Debug
+[2025-08-31T22:02:19.720Z] [YAHOO] AVAV range: Infinity - 0.00, Target 245 NOT hit
+Aug 31, 2025, 6:02:23 PM
+Debug
+API RESPONSE SAVED: AVAV_2025-08-31_22-02-20.json
+Aug 31, 2025, 6:02:23 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for AVAV
+Aug 31, 2025, 6:02:23 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for AVAV
+Aug 31, 2025, 6:02:27 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:02:27 PM
+Debug
+[2025-08-31T22:02:27.086Z] [YAHOO] Fetching SAIL with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:02:27 PM
+Debug
+[2025-08-31T22:02:27.088Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:02:27 PM
+Debug
+[2025-08-31T22:02:27.183Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:02:29 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for SAIL
+Aug 31, 2025, 6:02:29 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for SAIL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:02:29 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:02:29 PM
+Debug
+[2025-08-31T22:02:29.919Z] [YAHOO] Fetching SAIL with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:02:29 PM
+Debug
+[2025-08-31T22:02:29.920Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:02:30 PM
+Debug
+[2025-08-31T22:02:30.003Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:02:32 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for SAIL
+Aug 31, 2025, 6:02:32 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for SAIL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:02:32 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:02:32 PM
+Debug
+[2025-08-31T22:02:32.877Z] [YAHOO] Fetching SAIL with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:02:32 PM
+Debug
+[2025-08-31T22:02:32.878Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:02:32 PM
+Debug
+[2025-08-31T22:02:32.996Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:02:35 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for SAIL
+Aug 31, 2025, 6:02:35 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for SAIL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:02:35 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:02:35 PM
+Debug
+[2025-08-31T22:02:35.467Z] [YAHOO] Fetching SAIL with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:02:35 PM
+Debug
+[2025-08-31T22:02:35.479Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:02:35 PM
+Debug
+[2025-08-31T22:02:35.578Z] [YAHOO] Got 21 data points for SAIL (1d)
+Aug 31, 2025, 6:02:35 PM
+Debug
+[2025-08-31T22:02:35.580Z] [YAHOO] SAIL range: Infinity - 0.00, Target 17.5 NOT hit
+Aug 31, 2025, 6:02:39 PM
+Debug
+API RESPONSE SAVED: SAIL_2025-08-31_22-02-36.json
+Aug 31, 2025, 6:02:39 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for SAIL
+Aug 31, 2025, 6:02:39 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for SAIL
+Aug 31, 2025, 6:02:43 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PLAY?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:02:43 PM
+Debug
+[2025-08-31T22:02:43.745Z] [YAHOO] Fetching PLAY with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:02:43 PM
+Debug
+[2025-08-31T22:02:43.748Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PLAY?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:02:43 PM
+Debug
+[2025-08-31T22:02:43.835Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:02:46 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for PLAY
+Aug 31, 2025, 6:02:46 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for PLAY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:02:46 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PLAY?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:02:46 PM
+Debug
+[2025-08-31T22:02:46.460Z] [YAHOO] Fetching PLAY with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:02:46 PM
+Debug
+[2025-08-31T22:02:46.461Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PLAY?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:02:46 PM
+Debug
+[2025-08-31T22:02:46.551Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:02:49 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for PLAY
+Aug 31, 2025, 6:02:49 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for PLAY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:02:49 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PLAY?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:02:49 PM
+Debug
+[2025-08-31T22:02:49.447Z] [YAHOO] Fetching PLAY with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:02:49 PM
+Debug
+[2025-08-31T22:02:49.449Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PLAY?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:02:49 PM
+Debug
+[2025-08-31T22:02:49.547Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:02:52 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for PLAY
+Aug 31, 2025, 6:02:52 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for PLAY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:02:52 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PLAY?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:02:52 PM
+Debug
+[2025-08-31T22:02:52.245Z] [YAHOO] Fetching PLAY with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:02:52 PM
+Debug
+[2025-08-31T22:02:52.248Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PLAY?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:02:52 PM
+Debug
+[2025-08-31T22:02:52.342Z] [YAHOO] Got 21 data points for PLAY (1d)
+Aug 31, 2025, 6:02:52 PM
+Debug
+[2025-08-31T22:02:52.345Z] [YAHOO] PLAY range: Infinity - 0.00, Target 25 NOT hit
+Aug 31, 2025, 6:02:56 PM
+Debug
+API RESPONSE SAVED: PLAY_2025-08-31_22-02-53.json
+Aug 31, 2025, 6:02:56 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for PLAY
+Aug 31, 2025, 6:02:56 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for PLAY
+Aug 31, 2025, 6:02:58 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:02:58 PM
+Debug
+[2025-08-31T22:02:58.863Z] [YAHOO] Fetching KR with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:02:58 PM
+Debug
+[2025-08-31T22:02:58.866Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:02:58 PM
+Debug
+[2025-08-31T22:02:58.962Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:02 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for KR
+Aug 31, 2025, 6:03:02 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for KR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:02 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:03:02 PM
+Debug
+[2025-08-31T22:03:02.485Z] [YAHOO] Fetching KR with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:03:02 PM
+Debug
+[2025-08-31T22:03:02.488Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:03:02 PM
+Debug
+[2025-08-31T22:03:02.580Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:04 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for KR
+Aug 31, 2025, 6:03:04 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for KR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:04 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:03:04 PM
+Debug
+[2025-08-31T22:03:04.936Z] [YAHOO] Fetching KR with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:03:04 PM
+Debug
+[2025-08-31T22:03:04.938Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:03:05 PM
+Debug
+[2025-08-31T22:03:05.047Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:07 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for KR
+Aug 31, 2025, 6:03:07 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for KR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:07 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:03:07 PM
+Debug
+[2025-08-31T22:03:07.511Z] [YAHOO] Fetching KR with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:03:07 PM
+Debug
+[2025-08-31T22:03:07.511Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:03:07 PM
+Debug
+[2025-08-31T22:03:07.656Z] [YAHOO] Got 21 data points for KR (1d)
+Aug 31, 2025, 6:03:07 PM
+Debug
+[2025-08-31T22:03:07.657Z] [YAHOO] KR range: Infinity - 0.00, Target 67.5 NOT hit
+Aug 31, 2025, 6:03:11 PM
+Debug
+API RESPONSE SAVED: KR_2025-08-31_22-03-08.json
+Aug 31, 2025, 6:03:11 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for KR
+Aug 31, 2025, 6:03:11 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for KR
+Aug 31, 2025, 6:03:14 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:03:14 PM
+Debug
+[2025-08-31T22:03:14.276Z] [YAHOO] Fetching ADBE with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:03:14 PM
+Debug
+[2025-08-31T22:03:14.338Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:03:14 PM
+Debug
+[2025-08-31T22:03:14.458Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:17 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for ADBE
+Aug 31, 2025, 6:03:17 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for ADBE on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:17 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:03:17 PM
+Debug
+[2025-08-31T22:03:17.064Z] [YAHOO] Fetching ADBE with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:03:17 PM
+Debug
+[2025-08-31T22:03:17.065Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:03:17 PM
+Debug
+[2025-08-31T22:03:17.157Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:19 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for ADBE
+Aug 31, 2025, 6:03:19 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for ADBE on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:19 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:03:19 PM
+Debug
+[2025-08-31T22:03:19.513Z] [YAHOO] Fetching ADBE with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:03:19 PM
+Debug
+[2025-08-31T22:03:19.515Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:03:19 PM
+Debug
+[2025-08-31T22:03:19.607Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:22 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for ADBE
+Aug 31, 2025, 6:03:22 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for ADBE on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:22 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:03:22 PM
+Debug
+[2025-08-31T22:03:22.889Z] [YAHOO] Fetching ADBE with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:03:22 PM
+Debug
+[2025-08-31T22:03:22.890Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:03:23 PM
+Debug
+[2025-08-31T22:03:23.004Z] [YAHOO] Got 21 data points for ADBE (1d)
+Aug 31, 2025, 6:03:23 PM
+Debug
+[2025-08-31T22:03:23.006Z] [YAHOO] ADBE range: Infinity - 0.00, Target 355 NOT hit
+Aug 31, 2025, 6:03:27 PM
+Debug
+API RESPONSE SAVED: ADBE_2025-08-31_22-03-24.json
+Aug 31, 2025, 6:03:27 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for ADBE
+Aug 31, 2025, 6:03:27 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for ADBE
+Aug 31, 2025, 6:03:29 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:03:29 PM
+Debug
+[2025-08-31T22:03:29.351Z] [YAHOO] Fetching ORCL with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:03:29 PM
+Debug
+[2025-08-31T22:03:29.354Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:03:29 PM
+Debug
+[2025-08-31T22:03:29.463Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:32 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for ORCL
+Aug 31, 2025, 6:03:32 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for ORCL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:32 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:03:32 PM
+Debug
+[2025-08-31T22:03:32.170Z] [YAHOO] Fetching ORCL with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:03:32 PM
+Debug
+[2025-08-31T22:03:32.171Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:03:32 PM
+Debug
+[2025-08-31T22:03:32.472Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:34 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for ORCL
+Aug 31, 2025, 6:03:34 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for ORCL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:34 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:03:34 PM
+Debug
+[2025-08-31T22:03:34.985Z] [YAHOO] Fetching ORCL with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:03:34 PM
+Debug
+[2025-08-31T22:03:34.987Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:03:35 PM
+Debug
+[2025-08-31T22:03:35.094Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:37 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for ORCL
+Aug 31, 2025, 6:03:37 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for ORCL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:37 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:03:37 PM
+Debug
+[2025-08-31T22:03:37.809Z] [YAHOO] Fetching ORCL with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:03:37 PM
+Debug
+[2025-08-31T22:03:37.810Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:03:37 PM
+Debug
+[2025-08-31T22:03:37.967Z] [YAHOO] Got 21 data points for ORCL (1d)
+Aug 31, 2025, 6:03:37 PM
+Debug
+[2025-08-31T22:03:37.968Z] [YAHOO] ORCL range: Infinity - 0.00, Target 235 NOT hit
+Aug 31, 2025, 6:03:41 PM
+Debug
+API RESPONSE SAVED: ORCL_2025-08-31_22-03-38.json
+Aug 31, 2025, 6:03:41 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for ORCL
+Aug 31, 2025, 6:03:41 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for ORCL
+Aug 31, 2025, 6:03:44 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:03:44 PM
+Debug
+[2025-08-31T22:03:44.457Z] [YAHOO] Fetching FERG with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:03:44 PM
+Debug
+[2025-08-31T22:03:44.459Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:03:44 PM
+Debug
+[2025-08-31T22:03:44.558Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:46 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for FERG
+Aug 31, 2025, 6:03:46 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for FERG on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:46 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:03:46 PM
+Debug
+[2025-08-31T22:03:46.816Z] [YAHOO] Fetching FERG with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:03:46 PM
+Debug
+[2025-08-31T22:03:46.818Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:03:46 PM
+Debug
+[2025-08-31T22:03:46.918Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:49 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for FERG
+Aug 31, 2025, 6:03:49 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for FERG on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:49 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:03:49 PM
+Debug
+[2025-08-31T22:03:49.525Z] [YAHOO] Fetching FERG with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:03:49 PM
+Debug
+[2025-08-31T22:03:49.527Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:03:49 PM
+Debug
+[2025-08-31T22:03:49.643Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:03:52 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for FERG
+Aug 31, 2025, 6:03:52 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for FERG on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:03:52 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:03:52 PM
+Debug
+[2025-08-31T22:03:52.367Z] [YAHOO] Fetching FERG with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:03:52 PM
+Debug
+[2025-08-31T22:03:52.368Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:03:52 PM
+Debug
+[2025-08-31T22:03:52.497Z] [YAHOO] Got 21 data points for FERG (1d)
+Aug 31, 2025, 6:03:52 PM
+Debug
+[2025-08-31T22:03:52.498Z] [YAHOO] FERG range: Infinity - 0.00, Target 210 NOT hit
+Aug 31, 2025, 6:03:56 PM
+Debug
+API RESPONSE SAVED: FERG_2025-08-31_22-03-53.json
+Aug 31, 2025, 6:03:56 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for FERG
+Aug 31, 2025, 6:03:56 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for FERG
+Aug 31, 2025, 6:03:59 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SIG?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:03:59 PM
+Debug
+[2025-08-31T22:03:59.385Z] [YAHOO] Fetching SIG with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:03:59 PM
+Debug
+[2025-08-31T22:03:59.386Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SIG?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:03:59 PM
+Debug
+[2025-08-31T22:03:59.473Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:02 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for SIG
+Aug 31, 2025, 6:04:02 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for SIG on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:02 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SIG?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:04:02 PM
+Debug
+[2025-08-31T22:04:02.079Z] [YAHOO] Fetching SIG with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:04:02 PM
+Debug
+[2025-08-31T22:04:02.081Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SIG?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:04:02 PM
+Debug
+[2025-08-31T22:04:02.170Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:04 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for SIG
+Aug 31, 2025, 6:04:04 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for SIG on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:04 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SIG?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:04:04 PM
+Debug
+[2025-08-31T22:04:04.624Z] [YAHOO] Fetching SIG with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:04:04 PM
+Debug
+[2025-08-31T22:04:04.625Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SIG?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:04:04 PM
+Debug
+[2025-08-31T22:04:04.730Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:06 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for SIG
+Aug 31, 2025, 6:04:06 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for SIG on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:06 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SIG?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:04:06 PM
+Debug
+[2025-08-31T22:04:06.949Z] [YAHOO] Fetching SIG with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:04:06 PM
+Debug
+[2025-08-31T22:04:06.950Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SIG?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:04:07 PM
+Debug
+[2025-08-31T22:04:07.086Z] [YAHOO] Got 21 data points for SIG (1d)
+Aug 31, 2025, 6:04:07 PM
+Debug
+[2025-08-31T22:04:07.090Z] [YAHOO] SIG range: Infinity - 0.00, Target 89 NOT hit
+Aug 31, 2025, 6:04:11 PM
+Debug
+API RESPONSE SAVED: SIG_2025-08-31_22-04-08.json
+Aug 31, 2025, 6:04:11 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for SIG
+Aug 31, 2025, 6:04:11 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for SIG
+Aug 31, 2025, 6:04:13 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:04:13 PM
+Debug
+[2025-08-31T22:04:13.948Z] [YAHOO] Fetching ZS with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:04:13 PM
+Debug
+[2025-08-31T22:04:13.949Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:04:14 PM
+Debug
+[2025-08-31T22:04:14.045Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:16 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for ZS
+Aug 31, 2025, 6:04:16 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for ZS on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:16 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:04:16 PM
+Debug
+[2025-08-31T22:04:16.672Z] [YAHOO] Fetching ZS with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:04:16 PM
+Debug
+[2025-08-31T22:04:16.675Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:04:16 PM
+Debug
+[2025-08-31T22:04:16.800Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:19 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for ZS
+Aug 31, 2025, 6:04:19 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for ZS on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:19 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:04:19 PM
+Debug
+[2025-08-31T22:04:19.593Z] [YAHOO] Fetching ZS with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:04:19 PM
+Debug
+[2025-08-31T22:04:19.594Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:04:19 PM
+Debug
+[2025-08-31T22:04:19.698Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:22 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for ZS
+Aug 31, 2025, 6:04:22 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for ZS on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:22 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:04:22 PM
+Debug
+[2025-08-31T22:04:22.545Z] [YAHOO] Fetching ZS with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:04:22 PM
+Debug
+[2025-08-31T22:04:22.547Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:04:22 PM
+Debug
+[2025-08-31T22:04:22.653Z] [YAHOO] Got 21 data points for ZS (1d)
+Aug 31, 2025, 6:04:22 PM
+Debug
+[2025-08-31T22:04:22.657Z] [YAHOO] ZS range: Infinity - 0.00, Target 280 NOT hit
+Aug 31, 2025, 6:04:26 PM
+Debug
+API RESPONSE SAVED: ZS_2025-08-31_22-04-23.json
+Aug 31, 2025, 6:04:26 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for ZS
+Aug 31, 2025, 6:04:26 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for ZS
+Aug 31, 2025, 6:04:29 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:04:29 PM
+Debug
+[2025-08-31T22:04:29.366Z] [YAHOO] Fetching DLTR with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:04:29 PM
+Debug
+[2025-08-31T22:04:29.370Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:04:29 PM
+Debug
+[2025-08-31T22:04:29.505Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:32 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for DLTR
+Aug 31, 2025, 6:04:32 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for DLTR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:32 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:04:32 PM
+Debug
+[2025-08-31T22:04:32.221Z] [YAHOO] Fetching DLTR with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:04:32 PM
+Debug
+[2025-08-31T22:04:32.224Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:04:32 PM
+Debug
+[2025-08-31T22:04:32.320Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:34 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for DLTR
+Aug 31, 2025, 6:04:34 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for DLTR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:34 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:04:34 PM
+Debug
+[2025-08-31T22:04:34.996Z] [YAHOO] Fetching DLTR with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:04:35 PM
+Debug
+[2025-08-31T22:04:34.998Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:04:35 PM
+Debug
+[2025-08-31T22:04:35.087Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:38 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for DLTR
+Aug 31, 2025, 6:04:38 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for DLTR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:38 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:04:38 PM
+Debug
+[2025-08-31T22:04:38.050Z] [YAHOO] Fetching DLTR with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:04:38 PM
+Debug
+[2025-08-31T22:04:38.053Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:04:38 PM
+Debug
+[2025-08-31T22:04:38.168Z] [YAHOO] Got 21 data points for DLTR (1d)
+Aug 31, 2025, 6:04:38 PM
+Debug
+[2025-08-31T22:04:38.175Z] [YAHOO] DLTR range: Infinity - 0.00, Target 112 NOT hit
+Aug 31, 2025, 6:04:42 PM
+Debug
+API RESPONSE SAVED: DLTR_2025-08-31_22-04-39.json
+Aug 31, 2025, 6:04:42 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for DLTR
+Aug 31, 2025, 6:04:42 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for DLTR
+Aug 31, 2025, 6:04:44 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:04:44 PM
+Debug
+[2025-08-31T22:04:44.701Z] [YAHOO] Fetching CRDO with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:04:44 PM
+Debug
+[2025-08-31T22:04:44.703Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:04:44 PM
+Debug
+[2025-08-31T22:04:44.807Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:47 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for CRDO
+Aug 31, 2025, 6:04:47 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for CRDO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:47 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:04:47 PM
+Debug
+[2025-08-31T22:04:47.481Z] [YAHOO] Fetching CRDO with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:04:47 PM
+Debug
+[2025-08-31T22:04:47.483Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:04:47 PM
+Debug
+[2025-08-31T22:04:47.575Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:50 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for CRDO
+Aug 31, 2025, 6:04:50 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for CRDO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:50 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:04:50 PM
+Debug
+[2025-08-31T22:04:50.138Z] [YAHOO] Fetching CRDO with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:04:50 PM
+Debug
+[2025-08-31T22:04:50.140Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:04:50 PM
+Debug
+[2025-08-31T22:04:50.270Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:04:52 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for CRDO
+Aug 31, 2025, 6:04:52 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for CRDO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:04:52 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:04:52 PM
+Debug
+[2025-08-31T22:04:52.860Z] [YAHOO] Fetching CRDO with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:04:52 PM
+Debug
+[2025-08-31T22:04:52.862Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:04:52 PM
+Debug
+[2025-08-31T22:04:52.946Z] [YAHOO] Got 21 data points for CRDO (1d)
+Aug 31, 2025, 6:04:52 PM
+Debug
+[2025-08-31T22:04:52.950Z] [YAHOO] CRDO range: Infinity - 0.00, Target 131 NOT hit
+Aug 31, 2025, 6:04:57 PM
+Debug
+API RESPONSE SAVED: CRDO_2025-08-31_22-04-54.json
+Aug 31, 2025, 6:04:57 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for CRDO
+Aug 31, 2025, 6:04:57 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for CRDO
+Aug 31, 2025, 6:04:59 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:04:59 PM
+Debug
+[2025-08-31T22:04:59.915Z] [YAHOO] Fetching CRM with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:04:59 PM
+Debug
+[2025-08-31T22:04:59.916Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:04:59 PM
+Debug
+[2025-08-31T22:04:59.997Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:02 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for CRM
+Aug 31, 2025, 6:05:02 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for CRM on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:02 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:05:02 PM
+Debug
+[2025-08-31T22:05:02.793Z] [YAHOO] Fetching CRM with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:05:02 PM
+Debug
+[2025-08-31T22:05:02.795Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:05:02 PM
+Debug
+[2025-08-31T22:05:02.908Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:05 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for CRM
+Aug 31, 2025, 6:05:05 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for CRM on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:05 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:05:05 PM
+Debug
+[2025-08-31T22:05:05.631Z] [YAHOO] Fetching CRM with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:05:05 PM
+Debug
+[2025-08-31T22:05:05.635Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:05:05 PM
+Debug
+[2025-08-31T22:05:05.730Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:07 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for CRM
+Aug 31, 2025, 6:05:07 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for CRM on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:07 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:05:07 PM
+Debug
+[2025-08-31T22:05:07.997Z] [YAHOO] Fetching CRM with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:05:07 PM
+Debug
+[2025-08-31T22:05:07.998Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:05:08 PM
+Debug
+[2025-08-31T22:05:08.120Z] [YAHOO] Got 21 data points for CRM (1d)
+Aug 31, 2025, 6:05:08 PM
+Debug
+[2025-08-31T22:05:08.121Z] [YAHOO] CRM range: Infinity - 0.00, Target 252.5 NOT hit
+Aug 31, 2025, 6:05:11 PM
+Debug
+API RESPONSE SAVED: CRM_2025-08-31_22-05-09.json
+Aug 31, 2025, 6:05:11 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for CRM
+Aug 31, 2025, 6:05:11 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for CRM
+Aug 31, 2025, 6:05:15 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:05:15 PM
+Debug
+[2025-08-31T22:05:15.723Z] [YAHOO] Fetching AVGO with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:05:15 PM
+Debug
+[2025-08-31T22:05:15.725Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:05:15 PM
+Debug
+[2025-08-31T22:05:15.812Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:19 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for AVGO
+Aug 31, 2025, 6:05:19 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for AVGO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:19 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:05:19 PM
+Debug
+[2025-08-31T22:05:19.328Z] [YAHOO] Fetching AVGO with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:05:19 PM
+Debug
+[2025-08-31T22:05:19.329Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:05:19 PM
+Debug
+[2025-08-31T22:05:19.440Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:22 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for AVGO
+Aug 31, 2025, 6:05:22 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for AVGO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:22 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:05:22 PM
+Debug
+[2025-08-31T22:05:22.096Z] [YAHOO] Fetching AVGO with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:05:22 PM
+Debug
+[2025-08-31T22:05:22.097Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:05:22 PM
+Debug
+[2025-08-31T22:05:22.210Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:25 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for AVGO
+Aug 31, 2025, 6:05:25 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for AVGO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:25 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:05:25 PM
+Debug
+[2025-08-31T22:05:25.986Z] [YAHOO] Fetching AVGO with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:05:25 PM
+Debug
+[2025-08-31T22:05:25.987Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:05:26 PM
+Debug
+[2025-08-31T22:05:26.094Z] [YAHOO] Got 21 data points for AVGO (1d)
+Aug 31, 2025, 6:05:26 PM
+Debug
+[2025-08-31T22:05:26.096Z] [YAHOO] AVGO range: Infinity - 0.00, Target 307.5 NOT hit
+Aug 31, 2025, 6:05:29 PM
+Debug
+API RESPONSE SAVED: AVGO_2025-08-31_22-05-26.json
+Aug 31, 2025, 6:05:29 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for AVGO
+Aug 31, 2025, 6:05:29 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for AVGO
+Aug 31, 2025, 6:05:32 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:05:32 PM
+Debug
+[2025-08-31T22:05:32.615Z] [YAHOO] Fetching PATH with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:05:32 PM
+Debug
+[2025-08-31T22:05:32.616Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:05:32 PM
+Debug
+[2025-08-31T22:05:32.711Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:35 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for PATH
+Aug 31, 2025, 6:05:35 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for PATH on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:35 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:05:35 PM
+Debug
+[2025-08-31T22:05:35.285Z] [YAHOO] Fetching PATH with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:05:35 PM
+Debug
+[2025-08-31T22:05:35.286Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:05:35 PM
+Debug
+[2025-08-31T22:05:35.389Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:38 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for PATH
+Aug 31, 2025, 6:05:38 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for PATH on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:38 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:05:38 PM
+Debug
+[2025-08-31T22:05:38.271Z] [YAHOO] Fetching PATH with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:05:38 PM
+Debug
+[2025-08-31T22:05:38.273Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:05:38 PM
+Debug
+[2025-08-31T22:05:38.398Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:40 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for PATH
+Aug 31, 2025, 6:05:40 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for PATH on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:40 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:05:40 PM
+Debug
+[2025-08-31T22:05:40.979Z] [YAHOO] Fetching PATH with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:05:40 PM
+Debug
+[2025-08-31T22:05:40.980Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:05:41 PM
+Debug
+[2025-08-31T22:05:41.083Z] [YAHOO] Got 21 data points for PATH (1d)
+Aug 31, 2025, 6:05:41 PM
+Debug
+[2025-08-31T22:05:41.085Z] [YAHOO] PATH range: Infinity - 0.00, Target 11 NOT hit
+Aug 31, 2025, 6:05:45 PM
+Debug
+API RESPONSE SAVED: PATH_2025-08-31_22-05-42.json
+Aug 31, 2025, 6:05:45 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for PATH
+Aug 31, 2025, 6:05:45 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for PATH
+Aug 31, 2025, 6:05:47 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:05:47 PM
+Debug
+[2025-08-31T22:05:47.979Z] [YAHOO] Fetching PL with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:05:47 PM
+Debug
+[2025-08-31T22:05:47.981Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:05:48 PM
+Debug
+[2025-08-31T22:05:48.092Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:52 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for PL
+Aug 31, 2025, 6:05:52 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for PL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:52 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:05:52 PM
+Debug
+[2025-08-31T22:05:52.442Z] [YAHOO] Fetching PL with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:05:52 PM
+Debug
+[2025-08-31T22:05:52.444Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:05:52 PM
+Debug
+[2025-08-31T22:05:52.591Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:55 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for PL
+Aug 31, 2025, 6:05:55 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for PL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:55 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:05:55 PM
+Debug
+[2025-08-31T22:05:55.441Z] [YAHOO] Fetching PL with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:05:55 PM
+Debug
+[2025-08-31T22:05:55.442Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:05:55 PM
+Debug
+[2025-08-31T22:05:55.554Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:05:58 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for PL
+Aug 31, 2025, 6:05:58 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for PL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:05:58 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:05:58 PM
+Debug
+[2025-08-31T22:05:58.289Z] [YAHOO] Fetching PL with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:05:58 PM
+Debug
+[2025-08-31T22:05:58.290Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:05:58 PM
+Debug
+[2025-08-31T22:05:58.538Z] [YAHOO] Got 21 data points for PL (1d)
+Aug 31, 2025, 6:05:58 PM
+Debug
+[2025-08-31T22:05:58.540Z] [YAHOO] PL range: Infinity - 0.00, Target 7 NOT hit
+Aug 31, 2025, 6:06:02 PM
+Debug
+API RESPONSE SAVED: PL_2025-08-31_22-05-59.json
+Aug 31, 2025, 6:06:02 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for PL
+Aug 31, 2025, 6:06:02 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for PL
+Aug 31, 2025, 6:06:05 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:06:05 PM
+Debug
+[2025-08-31T22:06:05.366Z] [YAHOO] Fetching CASY with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:06:05 PM
+Debug
+[2025-08-31T22:06:05.369Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:06:05 PM
+Debug
+[2025-08-31T22:06:05.465Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:08 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for CASY
+Aug 31, 2025, 6:06:08 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for CASY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:08 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:06:08 PM
+Debug
+[2025-08-31T22:06:08.043Z] [YAHOO] Fetching CASY with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:06:08 PM
+Debug
+[2025-08-31T22:06:08.045Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:06:08 PM
+Debug
+[2025-08-31T22:06:08.146Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:10 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for CASY
+Aug 31, 2025, 6:06:10 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for CASY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:10 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:06:10 PM
+Debug
+[2025-08-31T22:06:10.881Z] [YAHOO] Fetching CASY with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:06:10 PM
+Debug
+[2025-08-31T22:06:10.883Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:06:10 PM
+Debug
+[2025-08-31T22:06:10.984Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:14 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for CASY
+Aug 31, 2025, 6:06:14 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for CASY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:14 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:06:14 PM
+Debug
+[2025-08-31T22:06:14.076Z] [YAHOO] Fetching CASY with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:06:14 PM
+Debug
+[2025-08-31T22:06:14.078Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:06:14 PM
+Debug
+[2025-08-31T22:06:14.235Z] [YAHOO] Got 21 data points for CASY (1d)
+Aug 31, 2025, 6:06:14 PM
+Debug
+[2025-08-31T22:06:14.238Z] [YAHOO] CASY range: Infinity - 0.00, Target 490 NOT hit
+Aug 31, 2025, 6:06:18 PM
+Debug
+API RESPONSE SAVED: CASY_2025-08-31_22-06-15.json
+Aug 31, 2025, 6:06:18 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for CASY
+Aug 31, 2025, 6:06:18 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for CASY
+Aug 31, 2025, 6:06:20 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:06:20 PM
+Debug
+[2025-08-31T22:06:20.962Z] [YAHOO] Fetching SAIL with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:06:20 PM
+Debug
+[2025-08-31T22:06:20.963Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:06:21 PM
+Debug
+[2025-08-31T22:06:21.042Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:23 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for SAIL
+Aug 31, 2025, 6:06:23 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for SAIL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:23 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:06:23 PM
+Debug
+[2025-08-31T22:06:23.805Z] [YAHOO] Fetching SAIL with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:06:23 PM
+Debug
+[2025-08-31T22:06:23.809Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:06:23 PM
+Debug
+[2025-08-31T22:06:23.927Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:26 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for SAIL
+Aug 31, 2025, 6:06:26 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for SAIL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:26 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:06:26 PM
+Debug
+[2025-08-31T22:06:26.449Z] [YAHOO] Fetching SAIL with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:06:26 PM
+Debug
+[2025-08-31T22:06:26.456Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:06:26 PM
+Debug
+[2025-08-31T22:06:26.656Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:29 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for SAIL
+Aug 31, 2025, 6:06:29 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for SAIL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:29 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:06:29 PM
+Debug
+[2025-08-31T22:06:29.444Z] [YAHOO] Fetching SAIL with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:06:29 PM
+Debug
+[2025-08-31T22:06:29.446Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:06:29 PM
+Debug
+[2025-08-31T22:06:29.582Z] [YAHOO] Got 21 data points for SAIL (1d)
+Aug 31, 2025, 6:06:29 PM
+Debug
+[2025-08-31T22:06:29.583Z] [YAHOO] SAIL range: Infinity - 0.00, Target 20 NOT hit
+Aug 31, 2025, 6:06:33 PM
+Debug
+API RESPONSE SAVED: SAIL_2025-08-31_22-06-30.json
+Aug 31, 2025, 6:06:33 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for SAIL
+Aug 31, 2025, 6:06:33 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for SAIL
+Aug 31, 2025, 6:06:36 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:06:36 PM
+Debug
+[2025-08-31T22:06:36.123Z] [YAHOO] Fetching AVAV with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:06:36 PM
+Debug
+[2025-08-31T22:06:36.126Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:06:36 PM
+Debug
+[2025-08-31T22:06:36.234Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:38 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for AVAV
+Aug 31, 2025, 6:06:38 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for AVAV on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:38 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:06:38 PM
+Debug
+[2025-08-31T22:06:38.802Z] [YAHOO] Fetching AVAV with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:06:38 PM
+Debug
+[2025-08-31T22:06:38.803Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:06:38 PM
+Debug
+[2025-08-31T22:06:38.895Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:41 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for AVAV
+Aug 31, 2025, 6:06:41 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for AVAV on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:41 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:06:41 PM
+Debug
+[2025-08-31T22:06:41.684Z] [YAHOO] Fetching AVAV with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:06:41 PM
+Debug
+[2025-08-31T22:06:41.690Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:06:41 PM
+Debug
+[2025-08-31T22:06:41.811Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:44 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for AVAV
+Aug 31, 2025, 6:06:44 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for AVAV on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:44 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:06:44 PM
+Debug
+[2025-08-31T22:06:44.178Z] [YAHOO] Fetching AVAV with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:06:44 PM
+Debug
+[2025-08-31T22:06:44.180Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:06:44 PM
+Debug
+[2025-08-31T22:06:44.294Z] [YAHOO] Got 21 data points for AVAV (1d)
+Aug 31, 2025, 6:06:44 PM
+Debug
+[2025-08-31T22:06:44.298Z] [YAHOO] AVAV range: Infinity - 0.00, Target 247.5 NOT hit
+Aug 31, 2025, 6:06:48 PM
+Debug
+API RESPONSE SAVED: AVAV_2025-08-31_22-06-45.json
+Aug 31, 2025, 6:06:48 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for AVAV
+Aug 31, 2025, 6:06:48 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for AVAV
+Aug 31, 2025, 6:06:50 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:06:50 PM
+Debug
+[2025-08-31T22:06:50.632Z] [YAHOO] Fetching KR with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:06:50 PM
+Debug
+[2025-08-31T22:06:50.633Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:06:50 PM
+Debug
+[2025-08-31T22:06:50.773Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:53 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for KR
+Aug 31, 2025, 6:06:53 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for KR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:53 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:06:53 PM
+Debug
+[2025-08-31T22:06:53.269Z] [YAHOO] Fetching KR with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:06:53 PM
+Debug
+[2025-08-31T22:06:53.269Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:06:53 PM
+Debug
+[2025-08-31T22:06:53.374Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:56 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for KR
+Aug 31, 2025, 6:06:56 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for KR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:56 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:06:56 PM
+Debug
+[2025-08-31T22:06:56.103Z] [YAHOO] Fetching KR with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:06:56 PM
+Debug
+[2025-08-31T22:06:56.104Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:06:56 PM
+Debug
+[2025-08-31T22:06:56.202Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:06:58 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for KR
+Aug 31, 2025, 6:06:58 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for KR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:06:58 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:06:58 PM
+Debug
+[2025-08-31T22:06:58.824Z] [YAHOO] Fetching KR with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:06:58 PM
+Debug
+[2025-08-31T22:06:58.825Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:06:59 PM
+Debug
+[2025-08-31T22:06:59.027Z] [YAHOO] Got 21 data points for KR (1d)
+Aug 31, 2025, 6:06:59 PM
+Debug
+[2025-08-31T22:06:59.032Z] [YAHOO] KR range: Infinity - 0.00, Target 67 NOT hit
+Aug 31, 2025, 6:07:02 PM
+Debug
+API RESPONSE SAVED: KR_2025-08-31_22-06-59.json
+Aug 31, 2025, 6:07:02 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for KR
+Aug 31, 2025, 6:07:02 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for KR
+Aug 31, 2025, 6:07:05 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:07:05 PM
+Debug
+[2025-08-31T22:07:05.418Z] [YAHOO] Fetching ADBE with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:07:05 PM
+Debug
+[2025-08-31T22:07:05.419Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:07:05 PM
+Debug
+[2025-08-31T22:07:05.510Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:07:08 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for ADBE
+Aug 31, 2025, 6:07:08 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for ADBE on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:07:08 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:07:08 PM
+Debug
+[2025-08-31T22:07:08.187Z] [YAHOO] Fetching ADBE with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:07:08 PM
+Debug
+[2025-08-31T22:07:08.188Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:07:08 PM
+Debug
+[2025-08-31T22:07:08.568Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:07:11 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for ADBE
+Aug 31, 2025, 6:07:11 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for ADBE on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:07:11 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:07:11 PM
+Debug
+[2025-08-31T22:07:11.513Z] [YAHOO] Fetching ADBE with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:07:11 PM
+Debug
+[2025-08-31T22:07:11.514Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:07:11 PM
+Debug
+[2025-08-31T22:07:11.619Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:07:14 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for ADBE
+Aug 31, 2025, 6:07:14 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for ADBE on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:07:14 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:07:14 PM
+Debug
+[2025-08-31T22:07:14.176Z] [YAHOO] Fetching ADBE with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:07:14 PM
+Debug
+[2025-08-31T22:07:14.177Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:07:14 PM
+Debug
+[2025-08-31T22:07:14.338Z] [YAHOO] Got 21 data points for ADBE (1d)
+Aug 31, 2025, 6:07:14 PM
+Debug
+[2025-08-31T22:07:14.340Z] [YAHOO] ADBE range: Infinity - 0.00, Target 352.5 NOT hit
+Aug 31, 2025, 6:07:17 PM
+Debug
+API RESPONSE SAVED: ADBE_2025-08-31_22-07-15.json
+Aug 31, 2025, 6:07:17 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for ADBE
+Aug 31, 2025, 6:07:17 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for ADBE
+Aug 31, 2025, 6:07:20 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:07:20 PM
+Debug
+[2025-08-31T22:07:20.610Z] [YAHOO] Fetching ORCL with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:07:20 PM
+Debug
+[2025-08-31T22:07:20.612Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:07:20 PM
+Debug
+[2025-08-31T22:07:20.709Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:07:23 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for ORCL
+Aug 31, 2025, 6:07:23 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for ORCL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:07:23 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:07:23 PM
+Debug
+[2025-08-31T22:07:23.426Z] [YAHOO] Fetching ORCL with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:07:23 PM
+Debug
+[2025-08-31T22:07:23.428Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:07:23 PM
+Debug
+[2025-08-31T22:07:23.506Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:07:25 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for ORCL
+Aug 31, 2025, 6:07:25 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for ORCL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:07:25 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:07:25 PM
+Debug
+[2025-08-31T22:07:25.904Z] [YAHOO] Fetching ORCL with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:07:25 PM
+Debug
+[2025-08-31T22:07:25.906Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:07:25 PM
+Debug
+[2025-08-31T22:07:25.996Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:07:31 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for ORCL
+Aug 31, 2025, 6:07:31 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for ORCL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:07:31 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:07:31 PM
+Debug
+[2025-08-31T22:07:31.895Z] [YAHOO] Fetching ORCL with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:07:31 PM
+Debug
+[2025-08-31T22:07:31.904Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:07:32 PM
+Debug
+[2025-08-31T22:07:32.057Z] [YAHOO] Got 21 data points for ORCL (1d)
+Aug 31, 2025, 6:07:32 PM
+Debug
+[2025-08-31T22:07:32.086Z] [YAHOO] ORCL range: Infinity - 0.00, Target 240 NOT hit
+Aug 31, 2025, 6:07:37 PM
+Debug
+API RESPONSE SAVED: ORCL_2025-08-31_22-07-34.json
+Aug 31, 2025, 6:07:37 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for ORCL
+Aug 31, 2025, 6:07:37 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for ORCL
+Aug 31, 2025, 6:07:40 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/MU?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:07:40 PM
+Debug
+[2025-08-31T22:07:40.144Z] [YAHOO] Fetching MU with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:07:40 PM
+Debug
+[2025-08-31T22:07:40.146Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/MU?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:07:40 PM
+Debug
+[2025-08-31T22:07:40.238Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:07:43 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for MU
+Aug 31, 2025, 6:07:43 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for MU on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:07:43 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/MU?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:07:43 PM
+Debug
+[2025-08-31T22:07:43.474Z] [YAHOO] Fetching MU with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:07:43 PM
+Debug
+[2025-08-31T22:07:43.476Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/MU?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:07:43 PM
+Debug
+[2025-08-31T22:07:43.666Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:07:46 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for MU
+Aug 31, 2025, 6:07:46 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for MU on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:07:46 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/MU?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:07:46 PM
+Debug
+[2025-08-31T22:07:46.303Z] [YAHOO] Fetching MU with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:07:46 PM
+Debug
+[2025-08-31T22:07:46.304Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/MU?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:07:46 PM
+Debug
+[2025-08-31T22:07:46.436Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:07:49 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for MU
+Aug 31, 2025, 6:07:49 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for MU on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:07:49 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/MU?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:07:49 PM
+Debug
+[2025-08-31T22:07:49.162Z] [YAHOO] Fetching MU with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:07:49 PM
+Debug
+[2025-08-31T22:07:49.164Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/MU?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:07:49 PM
+Debug
+[2025-08-31T22:07:49.311Z] [YAHOO] Got 21 data points for MU (1d)
+Aug 31, 2025, 6:07:49 PM
+Debug
+[2025-08-31T22:07:49.313Z] [YAHOO] MU range: Infinity - 0.00, Target 121 NOT hit
+Aug 31, 2025, 6:07:53 PM
+Debug
+API RESPONSE SAVED: MU_2025-08-31_22-07-50.json
+Aug 31, 2025, 6:07:53 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for MU
+Aug 31, 2025, 6:07:53 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for MU
+Aug 31, 2025, 6:07:56 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ACN?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:07:56 PM
+Debug
+[2025-08-31T22:07:56.673Z] [YAHOO] Fetching ACN with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:07:56 PM
+Debug
+[2025-08-31T22:07:56.674Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ACN?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:07:56 PM
+Debug
+[2025-08-31T22:07:56.820Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:07:59 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for ACN
+Aug 31, 2025, 6:07:59 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for ACN on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:07:59 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ACN?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:07:59 PM
+Debug
+[2025-08-31T22:07:59.301Z] [YAHOO] Fetching ACN with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:07:59 PM
+Debug
+[2025-08-31T22:07:59.303Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ACN?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:07:59 PM
+Debug
+[2025-08-31T22:07:59.402Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:08:02 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for ACN
+Aug 31, 2025, 6:08:02 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for ACN on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:08:02 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ACN?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:08:02 PM
+Debug
+[2025-08-31T22:08:02.492Z] [YAHOO] Fetching ACN with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:08:02 PM
+Debug
+[2025-08-31T22:08:02.499Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ACN?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:08:02 PM
+Debug
+[2025-08-31T22:08:02.663Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:08:05 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for ACN
+Aug 31, 2025, 6:08:05 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for ACN on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:08:05 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ACN?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:08:05 PM
+Debug
+[2025-08-31T22:08:05.199Z] [YAHOO] Fetching ACN with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:08:05 PM
+Debug
+[2025-08-31T22:08:05.200Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ACN?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:08:05 PM
+Debug
+[2025-08-31T22:08:05.326Z] [YAHOO] Got 21 data points for ACN (1d)
+Aug 31, 2025, 6:08:05 PM
+Debug
+[2025-08-31T22:08:05.330Z] [YAHOO] ACN range: Infinity - 0.00, Target 255 NOT hit
+Aug 31, 2025, 6:08:09 PM
+Debug
+API RESPONSE SAVED: ACN_2025-08-31_22-08-06.json
+Aug 31, 2025, 6:08:09 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for ACN
+Aug 31, 2025, 6:08:09 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for ACN
+Aug 31, 2025, 6:08:14 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/COST?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:08:14 PM
+Debug
+[2025-08-31T22:08:14.026Z] [YAHOO] Fetching COST with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:08:14 PM
+Debug
+[2025-08-31T22:08:14.028Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/COST?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:08:14 PM
+Debug
+[2025-08-31T22:08:14.131Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:08:16 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for COST
+Aug 31, 2025, 6:08:16 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for COST on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:08:16 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/COST?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:08:16 PM
+Debug
+[2025-08-31T22:08:16.744Z] [YAHOO] Fetching COST with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:08:16 PM
+Debug
+[2025-08-31T22:08:16.746Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/COST?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:08:16 PM
+Debug
+[2025-08-31T22:08:16.829Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:08:19 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for COST
+Aug 31, 2025, 6:08:19 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for COST on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:08:19 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/COST?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:08:19 PM
+Debug
+[2025-08-31T22:08:19.391Z] [YAHOO] Fetching COST with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:08:19 PM
+Debug
+[2025-08-31T22:08:19.392Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/COST?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:08:19 PM
+Debug
+[2025-08-31T22:08:19.484Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:08:22 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for COST
+Aug 31, 2025, 6:08:22 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for COST on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:08:22 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/COST?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:08:22 PM
+Debug
+[2025-08-31T22:08:22.963Z] [YAHOO] Fetching COST with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:08:22 PM
+Debug
+[2025-08-31T22:08:22.964Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/COST?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:08:23 PM
+Debug
+[2025-08-31T22:08:23.079Z] [YAHOO] Got 21 data points for COST (1d)
+Aug 31, 2025, 6:08:23 PM
+Debug
+[2025-08-31T22:08:23.080Z] [YAHOO] COST range: Infinity - 0.00, Target 940 NOT hit
+Aug 31, 2025, 6:08:26 PM
+Debug
+API RESPONSE SAVED: COST_2025-08-31_22-08-24.json
+Aug 31, 2025, 6:08:26 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for COST
+Aug 31, 2025, 6:08:26 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for COST
+Aug 31, 2025, 6:08:29 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:08:29 PM
+Debug
+[2025-08-31T22:08:29.924Z] [YAHOO] Fetching ZS with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:08:29 PM
+Debug
+[2025-08-31T22:08:29.927Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:08:30 PM
+Debug
+[2025-08-31T22:08:30.029Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:08:32 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for ZS
+Aug 31, 2025, 6:08:32 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for ZS on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:08:32 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:08:32 PM
+Debug
+[2025-08-31T22:08:32.492Z] [YAHOO] Fetching ZS with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:08:32 PM
+Debug
+[2025-08-31T22:08:32.493Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:08:32 PM
+Debug
+[2025-08-31T22:08:32.589Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:08:35 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for ZS
+Aug 31, 2025, 6:08:35 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for ZS on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:08:35 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:08:35 PM
+Debug
+[2025-08-31T22:08:35.331Z] [YAHOO] Fetching ZS with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:08:35 PM
+Debug
+[2025-08-31T22:08:35.333Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:08:35 PM
+Debug
+[2025-08-31T22:08:35.431Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:08:37 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for ZS
+Aug 31, 2025, 6:08:37 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for ZS on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:08:37 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:08:37 PM
+Debug
+[2025-08-31T22:08:37.972Z] [YAHOO] Fetching ZS with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:08:37 PM
+Debug
+[2025-08-31T22:08:37.975Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ZS?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:08:38 PM
+Debug
+[2025-08-31T22:08:38.084Z] [YAHOO] Got 21 data points for ZS (1d)
+Aug 31, 2025, 6:08:38 PM
+Debug
+[2025-08-31T22:08:38.086Z] [YAHOO] ZS range: Infinity - 0.00, Target 275 NOT hit
+Aug 31, 2025, 6:08:41 PM
+Debug
+API RESPONSE SAVED: ZS_2025-08-31_22-08-38.json
+Aug 31, 2025, 6:08:41 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for ZS
+Aug 31, 2025, 6:08:41 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for ZS
+Aug 31, 2025, 6:08:44 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:08:44 PM
+Debug
+[2025-08-31T22:08:44.565Z] [YAHOO] Fetching DLTR with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:08:44 PM
+Debug
+[2025-08-31T22:08:44.567Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:08:44 PM
+Debug
+[2025-08-31T22:08:44.656Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:08:47 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for DLTR
+Aug 31, 2025, 6:08:47 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for DLTR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:08:47 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:08:47 PM
+Debug
+[2025-08-31T22:08:47.329Z] [YAHOO] Fetching DLTR with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:08:47 PM
+Debug
+[2025-08-31T22:08:47.331Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:08:47 PM
+Debug
+[2025-08-31T22:08:47.405Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:08:49 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for DLTR
+Aug 31, 2025, 6:08:49 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for DLTR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:08:49 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:08:49 PM
+Debug
+[2025-08-31T22:08:49.964Z] [YAHOO] Fetching DLTR with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:08:49 PM
+Debug
+[2025-08-31T22:08:49.966Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:08:50 PM
+Debug
+[2025-08-31T22:08:50.107Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:08:52 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for DLTR
+Aug 31, 2025, 6:08:52 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for DLTR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:08:52 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:08:52 PM
+Debug
+[2025-08-31T22:08:52.882Z] [YAHOO] Fetching DLTR with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:08:52 PM
+Debug
+[2025-08-31T22:08:52.886Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/DLTR?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:08:52 PM
+Debug
+[2025-08-31T22:08:52.997Z] [YAHOO] Got 21 data points for DLTR (1d)
+Aug 31, 2025, 6:08:53 PM
+Debug
+[2025-08-31T22:08:52.999Z] [YAHOO] DLTR range: Infinity - 0.00, Target 109 NOT hit
+Aug 31, 2025, 6:08:56 PM
+Debug
+API RESPONSE SAVED: DLTR_2025-08-31_22-08-54.json
+Aug 31, 2025, 6:08:56 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for DLTR
+Aug 31, 2025, 6:08:56 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for DLTR
+Aug 31, 2025, 6:08:59 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:08:59 PM
+Debug
+[2025-08-31T22:08:59.234Z] [YAHOO] Fetching CRDO with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:08:59 PM
+Debug
+[2025-08-31T22:08:59.235Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:08:59 PM
+Debug
+[2025-08-31T22:08:59.321Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:02 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for CRDO
+Aug 31, 2025, 6:09:02 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for CRDO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:02 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:09:02 PM
+Debug
+[2025-08-31T22:09:02.017Z] [YAHOO] Fetching CRDO with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:09:02 PM
+Debug
+[2025-08-31T22:09:02.017Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:09:02 PM
+Debug
+[2025-08-31T22:09:02.094Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:04 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for CRDO
+Aug 31, 2025, 6:09:04 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for CRDO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:05 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:09:05 PM
+Debug
+[2025-08-31T22:09:05.005Z] [YAHOO] Fetching CRDO with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:09:05 PM
+Debug
+[2025-08-31T22:09:05.006Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:09:05 PM
+Debug
+[2025-08-31T22:09:05.147Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:07 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for CRDO
+Aug 31, 2025, 6:09:07 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for CRDO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:07 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:09:07 PM
+Debug
+[2025-08-31T22:09:07.500Z] [YAHOO] Fetching CRDO with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:09:07 PM
+Debug
+[2025-08-31T22:09:07.503Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRDO?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:09:07 PM
+Debug
+[2025-08-31T22:09:07.624Z] [YAHOO] Got 21 data points for CRDO (1d)
+Aug 31, 2025, 6:09:07 PM
+Debug
+[2025-08-31T22:09:07.626Z] [YAHOO] CRDO range: Infinity - 0.00, Target 123 NOT hit
+Aug 31, 2025, 6:09:11 PM
+Debug
+API RESPONSE SAVED: CRDO_2025-08-31_22-09-08.json
+Aug 31, 2025, 6:09:11 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for CRDO
+Aug 31, 2025, 6:09:11 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for CRDO
+Aug 31, 2025, 6:09:14 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:09:14 PM
+Debug
+[2025-08-31T22:09:14.294Z] [YAHOO] Fetching CRM with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:09:14 PM
+Debug
+[2025-08-31T22:09:14.296Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:09:14 PM
+Debug
+[2025-08-31T22:09:14.407Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:16 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for CRM
+Aug 31, 2025, 6:09:16 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for CRM on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:16 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:09:16 PM
+Debug
+[2025-08-31T22:09:16.786Z] [YAHOO] Fetching CRM with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:09:16 PM
+Debug
+[2025-08-31T22:09:16.792Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:09:16 PM
+Debug
+[2025-08-31T22:09:16.896Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:19 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for CRM
+Aug 31, 2025, 6:09:19 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for CRM on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:19 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:09:19 PM
+Debug
+[2025-08-31T22:09:19.613Z] [YAHOO] Fetching CRM with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:09:19 PM
+Debug
+[2025-08-31T22:09:19.615Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:09:19 PM
+Debug
+[2025-08-31T22:09:19.704Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:22 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for CRM
+Aug 31, 2025, 6:09:22 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for CRM on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:22 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:09:22 PM
+Debug
+[2025-08-31T22:09:22.356Z] [YAHOO] Fetching CRM with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:09:22 PM
+Debug
+[2025-08-31T22:09:22.358Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CRM?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:09:22 PM
+Debug
+[2025-08-31T22:09:22.495Z] [YAHOO] Got 21 data points for CRM (1d)
+Aug 31, 2025, 6:09:22 PM
+Debug
+[2025-08-31T22:09:22.496Z] [YAHOO] CRM range: Infinity - 0.00, Target 255 NOT hit
+Aug 31, 2025, 6:09:26 PM
+Debug
+API RESPONSE SAVED: CRM_2025-08-31_22-09-23.json
+Aug 31, 2025, 6:09:26 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for CRM
+Aug 31, 2025, 6:09:26 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for CRM
+Aug 31, 2025, 6:09:29 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:09:29 PM
+Debug
+[2025-08-31T22:09:29.209Z] [YAHOO] Fetching AVGO with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:09:29 PM
+Debug
+[2025-08-31T22:09:29.211Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:09:29 PM
+Debug
+[2025-08-31T22:09:29.302Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:31 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for AVGO
+Aug 31, 2025, 6:09:31 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for AVGO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:31 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:09:31 PM
+Debug
+[2025-08-31T22:09:31.564Z] [YAHOO] Fetching AVGO with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:09:31 PM
+Debug
+[2025-08-31T22:09:31.567Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:09:31 PM
+Debug
+[2025-08-31T22:09:31.646Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:34 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for AVGO
+Aug 31, 2025, 6:09:34 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for AVGO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:34 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:09:34 PM
+Debug
+[2025-08-31T22:09:34.541Z] [YAHOO] Fetching AVGO with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:09:34 PM
+Debug
+[2025-08-31T22:09:34.542Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:09:34 PM
+Debug
+[2025-08-31T22:09:34.638Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:37 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for AVGO
+Aug 31, 2025, 6:09:37 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for AVGO on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:37 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:09:37 PM
+Debug
+[2025-08-31T22:09:37.162Z] [YAHOO] Fetching AVGO with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:09:37 PM
+Debug
+[2025-08-31T22:09:37.163Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVGO?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:09:37 PM
+Debug
+[2025-08-31T22:09:37.271Z] [YAHOO] Got 21 data points for AVGO (1d)
+Aug 31, 2025, 6:09:37 PM
+Debug
+[2025-08-31T22:09:37.272Z] [YAHOO] AVGO range: Infinity - 0.00, Target 295 NOT hit
+Aug 31, 2025, 6:09:41 PM
+Debug
+API RESPONSE SAVED: AVGO_2025-08-31_22-09-38.json
+Aug 31, 2025, 6:09:41 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for AVGO
+Aug 31, 2025, 6:09:41 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for AVGO
+Aug 31, 2025, 6:09:44 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:09:44 PM
+Debug
+[2025-08-31T22:09:44.186Z] [YAHOO] Fetching PATH with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:09:44 PM
+Debug
+[2025-08-31T22:09:44.188Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:09:44 PM
+Debug
+[2025-08-31T22:09:44.281Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:46 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for PATH
+Aug 31, 2025, 6:09:46 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for PATH on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:46 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:09:46 PM
+Debug
+[2025-08-31T22:09:46.734Z] [YAHOO] Fetching PATH with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:09:46 PM
+Debug
+[2025-08-31T22:09:46.735Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:09:46 PM
+Debug
+[2025-08-31T22:09:46.837Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:49 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for PATH
+Aug 31, 2025, 6:09:49 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for PATH on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:49 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:09:49 PM
+Debug
+[2025-08-31T22:09:49.514Z] [YAHOO] Fetching PATH with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:09:49 PM
+Debug
+[2025-08-31T22:09:49.518Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:09:49 PM
+Debug
+[2025-08-31T22:09:49.630Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:09:52 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for PATH
+Aug 31, 2025, 6:09:52 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for PATH on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:09:52 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:09:52 PM
+Debug
+[2025-08-31T22:09:52.238Z] [YAHOO] Fetching PATH with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:09:52 PM
+Debug
+[2025-08-31T22:09:52.239Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PATH?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:09:52 PM
+Debug
+[2025-08-31T22:09:52.376Z] [YAHOO] Got 21 data points for PATH (1d)
+Aug 31, 2025, 6:09:52 PM
+Debug
+[2025-08-31T22:09:52.379Z] [YAHOO] PATH range: Infinity - 0.00, Target 11 NOT hit
+Aug 31, 2025, 6:09:57 PM
+Debug
+API RESPONSE SAVED: PATH_2025-08-31_22-09-53.json
+Aug 31, 2025, 6:09:57 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for PATH
+Aug 31, 2025, 6:09:57 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for PATH
+Aug 31, 2025, 6:09:59 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:09:59 PM
+Debug
+[2025-08-31T22:09:59.633Z] [YAHOO] Fetching PL with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:09:59 PM
+Debug
+[2025-08-31T22:09:59.634Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:09:59 PM
+Debug
+[2025-08-31T22:09:59.744Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:02 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for PL
+Aug 31, 2025, 6:10:02 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for PL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:02 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:10:02 PM
+Debug
+[2025-08-31T22:10:02.478Z] [YAHOO] Fetching PL with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:10:02 PM
+Debug
+[2025-08-31T22:10:02.488Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:10:02 PM
+Debug
+[2025-08-31T22:10:02.583Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:05 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for PL
+Aug 31, 2025, 6:10:05 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for PL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:05 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:10:05 PM
+Debug
+[2025-08-31T22:10:05.346Z] [YAHOO] Fetching PL with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:10:05 PM
+Debug
+[2025-08-31T22:10:05.347Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:10:05 PM
+Debug
+[2025-08-31T22:10:05.448Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:07 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for PL
+Aug 31, 2025, 6:10:08 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for PL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:08 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:10:08 PM
+Debug
+[2025-08-31T22:10:08.007Z] [YAHOO] Fetching PL with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:10:08 PM
+Debug
+[2025-08-31T22:10:08.012Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/PL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:10:08 PM
+Debug
+[2025-08-31T22:10:08.106Z] [YAHOO] Got 21 data points for PL (1d)
+Aug 31, 2025, 6:10:08 PM
+Debug
+[2025-08-31T22:10:08.107Z] [YAHOO] PL range: Infinity - 0.00, Target 7 NOT hit
+Aug 31, 2025, 6:10:12 PM
+Debug
+API RESPONSE SAVED: PL_2025-08-31_22-10-09.json
+Aug 31, 2025, 6:10:12 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for PL
+Aug 31, 2025, 6:10:12 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for PL
+Aug 31, 2025, 6:10:15 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:10:15 PM
+Debug
+[2025-08-31T22:10:15.315Z] [YAHOO] Fetching ORCL with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:10:15 PM
+Debug
+[2025-08-31T22:10:15.316Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:10:15 PM
+Debug
+[2025-08-31T22:10:15.496Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:18 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for ORCL
+Aug 31, 2025, 6:10:18 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for ORCL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:18 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:10:18 PM
+Debug
+[2025-08-31T22:10:18.484Z] [YAHOO] Fetching ORCL with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:10:18 PM
+Debug
+[2025-08-31T22:10:18.485Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:10:18 PM
+Debug
+[2025-08-31T22:10:18.589Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:21 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for ORCL
+Aug 31, 2025, 6:10:21 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for ORCL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:21 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:10:21 PM
+Debug
+[2025-08-31T22:10:21.171Z] [YAHOO] Fetching ORCL with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:10:21 PM
+Debug
+[2025-08-31T22:10:21.173Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:10:21 PM
+Debug
+[2025-08-31T22:10:21.251Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:23 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for ORCL
+Aug 31, 2025, 6:10:23 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for ORCL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:23 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:10:23 PM
+Debug
+[2025-08-31T22:10:23.947Z] [YAHOO] Fetching ORCL with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:10:23 PM
+Debug
+[2025-08-31T22:10:23.955Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ORCL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:10:24 PM
+Debug
+[2025-08-31T22:10:24.097Z] [YAHOO] Got 21 data points for ORCL (1d)
+Aug 31, 2025, 6:10:24 PM
+Debug
+[2025-08-31T22:10:24.100Z] [YAHOO] ORCL range: Infinity - 0.00, Target 225 NOT hit
+Aug 31, 2025, 6:10:27 PM
+Debug
+API RESPONSE SAVED: ORCL_2025-08-31_22-10-25.json
+Aug 31, 2025, 6:10:27 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for ORCL
+Aug 31, 2025, 6:10:27 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for ORCL
+Aug 31, 2025, 6:10:32 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:10:32 PM
+Debug
+[2025-08-31T22:10:32.681Z] [YAHOO] Fetching CASY with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:10:32 PM
+Debug
+[2025-08-31T22:10:32.684Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:10:32 PM
+Debug
+[2025-08-31T22:10:32.792Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:35 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for CASY
+Aug 31, 2025, 6:10:35 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for CASY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:35 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:10:35 PM
+Debug
+[2025-08-31T22:10:35.694Z] [YAHOO] Fetching CASY with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:10:35 PM
+Debug
+[2025-08-31T22:10:35.697Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:10:35 PM
+Debug
+[2025-08-31T22:10:35.802Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:39 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for CASY
+Aug 31, 2025, 6:10:39 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for CASY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:39 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:10:39 PM
+Debug
+[2025-08-31T22:10:39.107Z] [YAHOO] Fetching CASY with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:10:39 PM
+Debug
+[2025-08-31T22:10:39.109Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:10:39 PM
+Debug
+[2025-08-31T22:10:39.196Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:41 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for CASY
+Aug 31, 2025, 6:10:41 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for CASY on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:41 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:10:41 PM
+Debug
+[2025-08-31T22:10:41.810Z] [YAHOO] Fetching CASY with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:10:41 PM
+Debug
+[2025-08-31T22:10:41.812Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/CASY?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:10:41 PM
+Debug
+[2025-08-31T22:10:41.959Z] [YAHOO] Got 21 data points for CASY (1d)
+Aug 31, 2025, 6:10:41 PM
+Debug
+[2025-08-31T22:10:41.960Z] [YAHOO] CASY range: Infinity - 0.00, Target 470 NOT hit
+Aug 31, 2025, 6:10:46 PM
+Debug
+API RESPONSE SAVED: CASY_2025-08-31_22-10-43.json
+Aug 31, 2025, 6:10:46 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for CASY
+Aug 31, 2025, 6:10:46 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for CASY
+Aug 31, 2025, 6:10:49 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:10:49 PM
+Debug
+[2025-08-31T22:10:49.459Z] [YAHOO] Fetching SAIL with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:10:49 PM
+Debug
+[2025-08-31T22:10:49.461Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:10:49 PM
+Debug
+[2025-08-31T22:10:49.570Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:52 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for SAIL
+Aug 31, 2025, 6:10:52 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for SAIL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:52 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:10:52 PM
+Debug
+[2025-08-31T22:10:52.167Z] [YAHOO] Fetching SAIL with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:10:52 PM
+Debug
+[2025-08-31T22:10:52.168Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:10:52 PM
+Debug
+[2025-08-31T22:10:52.270Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:54 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for SAIL
+Aug 31, 2025, 6:10:54 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for SAIL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:54 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:10:54 PM
+Debug
+[2025-08-31T22:10:54.917Z] [YAHOO] Fetching SAIL with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:10:54 PM
+Debug
+[2025-08-31T22:10:54.919Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:10:55 PM
+Debug
+[2025-08-31T22:10:55.044Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:10:58 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for SAIL
+Aug 31, 2025, 6:10:58 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for SAIL on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:10:58 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:10:58 PM
+Debug
+[2025-08-31T22:10:58.498Z] [YAHOO] Fetching SAIL with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:10:58 PM
+Debug
+[2025-08-31T22:10:58.500Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/SAIL?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:10:58 PM
+Debug
+[2025-08-31T22:10:58.605Z] [YAHOO] Got 21 data points for SAIL (1d)
+Aug 31, 2025, 6:10:58 PM
+Debug
+[2025-08-31T22:10:58.609Z] [YAHOO] SAIL range: Infinity - 0.00, Target 20 NOT hit
+Aug 31, 2025, 6:11:03 PM
+Debug
+API RESPONSE SAVED: SAIL_2025-08-31_22-10-59.json
+Aug 31, 2025, 6:11:03 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for SAIL
+Aug 31, 2025, 6:11:03 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for SAIL
+Aug 31, 2025, 6:11:05 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:11:05 PM
+Debug
+[2025-08-31T22:11:05.829Z] [YAHOO] Fetching AVAV with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:11:05 PM
+Debug
+[2025-08-31T22:11:05.831Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:11:05 PM
+Debug
+[2025-08-31T22:11:05.949Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:11:08 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for AVAV
+Aug 31, 2025, 6:11:08 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for AVAV on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:11:08 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:11:08 PM
+Debug
+[2025-08-31T22:11:08.555Z] [YAHOO] Fetching AVAV with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:11:08 PM
+Debug
+[2025-08-31T22:11:08.557Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:11:08 PM
+Debug
+[2025-08-31T22:11:08.647Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:11:11 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for AVAV
+Aug 31, 2025, 6:11:11 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for AVAV on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:11:11 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:11:11 PM
+Debug
+[2025-08-31T22:11:11.069Z] [YAHOO] Fetching AVAV with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:11:11 PM
+Debug
+[2025-08-31T22:11:11.070Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:11:11 PM
+Debug
+[2025-08-31T22:11:11.185Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:11:13 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for AVAV
+Aug 31, 2025, 6:11:13 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for AVAV on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:11:13 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:11:13 PM
+Debug
+[2025-08-31T22:11:13.733Z] [YAHOO] Fetching AVAV with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:11:13 PM
+Debug
+[2025-08-31T22:11:13.735Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/AVAV?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:11:13 PM
+Debug
+[2025-08-31T22:11:13.856Z] [YAHOO] Got 21 data points for AVAV (1d)
+Aug 31, 2025, 6:11:13 PM
+Debug
+[2025-08-31T22:11:13.859Z] [YAHOO] AVAV range: Infinity - 0.00, Target 240 NOT hit
+Aug 31, 2025, 6:11:17 PM
+Debug
+API RESPONSE SAVED: AVAV_2025-08-31_22-11-14.json
+Aug 31, 2025, 6:11:17 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for AVAV
+Aug 31, 2025, 6:11:17 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for AVAV
+Aug 31, 2025, 6:11:20 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:11:20 PM
+Debug
+[2025-08-31T22:11:20.349Z] [YAHOO] Fetching KR with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:11:20 PM
+Debug
+[2025-08-31T22:11:20.350Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:11:20 PM
+Debug
+[2025-08-31T22:11:20.475Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:11:23 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for KR
+Aug 31, 2025, 6:11:23 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for KR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:11:23 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:11:23 PM
+Debug
+[2025-08-31T22:11:23.228Z] [YAHOO] Fetching KR with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:11:23 PM
+Debug
+[2025-08-31T22:11:23.232Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:11:23 PM
+Debug
+[2025-08-31T22:11:23.360Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:11:25 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for KR
+Aug 31, 2025, 6:11:25 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for KR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:11:25 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:11:25 PM
+Debug
+[2025-08-31T22:11:25.774Z] [YAHOO] Fetching KR with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:11:25 PM
+Debug
+[2025-08-31T22:11:25.776Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:11:25 PM
+Debug
+[2025-08-31T22:11:25.891Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:11:28 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for KR
+Aug 31, 2025, 6:11:28 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for KR on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:11:28 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:11:28 PM
+Debug
+[2025-08-31T22:11:28.494Z] [YAHOO] Fetching KR with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:11:28 PM
+Debug
+[2025-08-31T22:11:28.495Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/KR?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:11:28 PM
+Debug
+[2025-08-31T22:11:28.681Z] [YAHOO] Got 21 data points for KR (1d)
+Aug 31, 2025, 6:11:28 PM
+Debug
+[2025-08-31T22:11:28.684Z] [YAHOO] KR range: Infinity - 0.00, Target 67.5 NOT hit
+Aug 31, 2025, 6:11:32 PM
+Debug
+API RESPONSE SAVED: KR_2025-08-31_22-11-29.json
+Aug 31, 2025, 6:11:32 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for KR
+Aug 31, 2025, 6:11:32 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for KR
+Aug 31, 2025, 6:11:35 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:11:35 PM
+Debug
+[2025-08-31T22:11:35.260Z] [YAHOO] Fetching ADBE with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:11:35 PM
+Debug
+[2025-08-31T22:11:35.263Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:11:35 PM
+Debug
+[2025-08-31T22:11:35.394Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:11:38 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for ADBE
+Aug 31, 2025, 6:11:38 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for ADBE on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:11:38 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:11:38 PM
+Debug
+[2025-08-31T22:11:38.210Z] [YAHOO] Fetching ADBE with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:11:38 PM
+Debug
+[2025-08-31T22:11:38.211Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:11:38 PM
+Debug
+[2025-08-31T22:11:38.294Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:11:41 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for ADBE
+Aug 31, 2025, 6:11:41 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for ADBE on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:11:41 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:11:41 PM
+Debug
+[2025-08-31T22:11:41.276Z] [YAHOO] Fetching ADBE with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:11:41 PM
+Debug
+[2025-08-31T22:11:41.281Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:11:41 PM
+Debug
+[2025-08-31T22:11:41.371Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:11:44 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for ADBE
+Aug 31, 2025, 6:11:44 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for ADBE on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:11:44 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:11:44 PM
+Debug
+[2025-08-31T22:11:44.169Z] [YAHOO] Fetching ADBE with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:11:44 PM
+Debug
+[2025-08-31T22:11:44.172Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/ADBE?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:11:44 PM
+Debug
+[2025-08-31T22:11:44.300Z] [YAHOO] Got 21 data points for ADBE (1d)
+Aug 31, 2025, 6:11:44 PM
+Debug
+[2025-08-31T22:11:44.301Z] [YAHOO] ADBE range: Infinity - 0.00, Target 355 NOT hit
+Aug 31, 2025, 6:11:48 PM
+Debug
+API RESPONSE SAVED: ADBE_2025-08-31_22-11-45.json
+Aug 31, 2025, 6:11:48 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for ADBE
+Aug 31, 2025, 6:11:48 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for ADBE
+Aug 31, 2025, 6:11:51 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:11:51 PM
+Debug
+[2025-08-31T22:11:51.731Z] [YAHOO] Fetching FERG with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:11:51 PM
+Debug
+[2025-08-31T22:11:51.766Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:11:51 PM
+Debug
+[2025-08-31T22:11:51.895Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:11:55 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for FERG
+Aug 31, 2025, 6:11:55 PM
+Info
+YAHOO FALLBACK: Attempting 5m interval for FERG on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:11:55 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:11:55 PM
+Debug
+[2025-08-31T22:11:55.691Z] [YAHOO] Fetching FERG with 5m interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:11:55 PM
+Debug
+[2025-08-31T22:11:55.693Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756627200&period2=1756684800&interval=5m&events=history
+Aug 31, 2025, 6:11:55 PM
+Debug
+[2025-08-31T22:11:55.779Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:11:58 PM
+Debug
+YAHOO FALLBACK: Trying 1h interval for FERG
+Aug 31, 2025, 6:11:58 PM
+Info
+YAHOO FALLBACK: Attempting 1h interval for FERG on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:11:58 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:11:58 PM
+Debug
+[2025-08-31T22:11:58.311Z] [YAHOO] Fetching FERG with 1h interval from 2025-08-31T08:00:00.000Z to 2025-09-01T00:00:00.000Z
+Aug 31, 2025, 6:11:58 PM
+Debug
+[2025-08-31T22:11:58.313Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1756627200&period2=1756684800&interval=1h&events=history
+Aug 31, 2025, 6:11:58 PM
+Debug
+[2025-08-31T22:11:58.435Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:12:01 PM
+Debug
+YAHOO FALLBACK: Trying 1d interval for FERG
+Aug 31, 2025, 6:12:01 PM
+Info
+YAHOO FALLBACK: Attempting 1d interval for FERG on 2025-08-31T04:00:00.000Z
+Aug 31, 2025, 6:12:01 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:12:01 PM
+Debug
+[2025-08-31T22:12:01.082Z] [YAHOO] Fetching FERG with 1d interval from 2025-08-01T04:00:00.000Z to 2025-09-01T04:00:00.000Z
+Aug 31, 2025, 6:12:01 PM
+Debug
+[2025-08-31T22:12:01.084Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/FERG?period1=1754020800&period2=1756699200&interval=1d&events=history
+Aug 31, 2025, 6:12:01 PM
+Debug
+[2025-08-31T22:12:01.211Z] [YAHOO] Got 21 data points for FERG (1d)
+Aug 31, 2025, 6:12:01 PM
+Debug
+[2025-08-31T22:12:01.212Z] [YAHOO] FERG range: Infinity - 0.00, Target 230 NOT hit
+Aug 31, 2025, 6:12:05 PM
+Debug
+API RESPONSE SAVED: FERG_2025-08-31_22-12-02.json
+Aug 31, 2025, 6:12:05 PM
+Debug
+YAHOO FALLBACK SUCCESS: Got data using 1d interval for FERG
+Aug 31, 2025, 6:12:05 PM
+Info
+YAHOO FALLBACK SUCCESS: Retrieved data using 1d interval for FERG
+Aug 31, 2025, 6:12:07 PM
+Debug
+YAHOO API: https://query2.finance.yahoo.com/v8/finance/chart/MU?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:12:07 PM
+Debug
+[2025-08-31T22:12:07.417Z] [YAHOO] Fetching MU with 1m interval from 2025-08-31T13:30:00.000Z to 2025-08-31T20:00:00.000Z
+Aug 31, 2025, 6:12:07 PM
+Debug
+[2025-08-31T22:12:07.420Z] [YAHOO] URL: https://query2.finance.yahoo.com/v8/finance/chart/MU?period1=1756647000&period2=1756670400&interval=1m&events=history
+Aug 31, 2025, 6:12:07 PM
+Debug
+[2025-08-31T22:12:07.547Z] [YAHOO] No timestamps in response
+Aug 31, 2025, 6:12:10 PM
+Debug
+YAHOO FALLBACK: Trying 5m interval for MU
+Aug 31, 2025, 6:12:10 PM
+Error
+Exceeded maximum execution time

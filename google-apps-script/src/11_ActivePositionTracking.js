@@ -12,6 +12,18 @@ function EW_updateActiveStrikeHits() {
   const startTime = new Date();
   console.log(`ACTIVE TRACKING: Started at ${startTime.toISOString()}`);
   Logger.log(`ACTIVE TRACKING: Strike_Hit update started at ${startTime.toISOString()}`);
+  
+  // Check if today is a weekend - skip if Saturday (6) or Sunday (0)
+  const dayOfWeek = startTime.getDay();
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    const dayName = dayOfWeek === 0 ? 'Sunday' : 'Saturday';
+    const msg = `Skipping active position tracking - Today is ${dayName}, markets are closed`;
+    console.log(`ACTIVE TRACKING: ${msg}`);
+    Logger.log(`ACTIVE TRACKING: ${msg}`);
+    EW_trace('ACTIVE_TRACKING', msg, true);
+    return { checked: 0, updated: 0, duration: 0, skipped: true, reason: 'weekend' };
+  }
+  
   EW_trace('ACTIVE_TRACKING', 'Starting Strike_Hit updates for active positions', true);
   
   const ss = SpreadsheetApp.getActive();
