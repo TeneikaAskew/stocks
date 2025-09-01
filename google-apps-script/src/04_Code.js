@@ -60,8 +60,18 @@ function onOpen() {
     .addItem('Backfill Selected Rows', 'EW_backfillSelectedRows')
     .addItem('Backfill Selected (with Continuation)', 'EW_backfillSelectedRowsWithContinuation')
     .addSeparator()
+    .addItem('Recalculate Indicators (Selected)', 'EW_recalculateIndicatorsForSelected')
+    .addItem('Recalculate Indicators (Sheet)', 'EW_recalculateIndicatorsForSheet')
+    .addItem('Check Missing Indicators', 'EW_checkMissingIndicators')
+    .addSeparator()
+    .addItem('Apply Day Check Formatting (Current)', 'EW_applyDayCheckFormatting')
+    .addItem('Apply Day Check Formatting (All)', 'EW_applyDayCheckFormattingToAll')
+    .addSeparator()
     .addItem('Update Active Position Strikes', 'EW_updateActiveStrikeHits')
     .addItem('Update Active (with Continuation)', 'EW_updateActiveStrikeHitsWithContinuation')
+    .addSeparator()
+    .addItem('Add Tracking Columns (Current Sheet)', 'EW_addColumnsToCurrentSheet')
+    .addItem('Add Tracking Columns (All Sheets)', 'EW_addTrackingColumnsToAll')
     .addSeparator()
     .addItem('Reset All Continuation States', 'EW_resetContinuation')
     .addSeparator()
@@ -163,10 +173,6 @@ function EW_testLogin() {
 function EW_runAll() {
   EW_trace('MAIN', 'EW_runAll() started', true);
 
-  // Clean up empty rows before starting to prevent accumulation
-  EW_trace('MAIN', 'Cleaning up empty rows before data fetch...', false);
-  EW_cleanupEmptyRows();
-
   let cookies = {};
   if (EW.p.user && EW.p.pass) {
     try {
@@ -188,6 +194,10 @@ function EW_runAll() {
   for (const [tabName, path] of Object.entries(endpoints)) {
     EW_runOneInternal(ss, tabName, path, cookies);
   }
+
+  // Clean up empty rows after starting to prevent accumulation
+  EW_trace('MAIN', 'Cleaning up empty rows after data fetch...', false);
+  EW_cleanupEmptyRows();
 
   EW_trace('MAIN', 'EW_runAll() finished', true);
 }
@@ -466,7 +476,7 @@ function EW_objectsToRows(arr) {
 
 /**
  * Removes empty rows from all strategy sheets
- * Helps prevent accumulation of empty rows that can cause issues
+ * OPTIMIZED: Uses batch operations to avoid individual deleteRow calls
  * @returns {void}
  */
 function EW_cleanupEmptyRows() {
@@ -479,64 +489,86 @@ function EW_cleanupEmptyRows() {
       const sheet = ss.getSheetByName(tabName);
       if (!sheet || sheet.getLastRow() <= 1) continue; // Skip if no sheet or only header
       
-      // Get data from columns that should have actual values (not formulas)
-      const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      const hdrMap = EW_headerMap(headers);
-      
-      // Use ticker column as the primary indicator of real data
-      const checkCol = hdrMap.tickerCol || hdrMap.runDateCol || 1;
       const lastRow = sheet.getLastRow();
+      const lastCol = sheet.getLastColumn();
       
       if (lastRow <= 1) continue; // Only header, nothing to clean
       
-      // Get all values from the check column
-      const colData = sheet.getRange(2, checkCol, lastRow - 1, 1).getValues();
+      // Get ALL data at once for efficiency
+      const allData = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+      const headers = allData[0];
+      const hdrMap = EW_headerMap(headers);
       
-      // Find rows to delete (empty rows)
-      const rowsToDelete = [];
-      for (let i = 0; i < colData.length; i++) {
-        if (colData[i][0] === '' || colData[i][0] === null) {
-          // Check if entire row is empty (not just this column)
-          const rowNum = i + 2; // Convert to 1-based row number
-          const rowData = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
-          
-          // Check if all non-formula columns are empty
-          const isEmptyRow = rowData.every((cell, idx) => {
-            // Skip formula columns (they might have values from formulas)
-            const header = headers[idx];
-            if (header && (header.toString().startsWith('GF_') || 
-                          header.toString().includes('Days_To_Exp') ||
-                          header.toString().includes('Success_Score') ||
-                          header.toString().includes('Historical_') ||
-                          header.toString().includes('Ever_Hit') ||
-                          header.toString().includes('First_Hit') ||
-                          header.toString().includes('Last_Update') ||
-                          header.toString().includes('Total_Hit'))) {
-              return true; // Ignore formula columns
-            }
-            return cell === '' || cell === null;
-          });
-          
-          if (isEmptyRow) {
-            rowsToDelete.push(rowNum);
+      // Determine which columns are formula columns to ignore
+      const formulaColumns = new Set();
+      headers.forEach((header, idx) => {
+        if (header && (header.toString().startsWith('GF_') || 
+                      header.toString().includes('Days_To_Exp') ||
+                      header.toString().includes('Success_Score') ||
+                      header.toString().includes('Historical_') ||
+                      header.toString().includes('Ever_Hit') ||
+                      header.toString().includes('First_Hit') ||
+                      header.toString().includes('Last_Update') ||
+                      header.toString().includes('Total_Hit'))) {
+          formulaColumns.add(idx);
+        }
+      });
+      
+      // Use ticker column as the primary indicator of real data
+      const checkCol = (hdrMap.tickerCol || hdrMap.runDateCol || 1) - 1; // Convert to 0-based
+      
+      // Find non-empty rows to keep
+      const rowsToKeep = [allData[0]]; // Always keep header
+      
+      for (let i = 1; i < allData.length; i++) {
+        const row = allData[i];
+        
+        // Quick check: if ticker/primary column has data, keep the row
+        if (row[checkCol] !== '' && row[checkCol] !== null) {
+          rowsToKeep.push(row);
+          continue;
+        }
+        
+        // Detailed check: see if any non-formula columns have data
+        let hasData = false;
+        for (let j = 0; j < row.length; j++) {
+          if (!formulaColumns.has(j) && row[j] !== '' && row[j] !== null) {
+            hasData = true;
+            break;
           }
+        }
+        
+        if (hasData) {
+          rowsToKeep.push(row);
+        } else {
+          totalRemoved++;
         }
       }
       
-      // Delete rows from bottom to top to avoid index shifting
-      rowsToDelete.reverse();
-      for (const rowNum of rowsToDelete) {
-        sheet.deleteRow(rowNum);
-        totalRemoved++;
-      }
-      
-      if (rowsToDelete.length > 0) {
-        EW_trace('CLEANUP', `Removed ${rowsToDelete.length} empty rows from ${tabName}`);
+      // Only update sheet if we removed rows
+      if (rowsToKeep.length < allData.length) {
+        const removedCount = allData.length - rowsToKeep.length;
+        
+        // Clear the entire sheet
+        sheet.clear();
+        
+        // Write back only the rows we want to keep in one batch operation
+        if (rowsToKeep.length > 0) {
+          sheet.getRange(1, 1, rowsToKeep.length, lastCol).setValues(rowsToKeep);
+        }
+        
+        EW_trace('CLEANUP', `Removed ${removedCount} empty rows from ${tabName} (batch operation)`);
+        
+        // Re-apply formulas if we have the header map
+        if (rowsToKeep.length > 1) { // Has data rows, not just header
+          const newHdrMap = EW_headerMap(rowsToKeep[0]);
+          EW_setGFArrayFormulas(sheet, newHdrMap);
+        }
       }
     }
     
     if (totalRemoved > 0) {
-      EW_trace('CLEANUP', `Total empty rows removed: ${totalRemoved}`, false);
+      EW_trace('CLEANUP', `Total empty rows removed: ${totalRemoved} (using batch operations)`, false);
     }
   } catch (error) {
     EW_trace('CLEANUP', `Error during empty row cleanup: ${error.toString()}`, false);
@@ -818,8 +850,8 @@ function EW_headerMap(headerRow) {
   const askCol          = find(['ask','Ask']);
   const openInterestCol = find(['openInterest','open interest','Open Interest']);
   const volumeCol       = find(['volume','Volume']);
-  const nextEPSDateCol  = find(['nextEPSDate','next eps date','Next EPS Date']);
-  const releaseTimeCol  = find(['releaseTime','release time','Release Time']);
+  const nextEPSDateCol  = find(['earningsDate','earnings date','Earnings Date','nextEPSDate','next eps date','Next EPS Date']);
+  const releaseTimeCol  = find(['earningsTime','earnings time','Earnings Time','releaseTime','release time','Release Time']);
   const lastEPSTimeCol  = find(['lastEPSTime','last eps time','Last EPS Time']);
   const confirmDateCol  = find(['confirmDate','confirm date','Confirm Date']);
   const optionDateCol   = find(['optionDate','option date','Option Date']);
