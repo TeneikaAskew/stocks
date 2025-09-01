@@ -1,0 +1,173 @@
+{
+  "overview": {
+    "totalTrades": 3996,
+    "totalHits": 2157,
+    "profitableTrades": 2398,
+    "multiDayWinners": 1203,
+    "hitRate": 0.54,
+    "profitableRate": 0.60,
+    "avgRiskReward": 2.35,
+    "avgDaysToHit": 2.8
+  },
+  "multiDayProfitability": {
+    "profitabilityByDay": [
+      {"day": 0, "rate": 0.60, "count": 3996},
+      {"day": 1, "rate": 0.55, "count": 3200},
+      {"day": 2, "rate": 0.48, "count": 2400},
+      {"day": 3, "rate": 0.42, "count": 1800},
+      {"day": 4, "rate": 0.38, "count": 1200},
+      {"day": 5, "rate": 0.35, "count": 800}
+    ],
+    "sustainedWinners": [
+      {"days": 1, "count": 2398, "successRate": 0.60, "avgProfit": 3.2},
+      {"days": 2, "count": 1920, "successRate": 0.48, "avgProfit": 4.5},
+      {"days": 3, "count": 1680, "successRate": 0.42, "avgProfit": 5.8},
+      {"days": 4, "count": 1520, "successRate": 0.38, "avgProfit": 7.2}
+    ]
+  },
+  "indicatorEffectiveness": [
+    {
+      "name": "RSI",
+      "correlation": 0.42,
+      "significance": "HIGH",
+      "profitableRange": "30-50",
+      "hitRate": 0.68,
+      "avgProfit": 4.2
+    },
+    {
+      "name": "Price vs SMA20",
+      "correlation": 0.35,
+      "significance": "HIGH",
+      "profitableRange": "-2% to +2%",
+      "hitRate": 0.62,
+      "avgProfit": 3.5
+    },
+    {
+      "name": "RVOL",
+      "correlation": 0.28,
+      "significance": "MEDIUM",
+      "profitableRange": "1.5-3.0",
+      "hitRate": 0.58,
+      "avgProfit": 2.8
+    },
+    {
+      "name": "Price vs VWAP",
+      "correlation": 0.22,
+      "significance": "MEDIUM",
+      "profitableRange": "-1% to +1%",
+      "hitRate": 0.55,
+      "avgProfit": 2.2
+    },
+    {
+      "name": "Volume",
+      "correlation": 0.15,
+      "significance": "LOW",
+      "profitableRange": ">1M",
+      "hitRate": 0.52,
+      "avgProfit": 1.8
+    }
+  ],
+  "earningsTiming": {
+    "preEarnings": {
+      "hitRate": 0.58,
+      "avgProfit": 3.8,
+      "tradeCount": 1200
+    },
+    "postEarnings": {
+      "hitRate": 0.52,
+      "avgProfit": 2.9,
+      "tradeCount": 2796
+    },
+    "optimalDaysBeforeEarnings": 3,
+    "recommendation": "Enter positions 2-4 days before earnings for momentum plays"
+  },
+  "strategyPerformance": [
+    {
+      "strategy": "BullPutSpread",
+      "tradeCount": 1200,
+      "hitRate": 0.62,
+      "profitFactor": 2.8,
+      "avgDaysToHit": 2.3
+    },
+    {
+      "strategy": "BearCallSpread",
+      "tradeCount": 800,
+      "hitRate": 0.58,
+      "profitFactor": 2.4,
+      "avgDaysToHit": 2.5
+    },
+    {
+      "strategy": "CallCalendarSpread",
+      "tradeCount": 600,
+      "hitRate": 0.55,
+      "profitFactor": 2.1,
+      "avgDaysToHit": 3.2
+    },
+    {
+      "strategy": "PutCalendarSpread",
+      "tradeCount": 500,
+      "hitRate": 0.52,
+      "profitFactor": 1.9,
+      "avgDaysToHit": 3.5
+    },
+    {
+      "strategy": "ShortIronCondor",
+      "tradeCount": 896,
+      "hitRate": 0.48,
+      "profitFactor": 1.6,
+      "avgDaysToHit": 4.1
+    }
+  ],
+  "topPlays": [
+    {
+      "symbol": "AAPL",
+      "entryDate": "2024-01-15",
+      "strategy": "BullPutSpread",
+      "maxProfit": 12.5,
+      "daysToHit": 2,
+      "rsi": 42,
+      "priceVsSMA20": -1.2,
+      "rvol": 2.3
+    },
+    {
+      "symbol": "TSLA",
+      "entryDate": "2024-01-22",
+      "strategy": "BearCallSpread",
+      "maxProfit": 11.8,
+      "daysToHit": 1,
+      "rsi": 68,
+      "priceVsSMA20": 3.5,
+      "rvol": 3.1
+    },
+    {
+      "symbol": "NVDA",
+      "entryDate": "2024-02-05",
+      "strategy": "BullPutSpread",
+      "maxProfit": 10.2,
+      "daysToHit": 3,
+      "rsi": 38,
+      "priceVsSMA20": -0.8,
+      "rvol": 2.8
+    },
+    {
+      "symbol": "META",
+      "entryDate": "2024-02-12",
+      "strategy": "CallCalendarSpread",
+      "maxProfit": 9.5,
+      "daysToHit": 2,
+      "rsi": 45,
+      "priceVsSMA20": 0.5,
+      "rvol": 1.9
+    },
+    {
+      "symbol": "AMZN",
+      "entryDate": "2024-02-20",
+      "strategy": "BullPutSpread",
+      "maxProfit": 8.9,
+      "daysToHit": 1,
+      "rsi": 35,
+      "priceVsSMA20": -2.1,
+      "rvol": 2.5
+    }
+  ]
+}
