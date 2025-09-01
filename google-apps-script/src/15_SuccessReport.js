@@ -160,7 +160,7 @@ function EW_createIndicatorProfilesSheet(ss, topPlays) {
     // Basic info row
     sheet.getRange(row, 1).setValue(index + 1);
     sheet.getRange(row, 2).setValue(play.ticker).setFontWeight('bold');
-    sheet.getRange(row, 3).setValue((play.maxProfit || 0) / 100).setNumberFormat('0.00%');  // Divide by 100 since value is already in percentage
+    sheet.getRange(row, 3).setValue((play.maxProfit || 0).toFixed(2) + '%');  // Already in percentage form
     sheet.getRange(row, 4).setValue(play.strategy);
     sheet.getRange(row, 5).setValue(play.daysToHit || 'N/A');
     sheet.getRange(row, 6).setValue(play.strike);
@@ -813,7 +813,7 @@ function EW_analyzeMultiDayProfitability(trades) {
         strategy: trade.strategy,
         consecutiveDays: maxConsecutive,
         peakDay: peakDay,
-        peakValue: peakValue * 100,  // Convert to percentage but keep as number
+        peakValue: peakValue,  // Already in percentage form
         strike: trade.strike || trade.longStrike
       };
       
@@ -1278,7 +1278,7 @@ function EW_analyzeHoldingPeriod(trades) {
   
   analysis.optimalExitTiming = {
     bestDay: maxProfitDay,
-    profitableRate: maxProfitRate + '%',
+    profitableRate: maxProfitRate,  // Keep as number
     recommendation: maxProfitDay ? `Consider exiting positions on ${maxProfitDay} for optimal profit rate` : 'Insufficient data'
   };
   
@@ -1310,7 +1310,7 @@ function EW_analyzeHoldingPeriod(trades) {
   
   // Generate recommendations
   if (maxProfitDay) {
-    analysis.recommendations.push(`Optimal exit timing appears to be ${maxProfitDay} with ${maxProfitRate}% profitable rate`);
+    analysis.recommendations.push(`Optimal exit timing appears to be ${maxProfitDay} with ${maxProfitRate.toFixed(2)}% profitable rate`);
   }
   
   if (analysis.averageDecayRate && analysis.averageDecayRate.avgDecayPerDay) {
@@ -1480,7 +1480,7 @@ function EW_analyzeEarningsTiming(trades) {
           strategy: trade.strategy,
           daysToEarnings: daysToEarnings,
           daysToHit: hitDay,
-          maxProfit: Math.max(...preEarningsObservations.map(o => o.favorable)),
+          maxProfit: Math.max(...preEarningsObservations.map(o => o.favorable)),  // Already in percentage
           releaseTime: releaseTime,
           releaseTimeCategory: timeCategory,
           earningsImpactDay: earningsImpactDay
@@ -1499,7 +1499,7 @@ function EW_analyzeEarningsTiming(trades) {
           strategy: trade.strategy,
           daysToEarnings: daysToEarnings,
           daysToHit: hitDay,
-          maxProfit: Math.max(...postEarningsObservations.map(o => o.favorable)),
+          maxProfit: Math.max(...postEarningsObservations.map(o => o.favorable)),  // Already in percentage
           releaseTime: releaseTime,
           releaseTimeCategory: timeCategory,
           earningsImpactDay: earningsImpactDay
@@ -1581,8 +1581,8 @@ function EW_analyzeEarningsTiming(trades) {
       (analysis.preEarningsHits.length / totalEarningsTrades * 100).toFixed(2) + '%' : 'N/A',
     avgDaysToHitPreEarnings: preEarningsAvgDays > 0 ? preEarningsAvgDays.toFixed(1) + ' days' : 'N/A',
     avgDaysToHitPostEarnings: postEarningsAvgDays > 0 ? postEarningsAvgDays.toFixed(1) + ' days' : 'N/A',
-    avgProfitPreEarnings: avgProfitPreEarnings * 100,  // Keep as number
-    avgProfitPostEarnings: avgProfitPostEarnings * 100,  // Keep as number
+    avgProfitPreEarnings: avgProfitPreEarnings,  // Already in percentage
+    avgProfitPostEarnings: avgProfitPostEarnings,  // Already in percentage
     optimalEntryWindow: optimalBucket ? `${optimalBucket} days before earnings` : 'Insufficient data',
     recommendation: totalEarningsTrades > 10 ? 
       (preEarningsAvgDays < postEarningsAvgDays && avgProfitPreEarnings > avgProfitPostEarnings ? 
@@ -1803,7 +1803,7 @@ function EW_identifyTopPlays(trades) {
       strike: strikePrice,
       hitPrice: hitPrice,
       strikeAndHit: `${strikePrice} → ${hitPrice}`, // Combined display
-      maxProfit: trade.maxFavorableValue ? trade.maxFavorableValue * 100 : 0,  // Keep as number
+      maxProfit: trade.maxFavorableValue || 0,  // Already in percentage form
       daysToHit: trade.daysToHit !== undefined && trade.daysToHit !== null ? trade.daysToHit : 'N/A',
       profitableDays: trade.profitableDays || 0,
       riskReward: trade.riskReward && !isNaN(trade.riskReward) ? trade.riskReward.toFixed(2) : 'N/A',
@@ -1965,7 +1965,7 @@ function EW_createHoldingPeriodSheet(ss, holdingData) {
   sheet.getRange(2, 1).setValue('Best Day');
   sheet.getRange(2, 2).setValue(holdingData.optimalExitTiming.bestDay);
   sheet.getRange(3, 1).setValue('Profitable Rate');
-  sheet.getRange(3, 2).setValue(holdingData.optimalExitTiming.profitableRate.toFixed(1) + '%');
+  sheet.getRange(3, 2).setValue(holdingData.optimalExitTiming.profitableRate.toFixed(2) + '%');
   sheet.getRange(4, 1).setValue('Recommendation');
   sheet.getRange(4, 2).setValue(holdingData.optimalExitTiming.recommendation);
   
@@ -2028,14 +2028,13 @@ function EW_createMultiDaySheet(ss, multiDayData) {
   
   let row = 3;
   multiDayData.sustainedProfitability.forEach(trade => {
-    sheet.getRange(row, 1, 1, 6).setValues([[
-      trade.ticker,
-      trade.strategy,
-      trade.consecutiveDays,
-      `Day ${trade.peakDay}`,
-      trade.peakValue.toFixed(2) + '%',
-      trade.strike
-    ]]);
+    // Set values individually to ensure proper formatting
+    sheet.getRange(row, 1).setValue(trade.ticker);
+    sheet.getRange(row, 2).setValue(trade.strategy);
+    sheet.getRange(row, 3).setValue(trade.consecutiveDays).setNumberFormat('0');  // Whole number
+    sheet.getRange(row, 4).setValue(`Day ${trade.peakDay}`);
+    sheet.getRange(row, 5).setValue(trade.peakValue.toFixed(2) + '%');  // Already percentage, just add %
+    sheet.getRange(row, 6).setValue(trade.strike);
     row++;
   });
   
@@ -2267,7 +2266,7 @@ function EW_createTopPlaysSheet(ss, topPlaysData) {
       play.entryDate,
       play.strike,
       play.hitPrice,
-      play.maxProfit,
+      (play.maxProfit || 0).toFixed(2) + '%',
       play.daysToHit !== undefined && play.daysToHit !== null ? play.daysToHit : 'N/A',
       play.riskReward,
       play.profitableDays
@@ -2287,7 +2286,7 @@ function EW_createTopPlaysSheet(ss, topPlaysData) {
   topPlaysData.slice(0, 5).forEach(play => {
     sheet.getRange(row, 1, 1, 4).setValues([[
       play.ticker,
-      play.maxProfit,
+      (play.maxProfit || 0).toFixed(2) + '%',
       play.indicatorProfile,
       play.multiDayProfile
     ]]);
@@ -2479,10 +2478,13 @@ function EW_createReportSheet(ss, insights, allTrades) {
     currentRow++;
     
     insights.multiDayProfitability.sustainedProfitability.slice(0, 10).forEach(trade => {
-      reportSheet.getRange(currentRow, 1, 1, 6).setValues([[
-        trade.ticker, trade.strategy, trade.consecutiveDays,
-        `Day ${trade.peakDay}`, trade.peakValue.toFixed(2) + '%', trade.strike
-      ]]);
+      // Set values individually to avoid formatting issues
+      reportSheet.getRange(currentRow, 1).setValue(trade.ticker);
+      reportSheet.getRange(currentRow, 2).setValue(trade.strategy);
+      reportSheet.getRange(currentRow, 3).setValue(trade.consecutiveDays).setNumberFormat('0');  // Ensure whole number
+      reportSheet.getRange(currentRow, 4).setValue(`Day ${trade.peakDay}`);
+      reportSheet.getRange(currentRow, 5).setValue(trade.peakValue.toFixed(2) + '%');  // Already percentage, just add %
+      reportSheet.getRange(currentRow, 6).setValue(trade.strike);
       currentRow++;
     });
   }
@@ -2560,8 +2562,11 @@ function EW_createReportSheet(ss, insights, allTrades) {
   
   // Optimal exit timing
   if (insights.holdingPeriod.optimalExitTiming) {
+    const profitRate = typeof insights.holdingPeriod.optimalExitTiming.profitableRate === 'number' 
+      ? insights.holdingPeriod.optimalExitTiming.profitableRate.toFixed(2) + '%'
+      : insights.holdingPeriod.optimalExitTiming.profitableRate;
     reportSheet.getRange(currentRow, 1).setValue('Optimal Exit: ' + insights.holdingPeriod.optimalExitTiming.bestDay + 
-      ' (' + insights.holdingPeriod.optimalExitTiming.profitableRate + ')').setFontWeight('bold');
+      ' (' + profitRate + ')').setFontWeight('bold');
     currentRow++;
   }
   
@@ -2575,25 +2580,25 @@ function EW_createReportSheet(ss, insights, allTrades) {
   
   Object.entries(insights.holdingPeriod.byDay).forEach(([day, stats]) => {
     if (stats.totalObservations > 0) {
-      // Format individual cells to prevent percentage formatting issues
+      // Format individual cells with proper number formats
       reportSheet.getRange(currentRow, 1).setValue(day);
       reportSheet.getRange(currentRow, 2).setValue(stats.totalObservations).setNumberFormat('#,##0');
-      reportSheet.getRange(currentRow, 3).setValue(stats.hitRate);
-      reportSheet.getRange(currentRow, 4).setValue(stats.profitableRate);
-      reportSheet.getRange(currentRow, 5).setValue(stats.avgProfit || 'N/A');
-      reportSheet.getRange(currentRow, 6).setValue(stats.avgLoss || 'N/A');
-      reportSheet.getRange(currentRow, 7).setValue(stats.profitFactor || 'N/A');
+      reportSheet.getRange(currentRow, 3).setValue(stats.hitRate / 100).setNumberFormat('0.00%');  // Convert back to decimal for percentage format
+      reportSheet.getRange(currentRow, 4).setValue(stats.profitableRate / 100).setNumberFormat('0.00%');  // Convert back to decimal
+      reportSheet.getRange(currentRow, 5).setValue((stats.avgProfit || 0) / 100).setNumberFormat('0.00%');  // Convert back to decimal
+      reportSheet.getRange(currentRow, 6).setValue((stats.avgLoss || 0) / 100).setNumberFormat('0.00%');  // Convert back to decimal
+      reportSheet.getRange(currentRow, 7).setValue(stats.profitFactor || 0).setNumberFormat('0.00');
       currentRow++;
     }
   });
   
   // Decay rate analysis
-  if (insights.holdingPeriod.averageDecayRate) {
+  if (insights.holdingPeriod.averageDecayRate && insights.holdingPeriod.averageDecayRate.peakDay) {
     currentRow++;
     reportSheet.getRange(currentRow, 1).setValue('Profit Decay Analysis:').setFontWeight('bold');
     currentRow++;
     reportSheet.getRange(currentRow, 1).setValue('Peak Day: ' + insights.holdingPeriod.averageDecayRate.peakDay);
-    reportSheet.getRange(currentRow, 2).setValue('Avg Decay/Day: ' + insights.holdingPeriod.averageDecayRate.avgDecayPerDay);
+    reportSheet.getRange(currentRow, 2).setValue('Avg Decay/Day: ' + (insights.holdingPeriod.averageDecayRate.avgDecayPerDay || 0).toFixed(2) + '%');
     currentRow++;
     reportSheet.getRange(currentRow, 1).setValue(insights.holdingPeriod.averageDecayRate.recommendation).setFontStyle('italic');
     currentRow++;
@@ -2651,35 +2656,8 @@ function EW_createReportSheet(ss, insights, allTrades) {
     });
   }
   
-  currentRow += 2;
-  
-  // Indicator Effectiveness Section
-  reportSheet.getRange(currentRow, 1).setValue('INDICATOR EFFECTIVENESS ANALYSIS').setFontSize(14).setFontWeight('bold');
-  currentRow++;
-  
-  const significantIndicators = Object.entries(insights.indicatorEffectiveness)
-    .filter(([name, data]) => data.significance === 'HIGH')
-    .sort((a, b) => Math.abs(b[1].correlationWithProfit) - Math.abs(a[1].correlationWithProfit));
-  
-  if (significantIndicators.length > 0) {
-    reportSheet.getRange(currentRow, 1).setValue('High-Impact Indicators').setFontWeight('bold');
-    currentRow++;
-    
-    significantIndicators.forEach(([name, data]) => {
-      reportSheet.getRange(currentRow, 1).setValue(name.toUpperCase());
-      reportSheet.getRange(currentRow, 2).setValue(`Correlation: ${data.correlationWithProfit}`);
-      reportSheet.getRange(currentRow, 3).setValue(`Significance: ${data.significance}`);
-      currentRow++;
-      
-      if (data.profitableRanges.bullish.count > 0) {
-        reportSheet.getRange(currentRow, 2).setValue(
-          `Bullish Range: ${data.profitableRanges.bullish.min?.toFixed(2)}-${data.profitableRanges.bullish.max?.toFixed(2)} ` +
-          `(${data.profitableRanges.bullish.count} trades, avg ${(data.profitableRanges.bullish.avgProfit || 0).toFixed(2)}% profit)`
-        );
-        currentRow++;
-      }
-    });
-  }
+  // INDICATOR EFFECTIVENESS ANALYSIS removed - now shown in SR_Indicators sheet
+  // The SR_Indicators sheet contains comprehensive indicator analysis
   currentRow += 2;
   
   // Earnings Timing Analysis
@@ -2700,8 +2678,8 @@ function EW_createReportSheet(ss, insights, allTrades) {
       // These are percentages
       cell.setValue(value);
     } else if (key.includes('avgProfit')) {
-      // Format profit as percentage
-      const numValue = typeof value === 'number' ? (value * 100).toFixed(2) + '%' : value;
+      // Format profit as percentage (already in percentage form)
+      const numValue = typeof value === 'number' ? value.toFixed(2) + '%' : value;
       cell.setValue(numValue);
     } else {
       cell.setValue(value);
@@ -2732,7 +2710,7 @@ function EW_createReportSheet(ss, insights, allTrades) {
       play.strategy || '', 
       play.entryDate || 'N/A', 
       play.strikeAndHit || 'N/A',
-      play.maxProfit || 'N/A', 
+      play.maxProfit ? play.maxProfit.toFixed(2) + '%' : 'N/A', 
       play.daysToHit !== undefined && play.daysToHit !== null ? play.daysToHit : 'N/A', 
       play.riskReward || 'N/A'
     ]]);
@@ -2878,7 +2856,7 @@ function EW_showTopWinningPlays() {
       play.strategy || '', 
       play.entryDate || 'N/A', 
       play.strikeAndHit || 'N/A',
-      play.maxProfit || 'N/A', 
+      play.maxProfit ? play.maxProfit.toFixed(2) + '%' : 'N/A', 
       play.daysToHit !== undefined && play.daysToHit !== null ? play.daysToHit : 'N/A', 
       play.profitableDays !== undefined && play.profitableDays !== null ? play.profitableDays : 0, 
       play.riskReward || 'N/A',
@@ -2891,7 +2869,7 @@ function EW_showTopWinningPlays() {
   
   let indicatorRow = 26;
   topPlays.slice(0, 5).forEach(play => {
-    sheet.getRange(indicatorRow, 1).setValue(`${play.ticker} (${play.maxProfit}):`);
+    sheet.getRange(indicatorRow, 1).setValue(`${play.ticker} (${play.maxProfit.toFixed(2)}%):`);
     let indicatorStr = Object.entries(play.indicators)
       .map(([key, value]) => `${key}: ${value}`)
       .join(', ');
