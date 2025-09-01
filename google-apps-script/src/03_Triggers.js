@@ -95,8 +95,26 @@ function EW_setupTriggersIfMissing() {
       console.log(`Skipped existing trigger: ${activeTrackingFunction}`);
     }
 
-      // Empty row removal is now handled by EW_cleanupEmptyRows() before each data fetch
-      // No separate trigger needed
+    // Check and setup daily formatting trigger (8 PM)
+    const formattingFunction = 'EW_applyDailyFormatting';
+    if (!EW_triggerExists(formattingFunction)) {
+      ScriptApp.newTrigger(formattingFunction)
+        .timeBased()
+        .everyDays(1)
+        .atHour(20) // 8 PM
+        .inTimezone('America/New_York')
+        .create();
+      setupCount++;
+      messages.push(`✅ Created: Daily formatting (8 PM ET)`);
+      console.log(`Created trigger: ${formattingFunction}`);
+    } else {
+      skippedCount++;
+      messages.push(`⏭️ Exists: Daily formatting (8 PM ET)`);
+      console.log(`Skipped existing trigger: ${formattingFunction}`);
+    }
+    
+    // Empty row removal is now handled by EW_cleanupEmptyRows() before each data fetch
+    // No separate trigger needed
     
     // Ensure success report exists
     EW_ensureSuccessReportExists();
