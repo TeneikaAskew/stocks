@@ -104,6 +104,9 @@ function EW_generateSuccessReport() {
   insights.allTrades = allTrades; // Add trades to insights for data quality analysis
   EW_createIndividualSheets(ss, insights);
   
+  // Create indicator profiles sheet
+  EW_createIndicatorProfilesSheet(ss, insights.topPlays);
+  
   // Store data for web app access
   if (typeof storeSuccessReportData === 'function') {
     storeSuccessReportData(insights);
@@ -128,6 +131,174 @@ function EW_updateSuccessReport() {
   EW_generateSuccessReport();
 }
 
+/**
+ * Create a separate sheet for indicator profiles
+ * This prevents the main report from becoming too wide
+ */
+function EW_createIndicatorProfilesSheet(ss, topPlays) {
+  const sheetName = 'Indicator_Profiles';
+  let sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+  } else {
+    sheet.clear();
+  }
+  
+  // Title
+  sheet.getRange(1, 1).setValue('TOP WINNING PLAYS - INDICATOR PROFILES').setFontSize(16).setFontWeight('bold');
+  sheet.getRange(1, 6).setValue(new Date().toLocaleString());
+  
+  let row = 3;
+  
+  // Headers for the detailed view
+  const headers = ['Rank', 'Ticker', 'Max Profit %', 'Strategy', 'Days to Hit', 'Strike'];
+  sheet.getRange(row, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#f0f0f0');
+  row++;
+  
+  topPlays.slice(0, 20).forEach((play, index) => {
+    // Basic info row
+    sheet.getRange(row, 1).setValue(index + 1);
+    sheet.getRange(row, 2).setValue(play.ticker).setFontWeight('bold');
+    sheet.getRange(row, 3).setValue(play.maxProfit || 0).setNumberFormat('0.00%');
+    sheet.getRange(row, 4).setValue(play.strategy);
+    sheet.getRange(row, 5).setValue(play.daysToHit || 'N/A');
+    sheet.getRange(row, 6).setValue(play.strike);
+    
+    // Apply alternating row colors
+    if (index % 2 === 0) {
+      sheet.getRange(row, 1, 1, 6).setBackground('#f9f9f9');
+    }
+    row++;
+    
+    // Indicator movement (Entry → Hit)
+    sheet.getRange(row, 2).setValue('Entry → Hit:').setFontStyle('italic');
+    sheet.getRange(row, 3, 1, 4).merge().setValue(play.indicatorProfile || 'N/A');
+    row++;
+    
+    // Multi-day profit profile
+    sheet.getRange(row, 2).setValue('Profit Profile:').setFontStyle('italic');
+    sheet.getRange(row, 3, 1, 4).merge().setValue(play.multiDayProfile || 'N/A');
+    row++;
+    
+    // Risk/Reward info if available
+    if (play.riskReward) {
+      sheet.getRange(row, 2).setValue('Risk/Reward:').setFontStyle('italic');
+      sheet.getRange(row, 3).setValue(play.riskReward).setNumberFormat('0.00');
+      row++;
+    }
+    
+    // Add spacing between entries
+    row++;
+  });
+  
+  // Add summary section at the bottom
+  row += 2;
+  sheet.getRange(row, 1).setValue('KEY INSIGHTS').setFontSize(14).setFontWeight('bold');
+  row += 2;
+  
+  // Analyze common patterns
+  const patterns = analyzeIndicatorPatterns(topPlays.slice(0, 20));
+  
+  sheet.getRange(row, 1).setValue('Common Winning Patterns:').setFontWeight('bold');
+  row++;
+  
+  if (patterns.rsiRange) {
+    sheet.getRange(row, 2).setValue(`• RSI Range: ${patterns.rsiRange}`);
+    row++;
+  }
+  if (patterns.sma20Range) {
+    sheet.getRange(row, 2).setValue(`• Price vs SMA20: ${patterns.sma20Range}`);
+    row++;
+  }
+  if (patterns.vwapRange) {
+    sheet.getRange(row, 2).setValue(`• Price vs VWAP: ${patterns.vwapRange}`);
+    row++;
+  }
+  if (patterns.bestDayToExit) {
+    sheet.getRange(row, 2).setValue(`• Best Day to Exit: ${patterns.bestDayToExit}`);
+    row++;
+  }
+  
+  // Auto-resize columns
+  sheet.autoResizeColumns(1, 6);
+  
+  // Set column widths for better readability
+  sheet.setColumnWidth(1, 50);  // Rank
+  sheet.setColumnWidth(2, 100); // Ticker
+  sheet.setColumnWidth(3, 400); // Expanded for merged cells
+  
+  console.log(`Created Indicator Profiles sheet with ${topPlays.slice(0, 20).length} trades`);
+}
+
+/**
+ * Analyze common patterns in winning trades
+ */
+function analyzeIndicatorPatterns(trades) {
+  const patterns = {};
+  const rsiValues = [];
+  const sma20Values = [];
+  const vwapValues = [];
+  const profitDays = [];
+  
+  trades.forEach(trade => {
+    // Extract RSI values from indicator profile
+    if (trade.indicatorProfile && trade.indicatorProfile.includes('RSI:')) {
+      const rsiMatch = trade.indicatorProfile.match(/RSI:\s*[^→]*→([\d.]+)/);
+      if (rsiMatch) rsiValues.push(parseFloat(rsiMatch[1]));
+    }
+    
+    // Extract SMA20 values
+    if (trade.indicatorProfile && trade.indicatorProfile.includes('PRICEVSSMA20:')) {
+      const smaMatch = trade.indicatorProfile.match(/PRICEVSSMA20:\s*[^→]*→([\-\d.]+)/);
+      if (smaMatch) sma20Values.push(parseFloat(smaMatch[1]));
+    }
+    
+    // Extract VWAP values
+    if (trade.indicatorProfile && trade.indicatorProfile.includes('PRICEVSVWAP:')) {
+      const vwapMatch = trade.indicatorProfile.match(/PRICEVSVWAP:\s*[^→]*→([\-\d.]+)/);
+      if (vwapMatch) vwapValues.push(parseFloat(vwapMatch[1]));
+    }
+    
+    // Find best profit day
+    if (trade.multiDayProfile) {
+      const dayMatches = trade.multiDayProfile.matchAll(/D(\d):[\-\d.]+%/g);
+      for (const match of dayMatches) {
+        profitDays.push(parseInt(match[1]));
+      }
+    }
+  });
+  
+  // Calculate ranges
+  if (rsiValues.length > 0) {
+    const minRsi = Math.min(...rsiValues);
+    const maxRsi = Math.max(...rsiValues);
+    patterns.rsiRange = `${minRsi.toFixed(1)} - ${maxRsi.toFixed(1)}`;
+  }
+  
+  if (sma20Values.length > 0) {
+    const minSma = Math.min(...sma20Values);
+    const maxSma = Math.max(...sma20Values);
+    patterns.sma20Range = `${minSma.toFixed(2)}% - ${maxSma.toFixed(2)}%`;
+  }
+  
+  if (vwapValues.length > 0) {
+    const minVwap = Math.min(...vwapValues);
+    const maxVwap = Math.max(...vwapValues);
+    patterns.vwapRange = `${minVwap.toFixed(2)}% - ${maxVwap.toFixed(2)}%`;
+  }
+  
+  if (profitDays.length > 0) {
+    const dayCount = {};
+    profitDays.forEach(day => {
+      dayCount[day] = (dayCount[day] || 0) + 1;
+    });
+    const bestDay = Object.entries(dayCount).sort((a, b) => b[1] - a[1])[0];
+    patterns.bestDayToExit = `Day ${bestDay[0]} (${bestDay[1]} occurrences)`;
+  }
+  
+  return patterns;
+}
 
 /**
  * Extract and parse all trade data from a sheet
@@ -2320,9 +2491,12 @@ function EW_createReportSheet(ss, insights, allTrades) {
   currentRow++;
   
   Object.entries(insights.multiDayProfitability.profitabilityByDay).forEach(([day, stats]) => {
-    reportSheet.getRange(currentRow, 1, 1, 5).setValues([[
-      day, stats.totalTrades, stats.profitableCount, stats.profitableRate, stats.avgProfit
-    ]]);
+    // Format individual cells to prevent percentage formatting issues
+    reportSheet.getRange(currentRow, 1).setValue(day);
+    reportSheet.getRange(currentRow, 2).setValue(stats.totalTrades).setNumberFormat('#,##0');
+    reportSheet.getRange(currentRow, 3).setValue(stats.profitableCount).setNumberFormat('#,##0');
+    reportSheet.getRange(currentRow, 4).setValue(stats.profitableRate);
+    reportSheet.getRange(currentRow, 5).setValue(stats.avgProfit);
     currentRow++;
   });
   currentRow += 2;
@@ -2345,9 +2519,12 @@ function EW_createReportSheet(ss, insights, allTrades) {
         const dayKey = `Day${day}`;
         if (data.byDay[dayKey]) {
           const stats = data.byDay[dayKey];
-          reportSheet.getRange(currentRow, 1, 1, 5).setValues([[
-            dayKey, stats.totalTrades, stats.profitableCount, stats.profitableRate, stats.avgProfit
-          ]]);
+          // Format individual cells to prevent percentage formatting issues
+          reportSheet.getRange(currentRow, 1).setValue(dayKey);
+          reportSheet.getRange(currentRow, 2).setValue(stats.totalTrades).setNumberFormat('#,##0');
+          reportSheet.getRange(currentRow, 3).setValue(stats.profitableCount).setNumberFormat('#,##0');
+          reportSheet.getRange(currentRow, 4).setValue(stats.profitableRate);
+          reportSheet.getRange(currentRow, 5).setValue(stats.avgProfit);
           currentRow++;
         }
       }
@@ -2392,15 +2569,14 @@ function EW_createReportSheet(ss, insights, allTrades) {
   
   Object.entries(insights.holdingPeriod.byDay).forEach(([day, stats]) => {
     if (stats.totalObservations > 0) {
-      reportSheet.getRange(currentRow, 1, 1, 7).setValues([[
-        day,
-        stats.totalObservations,
-        stats.hitRate,
-        stats.profitableRate,
-        stats.avgProfit || 'N/A',
-        stats.avgLoss || 'N/A',
-        stats.profitFactor || 'N/A'
-      ]]);
+      // Format individual cells to prevent percentage formatting issues
+      reportSheet.getRange(currentRow, 1).setValue(day);
+      reportSheet.getRange(currentRow, 2).setValue(stats.totalObservations).setNumberFormat('#,##0');
+      reportSheet.getRange(currentRow, 3).setValue(stats.hitRate);
+      reportSheet.getRange(currentRow, 4).setValue(stats.profitableRate);
+      reportSheet.getRange(currentRow, 5).setValue(stats.avgProfit || 'N/A');
+      reportSheet.getRange(currentRow, 6).setValue(stats.avgLoss || 'N/A');
+      reportSheet.getRange(currentRow, 7).setValue(stats.profitFactor || 'N/A');
       currentRow++;
     }
   });
@@ -2505,8 +2681,27 @@ function EW_createReportSheet(ss, insights, allTrades) {
   currentRow++;
   
   Object.entries(insights.earningsTiming.earningsImpact).forEach(([key, value]) => {
-    reportSheet.getRange(currentRow, 1).setValue(key.replace(/([A-Z])/g, ' $1').trim());
-    reportSheet.getRange(currentRow, 2).setValue(value);
+    const label = key.replace(/([A-Z])/g, ' $1').trim();
+    const cell = reportSheet.getRange(currentRow, 2);
+    
+    // Format based on the field type
+    if (key === 'totalTradesAnalyzed' || key === 'tradesWithEarningsData' || 
+        key === 'tradesWithoutEarningsData' || key === 'preEarningsHits' || 
+        key === 'postEarningsHits') {
+      // These should be numbers, not percentages
+      cell.setValue(value).setNumberFormat('#,##0');
+    } else if (key.includes('Rate') || key === 'dataCompleteness') {
+      // These are percentages
+      cell.setValue(value);
+    } else if (key.includes('avgProfit')) {
+      // Format profit as percentage
+      const numValue = typeof value === 'number' ? (value * 100).toFixed(2) + '%' : value;
+      cell.setValue(numValue);
+    } else {
+      cell.setValue(value);
+    }
+    
+    reportSheet.getRange(currentRow, 1).setValue(label);
     currentRow++;
   });
   currentRow += 2;
@@ -2549,27 +2744,11 @@ function EW_createReportSheet(ss, insights, allTrades) {
     currentRow++;
   });
   
-  // Indicator profiles for top 5
+  // Note about indicator profiles being on separate sheet
   currentRow++;
-  reportSheet.getRange(currentRow, 1).setValue('INDICATOR PROFILES (TOP 5)').setFontWeight('bold');
-  currentRow++;
-  
-  insights.topPlays.slice(0, 5).forEach(play => {
-    reportSheet.getRange(currentRow, 1).setValue(`${play.ticker} (${play.maxProfit}):`).setFontWeight('bold');
-    currentRow++;
-    
-    // Show key indicator movement
-    reportSheet.getRange(currentRow, 1).setValue('Entry→Hit:');
-    reportSheet.getRange(currentRow, 2, 1, 6).setValue(play.indicatorProfile);
-    currentRow++;
-    
-    // Show multi-day profit profile
-    reportSheet.getRange(currentRow, 1).setValue('Profit Profile:');
-    reportSheet.getRange(currentRow, 2, 1, 6).setValue(play.multiDayProfile);
-    currentRow += 2;
-  });
-  
-  currentRow += 1;
+  reportSheet.getRange(currentRow, 1).setValue('INDICATOR PROFILES').setFontWeight('bold');
+  reportSheet.getRange(currentRow, 2).setValue('See "Indicator_Profiles" sheet for detailed analysis').setFontStyle('italic');
+  currentRow += 2;
   
   // ML Recommendations
   reportSheet.getRange(currentRow, 1).setValue('MACHINE LEARNING RECOMMENDATIONS').setFontSize(14).setFontWeight('bold');

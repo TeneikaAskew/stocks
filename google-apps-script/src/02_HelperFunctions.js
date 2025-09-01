@@ -76,19 +76,94 @@ function EW_toEDT(date) {
  * @param {string} msg - Log message
  * @param {boolean} alsoSheet - Also write to Log sheet
  */
-function EW_trace(scope, msg, alsoSheet = false) {
-  const line = `[${new Date().toISOString()}] [${scope}] ${msg}`;
-  try { console.log(line); } catch (_) {}
-  // try { Logger.log(line); } catch (_) {}
-  if (alsoSheet) {
+/**
+ * Enhanced standardized logging function
+ * @param {string} scope - Log category/scope (e.g., 'API', 'ERROR', 'INFO', 'BACKFILL')
+ * @param {string} msg - Log message
+ * @param {boolean} alsoSheet - Whether to log to sheet (default: false)
+ * @param {string} level - Log level: 'ERROR', 'WARN', 'INFO', 'DEBUG' (default: 'INFO')
+ */
+function EW_trace(scope, msg, alsoSheet = false, level = 'INFO') {
+  const timestamp = new Date().toISOString();
+  const line = `[${timestamp}] [${level}] [${scope}] ${msg}`;
+  
+  // Always log to console with appropriate method
+  try {
+    switch(level) {
+      case 'ERROR':
+        console.error(line);
+        break;
+      case 'WARN':
+        console.warn(line);
+        break;
+      case 'DEBUG':
+        // Only log debug messages if debug mode is enabled
+        if (EW.DEBUG_MODE || false) {
+          console.log(line);
+        }
+        break;
+      default:
+        console.log(line);
+    }
+  } catch (_) {}
+  
+  // Also log to Google's Logger for Stackdriver
+  try {
+    Logger.log(line);
+  } catch (_) {}
+  
+  // Log to sheet if requested and in spreadsheet environment
+  if (alsoSheet && EW_isSpreadsheetEnvironment()) {
     try {
       const ss = SpreadsheetApp.getActive();
       let log = ss.getSheetByName('Log');
       if (!log) log = ss.insertSheet('Log');
-      log.appendRow([new Date(), scope, msg]);
+      
+      // Add level column for better filtering
+      log.appendRow([new Date(), level, scope, msg]);
+      
+      // Keep log sheet size manageable (max 5000 rows)
+      if (log.getLastRow() > 5000) {
+        log.deleteRows(2, 1000); // Delete oldest 1000 rows (keep header)
+      }
     } catch (e) {
-      console.error('Failed to write to Log sheet:', e);
+      // Use console.error directly to avoid recursion
+      console.error('Failed to write to Log sheet:', e.message);
     }
+  }
+  
+  // For errors, also track in properties for debugging
+  if (level === 'ERROR') {
+    try {
+      EW_trackError(scope, msg);
+    } catch (_) {}
+  }
+}
+
+/**
+ * Track errors in ScriptProperties for debugging
+ * @param {string} scope - Error scope
+ * @param {string} msg - Error message
+ */
+function EW_trackError(scope, msg) {
+  try {
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const errors = JSON.parse(scriptProperties.getProperty('ERROR_LOG') || '[]');
+    
+    errors.push({
+      timestamp: new Date().toISOString(),
+      scope: scope,
+      message: msg
+    });
+    
+    // Keep only last 100 errors
+    if (errors.length > 100) {
+      errors.splice(0, errors.length - 100);
+    }
+    
+    scriptProperties.setProperty('ERROR_LOG', JSON.stringify(errors));
+  } catch (e) {
+    // Silent fail - don't want error tracking to cause errors
   }
 }
 

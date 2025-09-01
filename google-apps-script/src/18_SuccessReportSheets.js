@@ -471,15 +471,15 @@ function EW_createEarningsSheet(ss, earnings) {
   
   const data = [
     ['EARNINGS TIMING ANALYSIS'],
-    ['Total Trades with Earnings Data', earnings.totalWithEarnings || 0],
-    ['Pre-Earnings Trades', earnings.preEarnings?.count || 0],
-    ['Post-Earnings Trades', earnings.postEarnings?.count || 0],
+    ['Total Trades with Earnings Data', earnings.earningsImpact?.tradesWithEarningsData || earnings.totalWithEarnings || 0],
+    ['Pre-Earnings Trades', earnings.earningsImpact?.preEarningsHits || earnings.preEarnings?.count || 0],
+    ['Post-Earnings Trades', earnings.earningsImpact?.postEarningsHits || earnings.postEarnings?.count || 0],
     [''],
-    ['Pre-Earnings Hit Rate', `${((earnings.preEarnings?.hitRate || 0) * 100).toFixed(1)}%`],
-    ['Post-Earnings Hit Rate', `${((earnings.postEarnings?.hitRate || 0) * 100).toFixed(1)}%`],
+    ['Pre-Earnings Hit Rate', earnings.earningsImpact?.preEarningsHitRate || `${((earnings.preEarnings?.hitRate || 0) * 100).toFixed(1)}%`],
+    ['Post-Earnings Hit Rate', earnings.earningsImpact?.postEarningsHitRate || `${((earnings.postEarnings?.hitRate || 0) * 100).toFixed(1)}%`],
     [''],
-    ['Optimal Days Before Earnings', earnings.optimalDays || 3],
-    ['Recommendation', earnings.recommendation || 'Enter 2-4 days before earnings for best results'],
+    ['Optimal Days Before Earnings', earnings.earningsImpact?.optimalEntryWindow || earnings.optimalDays || '3-5 days'],
+    ['Recommendation', earnings.earningsImpact?.recommendation || earnings.recommendation || 'Enter 2-4 days before earnings for best results'],
     [''],
     ['PERFORMANCE BY DAYS TO EARNINGS'],
     ['Window', 'Trades', 'Hits', 'Hit Rate', 'Avg Profit', 'Avg Days to Hit']
@@ -510,11 +510,11 @@ function EW_createEarningsSheet(ss, earnings) {
     Object.entries(earnings.byReleaseTime).forEach(([time, stats]) => {
       data.push([
         time,
-        stats.count,
-        stats.hits,
-        `${(stats.hitRate * 100).toFixed(1)}%`,
-        `${(Number(stats.avgProfit) || 0).toFixed(2)}%`,
-        (Number(stats.avgDaysToHit) || 0).toFixed(1)
+        stats.total || stats.count || 0,  // Check both field names
+        stats.hits || 0,
+        stats.hitRate ? `${stats.hitRate.toFixed(1)}%` : '0%',
+        stats.avgProfit ? `${(stats.avgProfit * 100).toFixed(2)}%` : '0%',
+        stats.avgDaysToHit ? stats.avgDaysToHit.toFixed(1) : '0'
       ]);
     });
   }
@@ -562,11 +562,11 @@ function EW_createStrategiesSheet(ss, strategies) {
     sortedStrategies.forEach(([strategy, stats]) => {
       data.push([
         strategy,
-        stats.count || 0,
-        stats.hits || 0,
+        stats.totalTrades || stats.count || 0,  // Check both field names
+        stats.hitTrades || stats.hits || 0,      // Check both field names
         `${((stats.hitRate || 0) * 100).toFixed(1)}%`,
-        `${(Number(stats.avgProfit) || 0).toFixed(2)}%`,
-        `${(Number(stats.avgLoss) || 0).toFixed(2)}%`,
+        `${(Number(stats.avgProfit) || 0) * 100).toFixed(2)}%`,  // Convert to percentage
+        `${(Number(stats.avgLoss) || 0) * 100).toFixed(2)}%`,    // Convert to percentage
         (Number(stats.profitFactor) || 0).toFixed(2),
         (Number(stats.avgDaysToHit) || 0).toFixed(1),
         (Number(stats.totalProfit) || 0).toFixed(2),
