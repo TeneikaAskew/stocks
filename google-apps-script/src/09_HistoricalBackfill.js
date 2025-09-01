@@ -130,24 +130,9 @@ function EW_backfillHistoricalTracking() {
     }
   }
   
-  // Apply formatting to all sheets that were processed
+  // Formatting removed - now handled by separate daily trigger function
+  // Just flush any pending updates
   if (totalBackfilled > 0) {
-    EW_trace('BACKFILL', 'Applying Day Check formatting to all sheets...', true);
-    for (const strategy of strategies) {
-      try {
-        const sheet = ss.getSheetByName(strategy);
-        if (sheet && sheet.getLastRow() > 1) {
-          const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-          const hdrMap = EW_headerMap(headers);
-          if (hdrMap.day0CheckCol || hdrMap.day1CheckCol) {
-            EW_formatDayCheckColumns(sheet, hdrMap, strategy);
-            EW_trace('BACKFILL', `Applied formatting to ${strategy}`);
-          }
-        }
-      } catch (e) {
-        EW_trace('BACKFILL', `Failed to apply formatting to ${strategy}: ${e.message}`);
-      }
-    }
     SpreadsheetApp.flush();
   }
   
@@ -1407,15 +1392,7 @@ function EW_backfillSelectedRows() {
   
   const message = 'Processed ' + processedCount + ' of ' + numRows + ' selected rows';
   
-  // Apply formatting at the end if any rows were processed
-  if (processedCount > 0) {
-    try {
-      EW_formatDayCheckColumns(sheet, hdrMap, sheet.getName());
-      EW_trace('BACKFILL', `Applied Day Check formatting for selected rows`);
-    } catch (e) {
-      EW_trace('BACKFILL', `Failed to apply formatting: ${e.message}`);
-    }
-  }
+  // Formatting removed - now handled by separate daily trigger function
   
   EW_safeAlert('Backfill Complete', message);
 }
