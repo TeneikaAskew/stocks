@@ -67,20 +67,17 @@ function EW_setupTriggersIfMissing() {
     }
     
     // Check and setup active position tracking trigger (5 PM)
-    // Use continuation version if enabled in settings
-    const useContinuation = true; // Set to true to use continuation support
-    const activeTrackingFunction = useContinuation ? 'EW_updateActiveStrikeHitsWithContinuation' : 'EW_updateActiveStrikeHits';
+    // Now uses the main function with built-in continuation support
+    const activeTrackingFunction = 'EW_updateActiveStrikeHits';
     
-    // Remove old trigger if switching between versions
-    if (useContinuation && EW_triggerExists('EW_updateActiveStrikeHits')) {
-      const triggers = ScriptApp.getProjectTriggers();
-      triggers.forEach(trigger => {
-        if (trigger.getHandlerFunction() === 'EW_updateActiveStrikeHits') {
-          ScriptApp.deleteTrigger(trigger);
-          console.log('Removed old non-continuation trigger');
-        }
-      });
-    }
+    // Remove old wrapper function trigger if it exists
+    const triggers = ScriptApp.getProjectTriggers();
+    triggers.forEach(trigger => {
+      if (trigger.getHandlerFunction() === 'EW_updateActiveStrikeHitsWithContinuation') {
+        ScriptApp.deleteTrigger(trigger);
+        console.log('Removed old wrapper function trigger');
+      }
+    });
     
     if (!EW_triggerExists(activeTrackingFunction)) {
       ScriptApp.newTrigger(activeTrackingFunction)
@@ -90,7 +87,7 @@ function EW_setupTriggersIfMissing() {
         .inTimezone('America/New_York')
         .create();
       setupCount++;
-      messages.push(`✅ Created: Active position tracking with ${useContinuation ? 'continuation' : 'standard'} (5 PM ET)`);
+      messages.push(`✅ Created: Active position tracking with continuation (5 PM ET)`);
       console.log(`Created trigger: ${activeTrackingFunction}`);
     } else {
       skippedCount++;
@@ -98,22 +95,8 @@ function EW_setupTriggersIfMissing() {
       console.log(`Skipped existing trigger: ${activeTrackingFunction}`);
     }
 
-      // Check and setup daily empty row removal trigger (6 AM)
-      if (!EW_triggerExists(EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS)) {
-        ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS)
-          .timeBased()
-          .everyDays(1)
-          .atHour(6) // 6 AM
-          .inTimezone('America/New_York')
-          .create();
-        setupCount++;
-        messages.push(`✅ Created: Daily empty row removal (6 AM ET)`);
-        console.log(`Created trigger: ${EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS}`);
-      } else {
-        skippedCount++;
-        messages.push(`⏭️ Exists: Daily empty row removal (6 AM ET)`);
-        console.log(`Skipped existing trigger: ${EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS}`);
-      }
+      // Empty row removal is now handled by EW_cleanupEmptyRows() before each data fetch
+      // No separate trigger needed
     
     // Ensure success report exists
     EW_ensureSuccessReportExists();
@@ -186,14 +169,8 @@ function EW_setupAutoTracking() {
       .atHour(17) // 5 PM
       .inTimezone('America/New_York')
       .create();
-
-      // Create daily empty row removal trigger (6 AM ET)
-      ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS)
-        .timeBased()
-        .everyDays(1)
-        .atHour(6) // 6 AM
-        .inTimezone('America/New_York')
-        .create();
+    
+    // Empty row removal is now handled by EW_cleanupEmptyRows() before each data fetch
     
     EW_safeAlert(
       'Auto Tracking Setup Complete',
@@ -266,8 +243,7 @@ function EW_stopAutoTracking() {
     if (handlerFunction === EW_TRIGGER_FUNCTIONS.AUTO_UPDATE || 
       handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_REPORT ||
       handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_DATA ||
-      handlerFunction === EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING ||
-      handlerFunction === EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS) {
+      handlerFunction === EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING) {
         ScriptApp.deleteTrigger(trigger);
         deletedCount++;
         console.log(`Deleted trigger: ${handlerFunction}`);
@@ -589,8 +565,7 @@ function EW_validateTriggers() {
       EW_TRIGGER_FUNCTIONS.DAILY_DATA, 
       EW_TRIGGER_FUNCTIONS.DAILY_REPORT, 
       EW_TRIGGER_FUNCTIONS.AUTO_UPDATE,
-      EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING,
-      EW_TRIGGER_FUNCTIONS.REMOVE_EMPTY_ROWS
+      EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING
     ];
     let foundTriggers = triggers.map(t => t.getHandlerFunction());
     

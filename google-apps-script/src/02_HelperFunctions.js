@@ -822,8 +822,8 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategy) {
   if (lastRow < 2) return;
   
   const strategyUpper = strategy.toUpperCase();
-  const isBullish = strategyUpper.includes('BULL') || strategyUpper.includes('LONG CALL');
-  const isBearish = strategyUpper.includes('BEAR') || strategyUpper.includes('LONG PUT');
+  const isBullish = strategyUpper.includes('BULL') || strategyUpper.includes('LONG CALL') || strategyUpper.includes('COVERED CALL');
+  const isBearish = strategyUpper.includes('BEAR') || strategyUpper.includes('LONG PUT') || strategyUpper.includes('SHORT CALL');
   
   // Get data range
   const dataRange = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
@@ -866,4 +866,728 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategy) {
       }
     });
   });
+}
+
+/**
+ * Apply Day Check formatting to the current sheet
+ * Can be called from menu to apply colors without running backfill
+ */
+function EW_applyDayCheckFormatting() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const sheetName = sheet.getName();
+  
+  // Get headers
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
+  
+  // Check if we have day check columns
+  if (!hdrMap.day0CheckCol && !hdrMap.day1CheckCol) {
+    EW_safeAlert('No Day Check Columns', 'This sheet does not have Day Check columns to format');
+    return;
+  }
+  
+  // Apply formatting
+  try {
+    EW_formatDayCheckColumns(sheet, hdrMap, sheetName);
+    SpreadsheetApp.flush();
+    EW_safeAlert('Formatting Applied', 'Day Check columns have been formatted with colors');
+  } catch (e) {
+    EW_safeAlert('Formatting Error', 'Failed to apply formatting: ' + e.message);
+  }
+}
+
+/**
+ * Apply Day Check formatting to all strategy sheets
+ */
+function EW_applyDayCheckFormattingToAll() {
+  const ss = SpreadsheetApp.getActive();
+  const strategies = Object.keys(EW.STRATEGY_ENDPOINTS);
+  let formatted = 0;
+  let errors = [];
+  
+  for (const strategy of strategies) {
+    const sheet = ss.getSheetByName(strategy);
+    if (!sheet || sheet.getLastRow() < 2) continue;
+    
+    try {
+      const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      const hdrMap = EW_headerMap(headers);
+      
+      if (hdrMap.day0CheckCol || hdrMap.day1CheckCol) {
+        EW_formatDayCheckColumns(sheet, hdrMap, strategy);
+        formatted++;
+        EW_trace('FORMAT', `Applied Day Check formatting to ${strategy}`);
+      }
+    } catch (e) {
+      errors.push(`${strategy}: ${e.message}`);
+    }
+  }
+  
+  SpreadsheetApp.flush();
+  
+  const message = `Formatted ${formatted} sheets` + 
+    (errors.length > 0 ? `\n\nErrors:\n${errors.join('\n')}` : '');
+  EW_safeAlert('Formatting Complete', message);
+}
+
+// ======= BATCH ROW CHECKING UTILITIES =======
+
+/**
+ * Check which rows need backfill processing in batch
+ * Returns an object with row indices to process and summary statistics
+ * @param {Sheet} sheet - The sheet to check
+ * @param {Object} hdrMap - Header mapping object
+ * @param {Array} data - All row data
+ * @param {string} strategyName - Name of the strategy for logging
+ * @returns {Object} Object with arrays of rows to process and statistics
+ */
+function EW_batchCheckBackfillRows(sheet, hdrMap, data, strategyName) {
+  const rowsToProcess = [];
+  const skippedAlreadyComplete = [];
+  const skippedFutureDate = [];
+  const skippedMissingData = [];
+  const skippedEmptyStrike = [];
+  
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  
+  const isSpread = strategyName.toUpperCase().includes('SPREAD');
+  const strikeCol = isSpread ? hdrMap.longStrikeCol : hdrMap.strikeCol;
+  
+  // Check each row to determine if it needs processing
+  data.forEach((row, rowIndex) => {
+    const ticker = row[hdrMap.tickerCol - 1];
+    const runDateStr = row[hdrMap.runDateCol - 1];
+    const strike = parseFloat(row[strikeCol - 1]) || 0;
+    const expDateStr = hdrMap.expDateCol ? row[hdrMap.expDateCol - 1] : null;
+    
+    // Skip if missing required data
+    if (!ticker || !runDateStr || !strike) {
+      if (!ticker && !runDateStr && !strike) {
+        // Completely empty row, skip silently
+        return;
+      }
+      skippedMissingData.push(rowIndex + 2);
+      return;
+    }
+    
+    // Check if run date is in the future
+    const runDate = new Date(runDateStr);
+    if (runDate > today) {
+      skippedFutureDate.push(rowIndex + 2);
+      return;
+    }
+    
+    // Check which day values are already filled
+    const hasDay0 = hdrMap.day0CheckCol && row[hdrMap.day0CheckCol - 1];
+    const hasDay1 = hdrMap.day1CheckCol && row[hdrMap.day1CheckCol - 1];
+    const hasDay2 = hdrMap.day2CheckCol && row[hdrMap.day2CheckCol - 1];
+    const hasDay3 = hdrMap.day3CheckCol && row[hdrMap.day3CheckCol - 1];
+    const hasDay4 = hdrMap.day4CheckCol && row[hdrMap.day4CheckCol - 1];
+    const hasDay5 = hdrMap.day5CheckCol && row[hdrMap.day5CheckCol - 1];
+    const hasStrikeHit = hdrMap.strikeHitCol && row[hdrMap.strikeHitCol - 1];
+    const hasIndicators = hdrMap.hitRSICol && row[hdrMap.hitRSICol - 1];
+    
+    // Skip if ALL day values AND arrays are already filled
+    if (hasDay0 && hasDay1 && hasDay2 && hasDay3 && hasDay4 && hasDay5 && hasStrikeHit && hasIndicators) {
+      skippedAlreadyComplete.push(rowIndex + 2);
+      return;
+    }
+    
+    // Row needs processing
+    rowsToProcess.push({
+      index: rowIndex,
+      rowNum: rowIndex + 2,
+      ticker: ticker,
+      runDateStr: runDateStr,
+      strike: strike,
+      expDateStr: expDateStr,
+      shortStrike: isSpread && hdrMap.shortStrikeCol ? parseFloat(row[hdrMap.shortStrikeCol - 1]) || null : null,
+      hasPartialData: hasDay0 || hasDay1 || hasDay2 || hasDay3 || hasDay4 || hasDay5 || hasStrikeHit
+    });
+  });
+  
+  // Create summary message
+  const summary = EW_createBatchCheckSummary(
+    strategyName,
+    data.length,
+    rowsToProcess.length,
+    skippedAlreadyComplete.length,
+    skippedFutureDate.length,
+    skippedMissingData.length,
+    skippedAlreadyComplete  // Pass the actual array for row number grouping
+  );
+  
+  return {
+    rowsToProcess: rowsToProcess,
+    skippedAlreadyComplete: skippedAlreadyComplete,
+    skippedFutureDate: skippedFutureDate,
+    skippedMissingData: skippedMissingData,
+    summary: summary,
+    totalRows: data.length,
+    needsProcessing: rowsToProcess.length
+  };
+}
+
+/**
+ * Check which active positions need updating in batch
+ */
+function EW_batchCheckActivePositions(sheet, hdrMap, data, strategyName) {
+  const positionsToCheck = [];
+  const skippedExpired = [];
+  const skippedAlreadyUpdated = [];
+  const skippedMissingData = [];
+  
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = today.toISOString().split('T')[0];
+  const sevenDaysAgo = new Date(today);
+  sevenDaysAgo.setDate(today.getDate() - 7);
+  
+  // Determine if this is a spread strategy
+  const isSpread = strategyName.toUpperCase().includes('SPREAD');
+  
+  data.forEach((row, index) => {
+    const ticker = row[hdrMap.tickerCol - 1];
+    const runDateStr = row[hdrMap.runDateCol - 1];
+    const daysToExp = hdrMap.daysToExpCol ? parseFloat(row[hdrMap.daysToExpCol - 1]) : null;
+    
+    // Skip if missing required data
+    if (!ticker || !runDateStr) {
+      if (!ticker && !runDateStr) {
+        // Completely empty row, skip silently
+        return;
+      }
+      skippedMissingData.push(index + 2);
+      return;
+    }
+    
+    // Skip expired positions (> 7 days old or daysToExp < -7)
+    const runDate = new Date(runDateStr);
+    if (runDate < sevenDaysAgo || (daysToExp !== null && daysToExp < -7)) {
+      skippedExpired.push(index + 2);
+      return;
+    }
+    
+    // For active positions, check the arrays to see if today's data exists
+    const strikeHitArray = hdrMap.strikeHitCol ? row[hdrMap.strikeHitCol - 1] : null;
+    const maxFavArray = hdrMap.maxFavorableCol ? row[hdrMap.maxFavorableCol - 1] : null;
+    
+    // Calculate which day index today represents
+    const daysSinceRun = Math.floor((today - runDate) / (1000 * 60 * 60 * 24));
+    
+    // Check if today's data already exists
+    let alreadyHasToday = false;
+    if (strikeHitArray || maxFavArray) {
+      try {
+        const strikeData = strikeHitArray ? JSON.parse(strikeHitArray) : [];
+        const maxFavData = maxFavArray ? JSON.parse(maxFavArray) : [];
+        
+        // Check if the array has data for today's index
+        if (daysSinceRun >= 0 && daysSinceRun < 6) {
+          alreadyHasToday = (strikeData[daysSinceRun] !== null && strikeData[daysSinceRun] !== undefined) ||
+                           (maxFavData[daysSinceRun] !== null && maxFavData[daysSinceRun] !== undefined);
+        }
+      } catch (e) {
+        // Invalid JSON, needs update
+      }
+    }
+    
+    if (alreadyHasToday) {
+      skippedAlreadyUpdated.push(index + 2);
+      return;
+    }
+    
+    // Get strike prices based on strategy type
+    let strike, shortStrike;
+    if (isSpread) {
+      strike = hdrMap.longStrikeCol ? parseFloat(row[hdrMap.longStrikeCol - 1]) : null;
+      shortStrike = hdrMap.shortStrikeCol ? parseFloat(row[hdrMap.shortStrikeCol - 1]) : null;
+    } else {
+      strike = hdrMap.strikeCol ? parseFloat(row[hdrMap.strikeCol - 1]) : null;
+      shortStrike = null;
+    }
+    
+    // Position needs checking
+    positionsToCheck.push({
+      ticker: ticker,
+      strike: strike,
+      shortStrike: shortStrike,
+      runDate: runDate,
+      runDateStr: runDateStr,
+      daysToExp: daysToExp,
+      rowIndex: index,
+      rowNum: index + 2,
+      dayIndex: daysSinceRun
+    });
+  });
+  
+  // Create summary message
+  const summary = EW_createActiveCheckSummary(
+    strategyName,
+    data.length,
+    positionsToCheck.length,
+    skippedAlreadyUpdated.length,
+    skippedExpired.length,
+    skippedMissingData.length
+  );
+  
+  return {
+    positionsToCheck: positionsToCheck,
+    skippedAlreadyUpdated: skippedAlreadyUpdated,
+    skippedExpired: skippedExpired,
+    skippedMissingData: skippedMissingData,
+    summary: summary,
+    totalRows: data.length,
+    needsChecking: positionsToCheck.length
+  };
+}
+
+/**
+ * Create a consolidated summary message for batch checking
+ */
+function EW_createBatchCheckSummary(strategyName, totalRows, toProcess, alreadyCompleteCount, futureDateCount, missingDataCount, alreadyCompleteRows) {
+  const parts = [`${strategyName}: Checking ${totalRows} rows`];
+  
+  if (toProcess > 0) {
+    parts.push(`${toProcess} need processing`);
+  }
+  
+  const skipped = [];
+  if (alreadyCompleteCount > 0) {
+    // Group consecutive rows for better readability if array provided
+    if (alreadyCompleteRows && alreadyCompleteRows.length > 0) {
+      const ranges = EW_groupConsecutiveNumbers(alreadyCompleteRows);
+      if (ranges.length <= 3) {
+        skipped.push(`${alreadyCompleteCount} already complete (rows ${ranges.join(', ')})`);
+      } else {
+        skipped.push(`${alreadyCompleteCount} already complete`);
+      }
+    } else {
+      skipped.push(`${alreadyCompleteCount} already complete`);
+    }
+  }
+  
+  if (futureDateCount > 0) {
+    skipped.push(`${futureDateCount} future dated`);
+  }
+  
+  if (missingDataCount > 0) {
+    skipped.push(`${missingDataCount} missing data`);
+  }
+  
+  if (skipped.length > 0) {
+    parts.push(`Skipped: ${skipped.join(', ')}`);
+  }
+  
+  return parts.join(' - ');
+}
+
+/**
+ * Create a summary for active position checking
+ */
+function EW_createActiveCheckSummary(strategyName, totalRows, toCheck, alreadyUpdatedCount, expiredCount, missingDataCount) {
+  const parts = [`${strategyName}: Checking ${totalRows} positions`];
+  
+  if (toCheck > 0) {
+    parts.push(`${toCheck} active positions to update`);
+  }
+  
+  const skipped = [];
+  if (alreadyUpdatedCount > 0) {
+    skipped.push(`${alreadyUpdatedCount} already updated today`);
+  }
+  
+  if (expiredCount > 0) {
+    skipped.push(`${expiredCount} expired (>7 days)`);
+  }
+  
+  if (missingDataCount > 0) {
+    skipped.push(`${missingDataCount} missing data`);
+  }
+  
+  if (skipped.length > 0) {
+    parts.push(`Skipped: ${skipped.join(', ')}`);
+  }
+  
+  return parts.join(' - ');
+}
+
+/**
+ * Group consecutive numbers into ranges for display
+ * e.g., [1,2,3,5,6,8] becomes ["1-3", "5-6", "8"]
+ */
+function EW_groupConsecutiveNumbers(numbers) {
+  if (!numbers || numbers.length === 0) return [];
+  
+  // Ensure we have an array of numbers
+  if (!Array.isArray(numbers)) {
+    console.error('EW_groupConsecutiveNumbers: Expected array, got:', typeof numbers, numbers);
+    return [];
+  }
+  
+  // Filter out any non-numeric values and ensure all are numbers
+  const validNumbers = numbers.filter(n => typeof n === 'number' && !isNaN(n));
+  if (validNumbers.length === 0) return [];
+  
+  const sorted = validNumbers.sort((a, b) => a - b);
+  const ranges = [];
+  let start = sorted[0];
+  let end = sorted[0];
+  
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === end + 1) {
+      end = sorted[i];
+    } else {
+      if (start === end) {
+        ranges.push(start.toString());
+      } else if (end === start + 1) {
+        ranges.push(`${start},${end}`);
+      } else {
+        ranges.push(`${start}-${end}`);
+      }
+      start = sorted[i];
+      end = sorted[i];
+    }
+  }
+  
+  // Add the last range
+  if (start === end) {
+    ranges.push(start.toString());
+  } else if (end === start + 1) {
+    ranges.push(`${start},${end}`);
+  } else {
+    ranges.push(`${start}-${end}`);
+  }
+  
+  return ranges;
+}
+
+/**
+ * Log batch processing progress at intervals
+ * Only logs every N rows to reduce log spam
+ */
+function EW_logBatchProgress(current, total, interval = 50, prefix = 'BACKFILL') {
+  if (current % interval === 0 || current === total) {
+    const percent = Math.round((current / total) * 100);
+    EW_trace(prefix, `Progress: ${current}/${total} (${percent}%)`, true);
+  }
+}
+
+// ======= INDICATOR RECALCULATION UTILITIES =======
+
+/**
+ * Recalculate indicators for selected rows using existing Strike_Hit data
+ * This is much faster than re-running the entire backfill
+ */
+function EW_recalculateIndicatorsForSelected() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const range = sheet.getActiveRange();
+  
+  if (!range) {
+    EW_safeAlert('No Selection', 'Please select rows to recalculate indicators');
+    return;
+  }
+  
+  const startRow = range.getRow();
+  const numRows = range.getNumRows();
+  
+  if (startRow === 1) {
+    EW_safeAlert('Invalid Selection', 'Please select data rows, not the header row');
+    return;
+  }
+  
+  EW_trace('INDICATORS', `Recalculating indicators for ${numRows} selected rows`, true);
+  
+  // Get headers
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
+  
+  // Check required columns exist
+  const requiredCols = ['tickerCol', 'runDateCol', 'strikeCol', 'strikeHitCol'];
+  
+  for (const col of requiredCols) {
+    if (!hdrMap[col]) {
+      EW_safeAlert('Missing Column', `Required column ${col} not found`);
+      return;
+    }
+  }
+  
+  let processedCount = 0;
+  let skippedCount = 0;
+  
+  // Process each selected row
+  for (let i = 0; i < numRows; i++) {
+    const rowNum = startRow + i;
+    const rowData = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
+    
+    const ticker = rowData[hdrMap.tickerCol - 1];
+    const runDateStr = rowData[hdrMap.runDateCol - 1];
+    const strike = parseFloat(rowData[hdrMap.strikeCol - 1]);
+    const strikeHitData = rowData[hdrMap.strikeHitCol - 1];
+    
+    if (!ticker || !runDateStr || !strike) {
+      EW_trace('INDICATORS', `Row ${rowNum}: Missing required data, skipping`);
+      skippedCount++;
+      continue;
+    }
+    
+    if (!strikeHitData || strikeHitData === '["NO_DATA"]') {
+      EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): No Strike_Hit data available, skipping`);
+      skippedCount++;
+      continue;
+    }
+    
+    try {
+      // Parse the Strike_Hit array to determine which days had hits
+      let strikeHitArray;
+      try {
+        strikeHitArray = JSON.parse(strikeHitData);
+      } catch (e) {
+        EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): Invalid Strike_Hit JSON, skipping`);
+        skippedCount++;
+        continue;
+      }
+      
+      // Count how many days have data (non-null entries)
+      const daysWithData = strikeHitArray.filter(val => val !== null && val !== 'NO_DATA').length;
+      
+      if (daysWithData === 0) {
+        EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): Strike_Hit array has no valid data`);
+        skippedCount++;
+        continue;
+      }
+      
+      EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): Found ${daysWithData} days with strike hit data`);
+      
+      // Parse dates
+      const runDate = new Date(runDateStr);
+      const marketRunDate = EW_adjustToMarketHours(runDate);
+      
+      // Calculate the date range we need data for
+      const endDate = new Date();
+      endDate.setHours(16, 0, 0, 0);
+      
+      // Fetch the historical data with indicators
+      EW_trace('INDICATORS', `Fetching data for ${ticker} from ${marketRunDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+      
+      const yahooResult = EW_getYahooHistoricalRange(ticker, marketRunDate, endDate, true);
+      
+      if (!yahooResult || !yahooResult.data || yahooResult.data.length === 0) {
+        EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): Unable to fetch Yahoo data`);
+        skippedCount++;
+        continue;
+      }
+      
+      // Analyze the data to get indicators at strike hit points
+      const analysis = EW_analyzeHistoricalData(
+        ticker, 
+        sheet.getName(), 
+        strike, 
+        yahooResult.data, 
+        marketRunDate, 
+        null, // shortStrike
+        yahooResult.raw
+      );
+      
+      if (!analysis || !analysis.dailyIndicators) {
+        EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): No indicators calculated`);
+        skippedCount++;
+        continue;
+      }
+      
+      // Format the indicator arrays
+      const indicatorArrays = EW_formatIndicatorArraysForStorage(analysis.dailyIndicators);
+      
+      // Update only the indicator columns
+      let updated = false;
+      
+      if (hdrMap.hitRSICol && indicatorArrays.rsi) {
+        sheet.getRange(rowNum, hdrMap.hitRSICol).setValue(indicatorArrays.rsi);
+        updated = true;
+      }
+      if (hdrMap.hitSMA20Col && indicatorArrays.sma20) {
+        sheet.getRange(rowNum, hdrMap.hitSMA20Col).setValue(indicatorArrays.sma20);
+        updated = true;
+      }
+      if (hdrMap.hitSMA50Col && indicatorArrays.sma50) {
+        sheet.getRange(rowNum, hdrMap.hitSMA50Col).setValue(indicatorArrays.sma50);
+        updated = true;
+      }
+      if (hdrMap.hitEMA9Col && indicatorArrays.ema9) {
+        sheet.getRange(rowNum, hdrMap.hitEMA9Col).setValue(indicatorArrays.ema9);
+        updated = true;
+      }
+      if (hdrMap.hitEMA21Col && indicatorArrays.ema21) {
+        sheet.getRange(rowNum, hdrMap.hitEMA21Col).setValue(indicatorArrays.ema21);
+        updated = true;
+      }
+      if (hdrMap.hitVWAPCol && indicatorArrays.vwap) {
+        sheet.getRange(rowNum, hdrMap.hitVWAPCol).setValue(indicatorArrays.vwap);
+        updated = true;
+      }
+      if (hdrMap.hitRVOLCol && indicatorArrays.rvol) {
+        sheet.getRange(rowNum, hdrMap.hitRVOLCol).setValue(indicatorArrays.rvol);
+        updated = true;
+      }
+      if (hdrMap.hitATRCol && indicatorArrays.atr) {
+        sheet.getRange(rowNum, hdrMap.hitATRCol).setValue(indicatorArrays.atr);
+        updated = true;
+      }
+      if (hdrMap.hitPriceVsSMA20Col && indicatorArrays.priceVsSMA20) {
+        sheet.getRange(rowNum, hdrMap.hitPriceVsSMA20Col).setValue(indicatorArrays.priceVsSMA20);
+        updated = true;
+      }
+      if (hdrMap.hitPriceVsVWAPCol && indicatorArrays.priceVsVWAP) {
+        sheet.getRange(rowNum, hdrMap.hitPriceVsVWAPCol).setValue(indicatorArrays.priceVsVWAP);
+        updated = true;
+      }
+      
+      if (updated) {
+        processedCount++;
+        EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): Indicators updated successfully`);
+      } else {
+        EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): No indicator columns found to update`);
+        skippedCount++;
+      }
+      
+    } catch (e) {
+      EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): Error - ${e.message}`);
+      skippedCount++;
+    }
+  }
+  
+  SpreadsheetApp.flush();
+  const message = `Recalculated indicators for ${processedCount} rows\nSkipped ${skippedCount} rows`;
+  EW_safeAlert('Indicator Recalculation Complete', message);
+}
+
+/**
+ * Batch recalculate indicators for all rows with Strike_Hit data
+ * Processes an entire sheet at once
+ */
+function EW_recalculateIndicatorsForSheet() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const sheetName = sheet.getName();
+  
+  EW_trace('INDICATORS', `Starting indicator recalculation for sheet: ${sheetName}`, true);
+  
+  // Get headers
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
+  
+  // Check if we have the Strike_Hit column
+  if (!hdrMap.strikeHitCol) {
+    EW_safeAlert('Missing Column', 'Strike_Hit column not found in this sheet');
+    return;
+  }
+  
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    EW_safeAlert('No Data', 'No data rows found in sheet');
+    return;
+  }
+  
+  // Get all Strike_Hit data to find rows that need processing
+  const strikeHitRange = sheet.getRange(2, hdrMap.strikeHitCol, lastRow - 1, 1);
+  const strikeHitData = strikeHitRange.getValues();
+  
+  // Find rows with valid Strike_Hit data but missing indicators
+  const rowsToProcess = [];
+  for (let i = 0; i < strikeHitData.length; i++) {
+    const strikeHit = strikeHitData[i][0];
+    if (strikeHit && strikeHit !== '' && strikeHit !== '["NO_DATA"]') {
+      // Check if indicators are missing
+      const rowNum = i + 2;
+      const indicatorData = hdrMap.hitRSICol ? 
+        sheet.getRange(rowNum, hdrMap.hitRSICol).getValue() : null;
+      
+      if (!indicatorData || indicatorData === '') {
+        rowsToProcess.push(rowNum);
+      }
+    }
+  }
+  
+  if (rowsToProcess.length === 0) {
+    EW_safeAlert('No Processing Needed', 'All rows with Strike_Hit data already have indicators');
+    return;
+  }
+  
+  const response = Browser.msgBox(
+    'Confirm Recalculation',
+    `Found ${rowsToProcess.length} rows that need indicator calculation. Continue?`,
+    Browser.Buttons.YES_NO
+  );
+  
+  if (response !== Browser.Buttons.YES) {
+    return;
+  }
+  
+  // Process in batches to avoid timeout
+  const BATCH_SIZE = 10;
+  let processedCount = 0;
+  
+  for (let batch = 0; batch < rowsToProcess.length; batch += BATCH_SIZE) {
+    const batchRows = rowsToProcess.slice(batch, batch + BATCH_SIZE);
+    
+    EW_trace('INDICATORS', `Processing batch ${Math.floor(batch/BATCH_SIZE) + 1} of ${Math.ceil(rowsToProcess.length/BATCH_SIZE)}`);
+    
+    // Process each row in the batch
+    for (const rowNum of batchRows) {
+      // Set the range for this specific row
+      const range = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn());
+      sheet.setActiveRange(range);
+      
+      // Process this row
+      EW_recalculateIndicatorsForSelected();
+      processedCount++;
+    }
+    
+    // Add a small delay between batches
+    Utilities.sleep(1000);
+  }
+  
+  EW_trace('INDICATORS', `Completed indicator recalculation for ${processedCount} rows`, true);
+}
+
+/**
+ * Quick function to check which rows are missing indicators
+ * Useful for diagnostics
+ */
+function EW_checkMissingIndicators() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
+  
+  if (!hdrMap.strikeHitCol || !hdrMap.hitRSICol) {
+    EW_safeAlert('Missing Columns', 'Strike_Hit or Hit_RSI column not found');
+    return;
+  }
+  
+  const lastRow = sheet.getLastRow();
+  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  
+  const missingRows = [];
+  
+  data.forEach((row, index) => {
+    const strikeHit = row[hdrMap.strikeHitCol - 1];
+    const hitRSI = row[hdrMap.hitRSICol - 1];
+    const ticker = row[hdrMap.tickerCol - 1];
+    
+    if (strikeHit && strikeHit !== '' && strikeHit !== '["NO_DATA"]' && (!hitRSI || hitRSI === '')) {
+      missingRows.push({
+        row: index + 2,
+        ticker: ticker,
+        strikeHit: strikeHit
+      });
+    }
+  });
+  
+  if (missingRows.length === 0) {
+    EW_safeAlert('Check Complete', 'All rows with Strike_Hit data have indicators');
+  } else {
+    const sample = missingRows.slice(0, 10).map(r => `Row ${r.row}: ${r.ticker}`).join('\n');
+    const message = `Found ${missingRows.length} rows missing indicators:\n\n${sample}${missingRows.length > 10 ? '\n...' : ''}`;
+    EW_safeAlert('Missing Indicators Found', message);
+  }
 }

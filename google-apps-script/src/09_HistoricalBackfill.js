@@ -39,25 +39,98 @@
 /**
  * Main function to backfill historical tracking data for all sheets
  * This analyzes historical prices from run date to expiration/today
+ * Now includes continuation support for long-running processes
  */
 function EW_backfillHistoricalTracking() {
-  EW_trace('BACKFILL', 'Starting historical tracking backfill', true);
+  const MAX_RUNTIME_MS = 25 * 60 * 1000; // 25 minutes (leaving 5 min buffer)
+  const startTime = new Date();
+  
+  // Check for existing state from previous run
+  const savedState = EW_getBackfillState ? EW_getBackfillState('BACKFILL_STATE') : null;
+  let currentStrategyIndex = savedState ? savedState.currentStrategyIndex : 0;
+  let totalBackfilled = savedState ? savedState.totalBackfilled : 0;
+  let errors = savedState ? savedState.errors : [];
+  let processedStrategies = savedState ? savedState.processedStrategies : [];
+  
+  if (savedState) {
+    EW_trace('BACKFILL', `Resuming from strategy index ${currentStrategyIndex}. Already processed: ${processedStrategies.join(', ')}`, true);
+  } else {
+    EW_trace('BACKFILL', 'Starting historical tracking backfill', true);
+  }
+  
   const ss = SpreadsheetApp.getActive();
   const strategies = Object.keys(EW.STRATEGY_ENDPOINTS);
-  let totalBackfilled = 0;
-  let errors = [];
   
-  for (const strategy of strategies) {
+  // Process strategies starting from where we left off
+  for (let i = currentStrategyIndex; i < strategies.length; i++) {
+    const strategy = strategies[i];
+    
+    // Check if we're approaching time limit
+    const elapsedMs = new Date() - startTime;
+    if (elapsedMs > MAX_RUNTIME_MS) {
+      EW_trace('BACKFILL', `Approaching time limit after ${Math.round(elapsedMs / 1000)}s. Saving state and scheduling continuation...`, true);
+      
+      // Save state for continuation
+      if (EW_saveBackfillState) {
+        const state = {
+          currentStrategyIndex: i,
+          totalBackfilled: totalBackfilled,
+          errors: errors,
+          processedStrategies: processedStrategies,
+          startTime: startTime.toISOString(),
+          continuationCount: (savedState?.continuationCount || 0) + 1
+        };
+        EW_saveBackfillState(state, 'BACKFILL_STATE');
+        
+        // Schedule continuation trigger
+        EW_scheduleBackfillContinuation('EW_backfillHistoricalTracking');
+      }
+      
+      return; // Exit to let continuation handle the rest
+    }
+    
     try {
       const backfilled = EW_backfillStrategyTracking(ss, strategy);
       if (backfilled > 0) {
         totalBackfilled += backfilled;
         EW_trace('BACKFILL', `Backfilled ${backfilled} positions in ${strategy}`);
       }
+      processedStrategies.push(strategy);
     } catch (e) {
+      // Log the full error with stack trace for debugging
+      console.error(`BACKFILL ERROR: ${strategy} - ${e.message}`);
+      console.error(e.stack);
       errors.push(`${strategy}: ${e.message}`);
       EW_trace('BACKFILL', `Error backfilling ${strategy}: ${e.message}`, true);
+      // Continue with next strategy instead of failing entirely
+      continue;
     }
+  }
+  
+  // Apply formatting to all sheets that were processed
+  if (totalBackfilled > 0) {
+    EW_trace('BACKFILL', 'Applying Day Check formatting to all sheets...', true);
+    for (const strategy of strategies) {
+      try {
+        const sheet = ss.getSheetByName(strategy);
+        if (sheet && sheet.getLastRow() > 1) {
+          const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+          const hdrMap = EW_headerMap(headers);
+          if (hdrMap.day0CheckCol || hdrMap.day1CheckCol) {
+            EW_formatDayCheckColumns(sheet, hdrMap, strategy);
+            EW_trace('BACKFILL', `Applied formatting to ${strategy}`);
+          }
+        }
+      } catch (e) {
+        EW_trace('BACKFILL', `Failed to apply formatting to ${strategy}: ${e.message}`);
+      }
+    }
+    SpreadsheetApp.flush();
+  }
+  
+  // Clear continuation state since we're done
+  if (EW_clearBackfillState) {
+    EW_clearBackfillState('BACKFILL_STATE');
   }
   
   const msg = `Historical backfill complete. Processed ${totalBackfilled} positions across ${strategies.length} strategies.` +
@@ -107,7 +180,7 @@ function EW_backfillStrategyTracking(ss, strategyName) {
     EW_trace('BACKFILL', `Column verification - Day5_Check: col ${hdrMap.day5CheckCol}='${day5Header}', Exp_Result: col ${hdrMap.expResultCol}='${expResultHeader}'`);
   }
   
-  const requiredCols = ['tickerCol', 'runDateCol', strikeColumn, 'daysToExpCol'];
+  const requiredCols = ['tickerCol', 'runDateCol', strikeColumn];
   for (const col of requiredCols) {
     if (!hdrMap[col]) {
       EW_trace('BACKFILL', `${strategyName}: Missing required column ${col}`);
@@ -115,93 +188,74 @@ function EW_backfillStrategyTracking(ss, strategyName) {
     }
   }
   
-  let processedCount = 0;
-  let skippedCount = 0;
-  let emptyStrikeHitProcessed = 0;
-  let emptyStrikeHitSkipped = 0;
+  // Use batch checking to determine which rows need processing
+  const batchCheck = EW_batchCheckBackfillRows(sheet, hdrMap, data, strategyName);
   
-  // Process each row
-  data.forEach((row, rowIndex) => {
+  // Log the summary once
+  EW_trace('BACKFILL', batchCheck.summary, true);
+  
+  if (batchCheck.needsProcessing === 0) {
+    EW_trace('BACKFILL', `${strategyName}: No rows need processing`);
+    return 0;
+  }
+  
+  let processedCount = 0;
+  let failedCount = 0;
+  
+  // Process only the rows that need it
+  batchCheck.rowsToProcess.forEach((rowInfo, index) => {
     try {
-      const ticker = row[hdrMap.tickerCol - 1];
-      const runDateStr = row[hdrMap.runDateCol - 1];
-      // For spreads, use longStrike; otherwise use strike
-      const strikeCol = isSpread ? hdrMap.longStrikeCol : hdrMap.strikeCol;
-      const strike = parseFloat(row[strikeCol - 1]) || 0;
-      const expDateStr = hdrMap.expDateCol ? row[hdrMap.expDateCol - 1] : null;
-      const shortStrike = isSpread && hdrMap.shortStrikeCol ? parseFloat(row[hdrMap.shortStrikeCol - 1]) || null : null;
-      
-      if (!ticker || !runDateStr || !strike) return;
-      
-      // Check which day values are already filled
-      const hasDay0 = hdrMap.day0CheckCol && row[hdrMap.day0CheckCol - 1];
-      const hasDay1 = hdrMap.day1CheckCol && row[hdrMap.day1CheckCol - 1];
-      const hasDay2 = hdrMap.day2CheckCol && row[hdrMap.day2CheckCol - 1];
-      const hasDay3 = hdrMap.day3CheckCol && row[hdrMap.day3CheckCol - 1];
-      const hasDay4 = hdrMap.day4CheckCol && row[hdrMap.day4CheckCol - 1];
-      const hasDay5 = hdrMap.day5CheckCol && row[hdrMap.day5CheckCol - 1];
-      const hasStrikeHit = hdrMap.strikeHitCol && row[hdrMap.strikeHitCol - 1];
-      const hasIndicators = hdrMap.hitRSICol && row[hdrMap.hitRSICol - 1];
-      
-      // Skip if ALL day values AND arrays are already filled
-      if (hasDay0 && hasDay1 && hasDay2 && hasDay3 && hasDay4 && hasDay5 && hasStrikeHit && hasIndicators) {
-        EW_trace('BACKFILL', `Skipping ${ticker} - already has complete tracking data`);
-        return; // Skip only if fully processed
-      }
-      
-      // Track empty Strike_Hit for statistics
-      if (!hasStrikeHit) emptyStrikeHitProcessed++;
+      // Log progress at intervals
+      EW_logBatchProgress(index + 1, batchCheck.rowsToProcess.length, 25, 'BACKFILL');
       
       // Use the shared processing function
       const params = {
-        ticker: ticker,
+        ticker: rowInfo.ticker,
         strategyName: strategyName,
-        strike: strike,
-        runDateStr: runDateStr,
-        expDateStr: expDateStr,
-        shortStrike: shortStrike,
+        strike: rowInfo.strike,
+        runDateStr: rowInfo.runDateStr,
+        expDateStr: rowInfo.expDateStr,
+        shortStrike: rowInfo.shortStrike,
         hdrMap: hdrMap,
-        row: row,
-        rowIndex: rowIndex,
+        row: data[rowInfo.index],
+        rowIndex: rowInfo.index,
         sheet: sheet,
         isSpread: isSpread
       };
       
       const result = EW_processBackfillPosition(params);
       
-      if (result.success) {
-        processedCount++;
-      } else if (result.reason === 'future_date') {
-        if (!hasStrikeHit) emptyStrikeHitSkipped++;
-        return;
+      if (result.success && result.analysis) {
+        // Convert expDateStr to Date object if it exists
+        const expDateObj = rowInfo.expDateStr ? new Date(rowInfo.expDateStr) : null;
+        
+        // Actually update the columns with the analysis data
+        const wasUpdated = EW_updateBackfillColumns(sheet, rowInfo.rowNum, result.analysis, hdrMap, rowInfo.ticker, expDateObj, data[rowInfo.index]);
+        
+        if (wasUpdated) {
+          processedCount++;
+        }
       } else if (result.reason === 'no_data') {
-        skippedCount++;
-        return;
+        failedCount++;
       }
       
     } catch (e) {
-      EW_trace('BACKFILL', `Error processing row ${rowIndex + 2} in ${strategyName}: ${e.message}`);
+      EW_trace('BACKFILL', `Error processing row ${rowInfo.rowNum} in ${strategyName}: ${e.message}`);
+      failedCount++;
     }
   });
   
   // Force save
   if (processedCount > 0) {
     SpreadsheetApp.flush();
-    
-    // Apply formatting to Day Check columns
-    try {
-      EW_formatDayCheckColumns(sheet, hdrMap, strategyName);
-      EW_trace('BACKFILL', `Applied Day Check formatting for ${strategyName}`);
-    } catch (e) {
-      EW_trace('BACKFILL', `Failed to apply formatting: ${e.message}`);
-    }
   }
   
-  EW_trace('BACKFILL', `${strategyName}: FINAL SUMMARY:`);
-  EW_trace('BACKFILL', `  - Processed ${processedCount} positions total`);
-  EW_trace('BACKFILL', `  - Empty Strike_Hit processed: ${emptyStrikeHitProcessed}`);
-  EW_trace('BACKFILL', `  - Skipped ${skippedCount} positions (no data available)`);
-  EW_trace('BACKFILL', `  - Empty Strike_Hit in skipped: ${emptyStrikeHitSkipped}`);
+  // Log final summary
+  const finalSummary = `${strategyName} Complete: Processed ${processedCount}/${batchCheck.needsProcessing}` +
+    (failedCount > 0 ? `, Failed ${failedCount}` : '') +
+    `, Skipped ${batchCheck.skippedAlreadyComplete.length + batchCheck.skippedFutureDate.length + batchCheck.skippedMissingData.length}`;
+  
+  EW_trace('BACKFILL', finalSummary, true);
   return processedCount;
 }
 
@@ -357,7 +411,7 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     historicalData.forEach((bar, index) => {
       const dateStr = bar.date.toISOString().split('T')[0];
       dailyGroups[dateStr] = {
-        date: new Date(dateStr),
+        date: bar.date, // Use the actual bar date instead of creating new Date from string
         bars: [bar], // Single bar for the day
         open: bar.open,
         high: bar.high,
@@ -371,7 +425,7 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     const dateStr = bar.date.toISOString().split('T')[0];
     if (!dailyGroups[dateStr]) {
       dailyGroups[dateStr] = {
-        date: new Date(dateStr),
+        date: bar.date, // Use the actual bar date instead of creating new Date from string
         bars: [],
         open: null,
         high: -Infinity,
@@ -944,7 +998,22 @@ function EW_processBackfillPosition(params) {
     
     // Get today's date for comparison
     const today = new Date();
-    today.setHours(23, 59, 59, 999);
+    const currentHour = today.getHours();
+    
+    // If before market open (9:30 AM ET), use yesterday as the end date
+    let effectiveEndDate = new Date(today);
+    if (currentHour < 9 || (currentHour === 9 && today.getMinutes() < 30)) {
+      // Before market open, use yesterday's close
+      effectiveEndDate.setDate(effectiveEndDate.getDate() - 1);
+      effectiveEndDate.setHours(16, 0, 0, 0); // Yesterday's market close
+      EW_trace('BACKFILL', `${ticker}: Before market open, using yesterday as end date`);
+    } else if (currentHour >= 16) {
+      // After market close, use today's close
+      effectiveEndDate.setHours(16, 0, 0, 0);
+    } else {
+      // During market hours, use current time
+      // Keep current time
+    }
     
     // Skip if run date is in the future
     if (runDate > today) {
@@ -956,9 +1025,9 @@ function EW_processBackfillPosition(params) {
     const marketRunDate = EW_adjustToMarketHours(runDate);
     EW_trace('BACKFILL', `${ticker}: Original run date: ${runDate.toISOString()}, Adjusted to market hours: ${marketRunDate.toISOString()}`);
     
-    // Determine end date (expiration or today, whichever is earlier)
+    // Determine end date (expiration or effective end date, whichever is earlier)
     // But ensure it's at least equal to or after the adjusted market run date
-    let endDate = expDate && expDate < today ? expDate : today;
+    let endDate = expDate && expDate < effectiveEndDate ? expDate : effectiveEndDate;
     if (endDate < marketRunDate) {
       endDate = new Date(marketRunDate);
       endDate.setHours(16, 0, 0, 0); // Set to market close
@@ -969,14 +1038,14 @@ function EW_processBackfillPosition(params) {
     EW_trace('BACKFILL', `Raw run date string: "${runDateStr}", Parsed: ${runDate.toISOString()}`);
     
     // Check if runDate is more than 7 days old
-    const daysSinceRun = Math.floor((today - runDate) / (1000 * 60 * 60 * 24));
-    EW_trace('BACKFILL', `Days since run: ${daysSinceRun} (today: ${today.toISOString()}, runDate: ${runDate.toISOString()})`)
+    const daysSinceRun = Math.floor((effectiveEndDate - runDate) / (1000 * 60 * 60 * 24));
+    EW_trace('BACKFILL', `Days since run: ${daysSinceRun} (effective end: ${effectiveEndDate.toISOString()}, runDate: ${runDate.toISOString()})`)
     
     let yahooResult;
     
     // Always try to get minute data first for the last 7 days
-    const sevenDaysAgo = new Date(today);
-    sevenDaysAgo.setDate(today.getDate() - 7);
+    const sevenDaysAgo = new Date(effectiveEndDate);
+    sevenDaysAgo.setDate(effectiveEndDate.getDate() - 7);
     
     if (marketRunDate >= sevenDaysAgo) {
       // Position is within 7 days, use only minute data
@@ -1257,8 +1326,25 @@ function EW_backfillSelectedRows() {
     }
   }
   
+  // Clear continuation state since we're done
+  if (EW_clearBackfillState) {
+    EW_clearBackfillState('BACKFILL_SELECTED_STATE');
+  }
+  
   SpreadsheetApp.flush();
+  
   const message = 'Processed ' + processedCount + ' of ' + numRows + ' selected rows';
+  
+  // Apply formatting at the end if any rows were processed
+  if (processedCount > 0) {
+    try {
+      EW_formatDayCheckColumns(sheet, hdrMap, sheet.getName());
+      EW_trace('BACKFILL', `Applied Day Check formatting for selected rows`);
+    } catch (e) {
+      EW_trace('BACKFILL', `Failed to apply formatting: ${e.message}`);
+    }
+  }
+  
   EW_safeAlert('Backfill Complete', message);
 }
 
