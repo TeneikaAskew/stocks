@@ -1,0 +1,20 @@
+{
+  "ticker": "IWM",
+  "ticker_symbol": "IWM",
+  "last_update": "2025-09-01T03:09:40.738899",
+  "last_date": "2025-08-29 00:00:00",
+  "first_date": "2025-08-25 00:00:00",
+  "total_daily_records": 5,
+  "minute_data_available_from": "2025-08-25",
+  "current_year_file": "iwm_2025.parquet",
+  "latest_close": 235.17999267578125,
+  "latest_volume": 25864375,
+  "latest_rsi_14": null,
+  "latest_rvol": 25864375.0,
+  "latest_stoch_rsi_k": null,
+  "latest_stoch_rsi_d": null,
+  "latest_obv": 67204213.0,
+  "latest_atr_14": 2.1072298345871916,
+  "data_source": "1-minute aggregation",
+  "ytd_return": 1.200565124773223
+}
