@@ -565,8 +565,8 @@ function EW_createStrategiesSheet(ss, strategies) {
         stats.totalTrades || stats.count || 0,  // Check both field names
         stats.hitTrades || stats.hits || 0,      // Check both field names
         `${((stats.hitRate || 0) * 100).toFixed(1)}%`,
-        `${(Number(stats.avgProfit) || 0) * 100).toFixed(2)}%`,  // Convert to percentage
-        `${(Number(stats.avgLoss) || 0) * 100).toFixed(2)}%`,    // Convert to percentage
+        `${((Number(stats.avgProfit) || 0) * 100).toFixed(2)}%`,  // Convert to percentage
+        `${((Number(stats.avgLoss) || 0) * 100).toFixed(2)}%`,    // Convert to percentage
         (Number(stats.profitFactor) || 0).toFixed(2),
         (Number(stats.avgDaysToHit) || 0).toFixed(1),
         (Number(stats.totalProfit) || 0).toFixed(2),
