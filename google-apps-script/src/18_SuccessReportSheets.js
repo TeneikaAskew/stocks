@@ -33,7 +33,7 @@ function EW_createIndividualSheets(ss, insights) {
   EW_createMultiDaySheet(ss, insights.multiDayProfitability);
   EW_createIndicatorsSheet(ss, insights.indicatorEffectiveness);
   EW_createEarningsSheet(ss, insights.earningsTiming);
-  EW_createStrategiesSheet(ss, insights.strategyPerformance);
+  // EW_createStrategiesSheet(ss, insights.strategyPerformance); // Combined with SR_Overview
   EW_createTopPlaysSheet(ss, insights.topPlays);
   EW_createRiskRewardSheet(ss, insights.riskRewardPatterns);
   
