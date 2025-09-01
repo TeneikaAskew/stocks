@@ -1,0 +1,20 @@
+{
+  "ticker": "QQQ",
+  "ticker_symbol": "QQQ",
+  "last_update": "2025-09-01T02:51:52.042950",
+  "last_date": "2025-08-29 00:00:00",
+  "first_date": "2025-08-25 00:00:00",
+  "total_daily_records": 5,
+  "minute_data_available_from": "2025-08-25",
+  "current_year_file": "qqq_2025.parquet",
+  "latest_close": 570.3099975585938,
+  "latest_volume": 50362385,
+  "latest_rsi_14": null,
+  "latest_rvol": 50362385.0,
+  "latest_stoch_rsi_k": null,
+  "latest_stoch_rsi_d": null,
+  "latest_obv": 85226004.0,
+  "latest_atr_14": 4.860802822386187,
+  "data_source": "1-minute aggregation",
+  "ytd_return": -0.007009385299383553
+}

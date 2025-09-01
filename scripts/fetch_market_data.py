@@ -133,9 +133,9 @@ def fetch_minute_data_for_date(ticker, date):
     """
     eastern = pytz.timezone('US/Eastern')
     
-    # Create timestamps for the date
-    start_time = datetime.combine(date, time(0, 0))
-    end_time = datetime.combine(date, time(23, 59))
+    # Create timestamps for the date - set to market hours
+    start_time = datetime.combine(date, time(9, 30))  # Market open
+    end_time = datetime.combine(date, time(16, 0))    # Market close
     
     start_time = eastern.localize(start_time)
     end_time = eastern.localize(end_time)
@@ -148,10 +148,40 @@ def fetch_minute_data_for_date(ticker, date):
             end=end_time + timedelta(minutes=1),
             interval="1m",
             progress=False,
-            prepost=False  # Only regular market hours
+            prepost=False,  # Only regular market hours
+            group_by=None,
+            auto_adjust=True,
+            threads=False
         )
         
         if not df.empty:
+            # Handle multi-level columns from yfinance
+            if isinstance(df.columns, pd.MultiIndex):
+                # For single ticker, yfinance returns columns like ('SPY', 'Open')
+                # We need to flatten to just 'Open', 'Close', etc. - use level 1!
+                df.columns = df.columns.get_level_values(1)
+            
+            # Standardize column names to match expected format
+            expected_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            if not all(col in df.columns for col in expected_columns):
+                # Try to map columns if they're different case or format
+                column_mapping = {}
+                for col in df.columns:
+                    col_lower = str(col).lower()
+                    if 'open' in col_lower:
+                        column_mapping[col] = 'Open'
+                    elif 'high' in col_lower:
+                        column_mapping[col] = 'High'
+                    elif 'low' in col_lower:
+                        column_mapping[col] = 'Low'
+                    elif 'close' in col_lower:
+                        column_mapping[col] = 'Close'
+                    elif 'volume' in col_lower:
+                        column_mapping[col] = 'Volume'
+                
+                if column_mapping:
+                    df = df.rename(columns=column_mapping)
+            
             # Ensure timezone awareness
             if df.index.tz is None:
                 df.index = df.index.tz_localize('US/Eastern')
@@ -162,31 +192,77 @@ def fetch_minute_data_for_date(ticker, date):
         print(f"  Error fetching minute data for {date}: {e}")
         return pd.DataFrame()
 
-def calculate_all_indicators(df, ticker_symbol):
+def calculate_all_indicators(df, ticker_symbol, is_minute_data=False):
     """
     Calculate all technical indicators for a dataframe.
+    
+    Args:
+        df: DataFrame with OHLCV data
+        ticker_symbol: Ticker symbol (for SPX volume handling)
+        is_minute_data: If True, adjust window sizes for minute-level data
     """
+    # Adjust window sizes for minute vs daily data
+    # For minute data, we want shorter windows since we have 390 bars per day
+    if is_minute_data:
+        # For minute data: approximate daily equivalents
+        # 390 minutes = 1 day, so:
+        ma_5_window = 5  # 5 minutes
+        ma_10_window = 10  # 10 minutes
+        ma_20_window = 20  # 20 minutes
+        ma_50_window = 50  # 50 minutes
+        ma_390_window = 390  # Full day
+        volatility_short = 30  # 30 minutes
+        volatility_long = 390  # Full day
+    else:
+        # For daily data: use day counts
+        ma_5_window = 5
+        ma_10_window = 10
+        ma_20_window = 20
+        ma_50_window = 50
+        ma_390_window = None  # Not applicable for daily
+        volatility_short = 5
+        volatility_long = 20
+    
     # Calculate moving averages
-    df['ma_5'] = df['Close'].rolling(window=5).mean()
-    df['ma_10'] = df['Close'].rolling(window=10).mean()
-    df['ma_20'] = df['Close'].rolling(window=20).mean()
-    df['ma_50'] = df['Close'].rolling(window=50).mean()
-    df['volume_ma_10'] = df['Volume'].rolling(window=10).mean()
-    df['volume_ma_20'] = df['Volume'].rolling(window=20).mean()
+    df['ma_5'] = df['Close'].rolling(window=ma_5_window).mean()
+    df['ma_10'] = df['Close'].rolling(window=ma_10_window).mean()
+    df['ma_20'] = df['Close'].rolling(window=ma_20_window).mean()
+    df['ma_50'] = df['Close'].rolling(window=ma_50_window).mean()
+    
+    if is_minute_data:
+        # Add full-day MA for minute data
+        df['ma_390'] = df['Close'].rolling(window=ma_390_window).mean()
+    
+    df['volume_ma_10'] = df['Volume'].rolling(window=ma_10_window).mean()
+    df['volume_ma_20'] = df['Volume'].rolling(window=ma_20_window).mean()
     
     # Calculate returns and volatility
-    df['daily_return'] = df['Close'].pct_change()
-    df['volatility_5d'] = df['daily_return'].rolling(window=5).std()
-    df['volatility_20d'] = df['daily_return'].rolling(window=20).std()
+    df['return'] = df['Close'].pct_change()
+    if is_minute_data:
+        df['volatility_30min'] = df['return'].rolling(window=volatility_short).std()
+        df['volatility_day'] = df['return'].rolling(window=volatility_long).std()
+    else:
+        df['daily_return'] = df['return']  # Keep for compatibility
+        df['volatility_5d'] = df['return'].rolling(window=volatility_short).std()
+        df['volatility_20d'] = df['return'].rolling(window=volatility_long).std()
     
     # Calculate EMAs
-    df['ema_9'] = calculate_ema(df['Close'], 9)
-    df['ema_21'] = calculate_ema(df['Close'], 21)
-    df['ema_50'] = calculate_ema(df['Close'], 50)
+    if is_minute_data:
+        df['ema_9'] = calculate_ema(df['Close'], 9)
+        df['ema_21'] = calculate_ema(df['Close'], 21)
+        df['ema_50'] = calculate_ema(df['Close'], 50)
+    else:
+        df['ema_9'] = calculate_ema(df['Close'], 9)
+        df['ema_21'] = calculate_ema(df['Close'], 21)
+        df['ema_50'] = calculate_ema(df['Close'], 50)
     
     # Calculate RSI
-    df['rsi_14'] = calculate_rsi(df['Close'], 14)
-    df['rsi_9'] = calculate_rsi(df['Close'], 9)
+    if is_minute_data:
+        df['rsi_14'] = calculate_rsi(df['Close'], 14)  # 14 minute RSI
+        df['rsi_30'] = calculate_rsi(df['Close'], 30)  # 30 minute RSI
+    else:
+        df['rsi_14'] = calculate_rsi(df['Close'], 14)
+        df['rsi_9'] = calculate_rsi(df['Close'], 9)
     
     # Calculate RVOL (Relative Volume)
     df['rvol'] = calculate_rvol(df['Volume'], df['volume_ma_20'])
@@ -224,17 +300,23 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None):
         display_name = ticker_name if ticker_name else ticker_symbol
         display_name_lower = display_name.lower()
         
-        # Create data directories
+        # Create ticker-specific data directories
         data_dir = Path("data")
         data_dir.mkdir(exist_ok=True)
-        minute_dir = data_dir / "minute"
+        
+        # Create ticker-specific folders
+        ticker_dir = data_dir / display_name_lower
+        ticker_dir.mkdir(exist_ok=True)
+        
+        # Create minute subfolder for this ticker
+        minute_dir = ticker_dir / "minute"
         minute_dir.mkdir(exist_ok=True)
         
         today = datetime.now().date()
         current_year = today.year
         
-        # File paths
-        daily_parquet = data_dir / f"{display_name_lower}_{current_year}.parquet"
+        # File paths - now in ticker-specific folders
+        daily_parquet = ticker_dir / f"{display_name_lower}_{current_year}.parquet"
         minute_parquet_template = str(minute_dir / f"{display_name_lower}_minute_{{}}.parquet")
         
         print(f"\n{'='*60}")
@@ -285,14 +367,68 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None):
             if Path(minute_file).exists():
                 print(f"  Loading existing minute data from {minute_file}")
                 minute_df = pd.read_parquet(minute_file)
+                
+                # Handle multi-level columns if present in saved file
+                if isinstance(minute_df.columns, pd.MultiIndex):
+                    # Use level 1 which contains the price types (Open, High, Low, etc.)
+                    minute_df.columns = minute_df.columns.get_level_values(1)
+                
+                # Standardize column names
+                column_mapping = {}
+                for col in minute_df.columns:
+                    col_lower = str(col).lower()
+                    if 'open' in col_lower:
+                        column_mapping[col] = 'Open'
+                    elif 'high' in col_lower:
+                        column_mapping[col] = 'High'
+                    elif 'low' in col_lower:
+                        column_mapping[col] = 'Low'
+                    elif 'close' in col_lower:
+                        column_mapping[col] = 'Close'
+                    elif 'volume' in col_lower:
+                        column_mapping[col] = 'Volume'
+                
+                if column_mapping:
+                    minute_df = minute_df.rename(columns=column_mapping)
+                
+                # Validate loaded data has required columns
+                required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                missing_columns = [col for col in required_columns if col not in minute_df.columns]
+                
+                if missing_columns:
+                    print(f"  WARNING: Loaded file missing columns: {missing_columns}")
+                    print(f"  Available columns: {list(minute_df.columns)}")
+                    print(f"  Attempting to re-fetch data for {fetch_date}")
+                    minute_df = fetch_minute_data_for_date(ticker_symbol, fetch_date)
+                    
+                    if not minute_df.empty and all(col in minute_df.columns for col in required_columns):
+                        # Re-save with correct format
+                        minute_df.to_parquet(minute_file, compression='snappy')
+                        print(f"  Re-saved {len(minute_df)} minute bars with correct format")
+                    else:
+                        print(f"  Failed to get valid data for {fetch_date}")
+                        continue
             else:
                 # Fetch new minute data
                 minute_df = fetch_minute_data_for_date(ticker_symbol, fetch_date)
                 
                 if not minute_df.empty:
-                    # Save minute data
+                    # Validate that we have the required columns
+                    required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                    missing_columns = [col for col in required_columns if col not in minute_df.columns]
+                    
+                    if missing_columns:
+                        print(f"  ERROR: Missing required columns: {missing_columns}")
+                        print(f"  Available columns: {list(minute_df.columns)}")
+                        print(f"  Skipping {fetch_date} due to invalid data format")
+                        continue
+                    
+                    # Calculate indicators for minute data before saving
+                    minute_df = calculate_all_indicators(minute_df, ticker_symbol, is_minute_data=True)
+                    
+                    # Save minute data with indicators
                     minute_df.to_parquet(minute_file, compression='snappy')
-                    print(f"  Saved {len(minute_df)} minute bars to {minute_file}")
+                    print(f"  Saved {len(minute_df)} minute bars with indicators to {minute_file}")
                 else:
                     print(f"  No data available for {fetch_date} (market holiday?)")
                     continue
@@ -342,8 +478,8 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None):
         new_daily_df.to_parquet(daily_parquet, compression='snappy', index=True)
         print(f"Daily data saved to {daily_parquet}")
         
-        # Create summary file
-        summary_file = data_dir / f"{display_name_lower}_summary.json"
+        # Create summary file in ticker directory
+        summary_file = ticker_dir / f"{display_name_lower}_summary.json"
         summary = {
             "ticker": display_name,
             "ticker_symbol": ticker_symbol,
@@ -391,12 +527,11 @@ def main():
     args = parser.parse_args()
     
     # Define ticker mappings
-    # Yahoo Finance uses ^GSPC for S&P 500 index
     ticker_mappings = {
         'IWM': ('IWM', None),      # Russell 2000 ETF
         'SPY': ('SPY', None),      # S&P 500 ETF
         'QQQ': ('QQQ', None),      # Nasdaq 100 ETF
-        'SPX': ('^GSPC', 'SPX'),   # S&P 500 Index (^GSPC on Yahoo)
+        'SPX': ('^SPX', 'SPX'),    # S&P 500 Index (^SPX on Yahoo)
     }
     
     # Determine which tickers to fetch

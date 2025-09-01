@@ -95,7 +95,5 @@ wheels/
 MANIFEST
 
 # Data files (optional - remove if you want to track data)
-data/
 *.csv
-*.json
-*.parquet
+# Allowing data/, *.json, and *.parquet files to be tracked
