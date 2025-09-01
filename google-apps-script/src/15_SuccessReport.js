@@ -160,7 +160,7 @@ function EW_createIndicatorProfilesSheet(ss, topPlays) {
     // Basic info row
     sheet.getRange(row, 1).setValue(index + 1);
     sheet.getRange(row, 2).setValue(play.ticker).setFontWeight('bold');
-    sheet.getRange(row, 3).setValue(play.maxProfit || 0).setNumberFormat('0.00%');
+    sheet.getRange(row, 3).setValue((play.maxProfit || 0) / 100).setNumberFormat('0.00%');  // Divide by 100 since value is already in percentage
     sheet.getRange(row, 4).setValue(play.strategy);
     sheet.getRange(row, 5).setValue(play.daysToHit || 'N/A');
     sheet.getRange(row, 6).setValue(play.strike);
@@ -691,15 +691,42 @@ function EW_analyzeOverview(trades) {
     const strategyAvgWin = strategyWinCount > 0 ? strategyWins / strategyWinCount : 0;
     const strategyAvgLoss = strategyLossCount > 0 ? strategyLosses / strategyLossCount : 0;
     
+    // Calculate additional strategy metrics
+    let strategyTotalProfit = 0;
+    let strategyTotalLoss = 0;
+    let strategyAvgDaysToHit = 0;
+    let strategyHitCount = 0;
+    
+    strategyTrades.forEach(trade => {
+      if (trade.wasHit) {
+        strategyHitCount++;
+        if (trade.daysToHit !== undefined) {
+          strategyAvgDaysToHit += trade.daysToHit;
+        }
+      }
+      
+      const netProfit = (trade.maxFavorableValue || 0) - (trade.maxUnfavorableValue || 0);
+      if (netProfit > 0) {
+        strategyTotalProfit += netProfit;
+      } else {
+        strategyTotalLoss += Math.abs(netProfit);
+      }
+    });
+    
     byStrategy[strategy] = {
       totalTrades: strategyTrades.length,
       totalObservations: strategyObservations,
+      hitTrades: strategyHitCount,  // Added for compatibility
       hitRate: strategyTrades.length > 0 ? strategyHits / strategyTrades.length : 0, // Keep as decimal
       profitableRate: strategyObservations > 0 ? strategyProfitableObs / strategyObservations : 0,
       profitFactor: strategyProfitFactor,
+      avgProfit: strategyAvgWin,  // Using avgWin as avgProfit for consistency
       avgWin: strategyAvgWin,  // Keep as decimal
       avgLoss: strategyAvgLoss,  // Keep as decimal
-      avgRiskReward: strategyTrades.length > 0 ? strategyTrades.reduce((sum, t) => sum + (t.riskReward || 0), 0) / strategyTrades.length : 0
+      avgRiskReward: strategyTrades.length > 0 ? strategyTrades.reduce((sum, t) => sum + (t.riskReward || 0), 0) / strategyTrades.length : 0,
+      totalProfit: strategyTotalProfit,  // Added
+      totalLoss: strategyTotalLoss,  // Added
+      avgDaysToHit: strategyHitCount > 0 ? strategyAvgDaysToHit / strategyHitCount : 0  // Added
     };
   });
   
@@ -1806,7 +1833,7 @@ function EW_createIndividualSheets(ss, insights, allTrades) {
   EW_createMultiDaySheet(ss, insights.multiDayProfitability);
   EW_createIndicatorsSheet(ss, insights.indicatorEffectiveness);
   EW_createEarningsSheet(ss, insights.earningsTiming);
-  EW_createStrategiesSheet(ss, insights.strategyPerformance);
+  // EW_createStrategiesSheet(ss, insights.strategyPerformance); // Combined with SR_Overview
   EW_createTopPlaysSheet(ss, insights.topPlays);
   EW_createRiskRewardSheet(ss, insights.riskRewardPatterns);
 }
@@ -1832,10 +1859,10 @@ function EW_createOverviewSheet(ss, overviewData) {
     ['Total Observations', overviewData.totalObservations, 'Total day-observations (trades × days)'],
     ['Hit Rate', overviewData.hitRate, 'Percentage of observations where strike was hit'],
     ['Profitable Rate', overviewData.profitableRate, 'Percentage of profitable observations'],
-    ['Profit Factor', overviewData.profitFactor, 'Sum of wins / Sum of losses'],
+    ['Profit Factor', overviewData.profitFactor, `$${(overviewData.profitFactor || 0).toFixed(2)} profit for every $1 loss`],
     ['Avg Profit', overviewData.avgProfit, 'Average profit when profitable'],
     ['Avg Loss', overviewData.avgLoss, 'Average loss when unprofitable'],
-    ['Avg Risk/Reward', overviewData.avgRiskReward, 'Average risk/reward ratio'],
+    ['Avg Risk/Reward', overviewData.avgRiskReward, `Risk $1 to gain $${(overviewData.avgRiskReward || 0).toFixed(2)}`],
     ['Avg Days to Hit', overviewData.avgDaysToHit, 'Average days until strike hit'],
     ['Best Holding Day', overviewData.bestHoldingDay, 'Optimal day to exit positions']
   ];
@@ -1938,7 +1965,7 @@ function EW_createHoldingPeriodSheet(ss, holdingData) {
   sheet.getRange(2, 1).setValue('Best Day');
   sheet.getRange(2, 2).setValue(holdingData.optimalExitTiming.bestDay);
   sheet.getRange(3, 1).setValue('Profitable Rate');
-  sheet.getRange(3, 2).setValue(holdingData.optimalExitTiming.profitableRate);
+  sheet.getRange(3, 2).setValue(holdingData.optimalExitTiming.profitableRate.toFixed(1) + '%');
   sheet.getRange(4, 1).setValue('Recommendation');
   sheet.getRange(4, 2).setValue(holdingData.optimalExitTiming.recommendation);
   
@@ -2006,7 +2033,7 @@ function EW_createMultiDaySheet(ss, multiDayData) {
       trade.strategy,
       trade.consecutiveDays,
       `Day ${trade.peakDay}`,
-      trade.peakValue,
+      trade.peakValue.toFixed(2) + '%',
       trade.strike
     ]]);
     row++;
@@ -2026,8 +2053,8 @@ function EW_createMultiDaySheet(ss, multiDayData) {
       day,
       stats.totalTrades,
       stats.profitableCount,
-      stats.profitableRate,
-      stats.avgProfit
+      stats.profitableRate.toFixed(1) + '%',
+      stats.avgProfit.toFixed(2) + '%'
     ]]);
     row++;
   });
@@ -2176,42 +2203,42 @@ function EW_createEarningsSheet(ss, earningsData) {
 }
 
 /**
- * Create Strategies sheet
+ * Create Strategies sheet - DEPRECATED: Combined with SR_Overview
  */
-function EW_createStrategiesSheet(ss, strategyData) {
-  let sheet = ss.getSheetByName('SR_Strategies');
-  if (!sheet) {
-    sheet = ss.insertSheet('SR_Strategies');
-  } else {
-    sheet.clear();
-  }
-  
-  // Strategy performance
-  sheet.getRange(1, 1).setValue('STRATEGY PERFORMANCE ANALYSIS').setFontWeight('bold');
-  
-  const headers = ['Strategy', 'Total Trades', 'Hit Count', 'Hit Rate', 'Avg Profit', 'Avg Loss', 
-                   'Profit Factor', 'Avg Days to Hit', 'Total Profit', 'Total Loss'];
-  sheet.getRange(2, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
-  
-  let row = 3;
-  Object.entries(strategyData).forEach(([strategy, stats]) => {
-    sheet.getRange(row, 1, 1, 10).setValues([[
-      strategy,
-      stats.totalTrades,
-      stats.hitTrades,
-      stats.hitRate,
-      stats.avgProfit,
-      stats.avgLoss,
-      stats.profitFactor || 'N/A',
-      stats.avgDaysToHit || 'N/A',
-      stats.totalProfit.toFixed(2) + '%',
-      stats.totalLoss.toFixed(2) + '%'
-    ]]);
-    row++;
-  });
-  
-  sheet.autoResizeColumns(1, 10);
-}
+// function EW_createStrategiesSheet(ss, strategyData) {
+//   let sheet = ss.getSheetByName('SR_Strategies');
+//   if (!sheet) {
+//     sheet = ss.insertSheet('SR_Strategies');
+//   } else {
+//     sheet.clear();
+//   }
+//   
+//   // Strategy performance
+//   sheet.getRange(1, 1).setValue('STRATEGY PERFORMANCE ANALYSIS').setFontWeight('bold');
+//   
+//   const headers = ['Strategy', 'Total Trades', 'Hit Count', 'Hit Rate', 'Avg Profit', 'Avg Loss', 
+//                    'Profit Factor', 'Avg Days to Hit', 'Total Profit', 'Total Loss'];
+//   sheet.getRange(2, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+//   
+//   let row = 3;
+//   Object.entries(strategyData).forEach(([strategy, stats]) => {
+//     sheet.getRange(row, 1, 1, 10).setValues([[
+//       strategy,
+//       stats.totalTrades,
+//       stats.hitTrades,
+//       stats.hitRate,
+//       stats.avgProfit,
+//       stats.avgLoss,
+//       stats.profitFactor || 'N/A',
+//       stats.avgDaysToHit || 'N/A',
+//       stats.totalProfit.toFixed(2) + '%',
+//       stats.totalLoss.toFixed(2) + '%'
+//     ]]);
+//     row++;
+//   });
+//   
+//   sheet.autoResizeColumns(1, 10);
+// }
 
 /**
  * Create Top Plays sheet
@@ -2435,30 +2462,9 @@ function EW_createReportSheet(ss, insights, allTrades) {
   });
   currentRow += 1;
   
-  // Show strategy breakdown
-  if (insights.overview.byStrategy) {
-    reportSheet.getRange(currentRow, 1).setValue('BY STRATEGY:').setFontWeight('bold');
-    currentRow++;
-    
-    // Strategy headers
-    const stratHeaders = ['Strategy', 'Trades/Obs', 'Hit Rate', 'Profitable', 'Profit Factor', 'Avg Win', 'Avg Loss'];
-    reportSheet.getRange(currentRow, 1, 1, stratHeaders.length).setValues([stratHeaders]).setFontWeight('bold');
-    currentRow++;
-    
-    Object.entries(insights.overview.byStrategy).forEach(([strategy, stats]) => {
-      reportSheet.getRange(currentRow, 1, 1, 7).setValues([[
-        strategy,
-        `${stats.totalTrades} (${stats.totalObservations})`,
-        stats.hitRate,
-        stats.profitableRate,
-        stats.profitFactor || 'N/A',
-        stats.avgProfit || 'N/A',
-        stats.avgLoss || 'N/A'
-      ]]);
-      currentRow++;
-    });
-  }
-  currentRow += 2;
+  // BY STRATEGY section removed - now shown comprehensively in SR_Overview sheet
+  // SR_Overview contains full strategy breakdown with all metrics
+  currentRow += 1;
   
   // Multi-Day Profitability Section
   reportSheet.getRange(currentRow, 1).setValue('MULTI-DAY PROFITABILITY ANALYSIS').setFontSize(14).setFontWeight('bold');
@@ -2475,7 +2481,7 @@ function EW_createReportSheet(ss, insights, allTrades) {
     insights.multiDayProfitability.sustainedProfitability.slice(0, 10).forEach(trade => {
       reportSheet.getRange(currentRow, 1, 1, 6).setValues([[
         trade.ticker, trade.strategy, trade.consecutiveDays,
-        `Day ${trade.peakDay}`, trade.peakValue, trade.strike
+        `Day ${trade.peakDay}`, trade.peakValue.toFixed(2) + '%', trade.strike
       ]]);
       currentRow++;
     });
@@ -2495,8 +2501,8 @@ function EW_createReportSheet(ss, insights, allTrades) {
     reportSheet.getRange(currentRow, 1).setValue(day);
     reportSheet.getRange(currentRow, 2).setValue(stats.totalTrades).setNumberFormat('#,##0');
     reportSheet.getRange(currentRow, 3).setValue(stats.profitableCount).setNumberFormat('#,##0');
-    reportSheet.getRange(currentRow, 4).setValue(stats.profitableRate);
-    reportSheet.getRange(currentRow, 5).setValue(stats.avgProfit);
+    reportSheet.getRange(currentRow, 4).setValue(stats.profitableRate.toFixed(1) + '%');
+    reportSheet.getRange(currentRow, 5).setValue(stats.avgProfit.toFixed(2) + '%');
     currentRow++;
   });
   currentRow += 2;
@@ -2523,8 +2529,8 @@ function EW_createReportSheet(ss, insights, allTrades) {
           reportSheet.getRange(currentRow, 1).setValue(dayKey);
           reportSheet.getRange(currentRow, 2).setValue(stats.totalTrades).setNumberFormat('#,##0');
           reportSheet.getRange(currentRow, 3).setValue(stats.profitableCount).setNumberFormat('#,##0');
-          reportSheet.getRange(currentRow, 4).setValue(stats.profitableRate);
-          reportSheet.getRange(currentRow, 5).setValue(stats.avgProfit);
+          reportSheet.getRange(currentRow, 4).setValue(stats.profitableRate.toFixed(1) + '%');
+          reportSheet.getRange(currentRow, 5).setValue(stats.avgProfit.toFixed(2) + '%');
           currentRow++;
         }
       }
@@ -2537,7 +2543,7 @@ function EW_createReportSheet(ss, insights, allTrades) {
         
         data.sustainedProfitable.slice(0, 5).forEach(trade => {
           reportSheet.getRange(currentRow, 2).setValue(
-            `${trade.ticker} - ${trade.consecutiveDays} days, peak: ${trade.peakValue}`
+            `${trade.ticker} - ${trade.consecutiveDays} days, peak: ${trade.peakValue.toFixed(2)}%`
           );
           currentRow++;
         });
@@ -2706,22 +2712,11 @@ function EW_createReportSheet(ss, insights, allTrades) {
   });
   currentRow += 2;
   
-  // Strategy Performance
-  reportSheet.getRange(currentRow, 1).setValue('STRATEGY PERFORMANCE BREAKDOWN').setFontSize(14).setFontWeight('bold');
-  currentRow++;
-  
-  const stratHeaders = ['Strategy', 'Total', 'Hit Rate', 'Avg Profit', 'Avg Loss', 'Profit Factor', 'Avg Days to Hit'];
-  reportSheet.getRange(currentRow, 1, 1, stratHeaders.length).setValues([stratHeaders]).setFontWeight('bold');
-  currentRow++;
-  
-  Object.entries(insights.strategyPerformance).forEach(([strategy, stats]) => {
-    reportSheet.getRange(currentRow, 1, 1, 7).setValues([[
-      strategy, stats.totalTrades, stats.hitRate, stats.avgProfit,
-      stats.avgLoss, stats.profitFactor, stats.avgDaysToHit
-    ]]);
-    currentRow++;
-  });
-  currentRow += 2;
+  // STRATEGY PERFORMANCE BREAKDOWN removed - now shown in SR_Overview sheet
+  // The SR_Overview sheet contains comprehensive strategy metrics including:
+  // - Total Trades, Hit Count, Hit Rate
+  // - Avg Profit, Avg Loss, Profit Factor
+  // - Avg Days to Hit, Total Profit, Total Loss
   
   // Top Plays
   reportSheet.getRange(currentRow, 1).setValue('TOP 20 WINNING PLAYS').setFontSize(14).setFontWeight('bold');
@@ -2941,7 +2936,7 @@ function EW_showMultiDayReport() {
   analysis.sustainedProfitability.slice(0, 20).forEach((trade, idx) => {
     sheet.getRange(idx + 5, 1, 1, 6).setValues([[
       trade.ticker, trade.strategy, trade.consecutiveDays,
-      `Day ${trade.peakDay}`, trade.peakValue, trade.strike
+      `Day ${trade.peakDay}`, trade.peakValue.toFixed(2) + '%', trade.strike
     ]]);
   });
   
@@ -2954,7 +2949,7 @@ function EW_showMultiDayReport() {
   
   Object.entries(analysis.profitabilityByDay).forEach(([day, stats], idx) => {
     sheet.getRange(dayRow + 2 + idx, 1, 1, 5).setValues([[
-      day, stats.totalTrades, stats.profitableCount, stats.profitableRate, stats.avgProfit
+      day, stats.totalTrades, stats.profitableCount, stats.profitableRate.toFixed(1) + '%', stats.avgProfit.toFixed(2) + '%'
     ]]);
   });
   
@@ -3163,7 +3158,7 @@ function EW_showEarningsTimingReport() {
       sheet.getRange(row, 1, 1, 5).setValues([[
         trade.ticker, trade.strategy, trade.daysToEarnings,
         trade.daysToHit !== undefined && trade.daysToHit !== null ? trade.daysToHit : 'N/A', 
-        (trade.maxProfit * 100).toFixed(2) + '%'
+        trade.maxProfit.toFixed(2) + '%'
       ]]);
       row++;
     });
@@ -3183,7 +3178,7 @@ function EW_showEarningsTimingReport() {
       sheet.getRange(row, 1, 1, 5).setValues([[
         trade.ticker, trade.strategy, trade.daysToEarnings,
         trade.daysToHit !== undefined && trade.daysToHit !== null ? trade.daysToHit : 'N/A', 
-        (trade.maxProfit * 100).toFixed(2) + '%'
+        trade.maxProfit.toFixed(2) + '%'
       ]]);
       row++;
     });

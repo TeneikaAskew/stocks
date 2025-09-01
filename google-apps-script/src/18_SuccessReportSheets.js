@@ -59,28 +59,33 @@ function EW_createOverviewSheet(ss, overview) {
     ['Total Observations', overview.totalObservations || 0, 'Total data points across all days'],
     ['Hit Rate', `${((overview.hitRate || 0) * 100).toFixed(1)}%`, 'Percentage of trades where strike was hit'],
     ['Profitable Rate', `${((overview.profitableRate || 0) * 100).toFixed(1)}%`, 'Percentage of observations with positive profit'],
-    ['Profit Factor', (overview.profitFactor || 0).toFixed(2), 'Total profit / Total loss'],
+    ['Profit Factor', (overview.profitFactor || 0).toFixed(2), `$${(overview.profitFactor || 0).toFixed(2)} profit for every $1 loss`],
     ['Avg Profit', `${((overview.avgProfit || 0) * 100).toFixed(2)}%`, 'Average profit on winning trades'],
     ['Avg Loss', `${((overview.avgLoss || 0) * 100).toFixed(2)}%`, 'Average loss on losing trades'],
-    ['Avg Risk/Reward', (overview.avgRiskReward || 0).toFixed(2), 'Average risk/reward ratio'],
+    ['Avg Risk/Reward', (overview.avgRiskReward || 0).toFixed(2), `Risk $1 to gain $${(overview.avgRiskReward || 0).toFixed(2)}`],
     ['Avg Days to Hit', (overview.avgDaysToHit || 0).toFixed(1), 'Average days to reach strike'],
     ['Best Holding Day', overview.bestHoldingDay || 'Day 1', 'Optimal day to exit positions'],
     ['', '', ''],
-    ['STRATEGY BREAKDOWN', 'Trades', 'Observations', 'Hit Rate', 'Profitable Rate', 'Profit Factor', 'Avg Win', 'Avg Loss']
+    ['STRATEGY BREAKDOWN', 'Total Trades', 'Hit Count', 'Hit Rate', 'Avg Profit', 'Avg Loss', 'Profit Factor', 'Avg Days to Hit', 'Total Profit', 'Total Loss']
   ];
   
-  // Add strategy breakdown
+  // Add strategy breakdown with more details
   if (overview.byStrategy) {
-    Object.entries(overview.byStrategy).forEach(([strategy, stats]) => {
+    const sortedStrategies = Object.entries(overview.byStrategy)
+      .sort((a, b) => (b[1].hitRate || 0) - (a[1].hitRate || 0));
+    
+    sortedStrategies.forEach(([strategy, stats]) => {
       data.push([
         strategy,
-        stats.totalTrades || 0,
-        stats.totalObservations || 0,
-        stats.hitRate || '0%',
-        stats.profitableRate || '0%',
-        stats.profitFactor || 0,
-        stats.avgWin || 0,
-        stats.avgLoss || 0
+        stats.totalTrades || stats.count || 0,
+        stats.hitTrades || stats.hits || 0,
+        `${((stats.hitRate || 0) * 100).toFixed(1)}%`,
+        `${((Number(stats.avgProfit || stats.avgWin) || 0) * 100).toFixed(2)}%`,
+        `${((Number(stats.avgLoss) || 0) * 100).toFixed(2)}%`,
+        (Number(stats.profitFactor) || 0).toFixed(2),
+        (Number(stats.avgDaysToHit) || 0).toFixed(1),
+        (Number(stats.totalProfit) || 0).toFixed(2),
+        (Number(stats.totalLoss) || 0).toFixed(2)
       ]);
     });
   }
@@ -537,76 +542,76 @@ function EW_createEarningsSheet(ss, earnings) {
 }
 
 /**
- * Create Strategy Performance sheet
+ * Create Strategy Performance sheet - DEPRECATED: Combined with SR_Overview
  */
-function EW_createStrategiesSheet(ss, strategies) {
-  const sheetName = 'SR_Strategies';
-  let sheet = ss.getSheetByName(sheetName);
-  
-  if (!sheet) {
-    sheet = ss.insertSheet(sheetName);
-  } else {
-    sheet.clear();
-  }
-  
-  const data = [
-    ['STRATEGY PERFORMANCE COMPARISON'],
-    ['Strategy', 'Total Trades', 'Hit Count', 'Hit Rate', 'Avg Profit', 'Avg Loss', 'Profit Factor', 'Avg Days to Hit', 'Total Profit', 'Total Loss']
-  ];
-  
-  // Add strategy data sorted by hit rate
-  if (strategies) {
-    const sortedStrategies = Object.entries(strategies)
-      .sort((a, b) => (b[1].hitRate || 0) - (a[1].hitRate || 0));
-    
-    sortedStrategies.forEach(([strategy, stats]) => {
-      data.push([
-        strategy,
-        stats.totalTrades || stats.count || 0,  // Check both field names
-        stats.hitTrades || stats.hits || 0,      // Check both field names
-        `${((stats.hitRate || 0) * 100).toFixed(1)}%`,
-        `${((Number(stats.avgProfit) || 0) * 100).toFixed(2)}%`,  // Convert to percentage
-        `${((Number(stats.avgLoss) || 0) * 100).toFixed(2)}%`,    // Convert to percentage
-        (Number(stats.profitFactor) || 0).toFixed(2),
-        (Number(stats.avgDaysToHit) || 0).toFixed(1),
-        (Number(stats.totalProfit) || 0).toFixed(2),
-        (Number(stats.totalLoss) || 0).toFixed(2)
-      ]);
-    });
-  }
-  
-  // Pad data array to ensure consistent columns
-  const paddedData = padDataArray(data);
-  sheet.getRange(1, 1, paddedData.length, paddedData[0].length).setValues(paddedData);
-  
-  // Format the sheet
-  sheet.getRange(1, 1).setFontSize(14).setFontWeight('bold');
-  sheet.getRange(2, 1, 1, 10).setFontWeight('bold').setBackground('#374151').setFontColor('white');
-  sheet.autoResizeColumns(1, 10);
-  
-  // Apply conditional formatting to hit rate column
-  if (data.length > 2) {
-    const hitRateRange = sheet.getRange(3, 4, data.length - 2, 1);
-    
-    // Green for hit rate > 20%
-    const highRule = SpreadsheetApp.newConditionalFormatRule()
-      .whenTextContains('2')
-      .setBackground('#D4EDDA')
-      .setFontColor('#155724')
-      .setRanges([hitRateRange])
-      .build();
-    
-    // Yellow for hit rate 10-20%
-    const midRule = SpreadsheetApp.newConditionalFormatRule()
-      .whenTextContains('1')
-      .setBackground('#FFF3CD')
-      .setFontColor('#856404')
-      .setRanges([hitRateRange])
-      .build();
-    
-    sheet.setConditionalFormatRules([highRule, midRule]);
-  }
-}
+// function EW_createStrategiesSheet(ss, strategies) {
+//   const sheetName = 'SR_Strategies';
+//   let sheet = ss.getSheetByName(sheetName);
+//   
+//   if (!sheet) {
+//     sheet = ss.insertSheet(sheetName);
+//   } else {
+//     sheet.clear();
+//   }
+//   
+//   const data = [
+//     ['STRATEGY PERFORMANCE COMPARISON'],
+//     ['Strategy', 'Total Trades', 'Hit Count', 'Hit Rate', 'Avg Profit', 'Avg Loss', 'Profit Factor', 'Avg Days to Hit', 'Total Profit', 'Total Loss']
+//   ];
+//   
+//   // Add strategy data sorted by hit rate
+//   if (strategies) {
+//     const sortedStrategies = Object.entries(strategies)
+//       .sort((a, b) => (b[1].hitRate || 0) - (a[1].hitRate || 0));
+//     
+//     sortedStrategies.forEach(([strategy, stats]) => {
+//       data.push([
+//         strategy,
+//         stats.totalTrades || stats.count || 0,  // Check both field names
+//         stats.hitTrades || stats.hits || 0,      // Check both field names
+//         `${((stats.hitRate || 0) * 100).toFixed(1)}%`,
+//         `${((Number(stats.avgProfit) || 0) * 100).toFixed(2)}%`,  // Convert to percentage
+//         `${((Number(stats.avgLoss) || 0) * 100).toFixed(2)}%`,    // Convert to percentage
+//         (Number(stats.profitFactor) || 0).toFixed(2),
+//         (Number(stats.avgDaysToHit) || 0).toFixed(1),
+//         (Number(stats.totalProfit) || 0).toFixed(2),
+//         (Number(stats.totalLoss) || 0).toFixed(2)
+//       ]);
+//     });
+//   }
+//   
+//   // Pad data array to ensure consistent columns
+//   const paddedData = padDataArray(data);
+//   sheet.getRange(1, 1, paddedData.length, paddedData[0].length).setValues(paddedData);
+//   
+//   // Format the sheet
+//   sheet.getRange(1, 1).setFontSize(14).setFontWeight('bold');
+//   sheet.getRange(2, 1, 1, 10).setFontWeight('bold').setBackground('#374151').setFontColor('white');
+//   sheet.autoResizeColumns(1, 10);
+//   
+//   // Apply conditional formatting to hit rate column
+//   if (data.length > 2) {
+//     const hitRateRange = sheet.getRange(3, 4, data.length - 2, 1);
+//     
+//     // Green for hit rate > 20%
+//     const highRule = SpreadsheetApp.newConditionalFormatRule()
+//       .whenTextContains('2')
+//       .setBackground('#D4EDDA')
+//       .setFontColor('#155724')
+//       .setRanges([hitRateRange])
+//       .build();
+//     
+//     // Yellow for hit rate 10-20%
+//     const midRule = SpreadsheetApp.newConditionalFormatRule()
+//       .whenTextContains('1')
+//       .setBackground('#FFF3CD')
+//       .setFontColor('#856404')
+//       .setRanges([hitRateRange])
+//       .build();
+//     
+//     sheet.setConditionalFormatRules([highRule, midRule]);
+//   }
+// }
 
 /**
  * Create Top Plays sheet
