@@ -3,9 +3,24 @@
  * Stores detailed logs in JSON format for tracking and analysis
  */
 
-// Drive folder IDs for storing logs
-const API_LOG_FOLDER_ID = '1fUcRfi6y-JoWPlMO2jGAJOutapihfUUd';  // Main folder for detailed responses
-const API_SUMMARY_FOLDER_ID = '1BMa9E4nvjW3hjz1mgZQrMR1zxTNKnful';  // Subfolder for summary logs
+// Get Drive folder IDs from Script Properties
+function getApiLogFolderId() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const folderId = scriptProperties.getProperty('API_LOGS_FOLDER_ID');
+  if (!folderId) {
+    throw new Error('API_LOGS_FOLDER_ID not set in Script Properties');
+  }
+  return folderId;
+}
+
+function getApiSummaryFolderId() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const folderId = scriptProperties.getProperty('DAILY_REPORTS_FOLDER_ID');
+  if (!folderId) {
+    throw new Error('DAILY_REPORTS_FOLDER_ID not set in Script Properties');
+  }
+  return folderId;
+}
 
 /**
  * Initialize or get today's API log file
@@ -13,7 +28,7 @@ const API_SUMMARY_FOLDER_ID = '1BMa9E4nvjW3hjz1mgZQrMR1zxTNKnful';  // Subfolder
  */
 function EW_getApiLogFile() {
   try {
-    const folder = DriveApp.getFolderById(API_SUMMARY_FOLDER_ID);  // Use summary folder
+    const folder = DriveApp.getFolderById(getApiSummaryFolderId());  // Use summary folder
     const today = new Date();
     const fileName = `yahoo_api_log_${today.toISOString().split('T')[0]}.json`;
     
@@ -81,7 +96,7 @@ function EW_logApiCall(callData, rawResponse = null) {
  */
 function EW_getApiCallSummary(date = new Date()) {
   try {
-    const folder = DriveApp.getFolderById(API_SUMMARY_FOLDER_ID);  // Use summary folder
+    const folder = DriveApp.getFolderById(getApiSummaryFolderId());  // Use summary folder
     const fileName = `yahoo_api_log_${date.toISOString().split('T')[0]}.json`;
     
     const files = folder.getFilesByName(fileName);
@@ -159,7 +174,7 @@ function EW_createDailyApiReport() {
       return;
     }
     
-    const folder = DriveApp.getFolderById(API_SUMMARY_FOLDER_ID);  // Use summary folder
+    const folder = DriveApp.getFolderById(getApiSummaryFolderId());  // Use summary folder
     const today = new Date();
     const reportName = `yahoo_api_summary_${today.toISOString().split('T')[0]}.txt`;
     
@@ -225,7 +240,7 @@ function EW_cleanupOldApiLogs() {
     let deletedCount = 0;
     
     // Clean up detailed response files in main folder
-    const mainFolder = DriveApp.getFolderById(API_LOG_FOLDER_ID);
+    const mainFolder = DriveApp.getFolderById(getApiLogFolderId());
     const mainFiles = mainFolder.getFiles();
     
     while (mainFiles.hasNext()) {
@@ -246,7 +261,7 @@ function EW_cleanupOldApiLogs() {
     }
     
     // Clean up summary logs in summary folder
-    const summaryFolder = DriveApp.getFolderById(API_SUMMARY_FOLDER_ID);
+    const summaryFolder = DriveApp.getFolderById(getApiSummaryFolderId());
     const summaryFiles = summaryFolder.getFiles();
     
     while (summaryFiles.hasNext()) {
@@ -288,7 +303,7 @@ function EW_cleanupOldApiLogs() {
  */
 function EW_saveApiResponse(ticker, timestamp, response, metadata = {}) {
   try {
-    const folder = DriveApp.getFolderById(API_LOG_FOLDER_ID);  // Main folder for detailed responses
+    const folder = DriveApp.getFolderById(getApiLogFolderId());  // Main folder for detailed responses
     
     // Create filename with ticker and timestamp
     const date = new Date(timestamp);
@@ -366,8 +381,8 @@ function EW_showApiSummary() {
  */
 function EW_getApiResponsesFolderUrl() {
   try {
-    const mainFolder = DriveApp.getFolderById(API_LOG_FOLDER_ID);
-    const summaryFolder = DriveApp.getFolderById(API_SUMMARY_FOLDER_ID);
+    const mainFolder = DriveApp.getFolderById(getApiLogFolderId());
+    const summaryFolder = DriveApp.getFolderById(getApiSummaryFolderId());
     
     const mainUrl = mainFolder.getUrl();
     const summaryUrl = summaryFolder.getUrl();
