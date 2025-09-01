@@ -1078,14 +1078,22 @@ function EW_calculateIndicatorsFromYahoo(timestamps, quotes, targetIndex = null)
     const lowsSlice = lows.slice(0, endIndex);
     const volumesSlice = volumes.slice(0, endIndex);
     
-    // Calculate indicators
-    const rsi = EW_calculateRSI(closesSlice, 14);
-    const sma20 = EW_calculateSMA(closesSlice, 20);
-    const sma50 = EW_calculateSMA(closesSlice, 50);
-    const ema9 = EW_calculateEMA(closesSlice, 9);
-    const ema21 = EW_calculateEMA(closesSlice, 21);
-    const vwap = EW_calculateVWAP(closesSlice, highsSlice, lowsSlice, volumesSlice);
-    const atr = EW_calculateATR(highsSlice, lowsSlice, closesSlice, 14);
+    // Use consolidated TechnicalIndicators module for all calculations
+    const indicators = TechnicalIndicators.calculateAll({
+      closes: closesSlice,
+      highs: highsSlice,
+      lows: lowsSlice,
+      volumes: volumesSlice
+    });
+    
+    // Extract individual indicators from the calculated results
+    const rsi = indicators.rsi;
+    const sma20 = indicators.sma20;
+    const sma50 = indicators.sma50;
+    const ema9 = indicators.ema9;
+    const ema21 = indicators.ema21;
+    const vwap = indicators.vwap;
+    const atr = indicators.atr;
     
     // Calculate relative volume (current vs 20-period average)
     const currentVolume = volumesSlice[volumesSlice.length - 1];
@@ -1119,130 +1127,23 @@ function EW_calculateIndicatorsFromYahoo(timestamps, quotes, targetIndex = null)
   }
 }
 
-/**
- * Calculate Simple Moving Average
- * @param {Array} prices - Array of prices
- * @param {number} period - Period for SMA
- * @returns {number} SMA value
- */
-function EW_calculateSMA(prices, period) {
-  if (prices.length < period) return null;
-  const slice = prices.slice(-period);
-  return slice.reduce((a, b) => a + b, 0) / period;
-}
+// Indicator calculations have been moved to 19_TechnicalIndicators.js
+// The EW_calculate* functions are available there for backward compatibility
 
-/**
- * Calculate Exponential Moving Average
- * @param {Array} prices - Array of prices
- * @param {number} period - Period for EMA
- * @returns {number} EMA value
- */
-function EW_calculateEMA(prices, period) {
-  if (prices.length < period) return null;
-  
-  const multiplier = 2 / (period + 1);
-  let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  
-  for (let i = period; i < prices.length; i++) {
-    ema = (prices[i] - ema) * multiplier + ema;
-  }
-  
-  return ema;
-}
-
-/**
- * Calculate RSI (Relative Strength Index)
- * @param {Array} closes - Array of closing prices
- * @param {number} period - RSI period (default: 14)
- * @returns {number} RSI value between 0 and 100
- */
+// RSI calculation moved to 19_TechnicalIndicators.js
+// Keeping function stub for backward compatibility
 function EW_calculateRSI(closes, period = 14) {
-  if (closes.length < period + 1) return null;
-  
-  const changes = [];
-  for (let i = 1; i < closes.length; i++) {
-    changes.push(closes[i] - closes[i - 1]);
-  }
-  
-  let avgGain = 0;
-  let avgLoss = 0;
-  
-  // Initial calculation
-  for (let i = 0; i < period; i++) {
-    if (changes[i] > 0) avgGain += changes[i];
-    else avgLoss -= changes[i];
-  }
-  
-  avgGain /= period;
-  avgLoss /= period;
-  
-  // Calculate RSI for the latest period
-  for (let i = period; i < changes.length; i++) {
-    const change = changes[i];
-    const gain = change > 0 ? change : 0;
-    const loss = change < 0 ? -change : 0;
-    
-    avgGain = (avgGain * (period - 1) + gain) / period;
-    avgLoss = (avgLoss * (period - 1) + loss) / period;
-  }
-  
-  const rs = avgGain / avgLoss;
-  return 100 - (100 / (1 + rs));
+  return TechnicalIndicators.RSI(closes, period);
 }
 
-/**
- * Calculate VWAP (Volume Weighted Average Price)
- * @param {Array} closes - Array of closing prices
- * @param {Array} highs - Array of high prices  
- * @param {Array} lows - Array of low prices
- * @param {Array} volumes - Array of volume data
- * @returns {number} VWAP value
- */
+// VWAP calculation moved to 19_TechnicalIndicators.js
+// Keeping function stub for backward compatibility
 function EW_calculateVWAP(closes, highs, lows, volumes) {
-  if (closes.length !== highs.length || closes.length !== lows.length || closes.length !== volumes.length) {
-    return null;
-  }
-  
-  let totalVolume = 0;
-  let totalVolumePrice = 0;
-  
-  for (let i = 0; i < closes.length; i++) {
-    const typicalPrice = (highs[i] + lows[i] + closes[i]) / 3;
-    const volume = volumes[i];
-    
-    totalVolumePrice += typicalPrice * volume;
-    totalVolume += volume;
-  }
-  
-  return totalVolume > 0 ? totalVolumePrice / totalVolume : null;
+  return TechnicalIndicators.VWAP(closes, highs, lows, volumes);
 }
 
-/**
- * Calculate ATR (Average True Range)
- * @param {Array} highs - Array of high prices
- * @param {Array} lows - Array of low prices
- * @param {Array} closes - Array of closing prices
- * @param {number} period - ATR period (default: 14)
- * @returns {number} ATR value
- */
+// ATR calculation moved to 19_TechnicalIndicators.js
+// Keeping function stub for backward compatibility
 function EW_calculateATR(highs, lows, closes, period = 14) {
-  if (highs.length < period + 1) return null;
-  
-  const trueRanges = [];
-  
-  for (let i = 1; i < highs.length; i++) {
-    const high = highs[i];
-    const low = lows[i];
-    const prevClose = closes[i - 1];
-    
-    const tr1 = high - low;
-    const tr2 = Math.abs(high - prevClose);
-    const tr3 = Math.abs(low - prevClose);
-    
-    trueRanges.push(Math.max(tr1, tr2, tr3));
-  }
-  
-  // Calculate simple moving average of true ranges
-  const recentTR = trueRanges.slice(-period);
-  return recentTR.reduce((a, b) => a + b, 0) / recentTR.length;
+  return TechnicalIndicators.ATR(highs, lows, closes, period);
 }

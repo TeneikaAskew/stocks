@@ -2233,11 +2233,32 @@ function EW_createReportSheet(ss, insights, allTrades) {
   mainStats.forEach(key => {
     if (insights.overview[key] !== undefined) {
       let label = key.replace(/([A-Z])/g, ' $1').trim();
-      if (key === 'hitRate' || key === 'profitableRate') {
+      let value = insights.overview[key];
+      let formattedValue = value;
+      
+      // Format specific fields appropriately
+      if (key === 'totalTrades' || key === 'totalObservations') {
+        // Keep as plain number, no percentage
+        formattedValue = value;
+        reportSheet.getRange(currentRow, 1).setValue(label);
+        reportSheet.getRange(currentRow, 2).setValue(formattedValue).setNumberFormat('#,##0'); // Format as number with commas
+      } else if (key === 'hitRate' || key === 'profitableRate') {
         label += ' (by observation)';
+        formattedValue = (value * 100).toFixed(2) + '%';
+        reportSheet.getRange(currentRow, 1).setValue(label);
+        reportSheet.getRange(currentRow, 2).setValue(formattedValue);
+      } else if (key === 'avgProfit' || key === 'avgLoss') {
+        formattedValue = (value * 100).toFixed(2) + '%';
+        reportSheet.getRange(currentRow, 1).setValue(label);
+        reportSheet.getRange(currentRow, 2).setValue(formattedValue);
+      } else if (key === 'profitFactor' || key === 'avgRiskReward' || key === 'avgDaysToHit') {
+        formattedValue = typeof value === 'number' ? value.toFixed(2) : value;
+        reportSheet.getRange(currentRow, 1).setValue(label);
+        reportSheet.getRange(currentRow, 2).setValue(formattedValue);
+      } else {
+        reportSheet.getRange(currentRow, 1).setValue(label);
+        reportSheet.getRange(currentRow, 2).setValue(value);
       }
-      reportSheet.getRange(currentRow, 1).setValue(label);
-      reportSheet.getRange(currentRow, 2).setValue(insights.overview[key]);
       currentRow++;
     }
   });
