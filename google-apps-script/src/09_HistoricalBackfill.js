@@ -90,7 +90,30 @@ function EW_backfillHistoricalTracking() {
     }
     
     try {
-      const backfilled = EW_backfillStrategyTracking(ss, strategy);
+      const backfilled = EW_backfillStrategyTracking(ss, strategy, startTime, MAX_RUNTIME_MS);
+      
+      // Check if continuation is needed (-1 indicates time limit reached)
+      if (backfilled === -1) {
+        EW_trace('BACKFILL', `${strategy} needs continuation - saving state...`, true);
+        
+        // Save state for continuation at strategy level
+        if (EW_saveBackfillState) {
+          const state = {
+            currentStrategyIndex: i,  // Stay on current strategy
+            totalBackfilled: totalBackfilled,
+            errors: errors,
+            processedStrategies: processedStrategies,
+            continuationCount: (savedState?.continuationCount || 0) + 1
+          };
+          EW_saveBackfillState(state, 'BACKFILL_STATE');
+          
+          // Schedule continuation trigger
+          EW_scheduleBackfillContinuation('EW_backfillHistoricalTracking');
+        }
+        
+        return; // Exit to let continuation handle the rest
+      }
+      
       if (backfilled > 0) {
         totalBackfilled += backfilled;
         EW_trace('BACKFILL', `Backfilled ${backfilled} positions in ${strategy}`);
@@ -151,11 +174,15 @@ function EW_backfillHistoricalTracking() {
  * @param {string} strategyName - Name of the strategy/sheet
  * @returns {number} Number of positions processed
  */
-function EW_backfillStrategyTracking(ss, strategyName) {
+function EW_backfillStrategyTracking(ss, strategyName, startTime = null, maxRuntimeMs = null) {
   const sheet = ss.getSheetByName(strategyName);
   if (!sheet || sheet.getLastRow() < 2) {
     return 0;
   }
+  
+  // Use provided start time or current time
+  const functionStartTime = startTime || new Date();
+  const MAX_RUNTIME = maxRuntimeMs || (25 * 60 * 1000); // 25 minutes default
   
   // Get header map
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
@@ -202,8 +229,48 @@ function EW_backfillStrategyTracking(ss, strategyName) {
   let processedCount = 0;
   let failedCount = 0;
   
-  // Process only the rows that need it
-  batchCheck.rowsToProcess.forEach((rowInfo, index) => {
+  // Check for saved position state within this strategy
+  const savedState = EW_getBackfillState ? EW_getBackfillState('BACKFILL_POSITION_STATE') : null;
+  let startPositionIndex = 0;
+  
+  if (savedState && savedState.currentStrategy === strategyName) {
+    startPositionIndex = savedState.currentPositionIndex || 0;
+    processedCount = savedState.processedInStrategy || 0;
+    failedCount = savedState.failedInStrategy || 0;
+    EW_trace('BACKFILL', `${strategyName}: Resuming from position ${startPositionIndex + 1}/${batchCheck.rowsToProcess.length}`);
+  } else if (savedState && savedState.currentStrategy !== strategyName) {
+    // Clear stale position state from a different strategy
+    if (EW_clearBackfillState) {
+      EW_clearBackfillState('BACKFILL_POSITION_STATE');
+    }
+  }
+  
+  // Process only the rows that need it, starting from saved position
+  for (let index = startPositionIndex; index < batchCheck.rowsToProcess.length; index++) {
+    const rowInfo = batchCheck.rowsToProcess[index];
+    
+    // Check time limit after each position
+    const elapsedMs = new Date() - functionStartTime;
+    if (elapsedMs > MAX_RUNTIME) {
+      EW_trace('BACKFILL', `${strategyName}: Time limit reached after ${Math.round(elapsedMs / 1000)}s at position ${index + 1}/${batchCheck.rowsToProcess.length}`, true);
+      
+      // Save position-level state
+      if (EW_saveBackfillState) {
+        const positionState = {
+          currentStrategy: strategyName,
+          currentPositionIndex: index,
+          processedInStrategy: processedCount,
+          failedInStrategy: failedCount,
+          totalPositions: batchCheck.rowsToProcess.length,
+          timestamp: new Date().toISOString()
+        };
+        EW_saveBackfillState(positionState, 'BACKFILL_POSITION_STATE');
+      }
+      
+      // Return special value to indicate continuation needed
+      return -1;
+    }
+    
     try {
       // Log progress at intervals
       EW_logBatchProgress(index + 1, batchCheck.rowsToProcess.length, 25, 'BACKFILL');
@@ -243,7 +310,12 @@ function EW_backfillStrategyTracking(ss, strategyName) {
       EW_trace('BACKFILL', `Error processing row ${rowInfo.rowNum} in ${strategyName}: ${e.message}`);
       failedCount++;
     }
-  });
+  }
+  
+  // Clear position state if we completed this strategy
+  if (EW_clearBackfillState) {
+    EW_clearBackfillState('BACKFILL_POSITION_STATE');
+  }
   
   // Force save
   if (processedCount > 0) {
@@ -925,7 +997,7 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     // Debug logging for day 0-2
     if (tradingDaysSinceEntry <= 2) {
       EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: high=${dayData.high}, low=${dayData.low}, strike=${strike}`);
-      EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: isBullish=${isBullish}, isBearish=${isBearish}`);
+      EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry} [${strategy}]: isBullish=${isBullish}, isBearish=${isBearish}, isBullSpread=${isBullSpread}, isBearSpread=${isBearSpread}`);
       EW_trace('BACKFILL', `${ticker} Day ${tradingDaysSinceEntry}: maxFav=${dayMaxFavorable}, minUnfav=${dayMinUnfavorable}`);
     }
     
