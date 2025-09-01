@@ -192,31 +192,77 @@ def fetch_minute_data_for_date(ticker, date):
         print(f"  Error fetching minute data for {date}: {e}")
         return pd.DataFrame()
 
-def calculate_all_indicators(df, ticker_symbol):
+def calculate_all_indicators(df, ticker_symbol, is_minute_data=False):
     """
     Calculate all technical indicators for a dataframe.
+    
+    Args:
+        df: DataFrame with OHLCV data
+        ticker_symbol: Ticker symbol (for SPX volume handling)
+        is_minute_data: If True, adjust window sizes for minute-level data
     """
+    # Adjust window sizes for minute vs daily data
+    # For minute data, we want shorter windows since we have 390 bars per day
+    if is_minute_data:
+        # For minute data: approximate daily equivalents
+        # 390 minutes = 1 day, so:
+        ma_5_window = 5  # 5 minutes
+        ma_10_window = 10  # 10 minutes
+        ma_20_window = 20  # 20 minutes
+        ma_50_window = 50  # 50 minutes
+        ma_390_window = 390  # Full day
+        volatility_short = 30  # 30 minutes
+        volatility_long = 390  # Full day
+    else:
+        # For daily data: use day counts
+        ma_5_window = 5
+        ma_10_window = 10
+        ma_20_window = 20
+        ma_50_window = 50
+        ma_390_window = None  # Not applicable for daily
+        volatility_short = 5
+        volatility_long = 20
+    
     # Calculate moving averages
-    df['ma_5'] = df['Close'].rolling(window=5).mean()
-    df['ma_10'] = df['Close'].rolling(window=10).mean()
-    df['ma_20'] = df['Close'].rolling(window=20).mean()
-    df['ma_50'] = df['Close'].rolling(window=50).mean()
-    df['volume_ma_10'] = df['Volume'].rolling(window=10).mean()
-    df['volume_ma_20'] = df['Volume'].rolling(window=20).mean()
+    df['ma_5'] = df['Close'].rolling(window=ma_5_window).mean()
+    df['ma_10'] = df['Close'].rolling(window=ma_10_window).mean()
+    df['ma_20'] = df['Close'].rolling(window=ma_20_window).mean()
+    df['ma_50'] = df['Close'].rolling(window=ma_50_window).mean()
+    
+    if is_minute_data:
+        # Add full-day MA for minute data
+        df['ma_390'] = df['Close'].rolling(window=ma_390_window).mean()
+    
+    df['volume_ma_10'] = df['Volume'].rolling(window=ma_10_window).mean()
+    df['volume_ma_20'] = df['Volume'].rolling(window=ma_20_window).mean()
     
     # Calculate returns and volatility
-    df['daily_return'] = df['Close'].pct_change()
-    df['volatility_5d'] = df['daily_return'].rolling(window=5).std()
-    df['volatility_20d'] = df['daily_return'].rolling(window=20).std()
+    df['return'] = df['Close'].pct_change()
+    if is_minute_data:
+        df['volatility_30min'] = df['return'].rolling(window=volatility_short).std()
+        df['volatility_day'] = df['return'].rolling(window=volatility_long).std()
+    else:
+        df['daily_return'] = df['return']  # Keep for compatibility
+        df['volatility_5d'] = df['return'].rolling(window=volatility_short).std()
+        df['volatility_20d'] = df['return'].rolling(window=volatility_long).std()
     
     # Calculate EMAs
-    df['ema_9'] = calculate_ema(df['Close'], 9)
-    df['ema_21'] = calculate_ema(df['Close'], 21)
-    df['ema_50'] = calculate_ema(df['Close'], 50)
+    if is_minute_data:
+        df['ema_9'] = calculate_ema(df['Close'], 9)
+        df['ema_21'] = calculate_ema(df['Close'], 21)
+        df['ema_50'] = calculate_ema(df['Close'], 50)
+    else:
+        df['ema_9'] = calculate_ema(df['Close'], 9)
+        df['ema_21'] = calculate_ema(df['Close'], 21)
+        df['ema_50'] = calculate_ema(df['Close'], 50)
     
     # Calculate RSI
-    df['rsi_14'] = calculate_rsi(df['Close'], 14)
-    df['rsi_9'] = calculate_rsi(df['Close'], 9)
+    if is_minute_data:
+        df['rsi_14'] = calculate_rsi(df['Close'], 14)  # 14 minute RSI
+        df['rsi_30'] = calculate_rsi(df['Close'], 30)  # 30 minute RSI
+    else:
+        df['rsi_14'] = calculate_rsi(df['Close'], 14)
+        df['rsi_9'] = calculate_rsi(df['Close'], 9)
     
     # Calculate RVOL (Relative Volume)
     df['rvol'] = calculate_rvol(df['Volume'], df['volume_ma_20'])
@@ -371,9 +417,12 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None):
                         print(f"  Skipping {fetch_date} due to invalid data format")
                         continue
                     
-                    # Save minute data only if valid
+                    # Calculate indicators for minute data before saving
+                    minute_df = calculate_all_indicators(minute_df, ticker_symbol, is_minute_data=True)
+                    
+                    # Save minute data with indicators
                     minute_df.to_parquet(minute_file, compression='snappy')
-                    print(f"  Saved {len(minute_df)} minute bars to {minute_file}")
+                    print(f"  Saved {len(minute_df)} minute bars with indicators to {minute_file}")
                 else:
                     print(f"  No data available for {fetch_date} (market holiday?)")
                     continue
