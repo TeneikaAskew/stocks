@@ -300,17 +300,23 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None):
         display_name = ticker_name if ticker_name else ticker_symbol
         display_name_lower = display_name.lower()
         
-        # Create data directories
+        # Create ticker-specific data directories
         data_dir = Path("data")
         data_dir.mkdir(exist_ok=True)
-        minute_dir = data_dir / "minute"
+        
+        # Create ticker-specific folders
+        ticker_dir = data_dir / display_name_lower
+        ticker_dir.mkdir(exist_ok=True)
+        
+        # Create minute subfolder for this ticker
+        minute_dir = ticker_dir / "minute"
         minute_dir.mkdir(exist_ok=True)
         
         today = datetime.now().date()
         current_year = today.year
         
-        # File paths
-        daily_parquet = data_dir / f"{display_name_lower}_{current_year}.parquet"
+        # File paths - now in ticker-specific folders
+        daily_parquet = ticker_dir / f"{display_name_lower}_{current_year}.parquet"
         minute_parquet_template = str(minute_dir / f"{display_name_lower}_minute_{{}}.parquet")
         
         print(f"\n{'='*60}")
@@ -472,8 +478,8 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None):
         new_daily_df.to_parquet(daily_parquet, compression='snappy', index=True)
         print(f"Daily data saved to {daily_parquet}")
         
-        # Create summary file
-        summary_file = data_dir / f"{display_name_lower}_summary.json"
+        # Create summary file in ticker directory
+        summary_file = ticker_dir / f"{display_name_lower}_summary.json"
         summary = {
             "ticker": display_name,
             "ticker_symbol": ticker_symbol,
