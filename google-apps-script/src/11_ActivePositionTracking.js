@@ -9,6 +9,7 @@
  * Runs at 5 PM ET to capture full day's 1-minute interval data
  */
 function EW_updateActiveStrikeHits() {
+  const MAX_RUNTIME_MS = 25 * 60 * 1000; // 25 minutes (leaving 5 min buffer)
   const startTime = new Date();
   console.log(`ACTIVE TRACKING: Started at ${startTime.toISOString()}`);
   Logger.log(`ACTIVE TRACKING: Strike_Hit update started at ${startTime.toISOString()}`);
@@ -24,20 +25,83 @@ function EW_updateActiveStrikeHits() {
     return { checked: 0, updated: 0, duration: 0, skipped: true, reason: 'weekend' };
   }
   
-  EW_trace('ACTIVE_TRACKING', 'Starting Strike_Hit updates for active positions', true);
+  // Check for existing state from previous run
+  const savedState = EW_getBackfillState ? EW_getBackfillState('ACTIVE_TRACKING_STATE') : null;
+  let currentStrategyIndex = savedState ? savedState.currentStrategyIndex : 0;
+  let totalUpdated = savedState ? savedState.totalUpdated : 0;
+  let totalChecked = savedState ? savedState.totalChecked : 0;
+  let totalSkipped = savedState ? savedState.totalSkipped : 0;
+  let totalExpired = savedState ? savedState.totalExpired : 0;
+  let errors = savedState ? savedState.errors : [];
+  let processedStrategies = savedState ? savedState.processedStrategies : [];
+  
+  if (savedState) {
+    EW_trace('ACTIVE_TRACKING', `Resuming from strategy index ${currentStrategyIndex}. Already processed: ${processedStrategies.join(', ')}`, true);
+  } else {
+    EW_trace('ACTIVE_TRACKING', 'Starting Strike_Hit updates for active positions', true);
+  }
   
   const ss = SpreadsheetApp.getActive();
   const strategies = Object.keys(EW.STRATEGY_ENDPOINTS);
-  let totalUpdated = 0;
-  let totalChecked = 0;
-  let totalSkipped = 0;
-  let totalExpired = 0;
-  let errors = [];
   
-  for (const strategy of strategies) {
+  // Process strategies starting from where we left off
+  for (let i = currentStrategyIndex; i < strategies.length; i++) {
+    const strategy = strategies[i];
+    
+    // Check if we're approaching time limit
+    const elapsedMs = new Date() - startTime;
+    if (elapsedMs > MAX_RUNTIME_MS) {
+      EW_trace('ACTIVE_TRACKING', `Approaching time limit after ${Math.round(elapsedMs / 1000)}s. Saving state and scheduling continuation...`, true);
+      
+      // Save state for continuation
+      if (EW_saveBackfillState) {
+        const state = {
+          currentStrategyIndex: i,
+          totalUpdated: totalUpdated,
+          totalChecked: totalChecked,
+          totalSkipped: totalSkipped,
+          totalExpired: totalExpired,
+          errors: errors,
+          processedStrategies: processedStrategies,
+          continuationCount: (savedState?.continuationCount || 0) + 1
+        };
+        EW_saveBackfillState(state, 'ACTIVE_TRACKING_STATE');
+        
+        // Schedule continuation trigger
+        EW_scheduleBackfillContinuation('EW_updateActiveStrikeHits');
+      }
+      
+      return; // Exit to let continuation handle the rest
+    }
     try {
       console.log(`ACTIVE TRACKING: Processing ${strategy} sheet...`);
-      const result = EW_updateStrategyActiveStrikes(ss, strategy);
+      const result = EW_updateStrategyActiveStrikes(ss, strategy, startTime, MAX_RUNTIME_MS);
+      
+      // Check if continuation is needed (-1 indicates time limit reached within strategy)
+      if (result === -1) {
+        EW_trace('ACTIVE_TRACKING', `${strategy} needs continuation - saving state...`, true);
+        
+        // Save state for continuation at strategy level
+        if (EW_saveBackfillState) {
+          const state = {
+            currentStrategyIndex: i,  // Stay on current strategy
+            totalUpdated: totalUpdated,
+            totalChecked: totalChecked,
+            totalSkipped: totalSkipped,
+            totalExpired: totalExpired,
+            errors: errors,
+            processedStrategies: processedStrategies,
+            continuationCount: (savedState?.continuationCount || 0) + 1
+          };
+          EW_saveBackfillState(state, 'ACTIVE_TRACKING_STATE');
+          
+          // Schedule continuation trigger
+          EW_scheduleBackfillContinuation('EW_updateActiveStrikeHits');
+        }
+        
+        return; // Exit to let continuation handle the rest
+      }
+      
       totalChecked += result.checked;
       totalUpdated += result.updated;
       totalSkipped += (result.skipped || 0);
@@ -53,6 +117,8 @@ function EW_updateActiveStrikeHits() {
       } else if (result.skipped > 0) {
         console.log(`ACTIVE TRACKING: ${strategy} - All ${result.skipped} positions already updated today`);
       }
+      
+      processedStrategies.push(strategy);
     } catch (e) {
       errors.push(`${strategy}: ${e.message}`);
       EW_trace('ACTIVE_TRACKING', `Error updating ${strategy}: ${e.message}`, true);
@@ -60,8 +126,11 @@ function EW_updateActiveStrikeHits() {
     }
   }
   
-  // Don't clear continuation state here - this function doesn't use continuation
-  // and clearing it could interfere with other functions that do
+  // Clear state if we completed all strategies
+  if (EW_clearBackfillState) {
+    EW_clearBackfillState('ACTIVE_TRACKING_STATE');
+    EW_clearBackfillState('ACTIVE_POSITION_STATE');
+  }
   
   const endTime = new Date();
   const duration = Math.round((endTime - startTime) / 1000);
@@ -112,11 +181,15 @@ function EW_updateActiveStrikeHits() {
  * @param {string} strategyName - Name of the strategy/sheet
  * @returns {Object} Object with checked and updated counts
  */
-function EW_updateStrategyActiveStrikes(ss, strategyName) {
+function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxRuntimeMs = null) {
   const sheet = ss.getSheetByName(strategyName);
   if (!sheet || sheet.getLastRow() < 2) {
     return { checked: 0, updated: 0 };
   }
+  
+  // Use provided start time or current time
+  const functionStartTime = startTime || new Date();
+  const MAX_RUNTIME = maxRuntimeMs || (25 * 60 * 1000); // 25 minutes default
   
   // Get header map
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
@@ -177,11 +250,49 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
     expDate: data[pos.rowIndex][hdrMap.expDateCol - 1] ? new Date(data[pos.rowIndex][hdrMap.expDateCol - 1]) : null
   }));
   
+  // Check for saved position state within this strategy
+  const savedPositionState = EW_getBackfillState ? EW_getBackfillState('ACTIVE_POSITION_STATE') : null;
+  let startPositionIndex = 0;
+  
+  if (savedPositionState && savedPositionState.currentStrategy === strategyName) {
+    startPositionIndex = savedPositionState.currentPositionIndex || 0;
+    updatedCount = savedPositionState.updatedInStrategy || 0;
+    EW_trace('ACTIVE_TRACKING', `${strategyName}: Resuming from position ${startPositionIndex + 1}/${positionsToCheck.length}`);
+  } else if (savedPositionState && savedPositionState.currentStrategy !== strategyName) {
+    // Clear stale position state from a different strategy
+    if (EW_clearBackfillState) {
+      EW_clearBackfillState('ACTIVE_POSITION_STATE');
+    }
+  }
+  
   // Batch check strike hits
   const results = EW_batchCheckStrikeHits(positionsToCheck);
   
   // Update cells with results
-  results.forEach((result, index) => {
+  for (let index = startPositionIndex; index < results.length; index++) {
+    const result = results[index];
+    
+    // Check time limit after each position
+    const elapsedMs = new Date() - functionStartTime;
+    if (elapsedMs > MAX_RUNTIME) {
+      EW_trace('ACTIVE_TRACKING', `${strategyName}: Time limit reached after ${Math.round(elapsedMs / 1000)}s at position ${index + 1}/${results.length}`, true);
+      
+      // Save position-level state
+      if (EW_saveBackfillState) {
+        const positionState = {
+          currentStrategy: strategyName,
+          currentPositionIndex: index,
+          updatedInStrategy: updatedCount,
+          totalPositions: results.length,
+          timestamp: new Date().toISOString()
+        };
+        EW_saveBackfillState(positionState, 'ACTIVE_POSITION_STATE');
+      }
+      
+      // Return special value to indicate continuation needed
+      return -1;
+    }
+    
     if (!result.error) {
       const position = positionsToCheck[index];
       const row = position.row;
@@ -362,7 +473,12 @@ function EW_updateStrategyActiveStrikes(ss, strategyName) {
     } else {
       console.error(`ACTIVE TRACKING ERROR: ${strategyName} - ${result.ticker}: ${result.error}`);
     }
-  });
+  }
+  
+  // Clear position state if we completed this strategy
+  if (EW_clearBackfillState) {
+    EW_clearBackfillState('ACTIVE_POSITION_STATE');
+  }
   
   // Force save
   if (updatedCount > 0) {
