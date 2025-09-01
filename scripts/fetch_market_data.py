@@ -521,12 +521,11 @@ def main():
     args = parser.parse_args()
     
     # Define ticker mappings
-    # Yahoo Finance uses ^GSPC for S&P 500 index
     ticker_mappings = {
         'IWM': ('IWM', None),      # Russell 2000 ETF
         'SPY': ('SPY', None),      # S&P 500 ETF
         'QQQ': ('QQQ', None),      # Nasdaq 100 ETF
-        'SPX': ('^GSPC', 'SPX'),   # S&P 500 Index (^GSPC on Yahoo)
+        'SPX': ('^SPX', 'SPX'),    # S&P 500 Index (^SPX on Yahoo)
     }
     
     # Determine which tickers to fetch
