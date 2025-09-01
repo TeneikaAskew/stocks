@@ -1,9 +1,7 @@
-# stocks
-
-# IWM Stock Analysis and Trading Signal System
+# Stock Market Analysis System
 
 ## Overview
-This repository contains tools for analyzing IWM (iShares Russell 2000 ETF) historical data, calculating technical indicators, and generating trading signals.
+This repository contains tools for analyzing stock market data (IWM, SPY, QQQ, SPX), calculating technical indicators, generating trading signals, and fetching real-time market data.
 
 ## Main Components
 
@@ -79,7 +77,56 @@ python3 trade_analysis_pipeline.py -months 2
 - `data/trade_patterns.csv` - Analyzed trading patterns
 - `data/similar_trades_pipeline.csv` - Similar profitable trades found
 
+## Market Data Scripts (scripts/)
+
+### 1. Fetch Market Data (`fetch_market_data.py`)
+Fetches minute-level and daily data from Yahoo Finance:
+- **Supports**: IWM, SPY, QQQ, SPX (S&P 500 Index)
+- **IMPORTANT**: Minute-level data is only available for the past 7 days due to Yahoo Finance limitations
+- **Features**:
+  - Fetches 1-minute bars for recent trading days (last 7 days)
+  - Calculates true daily OHLCV from minute data
+  - Computes comprehensive technical indicators
+  - Stores data in efficient Parquet format
+  - Saves minute data for future reference
+
+```bash
+# Fetch all tickers
+python3 scripts/fetch_market_data.py
+
+# Fetch specific tickers
+python3 scripts/fetch_market_data.py --tickers IWM SPY
+```
+
+### 2. Analyze Market Data (`analyze_market_data.py`)
+Analyzes stored market data:
+- Performance metrics and statistics
+- Correlation analysis between tickers
+- Export to CSV format
+- Technical indicator analysis
+
+```bash
+# Analyze specific ticker
+python3 scripts/analyze_market_data.py --ticker IWM
+
+# Compare all tickers
+python3 scripts/analyze_market_data.py --compare
+
+# Correlation analysis
+python3 scripts/analyze_market_data.py --correlations
+
+# Export to CSV
+python3 scripts/analyze_market_data.py --export
+```
+
+## Data Storage
+- `data/` - Daily aggregated data in Parquet format
+- `data/minute/` - Minute-level data (last 7 days only)
+- `data/*_summary.json` - Latest statistics for each ticker
+
 ## Notes
+- **Minute Data Limitation**: Yahoo Finance only provides minute-level data for the past 7 days. Historical data beyond 7 days uses daily aggregates
 - The first run of `iwm_analysis.py` may take 2-3 minutes to process all data
 - Indicators are calculated to match popular trading platforms (Robinhood, etc.)
 - Trade examples have been moved to `data/trade_examples/`
+- All market data is stored in efficient Parquet format for fast loading

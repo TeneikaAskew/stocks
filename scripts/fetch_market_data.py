@@ -242,8 +242,8 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None):
         print(f"{'='*60}")
         
         # Determine dates to fetch
-        # Yahoo Finance only provides minute data for last 30 days
-        max_lookback = 30
+        # Yahoo Finance only provides minute data for last 7 days
+        max_lookback = 7
         dates_to_fetch = []
         
         if daily_parquet.exists():
@@ -255,7 +255,7 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None):
             else:
                 start_date = max(today - timedelta(days=max_lookback), datetime(current_year, 1, 1).date())
         else:
-            # Start from 30 days ago or beginning of year, whichever is later
+            # Start from 7 days ago or beginning of year, whichever is later
             start_date = max(today - timedelta(days=max_lookback), datetime(current_year, 1, 1).date())
             print(f"No existing data for {current_year}. Starting from {start_date}")
         
@@ -351,7 +351,7 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None):
             "last_date": str(new_daily_df.index.max()),
             "first_date": str(new_daily_df.index.min()),
             "total_daily_records": len(new_daily_df),
-            "minute_data_available_from": str(max(new_daily_df.index.max().date() - timedelta(days=29), new_daily_df.index.min().date())),
+            "minute_data_available_from": str(max(new_daily_df.index.max().date() - timedelta(days=6), new_daily_df.index.min().date())),
             "current_year_file": f"{display_name_lower}_{current_year}.parquet",
             "latest_close": float(new_daily_df['Close'].iloc[-1]),
             "latest_volume": int(new_daily_df['Volume'].iloc[-1]) if 'Volume' in new_daily_df.columns else 0,
@@ -432,8 +432,8 @@ def main():
         sys.exit(1)
     
     print(f"\nAll tickers fetched successfully!")
-    print(f"Note: Minute-level data is only available for the last 30 days.")
-    print(f"Historical data beyond 30 days will use daily aggregates.")
+    print(f"Note: Minute-level data is only available for the last 7 days.")
+    print(f"Historical data beyond 7 days will use daily aggregates.")
 
 if __name__ == "__main__":
     main()
