@@ -1,0 +1,20 @@
+{
+  "ticker": "SPY",
+  "ticker_symbol": "SPY",
+  "last_update": "2025-09-01T02:51:29.161281",
+  "last_date": "2025-08-29 00:00:00",
+  "first_date": "2025-08-25 00:00:00",
+  "total_daily_records": 5,
+  "minute_data_available_from": "2025-08-25",
+  "current_year_file": "spy_2025.parquet",
+  "latest_close": 644.989990234375,
+  "latest_volume": 62936818,
+  "latest_rsi_14": null,
+  "latest_rvol": 62936818.0,
+  "latest_stoch_rsi_k": null,
+  "latest_stoch_rsi_d": null,
+  "latest_obv": 121008252.0,
+  "latest_atr_14": 3.5371234218267746,
+  "data_source": "1-minute aggregation",
+  "ytd_return": 0.38911112048423124
+}
