@@ -1,0 +1,19 @@
+{
+  "name": "stocks-gas-integration",
+  "version": "1.0.0",
+  "description": "Google Apps Script integration for stocks trading alerts and automation",
+  "scripts": {
+    "setup": "clasp login && clasp clone 1Qa8BmLGqRC2vp1lJtBWyxlXJUbD69rbTgcHkSWAxGxlKYKIHFwvrQaHy",
+    "push": "clasp push",
+    "pull": "clasp pull",
+    "deploy": "clasp deploy",
+    "logs": "clasp logs",
+    "open": "clasp open"
+  },
+  "dependencies": {
+    "@google/clasp": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/google-apps-script": "^1.0.0"
+  }
+}

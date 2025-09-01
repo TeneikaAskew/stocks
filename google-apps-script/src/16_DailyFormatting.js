@@ -139,18 +139,20 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
             // Neutral strategy - no specific formatting
             backgrounds.push([null]);
             fontWeights.push(['normal']);
-            continue;
           }
           
-          if (isHit) {
-            backgrounds.push([GREEN]);
-            fontWeights.push(['bold']);
-          } else if (isClose) {
-            backgrounds.push([YELLOW]);
-            fontWeights.push(['normal']);
-          } else {
-            backgrounds.push([RED]);
-            fontWeights.push(['normal']);
+          // Only apply hit/miss formatting for bullish/bearish strategies
+          if (isBullish || isBearish) {
+            if (isHit) {
+              backgrounds.push([GREEN]);
+              fontWeights.push(['bold']);
+            } else if (isClose) {
+              backgrounds.push([YELLOW]);
+              fontWeights.push(['normal']);
+            } else {
+              backgrounds.push([RED]);
+              fontWeights.push(['normal']);
+            }
           }
         }
       }
