@@ -15,6 +15,25 @@
  * @returns {Object} Result object with hit status and details
  */
 function EW_checkStockIntraday(ticker, targetPrice, date = new Date()) {
+  // Check if date is a weekend first
+  const dayOfWeek = date.getDay();
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    const dayName = dayOfWeek === 0 ? 'Sunday' : 'Saturday';
+    const dateStr = date.toISOString().split('T')[0];
+    console.log(`YAHOO: Skipping intraday check for ${ticker} on ${dateStr} (${dayName}) - markets closed`);
+    return {
+      ticker: ticker,
+      date: date,
+      skipped: true,
+      reason: 'weekend',
+      dayOfWeek: dayName,
+      hit: false,
+      dayHigh: null,
+      dayLow: null,
+      indicators: null
+    };
+  }
+  
   // Default to 1-minute intervals for full day data
   const defaultInterval = '1m';
   
@@ -24,6 +43,10 @@ function EW_checkStockIntraday(ticker, targetPrice, date = new Date()) {
   try {
     const result = EW_fetchYahooData(ticker, targetPrice, date, defaultInterval);
     if (result && !result.error) {
+      // Handle weekend skip results
+      if (result.skipped) {
+        return result;
+      }
       // console.log(`\n=== EW_checkStockIntraday SUCCESS for ${ticker} ===`);
       // console.log(`Result properties: ${Object.keys(result).join(', ')}`);
       // console.log(`=== END checkStockIntraday ===\n`);
@@ -91,6 +114,28 @@ function EW_checkStockIntraday(ticker, targetPrice, date = new Date()) {
  * @returns {Object} Result with hit status and price data
  */
 function EW_fetchYahooData(ticker, targetPrice, date, interval) {
+  // Check if the requested date is a weekend - skip if it is
+  const requestedDayOfWeek = date.getDay();
+  if (requestedDayOfWeek === 0 || requestedDayOfWeek === 6) {
+    const dayName = requestedDayOfWeek === 0 ? 'Sunday' : 'Saturday';
+    const dateStr = date.toISOString().split('T')[0];
+    EW_trace('YAHOO', `Skipping ${dateStr} (${dayName}) - markets closed on weekends`);
+    console.log(`YAHOO: Skipping ${ticker} for ${dateStr} - ${dayName}, markets closed`);
+    
+    // Return a skip result instead of throwing an error
+    return {
+      ticker: ticker,
+      date: date,
+      skipped: true,
+      reason: 'weekend',
+      dayOfWeek: dayName,
+      hit: false,
+      dayHigh: null,
+      dayLow: null,
+      indicators: null
+    };
+  }
+  
   // Set time range based on interval
   let startDate, endDate;
   
@@ -823,6 +868,19 @@ function EW_batchCheckStrikeHits(positions) {
             position.endDate
           );
           
+          // Skip if it's a weekend
+          if (intradayResult.skipped) {
+            results.push({
+              ticker: position.ticker,
+              hit: false,
+              skipped: true,
+              reason: intradayResult.reason,
+              dayOfWeek: intradayResult.dayOfWeek,
+              error: `Skipped: ${intradayResult.reason}`
+            });
+            continue;
+          }
+          
           if (intradayResult.dayHigh && intradayResult.dayLow) {
             if (isBullSpread) {
               // Bull spread is profitable when price is above long strike but below short strike
@@ -850,6 +908,19 @@ function EW_batchCheckStrikeHits(positions) {
             strike, 
             position.endDate
           );
+          
+          // Skip if it's a weekend
+          if (intradayResult.skipped) {
+            results.push({
+              ticker: position.ticker,
+              hit: false,
+              skipped: true,
+              reason: intradayResult.reason,
+              dayOfWeek: intradayResult.dayOfWeek,
+              error: `Skipped: ${intradayResult.reason}`
+            });
+            continue;
+          }
           
           // Determine if strike was hit based on strategy
           const isBullish = strategyUpper.includes('LONG CALL') || (strategyUpper.includes('BULL') && !isSpread);
