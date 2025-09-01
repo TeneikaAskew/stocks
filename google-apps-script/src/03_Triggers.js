@@ -71,7 +71,7 @@ function EW_setupTriggersIfMissing() {
     const activeTrackingFunction = 'EW_updateActiveStrikeHits';
     
     // Remove old wrapper function trigger if it exists
-    const triggers = ScriptApp.getProjectTriggers();
+    // Use the already declared 'triggers' variable from line 15
     triggers.forEach(trigger => {
       if (trigger.getHandlerFunction() === 'EW_updateActiveStrikeHitsWithContinuation') {
         ScriptApp.deleteTrigger(trigger);
