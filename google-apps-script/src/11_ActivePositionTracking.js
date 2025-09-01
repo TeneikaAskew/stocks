@@ -60,10 +60,8 @@ function EW_updateActiveStrikeHits() {
     }
   }
   
-  // Clear continuation state since we're done
-  if (EW_clearContinuationState) {
-    EW_clearContinuationState();
-  }
+  // Don't clear continuation state here - this function doesn't use continuation
+  // and clearing it could interfere with other functions that do
   
   const endTime = new Date();
   const duration = Math.round((endTime - startTime) / 1000);
