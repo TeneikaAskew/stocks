@@ -959,6 +959,13 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
       // For bullish: favorable = (high - strike) / strike, unfavorable = (strike - low) / strike
       dayMaxFavorable = Math.max(0, (dayData.high - strike) / strike);
       dayMinUnfavorable = Math.max(0, (strike - dayData.low) / strike);
+      
+      // Debug logging for specific problematic tickers
+      if ((ticker === 'PANW' && strike === 172.5) || (ticker === 'ZM' && strike === 71)) {
+        console.log(`${ticker} Day ${tradingDaysSinceEntry}: high=${dayData.high}, strike=${strike}`);
+        console.log(`${ticker} Day ${tradingDaysSinceEntry}: (${dayData.high} - ${strike}) / ${strike} = ${dayMaxFavorable}`);
+        console.log(`${ticker} Day ${tradingDaysSinceEntry}: Expected %: ${(dayMaxFavorable * 100).toFixed(2)}%`);
+      }
     } else if (isBearish) {
       // For bearish: favorable = (strike - low) / strike, unfavorable = (high - strike) / strike
       dayMaxFavorable = Math.max(0, (strike - dayData.low) / strike);
