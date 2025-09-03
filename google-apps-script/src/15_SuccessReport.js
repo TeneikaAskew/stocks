@@ -448,27 +448,70 @@ function EW_extractTradeData(sheet, strategy) {
           return pctMove !== 0;
         });
       
-      // Calculate max favorable value - handle both decimal and percentage formats
+      // Calculate max favorable value - check data format and correct if needed
       const maxFavValues = trade.maxFavorable.filter(v => v !== null).map(v => {
-        const val = parseFloat(v) || 0;
-        // If value is greater than 1, it's likely stored as percentage, convert to decimal
-        return val > 1 ? val / 100 : val;
+        let val = parseFloat(v) || 0;
+        
+        // Smart data correction: Detect if value is absolute difference or percentage
+        // If we have a strike price and the value is unreasonably high (>10 which would be 1000%),
+        // it's likely an absolute dollar difference that needs conversion
+        if (trade.strike && trade.strike > 0) {
+          // Check if this looks like an absolute price difference
+          // Absolute differences would typically be in the range of strike price magnitude
+          if (Math.abs(val) > 10 && Math.abs(val) < trade.strike * 2) {
+            // This looks like an absolute difference, convert to percentage
+            val = val / trade.strike;
+          }
+          // If val is between 0 and 10, it's likely already a decimal percentage
+          // If val is tiny (< 0.0001), it might be a percentage stored as 0.0091 for 0.91%
+        }
+        
+        // Debug logging for problematic tickers
+        if (trade.ticker === 'BURL' || trade.ticker === 'WMT' || trade.ticker === 'BILI') {
+          console.log(`${trade.ticker} maxFavorable raw: ${v}, parsed: ${val}, strike: ${trade.strike}`);
+        }
+        
+        return val;
       });
       trade.maxFavorableValue = maxFavValues.length > 0 ? Math.max(...maxFavValues) : 0;
       
-      // Same for unfavorable
+      // Debug logging for problematic tickers
+      if (trade.ticker === 'BURL' || trade.ticker === 'WMT' || trade.ticker === 'BILI') {
+        console.log(`${trade.ticker} maxFavorableValue final: ${trade.maxFavorableValue}`);
+      }
+      
+      // Same for unfavorable with smart data correction
       const minUnfavValues = trade.minUnfavorable.filter(v => v !== null).map(v => {
-        const val = parseFloat(v) || 0;
-        return val > 1 ? val / 100 : val;
+        let val = parseFloat(v) || 0;
+        
+        if (trade.strike && trade.strike > 0) {
+          // Check if this looks like an absolute price difference
+          if (Math.abs(val) > 10 && Math.abs(val) < trade.strike * 2) {
+            // This looks like an absolute difference, convert to percentage
+            val = val / trade.strike;
+          }
+        }
+        
+        return val;
       });
       trade.maxUnfavorableValue = minUnfavValues.length > 0 ? Math.max(...minUnfavValues) : 0;
       trade.profitableDays = trade.maxFavorable.filter(v => v !== null && parseFloat(v) > 0).length;
       
-      // Days to hit
+      // Days to hit - ensure it's never negative
       if (trade.firstHitDate && trade.runDate) {
         const hit = new Date(trade.firstHitDate);
         const run = new Date(trade.runDate);
-        trade.daysToHit = Math.floor((hit - run) / (1000 * 60 * 60 * 24));
+        const daysDiff = Math.floor((hit - run) / (1000 * 60 * 60 * 24));
+        // Days to hit should never be negative - if it is, use the array index method instead
+        if (daysDiff >= 0) {
+          trade.daysToHit = daysDiff;
+        } else if (trade.wasHit && trade.strikeHit) {
+          // Fallback to array index method if date calculation gives negative
+          const firstHitIndex = trade.strikeHit.findIndex(pct => pct !== null && pct !== undefined && pct !== "");
+          if (firstHitIndex !== -1) {
+            trade.daysToHit = firstHitIndex;
+          }
+        }
       } else if (trade.wasHit && trade.strikeHit) {
         // Alternative: find first day with a hit percentage in Strike_Hit array
         const firstHitIndex = trade.strikeHit.findIndex(pct => pct !== null && pct !== undefined && pct !== "");
@@ -476,6 +519,9 @@ function EW_extractTradeData(sheet, strategy) {
           trade.daysToHit = firstHitIndex; // Day 0 = same day, Day 1 = next day, etc.
         }
       }
+      
+      // Validate calculations before adding
+      trade = EW_validateTradeCalculations(trade);
       
       trades.push(trade);
     } catch (e) {
@@ -559,8 +605,18 @@ function EW_analyzeOverview(trades) {
     for (let i = 0; i < observationCount; i++) {
       totalObservations++;
       
-      const favorable = parseFloat(trade.maxFavorable[i]) || 0;
-      const unfavorable = parseFloat(trade.minUnfavorable[i]) || 0;
+      let favorable = parseFloat(trade.maxFavorable[i]) || 0;
+      let unfavorable = parseFloat(trade.minUnfavorable[i]) || 0;
+      
+      // Smart data correction for corrupted absolute values
+      if (trade.strike && trade.strike > 0) {
+        if (Math.abs(favorable) > 10 && Math.abs(favorable) < trade.strike * 2) {
+          favorable = favorable / trade.strike;
+        }
+        if (Math.abs(unfavorable) > 10 && Math.abs(unfavorable) < trade.strike * 2) {
+          unfavorable = unfavorable / trade.strike;
+        }
+      }
       const netProfit = favorable - unfavorable;
       
       observations.push({
@@ -661,8 +717,16 @@ function EW_analyzeOverview(trades) {
       for (let i = 0; i < observationCount; i++) {
         strategyObservations++;
         
-        const favorable = parseFloat(trade.maxFavorable[i]) || 0;
-        const unfavorable = parseFloat(trade.minUnfavorable[i]) || 0;
+        let favorable = parseFloat(trade.maxFavorable[i]) || 0;
+        let unfavorable = parseFloat(trade.minUnfavorable[i]) || 0;
+        
+        // Data correction: If values > 1, they're likely absolute differences not percentages
+        if (favorable > 1 && trade.strike) {
+          favorable = favorable / trade.strike;
+        }
+        if (unfavorable > 1 && trade.strike) {
+          unfavorable = unfavorable / trade.strike;
+        }
         
         if (favorable > unfavorable) {
           strategyProfitableObs++;
@@ -796,8 +860,19 @@ function EW_analyzeMultiDayProfitability(trades) {
     trade.maxFavorable.forEach((value, day) => {
       if (value !== null && parseFloat(value) > 0) {
         consecutiveProfitableDays++;
-        if (parseFloat(value) > peakValue) {
-          peakValue = parseFloat(value);
+        let parsedValue = parseFloat(value);
+        
+        // Smart data correction for corrupted absolute values
+        // Check if this looks like an absolute price difference rather than a percentage
+        if (trade.strike && trade.strike > 0) {
+          if (Math.abs(parsedValue) > 10 && Math.abs(parsedValue) < trade.strike * 2) {
+            // This looks like an absolute difference, convert to percentage
+            parsedValue = parsedValue / trade.strike;
+          }
+        }
+        
+        if (parsedValue > peakValue) {
+          peakValue = parsedValue;
           peakDay = day;
         }
       } else {
@@ -813,7 +888,7 @@ function EW_analyzeMultiDayProfitability(trades) {
         strategy: trade.strategy,
         consecutiveDays: maxConsecutive,
         peakDay: peakDay,
-        peakValue: peakValue,  // Already in percentage form
+        peakValue: peakValue * 100,  // Convert decimal to percentage for display
         strike: trade.strike || trade.longStrike
       };
       
@@ -836,12 +911,30 @@ function EW_analyzeMultiDayProfitability(trades) {
     );
     
     const profitable = dayTrades.filter(t => {
-      const fav = parseFloat(t.maxFavorable[day]) || 0;
-      const unfav = parseFloat(t.minUnfavorable[day]) || 0;
+      let fav = parseFloat(t.maxFavorable[day]) || 0;
+      let unfav = parseFloat(t.minUnfavorable[day]) || 0;
+      
+      // Smart data correction for corrupted absolute values
+      if (t.strike && t.strike > 0) {
+        if (Math.abs(fav) > 10 && Math.abs(fav) < t.strike * 2) {
+          fav = fav / t.strike;
+        }
+        if (Math.abs(unfav) > 10 && Math.abs(unfav) < t.strike * 2) {
+          unfav = unfav / t.strike;
+        }
+      }
+      
       return fav > unfav;
     }).length;
     
-    const avgProfit = dayTrades.reduce((sum, t) => sum + (parseFloat(t.maxFavorable[day]) || 0), 0) / dayTrades.length;
+    const avgProfit = dayTrades.reduce((sum, t) => {
+      let fav = parseFloat(t.maxFavorable[day]) || 0;
+      // Smart data correction for corrupted absolute values
+      if (t.strike && t.strike > 0 && Math.abs(fav) > 10 && Math.abs(fav) < t.strike * 2) {
+        fav = fav / t.strike;
+      }
+      return sum + fav;
+    }, 0) / dayTrades.length;
     
     analysis.profitabilityByDay[`Day${day}`] = {
       totalTrades: dayTrades.length,
@@ -855,13 +948,30 @@ function EW_analyzeMultiDayProfitability(trades) {
       const strategyDayTrades = dayTrades.filter(t => t.strategy === strategy);
       if (strategyDayTrades.length > 0) {
         const stratProfitable = strategyDayTrades.filter(t => {
-          const fav = parseFloat(t.maxFavorable[day]) || 0;
-          const unfav = parseFloat(t.minUnfavorable[day]) || 0;
+          let fav = parseFloat(t.maxFavorable[day]) || 0;
+          let unfav = parseFloat(t.minUnfavorable[day]) || 0;
+          
+          // Smart data correction for corrupted absolute values
+          if (t.strike && t.strike > 0) {
+            if (Math.abs(fav) > 10 && Math.abs(fav) < t.strike * 2) {
+              fav = fav / t.strike;
+            }
+            if (Math.abs(unfav) > 10 && Math.abs(unfav) < t.strike * 2) {
+              unfav = unfav / t.strike;
+            }
+          }
+          
           return fav > unfav;
         }).length;
         
-        const stratAvgProfit = strategyDayTrades.reduce((sum, t) => 
-          sum + (parseFloat(t.maxFavorable[day]) || 0), 0) / strategyDayTrades.length;
+        const stratAvgProfit = strategyDayTrades.reduce((sum, t) => {
+          let fav = parseFloat(t.maxFavorable[day]) || 0;
+          // Smart data correction for corrupted absolute values
+          if (t.strike && t.strike > 0 && Math.abs(fav) > 10 && Math.abs(fav) < t.strike * 2) {
+            fav = fav / t.strike;
+          }
+          return sum + fav;
+        }, 0) / strategyDayTrades.length;
         
         analysis.profitabilityByStrategy[strategy].byDay[`Day${day}`] = {
           totalTrades: strategyDayTrades.length,
@@ -1159,8 +1269,18 @@ function EW_analyzeHoldingPeriod(trades) {
     );
     
     for (let day = 0; day < observationCount; day++) {
-      const favorable = parseFloat(trade.maxFavorable[day]) || 0;
-      const unfavorable = parseFloat(trade.minUnfavorable[day]) || 0;
+      let favorable = parseFloat(trade.maxFavorable[day]) || 0;
+      let unfavorable = parseFloat(trade.minUnfavorable[day]) || 0;
+      
+      // Smart data correction for corrupted absolute values
+      if (trade.strike && trade.strike > 0) {
+        if (Math.abs(favorable) > 10 && Math.abs(favorable) < trade.strike * 2) {
+          favorable = favorable / trade.strike;
+        }
+        if (Math.abs(unfavorable) > 10 && Math.abs(unfavorable) < trade.strike * 2) {
+          unfavorable = unfavorable / trade.strike;
+        }
+      }
       
       // Only count if we have data for this day (at least one array has a value)
       if (trade.maxFavorable[day] !== null || trade.minUnfavorable[day] !== null || 
@@ -1237,8 +1357,16 @@ function EW_analyzeHoldingPeriod(trades) {
       );
       
       for (let day = 0; day < observationCount; day++) {
-        const favorable = parseFloat(trade.maxFavorable[day]) || 0;
-        const unfavorable = parseFloat(trade.minUnfavorable[day]) || 0;
+        let favorable = parseFloat(trade.maxFavorable[day]) || 0;
+        let unfavorable = parseFloat(trade.minUnfavorable[day]) || 0;
+        
+        // Data correction: If values > 1, they're likely absolute differences not percentages
+        if (favorable > 1 && trade.strike) {
+          favorable = favorable / trade.strike;
+        }
+        if (unfavorable > 1 && trade.strike) {
+          unfavorable = unfavorable / trade.strike;
+        }
         
         if (favorable !== 0 || unfavorable !== 0) {
           const dayKey = `Day${day}`;
@@ -1445,8 +1573,18 @@ function EW_analyzeEarningsTiming(trades) {
     // Check each day's data based on array length
     for (let dayIndex = 0; dayIndex < observationCount; dayIndex++) {
       if (trade.maxFavorable[dayIndex] !== null && trade.maxFavorable[dayIndex] !== undefined) {
-        const favorable = parseFloat(trade.maxFavorable[dayIndex]) || 0;
-        const unfavorable = parseFloat(trade.minUnfavorable[dayIndex]) || 0;
+        let favorable = parseFloat(trade.maxFavorable[dayIndex]) || 0;
+        let unfavorable = parseFloat(trade.minUnfavorable[dayIndex]) || 0;
+        
+        // Smart data correction for corrupted absolute values
+        if (trade.strike && trade.strike > 0) {
+          if (Math.abs(favorable) > 10 && Math.abs(favorable) < trade.strike * 2) {
+            favorable = favorable / trade.strike;
+          }
+          if (Math.abs(unfavorable) > 10 && Math.abs(unfavorable) < trade.strike * 2) {
+            unfavorable = unfavorable / trade.strike;
+          }
+        }
         const profit = favorable - unfavorable;
         
         // Day 0 = run date, Day 1 = run date + 1, etc.
@@ -1480,7 +1618,7 @@ function EW_analyzeEarningsTiming(trades) {
           strategy: trade.strategy,
           daysToEarnings: daysToEarnings,
           daysToHit: hitDay,
-          maxProfit: Math.max(...preEarningsObservations.map(o => o.favorable)),  // Already in percentage
+          maxProfit: Math.max(...preEarningsObservations.map(o => o.favorable)),  // Already a percentage
           releaseTime: releaseTime,
           releaseTimeCategory: timeCategory,
           earningsImpactDay: earningsImpactDay
@@ -1499,7 +1637,7 @@ function EW_analyzeEarningsTiming(trades) {
           strategy: trade.strategy,
           daysToEarnings: daysToEarnings,
           daysToHit: hitDay,
-          maxProfit: Math.max(...postEarningsObservations.map(o => o.favorable)),  // Already in percentage
+          maxProfit: Math.max(...postEarningsObservations.map(o => o.favorable)),  // Already a percentage
           releaseTime: releaseTime,
           releaseTimeCategory: timeCategory,
           earningsImpactDay: earningsImpactDay
@@ -1708,6 +1846,50 @@ function EW_analyzeStrategyPerformance(trades) {
 }
 
 /**
+ * Validate and fix trade calculations
+ */
+function EW_validateTradeCalculations(trade) {
+  // Validate maxFavorableValue
+  if (trade.maxFavorableValue !== undefined && trade.maxFavorableValue !== null) {
+    // Check if the value makes sense
+    // Most option trades won't have > 500% profit (5.0 as decimal)
+    if (trade.maxFavorableValue > 5) {
+      console.warn(`${trade.ticker}: maxFavorableValue ${trade.maxFavorableValue} seems too high, might be data corruption`);
+      
+      // If we have the strike and hit price, recalculate
+      if (trade.strikeHit && trade.strike) {
+        const maxPctFromArray = Math.max(...trade.strikeHit
+          .filter(v => v !== null && v !== "" && !isNaN(parseFloat(v)))
+          .map(v => Math.abs(parseFloat(v))));
+        
+        if (maxPctFromArray > 0 && maxPctFromArray < 5) {
+          console.log(`${trade.ticker}: Using strikeHit array max ${maxPctFromArray} instead of ${trade.maxFavorableValue}`);
+          trade.maxFavorableValue = maxPctFromArray;
+        }
+      }
+    }
+    
+    // Check if value is too small (might be stored as 0.0091 for 0.91%)
+    if (trade.maxFavorableValue > 0 && trade.maxFavorableValue < 0.01) {
+      console.warn(`${trade.ticker}: maxFavorableValue ${trade.maxFavorableValue} seems too small`);
+      // Might be a percentage stored as 0.0091 for 0.91%, multiply by 100
+      if (trade.maxFavorableValue < 0.01) {
+        trade.maxFavorableValue = trade.maxFavorableValue * 100;
+        console.log(`${trade.ticker}: Adjusted to ${trade.maxFavorableValue}`);
+      }
+    }
+  }
+  
+  // Validate days to hit
+  if (trade.daysToHit !== undefined && trade.daysToHit < 0) {
+    console.warn(`${trade.ticker}: daysToHit ${trade.daysToHit} is negative, setting to 0`);
+    trade.daysToHit = 0;
+  }
+  
+  return trade;
+}
+
+/**
  * Identify top performing plays
  */
 function EW_identifyTopPlays(trades) {
@@ -1803,7 +1985,7 @@ function EW_identifyTopPlays(trades) {
       strike: strikePrice,
       hitPrice: hitPrice,
       strikeAndHit: `${strikePrice} → ${hitPrice}`, // Combined display
-      maxProfit: trade.maxFavorableValue || 0,  // Already in percentage form
+      maxProfit: trade.maxFavorableValue || 0,  // Already a percentage
       daysToHit: trade.daysToHit !== undefined && trade.daysToHit !== null ? trade.daysToHit : 'N/A',
       profitableDays: trade.profitableDays || 0,
       riskReward: trade.riskReward && !isNaN(trade.riskReward) ? trade.riskReward.toFixed(2) : 'N/A',
@@ -2266,7 +2448,12 @@ function EW_createTopPlaysSheet(ss, topPlaysData) {
       play.entryDate,
       play.strike,
       play.hitPrice,
-      (play.maxProfit || 0).toFixed(2) + '%',
+      (() => {
+        const profit = play.maxProfit || 0;
+        // If profit is stored as decimal (0.8767 for 87.67%), multiply by 100
+        const displayProfit = profit < 1 ? profit * 100 : profit;
+        return displayProfit.toFixed(2) + '%';
+      })(),
       play.daysToHit !== undefined && play.daysToHit !== null ? play.daysToHit : 'N/A',
       play.riskReward,
       play.profitableDays
@@ -2286,7 +2473,12 @@ function EW_createTopPlaysSheet(ss, topPlaysData) {
   topPlaysData.slice(0, 5).forEach(play => {
     sheet.getRange(row, 1, 1, 4).setValues([[
       play.ticker,
-      (play.maxProfit || 0).toFixed(2) + '%',
+      (() => {
+        const profit = play.maxProfit || 0;
+        // If profit is stored as decimal (0.8767 for 87.67%), multiply by 100
+        const displayProfit = profit < 1 ? profit * 100 : profit;
+        return displayProfit.toFixed(2) + '%';
+      })(),
       play.indicatorProfile,
       play.multiDayProfile
     ]]);
@@ -2369,13 +2561,61 @@ function EW_prepareMachineLearningData(trades) {
       priceVsSMA20_entry: trade.indicators.priceVsSMA20[0] || null,
       priceVsVWAP_entry: trade.indicators.priceVsVWAP[0] || null,
       
-      // Day-by-day profit profile
-      profit_day0: trade.maxFavorable[0] || null,
-      profit_day1: trade.maxFavorable[1] || null,
-      profit_day2: trade.maxFavorable[2] || null,
-      profit_day3: trade.maxFavorable[3] || null,
-      profit_day4: trade.maxFavorable[4] || null,
-      profit_day5: trade.maxFavorable[5] || null
+      // Day-by-day profit profile (with smart data correction)
+      profit_day0: (() => {
+        let val = parseFloat(trade.maxFavorable[0]);
+        if (val && trade.strike && trade.strike > 0) {
+          if (Math.abs(val) > 10 && Math.abs(val) < trade.strike * 2) {
+            val = val / trade.strike;
+          }
+        }
+        return val || null;
+      })(),
+      profit_day1: (() => {
+        let val = parseFloat(trade.maxFavorable[1]);
+        if (val && trade.strike && trade.strike > 0) {
+          if (Math.abs(val) > 10 && Math.abs(val) < trade.strike * 2) {
+            val = val / trade.strike;
+          }
+        }
+        return val || null;
+      })(),
+      profit_day2: (() => {
+        let val = parseFloat(trade.maxFavorable[2]);
+        if (val && trade.strike && trade.strike > 0) {
+          if (Math.abs(val) > 10 && Math.abs(val) < trade.strike * 2) {
+            val = val / trade.strike;
+          }
+        }
+        return val || null;
+      })(),
+      profit_day3: (() => {
+        let val = parseFloat(trade.maxFavorable[3]);
+        if (val && trade.strike && trade.strike > 0) {
+          if (Math.abs(val) > 10 && Math.abs(val) < trade.strike * 2) {
+            val = val / trade.strike;
+          }
+        }
+        return val || null;
+      })(),
+      profit_day4: (() => {
+        let val = parseFloat(trade.maxFavorable[4]);
+        if (val && trade.strike && trade.strike > 0) {
+          if (Math.abs(val) > 10 && Math.abs(val) < trade.strike * 2) {
+            val = val / trade.strike;
+          }
+        }
+        return val || null;
+      })(),
+      profit_day5: (() => {
+        let val = parseFloat(trade.maxFavorable[5]);
+        if (val && trade.strike && trade.strike > 0) {
+          if (Math.abs(val) > 10 && Math.abs(val) < trade.strike * 2) {
+            val = val / trade.strike;
+          }
+        }
+        return val || null;
+      })()
     };
   });
   
