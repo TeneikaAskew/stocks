@@ -1000,13 +1000,14 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
       analysis.maxFavorableArray.push(dayMaxFavorable.toFixed(6));
       analysis.minUnfavorableArray.push(dayMinUnfavorable.toFixed(6));
       
-      // Add OHLC and volume data
+      // Add OHLC and volume data with source tracking
       analysis.ohlcVolumeArray.push({
         o: dayData.open ? parseFloat(dayData.open).toFixed(2) : null,
         h: dayData.high ? parseFloat(dayData.high).toFixed(2) : null,
         l: dayData.low ? parseFloat(dayData.low).toFixed(2) : null,
         c: dayData.close ? parseFloat(dayData.close).toFixed(2) : null,
-        v: dayData.volume || 0
+        v: dayData.volume || 0,
+        src: 'BACKFILL'  // Track that this came from backfill
       });
     }
     

@@ -347,7 +347,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
         );
       }
       
-      // Build OHLC_Volume array
+      // Build OHLC_Volume array with source tracking
       const existingOHLC = position.ohlcVolume ? EW_parseOHLCArray(position.ohlcVolume) : [];
       const ohlcData = {
         open: result.dayOpen || null,
@@ -356,7 +356,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
         close: result.dayClose || null,
         volume: result.dayVolume || 0
       };
-      const updatedOHLC = EW_buildOHLCArray(existingOHLC, dayIndex, ohlcData);
+      const updatedOHLC = EW_buildOHLCArray(existingOHLC, dayIndex, ohlcData, 'ACTIVE');
       
       // Update historical high/low
       const updatedHistorical = EW_updateHistoricalHighLow(

@@ -1,7 +1,8 @@
 /**
- * Rename Peak_Profit_Date to OHLC_Volume and Populate with Daily Data
- * This file contains functions to rename the old Peak_Profit_Date column
- * and populate it with comprehensive OHLC and Volume data
+ * OHLC_Volume Column Management
+ * Functions to populate the OHLC_Volume column with comprehensive daily data
+ * Note: Day_Checks method deprecated as it only provides close prices (unreliable)
+ * Always use backfill for complete OHLC data needed for accurate calculations
  */
 
 /**
@@ -85,9 +86,10 @@ function EW_renamePeakProfitToOHLC() {
  * @param {Array} existingArray - Current OHLC array (can be empty)
  * @param {number} dayIndex - Day index (0-5)
  * @param {Object} ohlcData - Object with open, high, low, close, volume
+ * @param {string} source - Source of the data (e.g., 'BACKFILL', 'ACTIVE', 'DAY_CHECK')
  * @returns {Array} Updated array with new OHLC data at dayIndex
  */
-function EW_buildOHLCArray(existingArray = [], dayIndex, ohlcData) {
+function EW_buildOHLCArray(existingArray = [], dayIndex, ohlcData, source = 'UNKNOWN') {
   if (dayIndex < 0 || dayIndex > 5 || !ohlcData) return existingArray;
   
   // Ensure array has correct length (6 days)
@@ -103,7 +105,19 @@ function EW_buildOHLCArray(existingArray = [], dayIndex, ohlcData) {
       h: parseFloat(ohlcData.high).toFixed(2),
       l: parseFloat(ohlcData.low).toFixed(2),
       c: parseFloat(ohlcData.close).toFixed(2),
-      v: ohlcData.volume || 0
+      v: ohlcData.volume || 0,
+      src: source  // Track the source of this data
+    };
+    array[dayIndex] = dayOHLC;
+  } else if (ohlcData.close !== null && ohlcData.close !== undefined) {
+    // If we only have close price (from Day_Check), still store it with source
+    const dayOHLC = {
+      o: null,
+      h: null,
+      l: null,
+      c: parseFloat(ohlcData.close).toFixed(2),
+      v: 0,
+      src: source  // Track the source
     };
     array[dayIndex] = dayOHLC;
   } else {
@@ -154,13 +168,13 @@ function EW_addOHLCToHeaderMap(hdrMap, headers) {
 }
 
 /**
- * Populate OHLC_Volume for all sheets with missing data
- * This function processes existing data and fills in OHLC values
+ * DEPRECATED: Populate from Day_Checks (unreliable - only has close prices)
+ * @deprecated Use EW_populateOHLCWithBackfill() instead
  */
-function EW_populateOHLCVolume() {
+function EW_populateOHLCFromDayChecks() {
   const startTime = new Date();
-  EW_trace('OHLC_POPULATE', 'Starting OHLC_Volume population for all sheets', true);
-  console.log(`OHLC_POPULATE: Starting population at ${startTime.toISOString()}`);
+  EW_trace('OHLC_POPULATE', 'Starting OHLC_Volume population from Day_Check data only', true);
+  console.log(`OHLC_POPULATE: Populating from Day_Check data (close prices only)`);
   
   const ss = SpreadsheetApp.getActive();
   const strategies = Object.keys(EW.STRATEGY_ENDPOINTS);
@@ -176,7 +190,7 @@ function EW_populateOHLCVolume() {
         continue;
       }
       
-      const result = EW_populateOHLCForSheet(sheet, strategy);
+      const result = EW_populateOHLCForSheet(sheet, strategy, 'DAY_CHECK');
       processedCount += result.processed;
       updatedCount += result.updated;
       
@@ -196,26 +210,28 @@ function EW_populateOHLCVolume() {
   const endTime = new Date();
   const duration = Math.round((endTime - startTime) / 1000);
   
-  const msg = `OHLC population complete.\n` +
+  const msg = `OHLC population from Day_Check complete.\n` +
     `Processed: ${processedCount} rows\n` +
     `Updated: ${updatedCount} rows\n` +
-    `Duration: ${duration} seconds` +
+    `Duration: ${duration} seconds\n` +
+    `Note: Only close prices populated from Day_Check data` +
     (errors.length > 0 ? `\n\nErrors:\n${errors.join('\n')}` : '');
   
   EW_trace('OHLC_POPULATE', msg, true);
-  console.log(`OHLC_POPULATE: Completed in ${duration} seconds - Updated ${updatedCount}/${processedCount} rows`);
+  console.log(`OHLC_POPULATE: Completed in ${duration} seconds - Updated ${updatedCount}/${processedCount} rows with Day_Check data`);
   
-  EW_safeAlert('OHLC Population Complete', msg);
+  EW_safeAlert('Day_Check Population Complete', msg);
   
   return { processed: processedCount, updated: updatedCount, duration: duration, errors: errors };
 }
 
 /**
- * Populate OHLC for a specific sheet
+ * Populate OHLC for a specific sheet from Day_Check data
  * @param {Sheet} sheet - The sheet to process
  * @param {string} strategyName - Name of the strategy
+ * @param {string} source - Source identifier for logging
  */
-function EW_populateOHLCForSheet(sheet, strategyName) {
+function EW_populateOHLCForSheet(sheet, strategyName, source = 'DAY_CHECK') {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) {
     return { processed: 0, updated: 0, errors: [] };
@@ -280,13 +296,13 @@ function EW_populateOHLCForSheet(sheet, strategyName) {
           const dayPrice = rowData[dayCol - 1];
           if (dayPrice && dayPrice !== '' && dayPrice !== 'None' && dayPrice !== null) {
             // We only have closing price from day checks
-            // For a more complete solution, we'd need to fetch historical data
             ohlcArray.push({
               o: null, // No open price from day checks
               h: null, // No high price from day checks
               l: null, // No low price from day checks
               c: parseFloat(dayPrice).toFixed(2),
-              v: 0 // No volume from day checks
+              v: 0, // No volume from day checks
+              src: source // Track that this came from Day_Check data
             });
             hasData = true;
           } else {
@@ -297,10 +313,12 @@ function EW_populateOHLCForSheet(sheet, strategyName) {
         }
       }
       
-      // If we have any data, save it
+      // If we have any data, save it with source tracking
       if (hasData) {
-        sheet.getRange(rowNum, hdrMap.ohlcVolumeCol).setValue(JSON.stringify(ohlcArray));
+        const jsonData = JSON.stringify(ohlcArray);
+        sheet.getRange(rowNum, hdrMap.ohlcVolumeCol).setValue(jsonData);
         updatedCount++;
+        EW_trace('OHLC_POPULATE', `Row ${rowNum}: Populated with ${source} data`);
       }
       
     } catch (e) {
@@ -314,6 +332,49 @@ function EW_populateOHLCForSheet(sheet, strategyName) {
     updated: updatedCount,
     errors: errors
   };
+}
+
+/**
+ * Populate OHLC_Volume with full historical data using backfill
+ * This gets actual OHLC data from Yahoo Finance, not just closing prices
+ */
+function EW_populateOHLCWithBackfill() {
+  const startTime = new Date();
+  EW_trace('OHLC_BACKFILL', 'Starting OHLC_Volume population using backfill (full OHLC data)', true);
+  console.log(`OHLC_BACKFILL: Starting backfill to populate full OHLC data`);
+  
+  // Use the backfill function which will populate OHLC_Volume with full data
+  EW_trace('OHLC_BACKFILL', 'Triggering backfill to populate OHLC_Volume column with full historical data');
+  
+  // Call backfill which now populates OHLC_Volume automatically
+  const result = EW_backfillHistoricalTracking();
+  
+  const endTime = new Date();
+  const duration = Math.round((endTime - startTime) / 1000);
+  
+  const msg = `OHLC backfill population complete.\n` +
+    `This ran the full backfill process which populates:\n` +
+    `- OHLC_Volume with full open/high/low/close/volume data\n` +
+    `- All other tracking columns\n` +
+    `Duration: ${duration} seconds\n` +
+    `Note: Data source logged as 'BACKFILL' in OHLC entries`;
+  
+  EW_trace('OHLC_BACKFILL', msg, true);
+  console.log(`OHLC_BACKFILL: Completed in ${duration} seconds`);
+  
+  EW_safeAlert('OHLC Backfill Complete', msg);
+  
+  return result;
+}
+
+/**
+ * Main function to populate OHLC_Volume - always uses backfill for reliable data
+ * Day_Checks method removed as it only provides close prices (unreliable for favorables)
+ */
+function EW_populateOHLCVolume() {
+  // Always use backfill for reliable OHLC data
+  EW_trace('OHLC_POPULATE', 'Populating OHLC_Volume using backfill for complete data');
+  return EW_populateOHLCWithBackfill();
 }
 
 /**
