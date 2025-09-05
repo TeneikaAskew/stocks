@@ -798,7 +798,7 @@ function EW_getPriceHistory(row, hdrMap) {
   for (const col of dayChecks) {
     if (col) {
       const value = row[col - 1];
-      if (value && value !== 'None') {
+      if (value && value !== null && value !== '') {
         const price = parseFloat(value);
         if (!isNaN(price)) {
           priceHistory.push(price);
