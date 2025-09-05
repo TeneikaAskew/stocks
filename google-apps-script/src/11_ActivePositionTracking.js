@@ -347,6 +347,17 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
         );
       }
       
+      // Build OHLC_Volume array
+      const existingOHLC = position.ohlcVolume ? EW_parseOHLCArray(position.ohlcVolume) : [];
+      const ohlcData = {
+        open: result.dayOpen || null,
+        high: result.dayHigh || null,
+        low: result.dayLow || null,
+        close: result.dayClose || null,
+        volume: result.dayVolume || 0
+      };
+      const updatedOHLC = EW_buildOHLCArray(existingOHLC, dayIndex, ohlcData);
+      
       // Update historical high/low
       const updatedHistorical = EW_updateHistoricalHighLow(
         { high: existingHistoricalHigh, low: existingHistoricalLow },
@@ -401,6 +412,23 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
         }
       });
       
+      // Update OHLC_Volume column
+      // First check if column exists in header map
+      if (!hdrMap.ohlcVolumeCol) {
+        const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+        for (let i = 0; i < headers.length; i++) {
+          if (headers[i] === 'OHLC_Volume' || headers[i] === 'Peak_Profit_Date') {
+            hdrMap.ohlcVolumeCol = i + 1;
+            break;
+          }
+        }
+      }
+      
+      if (hdrMap.ohlcVolumeCol && updatedOHLC.length > 0) {
+        dataRange.getCell(position.rowIndex + 1, hdrMap.ohlcVolumeCol)
+          .setValue(EW_arrayToJson(updatedOHLC));
+      }
+      
       // Update Hit_Date and First_Hit_Date if strike was hit
       if (result.hit) {
         const hitDateStr = result.hitDate.toISOString().split('T')[0];
@@ -436,7 +464,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
       for (const check of dayChecks) {
         if (check.col && position.daysSinceEntry === check.day) {
           // Update today's day check with closing price
-          let dayCheckValue = 'None';
+          let dayCheckValue = null; // Use null instead of 'None' for consistency with backfill
           
           if (result.lastClose) {
             dayCheckValue = result.lastClose.toFixed(2);
@@ -446,7 +474,10 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
             dayCheckValue = avgPrice.toFixed(2);
           }
           
-          dataRange.getCell(position.rowIndex + 1, check.col).setValue(dayCheckValue);
+          // Only set value if we have actual data, otherwise leave blank (null)
+          if (dayCheckValue !== null) {
+            dataRange.getCell(position.rowIndex + 1, check.col).setValue(dayCheckValue);
+          }
         }
       }
       
@@ -624,10 +655,12 @@ function EW_testActivePositionTracking() {
   console.log(`\nHistorical High: ${historicalHigh}`);
   console.log(`Historical Low: ${historicalLow}`);
   
-  // Day check value (closing price)
+  // Day check value (closing price) - now uses null for no data
   const dayCheckValue = result.lastClose ? result.lastClose.toFixed(2) : 
-    ((parseFloat(result.dayHigh) + parseFloat(result.dayLow)) / 2).toFixed(2);
-  console.log(`\nDay ${dayIndex} Check: ${dayCheckValue}`);
+    (result.dayHigh && result.dayLow ? 
+      ((parseFloat(result.dayHigh) + parseFloat(result.dayLow)) / 2).toFixed(2) : 
+      null);
+  console.log(`\nDay ${dayIndex} Check: ${dayCheckValue || '(no data)'}`);
   
   // Summary of what would be updated in the sheet
   console.log('\n=== SUMMARY OF UPDATES ===');
