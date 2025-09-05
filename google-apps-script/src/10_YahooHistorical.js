@@ -359,6 +359,24 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       }
       EW_logApiCall(logEntry, data);
       
+      // Get daily OHLC data
+      let dayOpen = null;
+      let dayClose = lastClose;
+      let dayVolume = 0;
+      
+      // Find first open price of the day
+      for (let i = 0; i < timestamps.length; i++) {
+        const dataTime = new Date(timestamps[i] * 1000);
+        if (dataTime >= targetDateStart && dataTime <= targetDateEnd) {
+          if (dayOpen === null && quotes.open[i] !== null) {
+            dayOpen = quotes.open[i];
+          }
+          if (quotes.volume && quotes.volume[i]) {
+            dayVolume += quotes.volume[i];
+          }
+        }
+      }
+      
       const returnObj = {
         hit: true,
         timestamp: hitTime,
@@ -370,6 +388,9 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
         lastClose: hitData.close,  // Add lastClose
         dayHigh: dayHigh,
         dayLow: dayLow,
+        dayOpen: dayOpen,      // Add daily open
+        dayClose: dayClose,    // Add daily close
+        dayVolume: dayVolume,  // Add daily volume
         interval: interval,
         indicators: hitIndicators  // Include full indicators object
       };
@@ -401,6 +422,24 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
     logEntry.lastClose = lastClose;
     EW_logApiCall(logEntry, data);
     
+    // Get daily OHLC data even when no hit
+    let dayOpen = null;
+    let dayClose = lastClose;
+    let dayVolume = 0;
+    
+    // Find first open price and total volume of the day
+    for (let i = 0; i < timestamps.length; i++) {
+      const dataTime = new Date(timestamps[i] * 1000);
+      if (dataTime >= targetDateStart && dataTime <= targetDateEnd) {
+        if (dayOpen === null && quotes.open && quotes.open[i] !== null) {
+          dayOpen = quotes.open[i];
+        }
+        if (quotes.volume && quotes.volume[i]) {
+          dayVolume += quotes.volume[i];
+        }
+      }
+    }
+    
     const returnObj = { 
       hit: false, 
       timestamp: null,  // No hit, so no timestamp
@@ -408,6 +447,9 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       hitTime: null,    // No hit, so no hit time
       dayHigh: dayHigh === 0 ? null : dayHigh,
       dayLow: dayLow === Infinity ? null : dayLow,
+      dayOpen: dayOpen,      // Add daily open
+      dayClose: dayClose,    // Add daily close  
+      dayVolume: dayVolume,  // Add daily volume
       lastClose: lastClose,
       interval: interval,
       dataPoints: timestamps.length,

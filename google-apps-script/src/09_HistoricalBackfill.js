@@ -416,6 +416,8 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     // Arrays for max favorable and min unfavorable per day
     maxFavorableArray: [],  // Daily max favorable moves
     minUnfavorableArray: [],  // Daily min unfavorable moves
+    // OHLC and Volume array for validation and reference
+    ohlcVolumeArray: [],  // Daily OHLC and volume data
     // Daily indicator arrays
     dailyIndicators: {
       rsi: [],
@@ -997,6 +999,15 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     if (tradingDaysSinceEntry >= 0 && tradingDaysSinceEntry <= 5) {
       analysis.maxFavorableArray.push(dayMaxFavorable.toFixed(6));
       analysis.minUnfavorableArray.push(dayMinUnfavorable.toFixed(6));
+      
+      // Add OHLC and volume data
+      analysis.ohlcVolumeArray.push({
+        o: dayData.open ? parseFloat(dayData.open).toFixed(2) : null,
+        h: dayData.high ? parseFloat(dayData.high).toFixed(2) : null,
+        l: dayData.low ? parseFloat(dayData.low).toFixed(2) : null,
+        c: dayData.close ? parseFloat(dayData.close).toFixed(2) : null,
+        v: dayData.volume || 0
+      });
     }
     
     // Track overall max/min for backward compatibility
@@ -1612,6 +1623,27 @@ function EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDa
   if (shouldUpdate(hdrMap.historicalLowCol, analysis.historicalLow) && analysis.historicalLow < Infinity) {
     sheet.getRange(rowNum, hdrMap.historicalLowCol).setValue(analysis.historicalLow);
     updated = true;
+  }
+  
+  // Update OHLC_Volume array (ALWAYS merge with existing)
+  // First, check if the column mapping exists
+  if (!hdrMap.ohlcVolumeCol) {
+    // Add OHLC_Volume column to header map if it exists in headers
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    for (let i = 0; i < headers.length; i++) {
+      if (headers[i] === 'OHLC_Volume' || headers[i] === 'Peak_Profit_Date') {
+        hdrMap.ohlcVolumeCol = i + 1;
+        break;
+      }
+    }
+  }
+  
+  if (hdrMap.ohlcVolumeCol && analysis.ohlcVolumeArray && analysis.ohlcVolumeArray.length > 0) {
+    const existingOHLC = existingRowData ? existingRowData[hdrMap.ohlcVolumeCol - 1] : null;
+    const mergedArray = EW_mergeArrays(existingOHLC, analysis.ohlcVolumeArray);
+    sheet.getRange(rowNum, hdrMap.ohlcVolumeCol).setValue(JSON.stringify(mergedArray));
+    updated = true;
+    EW_trace('BACKFILL', `${ticker} OHLC_Volume array updated: ${JSON.stringify(mergedArray).substring(0, 100)}...`);
   }
   
   if (updated) {
