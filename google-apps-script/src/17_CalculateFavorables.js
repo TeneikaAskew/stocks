@@ -115,10 +115,23 @@ function EW_calculateFavorablesFromOHLC(sheet, strategyName, startRow = 2, numRo
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(headers);
   
+  // Add OHLC_Volume column to header map
+  for (let i = 0; i < headers.length; i++) {
+    if (headers[i] === 'OHLC_Volume' || headers[i] === 'Peak_Profit_Date') {
+      hdrMap.ohlcVolumeCol = i + 1;
+      break;
+    }
+  }
+  
   // Check if sheet has the necessary columns
   if (!hdrMap.maxFavorableCol || !hdrMap.minUnfavorableCol) {
     EW_trace('FAVORABLES', `${strategyName}: Missing Max_Favorable or Min_Unfavorable columns`);
     return { processed: 0, updated: 0, errors: ['Missing required columns'] };
+  }
+  
+  if (!hdrMap.ohlcVolumeCol) {
+    EW_trace('FAVORABLES', `${strategyName}: Missing OHLC_Volume column - cannot calculate from OHLC data`);
+    return { processed: 0, updated: 0, errors: ['OHLC_Volume column not found'] };
   }
   
   // Determine strike column
@@ -139,6 +152,7 @@ function EW_calculateFavorablesFromOHLC(sheet, strategyName, startRow = 2, numRo
   
   let processedCount = 0;
   let updatedCount = 0;
+  let skippedNoOHLC = 0;
   let errors = [];
   
   // Batch arrays for updates
@@ -177,26 +191,27 @@ function EW_calculateFavorablesFromOHLC(sheet, strategyName, startRow = 2, numRo
         continue;
       }
       
-      // Get day check values to calculate from
-      const dayChecks = [];
-      for (let day = 0; day <= 5; day++) {
-        const dayCol = hdrMap[`day${day}CheckCol`];
-        if (dayCol) {
-          const value = rowData[dayCol - 1];
-          if (value && value !== '' && value !== null) {
-            dayChecks.push(parseFloat(value));
-          } else {
-            dayChecks.push(null);
-          }
-        } else {
-          dayChecks.push(null);
-        }
+      // Get OHLC data instead of day check values
+      const ohlcData = rowData[hdrMap.ohlcVolumeCol - 1];
+      if (!ohlcData || ohlcData === '' || ohlcData === '[]') {
+        skippedNoOHLC++;
+        continue; // No OHLC data available
       }
       
-      // Check if we have any data to work with
-      const hasData = dayChecks.some(v => v !== null && !isNaN(v));
+      // Parse OHLC array
+      let ohlcArray;
+      try {
+        ohlcArray = typeof ohlcData === 'string' ? JSON.parse(ohlcData) : ohlcData;
+      } catch (e) {
+        errors.push(`Row ${rowNum}: Invalid OHLC format`);
+        continue;
+      }
+      
+      // Check if we have any valid OHLC data
+      const hasData = ohlcArray && ohlcArray.length > 0 && 
+                     ohlcArray.some(day => day && day.h && day.l);
       if (!hasData) {
-        // No day check data available, skip
+        skippedNoOHLC++;
         continue;
       }
       
@@ -211,75 +226,38 @@ function EW_calculateFavorablesFromOHLC(sheet, strategyName, startRow = 2, numRo
       const isBullSpread = strategyUpper.includes('BULL SPREAD');
       const isBearSpread = strategyUpper.includes('BEAR SPREAD');
       
-      // Process each day
-      for (let day = 0; day <= 5; day++) {
-        const dayPrice = dayChecks[day];
+      // Process each day using OHLC data
+      for (let day = 0; day < ohlcArray.length && day <= 5; day++) {
+        const dayOHLC = ohlcArray[day];
         
-        if (dayPrice === null || isNaN(dayPrice)) {
+        if (!dayOHLC || dayOHLC === null) {
           maxFavArray.push(null);
           minUnfavArray.push(null);
           continue;
         }
         
-        // For day checks, we only have the closing price, not high/low
-        // So we'll calculate based on the closing price relative to strike
-        let maxFav = null;
-        let minUnfav = null;
+        // Extract high and low from OHLC data
+        const dayHigh = parseFloat(dayOHLC.h);
+        const dayLow = parseFloat(dayOHLC.l);
         
-        if (isBullish) {
-          // Bullish: favorable when price > strike, unfavorable when price < strike
-          if (dayPrice >= strike) {
-            maxFav = ((dayPrice - strike) / strike).toFixed(6);
-            minUnfav = "0.000000"; // No unfavorable move if price is above strike
-          } else {
-            maxFav = "0.000000"; // No favorable move if price is below strike
-            minUnfav = ((strike - dayPrice) / strike).toFixed(6);
-          }
-        } else if (isBearish) {
-          // Bearish: favorable when price < strike, unfavorable when price > strike
-          if (dayPrice <= strike) {
-            maxFav = ((strike - dayPrice) / strike).toFixed(6);
-            minUnfav = "0.000000"; // No unfavorable move if price is below strike
-          } else {
-            maxFav = "0.000000"; // No favorable move if price is above strike
-            minUnfav = ((dayPrice - strike) / strike).toFixed(6);
-          }
-        } else if (isBullSpread && shortStrike) {
-          // Bull spread: capped profit at short strike
-          const maxProfit = (shortStrike - strike) / strike;
-          if (dayPrice >= shortStrike) {
-            maxFav = maxProfit.toFixed(6);
-            minUnfav = "0.000000";
-          } else if (dayPrice >= strike) {
-            maxFav = ((dayPrice - strike) / strike).toFixed(6);
-            minUnfav = "0.000000";
-          } else {
-            maxFav = "0.000000";
-            minUnfav = ((strike - dayPrice) / strike).toFixed(6);
-          }
-        } else if (isBearSpread && shortStrike) {
-          // Bear spread: capped profit at short strike
-          const maxProfit = (strike - shortStrike) / strike;
-          if (dayPrice <= shortStrike) {
-            maxFav = maxProfit.toFixed(6);
-            minUnfav = "0.000000";
-          } else if (dayPrice <= strike) {
-            maxFav = ((strike - dayPrice) / strike).toFixed(6);
-            minUnfav = "0.000000";
-          } else {
-            maxFav = "0.000000";
-            minUnfav = ((dayPrice - strike) / strike).toFixed(6);
-          }
-        } else {
-          // Neutral or other strategies - calculate both directions
-          const upMove = Math.max(0, (dayPrice - strike) / strike);
-          const downMove = Math.max(0, (strike - dayPrice) / strike);
-          maxFav = Math.max(upMove, downMove).toFixed(6);
-          minUnfav = Math.min(upMove, downMove).toFixed(6);
+        if (isNaN(dayHigh) || isNaN(dayLow)) {
+          maxFavArray.push(null);
+          minUnfavArray.push(null);
+          continue;
         }
+        
+        // Now we have actual high/low data, so use the proper calculation functions
+        const maxFav = EW_calculateMaxFavorableForDay(strategyName, strike, dayHigh, dayLow);
+        const minUnfav = EW_calculateMinUnfavorableForDay(strategyName, strike, dayHigh, dayLow);
         
         maxFavArray.push(maxFav);
         minUnfavArray.push(minUnfav);
+      }
+      
+      // Pad with nulls if we have less than 6 days
+      while (maxFavArray.length < 6) {
+        maxFavArray.push(null);
+        minUnfavArray.push(null);
       }
       
       // Store updates for batch processing
@@ -323,15 +301,18 @@ function EW_calculateFavorablesFromOHLC(sheet, strategyName, startRow = 2, numRo
   return {
     processed: processedCount,
     updated: updatedCount,
+    skippedNoOHLC: skippedNoOHLC,
     errors: errors
   };
 }
 
 /**
- * Calculate favorables using historical data (more accurate)
+ * Calculate favorables using historical data from Yahoo API (legacy - slow)
  * This version fetches actual high/low data from Yahoo Finance
+ * NOTE: This makes API calls and is much slower than using OHLC_Volume data
+ * @deprecated Use EW_calculateMissingFavorables() instead which uses OHLC_Volume
  */
-function EW_calculateFavorablesWithHistorical() {
+function EW_calculateFavorablesWithHistoricalAPI() {
   const sheet = SpreadsheetApp.getActiveSheet();
   const range = sheet.getActiveRange();
   
