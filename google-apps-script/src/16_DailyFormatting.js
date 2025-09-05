@@ -79,8 +79,12 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
   // Define colors
   const GREEN = '#d4edda';  // Light green for hits
   const RED = '#f8d7da';    // Light red for misses
-  const YELLOW = '#fff3cd'; // Light yellow for close calls
   const GRAY = '#e2e3e5';   // Light gray for no data
+  
+  // Text colors
+  const TEXT_DARK_GREEN = '#155724';  // Dark green text for hits
+  const TEXT_DARK_RED = '#721c24';    // Dark red text for misses
+  const TEXT_GRAY = '#6c757d';        // Gray text for no data
   
   // Format each Day Check column
   const dayCheckCols = [
@@ -100,6 +104,7 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
     const values = range.getValues();
     const backgrounds = [];
     const fontWeights = [];
+    const fontColors = [];
     
     // Get strike prices for comparison
     const strikeCol = hdrMap.strikeCol || hdrMap.longStrikeCol;
@@ -115,6 +120,7 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
         // No data - gray background
         backgrounds.push([GRAY]);
         fontWeights.push(['normal']);
+        fontColors.push([TEXT_GRAY]);
       } else {
         const price = parseFloat(value);
         
@@ -122,23 +128,22 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
           // Invalid data
           backgrounds.push([GRAY]);
           fontWeights.push(['normal']);
+          fontColors.push([TEXT_GRAY]);
         } else {
           // Compare price to strike
           let isHit = false;
-          let isClose = false;
           
           if (isBullish) {
-            // Bullish: green if price >= strike
+            // Bullish: green if price >= strike, red if price < strike
             isHit = price >= strike;
-            isClose = price >= strike * 0.98 && price < strike; // Within 2% of strike
           } else if (isBearish) {
-            // Bearish: green if price <= strike
+            // Bearish: green if price <= strike, red if price > strike
             isHit = price <= strike;
-            isClose = price <= strike * 1.02 && price > strike; // Within 2% of strike
           } else {
             // Neutral strategy - no specific formatting
             backgrounds.push([null]);
             fontWeights.push(['normal']);
+            fontColors.push([null]);
           }
           
           // Only apply hit/miss formatting for bullish/bearish strategies
@@ -146,12 +151,11 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
             if (isHit) {
               backgrounds.push([GREEN]);
               fontWeights.push(['bold']);
-            } else if (isClose) {
-              backgrounds.push([YELLOW]);
-              fontWeights.push(['normal']);
+              fontColors.push([TEXT_DARK_GREEN]);
             } else {
               backgrounds.push([RED]);
               fontWeights.push(['normal']);
+              fontColors.push([TEXT_DARK_RED]);
             }
           }
         }
@@ -162,6 +166,7 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
     if (backgrounds.length > 0) {
       range.setBackgrounds(backgrounds);
       range.setFontWeights(fontWeights);
+      range.setFontColors(fontColors);
     }
   });
   
@@ -171,6 +176,7 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
     const values = range.getValues();
     const backgrounds = [];
     const fontWeights = [];
+    const fontColors = [];
     
     values.forEach(row => {
       const value = row[0];
@@ -178,6 +184,7 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
       if (!value || value === '') {
         backgrounds.push([null]);
         fontWeights.push(['normal']);
+        fontColors.push([null]);
       } else if (typeof value === 'string' && value.startsWith('[')) {
         // Array format - check if any values are non-null
         try {
@@ -187,13 +194,16 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
           if (hasHit) {
             backgrounds.push([GREEN]);
             fontWeights.push(['bold']);
+            fontColors.push([TEXT_DARK_GREEN]);
           } else {
             backgrounds.push([GRAY]);
             fontWeights.push(['normal']);
+            fontColors.push([TEXT_GRAY]);
           }
         } catch (e) {
           backgrounds.push([null]);
           fontWeights.push(['normal']);
+          fontColors.push([null]);
         }
       } else {
         // Legacy format
@@ -201,12 +211,15 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
         if (upperValue === 'HIT' || upperValue === 'FAVORABLE') {
           backgrounds.push([GREEN]);
           fontWeights.push(['bold']);
+          fontColors.push([TEXT_DARK_GREEN]);
         } else if (upperValue === 'NO' || upperValue === 'UNFAVORABLE') {
           backgrounds.push([RED]);
           fontWeights.push(['normal']);
+          fontColors.push([TEXT_DARK_RED]);
         } else {
           backgrounds.push([null]);
           fontWeights.push(['normal']);
+          fontColors.push([null]);
         }
       }
     });
@@ -215,6 +228,7 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
     if (backgrounds.length > 0) {
       range.setBackgrounds(backgrounds);
       range.setFontWeights(fontWeights);
+      range.setFontColors(fontColors);
     }
   }
   
@@ -223,19 +237,23 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
     const range = sheet.getRange(2, hdrMap.hitDateCol, lastRow - 1, 1);
     const values = range.getValues();
     const backgrounds = [];
+    const fontColors = [];
     
     values.forEach(row => {
       const value = row[0];
       if (value && value !== '') {
         backgrounds.push([GREEN]);
+        fontColors.push([TEXT_DARK_GREEN]);
       } else {
         backgrounds.push([null]);
+        fontColors.push([null]);
       }
     });
     
     // Apply formatting
     if (backgrounds.length > 0) {
       range.setBackgrounds(backgrounds);
+      range.setFontColors(fontColors);
     }
   }
   
@@ -244,6 +262,7 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
     const range = sheet.getRange(2, hdrMap.expResultCol, lastRow - 1, 1);
     const values = range.getValues();
     const backgrounds = [];
+    const fontColors = [];
     
     // Get strike prices for comparison
     const strikeCol = hdrMap.strikeCol || hdrMap.longStrikeCol;
@@ -256,11 +275,13 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
         
         if (!value || value === '') {
           backgrounds.push([null]);
+          fontColors.push([null]);
         } else {
           const price = parseFloat(value);
           
           if (isNaN(price) || isNaN(strike)) {
             backgrounds.push([null]);
+            fontColors.push([null]);
           } else {
             let isSuccess = false;
             
@@ -271,6 +292,7 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
             }
             
             backgrounds.push([isSuccess ? GREEN : RED]);
+            fontColors.push([isSuccess ? TEXT_DARK_GREEN : TEXT_DARK_RED]);
           }
         }
       });
@@ -278,6 +300,7 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
       // Apply formatting
       if (backgrounds.length > 0) {
         range.setBackgrounds(backgrounds);
+        range.setFontColors(fontColors);
       }
     }
   }
