@@ -333,7 +333,7 @@ function EW_extractTradeData(sheet, strategy) {
     }
     
     try {
-      const trade = {
+      let trade = {
         // Basic info
         strategy: strategy,
         ticker: row[hdrMap.tickerCol - 1],
@@ -448,36 +448,64 @@ function EW_extractTradeData(sheet, strategy) {
           return pctMove !== 0;
         });
       
-      // Calculate max favorable value - check data format and correct if needed
+      // Calculate max favorable value - CRITICAL FIX for mixed data formats
+      // First, check if we have strikeHit data to understand the data format
+      let dataFormatHint = 'unknown';
+      if (trade.strikeHit && Array.isArray(trade.strikeHit)) {
+        const validStrikeHits = trade.strikeHit
+          .filter(v => v !== null && v !== "" && !isNaN(parseFloat(v)))
+          .map(v => Math.abs(parseFloat(v)));
+        
+        if (validStrikeHits.length > 0) {
+          const maxStrikeHit = Math.max(...validStrikeHits);
+          // If strikeHit values are mostly < 1, they're in decimal format (0.8767 for 87.67%)
+          // If strikeHit values are mostly > 10, they might be absolute differences
+          if (maxStrikeHit < 1) {
+            dataFormatHint = 'decimal';
+          } else if (maxStrikeHit > 10) {
+            dataFormatHint = 'absolute';
+          }
+        }
+      }
+      
       const maxFavValues = trade.maxFavorable.filter(v => v !== null).map(v => {
         let val = parseFloat(v) || 0;
         
-        // Smart data correction: Detect if value is absolute difference or percentage
-        // If we have a strike price and the value is unreasonably high (>10 which would be 1000%),
-        // it's likely an absolute dollar difference that needs conversion
+        // Apply correction ONLY for clearly corrupted data
         if (trade.strike && trade.strike > 0) {
-          // Check if this looks like an absolute price difference
-          // Absolute differences would typically be in the range of strike price magnitude
-          if (Math.abs(val) > 10 && Math.abs(val) < trade.strike * 2) {
-            // This looks like an absolute difference, convert to percentage
+          // If value is very large and close to strike price range, it's likely absolute
+          if (Math.abs(val) > 10 && Math.abs(val) < trade.strike * 3) {
+            // This looks like an absolute difference (e.g., 131.51 for BURL)
             val = val / trade.strike;
-          }
-          // If val is between 0 and 10, it's likely already a decimal percentage
-          // If val is tiny (< 0.0001), it might be a percentage stored as 0.0091 for 0.91%
-        }
-        
-        // Debug logging for problematic tickers
-        if (trade.ticker === 'BURL' || trade.ticker === 'WMT' || trade.ticker === 'BILI') {
-          console.log(`${trade.ticker} maxFavorable raw: ${v}, parsed: ${val}, strike: ${trade.strike}`);
+            console.log(`${trade.ticker}: Converting absolute ${v} to percentage ${val}`);
+          } 
+          // REMOVED: Small value multiplication - this was flawed
+          // Small moves like 0.006850 (0.685%) are perfectly valid
         }
         
         return val;
       });
       trade.maxFavorableValue = maxFavValues.length > 0 ? Math.max(...maxFavValues) : 0;
       
+      // Final validation against strikeHit data
+      if (trade.strikeHit && Array.isArray(trade.strikeHit)) {
+        const maxStrikeHit = Math.max(...trade.strikeHit
+          .filter(v => v !== null && v !== "" && !isNaN(parseFloat(v)))
+          .map(v => Math.abs(parseFloat(v))));
+        
+        // If there's still a huge discrepancy, use strikeHit
+        if (maxStrikeHit > 0 && trade.maxFavorableValue > 0) {
+          const ratio = maxStrikeHit / trade.maxFavorableValue;
+          if (ratio > 50 || ratio < 0.02) {
+            console.log(`${trade.ticker}: Using strikeHit max ${maxStrikeHit} instead of calculated ${trade.maxFavorableValue}`);
+            trade.maxFavorableValue = maxStrikeHit;
+          }
+        }
+      }
+      
       // Debug logging for problematic tickers
-      if (trade.ticker === 'BURL' || trade.ticker === 'WMT' || trade.ticker === 'BILI') {
-        console.log(`${trade.ticker} maxFavorableValue final: ${trade.maxFavorableValue}`);
+      if (trade.ticker === 'BURL' || trade.ticker === 'WMT' || trade.ticker === 'BILI' || trade.ticker === 'FERG') {
+        console.log(`${trade.ticker} maxFavorableValue final: ${trade.maxFavorableValue}, strikeHit: ${JSON.stringify(trade.strikeHit)}`);
       }
       
       // Same for unfavorable with smart data correction
@@ -1851,31 +1879,55 @@ function EW_analyzeStrategyPerformance(trades) {
 function EW_validateTradeCalculations(trade) {
   // Validate maxFavorableValue
   if (trade.maxFavorableValue !== undefined && trade.maxFavorableValue !== null) {
-    // Check if the value makes sense
-    // Most option trades won't have > 500% profit (5.0 as decimal)
-    if (trade.maxFavorableValue > 5) {
-      console.warn(`${trade.ticker}: maxFavorableValue ${trade.maxFavorableValue} seems too high, might be data corruption`);
+    
+    // CRITICAL FIX: If we have strikeHit data, use it to verify/correct maxFavorableValue
+    // The strikeHit array contains the actual percentage moves when strike was hit
+    if (trade.strikeHit && Array.isArray(trade.strikeHit)) {
+      const validStrikeHits = trade.strikeHit
+        .filter(v => v !== null && v !== "" && !isNaN(parseFloat(v)))
+        .map(v => parseFloat(v));
       
-      // If we have the strike and hit price, recalculate
-      if (trade.strikeHit && trade.strike) {
-        const maxPctFromArray = Math.max(...trade.strikeHit
-          .filter(v => v !== null && v !== "" && !isNaN(parseFloat(v)))
-          .map(v => Math.abs(parseFloat(v))));
+      if (validStrikeHits.length > 0) {
+        // Get the maximum absolute value from strikeHit array
+        const maxFromStrikeHit = Math.max(...validStrikeHits.map(v => Math.abs(v)));
         
-        if (maxPctFromArray > 0 && maxPctFromArray < 5) {
-          console.log(`${trade.ticker}: Using strikeHit array max ${maxPctFromArray} instead of ${trade.maxFavorableValue}`);
-          trade.maxFavorableValue = maxPctFromArray;
+        // If maxFavorableValue is way off from strikeHit data, use strikeHit
+        // This catches cases where maxFavorableValue is 0.0091 but strikeHit shows 0.8767
+        if (maxFromStrikeHit > 0) {
+          // Check if there's a huge discrepancy (more than 10x difference)
+          const ratio = maxFromStrikeHit / trade.maxFavorableValue;
+          if (ratio > 10 || ratio < 0.1) {
+            console.log(`${trade.ticker}: Large discrepancy - maxFavorableValue: ${trade.maxFavorableValue}, strikeHit max: ${maxFromStrikeHit}`);
+            trade.maxFavorableValue = maxFromStrikeHit;
+          }
         }
       }
     }
     
-    // Check if value is too small (might be stored as 0.0091 for 0.91%)
-    if (trade.maxFavorableValue > 0 && trade.maxFavorableValue < 0.01) {
-      console.warn(`${trade.ticker}: maxFavorableValue ${trade.maxFavorableValue} seems too small`);
-      // Might be a percentage stored as 0.0091 for 0.91%, multiply by 100
-      if (trade.maxFavorableValue < 0.01) {
-        trade.maxFavorableValue = trade.maxFavorableValue * 100;
-        console.log(`${trade.ticker}: Adjusted to ${trade.maxFavorableValue}`);
+    // REMOVED: Small value multiplication logic - it was flawed
+    // Small percentage moves like 0.006850 (0.685%) are perfectly valid
+    
+    // Check if value is unreasonably high (>10 which would be 1000%)
+    if (trade.maxFavorableValue > 10) {
+      console.warn(`${trade.ticker}: maxFavorableValue ${trade.maxFavorableValue} seems too high`);
+      
+      // Try to recalculate from raw data if available
+      if (trade.maxFavorable && Array.isArray(trade.maxFavorable)) {
+        const recalculated = Math.max(...trade.maxFavorable
+          .filter(v => v !== null && !isNaN(parseFloat(v)))
+          .map(v => {
+            let val = parseFloat(v);
+            // Apply smart correction if needed
+            if (trade.strike && trade.strike > 0 && Math.abs(val) > 10 && Math.abs(val) < trade.strike * 2) {
+              val = val / trade.strike;
+            }
+            return val;
+          }));
+        
+        if (recalculated > 0 && recalculated < 10) {
+          console.log(`${trade.ticker}: Recalculated from maxFavorable array: ${recalculated}`);
+          trade.maxFavorableValue = recalculated;
+        }
       }
     }
   }
@@ -1905,6 +1957,8 @@ function EW_identifyTopPlays(trades) {
   
   // Get top 20
   const topPlays = successfulTrades.slice(0, 20).map(trade => {
+    // CRITICAL: Recalculate maxProfit from strike and hit price if available
+    let recalculatedMaxProfit = trade.maxFavorableValue;
     // Get comprehensive indicator profiles (both entry and hit)
     const entryIndicators = {};
     const hitIndicators = {};
@@ -1978,6 +2032,34 @@ function EW_identifyTopPlays(trades) {
       }
     }
     
+    // FINAL CALCULATION: If we have strike and hit price, calculate the actual profit
+    if (strikePrice !== 'N/A' && hitPrice !== 'N/A') {
+      const strike = parseFloat(strikePrice);
+      const hit = parseFloat(hitPrice);
+      
+      if (!isNaN(strike) && !isNaN(hit) && strike > 0) {
+        const strategyType = EW_getStrategyType(trade.strategy);
+        
+        if (strategyType === 'bullish') {
+          // For bullish strategies (Long Calls, Bull Spreads)
+          recalculatedMaxProfit = Math.abs((hit - strike) / strike);
+          console.log(`${trade.ticker}: Recalculated from ${strike}→${hit} = ${recalculatedMaxProfit}`);
+        } else if (strategyType === 'bearish') {
+          // For bearish strategies (Long Puts, Bear Spreads)
+          recalculatedMaxProfit = Math.abs((strike - hit) / strike);
+          console.log(`${trade.ticker}: Recalculated bearish from ${strike}→${hit} = ${recalculatedMaxProfit}`);
+        } else {
+          // For neutral strategies, use the absolute difference
+          recalculatedMaxProfit = Math.abs((hit - strike) / strike);
+        }
+        
+        // ALWAYS use the recalculated value when we have strike and hit prices
+        // This is the most reliable source of truth
+        console.log(`${trade.ticker}: Using strike→hit calculation: ${strike}→${hit} = ${(recalculatedMaxProfit * 100).toFixed(2)}%`);
+        trade.maxFavorableValue = recalculatedMaxProfit;
+      }
+    }
+    
     return {
       ticker: trade.ticker || 'N/A',
       strategy: trade.strategy || 'N/A',
@@ -1985,7 +2067,7 @@ function EW_identifyTopPlays(trades) {
       strike: strikePrice,
       hitPrice: hitPrice,
       strikeAndHit: `${strikePrice} → ${hitPrice}`, // Combined display
-      maxProfit: trade.maxFavorableValue || 0,  // Already a percentage
+      maxProfit: trade.maxFavorableValue || recalculatedMaxProfit || 0,  // Use recalculated if available
       daysToHit: trade.daysToHit !== undefined && trade.daysToHit !== null ? trade.daysToHit : 'N/A',
       profitableDays: trade.profitableDays || 0,
       riskReward: trade.riskReward && !isNaN(trade.riskReward) ? trade.riskReward.toFixed(2) : 'N/A',

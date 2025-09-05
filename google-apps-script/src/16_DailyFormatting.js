@@ -111,7 +111,7 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
       const value = row[0];
       const strike = parseFloat(strikes[rowIndex][0]);
       
-      if (!value || value === '' || value === 'None') {
+      if (!value || value === '' || value === null) {
         // No data - gray background
         backgrounds.push([GRAY]);
         fontWeights.push(['normal']);
