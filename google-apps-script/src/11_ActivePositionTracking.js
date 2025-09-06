@@ -354,7 +354,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
         high: result.dayHigh || null,
         low: result.dayLow || null,
         close: result.dayClose || null,
-        volume: result.dayVolume || 0
+        volume: result.dayVolume || null  // Use null instead of 0 if no volume data
       };
       const updatedOHLC = EW_buildOHLCArray(existingOHLC, dayIndex, ohlcData, 'ACTIVE');
       
