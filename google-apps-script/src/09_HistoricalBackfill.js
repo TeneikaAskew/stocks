@@ -754,11 +754,9 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     }
     
     // Record first hit date and price
-    if (dayHit && !hitDetected) {
-      analysis.firstHitDate = dayData.date.toISOString().split('T')[0];
-      analysis.firstHitPrice = hitPrice;
-      hitDetected = true;
-    }
+    // Hit_Date should be based on when the Strike_Hit array first has a positive value
+    // This indicates when the position first became profitable
+    // We'll determine this after building the Strike_Hit array
     
     // Check specific day milestones based on trading days
     // tradingDaysSinceEntry starts at 0 for the entry date (same day)
@@ -1055,6 +1053,21 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     
     // Set expResult to the closing price at expiration
     analysis.expResult = lastDay.close ? lastDay.close.toFixed(2) : null;
+  }
+  
+  // Determine firstHitDate based on first positive value in strikeHitArray
+  // This now stores the day number (0-5) instead of an actual date
+  // This makes it clear how many trading days it took to become profitable
+  if (analysis.strikeHitArray && analysis.strikeHitArray.length > 0) {
+    for (let i = 0; i < analysis.strikeHitArray.length && i <= 5; i++) {
+      const value = analysis.strikeHitArray[i];
+      if (value !== null && parseFloat(value) > 0) {
+        // Found first profitable day - store the day number
+        analysis.firstHitDate = i.toString();
+        EW_trace('BACKFILL', `${ticker}: Strike ${strike} first profitable on Day ${i} (value: ${value})`);
+        break;
+      }
+    }
   }
   
   // Note: Indicators are now calculated daily and stored in arrays
@@ -1466,9 +1479,22 @@ function EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDa
   };
   
   // Update First_Hit_Date
-  if (shouldUpdate(hdrMap.hitDateCol, analysis.firstHitDate)) {
-    sheet.getRange(rowNum, hdrMap.hitDateCol).setValue(analysis.firstHitDate);
-    updated = true;
+  // Special handling for Hit_Date - always update if we found an earlier hit date
+  if (hdrMap.hitDateCol && analysis.firstHitDate) {
+    const existingHitDate = existingRowData ? existingRowData[hdrMap.hitDateCol - 1] : null;
+    
+    // Always update if no existing date or if the new hit date is earlier
+    if (!existingHitDate || existingHitDate === '' || 
+        new Date(analysis.firstHitDate) < new Date(existingHitDate)) {
+      sheet.getRange(rowNum, hdrMap.hitDateCol).setValue(analysis.firstHitDate);
+      updated = true;
+      EW_trace('BACKFILL', `${ticker}: Updated Hit_Date from ${existingHitDate || 'empty'} to ${analysis.firstHitDate}`);
+    } else if (existingHitDate === expDate?.toISOString().split('T')[0]) {
+      // If existing date equals expiration date, replace with actual hit date
+      sheet.getRange(rowNum, hdrMap.hitDateCol).setValue(analysis.firstHitDate);
+      updated = true;
+      EW_trace('BACKFILL', `${ticker}: Replaced expiration date ${existingHitDate} with actual hit date ${analysis.firstHitDate}`);
+    }
   }
   
   // Update Day0_Check through Day5_Check
