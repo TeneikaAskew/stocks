@@ -33,16 +33,11 @@ function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('EarningsWhispers')
     .addItem('Run all strategies', 'EW_runAll')
-    .addItem('Debug one (prompt)', 'EW_debugOne')
-    .addSeparator()
-    .addItem('Test Login', 'EW_testLogin')
     .addSeparator()
     .addItem('Generate Success Report', 'EW_generateSuccessReport')
     .addItem('Update Success Report', 'EW_updateSuccessReport')
     .addItem('Update Tracking Data (Formulas)', 'EW_updateTrackingData')
     .addItem('Update Tracking Data (Fill Columns)', 'EW_updateAllTrackingData')
-    .addItem('Fix: Add Strategy column (one-time)', 'EW_fixAddStrategyColumn')
-    .addItem('Fix: Complete sheet repair', 'EW_completeSheetRepair')
     .addSeparator()
     .addSubMenu(ui.createMenu('Analysis & Reports')
       .addItem('Comprehensive Success Report', 'EW_generateSuccessReport')
@@ -62,11 +57,8 @@ function onOpen() {
     .addItem('Recalculate Indicators (Sheet)', 'EW_recalculateIndicatorsForSheet')
     .addItem('Check Missing Indicators', 'EW_checkMissingIndicators')
     .addSeparator()
-    .addItem('Calculate Missing Favorables (All - Fast)', 'EW_calculateMissingFavorables')
-    .addItem('Calculate Favorables (Selected - Fast)', 'EW_calculateFavorablesForSelected')
-    .addItem('Calculate Favorables w/ API (Selected - Slow)', 'EW_calculateFavorablesWithHistoricalAPI')
-    .addSeparator()
-    .addItem('Populate OHLC_Volume (Backfill)', 'EW_populateOHLCWithBackfill')
+    .addItem('Calculate Missing Favorables (All)', 'EW_calculateMissingFavorables')
+    .addItem('Calculate Favorables (Selected)', 'EW_calculateFavorablesForSelected')
     .addItem('Validate Favorables Against OHLC', 'EW_validateFavorablesAgainstOHLC')
     .addSeparator()
     .addItem('Apply Formatting (Current Sheet)', 'EW_formatCurrentSheet')
@@ -79,14 +71,14 @@ function onOpen() {
     .addSeparator()
     .addItem('Reset All Continuation States', 'EW_resetContinuation')
     .addSeparator()
-    .addSubMenu(ui.createMenu('API Logging & Debug')
+    .addSubMenu(ui.createMenu('API Logging')
+      .addItem('Check Missing API Logs (All)', 'EW_checkMissingApiLogs')
+      .addItem('Check Missing API Logs (Selected)', 'EW_checkMissingLogsForSelected')
+      .addSeparator()
       .addItem('View Today\'s API Summary', 'EW_showApiSummary')
       .addItem('Create Daily API Report', 'EW_createDailyApiReport')
       .addItem('Open API Logging Folders', 'EW_getApiResponsesFolderUrl')
       .addItem('Cleanup Old Logs (>30 days)', 'EW_cleanupOldApiLogs')
-      .addSeparator()
-      .addItem('Debug Yahoo API', 'EW_debugYahooApi')
-      .addItem('Test Yahoo Data', 'EW_testYahooData')
     )
     .addSeparator()
     .addSubMenu(ui.createMenu('Automation & Triggers')
@@ -104,8 +96,6 @@ function onOpen() {
       .addItem('List Active Triggers', 'EW_listActiveTriggers')
       .addItem('Validate Triggers', 'EW_validateTriggers')
       .addItem('Verify & Repair Triggers', 'EW_verifyAndRepairTriggers')
-      .addSeparator()
-      .addItem('Test Environment Detection', 'EW_testEnvironmentDetection')
     )
     .addToUi();
     
@@ -823,6 +813,9 @@ function EW_headerMap(headerRow) {
   const totalHitDaysCol   = find(['Total_Hit_Days']);
   // Peak_Profit_Date removed - using daily indicator arrays instead
   
+  // OHLC_Volume column for storing daily OHLC and volume data
+  const ohlcVolumeCol = find(['OHLC_Volume', 'OHLCVolume']);
+  
   // Technical indicators at strike hit
   const hitRSICol         = find(['Hit_RSI']);
   const hitSMA20Col       = find(['Hit_SMA20']);
@@ -905,7 +898,7 @@ function EW_headerMap(headerRow) {
     day0CheckCol, day1CheckCol, day2CheckCol, day3CheckCol, day4CheckCol, day5CheckCol, expResultCol,
     successScoreCol, riskRewardCol,
     historicalHighCol, historicalLowCol, everHitStrikeCol, firstHitDateCol,
-    lastUpdateCol, totalHitDaysCol,
+    lastUpdateCol, totalHitDaysCol, ohlcVolumeCol,
     hitRSICol, hitSMA20Col, hitSMA50Col, hitEMA9Col, hitEMA21Col,
     hitVWAPCol, hitRVOLCol, hitATRCol, hitPriceVsSMA20Col, hitPriceVsVWAPCol,
     // API columns
@@ -1270,247 +1263,6 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
 
 
 
-/**
- * One-time fix function to add Strategy column to all existing sheets
- * This will insert Strategy as the second column and populate it with the sheet name
- * @returns {void}
- */
-function EW_fixAddStrategyColumn() {
-  EW_trace('FIX', 'Starting one-time fix to add Strategy column', true);
-  const ss = SpreadsheetApp.getActive();
-  const endpoints = EW.STRATEGY_ENDPOINTS;
-  let sheetsFixed = 0;
-  
-  for (const tabName of Object.keys(endpoints)) {
-    const sheet = ss.getSheetByName(tabName);
-    if (!sheet || sheet.getLastRow() === 0) {
-      EW_trace('FIX', `Skipping ${tabName} - sheet empty or doesn't exist`);
-      continue;
-    }
-    
-    try {
-      const lastRow = sheet.getLastRow();
-      const lastCol = sheet.getLastColumn();
-      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-      const hdrMap = EW_headerMap(headers);
-      
-      // Check if Strategy column already exists
-      if (hdrMap.strategyCol) {
-        EW_trace('FIX', `${tabName} already has Strategy column at position ${hdrMap.strategyCol}`);
-        continue;
-      }
-      
-      EW_trace('FIX', `Adding Strategy column to ${tabName}`);
-      
-      // Get all existing data
-      const allData = sheet.getRange(1, 1, lastRow, lastCol).getValues();
-      
-      // Insert Strategy as second column
-      const newData = allData.map((row, rowIndex) => {
-        const newRow = [...row];
-        if (rowIndex === 0) {
-          // Header row - insert "Strategy" after Run Date
-          newRow.splice(1, 0, 'Strategy');
-        } else {
-          // Data rows - insert the sheet name (strategy)
-          newRow.splice(1, 0, tabName);
-        }
-        return newRow;
-      });
-      
-      // Clear sheet and write updated data
-      sheet.clear();
-      const newWidth = lastCol + 1;
-      sheet.getRange(1, 1, lastRow, newWidth).setValues(newData);
-      
-      // Update header map with new columns
-      const newHeaders = sheet.getRange(1, 1, 1, newWidth).getValues()[0];
-      const newHdrMap = EW_headerMap(newHeaders);
-      
-      // Ensure all other columns exist
-      const finalHdrMap = EW_ensureAllColumnsExist(sheet);
-      
-      // Re-apply formulas with updated header map
-      if (finalHdrMap) {
-        EW_setGFArrayFormulas(sheet, finalHdrMap);
-      }
-      
-      sheetsFixed++;
-      EW_trace('FIX', `Fixed ${tabName} - added Strategy column and refreshed formulas`);
-      
-    } catch (e) {
-      EW_trace('FIX', `Error fixing ${tabName}: ${e.message}`, true);
-    }
-  }
-  
-  const msg = sheetsFixed > 0 ? 
-    `Fixed ${sheetsFixed} sheets - added Strategy column and refreshed formulas` : 
-    'All sheets already have Strategy column or no sheets needed fixing';
-  
-  EW_trace('FIX', msg, true);
-  EW_safeAlert('Strategy Column Fix Complete', msg);
-}
-
-/**
- * Complete sheet repair - removes all GF/error columns and recreates them
- * 1. Removes all Google Finance columns
- * 2. Removes all corrupted columns (#ERROR!, #REF!)
- * 3. Adds Strategy column if missing
- * 4. Re-applies all formulas fresh
- * @returns {void}
- */
-function EW_completeSheetRepair() {
-  EW_trace('REPAIR', 'Starting sheet repair - delete and recreate all GF columns', true);
-  const ss = SpreadsheetApp.getActive();
-  const endpoints = EW.STRATEGY_ENDPOINTS;
-  let sheetsRepaired = 0;
-  
-  for (const tabName of Object.keys(endpoints)) {
-    const sheet = ss.getSheetByName(tabName);
-    if (!sheet || sheet.getLastRow() === 0) {
-      EW_trace('REPAIR', `Skipping ${tabName} - sheet empty or doesn't exist`);
-      continue;
-    }
-    
-    try {
-      const lastRow = sheet.getLastRow();
-      const lastCol = sheet.getLastColumn();
-      
-      if (lastRow === 0 || lastCol === 0) {
-        EW_trace('REPAIR', `${tabName} has no data, skipping`);
-        continue;
-      }
-      
-      // Get headers
-      const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-      
-      // List of ALL Google Finance and tracking columns (both formula and plain text)
-      // These will be removed and re-added in the correct order
-      const allGFAndTrackingColumns = [
-        // Google Finance columns (with formulas)
-        'GF_Name', 'GF_Price', 'GF_ChangePct', 'GF_High', 'GF_Low', 
-        'GF_High52', 'GF_Low52', 'GF_Volume', 'GF_AvgVol10', 'GF_MktCap', 
-        'GF_PE', 'GF_Beta', 'HV_30D', 'RVOL_10', 'Ret_5D', 'Ret_20D', 'GapPct',
-        // Tracking columns with formulas
-        'Historical_High', 'Historical_Low', 'Ever_Hit_Strike', 
-        'First_Hit_Date', 'Last_Update', 'Total_Hit_Days',
-        'Days_To_Exp', 'Success_Score',
-        // Plain text tracking columns (for success reports and scripts)
-        'Strike_Hit', 'Hit_Date', 'Max_Favorable', 'Min_Unfavorable', 
-        'Day0_Check', 'Day1_Check', 'Day2_Check', 'Day3_Check', 'Day4_Check', 'Day5_Check',
-        'Exp_Result', 'Profit_Potential', 'Risk_Reward', 
-        // Technical indicators (now arrays for Day0-Day5)
-        'Hit_RSI','Hit_SMA20','Hit_SMA50','Hit_EMA9','Hit_EMA21','Hit_VWAP',
-        'Hit_RVOL','Hit_ATR','Hit_PriceVsSMA20','Hit_PriceVsVWAP'
-      ];
-      const columnsToRemoveLower = allGFAndTrackingColumns.map(c => c.toLowerCase());
-      
-      // Delete columns from right to left to maintain column indexes
-      const columnsToDelete = [];
-      headers.forEach((header, index) => {
-        const headerStr = header ? header.toString() : '';
-        const headerLower = headerStr.toLowerCase();
-        
-        if (headerStr.startsWith('#') || columnsToRemoveLower.includes(headerLower)) {
-          columnsToDelete.push(index + 1); // 1-based column number
-          EW_trace('REPAIR', `${tabName}: Will delete column "${header}" at position ${index + 1}`);
-        }
-      });
-      
-      // Sort columns to delete in reverse order (right to left)
-      columnsToDelete.sort((a, b) => b - a);
-      
-      // Delete columns one by one from right to left
-      columnsToDelete.forEach(colNum => {
-        sheet.deleteColumn(colNum);
-      });
-      
-      EW_trace('REPAIR', `${tabName}: Deleted ${columnsToDelete.length} columns`);
-      
-      // Ensure Strategy column exists
-      let currentHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      let hdrMap = EW_headerMap(currentHeaders);
-      
-      if (!hdrMap.strategyCol) {
-        EW_trace('REPAIR', `${tabName}: Adding Strategy column`);
-        
-        // Insert Strategy column as the second column
-        sheet.insertColumnBefore(2);
-        
-        // Set header
-        sheet.getRange(1, 2).setValue('Strategy');
-        
-        // Fill Strategy column with the tab name
-        const dataRows = sheet.getLastRow() - 1;
-        if (dataRows > 0) {
-          const strategyValues = Array(dataRows).fill([tabName]);
-          sheet.getRange(2, 2, dataRows, 1).setValues(strategyValues);
-        }
-      }
-      
-      // Get current headers after modifications
-      const cleanedHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      
-      // Define all columns in the correct order
-      const allGFColumns = [
-        'GF_Name','GF_Price','GF_ChangePct','GF_High','GF_Low','GF_High52','GF_Low52',
-        'GF_Volume','GF_AvgVol10','GF_MktCap','GF_PE','GF_Beta',
-        'HV_30D','RVOL_10','Ret_5D','Ret_20D','GapPct'
-      ];
-      
-      const trackingFormulaColumns = [
-        'Days_To_Exp','Success_Score','Historical_High','Historical_Low',
-        'Ever_Hit_Strike','First_Hit_Date','Last_Update','Total_Hit_Days'
-      ];
-      
-      const trackingPlainTextColumns = [
-        'Strike_Hit','Hit_Date','Max_Favorable','Min_Unfavorable',
-        'Day0_Check','Day1_Check','Day2_Check','Day3_Check','Day4_Check','Day5_Check',
-        'Exp_Result','Profit_Potential','Risk_Reward',
-        // Technical indicators (now arrays for Day0-Day5)
-        'Hit_RSI','Hit_SMA20','Hit_SMA50','Hit_EMA9','Hit_EMA21','Hit_VWAP',
-        'Hit_RVOL','Hit_ATR','Hit_PriceVsSMA20','Hit_PriceVsVWAP'
-      ];
-      
-      // Add plain text headers first (these won't have formulas)
-      const currentColCount = sheet.getLastColumn();
-      const newHeaders = [...trackingPlainTextColumns];
-      
-      if (newHeaders.length > 0) {
-        // Append the new headers
-        sheet.getRange(1, currentColCount + 1, 1, newHeaders.length).setValues([newHeaders]);
-      }
-      
-      // Create header map with all columns for formula application
-      const updatedHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      const withAllColumns = [...updatedHeaders, ...allGFColumns, ...trackingFormulaColumns];
-      const finalHdrMap = EW_headerMap(withAllColumns);
-      
-      // Apply formulas - this will create the formula column headers
-      EW_setGFArrayFormulas(sheet, finalHdrMap);
-      
-      sheetsRepaired++;
-      EW_trace('REPAIR', `${tabName}: Successfully repaired`);
-      
-    } catch (e) {
-      EW_trace('REPAIR', `Error repairing ${tabName}: ${e.message}`, true);
-    }
-  }
-  
-  const msg = sheetsRepaired > 0 ? 
-    `Successfully repaired ${sheetsRepaired} sheets - deleted and recreated all GF columns` :
-    'No sheets needed repair';
-  
-  EW_safeAlert('Sheet Repair Complete', msg);
-  EW_trace('REPAIR', msg, true);
-}
-
-/**
- * Targeted column removal - removes only specific formula columns without touching data
- * This is a safer alternative to complete sheet repair
- * @param {string} sheetName - Optional specific sheet name to repair
- * @returns {void}
- */
 function EW_removeFormulaColumns(sheetName = null) {
   EW_trace('REMOVE_COLS', 'Starting targeted formula column removal', true);
   const ss = SpreadsheetApp.getActive();
