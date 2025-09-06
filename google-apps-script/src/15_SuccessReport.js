@@ -525,26 +525,27 @@ function EW_extractTradeData(sheet, strategy) {
       trade.maxUnfavorableValue = minUnfavValues.length > 0 ? Math.max(...minUnfavValues) : 0;
       trade.profitableDays = trade.maxFavorable.filter(v => v !== null && parseFloat(v) > 0).length;
       
-      // Days to hit - ensure it's never negative
-      if (trade.firstHitDate && trade.runDate) {
-        const hit = new Date(trade.firstHitDate);
-        const run = new Date(trade.runDate);
-        const daysDiff = Math.floor((hit - run) / (1000 * 60 * 60 * 24));
-        // Days to hit should never be negative - if it is, use the array index method instead
-        if (daysDiff >= 0) {
-          trade.daysToHit = daysDiff;
-        } else if (trade.wasHit && trade.strikeHit) {
-          // Fallback to array index method if date calculation gives negative
-          const firstHitIndex = trade.strikeHit.findIndex(pct => pct !== null && pct !== undefined && pct !== "");
-          if (firstHitIndex !== -1) {
-            trade.daysToHit = firstHitIndex;
-          }
+      // Days to hit - Hit_Date now contains the day number (0-5) directly
+      if (trade.hitDate !== null && trade.hitDate !== undefined && trade.hitDate !== '') {
+        // Hit_Date is now a day number (0-5)
+        const dayNum = parseInt(trade.hitDate);
+        if (!isNaN(dayNum) && dayNum >= 0 && dayNum <= 5) {
+          trade.daysToHit = dayNum;
+        }
+      } else if (trade.firstHitDate !== null && trade.firstHitDate !== undefined && trade.firstHitDate !== '') {
+        // FirstHitDate might also be a day number
+        const dayNum = parseInt(trade.firstHitDate);
+        if (!isNaN(dayNum) && dayNum >= 0 && dayNum <= 5) {
+          trade.daysToHit = dayNum;
         }
       } else if (trade.wasHit && trade.strikeHit) {
-        // Alternative: find first day with a hit percentage in Strike_Hit array
-        const firstHitIndex = trade.strikeHit.findIndex(pct => pct !== null && pct !== undefined && pct !== "");
-        if (firstHitIndex !== -1) {
-          trade.daysToHit = firstHitIndex; // Day 0 = same day, Day 1 = next day, etc.
+        // Fallback: find first positive value in Strike_Hit array
+        for (let i = 0; i < trade.strikeHit.length && i <= 5; i++) {
+          const value = trade.strikeHit[i];
+          if (value !== null && value !== undefined && parseFloat(value) > 0) {
+            trade.daysToHit = i;
+            break;
+          }
         }
       }
       
