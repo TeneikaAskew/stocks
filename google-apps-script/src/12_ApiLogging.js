@@ -8,8 +8,12 @@ function getApiLogFolderId() {
   const scriptProperties = PropertiesService.getScriptProperties();
   const folderId = scriptProperties.getProperty('API_LOGS_FOLDER_ID');
   if (!folderId) {
+    // Log all script properties for debugging
+    const allProps = scriptProperties.getProperties();
+    console.error('API_LOGS_FOLDER_ID not found. All Script Properties:', JSON.stringify(allProps, null, 2));
     throw new Error('API_LOGS_FOLDER_ID not set in Script Properties');
   }
+  console.log(`Using API_LOGS_FOLDER_ID: ${folderId}`);
   return folderId;
 }
 
@@ -17,8 +21,12 @@ function getApiSummaryFolderId() {
   const scriptProperties = PropertiesService.getScriptProperties();
   const folderId = scriptProperties.getProperty('DAILY_REPORTS_FOLDER_ID');
   if (!folderId) {
+    // Log all script properties for debugging
+    const allProps = scriptProperties.getProperties();
+    console.error('DAILY_REPORTS_FOLDER_ID not found. All Script Properties:', JSON.stringify(allProps, null, 2));
     throw new Error('DAILY_REPORTS_FOLDER_ID not set in Script Properties');
   }
+  console.log(`Using DAILY_REPORTS_FOLDER_ID: ${folderId}`);
   return folderId;
 }
 
@@ -28,17 +36,26 @@ function getApiSummaryFolderId() {
  */
 function EW_getApiLogFile() {
   try {
-    const folder = DriveApp.getFolderById(getApiSummaryFolderId());  // Use summary folder
+    const folderId = getApiSummaryFolderId();
+    console.log(`Attempting to access DAILY_REPORTS folder with ID: ${folderId}`);
+    
+    const folder = DriveApp.getFolderById(folderId);  // Use summary folder
+    console.log(`Successfully accessed folder: ${folder.getName()}`);
+    
     const today = new Date();
     const fileName = `yahoo_api_log_${today.toISOString().split('T')[0]}.json`;
+    console.log(`Looking for or creating file: ${fileName}`);
     
     // Check if today's log file already exists
     const files = folder.getFilesByName(fileName);
     if (files.hasNext()) {
-      return files.next();
+      const existingFile = files.next();
+      console.log(`Found existing log file: ${existingFile.getName()}`);
+      return existingFile;
     }
     
     // Create new log file for today
+    console.log(`Creating new log file: ${fileName}`);
     const initialData = {
       date: today.toISOString().split('T')[0],
       created: today.toISOString(),
@@ -46,10 +63,19 @@ function EW_getApiLogFile() {
     };
     
     const blob = Utilities.newBlob(JSON.stringify(initialData, null, 2), 'application/json', fileName);
-    return folder.createFile(blob);
+    const newFile = folder.createFile(blob);
+    console.log(`Created new log file: ${newFile.getName()} with ID: ${newFile.getId()}`);
+    return newFile;
     
   } catch (error) {
     console.error(`API LOG ERROR: Failed to get/create log file: ${error.message}`);
+    console.error(`Error stack: ${error.stack}`);
+    
+    // Log all Script Properties when there's an error
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const allProps = scriptProperties.getProperties();
+    console.error('Current Script Properties:', JSON.stringify(allProps, null, 2));
+    
     EW_trace('API_LOG', `Failed to get/create log file: ${error.message}`);
     return null;
   }
@@ -78,9 +104,12 @@ function EW_logApiCall(callData, rawResponse = null) {
     // Update file
     file.setContent(JSON.stringify(logData, null, 2));
     
-    // If we have a raw response, save it separately
-    if (rawResponse && callData.success) {
+    // If we have a raw response, save it separately (save for both success and failure)
+    if (rawResponse && callData.ticker) {
+      EW_trace('API_LOG', `Saving raw response for ${callData.ticker}, success=${callData.success}`);
       EW_saveApiResponse(callData.ticker, callData.timestamp, rawResponse, callData);
+    } else {
+      EW_trace('API_LOG', `Not saving raw response - rawResponse=${!!rawResponse}, ticker=${callData.ticker}, success=${callData.success}`);
     }
     
   } catch (error) {
@@ -303,13 +332,18 @@ function EW_cleanupOldApiLogs() {
  */
 function EW_saveApiResponse(ticker, timestamp, response, metadata = {}) {
   try {
-    const folder = DriveApp.getFolderById(getApiLogFolderId());  // Main folder for detailed responses
+    // Get the API logs folder
+    const folderId = getApiLogFolderId();
+    EW_trace('API_LOG', `Getting folder with ID: ${folderId}`);
+    const folder = DriveApp.getFolderById(folderId);  // Main folder for detailed responses
     
     // Create filename with ticker and timestamp
     const date = new Date(timestamp);
     const dateStr = date.toISOString().split('T')[0];
     const timeStr = date.toISOString().split('T')[1].replace(/:/g, '-').split('.')[0];
     const fileName = `${ticker}_${dateStr}_${timeStr}.json`;
+    
+    EW_trace('API_LOG', `Creating file: ${fileName} in folder: ${folder.getName()}`);
     
     // Create response object with metadata
     const responseData = {
@@ -319,7 +353,7 @@ function EW_saveApiResponse(ticker, timestamp, response, metadata = {}) {
         date: dateStr,
         interval: metadata.interval || '1m',
         targetPrice: metadata.targetPrice || null,
-        success: metadata.success || true,
+        success: metadata.success !== undefined ? metadata.success : true,
         dataPoints: metadata.dataPoints || 0,
         hitDetected: metadata.hitDetected || false,
         fallbackUsed: metadata.fallbackUsed || false
@@ -329,12 +363,15 @@ function EW_saveApiResponse(ticker, timestamp, response, metadata = {}) {
     
     // Save the file to main folder
     const blob = Utilities.newBlob(JSON.stringify(responseData, null, 2), 'application/json', fileName);
-    folder.createFile(blob);
+    const file = folder.createFile(blob);
     
-    console.log(`API RESPONSE SAVED: ${fileName}`);
+    console.log(`API RESPONSE SAVED: ${fileName} (ID: ${file.getId()})`);
+    EW_trace('API_LOG', `Successfully saved API response to ${fileName}`);
     
   } catch (error) {
     console.error(`API RESPONSE SAVE ERROR: ${error.message}`);
+    console.error(`Stack trace: ${error.stack}`);
+    EW_trace('API_LOG', `Failed to save API response: ${error.message}`);
     // Don't throw - this is supplementary logging
   }
 }
@@ -399,5 +436,125 @@ function EW_getApiResponsesFolderUrl() {
   } catch (error) {
     console.error(`API FOLDER ERROR: ${error.message}`);
     EW_safeAlert('Error', `Failed to get folder URLs: ${error.message}`);
+  }
+}
+
+/**
+ * Check if an API log already exists for a ticker and date
+ * @param {string} ticker - The ticker symbol
+ * @param {Date} date - The date to check
+ * @returns {Object|null} The existing log data if found, null otherwise
+ */
+function EW_checkExistingApiLog(ticker, date) {
+  try {
+    const folderId = getApiLogFolderId();
+    const folder = DriveApp.getFolderById(folderId);
+    
+    // Format date string
+    const dateStr = date.toISOString().split('T')[0];
+    const filePattern = `${ticker}_${dateStr}_`;
+    
+    // Search for existing files
+    const files = folder.getFiles();
+    while (files.hasNext()) {
+      const file = files.next();
+      const fileName = file.getName();
+      
+      // Check if this is a match for our ticker and date
+      if (fileName.startsWith(filePattern) && fileName.endsWith('.json')) {
+        // Skip RECREATED files as they might be incomplete
+        if (fileName.includes('RECREATED')) {
+          continue;
+        }
+        
+        console.log(`Found existing API log: ${fileName}`);
+        
+        // Read and parse the file
+        const content = file.getBlob().getDataAsString();
+        const logData = JSON.parse(content);
+        
+        // Return the response data
+        return logData;
+      }
+    }
+    
+    return null;
+    
+  } catch (error) {
+    console.error(`Error checking existing API log: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Get cached API data if available, otherwise return null
+ * @param {string} ticker - The ticker symbol
+ * @param {Date} date - The date to check
+ * @returns {Object|null} Object with dayHigh, dayLow, etc. if found
+ */
+function EW_getCachedApiData(ticker, date) {
+  try {
+    const existingLog = EW_checkExistingApiLog(ticker, date);
+    
+    if (!existingLog) {
+      return null;
+    }
+    
+    // Extract the data from the log
+    if (existingLog.response && existingLog.response.chart && existingLog.response.chart.result) {
+      const result = existingLog.response.chart.result[0];
+      if (result.indicators && result.indicators.quote && result.indicators.quote[0]) {
+        const quote = result.indicators.quote[0];
+        
+        // Find the high and low for the day
+        const highs = quote.high || [];
+        const lows = quote.low || [];
+        const opens = quote.open || [];
+        const closes = quote.close || [];
+        const volumes = quote.volume || [];
+        
+        // Get the day's data (aggregate if multiple data points)
+        const dayHigh = highs.length > 0 ? Math.max(...highs.filter(h => h != null)) : null;
+        const dayLow = lows.length > 0 ? Math.min(...lows.filter(l => l != null)) : null;
+        const dayOpen = opens.length > 0 ? opens[0] : null;
+        const dayClose = closes.length > 0 ? closes[closes.length - 1] : null;
+        const dayVolume = volumes.length > 0 ? volumes.reduce((sum, v) => sum + (v || 0), 0) : 0;
+        
+        console.log(`Using cached data for ${ticker} on ${date.toISOString().split('T')[0]}`);
+        
+        return {
+          dayHigh: dayHigh,
+          dayLow: dayLow,
+          dayOpen: dayOpen,
+          dayClose: dayClose,
+          dayVolume: dayVolume,
+          fromCache: true,
+          cacheFile: existingLog.metadata?.timestamp || 'cached'
+        };
+      }
+    }
+    
+    // If we have metadata with day high/low (from recreated logs)
+    if (existingLog.metadata) {
+      const meta = existingLog.metadata;
+      if (meta.dayHigh && meta.dayLow) {
+        console.log(`Using cached metadata for ${ticker} on ${date.toISOString().split('T')[0]}`);
+        return {
+          dayHigh: meta.dayHigh,
+          dayLow: meta.dayLow,
+          dayOpen: meta.dayOpen || null,
+          dayClose: meta.dayClose || null,
+          dayVolume: meta.dayVolume || 0,
+          fromCache: true,
+          cacheFile: 'metadata'
+        };
+      }
+    }
+    
+    return null;
+    
+  } catch (error) {
+    console.error(`Error getting cached API data: ${error.message}`);
+    return null;
   }
 }
