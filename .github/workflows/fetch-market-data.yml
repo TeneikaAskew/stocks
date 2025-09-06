@@ -64,7 +64,7 @@ jobs:
         git config --local user.name "GitHub Action"
         
         # Add all parquet and json files in data directory
-        git add data/*.parquet data/*.json data/minute/*.parquet || true
+  git add data/*.parquet data/*.json data/*/minute/*.parquet || true
         
         # Check if there are changes to commit
         if git diff --staged --quiet; then
