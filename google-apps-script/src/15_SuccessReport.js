@@ -2055,8 +2055,10 @@ function EW_identifyTopPlays(trades) {
         
         // ALWAYS use the recalculated value when we have strike and hit prices
         // This is the most reliable source of truth
-        console.log(`${trade.ticker}: Using strike→hit calculation: ${strike}→${hit} = ${(recalculatedMaxProfit * 100).toFixed(2)}%`);
+        const oldValue = trade.maxFavorableValue;
         trade.maxFavorableValue = recalculatedMaxProfit;
+        console.log(`${trade.ticker}: Recalculated from ${strike}→${hit} = ${(recalculatedMaxProfit * 100).toFixed(2)}% (was ${(oldValue * 100).toFixed(2)}%)`);
+        console.log(`${trade.ticker}: Final maxFavorableValue = ${trade.maxFavorableValue}`);
       }
     }
     
@@ -2532,8 +2534,8 @@ function EW_createTopPlaysSheet(ss, topPlaysData) {
       play.hitPrice,
       (() => {
         const profit = play.maxProfit || 0;
-        // If profit is stored as decimal (0.8767 for 87.67%), multiply by 100
-        const displayProfit = profit < 1 ? profit * 100 : profit;
+        // Always multiply by 100 for percentage display (0.3771 becomes 37.71%)
+        const displayProfit = profit * 100;
         return displayProfit.toFixed(2) + '%';
       })(),
       play.daysToHit !== undefined && play.daysToHit !== null ? play.daysToHit : 'N/A',
@@ -2557,8 +2559,8 @@ function EW_createTopPlaysSheet(ss, topPlaysData) {
       play.ticker,
       (() => {
         const profit = play.maxProfit || 0;
-        // If profit is stored as decimal (0.8767 for 87.67%), multiply by 100
-        const displayProfit = profit < 1 ? profit * 100 : profit;
+        // Always multiply by 100 for percentage display (0.3771 becomes 37.71%)
+        const displayProfit = profit * 100;
         return displayProfit.toFixed(2) + '%';
       })(),
       play.indicatorProfile,
