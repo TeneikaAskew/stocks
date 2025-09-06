@@ -486,6 +486,16 @@ function EW_backfillHistoricalTrackingWithContinuation() {
   // All strategies processed - clear state
   EW_clearBackfillState('BACKFILL_STATE');
   
+  // Create daily API report after backfill
+  try {
+    EW_createDailyApiReport();
+    console.log('BACKFILL: Daily API report created');
+    EW_trace('BACKFILL', 'Daily API summary report created');
+  } catch (error) {
+    console.error(`BACKFILL: Failed to create API report: ${error.message}`);
+    EW_trace('BACKFILL', `Failed to create API report: ${error.message}`);
+  }
+  
   // Apply formatting to all processed sheets
   if (totalBackfilled > 0) {
     EW_trace('BACKFILL', 'Applying Day Check formatting to all processed sheets...', true);
@@ -732,6 +742,14 @@ function EW_backfillSelectedRowsWithContinuation() {
   
   // All rows processed - clear state
   EW_clearBackfillState('BACKFILL_SELECTED_STATE');
+  
+  // Create daily API report after backfill
+  try {
+    EW_createDailyApiReport();
+    console.log('BACKFILL SELECTED: Daily API report created');
+  } catch (error) {
+    console.error(`BACKFILL SELECTED: Failed to create API report: ${error.message}`);
+  }
   
   // Apply formatting to the sheet if any rows were processed
   if (processedCount > 0) {
