@@ -1,0 +1,442 @@
+2025-09-05T22:12:30.3694511Z Current runner version: '2.328.0'
+2025-09-05T22:12:30.3716594Z ##[group]Runner Image Provisioner
+2025-09-05T22:12:30.3717374Z Hosted Compute Agent
+2025-09-05T22:12:30.3717978Z Version: 20250829.383
+2025-09-05T22:12:30.3718540Z Commit: 27cb235aab5b0e52e153a26cd86b4742e89dac5d
+2025-09-05T22:12:30.3719204Z Build Date: 2025-08-29T13:48:48Z
+2025-09-05T22:12:30.3719730Z ##[endgroup]
+2025-09-05T22:12:30.3720344Z ##[group]Operating System
+2025-09-05T22:12:30.3721045Z Ubuntu
+2025-09-05T22:12:30.3721494Z 24.04.3
+2025-09-05T22:12:30.3722030Z LTS
+2025-09-05T22:12:30.3722477Z ##[endgroup]
+2025-09-05T22:12:30.3722918Z ##[group]Runner Image
+2025-09-05T22:12:30.3723546Z Image: ubuntu-24.04
+2025-09-05T22:12:30.3724041Z Version: 20250831.1.0
+2025-09-05T22:12:30.3724973Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20250831.1/images/ubuntu/Ubuntu2404-Readme.md
+2025-09-05T22:12:30.3726507Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20250831.1
+2025-09-05T22:12:30.3727386Z ##[endgroup]
+2025-09-05T22:12:30.3728548Z ##[group]GITHUB_TOKEN Permissions
+2025-09-05T22:12:30.3730297Z Contents: read
+2025-09-05T22:12:30.3731051Z Metadata: read
+2025-09-05T22:12:30.3731570Z Packages: read
+2025-09-05T22:12:30.3732014Z ##[endgroup]
+2025-09-05T22:12:30.3734399Z Secret source: Actions
+2025-09-05T22:12:30.3735288Z Prepare workflow directory
+2025-09-05T22:12:30.4047592Z Prepare all required actions
+2025-09-05T22:12:30.4084077Z Getting action download info
+2025-09-05T22:12:30.9579388Z Download action repository 'actions/checkout@v4' (SHA:08eba0b27e820071cde6df949e0beb9ba4906955)
+2025-09-05T22:12:31.0269069Z Download action repository 'actions/setup-python@v4' (SHA:7f4fc3e22c37d6ff65e88745f38bd3157c663f7c)
+2025-09-05T22:12:31.1508645Z Download action repository 'actions/cache@v3' (SHA:2f8e54208210a422b2efd51efaa6bd6d7ca8920f)
+2025-09-05T22:12:31.3824398Z Complete job name: fetch-market-data
+2025-09-05T22:12:31.4479837Z ##[group]Run actions/checkout@v4
+2025-09-05T22:12:31.4481033Z with:
+2025-09-05T22:12:31.4481595Z   token: ***
+2025-09-05T22:12:31.4481986Z   repository: TeneikaAskew/stocks
+2025-09-05T22:12:31.4482472Z   ssh-strict: true
+2025-09-05T22:12:31.4482845Z   ssh-user: git
+2025-09-05T22:12:31.4483228Z   persist-credentials: true
+2025-09-05T22:12:31.4483650Z   clean: true
+2025-09-05T22:12:31.4484034Z   sparse-checkout-cone-mode: true
+2025-09-05T22:12:31.4484489Z   fetch-depth: 1
+2025-09-05T22:12:31.4484868Z   fetch-tags: false
+2025-09-05T22:12:31.4485248Z   show-progress: true
+2025-09-05T22:12:31.4485636Z   lfs: false
+2025-09-05T22:12:31.4485980Z   submodules: false
+2025-09-05T22:12:31.4486366Z   set-safe-directory: true
+2025-09-05T22:12:31.4487086Z ##[endgroup]
+2025-09-05T22:12:31.5601067Z Syncing repository: TeneikaAskew/stocks
+2025-09-05T22:12:31.5606799Z ##[group]Getting Git version info
+2025-09-05T22:12:31.5607906Z Working directory is '/home/runner/work/stocks/stocks'
+2025-09-05T22:12:31.5609607Z [command]/usr/bin/git version
+2025-09-05T22:12:31.5644659Z git version 2.51.0
+2025-09-05T22:12:31.5673149Z ##[endgroup]
+2025-09-05T22:12:31.5691673Z Temporarily overriding HOME='/home/runner/work/_temp/1f4d6963-a12f-4ec5-942c-8513da9ed54a' before making global git config changes
+2025-09-05T22:12:31.5694369Z Adding repository directory to the temporary git global config as a safe directory
+2025-09-05T22:12:31.5697861Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/stocks/stocks
+2025-09-05T22:12:31.5739769Z Deleting the contents of '/home/runner/work/stocks/stocks'
+2025-09-05T22:12:31.5745762Z ##[group]Initializing the repository
+2025-09-05T22:12:31.5751165Z [command]/usr/bin/git init /home/runner/work/stocks/stocks
+2025-09-05T22:12:31.5807807Z hint: Using 'master' as the name for the initial branch. This default branch name
+2025-09-05T22:12:31.5812813Z hint: is subject to change. To configure the initial branch name to use in all
+2025-09-05T22:12:31.5815006Z hint: of your new repositories, which will suppress this warning, call:
+2025-09-05T22:12:31.5817539Z hint:
+2025-09-05T22:12:31.5818698Z hint: 	git config --global init.defaultBranch <name>
+2025-09-05T22:12:31.5821688Z hint:
+2025-09-05T22:12:31.5822647Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2025-09-05T22:12:31.5824172Z hint: 'development'. The just-created branch can be renamed via this command:
+2025-09-05T22:12:31.5825451Z hint:
+2025-09-05T22:12:31.5826116Z hint: 	git branch -m <name>
+2025-09-05T22:12:31.5827241Z hint:
+2025-09-05T22:12:31.5828263Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2025-09-05T22:12:31.5829878Z Initialized empty Git repository in /home/runner/work/stocks/stocks/.git/
+2025-09-05T22:12:31.5833778Z [command]/usr/bin/git remote add origin https://github.com/TeneikaAskew/stocks
+2025-09-05T22:12:31.5863756Z ##[endgroup]
+2025-09-05T22:12:31.5865438Z ##[group]Disabling automatic garbage collection
+2025-09-05T22:12:31.5870722Z [command]/usr/bin/git config --local gc.auto 0
+2025-09-05T22:12:31.5903779Z ##[endgroup]
+2025-09-05T22:12:31.5904999Z ##[group]Setting up auth
+2025-09-05T22:12:31.5911826Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2025-09-05T22:12:31.5944018Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2025-09-05T22:12:31.6204705Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2025-09-05T22:12:31.6237913Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2025-09-05T22:12:31.6482125Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2025-09-05T22:12:31.6520736Z ##[endgroup]
+2025-09-05T22:12:31.6522285Z ##[group]Fetching the repository
+2025-09-05T22:12:31.6532397Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +faae636eafb7930b1bab6e7e1594d3e7686b0509:refs/remotes/origin/main
+2025-09-05T22:12:34.6391668Z From https://github.com/TeneikaAskew/stocks
+2025-09-05T22:12:34.6401240Z  * [new ref]         faae636eafb7930b1bab6e7e1594d3e7686b0509 -> origin/main
+2025-09-05T22:12:34.6424978Z ##[endgroup]
+2025-09-05T22:12:34.6426429Z ##[group]Determining the checkout info
+2025-09-05T22:12:34.6427641Z ##[endgroup]
+2025-09-05T22:12:34.6433051Z [command]/usr/bin/git sparse-checkout disable
+2025-09-05T22:12:34.6478760Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2025-09-05T22:12:34.6508626Z ##[group]Checking out the ref
+2025-09-05T22:12:34.6512810Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2025-09-05T22:12:35.2503921Z Switched to a new branch 'main'
+2025-09-05T22:12:35.2510673Z branch 'main' set up to track 'origin/main'.
+2025-09-05T22:12:35.2538175Z ##[endgroup]
+2025-09-05T22:12:35.2577027Z [command]/usr/bin/git log -1 --format=%H
+2025-09-05T22:12:35.2601391Z faae636eafb7930b1bab6e7e1594d3e7686b0509
+2025-09-05T22:12:35.2821070Z ##[group]Run actions/setup-python@v4
+2025-09-05T22:12:35.2821431Z with:
+2025-09-05T22:12:35.2821655Z   python-version: 3.11
+2025-09-05T22:12:35.2821915Z   check-latest: false
+2025-09-05T22:12:35.2822281Z   token: ***
+2025-09-05T22:12:35.2822525Z   update-environment: true
+2025-09-05T22:12:35.2822781Z   allow-prereleases: false
+2025-09-05T22:12:35.2823029Z ##[endgroup]
+2025-09-05T22:12:35.4489890Z ##[group]Installed versions
+2025-09-05T22:12:35.4943218Z Successfully set up CPython (3.11.13)
+2025-09-05T22:12:35.4945275Z ##[endgroup]
+2025-09-05T22:12:35.5548728Z ##[group]Run actions/cache@v3
+2025-09-05T22:12:35.5549038Z with:
+2025-09-05T22:12:35.5549251Z   path: ~/.cache/pip
+2025-09-05T22:12:35.5549492Z   key: Linux-pip-market-data-
+2025-09-05T22:12:35.5549840Z   restore-keys: Linux-pip-market-data-
+Linux-pip-
+
+2025-09-05T22:12:35.5550207Z   enableCrossOsArchive: false
+2025-09-05T22:12:35.5550932Z   fail-on-cache-miss: false
+2025-09-05T22:12:35.5551188Z   lookup-only: false
+2025-09-05T22:12:35.5551406Z env:
+2025-09-05T22:12:35.5551674Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:35.5552152Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.13/x64/lib/pkgconfig
+2025-09-05T22:12:35.5552590Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:35.5552970Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:35.5553360Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:35.5553785Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.13/x64/lib
+2025-09-05T22:12:35.5554107Z ##[endgroup]
+2025-09-05T22:12:36.0102295Z Cache hit for: Linux-pip-market-data-
+2025-09-05T22:12:37.3906573Z Received 0 of 86763617 (0.0%), 0.0 MBs/sec
+2025-09-05T22:12:38.3978151Z Received 86763617 of 86763617 (100.0%), 41.2 MBs/sec
+2025-09-05T22:12:38.3980721Z Cache Size: ~83 MB (86763617 B)
+2025-09-05T22:12:38.4015876Z [command]/usr/bin/tar -xf /home/runner/work/_temp/d49adc4f-c8fa-46eb-99ca-ddc129cd9302/cache.tzst -P -C /home/runner/work/stocks/stocks --use-compress-program unzstd
+2025-09-05T22:12:38.5728198Z Cache restored successfully
+2025-09-05T22:12:38.5980719Z Cache restored from key: Linux-pip-market-data-
+2025-09-05T22:12:38.6107962Z ##[group]Run python -m pip install --upgrade pip
+2025-09-05T22:12:38.6108388Z [36;1mpython -m pip install --upgrade pip[0m
+2025-09-05T22:12:38.6108719Z [36;1mpip install yfinance pandas pyarrow pytz[0m
+2025-09-05T22:12:38.6196960Z shell: /usr/bin/bash -e {0}
+2025-09-05T22:12:38.6197209Z env:
+2025-09-05T22:12:38.6197454Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:38.6197873Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.13/x64/lib/pkgconfig
+2025-09-05T22:12:38.6198282Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:38.6198658Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:38.6199022Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:38.6199381Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.13/x64/lib
+2025-09-05T22:12:38.6199678Z ##[endgroup]
+2025-09-05T22:12:41.0079819Z Requirement already satisfied: pip in /opt/hostedtoolcache/Python/3.11.13/x64/lib/python3.11/site-packages (25.2)
+2025-09-05T22:12:42.0425869Z Collecting yfinance
+2025-09-05T22:12:42.0441322Z   Using cached yfinance-0.2.65-py2.py3-none-any.whl.metadata (5.8 kB)
+2025-09-05T22:12:42.1652551Z Collecting pandas
+2025-09-05T22:12:42.1669563Z   Using cached pandas-2.3.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (91 kB)
+2025-09-05T22:12:42.2677312Z Collecting pyarrow
+2025-09-05T22:12:42.2692940Z   Using cached pyarrow-21.0.0-cp311-cp311-manylinux_2_28_x86_64.whl.metadata (3.3 kB)
+2025-09-05T22:12:42.3000674Z Collecting pytz
+2025-09-05T22:12:42.3019069Z   Using cached pytz-2025.2-py2.py3-none-any.whl.metadata (22 kB)
+2025-09-05T22:12:42.4653776Z Collecting numpy>=1.16.5 (from yfinance)
+2025-09-05T22:12:42.4669466Z   Using cached numpy-2.3.2-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (62 kB)
+2025-09-05T22:12:42.4971114Z Collecting requests>=2.31 (from yfinance)
+2025-09-05T22:12:42.4992743Z   Using cached requests-2.32.5-py3-none-any.whl.metadata (4.9 kB)
+2025-09-05T22:12:42.5096961Z Collecting multitasking>=0.0.7 (from yfinance)
+2025-09-05T22:12:42.5103000Z   Using cached multitasking-0.0.12-py3-none-any.whl
+2025-09-05T22:12:42.5365389Z Collecting platformdirs>=2.0.0 (from yfinance)
+2025-09-05T22:12:42.5378683Z   Using cached platformdirs-4.4.0-py3-none-any.whl.metadata (12 kB)
+2025-09-05T22:12:42.5779064Z Collecting frozendict>=2.3.4 (from yfinance)
+2025-09-05T22:12:42.5792581Z   Using cached frozendict-2.4.6-py311-none-any.whl.metadata (23 kB)
+2025-09-05T22:12:42.5973883Z Collecting peewee>=3.16.2 (from yfinance)
+2025-09-05T22:12:42.5977518Z   Using cached peewee-3.18.2-cp311-cp311-linux_x86_64.whl
+2025-09-05T22:12:42.6105849Z Collecting beautifulsoup4>=4.11.1 (from yfinance)
+2025-09-05T22:12:42.6119316Z   Using cached beautifulsoup4-4.13.5-py3-none-any.whl.metadata (3.8 kB)
+2025-09-05T22:12:42.6724551Z Collecting curl_cffi>=0.7 (from yfinance)
+2025-09-05T22:12:42.6740666Z   Using cached curl_cffi-0.13.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (13 kB)
+2025-09-05T22:12:42.8513678Z Collecting protobuf>=3.19.0 (from yfinance)
+2025-09-05T22:12:42.8528978Z   Using cached protobuf-6.32.0-cp39-abi3-manylinux2014_x86_64.whl.metadata (593 bytes)
+2025-09-05T22:12:42.9302186Z Collecting websockets>=13.0 (from yfinance)
+2025-09-05T22:12:42.9316826Z   Using cached websockets-15.0.1-cp311-cp311-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.8 kB)
+2025-09-05T22:12:42.9491328Z Collecting python-dateutil>=2.8.2 (from pandas)
+2025-09-05T22:12:42.9505145Z   Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+2025-09-05T22:12:42.9661273Z Collecting tzdata>=2022.7 (from pandas)
+2025-09-05T22:12:42.9673673Z   Using cached tzdata-2025.2-py2.py3-none-any.whl.metadata (1.4 kB)
+2025-09-05T22:12:42.9831312Z Collecting soupsieve>1.2 (from beautifulsoup4>=4.11.1->yfinance)
+2025-09-05T22:12:42.9846533Z   Using cached soupsieve-2.8-py3-none-any.whl.metadata (4.6 kB)
+2025-09-05T22:12:43.0011899Z Collecting typing-extensions>=4.0.0 (from beautifulsoup4>=4.11.1->yfinance)
+2025-09-05T22:12:43.0025461Z   Using cached typing_extensions-4.15.0-py3-none-any.whl.metadata (3.3 kB)
+2025-09-05T22:12:43.0947011Z Collecting cffi>=1.12.0 (from curl_cffi>=0.7->yfinance)
+2025-09-05T22:12:43.0961380Z   Using cached cffi-1.17.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (1.5 kB)
+2025-09-05T22:12:43.1111005Z Collecting certifi>=2024.2.2 (from curl_cffi>=0.7->yfinance)
+2025-09-05T22:12:43.1124584Z   Using cached certifi-2025.8.3-py3-none-any.whl.metadata (2.4 kB)
+2025-09-05T22:12:43.1208189Z Collecting pycparser (from cffi>=1.12.0->curl_cffi>=0.7->yfinance)
+2025-09-05T22:12:43.1224043Z   Using cached pycparser-2.22-py3-none-any.whl.metadata (943 bytes)
+2025-09-05T22:12:43.1354891Z Collecting six>=1.5 (from python-dateutil>=2.8.2->pandas)
+2025-09-05T22:12:43.1374038Z   Using cached six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
+2025-09-05T22:12:43.2311926Z Collecting charset_normalizer<4,>=2 (from requests>=2.31->yfinance)
+2025-09-05T22:12:43.2327256Z   Using cached charset_normalizer-3.4.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (36 kB)
+2025-09-05T22:12:43.2451162Z Collecting idna<4,>=2.5 (from requests>=2.31->yfinance)
+2025-09-05T22:12:43.2468151Z   Using cached idna-3.10-py3-none-any.whl.metadata (10 kB)
+2025-09-05T22:12:43.2703591Z Collecting urllib3<3,>=1.21.1 (from requests>=2.31->yfinance)
+2025-09-05T22:12:43.2716725Z   Using cached urllib3-2.5.0-py3-none-any.whl.metadata (6.5 kB)
+2025-09-05T22:12:43.2870972Z Using cached yfinance-0.2.65-py2.py3-none-any.whl (119 kB)
+2025-09-05T22:12:43.2885228Z Using cached pandas-2.3.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (12.4 MB)
+2025-09-05T22:12:43.2986354Z Using cached pyarrow-21.0.0-cp311-cp311-manylinux_2_28_x86_64.whl (42.8 MB)
+2025-09-05T22:12:43.3302139Z Using cached pytz-2025.2-py2.py3-none-any.whl (509 kB)
+2025-09-05T22:12:43.3318812Z Using cached beautifulsoup4-4.13.5-py3-none-any.whl (105 kB)
+2025-09-05T22:12:43.3333058Z Using cached curl_cffi-0.13.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (8.3 MB)
+2025-09-05T22:12:43.3423167Z Using cached certifi-2025.8.3-py3-none-any.whl (161 kB)
+2025-09-05T22:12:43.3440365Z Using cached cffi-1.17.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (467 kB)
+2025-09-05T22:12:43.3458293Z Using cached frozendict-2.4.6-py311-none-any.whl (16 kB)
+2025-09-05T22:12:43.3472945Z Using cached numpy-2.3.2-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (16.9 MB)
+2025-09-05T22:12:43.3603503Z Using cached platformdirs-4.4.0-py3-none-any.whl (18 kB)
+2025-09-05T22:12:43.3617628Z Using cached protobuf-6.32.0-cp39-abi3-manylinux2014_x86_64.whl (322 kB)
+2025-09-05T22:12:43.3633833Z Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+2025-09-05T22:12:43.3649179Z Using cached requests-2.32.5-py3-none-any.whl (64 kB)
+2025-09-05T22:12:43.3664286Z Using cached charset_normalizer-3.4.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (150 kB)
+2025-09-05T22:12:43.3678080Z Using cached idna-3.10-py3-none-any.whl (70 kB)
+2025-09-05T22:12:43.3691514Z Using cached urllib3-2.5.0-py3-none-any.whl (129 kB)
+2025-09-05T22:12:43.3705164Z Using cached six-1.17.0-py2.py3-none-any.whl (11 kB)
+2025-09-05T22:12:43.3718047Z Using cached soupsieve-2.8-py3-none-any.whl (36 kB)
+2025-09-05T22:12:43.3731184Z Using cached typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+2025-09-05T22:12:43.3744654Z Using cached tzdata-2025.2-py2.py3-none-any.whl (347 kB)
+2025-09-05T22:12:43.3761406Z Using cached websockets-15.0.1-cp311-cp311-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl (182 kB)
+2025-09-05T22:12:43.3776226Z Using cached pycparser-2.22-py3-none-any.whl (117 kB)
+2025-09-05T22:12:43.5543498Z Installing collected packages: pytz, peewee, multitasking, websockets, urllib3, tzdata, typing-extensions, soupsieve, six, pycparser, pyarrow, protobuf, platformdirs, numpy, idna, frozendict, charset_normalizer, certifi, requests, python-dateutil, cffi, beautifulsoup4, pandas, curl_cffi, yfinance
+2025-09-05T22:12:52.0019842Z 
+2025-09-05T22:12:52.0039828Z Successfully installed beautifulsoup4-4.13.5 certifi-2025.8.3 cffi-1.17.1 charset_normalizer-3.4.3 curl_cffi-0.13.0 frozendict-2.4.6 idna-3.10 multitasking-0.0.12 numpy-2.3.2 pandas-2.3.2 peewee-3.18.2 platformdirs-4.4.0 protobuf-6.32.0 pyarrow-21.0.0 pycparser-2.22 python-dateutil-2.9.0.post0 pytz-2025.2 requests-2.32.5 six-1.17.0 soupsieve-2.8 typing-extensions-4.15.0 tzdata-2025.2 urllib3-2.5.0 websockets-15.0.1 yfinance-0.2.65
+2025-09-05T22:12:52.1459325Z ##[group]Run if [ "schedule" = "workflow_dispatch" ] && [ -n "" ]; then
+2025-09-05T22:12:52.1459796Z [36;1mif [ "schedule" = "workflow_dispatch" ] && [ -n "" ]; then[0m
+2025-09-05T22:12:52.1460125Z [36;1m  echo "TICKERS=" >> $GITHUB_OUTPUT[0m
+2025-09-05T22:12:52.1460379Z [36;1melse[0m
+2025-09-05T22:12:52.1460859Z [36;1m  echo "TICKERS=ALL" >> $GITHUB_OUTPUT[0m
+2025-09-05T22:12:52.1461109Z [36;1mfi[0m
+2025-09-05T22:12:52.1491993Z shell: /usr/bin/bash -e {0}
+2025-09-05T22:12:52.1492223Z env:
+2025-09-05T22:12:52.1492474Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:52.1492888Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.13/x64/lib/pkgconfig
+2025-09-05T22:12:52.1493314Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:52.1493661Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:52.1494002Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:52.1494393Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.13/x64/lib
+2025-09-05T22:12:52.1494688Z ##[endgroup]
+2025-09-05T22:12:52.1584057Z ##[group]Run if [ "ALL" = "ALL" ]; then
+2025-09-05T22:12:52.1584334Z [36;1mif [ "ALL" = "ALL" ]; then[0m
+2025-09-05T22:12:52.1584628Z [36;1m  python scripts/fetch_market_data.py --tickers ALL[0m
+2025-09-05T22:12:52.1584916Z [36;1melse[0m
+2025-09-05T22:12:52.1585148Z [36;1m  python scripts/fetch_market_data.py --tickers ALL[0m
+2025-09-05T22:12:52.1585426Z [36;1mfi[0m
+2025-09-05T22:12:52.1612852Z shell: /usr/bin/bash -e {0}
+2025-09-05T22:12:52.1613066Z env:
+2025-09-05T22:12:52.1613315Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:52.1613719Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.13/x64/lib/pkgconfig
+2025-09-05T22:12:52.1614114Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:52.1614459Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:52.1614798Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:52.1615170Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.13/x64/lib
+2025-09-05T22:12:52.1615622Z ##[endgroup]
+2025-09-05T22:12:53.2112639Z 
+2025-09-05T22:12:53.2113162Z 1 Failed download:
+2025-09-05T22:12:53.2114847Z ['IWM']: YFPricesMissingError('possibly delisted; no price data found  (1m 2025-09-01 09:30:00-04:00 -> 2025-09-01 16:01:00-04:00)')
+2025-09-05T22:12:53.9595726Z 
+2025-09-05T22:12:53.9596369Z 1 Failed download:
+2025-09-05T22:12:53.9597747Z ['SPY']: YFPricesMissingError('possibly delisted; no price data found  (1m 2025-09-01 09:30:00-04:00 -> 2025-09-01 16:01:00-04:00)')
+2025-09-05T22:12:54.6331325Z 
+2025-09-05T22:12:54.6332276Z 1 Failed download:
+2025-09-05T22:12:54.6333469Z ['QQQ']: YFPricesMissingError('possibly delisted; no price data found  (1m 2025-09-01 09:30:00-04:00 -> 2025-09-01 16:01:00-04:00)')
+2025-09-05T22:12:55.2600324Z 
+2025-09-05T22:12:55.2601256Z 1 Failed download:
+2025-09-05T22:12:55.2602619Z ['^SPX']: YFPricesMissingError('possibly delisted; no price data found  (1m 2025-09-01 09:30:00-04:00 -> 2025-09-01 16:01:00-04:00)')
+2025-09-05T22:12:55.7249242Z Market Data Fetcher
+2025-09-05T22:12:55.7250755Z ============================================================
+2025-09-05T22:12:55.7251419Z Fetching data for: IWM, SPY, QQQ, SPX
+2025-09-05T22:12:55.7251954Z Time: 2025-09-05 22:12:52
+2025-09-05T22:12:55.7252260Z 
+2025-09-05T22:12:55.7252407Z ============================================================
+2025-09-05T22:12:55.7252840Z Fetching IWM (IWM) Data
+2025-09-05T22:12:55.7253192Z ============================================================
+2025-09-05T22:12:55.7253573Z Existing data found. Last date: 2025-08-29
+2025-09-05T22:12:55.7253866Z Fetching minute data for 5 trading days
+2025-09-05T22:12:55.7254123Z Fetching minute data for 2025-09-01...
+2025-09-05T22:12:55.7254428Z   No data available for 2025-09-01 (market holiday?)
+2025-09-05T22:12:55.7254705Z Fetching minute data for 2025-09-02...
+2025-09-05T22:12:55.7255225Z   Saved 388 minute bars with indicators to data/iwm/minute/iwm_minute_20250902.parquet
+2025-09-05T22:12:55.7255810Z   Calculated daily OHLCV: O=231.99, H=234.40, L=231.47, C=233.91, V=29,190,034
+2025-09-05T22:12:55.7256154Z Fetching minute data for 2025-09-03...
+2025-09-05T22:12:55.7256840Z   Saved 390 minute bars with indicators to data/iwm/minute/iwm_minute_20250903.parquet
+2025-09-05T22:12:55.7257626Z   Calculated daily OHLCV: O=233.27, H=235.26, L=232.46, C=233.69, V=30,534,536
+2025-09-05T22:12:55.7258253Z Fetching minute data for 2025-09-04...
+2025-09-05T22:12:55.7259991Z   Saved 390 minute bars with indicators to data/iwm/minute/iwm_minute_20250904.parquet
+2025-09-05T22:12:55.7261063Z   Calculated daily OHLCV: O=234.23, H=236.67, L=233.58, C=236.58, V=27,078,100
+2025-09-05T22:12:55.7261804Z Fetching minute data for 2025-09-05...
+2025-09-05T22:12:55.7262526Z   Saved 389 minute bars with indicators to data/iwm/minute/iwm_minute_20250905.parquet
+2025-09-05T22:12:55.7263016Z   Calculated daily OHLCV: O=237.72, H=239.68, L=234.95, C=237.74, V=43,218,436
+2025-09-05T22:12:55.7263287Z 
+2025-09-05T22:12:55.7263637Z Calculated 4 days of OHLCV from minute data
+2025-09-05T22:12:55.7263912Z Total records after merge: 9
+2025-09-05T22:12:55.7264202Z Daily data saved to data/iwm/iwm_2025.parquet
+2025-09-05T22:12:55.7264523Z 
+2025-09-05T22:12:55.7264850Z Summary saved to data/iwm/iwm_summary.json
+2025-09-05T22:12:55.7265344Z Latest close: $237.74
+2025-09-05T22:12:55.7265855Z YTD return: 2.30%
+2025-09-05T22:12:55.7266064Z 
+2025-09-05T22:12:55.7266207Z ============================================================
+2025-09-05T22:12:55.7266657Z Fetching SPY (SPY) Data
+2025-09-05T22:12:55.7267006Z ============================================================
+2025-09-05T22:12:55.7267415Z Existing data found. Last date: 2025-08-29
+2025-09-05T22:12:55.7267836Z Fetching minute data for 5 trading days
+2025-09-05T22:12:55.7268275Z Fetching minute data for 2025-09-01...
+2025-09-05T22:12:55.7268710Z   No data available for 2025-09-01 (market holiday?)
+2025-09-05T22:12:55.7269135Z Fetching minute data for 2025-09-02...
+2025-09-05T22:12:55.7269973Z   Saved 388 minute bars with indicators to data/spy/minute/spy_minute_20250902.parquet
+2025-09-05T22:12:55.7270966Z   Calculated daily OHLCV: O=637.50, H=640.43, L=634.92, C=640.33, V=65,898,083
+2025-09-05T22:12:55.7272544Z Fetching minute data for 2025-09-03...
+2025-09-05T22:12:55.7274061Z   Saved 390 minute bars with indicators to data/spy/minute/spy_minute_20250903.parquet
+2025-09-05T22:12:55.7274756Z   Calculated daily OHLCV: O=642.67, H=644.21, L=640.46, C=643.64, V=61,628,220
+2025-09-05T22:12:55.7275303Z Fetching minute data for 2025-09-04...
+2025-09-05T22:12:55.7275865Z   Saved 390 minute bars with indicators to data/spy/minute/spy_minute_20250904.parquet
+2025-09-05T22:12:55.7276586Z   Calculated daily OHLCV: O=644.42, H=649.15, L=643.51, C=648.99, V=54,543,746
+2025-09-05T22:12:55.7277097Z Fetching minute data for 2025-09-05...
+2025-09-05T22:12:55.7277668Z   Saved 389 minute bars with indicators to data/spy/minute/spy_minute_20250905.parquet
+2025-09-05T22:12:55.7278392Z   Calculated daily OHLCV: O=651.48, H=652.21, L=643.33, C=647.22, V=75,830,711
+2025-09-05T22:12:55.7278803Z 
+2025-09-05T22:12:55.7278958Z Calculated 4 days of OHLCV from minute data
+2025-09-05T22:12:55.7279366Z Total records after merge: 9
+2025-09-05T22:12:55.7279730Z Daily data saved to data/spy/spy_2025.parquet
+2025-09-05T22:12:55.7280031Z 
+2025-09-05T22:12:55.7280179Z Summary saved to data/spy/spy_summary.json
+2025-09-05T22:12:55.7280776Z Latest close: $647.22
+2025-09-05T22:12:55.7281057Z YTD return: 0.74%
+2025-09-05T22:12:55.7281217Z 
+2025-09-05T22:12:55.7281346Z ============================================================
+2025-09-05T22:12:55.7281720Z Fetching QQQ (QQQ) Data
+2025-09-05T22:12:55.7282041Z ============================================================
+2025-09-05T22:12:55.7282433Z Existing data found. Last date: 2025-08-29
+2025-09-05T22:12:55.7282844Z Fetching minute data for 5 trading days
+2025-09-05T22:12:55.7283237Z Fetching minute data for 2025-09-01...
+2025-09-05T22:12:55.7283652Z   No data available for 2025-09-01 (market holiday?)
+2025-09-05T22:12:55.7284090Z Fetching minute data for 2025-09-02...
+2025-09-05T22:12:55.7284665Z   Saved 390 minute bars with indicators to data/qqq/minute/qqq_minute_20250902.parquet
+2025-09-05T22:12:55.7285409Z   Calculated daily OHLCV: O=561.33, H=565.97, L=559.55, C=565.64, V=57,694,996
+2025-09-05T22:12:55.7285912Z Fetching minute data for 2025-09-03...
+2025-09-05T22:12:55.7286477Z   Saved 389 minute bars with indicators to data/qqq/minute/qqq_minute_20250903.parquet
+2025-09-05T22:12:55.7287280Z   Calculated daily OHLCV: O=569.25, H=571.70, L=566.73, C=569.99, V=49,332,916
+2025-09-05T22:12:55.7287791Z Fetching minute data for 2025-09-04...
+2025-09-05T22:12:55.7288344Z   Saved 390 minute bars with indicators to data/qqq/minute/qqq_minute_20250904.parquet
+2025-09-05T22:12:55.7289033Z   Calculated daily OHLCV: O=570.74, H=575.59, L=569.03, C=575.26, V=41,420,639
+2025-09-05T22:12:55.7289545Z Fetching minute data for 2025-09-05...
+2025-09-05T22:12:55.7290349Z   Saved 388 minute bars with indicators to data/qqq/minute/qqq_minute_20250905.parquet
+2025-09-05T22:12:55.7291208Z   Calculated daily OHLCV: O=580.59, H=581.12, L=571.54, C=576.03, V=61,766,098
+2025-09-05T22:12:55.7291609Z 
+2025-09-05T22:12:55.7291760Z Calculated 4 days of OHLCV from minute data
+2025-09-05T22:12:55.7292152Z Total records after merge: 9
+2025-09-05T22:12:55.7292530Z Daily data saved to data/qqq/qqq_2025.parquet
+2025-09-05T22:12:55.7292821Z 
+2025-09-05T22:12:55.7292964Z Summary saved to data/qqq/qqq_summary.json
+2025-09-05T22:12:55.7293350Z Latest close: $576.03
+2025-09-05T22:12:55.7293633Z YTD return: 1.00%
+2025-09-05T22:12:55.7293793Z 
+2025-09-05T22:12:55.7293910Z ============================================================
+2025-09-05T22:12:55.7294316Z Fetching SPX (^SPX) Data
+2025-09-05T22:12:55.7294606Z ============================================================
+2025-09-05T22:12:55.7294995Z Existing data found. Last date: 2025-08-29
+2025-09-05T22:12:55.7295378Z Fetching minute data for 5 trading days
+2025-09-05T22:12:55.7295967Z Fetching minute data for 2025-09-01...
+2025-09-05T22:12:55.7296359Z   No data available for 2025-09-01 (market holiday?)
+2025-09-05T22:12:55.7296766Z Fetching minute data for 2025-09-02...
+2025-09-05T22:12:55.7297330Z   Saved 388 minute bars with indicators to data/spx/minute/spx_minute_20250902.parquet
+2025-09-05T22:12:55.7298070Z   Calculated daily OHLCV: O=6401.51, H=6415.39, L=6360.58, C=6414.95, V=2,188,468,636
+2025-09-05T22:12:55.7298613Z Fetching minute data for 2025-09-03...
+2025-09-05T22:12:55.7299160Z   Saved 390 minute bars with indicators to data/spx/minute/spx_minute_20250903.parquet
+2025-09-05T22:12:55.7299897Z   Calculated daily OHLCV: O=6445.82, H=6453.67, L=6416.17, C=6447.81, V=2,155,089,677
+2025-09-05T22:12:55.7300592Z Fetching minute data for 2025-09-04...
+2025-09-05T22:12:55.7301150Z   Saved 390 minute bars with indicators to data/spx/minute/spx_minute_20250904.parquet
+2025-09-05T22:12:55.7301860Z   Calculated daily OHLCV: O=6456.60, H=6502.54, L=6445.98, C=6501.50, V=2,137,079,620
+2025-09-05T22:12:55.7302422Z Fetching minute data for 2025-09-05...
+2025-09-05T22:12:55.7302993Z   Saved 389 minute bars with indicators to data/spx/minute/spx_minute_20250905.parquet
+2025-09-05T22:12:55.7303679Z   Calculated daily OHLCV: O=6529.08, H=6532.65, L=6443.98, C=6482.16, V=4,789,188,592
+2025-09-05T22:12:55.7304071Z 
+2025-09-05T22:12:55.7304218Z Calculated 4 days of OHLCV from minute data
+2025-09-05T22:12:55.7304603Z Total records after merge: 9
+2025-09-05T22:12:55.7304940Z Daily data saved to data/spx/spx_2025.parquet
+2025-09-05T22:12:55.7305222Z 
+2025-09-05T22:12:55.7305370Z Summary saved to data/spx/spx_summary.json
+2025-09-05T22:12:55.7305732Z Latest close: $6482.16
+2025-09-05T22:12:55.7306015Z YTD return: 0.66%
+2025-09-05T22:12:55.7306175Z 
+2025-09-05T22:12:55.7306293Z ============================================================
+2025-09-05T22:12:55.7306649Z Fetch Summary:
+2025-09-05T22:12:55.7306905Z ============================================================
+2025-09-05T22:12:55.7307557Z IWM: ✓ Success
+2025-09-05T22:12:55.7307848Z SPY: ✓ Success
+2025-09-05T22:12:55.7308118Z QQQ: ✓ Success
+2025-09-05T22:12:55.7308395Z SPX: ✓ Success
+2025-09-05T22:12:55.7308532Z 
+2025-09-05T22:12:55.7308673Z All tickers fetched successfully!
+2025-09-05T22:12:55.7309121Z Note: Minute-level data is only available for the last 7 days.
+2025-09-05T22:12:55.7309662Z Historical data beyond 7 days will use daily aggregates.
+2025-09-05T22:12:55.8041003Z ##[group]Run git config --local user.email "action@github.com"
+2025-09-05T22:12:55.8041463Z [36;1mgit config --local user.email "action@github.com"[0m
+2025-09-05T22:12:55.8041798Z [36;1mgit config --local user.name "GitHub Action"[0m
+2025-09-05T22:12:55.8042059Z [36;1m[0m
+2025-09-05T22:12:55.8042282Z [36;1m# Add all parquet and json files in data directory[0m
+2025-09-05T22:12:55.8042666Z [36;1mgit add data/*.parquet data/*.json data/minute/*.parquet || true[0m
+2025-09-05T22:12:55.8042976Z [36;1m[0m
+2025-09-05T22:12:55.8043163Z [36;1m# Check if there are changes to commit[0m
+2025-09-05T22:12:55.8043456Z [36;1mif git diff --staged --quiet; then[0m
+2025-09-05T22:12:55.8043705Z [36;1m  echo "No changes to commit"[0m
+2025-09-05T22:12:55.8043928Z [36;1melse[0m
+2025-09-05T22:12:55.8044122Z [36;1m  # Create commit message with ticker list[0m
+2025-09-05T22:12:55.8044440Z [36;1m  COMMIT_MSG="Update market data - $(date +'%Y-%m-%d')"[0m
+2025-09-05T22:12:55.8044772Z [36;1m  if [ "ALL" != "ALL" ]; then[0m
+2025-09-05T22:12:55.8045014Z [36;1m    COMMIT_MSG="$COMMIT_MSG (ALL)"[0m
+2025-09-05T22:12:55.8045242Z [36;1m  fi[0m
+2025-09-05T22:12:55.8045393Z [36;1m  [0m
+2025-09-05T22:12:55.8045564Z [36;1m  git commit -m "$COMMIT_MSG"[0m
+2025-09-05T22:12:55.8045789Z [36;1m  git push[0m
+2025-09-05T22:12:55.8045957Z [36;1mfi[0m
+2025-09-05T22:12:55.8076104Z shell: /usr/bin/bash -e {0}
+2025-09-05T22:12:55.8076327Z env:
+2025-09-05T22:12:55.8076561Z   pythonLocation: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:55.8076959Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.11.13/x64/lib/pkgconfig
+2025-09-05T22:12:55.8077499Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:55.8077834Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:55.8078163Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.11.13/x64
+2025-09-05T22:12:55.8078498Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.11.13/x64/lib
+2025-09-05T22:12:55.8078788Z ##[endgroup]
+2025-09-05T22:12:55.8177576Z fatal: pathspec 'data/minute/*.parquet' did not match any files
+2025-09-05T22:12:55.8198574Z No changes to commit
+2025-09-05T22:12:55.8690293Z Post job cleanup.
+2025-09-05T22:12:55.9945438Z Cache hit occurred on the primary key Linux-pip-market-data-, not saving cache.
+2025-09-05T22:12:56.0064413Z Post job cleanup.
+2025-09-05T22:12:56.2662731Z Post job cleanup.
+2025-09-05T22:12:56.3609221Z [command]/usr/bin/git version
+2025-09-05T22:12:56.3648415Z git version 2.51.0
+2025-09-05T22:12:56.3694103Z Temporarily overriding HOME='/home/runner/work/_temp/136c4121-c23d-4de7-9bca-369e227cb927' before making global git config changes
+2025-09-05T22:12:56.3697319Z Adding repository directory to the temporary git global config as a safe directory
+2025-09-05T22:12:56.3701627Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/stocks/stocks
+2025-09-05T22:12:56.3743670Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2025-09-05T22:12:56.3778905Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2025-09-05T22:12:56.4017940Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2025-09-05T22:12:56.4042128Z http.https://github.com/.extraheader
+2025-09-05T22:12:56.4056726Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2025-09-05T22:12:56.4118849Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2025-09-05T22:12:56.4438213Z Cleaning up orphan processes
