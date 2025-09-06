@@ -67,9 +67,9 @@ jobs:
     - name: Fetch market data
       run: |
         if [ "${{ steps.tickers.outputs.TICKERS }}" = "ALL" ]; then
-          python scripts/fetch_market_data.py --tickers ALL --date ${{ steps.date.outputs.DATE }}
+          python scripts/fetch_market_data.py --tickers ALL
         else
-          python scripts/fetch_market_data.py --tickers ${{ steps.tickers.outputs.TICKERS }} --date ${{ steps.date.outputs.DATE }}
+          python scripts/fetch_market_data.py --tickers ${{ steps.tickers.outputs.TICKERS }}
         fi
     
     - name: Commit and push data
