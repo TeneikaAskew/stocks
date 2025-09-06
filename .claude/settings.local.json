@@ -33,7 +33,10 @@
       "Bash(clasp push:*)",
       "Bash(chmod:*)",
       "Bash(sed:*)",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "Bash(git push:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": []
   }
