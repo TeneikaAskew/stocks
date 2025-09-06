@@ -84,14 +84,18 @@ function EW_buildMinUnfavorableArray(existingArray = [], dayIndex, strategy, str
 }
 
 /**
- * Build or update Strike_Hit array with percentage moves
+ * Build or update Strike_Hit array with percentage moves from strike to day's extreme
+ * Always calculates the percentage difference between the strike and the high/low,
+ * regardless of whether the strike was actually hit.
+ * - For bullish: (high - strike) / strike (positive when exceeded, negative when not)
+ * - For bearish: (strike - low) / strike (positive when exceeded, negative when not)
  * @param {Array} existingArray - Current strike hit array (can be empty)
  * @param {number} dayIndex - Day index (0-5)
  * @param {string} strategy - Strategy name
  * @param {number} strike - Strike price
  * @param {number} dayHigh - Day's high price
  * @param {number} dayLow - Day's low price
- * @param {boolean} strikeHit - Whether strike was hit this day
+ * @param {boolean} strikeHit - Whether strike was hit this day (unused but kept for compatibility)
  * @returns {Array} Updated array with new value at dayIndex
  */
 function EW_buildStrikeHitArray(existingArray = [], dayIndex, strategy, strike, dayHigh, dayLow, strikeHit) {
@@ -103,29 +107,27 @@ function EW_buildStrikeHitArray(existingArray = [], dayIndex, strategy, strike, 
     array.push(null);
   }
   
-  if (strikeHit) {
-    // Calculate percentage move when strike was hit (as decimal)
-    const strategyType = EW_getStrategyType(strategy);
-    
-    let percentMove = null;
-    if (strategyType === 'bullish') {
-      // For bullish: (high - strike) / strike
-      percentMove = ((dayHigh - strike) / strike).toFixed(6);
-    } else if (strategyType === 'bearish') {
-      // For bearish: (strike - low) / strike
-      percentMove = ((strike - dayLow) / strike).toFixed(6);
-    } else if (strategyType === 'neutral') {
-      // For neutral strategies, calculate the best move (largest absolute)
-      const upMove = (dayHigh - strike) / strike;
-      const downMove = (strike - dayLow) / strike;
-      percentMove = Math.abs(upMove) > Math.abs(downMove) ? upMove.toFixed(6) : (-downMove).toFixed(6);
-    }
-    
-    array[dayIndex] = percentMove;
-  } else {
-    // Store null when strike not hit
-    array[dayIndex] = null;
+  // Always calculate percentage move from strike to day's extreme
+  // This shows how much the price moved relative to the strike, whether hit or not
+  const strategyType = EW_getStrategyType(strategy);
+  
+  let percentMove = null;
+  if (strategyType === 'bullish') {
+    // For bullish: always calculate (high - strike) / strike
+    // Positive when high exceeds strike, negative when it falls short
+    percentMove = ((dayHigh - strike) / strike).toFixed(6);
+  } else if (strategyType === 'bearish') {
+    // For bearish: always calculate (strike - low) / strike
+    // Positive when low is below strike, negative when it stays above
+    percentMove = ((strike - dayLow) / strike).toFixed(6);
+  } else if (strategyType === 'neutral') {
+    // For neutral strategies, calculate the best move (largest absolute)
+    const upMove = (dayHigh - strike) / strike;
+    const downMove = (strike - dayLow) / strike;
+    percentMove = Math.abs(upMove) > Math.abs(downMove) ? upMove.toFixed(6) : (-downMove).toFixed(6);
   }
+  
+  array[dayIndex] = percentMove;
   
   return array;
 }

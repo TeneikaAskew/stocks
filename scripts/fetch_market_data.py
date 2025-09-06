@@ -287,7 +287,7 @@ def calculate_all_indicators(df, ticker_symbol, is_minute_data=False):
     
     return df
 
-def fetch_ticker_data(ticker_symbol, ticker_name=None):
+def fetch_ticker_data(ticker_symbol, ticker_name=None, target_date=None):
     """
     Fetch and process data for a specific ticker.
     
@@ -312,7 +312,10 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None):
         minute_dir = ticker_dir / "minute"
         minute_dir.mkdir(exist_ok=True)
         
-        today = datetime.now().date()
+        if target_date:
+            today = datetime.strptime(target_date, '%Y-%m-%d').date()
+        else:
+            today = datetime.now().date()
         current_year = today.year
         
         # File paths - now in ticker-specific folders
@@ -523,6 +526,8 @@ def main():
                        choices=['IWM', 'SPY', 'QQQ', 'SPX', 'ALL'],
                        default=['ALL'],
                        help='Tickers to fetch (default: ALL)')
+    parser.add_argument('--date', type=str, 
+                       help='Date to fetch data for (YYYY-MM-DD format). If not provided, uses current date.')
     
     args = parser.parse_args()
     
@@ -551,7 +556,7 @@ def main():
     # Fetch data for each ticker
     for ticker in tickers_to_fetch:
         symbol, display_name = ticker_mappings[ticker]
-        success = fetch_ticker_data(symbol, display_name)
+        success = fetch_ticker_data(symbol, display_name, args.date)
         results[ticker] = success
     
     # Print summary

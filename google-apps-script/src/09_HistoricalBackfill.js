@@ -794,21 +794,28 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
       // Store daily closing price
       analysis.dailyPrices.push(dayData.close);
       
-      // Calculate and store decimal move from close to strike when hit
+      // Calculate and store percentage move from strike to the day's extreme
+      // This shows how much the price moved relative to the strike, whether hit or not
       let percentMove = null;
-      if (dayHit) {
-        // Store the percentage move when strike was hit (as decimal, not percentage)
-        if (isBullish || (strategyUpper.includes('BULL') && !isSpread)) {
-          // For bullish: (hit price - strike) / strike
+      
+      if (isBullish || (strategyUpper.includes('BULL') && !isSpread)) {
+        // For bullish: always calculate (high - strike) / strike
+        // This shows how much the high exceeded (or fell short of) the strike
+        percentMove = ((dayData.high - strike) / strike).toFixed(6);
+      } else if (isBearish || (strategyUpper.includes('BEAR') && !isSpread)) {
+        // For bearish: always calculate (strike - low) / strike
+        // This shows how much the low fell below (or stayed above) the strike
+        percentMove = ((strike - dayData.low) / strike).toFixed(6);
+      } else {
+        // Default for other strategies: use high if hit expected above, low if below
+        if (dayHit) {
           percentMove = ((hitPrice - strike) / strike).toFixed(6);
-        } else if (isBearish || (strategyUpper.includes('BEAR') && !isSpread)) {
-          // For bearish: (strike - hit price) / strike
-          percentMove = ((strike - hitPrice) / strike).toFixed(6);
         } else {
-          // Default: (hit price - strike) / strike
-          percentMove = ((hitPrice - strike) / strike).toFixed(6);
+          // If not hit, show how close it got
+          percentMove = ((dayData.high - strike) / strike).toFixed(6);
         }
       }
+      
       analysis.strikeHitArray.push(percentMove);
       
       // Log the strike for debugging
