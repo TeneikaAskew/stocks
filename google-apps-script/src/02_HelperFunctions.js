@@ -1036,6 +1036,11 @@ function EW_batchCheckBackfillRows(sheet, hdrMap, data, strategyName) {
     const strike = parseFloat(row[strikeCol - 1]) || 0;
     const expDateStr = hdrMap.expDateCol ? row[hdrMap.expDateCol - 1] : null;
     
+    // Debug first row
+    if (rowIndex === 0) {
+      console.log(`BACKFILL DEBUG: Checking row 2 (index 0): ticker="${ticker}", runDate="${runDateStr}", strike=${strike}`);
+    }
+    
     // Skip if missing required data
     if (!ticker || !runDateStr || !strike) {
       if (!ticker && !runDateStr && !strike) {
@@ -1063,14 +1068,47 @@ function EW_batchCheckBackfillRows(sheet, hdrMap, data, strategyName) {
     const hasStrikeHit = hdrMap.strikeHitCol && row[hdrMap.strikeHitCol - 1];
     const hasIndicators = hdrMap.hitRSICol && row[hdrMap.hitRSICol - 1];
     
-    // Skip if ALL day values AND arrays are already filled
-    if (hasDay0 && hasDay1 && hasDay2 && hasDay3 && hasDay4 && hasDay5 && hasStrikeHit && hasIndicators) {
+    // Check if OHLC_Volume has proper OHLC data (no zero values for prices)
+    let hasProperOHLC = false;
+    if (hdrMap.ohlcVolumeCol && row[hdrMap.ohlcVolumeCol - 1]) {
+      const ohlcData = row[hdrMap.ohlcVolumeCol - 1];
+      try {
+        const ohlcArray = typeof ohlcData === 'string' ? JSON.parse(ohlcData) : ohlcData;
+        // Check if we have valid OHLC data:
+        // 1. Array exists and has elements
+        // 2. At least one entry has non-zero/non-null OHLC values (prices should never be 0)
+        // 3. At least one entry has non-zero/non-null volume
+        hasProperOHLC = ohlcArray && Array.isArray(ohlcArray) && ohlcArray.length > 0 &&
+          ohlcArray.some(day => {
+            if (!day || day === null) return false;
+            // Check that OHLC prices are not zero or null (parseFloat handles string values)
+            const hasValidPrices = parseFloat(day.o) > 0 || parseFloat(day.h) > 0 || 
+                                  parseFloat(day.l) > 0 || parseFloat(day.c) > 0;
+            // Volume should be greater than 0 (not null, not 0)
+            const hasValidVolume = day.v !== null && day.v !== undefined && parseFloat(day.v) > 0;
+            return hasValidPrices && hasValidVolume;
+          });
+      } catch (e) {
+        hasProperOHLC = false;
+      }
+    }
+    
+    // Debug first row to see why it might be skipped
+    if (rowIndex === 0) {
+      console.log(`BACKFILL DEBUG: Row 2 data check: Day0=${!!hasDay0}, Day1=${!!hasDay1}, Day2=${!!hasDay2}, Day3=${!!hasDay3}, Day4=${!!hasDay4}, Day5=${!!hasDay5}, StrikeHit=${!!hasStrikeHit}, Indicators=${!!hasIndicators}, ProperOHLC=${hasProperOHLC}`);
+    }
+    
+    // Skip if ALL day values AND arrays are already filled AND OHLC has proper volume
+    if (hasDay0 && hasDay1 && hasDay2 && hasDay3 && hasDay4 && hasDay5 && hasStrikeHit && hasIndicators && hasProperOHLC) {
       skippedAlreadyComplete.push(rowIndex + 2);
+      if (rowIndex === 0) {
+        console.log(`BACKFILL DEBUG: Row 2 marked as already complete with proper volume, skipping`);
+      }
       return;
     }
     
     // Row needs processing
-    rowsToProcess.push({
+    const rowItem = {
       index: rowIndex,
       rowNum: rowIndex + 2,
       ticker: ticker,
@@ -1079,7 +1117,13 @@ function EW_batchCheckBackfillRows(sheet, hdrMap, data, strategyName) {
       expDateStr: expDateStr,
       shortStrike: isSpread && hdrMap.shortStrikeCol ? parseFloat(row[hdrMap.shortStrikeCol - 1]) || null : null,
       hasPartialData: hasDay0 || hasDay1 || hasDay2 || hasDay3 || hasDay4 || hasDay5 || hasStrikeHit
-    });
+    };
+    
+    if (rowIndex === 0) {
+      console.log(`BACKFILL DEBUG: Row 2 added to processing queue as row ${rowItem.rowNum}`);
+    }
+    
+    rowsToProcess.push(rowItem);
   });
   
   // Create summary message

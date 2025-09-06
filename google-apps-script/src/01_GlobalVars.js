@@ -6,7 +6,6 @@
 // ======= MAIN CONFIGURATION OBJECT =======
 const EW = {
   STRATEGY_ENDPOINTS: {
-    
     'Long Calls':   '/api/getlongcalls', //Y
     'Long Puts':    '/api/getlongput', //E
     'Short Puts':   '/api/getshortput', //E
