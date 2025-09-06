@@ -21,6 +21,7 @@ function EW_calculateMissingFavorables() {
   let processedCount = 0;
   let updatedCount = 0;
   let skippedNoOHLC = 0;
+  let recalculatedZeros = 0;
   let errors = [];
   
   for (const strategy of strategies) {
@@ -34,6 +35,7 @@ function EW_calculateMissingFavorables() {
       processedCount += result.processed;
       updatedCount += result.updated;
       skippedNoOHLC += result.skippedNoOHLC || 0;
+      recalculatedZeros += result.recalculatedZeros || 0;
       
       if (result.errors.length > 0) {
         errors.push(...result.errors.map(e => `${strategy}: ${e}`));
@@ -54,6 +56,7 @@ function EW_calculateMissingFavorables() {
   const msg = `Favorable calculation complete (using OHLC data).\n` +
     `Processed: ${processedCount} rows\n` +
     `Updated: ${updatedCount} rows\n` +
+    (recalculatedZeros > 0 ? `Recalculated (all zeros): ${recalculatedZeros} rows\n` : '') +
     `Skipped (no OHLC): ${skippedNoOHLC} rows\n` +
     `Duration: ${duration} seconds` +
     (errors.length > 0 ? `\n\nErrors:\n${errors.join('\n')}` : '');
@@ -63,7 +66,7 @@ function EW_calculateMissingFavorables() {
   
   EW_safeAlert('Calculation Complete', msg);
   
-  return { processed: processedCount, updated: updatedCount, duration: duration, errors: errors, skippedNoOHLC: skippedNoOHLC };
+  return { processed: processedCount, updated: updatedCount, duration: duration, errors: errors, skippedNoOHLC: skippedNoOHLC, recalculatedZeros: recalculatedZeros };
 }
 
 /**
@@ -153,6 +156,7 @@ function EW_calculateFavorablesFromOHLC(sheet, strategyName, startRow = 2, numRo
   let processedCount = 0;
   let updatedCount = 0;
   let skippedNoOHLC = 0;
+  let recalculatedZeros = 0;
   let errors = [];
   
   // Batch arrays for updates
@@ -172,14 +176,40 @@ function EW_calculateFavorablesFromOHLC(sheet, strategyName, startRow = 2, numRo
       const currentMaxFav = rowData[hdrMap.maxFavorableCol - 1];
       const currentMinUnfav = rowData[hdrMap.minUnfavorableCol - 1];
       
+      // Helper function to check if array has all zeros
+      const hasAllZeros = (arrayStr) => {
+        if (!arrayStr || arrayStr === '') return false;
+        try {
+          const parsed = typeof arrayStr === 'string' ? JSON.parse(arrayStr) : arrayStr;
+          if (!Array.isArray(parsed)) return false;
+          // Check if all values are zero or "0.000000"
+          return parsed.every(val => val === null || parseFloat(val) === 0);
+        } catch (e) {
+          return false;
+        }
+      };
+      
       // Check if either needs calculation
       const needsMaxFav = !currentMaxFav || currentMaxFav === '' || 
-                         (typeof currentMaxFav === 'string' && currentMaxFav === '[]');
+                         (typeof currentMaxFav === 'string' && currentMaxFav === '[]') ||
+                         hasAllZeros(currentMaxFav);
       const needsMinUnfav = !currentMinUnfav || currentMinUnfav === '' || 
-                           (typeof currentMinUnfav === 'string' && currentMinUnfav === '[]');
+                           (typeof currentMinUnfav === 'string' && currentMinUnfav === '[]') ||
+                           hasAllZeros(currentMinUnfav);
       
       if (!needsMaxFav && !needsMinUnfav) {
-        continue; // Skip rows that already have values
+        continue; // Skip rows that already have proper values
+      }
+      
+      // Log if we're recalculating due to all zeros
+      let isRecalcZeros = false;
+      if (hasAllZeros(currentMaxFav)) {
+        EW_trace('FAVORABLES', `Row ${rowNum}: Recalculating Max_Favorable due to all zero values`);
+        isRecalcZeros = true;
+      }
+      if (hasAllZeros(currentMinUnfav)) {
+        EW_trace('FAVORABLES', `Row ${rowNum}: Recalculating Min_Unfavorable due to all zero values`);
+        isRecalcZeros = true;
       }
       
       // Get strike price(s)
@@ -270,11 +300,13 @@ function EW_calculateFavorablesFromOHLC(sheet, strategyName, startRow = 2, numRo
         }
         rowsToUpdate.push(rowNum);
         updatedCount++;
+        if (isRecalcZeros) recalculatedZeros++;
       } else if (needsMinUnfav && minUnfavArray.some(v => v !== null)) {
         maxFavUpdates.push(currentMaxFav); // Keep existing value
         minUnfavUpdates.push(JSON.stringify(minUnfavArray));
         rowsToUpdate.push(rowNum);
         updatedCount++;
+        if (isRecalcZeros) recalculatedZeros++;
       }
       
     } catch (e) {
@@ -302,106 +334,8 @@ function EW_calculateFavorablesFromOHLC(sheet, strategyName, startRow = 2, numRo
     processed: processedCount,
     updated: updatedCount,
     skippedNoOHLC: skippedNoOHLC,
+    recalculatedZeros: recalculatedZeros,
     errors: errors
   };
 }
 
-/**
- * Calculate favorables using historical data from Yahoo API (legacy - slow)
- * This version fetches actual high/low data from Yahoo Finance
- * NOTE: This makes API calls and is much slower than using OHLC_Volume data
- * @deprecated Use EW_calculateMissingFavorables() instead which uses OHLC_Volume
- */
-function EW_calculateFavorablesWithHistoricalAPI() {
-  const sheet = SpreadsheetApp.getActiveSheet();
-  const range = sheet.getActiveRange();
-  
-  if (!range) {
-    EW_safeAlert('No Selection', 'Please select rows to process');
-    return;
-  }
-  
-  const startRow = range.getRow();
-  const numRows = range.getNumRows();
-  
-  if (startRow === 1) {
-    EW_safeAlert('Invalid Selection', 'Please select data rows (not the header row)');
-    return;
-  }
-  
-  EW_trace('FAVORABLES', `Starting historical calculation for ${numRows} rows`, true);
-  
-  // Get header mapping
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  const hdrMap = EW_headerMap(headers);
-  
-  // Use backfill logic for more accurate calculation
-  const tickerCol = hdrMap.tickerCol;
-  const runDateCol = hdrMap.runDateCol;
-  const strikeCol = hdrMap.strikeCol || hdrMap.longStrikeCol;
-  
-  if (!tickerCol || !runDateCol || !strikeCol) {
-    EW_safeAlert('Missing Columns', 'Required columns (ticker, runDate, strike) not found');
-    return;
-  }
-  
-  let updatedCount = 0;
-  
-  for (let i = 0; i < numRows; i++) {
-    const rowNum = startRow + i;
-    const ticker = sheet.getRange(rowNum, tickerCol).getValue();
-    const runDate = sheet.getRange(rowNum, runDateCol).getValue();
-    const strike = sheet.getRange(rowNum, strikeCol).getValue();
-    
-    if (!ticker || !runDate || !strike) continue;
-    
-    try {
-      // Fetch 6 days of historical data starting from runDate
-      const dates = [];
-      const startDate = new Date(runDate);
-      
-      for (let day = 0; day <= 5; day++) {
-        const checkDate = new Date(startDate);
-        checkDate.setDate(checkDate.getDate() + day);
-        dates.push(checkDate);
-      }
-      
-      const maxFavArray = [];
-      const minUnfavArray = [];
-      const strategyName = sheet.getName();
-      
-      for (const date of dates) {
-        const result = EW_fetchYahooHistoricalForDate(ticker, date, true);
-        
-        if (result && result.dayHigh && result.dayLow) {
-          // Use the array builder functions for consistency
-          const maxFav = EW_calculateMaxFavorableForDay(
-            strategyName, strike, result.dayHigh, result.dayLow
-          );
-          const minUnfav = EW_calculateMinUnfavorableForDay(
-            strategyName, strike, result.dayHigh, result.dayLow
-          );
-          
-          maxFavArray.push(maxFav);
-          minUnfavArray.push(minUnfav);
-        } else {
-          maxFavArray.push(null);
-          minUnfavArray.push(null);
-        }
-      }
-      
-      // Update the sheet
-      if (maxFavArray.some(v => v !== null)) {
-        sheet.getRange(rowNum, hdrMap.maxFavorableCol).setValue(JSON.stringify(maxFavArray));
-        sheet.getRange(rowNum, hdrMap.minUnfavorableCol).setValue(JSON.stringify(minUnfavArray));
-        updatedCount++;
-      }
-      
-    } catch (e) {
-      EW_trace('FAVORABLES', `Error processing row ${rowNum}: ${e.message}`);
-    }
-  }
-  
-  const msg = `Historical calculation complete.\nUpdated ${updatedCount} of ${numRows} rows with accurate high/low data.`;
-  EW_safeAlert('Calculation Complete', msg);
-}
