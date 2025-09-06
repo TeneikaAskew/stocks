@@ -135,6 +135,16 @@ function EW_backfillHistoricalTracking() {
   // Clear continuation state since we're done
   EW_clearBackfillState('BACKFILL_STATE');
   
+  // Create daily API report after backfill
+  try {
+    EW_createDailyApiReport();
+    console.log('BACKFILL: Daily API report created');
+    EW_trace('BACKFILL', 'Daily API summary report created');
+  } catch (error) {
+    console.error(`BACKFILL: Failed to create API report: ${error.message}`);
+    EW_trace('BACKFILL', `Failed to create API report: ${error.message}`);
+  }
+  
   const msg = `Historical backfill complete. Processed ${totalBackfilled} positions across ${strategies.length} strategies.` +
     (errors.length > 0 ? `\n\nErrors:\n${errors.join('\n')}` : '');
   
@@ -1412,6 +1422,14 @@ function EW_backfillSelectedRows() {
   EW_clearBackfillState('BACKFILL_SELECTED_STATE');
   
   SpreadsheetApp.flush();
+  
+  // Create daily API report after backfill
+  try {
+    EW_createDailyApiReport();
+    console.log('BACKFILL SELECTED: Daily API report created');
+  } catch (error) {
+    console.error(`BACKFILL SELECTED: Failed to create API report: ${error.message}`);
+  }
   
   const message = 'Processed ' + processedCount + ' of ' + numRows + ' selected rows';
   

@@ -136,6 +136,34 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
     };
   }
   
+  // Check for cached API data first
+  const cachedData = EW_getCachedApiData(ticker, date);
+  if (cachedData) {
+    console.log(`YAHOO: Using cached data for ${ticker} on ${date.toISOString().split('T')[0]}`);
+    
+    // Build result from cached data
+    const hit = targetPrice ? 
+      (cachedData.dayLow <= targetPrice && targetPrice <= cachedData.dayHigh) : false;
+    
+    return {
+      ticker: ticker,
+      targetPrice: targetPrice,
+      date: date,
+      hit: hit,
+      hitPrice: hit ? targetPrice : null,
+      dayHigh: cachedData.dayHigh,
+      dayLow: cachedData.dayLow,
+      dayOpen: cachedData.dayOpen,
+      dayClose: cachedData.dayClose,
+      dayVolume: cachedData.dayVolume,
+      dataPoints: 1,
+      interval: interval,
+      fromCache: true,
+      cacheSource: cachedData.cacheFile,
+      indicators: null
+    };
+  }
+  
   // Set time range based on interval
   let startDate, endDate;
   
@@ -1037,54 +1065,6 @@ function EW_batchCheckStrikeHits(positions) {
 }
 
 /**
- * Test function for Yahoo Finance data
- */
-function EW_testYahooData() {
-  console.log('=== Testing Yahoo Finance Data ===');
-  
-  // Test with previous trading day (not today which may not have data yet)
-  const previousTradingDay = new Date();
-  const day = previousTradingDay.getDay();
-  
-  // Adjust to previous trading day
-  if (day === 0) previousTradingDay.setDate(previousTradingDay.getDate() - 2); // Sunday -> Friday
-  else if (day === 6) previousTradingDay.setDate(previousTradingDay.getDate() - 1); // Saturday -> Friday
-  else if (day === 1) previousTradingDay.setDate(previousTradingDay.getDate() - 3); // Monday -> Friday
-  else previousTradingDay.setDate(previousTradingDay.getDate() - 1); // Any other day -> previous day
-  
-  console.log(`Testing with previous trading day: ${previousTradingDay.toDateString()}`);
-  
-  // Test 1: Check if a strike was hit on previous trading day
-  const result1 = EW_checkStockIntraday('IWM', 235.00, previousTradingDay);
-  console.log('IWM $235 previous trading day:', result1);
-  
-  // Test 2: Historical hit from a week ago
-  const weekAgo = new Date(previousTradingDay);
-  weekAgo.setDate(weekAgo.getDate() - 7);
-  const result2 = EW_checkStockIntraday('SPY', 450.00, weekAgo);
-  console.log('SPY $450 from week ago:', result2);
-  
-  // Test 3: Range data for last 30 days
-  const rangeStart = new Date();
-  rangeStart.setDate(rangeStart.getDate() - 30);
-  const rangeEnd = new Date();
-  const rangeData = EW_getYahooHistoricalRange('AAPL', rangeStart, rangeEnd);
-  console.log(`AAPL historical data points (30 days): ${rangeData.length}`);
-  
-  // Test 4: Direct API test with known working date
-  console.log('\n=== Direct API Test ===');
-  const testResult = EW_fetchYahooData('IWM', 235, previousTradingDay, '1m');
-  console.log('Direct fetch result:', testResult);
-  
-  return {
-    previousTradingDay: result1,
-    historical: result2,
-    rangeDataPoints: rangeData.length,
-    directApiTest: testResult
-  };
-}
-
-/**
  * Calculate technical indicators from Yahoo price data
  * @param {Array} timestamps - Array of timestamps
  * @param {Object} quotes - Quote data with high, low, close, volume arrays
@@ -1188,4 +1168,44 @@ function EW_calculateVWAP(closes, highs, lows, volumes) {
 // Keeping function stub for backward compatibility
 function EW_calculateATR(highs, lows, closes, period = 14) {
   return TechnicalIndicators.ATR(highs, lows, closes, period);
+}
+
+/**
+ * Fetch Yahoo historical data for a specific date with caching
+ * @param {string} ticker - Stock ticker symbol
+ * @param {Date} date - Date to fetch data for
+ * @param {boolean} useCache - Whether to use cached data if available
+ * @returns {Object} Object with dayHigh, dayLow, dayOpen, dayClose, dayVolume
+ */
+function EW_fetchYahooHistoricalForDate(ticker, date, useCache = true) {
+  try {
+    // Check for cached data first if enabled
+    if (useCache) {
+      const cachedData = EW_getCachedApiData(ticker, date);
+      if (cachedData) {
+        console.log(`Using cached data for ${ticker} on ${date.toISOString().split('T')[0]}`);
+        return cachedData;
+      }
+    }
+    
+    // If no cache, fetch fresh data using existing function
+    const result = EW_fetchYahooData(ticker, null, date, '1d');
+    
+    if (!result || result.error || result.skipped) {
+      return null;
+    }
+    
+    return {
+      dayHigh: result.dayHigh,
+      dayLow: result.dayLow,
+      dayOpen: result.dayOpen || result.open,
+      dayClose: result.dayClose || result.close,
+      dayVolume: result.dayVolume || result.volume || 0,
+      lastClose: result.lastClose || null
+    };
+    
+  } catch (error) {
+    console.error(`Error fetching historical data for ${ticker} on ${date}: ${error.message}`);
+    return null;
+  }
 }
