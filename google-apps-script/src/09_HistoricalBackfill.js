@@ -46,7 +46,7 @@ function EW_backfillHistoricalTracking() {
   const startTime = new Date();
   
   // Check for existing state from previous run
-  const savedState = EW_getBackfillState ? EW_getBackfillState('BACKFILL_STATE') : null;
+  const savedState = EW_getBackfillState('BACKFILL_STATE');
   let currentStrategyIndex = savedState ? savedState.currentStrategyIndex : 0;
   let totalBackfilled = savedState ? savedState.totalBackfilled : 0;
   let errors = savedState ? savedState.errors : [];
@@ -71,20 +71,18 @@ function EW_backfillHistoricalTracking() {
       EW_trace('BACKFILL', `Approaching time limit after ${Math.round(elapsedMs / 1000)}s. Saving state and scheduling continuation...`, true);
       
       // Save state for continuation
-      if (EW_saveBackfillState) {
-        const state = {
-          currentStrategyIndex: i,
-          totalBackfilled: totalBackfilled,
-          errors: errors,
-          processedStrategies: processedStrategies,
-          startTime: startTime.toISOString(),
-          continuationCount: (savedState?.continuationCount || 0) + 1
-        };
-        EW_saveBackfillState(state, 'BACKFILL_STATE');
-        
-        // Schedule continuation trigger
-        EW_scheduleBackfillContinuation('EW_backfillHistoricalTracking');
-      }
+      const state = {
+        currentStrategyIndex: i,
+        totalBackfilled: totalBackfilled,
+        errors: errors,
+        processedStrategies: processedStrategies,
+        startTime: startTime.toISOString(),
+        continuationCount: (savedState?.continuationCount || 0) + 1
+      };
+      EW_saveBackfillState(state, 'BACKFILL_STATE');
+      
+      // Schedule continuation trigger
+      EW_scheduleBackfillContinuation('EW_backfillHistoricalTracking');
       
       return; // Exit to let continuation handle the rest
     }
@@ -97,19 +95,17 @@ function EW_backfillHistoricalTracking() {
         EW_trace('BACKFILL', `${strategy} needs continuation - saving state...`, true);
         
         // Save state for continuation at strategy level
-        if (EW_saveBackfillState) {
-          const state = {
-            currentStrategyIndex: i,  // Stay on current strategy
-            totalBackfilled: totalBackfilled,
-            errors: errors,
-            processedStrategies: processedStrategies,
-            continuationCount: (savedState?.continuationCount || 0) + 1
-          };
-          EW_saveBackfillState(state, 'BACKFILL_STATE');
-          
-          // Schedule continuation trigger
-          EW_scheduleBackfillContinuation('EW_backfillHistoricalTracking');
-        }
+        const state = {
+          currentStrategyIndex: i,  // Stay on current strategy
+          totalBackfilled: totalBackfilled,
+          errors: errors,
+          processedStrategies: processedStrategies,
+          continuationCount: (savedState?.continuationCount || 0) + 1
+        };
+        EW_saveBackfillState(state, 'BACKFILL_STATE');
+        
+        // Schedule continuation trigger
+        EW_scheduleBackfillContinuation('EW_backfillHistoricalTracking');
         
         return; // Exit to let continuation handle the rest
       }
@@ -137,9 +133,7 @@ function EW_backfillHistoricalTracking() {
   }
   
   // Clear continuation state since we're done
-  if (EW_clearBackfillState) {
-    EW_clearBackfillState('BACKFILL_STATE');
-  }
+  EW_clearBackfillState('BACKFILL_STATE');
   
   const msg = `Historical backfill complete. Processed ${totalBackfilled} positions across ${strategies.length} strategies.` +
     (errors.length > 0 ? `\n\nErrors:\n${errors.join('\n')}` : '');
@@ -215,7 +209,7 @@ function EW_backfillStrategyTracking(ss, strategyName, startTime = null, maxRunt
   let failedCount = 0;
   
   // Check for saved position state within this strategy
-  const savedState = EW_getBackfillState ? EW_getBackfillState('BACKFILL_POSITION_STATE') : null;
+  const savedState = EW_getBackfillState('BACKFILL_POSITION_STATE');
   let startPositionIndex = 0;
   
   if (savedState && savedState.currentStrategy === strategyName) {
@@ -225,9 +219,14 @@ function EW_backfillStrategyTracking(ss, strategyName, startTime = null, maxRunt
     EW_trace('BACKFILL', `${strategyName}: Resuming from position ${startPositionIndex + 1}/${batchCheck.rowsToProcess.length}`);
   } else if (savedState && savedState.currentStrategy !== strategyName) {
     // Clear stale position state from a different strategy
-    if (EW_clearBackfillState) {
-      EW_clearBackfillState('BACKFILL_POSITION_STATE');
-    }
+    EW_clearBackfillState('BACKFILL_POSITION_STATE');
+  }
+  
+  // Debug: Log first few rows to process
+  if (startPositionIndex === 0 && batchCheck.rowsToProcess.length > 0) {
+    const firstRows = batchCheck.rowsToProcess.slice(0, 3).map(r => `Row ${r.rowNum}: ${r.ticker}`).join(', ');
+    EW_trace('BACKFILL', `${strategyName}: First rows to process: ${firstRows}`);
+    console.log(`BACKFILL DEBUG: First rows to process in ${strategyName}: ${firstRows}`);
   }
   
   // Process only the rows that need it, starting from saved position
@@ -240,17 +239,15 @@ function EW_backfillStrategyTracking(ss, strategyName, startTime = null, maxRunt
       EW_trace('BACKFILL', `${strategyName}: Time limit reached after ${Math.round(elapsedMs / 1000)}s at position ${index + 1}/${batchCheck.rowsToProcess.length}`, true);
       
       // Save position-level state
-      if (EW_saveBackfillState) {
-        const positionState = {
-          currentStrategy: strategyName,
-          currentPositionIndex: index,
-          processedInStrategy: processedCount,
-          failedInStrategy: failedCount,
-          totalPositions: batchCheck.rowsToProcess.length,
-          timestamp: new Date().toISOString()
-        };
-        EW_saveBackfillState(positionState, 'BACKFILL_POSITION_STATE');
-      }
+      const positionState = {
+        currentStrategy: strategyName,
+        currentPositionIndex: index,
+        processedInStrategy: processedCount,
+        failedInStrategy: failedCount,
+        totalPositions: batchCheck.rowsToProcess.length,
+        timestamp: new Date().toISOString()
+      };
+      EW_saveBackfillState(positionState, 'BACKFILL_POSITION_STATE');
       
       // Return special value to indicate continuation needed
       return -1;
@@ -298,9 +295,7 @@ function EW_backfillStrategyTracking(ss, strategyName, startTime = null, maxRunt
   }
   
   // Clear position state if we completed this strategy
-  if (EW_clearBackfillState) {
-    EW_clearBackfillState('BACKFILL_POSITION_STATE');
-  }
+  EW_clearBackfillState('BACKFILL_POSITION_STATE');
   
   // Force save
   if (processedCount > 0) {
@@ -475,7 +470,8 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
         open: bar.open,
         high: bar.high,
         low: bar.low,
-        close: bar.close
+        close: bar.close,
+        volume: bar.volume !== null && bar.volume !== undefined ? bar.volume : null  // Add volume for daily data
       };
     });
   } else {
@@ -489,7 +485,8 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
         open: null,
         high: -Infinity,
         low: Infinity,
-        close: null
+        close: null,
+        volume: null  // Initialize volume aggregation as null, will sum up actual values
       };
     }
     
@@ -507,6 +504,14 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
     }
     if (bar.close !== null) {
       dailyGroups[dateStr].close = bar.close; // Last non-null close
+    }
+    // Aggregate volume (sum all non-null volumes for the day)
+    if (bar.volume !== null && bar.volume !== undefined) {
+      // Initialize to 0 if still null, then add
+      if (dailyGroups[dateStr].volume === null) {
+        dailyGroups[dateStr].volume = 0;
+      }
+      dailyGroups[dateStr].volume += bar.volume;
     }
     
     // Log first few bars for debugging
@@ -558,7 +563,8 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
   EW_trace('BACKFILL', `${ticker}: Grouped into ${sortedDays.length} trading days`);
   sortedDays.forEach((day, idx) => {
     if (idx < 3) { // Log first 3 days
-      EW_trace('BACKFILL', `${ticker}: Day ${idx} - ${day.date.toISOString().split('T')[0]}, ${day.bars.length} bars, OHLC: ${day.open.toFixed(2)}/${day.high.toFixed(2)}/${day.low.toFixed(2)}/${day.close.toFixed(2)}`);
+      const volumeStr = day.volume !== undefined ? `, Volume: ${day.volume}` : '';
+      EW_trace('BACKFILL', `${ticker}: Day ${idx} - ${day.date.toISOString().split('T')[0]}, ${day.bars.length} bars, OHLC: ${day.open.toFixed(2)}/${day.high.toFixed(2)}/${day.low.toFixed(2)}/${day.close.toFixed(2)}${volumeStr}`);
     }
   });
   
@@ -1006,7 +1012,7 @@ function EW_analyzeHistoricalData(ticker, strategy, strike, historicalData, runD
         h: dayData.high ? parseFloat(dayData.high).toFixed(2) : null,
         l: dayData.low ? parseFloat(dayData.low).toFixed(2) : null,
         c: dayData.close ? parseFloat(dayData.close).toFixed(2) : null,
-        v: dayData.volume || 0,
+        v: dayData.volume !== null && dayData.volume !== undefined ? dayData.volume : null,
         src: 'BACKFILL'  // Track that this came from backfill
       });
     }
@@ -1403,9 +1409,7 @@ function EW_backfillSelectedRows() {
   }
   
   // Clear continuation state since we're done
-  if (EW_clearBackfillState) {
-    EW_clearBackfillState('BACKFILL_SELECTED_STATE');
-  }
+  EW_clearBackfillState('BACKFILL_SELECTED_STATE');
   
   SpreadsheetApp.flush();
   
@@ -1575,7 +1579,9 @@ function EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDa
   }
   
   // Calculate and update Risk_Reward
-  const riskRewardShouldUpdate = shouldUpdate(hdrMap.riskRewardCol, 'check');
+  // For Risk_Reward, we need to check if the column is empty, not pass a value
+  const riskRewardShouldUpdate = hdrMap.riskRewardCol && 
+    (!existingRowData || !existingRowData[hdrMap.riskRewardCol - 1] || existingRowData[hdrMap.riskRewardCol - 1] === '');
   const hasArrays = analysis.maxFavorableArray && analysis.minUnfavorableArray && 
                     analysis.maxFavorableArray.length > 0 && analysis.minUnfavorableArray.length > 0;
   
