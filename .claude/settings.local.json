@@ -31,7 +31,8 @@
       "Bash(tree:*)",
       "Bash(node:*)",
       "Bash(clasp push:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(sed:*)"
     ],
     "deny": []
   }
