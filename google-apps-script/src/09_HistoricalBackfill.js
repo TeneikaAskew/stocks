@@ -1618,7 +1618,8 @@ function EW_updateBackfillColumns(sheet, rowNum, analysis, hdrMap, ticker, expDa
   
   if (riskRewardShouldUpdate && hasArrays) {
     const maxFav = Math.max(...analysis.maxFavorableArray.map(v => parseFloat(v)));
-    const maxUnfav = Math.max(...analysis.minUnfavorableArray.map(v => parseFloat(v)));
+    // Min_Unfavorable contains negative values, we need the absolute value of the most negative
+    const maxUnfav = Math.max(...analysis.minUnfavorableArray.map(v => Math.abs(parseFloat(v))));
     EW_trace('BACKFILL', `${ticker} Risk_Reward calculation - MaxFav: ${maxFav}, MaxUnfav: ${maxUnfav}`);
     
     if (maxUnfav > 0) {
