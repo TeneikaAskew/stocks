@@ -76,10 +76,10 @@ jobs:
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        
-  # Add all parquet and json files in data directory
-  git add data/*.parquet data/*.json data/*/minute/*.parquet || true
-        
+
+        # Add all parquet and json files in data directory
+        git add data/*.parquet data/*.json data/*/minute/*.parquet || true
+
         # Check if there are changes to commit
         if git diff --staged --quiet; then
           echo "No changes to commit"
@@ -89,7 +89,7 @@ jobs:
           if [ "${{ steps.tickers.outputs.TICKERS }}" != "ALL" ]; then
             COMMIT_MSG="$COMMIT_MSG (${{ steps.tickers.outputs.TICKERS }})"
           fi
-          
+
           git commit -m "$COMMIT_MSG"
           git push
         fi
