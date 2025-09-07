@@ -74,6 +74,8 @@ function onOpen() {
       .addSubMenu(ui.createMenu('Data Fixes')
         .addItem('Fix Hit_Date (All)', 'EW_fixHitDates')
         .addItem('Fix Hit_Date (Selected)', 'EW_fixHitDatesForSelected')
+        .addSeparator()
+        .addItem('Fix Strike_Hit Values', 'EW_fixStrikeHitValues')
       )
     )
     

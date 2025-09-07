@@ -99,7 +99,7 @@ python3 scripts/fetch_market_data.py --tickers IWM SPY
 ```
 
 ### 2. Analyze Market Data (`analyze_market_data.py`)
-Analyzes stored market data:
+Basic market data analysis:
 - Performance metrics and statistics
 - Correlation analysis between tickers
 - Export to CSV format
@@ -117,6 +117,40 @@ python3 scripts/analyze_market_data.py --correlations
 
 # Export to CSV
 python3 scripts/analyze_market_data.py --export
+```
+
+### 3. Enhanced Market Analysis (`analyze_market_data_enhanced.py`)
+**Comprehensive analysis with all IWM analysis features for all tickers:**
+- **Calculates enhanced technical indicators**:
+  - Stochastic RSI with K and D lines
+  - VWAP approximation from daily data
+  - Consecutive price movement detection
+  - Price position relative to EMAs and VWAP
+- **Generates trading signals** based on:
+  - Consecutive price movements (3+ periods)
+  - RSI levels (bullish: 25-50, bearish: 50-75)
+  - Price position relative to VWAP and EMAs
+  - Stochastic RSI conditions
+  - Requires at least 3 out of 5 conditions to be met
+- **Signal analysis and performance metrics**:
+  - Entry/exit points with return calculations
+  - Signal strength scoring (3/5, 4/5, 5/5)
+  - Win rate and profitability analysis
+  - Condition tracking for each signal
+- **Multi-ticker comparison**: Compare signals and performance across IWM, SPY, QQQ, SPX
+
+```bash
+# Analyze all tickers with signal generation
+python3 scripts/analyze_market_data_enhanced.py
+
+# Analyze specific ticker
+python3 scripts/analyze_market_data_enhanced.py --ticker SPY
+
+# Export signals to CSV files
+python3 scripts/analyze_market_data_enhanced.py --export
+
+# Compare all tickers
+python3 scripts/analyze_market_data_enhanced.py --compare
 ```
 
 ## Data Storage

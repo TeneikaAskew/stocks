@@ -257,3 +257,237 @@ function EW_fixHitDatesForSelected() {
   
   EW_safeAlert('Hit_Date Correction Complete', msg);
 }
+
+// ========== FIX STRIKE_HIT VALUES ==========
+
+/**
+ * Fix Strike_Hit values that are showing incorrect data
+ * This addresses the issue where Strike_Hit may be showing Min_Unfavorable values
+ * or incorrect calculations for below-strike prices
+ */
+function EW_fixStrikeHitValues() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  if (!sheet) return;
+  
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
+  
+  // Check required columns
+  if (!hdrMap.strikeHitCol || !hdrMap.ohlcVolumeCol || !hdrMap.strategyCol || !hdrMap.strikeCol) {
+    EW_safeAlert('Missing Columns', 'Required columns not found (Strike_Hit, OHLC_Volume, Strategy, Strike)');
+    return;
+  }
+  
+  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  
+  let fixedCount = 0;
+  const updates = [];
+  
+  data.forEach((row, index) => {
+    const rowNum = index + 2;
+    const strategy = row[hdrMap.strategyCol - 1];
+    const strike = parseFloat(row[hdrMap.strikeCol - 1]);
+    const ohlcData = row[hdrMap.ohlcVolumeCol - 1];
+    const currentStrikeHit = row[hdrMap.strikeHitCol - 1];
+    const ticker = row[hdrMap.tickerCol - 1] || 'Unknown';
+    
+    if (!strategy || !strike || !ohlcData) return;
+    
+    try {
+      const ohlcArray = JSON.parse(ohlcData);
+      const strategyType = EW_getStrategyType(strategy);
+      const newStrikeHit = [];
+      
+      ohlcArray.forEach(dayData => {
+        if (dayData && dayData.h && dayData.l) {
+          const high = parseFloat(dayData.h);
+          const low = parseFloat(dayData.l);
+          
+          let percentMove = null;
+          
+          if (strategyType === 'bullish') {
+            // For bullish: (high - strike) / strike
+            // Negative when high < strike, positive when high > strike
+            percentMove = ((high - strike) / strike).toFixed(6);
+          } else if (strategyType === 'bearish') {
+            // For bearish: (strike - low) / strike
+            // Negative when low > strike, positive when low < strike
+            percentMove = ((strike - low) / strike).toFixed(6);
+          } else {
+            // For neutral: use the extreme that gives larger absolute move
+            const upMove = (high - strike) / strike;
+            const downMove = (strike - low) / strike;
+            percentMove = Math.abs(upMove) > Math.abs(downMove) ? upMove.toFixed(6) : downMove.toFixed(6);
+          }
+          
+          newStrikeHit.push(percentMove);
+        } else {
+          newStrikeHit.push(null);
+        }
+      });
+      
+      // Limit to 6 days
+      while (newStrikeHit.length > 6) newStrikeHit.pop();
+      
+      // Check if update is needed
+      let needsUpdate = false;
+      try {
+        const currentArray = JSON.parse(currentStrikeHit);
+        // Check if values are different
+        if (currentArray.length !== newStrikeHit.length) {
+          needsUpdate = true;
+        } else {
+          for (let i = 0; i < newStrikeHit.length; i++) {
+            if (currentArray[i] !== newStrikeHit[i]) {
+              // Allow for small rounding differences
+              const current = parseFloat(currentArray[i]);
+              const newVal = parseFloat(newStrikeHit[i]);
+              if (isNaN(current) && isNaN(newVal)) continue;
+              if (Math.abs(current - newVal) > 0.00001) {
+                needsUpdate = true;
+                EW_trace('FIX_STRIKE_HIT', `${ticker} Day ${i}: Current=${currentArray[i]}, New=${newStrikeHit[i]}`);
+                break;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        needsUpdate = true;
+      }
+      
+      if (needsUpdate) {
+        updates.push({
+          row: rowNum,
+          col: hdrMap.strikeHitCol,
+          value: JSON.stringify(newStrikeHit),
+          ticker: ticker,
+          strike: strike,
+          strategy: strategyType
+        });
+        fixedCount++;
+      }
+      
+    } catch (e) {
+      EW_trace('FIX_STRIKE_HIT', `Error processing row ${rowNum} (${ticker}): ${e.toString()}`);
+    }
+  });
+  
+  // Apply updates in batch
+  if (updates.length > 0) {
+    updates.forEach(update => {
+      sheet.getRange(update.row, update.col).setValue(update.value);
+      EW_trace('FIX_STRIKE_HIT', `Fixed ${update.ticker} (${update.strategy}, strike=${update.strike})`);
+    });
+    
+    SpreadsheetApp.flush();
+    
+    EW_trace('FIX_STRIKE_HIT', `Fixed ${fixedCount} Strike_Hit values`)
+    EW_safeAlert('Strike_Hit Fixed', `Corrected ${fixedCount} Strike_Hit values that were showing incorrect data`);
+  } else {
+    EW_safeAlert('No Issues Found', 'All Strike_Hit values appear to be correct');
+  }
+}
+
+/**
+ * Recalculate Strike_Hit from Day Check columns when OHLC data is not available
+ */
+function EW_fixStrikeHitFromDayChecks() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  if (!sheet) return;
+  
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
+  
+  // Check required columns
+  if (!hdrMap.strikeHitCol || !hdrMap.strategyCol || !hdrMap.strikeCol) {
+    EW_safeAlert('Missing Columns', 'Strike_Hit, Strategy, or Strike column not found');
+    return;
+  }
+  
+  // Check if we have Day Check columns
+  const hasDayChecks = hdrMap.day0CheckCol && hdrMap.day1CheckCol && hdrMap.day2CheckCol;
+  if (!hasDayChecks) {
+    EW_safeAlert('Missing Columns', 'Day0_Check, Day1_Check, Day2_Check columns not found');
+    return;
+  }
+  
+  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  
+  let fixedCount = 0;
+  const updates = [];
+  
+  data.forEach((row, index) => {
+    const rowNum = index + 2;
+    const strategy = row[hdrMap.strategyCol - 1];
+    const strike = parseFloat(row[hdrMap.strikeCol - 1]);
+    const ticker = row[hdrMap.tickerCol - 1] || 'Unknown';
+    
+    if (!strategy || !strike) return;
+    
+    // Get Day0-5 prices (these are typically the highs for bullish, lows for bearish)
+    const day0 = hdrMap.day0CheckCol ? parseFloat(row[hdrMap.day0CheckCol - 1]) : null;
+    const day1 = hdrMap.day1CheckCol ? parseFloat(row[hdrMap.day1CheckCol - 1]) : null;
+    const day2 = hdrMap.day2CheckCol ? parseFloat(row[hdrMap.day2CheckCol - 1]) : null;
+    const day3 = hdrMap.day3CheckCol ? parseFloat(row[hdrMap.day3CheckCol - 1]) : null;
+    const day4 = hdrMap.day4CheckCol ? parseFloat(row[hdrMap.day4CheckCol - 1]) : null;
+    const day5 = hdrMap.day5CheckCol ? parseFloat(row[hdrMap.day5CheckCol - 1]) : null;
+    
+    const dayPrices = [day0, day1, day2, day3, day4, day5];
+    
+    // Calculate correct Strike_Hit values
+    const strategyType = EW_getStrategyType(strategy);
+    const correctStrikeHit = [];
+    
+    dayPrices.forEach((price, dayIndex) => {
+      if (price && !isNaN(price)) {
+        let percentMove = null;
+        
+        if (strategyType === 'bullish') {
+          // For bullish: (price - strike) / strike
+          // This will be negative when price < strike
+          percentMove = ((price - strike) / strike).toFixed(6);
+        } else if (strategyType === 'bearish') {
+          // For bearish: (strike - price) / strike
+          // This will be negative when price > strike
+          percentMove = ((strike - price) / strike).toFixed(6);
+        } else {
+          // For neutral: use the larger absolute move
+          const upMove = (price - strike) / strike;
+          const downMove = (strike - price) / strike;
+          percentMove = Math.abs(upMove) > Math.abs(downMove) ? upMove.toFixed(6) : downMove.toFixed(6);
+        }
+        
+        correctStrikeHit.push(percentMove);
+      } else {
+        correctStrikeHit.push(null);
+      }
+    });
+    
+    // Update if needed
+    updates.push({
+      row: rowNum,
+      col: hdrMap.strikeHitCol,
+      value: JSON.stringify(correctStrikeHit),
+      ticker: ticker
+    });
+    fixedCount++;
+  });
+  
+  // Apply updates
+  if (updates.length > 0) {
+    updates.forEach(update => {
+      sheet.getRange(update.row, update.col).setValue(update.value);
+    });
+    
+    SpreadsheetApp.flush();
+    
+    EW_trace('FIX_STRIKE_HIT', `Fixed ${fixedCount} Strike_Hit values from Day Check columns`);
+    EW_safeAlert('Strike_Hit Fixed', `Recalculated ${fixedCount} Strike_Hit values from Day Check data`);
+  }
+}
