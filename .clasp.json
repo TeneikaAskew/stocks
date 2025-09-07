@@ -1,6 +1,6 @@
 {
   "scriptId": "1q4fRnPURlKMMr7r7zBs3qAwvWYAXp1qMh9zZyvj5vV0J66padyTl355j",
-  "rootDir": "google-apps-script/src",
+  "rootDir": "",
   "scriptExtensions": [
     ".js",
     ".gs"
