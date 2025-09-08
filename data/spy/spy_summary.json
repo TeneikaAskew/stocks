@@ -1,30 +1,20 @@
 {
   "ticker": "SPY",
   "ticker_symbol": "SPY",
-<<<<<<< HEAD
-  "last_update": "2025-09-07T10:13:29.620712",
-=======
-  "last_update": "2025-09-06T22:25:21.808804",
->>>>>>> f96a88540bf2909ac0a430d70ed096f3813f4f4e
-  "last_date": "2025-09-05 00:00:00",
+  "last_update": "2025-09-08T22:20:48.803297",
+  "last_date": "2025-09-08 00:00:00",
   "first_date": "2025-08-25 00:00:00",
-  "total_daily_records": 9,
-  "minute_data_available_from": "2025-08-30",
+  "total_daily_records": 10,
+  "minute_data_available_from": "2025-09-02",
   "current_year_file": "spy_2025.parquet",
-  "latest_close": 647.219970703125,
-<<<<<<< HEAD
-  "latest_volume": 75830711,
+  "latest_close": 648.7999877929688,
+  "latest_volume": 54450305,
   "latest_rsi_14": null,
-  "latest_rvol": 75830711.0,
-=======
-  "latest_volume": 75830704,
-  "latest_rsi_14": null,
-  "latest_rvol": 75830704.0,
->>>>>>> f96a88540bf2909ac0a430d70ed096f3813f4f4e
+  "latest_rvol": 54450305.0,
   "latest_stoch_rsi_k": null,
   "latest_stoch_rsi_d": null,
-  "latest_obv": 95451424.0,
-  "latest_atr_14": 5.09386938551338,
+  "latest_obv": 149901729.0,
+  "latest_atr_14": 4.764027621090763,
   "data_source": "1-minute aggregation",
-  "ytd_return": 0.7361952000255245
+  "ytd_return": 0.9821160881108737
 }
