@@ -7,6 +7,151 @@
  */
 
 /**
+ * Extract historical data from cached API log
+ * @param {Object} cachedData - The cached API log data
+ * @param {boolean} includeRaw - Whether to include raw data
+ * @returns {Object|Array} Formatted data matching the expected return format
+ */
+function EW_extractCachedHistoricalData(cachedData, includeRaw = false) {
+  try {
+    if (!cachedData.response || !cachedData.response.chart || !cachedData.response.chart.result) {
+      return includeRaw ? { data: [], raw: null } : [];
+    }
+
+    const result = cachedData.response.chart.result[0];
+    if (!result.timestamp || !result.indicators || !result.indicators.quote) {
+      return includeRaw ? { data: [], raw: null } : [];
+    }
+
+    const timestamps = result.timestamp;
+    const quote = result.indicators.quote[0];
+    const processedData = [];
+
+    // Process each data point
+    for (let i = 0; i < timestamps.length; i++) {
+      if (quote.high[i] && quote.low[i]) {
+        processedData.push({
+          date: new Date(timestamps[i] * 1000),
+          high: quote.high[i],
+          low: quote.low[i],
+          open: quote.open[i],
+          close: quote.close[i],
+          volume: quote.volume[i] || 0
+        });
+      }
+    }
+
+    if (includeRaw) {
+      return {
+        data: processedData,
+        raw: {
+          timestamps: timestamps,
+          quotes: {
+            open: quote.open || [],
+            high: quote.high || [],
+            low: quote.low || [],
+            close: quote.close || [],
+            volume: quote.volume || []
+          }
+        }
+      };
+    }
+
+    return processedData;
+  } catch (error) {
+    console.error(`Error extracting cached data: ${error.message}`);
+    return includeRaw ? { data: [], raw: null } : [];
+  }
+}
+
+/**
+ * Check for cached daily data across a date range
+ * @param {string} ticker - The ticker symbol
+ * @param {Date} startDate - Start date
+ * @param {Date} endDate - End date
+ * @returns {Object|null} Aggregated cached data if complete, null otherwise
+ */
+function EW_checkCachedDailyRange(ticker, startDate, endDate) {
+  try {
+    const aggregatedData = [];
+    const aggregatedRaw = {
+      timestamps: [],
+      quotes: {
+        open: [],
+        high: [],
+        low: [],
+        close: [],
+        volume: []
+      }
+    };
+
+    // Iterate through each day in the range
+    const currentDate = new Date(startDate);
+    while (currentDate <= endDate) {
+      // Skip weekends
+      if (currentDate.getDay() === 0 || currentDate.getDay() === 6) {
+        currentDate.setDate(currentDate.getDate() + 1);
+        continue;
+      }
+
+      // Check for cached data for this specific day
+      const cachedData = EW_checkExistingApiLog(ticker, currentDate);
+      if (!cachedData) {
+        // Missing data for this day, can't use cache
+        console.log(`CACHE MISS: No cached data for ${ticker} on ${currentDate.toISOString().split('T')[0]}`);
+        return null;
+      }
+
+      // Extract the day's data
+      const dayData = EW_extractCachedHistoricalData(cachedData, true);
+      if (dayData.data && dayData.data.length > 0) {
+        // For daily data, aggregate to get day's OHLC
+        const dayHigh = Math.max(...dayData.data.map(d => d.high).filter(h => h != null));
+        const dayLow = Math.min(...dayData.data.map(d => d.low).filter(l => l != null));
+        const dayOpen = dayData.data[0].open;
+        const dayClose = dayData.data[dayData.data.length - 1].close;
+        const dayVolume = dayData.data.reduce((sum, d) => sum + (d.volume || 0), 0);
+
+        aggregatedData.push({
+          date: currentDate,
+          high: dayHigh,
+          low: dayLow,
+          open: dayOpen,
+          close: dayClose,
+          volume: dayVolume
+        });
+
+        // Add to raw data
+        if (dayData.raw) {
+          aggregatedRaw.timestamps.push(Math.floor(currentDate.getTime() / 1000));
+          aggregatedRaw.quotes.open.push(dayOpen);
+          aggregatedRaw.quotes.high.push(dayHigh);
+          aggregatedRaw.quotes.low.push(dayLow);
+          aggregatedRaw.quotes.close.push(dayClose);
+          aggregatedRaw.quotes.volume.push(dayVolume);
+        }
+      }
+
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    if (aggregatedData.length > 0) {
+      console.log(`CACHE: Aggregated ${aggregatedData.length} days of cached data for ${ticker}`);
+      return {
+        data: aggregatedData,
+        raw: aggregatedRaw,
+        complete: true
+      };
+    }
+
+    return null;
+  } catch (error) {
+    console.error(`Error checking cached daily range: ${error.message}`);
+    return null;
+  }
+}
+
+/**
  * Check if a stock hit a target price on a specific date
  * Uses 1-minute interval data to capture full trading day
  * @param {string} ticker - Stock ticker symbol
@@ -511,11 +656,26 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
  * @returns {Array|Object} Array of daily price data or object with data and raw
  */
 function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = false) {
+  // First check if we have cached data for this exact range
+  // For minute data, we typically fetch day by day, so check for cached daily data
+  const startDateStr = startDate.toISOString().split('T')[0];
+  const endDateStr = endDate.toISOString().split('T')[0];
+
+  // Check if this is a single-day request (most common for minute data)
+  if (startDateStr === endDateStr) {
+    const cachedData = EW_checkExistingApiLog(ticker, startDate);
+    if (cachedData && cachedData.response && !cachedData.metadata?.error) {
+      console.log(`CACHE HIT: Using cached minute data for ${ticker} on ${startDateStr}`);
+      // Extract and return the data in the expected format
+      return EW_extractCachedHistoricalData(cachedData, includeRaw);
+    }
+  }
+
   const period1 = Math.floor(startDate.getTime() / 1000);
   const period2 = Math.floor(endDate.getTime() / 1000);
-  
+
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1m&events=history`;
-  
+
   // Log API call attempt
   const callStartTime = new Date();
   const logEntry = {
@@ -700,11 +860,20 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
  * @return {Object} Historical price data with high, low, close, volume and optionally raw data
  */
 function EW_getYahooHistoricalRangeWithInterval(ticker, startDate, endDate, interval = '1m', includeRaw = false) {
+  // For daily data (1d interval), check cache for the date range
+  if (interval === '1d') {
+    const cachedDailyData = EW_checkCachedDailyRange(ticker, startDate, endDate);
+    if (cachedDailyData && cachedDailyData.complete) {
+      console.log(`CACHE HIT: Using cached daily data for ${ticker} from ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+      return includeRaw ? cachedDailyData : cachedDailyData.data;
+    }
+  }
+
   const period1 = Math.floor(startDate.getTime() / 1000);
   const period2 = Math.floor(endDate.getTime() / 1000);
-  
+
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=${interval}&events=history`;
-  
+
   // Log API call attempt
   const callStartTime = new Date();
   const logEntry = {
