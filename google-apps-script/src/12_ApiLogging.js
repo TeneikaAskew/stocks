@@ -1,7 +1,68 @@
 /**
  * API Call Logging - Functions to log Yahoo Finance API calls to Google Drive
  * Stores detailed logs in JSON format for tracking and analysis
+ *
+ * PERFORMANCE OPTIMIZATIONS:
+ * - Uses Drive search queries for specific file lookups
+ * - Maintains file list cache for batch operations
+ * - Avoids iterating through all files unnecessarily
  */
+
+// File list caching for batch operations
+let _cachedFileList = null;
+let _cacheTimestamp = null;
+const CACHE_LIFETIME_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Get cached list of files in the API logs folder
+ * Used for batch operations like checking multiple missing logs
+ * @returns {Array} Array of file objects with name and id
+ */
+function EW_getCachedFileList(folderId) {
+  const now = Date.now();
+
+  // Check if cache is still valid
+  if (_cachedFileList && _cacheTimestamp && (now - _cacheTimestamp) < CACHE_LIFETIME_MS) {
+    console.log(`CACHE: Using cached file list (${_cachedFileList.length} files, age: ${Math.round((now - _cacheTimestamp)/1000)}s)`);
+    return _cachedFileList;
+  }
+
+  // Refresh cache
+  console.log('CACHE: Refreshing file list cache...');
+  const startTime = new Date();
+  _cachedFileList = [];
+
+  try {
+    const folder = DriveApp.getFolderById(folderId);
+    const files = folder.getFiles();
+
+    while (files.hasNext()) {
+      const file = files.next();
+      _cachedFileList.push({
+        name: file.getName(),
+        id: file.getId()
+      });
+    }
+
+    _cacheTimestamp = now;
+    const duration = new Date() - startTime;
+    console.log(`CACHE: Refreshed file list (${_cachedFileList.length} files, took ${duration}ms)`);
+
+    return _cachedFileList;
+  } catch (error) {
+    console.error(`CACHE ERROR: Failed to refresh file list: ${error.message}`);
+    return [];
+  }
+}
+
+/**
+ * Clear the file list cache (useful after adding new files)
+ */
+function EW_clearFileListCache() {
+  _cachedFileList = null;
+  _cacheTimestamp = null;
+  console.log('CACHE: File list cache cleared');
+}
 
 // Get Drive folder IDs from Script Properties
 function getApiLogFolderId() {
@@ -364,7 +425,10 @@ function EW_saveApiResponse(ticker, timestamp, response, metadata = {}) {
     // Save the file to main folder
     const blob = Utilities.newBlob(JSON.stringify(responseData, null, 2), 'application/json', fileName);
     const file = folder.createFile(blob);
-    
+
+    // Clear the file list cache after adding a new file
+    EW_clearFileListCache();
+
     console.log(`API RESPONSE SAVED: ${fileName} (ID: ${file.getId()})`);
     EW_trace('API_LOG', `Successfully saved API response to ${fileName}`);
     
@@ -441,6 +505,7 @@ function EW_getApiResponsesFolderUrl() {
 
 /**
  * Check if an API log already exists for a ticker and date
+ * OPTIMIZED: Uses Drive search query to find specific files
  * @param {string} ticker - The ticker symbol
  * @param {Date} date - The date to check
  * @returns {Object|null} The existing log data if found, null otherwise
@@ -449,37 +514,46 @@ function EW_checkExistingApiLog(ticker, date) {
   try {
     const folderId = getApiLogFolderId();
     const folder = DriveApp.getFolderById(folderId);
-    
+
     // Format date string
     const dateStr = date.toISOString().split('T')[0];
-    const filePattern = `${ticker}_${dateStr}_`;
-    
-    // Search for existing files
-    const files = folder.getFiles();
+    const filePattern = `${ticker}_${dateStr}`;
+
+    // Use Drive's search to find specific files
+    // Search for files with name containing the pattern
+    const searchQuery = `title contains '${filePattern}' and mimeType = 'application/json' and trashed = false`;
+    console.log(`CACHE: Searching for API log with pattern: ${filePattern}`);
+
+    // Search specifically in this folder
+    const files = folder.searchFiles(searchQuery);
+
+    // Check the results
     while (files.hasNext()) {
       const file = files.next();
       const fileName = file.getName();
-      
-      // Check if this is a match for our ticker and date
-      if (fileName.startsWith(filePattern) && fileName.endsWith('.json')) {
+
+      // Verify it matches our exact pattern (starts with ticker_date and ends with .json)
+      if (fileName.startsWith(`${filePattern}_`) && fileName.endsWith('.json')) {
         // Skip RECREATED files as they might be incomplete
         if (fileName.includes('RECREATED')) {
           continue;
         }
-        
+
         console.log(`Found existing API log: ${fileName}`);
-        
+
         // Read and parse the file
         const content = file.getBlob().getDataAsString();
         const logData = JSON.parse(content);
-        
+
         // Return the response data
         return logData;
       }
     }
-    
+
+    // No matching file found
+    console.log(`CACHE: No API log found for ${ticker} on ${dateStr}`);
     return null;
-    
+
   } catch (error) {
     console.error(`Error checking existing API log: ${error.message}`);
     return null;
@@ -601,14 +675,10 @@ function EW_checkMissingApiLogs(sheetName = null) {
     return;
   }
   
-  // Get all existing log files
-  const existingFiles = new Set();
-  const files = apiLogsFolder.getFiles();
-  while (files.hasNext()) {
-    const file = files.next();
-    existingFiles.add(file.getName());
-  }
-  console.log(`Found ${existingFiles.size} existing API log files`);
+  // Get all existing log files using cached list for batch operation
+  const fileList = EW_getCachedFileList(apiLogsFolder.getId());
+  const existingFiles = new Set(fileList.map(f => f.name));
+  console.log(`Found ${existingFiles.size} existing API log files in cache`);
   
   // Check each row for missing logs
   const lastRow = sheet.getLastRow();
@@ -896,7 +966,10 @@ function EW_saveRecreatedApiLog(ticker, date, logEntry, data) {
     // Save file
     const blob = Utilities.newBlob(JSON.stringify(logData, null, 2), 'application/json', fileName);
     const file = folder.createFile(blob);
-    
+
+    // Clear the file list cache after adding a new file
+    EW_clearFileListCache();
+
     console.log(`    Saved recreated log: ${fileName}`);
     
     // Also update the daily summary log
@@ -938,6 +1011,50 @@ function EW_updateDailySummaryLog(logEntry) {
 }
 
 /**
+ * Test the cache performance improvements
+ * Compares old vs new cache checking methods
+ */
+function EW_testCachePerformance() {
+  console.log('===== TESTING CACHE PERFORMANCE =====');
+
+  const ticker = 'AAPL';
+  const testDate = new Date('2025-09-25');
+
+  // Test 1: New optimized method (Drive search)
+  const start1 = new Date();
+  const result1 = EW_checkExistingApiLog(ticker, testDate);
+  const duration1 = new Date() - start1;
+  console.log(`NEW METHOD (Drive search): ${duration1}ms - Found: ${!!result1}`);
+
+  // Test 2: Cached file list method (for batch operations)
+  const start2 = new Date();
+  const folderId = getApiLogFolderId();
+  const fileList = EW_getCachedFileList(folderId);
+  const duration2 = new Date() - start2;
+  console.log(`CACHED LIST METHOD: ${duration2}ms - Files in cache: ${fileList.length}`);
+
+  // Test 3: Second call to cached list (should be instant)
+  const start3 = new Date();
+  const fileList2 = EW_getCachedFileList(folderId);
+  const duration3 = new Date() - start3;
+  console.log(`CACHED LIST (2nd call): ${duration3}ms - Files: ${fileList2.length}`);
+
+  // Summary
+  console.log('\n===== PERFORMANCE SUMMARY =====');
+  console.log(`Drive Search Query: ${duration1}ms`);
+  console.log(`File List Cache (1st): ${duration2}ms`);
+  console.log(`File List Cache (2nd): ${duration3}ms`);
+  console.log(`Cache speedup: ${Math.round(duration2/duration3)}x faster on cached calls`);
+
+  return {
+    driveSearch: duration1,
+    cacheFirst: duration2,
+    cacheSecond: duration3,
+    speedup: Math.round(duration2/duration3)
+  };
+}
+
+/**
  * Check missing logs for selected rows only
  */
 function EW_checkMissingLogsForSelected() {
@@ -968,13 +1085,9 @@ function EW_checkMissingLogsForSelected() {
     return;
   }
   
-  // Get existing files
-  const existingFiles = new Set();
-  const files = apiLogsFolder.getFiles();
-  while (files.hasNext()) {
-    const file = files.next();
-    existingFiles.add(file.getName());
-  }
+  // Get existing files using cached list for batch operation
+  const fileList = EW_getCachedFileList(apiLogsFolder.getId());
+  const existingFiles = new Set(fileList.map(f => f.name));
   
   // Check selected rows
   const startRow = range.getRow();
