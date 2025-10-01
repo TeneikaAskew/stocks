@@ -1173,9 +1173,12 @@ function EW_processBackfillPosition(params) {
 
     let yahooResult;
 
-    // Calculate the cutoff date for minute data (7 days before end date)
-    const sevenDaysAgo = new Date(endDate);
-    sevenDaysAgo.setDate(endDate.getDate() - 7);
+    // Calculate the cutoff date for minute data (7 days before TODAY, not endDate)
+    // Yahoo only keeps 1-minute data for approximately 7 days
+    // For dates older than that, we must use daily (1d) data instead
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(today.getDate() - 7);
+    sevenDaysAgo.setHours(0, 0, 0, 0); // Start of day
 
     if (marketRunDate >= sevenDaysAgo) {
       // Position is within 7 days, use only minute data
