@@ -12,7 +12,7 @@ function EW_saveContinuationState(state) {
   const scriptProperties = PropertiesService.getScriptProperties();
   scriptProperties.setProperty('ACTIVE_TRACKING_STATE', JSON.stringify({
     ...state,
-    lastSaved: new Date().toISOString()
+    lastSaved: EW_formatDateTime(new Date())
   }));
 }
 
@@ -346,7 +346,7 @@ function EW_saveBackfillState(state, stateKey = 'BACKFILL_STATE') {
   const scriptProperties = PropertiesService.getScriptProperties();
   scriptProperties.setProperty(stateKey, JSON.stringify({
     ...state,
-    lastSaved: new Date().toISOString()
+    lastSaved: EW_formatDateTime(new Date())
   }));
 }
 

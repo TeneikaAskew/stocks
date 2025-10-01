@@ -99,12 +99,13 @@ function EW_getApiLogFile() {
   try {
     const folderId = getApiSummaryFolderId();
     console.log(`Attempting to access DAILY_REPORTS folder with ID: ${folderId}`);
-    
+
     const folder = DriveApp.getFolderById(folderId);  // Use summary folder
     console.log(`Successfully accessed folder: ${folder.getName()}`);
-    
+
     const today = new Date();
-    const fileName = `yahoo_api_log_${today.toISOString().split('T')[0]}.json`;
+    const dateStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const fileName = `yahoo_api_log_${dateStr}.json`;
     console.log(`Looking for or creating file: ${fileName}`);
     
     // Check if today's log file already exists
@@ -118,8 +119,8 @@ function EW_getApiLogFile() {
     // Create new log file for today
     console.log(`Creating new log file: ${fileName}`);
     const initialData = {
-      date: today.toISOString().split('T')[0],
-      created: today.toISOString(),
+      date: dateStr,
+      created: Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'),
       calls: []
     };
     
@@ -157,7 +158,8 @@ function EW_logApiCall(callData, rawResponse = null) {
     const logData = JSON.parse(content);
     
     // Add timestamp to call data
-    callData.timestamp = new Date().toISOString();
+    const now = new Date();
+    callData.timestamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
     
     // Add the new call
     logData.calls.push(callData);
@@ -187,7 +189,8 @@ function EW_logApiCall(callData, rawResponse = null) {
 function EW_getApiCallSummary(date = new Date()) {
   try {
     const folder = DriveApp.getFolderById(getApiSummaryFolderId());  // Use summary folder
-    const fileName = `yahoo_api_log_${date.toISOString().split('T')[0]}.json`;
+    const dateStr = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const fileName = `yahoo_api_log_${dateStr}.json`;
     
     const files = folder.getFilesByName(fileName);
     if (!files.hasNext()) {
@@ -263,15 +266,16 @@ function EW_createDailyApiReport() {
       console.error(`API REPORT ERROR: ${summary.error}`);
       return;
     }
-    
+
     const folder = DriveApp.getFolderById(getApiSummaryFolderId());  // Use summary folder
     const today = new Date();
-    const reportName = `yahoo_api_summary_${today.toISOString().split('T')[0]}.txt`;
-    
+    const dateStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const reportName = `yahoo_api_summary_${dateStr}.txt`;
+
     // Create report content
     let report = `Yahoo Finance API Call Summary\n`;
     report += `Date: ${summary.date}\n`;
-    report += `Generated: ${today.toISOString()}\n`;
+    report += `Generated: ${Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss')}\n`;
     report += `\n`;
     report += `Total API Calls: ${summary.totalCalls}\n`;
     report += `Successful: ${summary.byStatus.success}\n`;
@@ -397,11 +401,14 @@ function EW_saveApiResponse(ticker, timestamp, response, metadata = {}) {
     const folderId = getApiLogFolderId();
     EW_trace('API_LOG', `Getting folder with ID: ${folderId}`);
     const folder = DriveApp.getFolderById(folderId);  // Main folder for detailed responses
-    
+
     // Create filename with ticker and timestamp
-    const date = new Date(timestamp);
-    const dateStr = date.toISOString().split('T')[0];
-    const timeStr = date.toISOString().split('T')[1].replace(/:/g, '-').split('.')[0];
+    // Handle both ISO string timestamps and Date objects
+    const date = typeof timestamp === 'string' && timestamp.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+      ? new Date(timestamp.replace(' ', 'T'))
+      : new Date(timestamp);
+    const dateStr = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const timeStr = Utilities.formatDate(date, Session.getScriptTimeZone(), 'HH-mm-ss');
     const fileName = `${ticker}_${dateStr}_${timeStr}.json`;
     
     EW_trace('API_LOG', `Creating file: ${fileName} in folder: ${folder.getName()}`);
@@ -516,7 +523,7 @@ function EW_checkExistingApiLog(ticker, date) {
     const folder = DriveApp.getFolderById(folderId);
 
     // Format date string
-    const dateStr = date.toISOString().split('T')[0];
+    const dateStr = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
     const filePattern = `${ticker}_${dateStr}`;
 
     // Use Drive's search to find specific files
@@ -594,7 +601,8 @@ function EW_getCachedApiData(ticker, date) {
         const dayClose = closes.length > 0 ? closes[closes.length - 1] : null;
         const dayVolume = volumes.length > 0 ? volumes.reduce((sum, v) => sum + (v || 0), 0) : 0;
         
-        console.log(`Using cached data for ${ticker} on ${date.toISOString().split('T')[0]}`);
+        const dateStr = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+        console.log(`Using cached data for ${ticker} on ${dateStr}`);
         
         return {
           dayHigh: dayHigh,
@@ -612,7 +620,8 @@ function EW_getCachedApiData(ticker, date) {
     if (existingLog.metadata) {
       const meta = existingLog.metadata;
       if (meta.dayHigh && meta.dayLow) {
-        console.log(`Using cached metadata for ${ticker} on ${date.toISOString().split('T')[0]}`);
+        const dateStr = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+        console.log(`Using cached metadata for ${ticker} on ${dateStr}`);
         return {
           dayHigh: meta.dayHigh,
           dayLow: meta.dayLow,
@@ -702,12 +711,12 @@ function EW_checkMissingApiLogs(sheetName = null) {
     for (let day = 0; day <= 5; day++) {
       const checkDate = new Date(runDateObj);
       checkDate.setDate(checkDate.getDate() + day);
-      
+
       // Skip weekends
       if (checkDate.getDay() === 0 || checkDate.getDay() === 6) continue;
-      
+
       // Generate expected filename pattern
-      const dateStr = checkDate.toISOString().split('T')[0];
+      const dateStr = Utilities.formatDate(checkDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
       const filePattern = `${ticker}_${dateStr}_`;
       
       // Check if any file exists for this ticker and date
@@ -827,9 +836,10 @@ function EW_recreateMissingLogs(missingLogs) {
         
         if (result && result.dayHigh && result.dayLow) {
           // Create the API log entry
+          const now = new Date();
           const logEntry = {
             ticker: ticker,
-            timestamp: new Date().toISOString(),
+            timestamp: Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'),
             date: log.dateStr,
             interval: '1d',
             targetPrice: null,
@@ -841,8 +851,8 @@ function EW_recreateMissingLogs(missingLogs) {
             dayClose: result.dayClose || null,
             dayVolume: result.dayVolume || 0,
             recreated: true,
-            recreatedAt: new Date().toISOString(),
-            originalRunDate: log.runDate.toISOString().split('T')[0],
+            recreatedAt: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'),
+            originalRunDate: Utilities.formatDate(log.runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
             dayIndex: log.day
           };
           
@@ -928,8 +938,9 @@ function EW_saveRecreatedApiLog(ticker, date, logEntry, data) {
     const folder = DriveApp.getFolderById(folderId);
     
     // Create filename
-    const dateStr = date.toISOString().split('T')[0];
-    const timeStr = new Date().toISOString().split('T')[1].replace(/:/g, '-').split('.')[0];
+    const now = new Date();
+    const dateStr = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const timeStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'HH-mm-ss');
     const fileName = `${ticker}_${dateStr}_${timeStr}_RECREATED.json`;
     
     // Create full log object
@@ -1111,10 +1122,10 @@ function EW_checkMissingLogsForSelected() {
     for (let day = 0; day <= 5; day++) {
       const checkDate = new Date(runDateObj);
       checkDate.setDate(checkDate.getDate() + day);
-      
+
       if (checkDate.getDay() === 0 || checkDate.getDay() === 6) continue;
-      
-      const dateStr = checkDate.toISOString().split('T')[0];
+
+      const dateStr = Utilities.formatDate(checkDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
       const filePattern = `${ticker}_${dateStr}_`;
       
       let foundFile = false;
