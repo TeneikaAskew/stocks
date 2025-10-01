@@ -1103,9 +1103,16 @@ function EW_processBackfillPosition(params) {
   const { ticker, strategyName, strike, runDateStr, expDateStr, shortStrike, hdrMap, row, rowIndex, sheet, isSpread } = params;
   
   try {
-    // Parse dates - Keep original run date time for proper Day 0 calculation
-    const runDate = new Date(runDateStr);
-    const expDate = expDateStr ? new Date(expDateStr) : null;
+    // Parse dates - Parse as local date to avoid timezone shifts
+    // "2025-09-23" should be Sept 23 at midnight local time, not UTC
+    // Handle both string and Date object inputs
+    const runDate = runDateStr instanceof Date ? runDateStr :
+      new Date(typeof runDateStr === 'string' && runDateStr.includes('T') ? runDateStr : runDateStr + 'T00:00:00');
+
+    const expDate = !expDateStr ? null :
+      expDateStr instanceof Date ? new Date(expDateStr) :
+      new Date(typeof expDateStr === 'string' && expDateStr.includes('T') ? expDateStr : expDateStr + 'T00:00:00');
+
     if (expDate) expDate.setHours(16, 0, 0, 0); // Set to market close for expiration
     
     // Get today's date for comparison
