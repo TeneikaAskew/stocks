@@ -606,7 +606,31 @@ function EW_checkExistingApiLog(ticker, date) {
         const content = file.getBlob().getDataAsString();
         const logData = JSON.parse(content);
 
-        // Return the response data
+        // CRITICAL: Validate the cached data actually contains the requested date
+        // The filename might say 2025-09-22, but the actual data might be from 2025-09-23+
+        // This happens when Yahoo no longer has data for the requested date
+        if (logData.response && logData.response.chart && logData.response.chart.result) {
+          const result = logData.response.chart.result[0];
+          if (result.timestamp && result.timestamp.length > 0) {
+            // Check the first timestamp to see what date the data is actually from
+            const firstTimestamp = result.timestamp[0] * 1000; // Convert to milliseconds
+            const firstDataDate = new Date(firstTimestamp);
+
+            // Normalize both dates to midnight for comparison
+            const requestedDate = new Date(date);
+            requestedDate.setHours(0, 0, 0, 0);
+            const actualDate = new Date(firstDataDate);
+            actualDate.setHours(0, 0, 0, 0);
+
+            // If the actual data is for a different date than requested, skip this file
+            if (actualDate.getTime() !== requestedDate.getTime()) {
+              console.log(`CACHE MISMATCH: ${fileName} contains data for ${actualDate.toISOString().split('T')[0]}, not ${dateStr}. Skipping.`);
+              continue; // Try next file
+            }
+          }
+        }
+
+        // Return the response data only if it matches the requested date
         return logData;
       }
     }
