@@ -137,6 +137,12 @@ function onOpen() {
         .addItem('Open Log Folders', 'EW_getApiResponsesFolderUrl')
         .addItem('Cleanup Old Logs', 'EW_cleanupOldApiLogs')
       )
+      .addSeparator()
+      .addSubMenu(ui.createMenu('Cache Management')
+        .addItem('Fix Recent Cache Data', 'EW_validateAndFixRecentCache')
+        .addItem('Fix Historical Cache Data', 'EW_validateAndFixHistoricalCache')
+        .addItem('Clear File List Cache', 'EW_clearFileListCache')
+      )
     )
     
     .addToUi();
