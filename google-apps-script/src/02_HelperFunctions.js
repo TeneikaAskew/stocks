@@ -39,6 +39,27 @@ function EW_norm(s) {
 // ======= DATE AND TIME UTILITIES =======
 
 /**
+ * Format date to local timezone YYYY-MM-DD
+ * Replaces .toISOString().split('T')[0] to avoid UTC timezone issues
+ * @param {Date} date - Date to format
+ * @returns {string} Formatted date string YYYY-MM-DD
+ */
+function EW_formatDate(date) {
+  if (!date || !(date instanceof Date)) return '';
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+/**
+ * Format date and time to local timezone
+ * @param {Date} date - Date to format
+ * @returns {string} Formatted datetime string YYYY-MM-DD HH:mm:ss
+ */
+function EW_formatDateTime(date) {
+  if (!date || !(date instanceof Date)) return '';
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+}
+
+/**
  * Convert UTC Date to EDT/EST string
  * @param {Date} date - UTC date to convert
  * @returns {string} Formatted EDT/EST datetime string
@@ -84,7 +105,7 @@ function EW_toEDT(date) {
  * @param {string} level - Log level: 'ERROR', 'WARN', 'INFO', 'DEBUG' (default: 'INFO')
  */
 function EW_trace(scope, msg, alsoSheet = false, level = 'INFO') {
-  const timestamp = new Date().toISOString();
+  const timestamp = EW_formatDateTime(new Date());
   const line = `[${timestamp}] [${level}] [${scope}] ${msg}`;
   
   // Always log to console with appropriate method
@@ -151,7 +172,7 @@ function EW_trackError(scope, msg) {
     const errors = JSON.parse(scriptProperties.getProperty('ERROR_LOG') || '[]');
     
     errors.push({
-      timestamp: new Date().toISOString(),
+      timestamp: EW_formatDateTime(new Date()),
       scope: scope,
       message: msg
     });
@@ -519,7 +540,7 @@ function EW_createError(code, message, details = {}) {
     code,
     message,
     details,
-    timestamp: new Date().toISOString()
+    timestamp: EW_formatDateTime(new Date())
   };
 }
 
@@ -1159,7 +1180,7 @@ function EW_batchCheckActivePositions(sheet, hdrMap, data, strategyName) {
   
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const todayStr = today.toISOString().split('T')[0];
+  const todayStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   const sevenDaysAgo = new Date(today);
   sevenDaysAgo.setDate(today.getDate() - 7);
   
@@ -1169,8 +1190,8 @@ function EW_batchCheckActivePositions(sheet, hdrMap, data, strategyName) {
   data.forEach((row, index) => {
     const ticker = row[hdrMap.tickerCol - 1];
     const runDateStr = row[hdrMap.runDateCol - 1];
-    const daysToExp = hdrMap.daysToExpCol ? parseFloat(row[hdrMap.daysToExpCol - 1]) : null;
-    
+    const expDateStr = hdrMap.expDateCol ? row[hdrMap.expDateCol - 1] : null;
+
     // Skip if missing required data
     if (!ticker || !runDateStr) {
       if (!ticker && !runDateStr) {
@@ -1180,10 +1201,19 @@ function EW_batchCheckActivePositions(sheet, hdrMap, data, strategyName) {
       skippedMissingData.push(index + 2);
       return;
     }
-    
-    // Skip expired positions (> 7 days old or daysToExp < -7)
+
+    // Skip expired positions (> 7 days past expiration or > 7 days old with no expDate)
     const runDate = new Date(runDateStr);
-    if (runDate < sevenDaysAgo || (daysToExp !== null && daysToExp < -7)) {
+    let isExpired = runDate < sevenDaysAgo; // Default: check if run date is too old
+
+    if (expDateStr) {
+      const expDate = new Date(expDateStr);
+      const sevenDaysAfterExp = new Date(expDate);
+      sevenDaysAfterExp.setDate(expDate.getDate() + 7);
+      isExpired = today > sevenDaysAfterExp; // Check if more than 7 days past expiration
+    }
+
+    if (isExpired) {
       skippedExpired.push(index + 2);
       return;
     }
@@ -1234,7 +1264,7 @@ function EW_batchCheckActivePositions(sheet, hdrMap, data, strategyName) {
       shortStrike: shortStrike,
       runDate: runDate,
       runDateStr: runDateStr,
-      daysToExp: daysToExp,
+      expDateStr: expDateStr,
       rowIndex: index,
       rowNum: index + 2,
       dayIndex: daysSinceRun
@@ -1488,7 +1518,9 @@ function EW_recalculateIndicatorsForSelected() {
       endDate.setHours(16, 0, 0, 0);
       
       // Fetch the historical data with indicators
-      EW_trace('INDICATORS', `Fetching data for ${ticker} from ${marketRunDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
+      const startDateStr = Utilities.formatDate(marketRunDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      const endDateStr = Utilities.formatDate(endDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      EW_trace('INDICATORS', `Fetching data for ${ticker} from ${startDateStr} to ${endDateStr}`);
       
       const yahooResult = EW_getYahooHistoricalRange(ticker, marketRunDate, endDate, true);
       

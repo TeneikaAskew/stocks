@@ -561,7 +561,7 @@ function EW_testEnvironmentDetection() {
     return {
       environment: isSpreadsheet ? 'spreadsheet' : 'script_editor',
       uiAvailable: isSpreadsheet,
-      timestamp: new Date().toISOString()
+      timestamp: EW_formatDateTime(new Date())
     };
     
   } catch (error) {

@@ -120,7 +120,7 @@ function EW_updateStrategyTracking(ss, strategyName) {
         const existingHitDate = row[hdrMap.hitDateCol - 1];
         if (!existingHitDate) {
           // This is first time hit - record today's date
-          dataRange.getCell(rowIndex + 1, hdrMap.hitDateCol).setValue(today.toISOString().split('T')[0]);
+          dataRange.getCell(rowIndex + 1, hdrMap.hitDateCol).setValue(EW_formatDate(today));
           updatedCount++;
         }
       }
