@@ -458,7 +458,10 @@ function EW_saveApiResponse(ticker, timestamp, response, metadata = {}) {
     const date = typeof timestamp === 'string' && timestamp.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
       ? new Date(timestamp.replace(' ', 'T'))
       : new Date(timestamp);
-    const dateStr = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+    // Use dateRequested from metadata if provided, otherwise use timestamp date
+    // This allows cache files to be named by the data date, not the fetch date
+    const dateStr = metadata.dateRequested || Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
     const timeStr = Utilities.formatDate(date, Session.getScriptTimeZone(), 'HH-mm-ss');
     const fileName = `${ticker}_${dateStr}_${timeStr}.json`;
     

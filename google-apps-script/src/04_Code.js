@@ -145,12 +145,23 @@ function onOpen() {
         .addSeparator()
         .addItem('Clear File List Cache', 'EW_clearFileListCache')
       )
+      .addSeparator()
+      .addItem('📱 Update Menu Sheet', 'EW_updateMenuSheet')
     )
     
     .addToUi();
-    
+
   // Auto-create success report on first run
   EW_ensureSuccessReportExists();
+
+  // Auto-create/update menu sheet for mobile access
+  // Check if menu sheet exists, if not create it
+  const ss = SpreadsheetApp.getActive();
+  const menuSheet = ss.getSheetByName('📱 Menu');
+  if (!menuSheet) {
+    EW_createMenuSheet();
+    EW_installMenuSheetTrigger();
+  }
 }
 
 /**
