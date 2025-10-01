@@ -108,27 +108,27 @@ function EW_trace(scope, msg, alsoSheet = false, level = 'INFO') {
   const timestamp = EW_formatDateTime(new Date());
   const line = `[${timestamp}] [${level}] [${scope}] ${msg}`;
   
-  // Always log to console with appropriate method
-  try {
-    switch(level) {
-      case 'ERROR':
-        console.error(line);
-        break;
-      case 'WARN':
-        console.warn(line);
-        break;
-      case 'DEBUG':
-        // Only log debug messages if debug mode is enabled
-        if (EW.DEBUG_MODE || false) {
-          console.log(line);
-        }
-        break;
-      default:
-        console.log(line);
-    }
-  } catch (_) {}
-  
-  // Also log to Google's Logger for Stackdriver
+  // Commented out console logging to avoid duplicates with Logger.log below
+  // try {
+  //   switch(level) {
+  //     case 'ERROR':
+  //       console.error(line);
+  //       break;
+  //     case 'WARN':
+  //       console.warn(line);
+  //       break;
+  //     case 'DEBUG':
+  //       // Only log debug messages if debug mode is enabled
+  //       if (EW.DEBUG_MODE || false) {
+  //         console.log(line);
+  //       }
+  //       break;
+  //     default:
+  //       console.log(line);
+  //   }
+  // } catch (_) {}
+
+  // Log to Google's Logger for Cloud Logging
   try {
     Logger.log(line);
   } catch (_) {}
