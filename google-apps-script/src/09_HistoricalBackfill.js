@@ -1114,58 +1114,69 @@ function EW_processBackfillPosition(params) {
       new Date(typeof expDateStr === 'string' && expDateStr.includes('T') ? expDateStr : expDateStr + 'T00:00:00');
 
     if (expDate) expDate.setHours(16, 0, 0, 0); // Set to market close for expiration
-    
-    // Get today's date for comparison
-    const today = new Date();
-    const currentHour = today.getHours();
-    
-    // If before market open (9:30 AM ET), use yesterday as the end date
-    let effectiveEndDate = new Date(today);
-    if (currentHour < 9 || (currentHour === 9 && today.getMinutes() < 30)) {
-      // Before market open, use yesterday's close
-      effectiveEndDate.setDate(effectiveEndDate.getDate() - 1);
-      effectiveEndDate.setHours(16, 0, 0, 0); // Yesterday's market close
-      EW_trace('BACKFILL', `${ticker}: Before market open, using yesterday as end date`);
-    } else if (currentHour >= 16) {
-      // After market close, use today's close
-      effectiveEndDate.setHours(16, 0, 0, 0);
-    } else {
-      // During market hours, use current time
-      // Keep current time
-    }
-    
+
     // Skip if run date is in the future
+    const today = new Date();
     if (runDate > today) {
       EW_trace('BACKFILL', `Skipping ${ticker}: Run date is in the future`);
       return { success: false, reason: 'future_date' };
     }
-    
+
     // Adjust run date to market hours for Day 0 first
     const marketRunDate = EW_adjustToMarketHours(runDate);
     EW_trace('BACKFILL', `${ticker}: Original run date: ${EW_formatDateTime(runDate)}, Adjusted to market hours: ${EW_formatDateTime(marketRunDate)}`);
-    
-    // Determine end date (expiration or effective end date, whichever is earlier)
-    // But ensure it's at least equal to or after the adjusted market run date
-    let endDate = expDate && expDate < effectiveEndDate ? expDate : effectiveEndDate;
-    if (endDate < marketRunDate) {
-      endDate = new Date(marketRunDate);
-      endDate.setHours(16, 0, 0, 0); // Set to market close
-      EW_trace('BACKFILL', `${ticker}: Adjusted end date to match market run date: ${EW_formatDateTime(endDate)}`);
+
+    // Calculate Day 5 from the market run date (skip weekends)
+    // This ensures we only fetch data for Day 0-5, not excess data
+    let day5Date = new Date(marketRunDate);
+    let tradingDaysAdded = 0;
+
+    while (tradingDaysAdded < 5) {
+      day5Date.setDate(day5Date.getDate() + 1);
+      // Skip weekends
+      if (day5Date.getDay() !== 0 && day5Date.getDay() !== 6) {
+        tradingDaysAdded++;
+      }
+    }
+    day5Date.setHours(16, 0, 0, 0); // Set to market close
+
+    EW_trace('BACKFILL', `${ticker}: Calculated Day 5 date: ${EW_formatDateTime(day5Date)}`);
+
+    // Determine end date: use expiration date if it's before Day 5, otherwise use Day 5
+    // This prevents pulling excess data beyond what we need for Day 0-5 tracking
+    let endDate = expDate && expDate < day5Date ? expDate : day5Date;
+
+    // If end date is in the future (beyond today), cap it at today's market close
+    const todayMarketClose = new Date(today);
+    const currentHour = today.getHours();
+    if (currentHour < 9 || (currentHour === 9 && today.getMinutes() < 30)) {
+      // Before market open, use yesterday's close
+      todayMarketClose.setDate(todayMarketClose.getDate() - 1);
+      todayMarketClose.setHours(16, 0, 0, 0);
+    } else if (currentHour >= 16) {
+      // After market close, use today's close
+      todayMarketClose.setHours(16, 0, 0, 0);
+    }
+    // else during market hours, keep current time
+
+    if (endDate > todayMarketClose) {
+      endDate = todayMarketClose;
+      EW_trace('BACKFILL', `${ticker}: End date capped to today's close: ${EW_formatDateTime(endDate)}`);
     }
 
     EW_trace('BACKFILL', `Processing position: ${ticker} from ${EW_formatDate(marketRunDate)} to ${EW_formatDate(endDate)} (Exp: ${expDateStr || 'none'})`);
     EW_trace('BACKFILL', `Raw run date string: "${runDateStr}", Parsed: ${EW_formatDateTime(runDate)}`);
 
     // Check if runDate is more than 7 days old
-    const daysSinceRun = Math.floor((effectiveEndDate - runDate) / (1000 * 60 * 60 * 24));
-    EW_trace('BACKFILL', `Days since run: ${daysSinceRun} (effective end: ${EW_formatDateTime(effectiveEndDate)}, runDate: ${EW_formatDateTime(runDate)})`)
-    
+    const daysSinceRun = Math.floor((endDate - runDate) / (1000 * 60 * 60 * 24));
+    EW_trace('BACKFILL', `Days since run: ${daysSinceRun} (end date: ${EW_formatDateTime(endDate)}, runDate: ${EW_formatDateTime(runDate)})`)
+
     let yahooResult;
-    
-    // Always try to get minute data first for the last 7 days
-    const sevenDaysAgo = new Date(effectiveEndDate);
-    sevenDaysAgo.setDate(effectiveEndDate.getDate() - 7);
-    
+
+    // Calculate the cutoff date for minute data (7 days before end date)
+    const sevenDaysAgo = new Date(endDate);
+    sevenDaysAgo.setDate(endDate.getDate() - 7);
+
     if (marketRunDate >= sevenDaysAgo) {
       // Position is within 7 days, use only minute data
       EW_trace('BACKFILL', `${ticker}: Using minute data (within 7 days)`);
@@ -1173,13 +1184,39 @@ function EW_processBackfillPosition(params) {
       yahooResult = EW_getYahooHistoricalRange(ticker, marketRunDate, endDate, true);
     } else {
       // Position is older than 7 days, need hybrid approach
+      // Daily data: from marketRunDate to day before sevenDaysAgo (to avoid overlap)
+      // Minute data: from sevenDaysAgo to endDate
+      const dailyEndDate = new Date(sevenDaysAgo);
+      dailyEndDate.setDate(dailyEndDate.getDate() - 1);
+      dailyEndDate.setHours(16, 0, 0, 0); // Set to market close
+
       EW_trace('BACKFILL', `${ticker}: Using hybrid data (${daysSinceRun} days old)`);
-      EW_trace('BACKFILL', `${ticker}: Fetching daily data from ${EW_formatDate(marketRunDate)} to ${EW_formatDate(sevenDaysAgo)}`);
+
+      let dailyResult = null;
+
+      // Only fetch daily data if the range is valid (startDate <= endDate)
+      if (marketRunDate <= dailyEndDate) {
+        EW_trace('BACKFILL', `${ticker}: Fetching daily data from ${EW_formatDate(marketRunDate)} to ${EW_formatDate(dailyEndDate)}`);
+        dailyResult = EW_getYahooHistoricalRangeWithInterval(ticker, marketRunDate, dailyEndDate, '1d', true);
+      } else {
+        EW_trace('BACKFILL', `${ticker}: Skipping daily data fetch (run date >= 7-day cutoff), will check cache instead`);
+        // When dailyEndDate < marketRunDate, check if we have cached data for the gap
+        // This happens when the run date is exactly at or just inside the 7-day minute data window
+        // Normalize dates to midnight for proper range checking
+        const cacheStartDate = new Date(marketRunDate);
+        cacheStartDate.setHours(0, 0, 0, 0);
+        const cacheEndDate = new Date(sevenDaysAgo);
+        cacheEndDate.setHours(0, 0, 0, 0);
+
+        EW_trace('BACKFILL', `${ticker}: Checking cache from ${EW_formatDate(cacheStartDate)} to ${EW_formatDate(cacheEndDate)}`);
+        const cachedDailyData = EW_checkCachedDailyRange(ticker, cacheStartDate, cacheEndDate);
+        if (cachedDailyData && cachedDailyData.complete) {
+          EW_trace('BACKFILL', `${ticker}: Found cached daily data for gap days`);
+          dailyResult = cachedDailyData;
+        }
+      }
+
       EW_trace('BACKFILL', `${ticker}: Fetching minute data from ${EW_formatDate(sevenDaysAgo)} to ${EW_formatDate(endDate)}`);
-      
-      // Get daily data for the older period (marketRunDate to 7 days ago)
-      const dailyResult = EW_getYahooHistoricalRangeWithInterval(ticker, marketRunDate, sevenDaysAgo, '1d', true);
-      
       // Get minute data for recent period (7 days ago to endDate)
       const minuteResult = EW_getYahooHistoricalRange(ticker, sevenDaysAgo, endDate, true);
       
@@ -1202,19 +1239,38 @@ function EW_processBackfillPosition(params) {
       if (dailyResult && dailyResult.data) {
         EW_trace('BACKFILL', `${ticker}: Daily data received - ${dailyResult.data.length} data points`);
         yahooResult.data = yahooResult.data.concat(dailyResult.data);
-        
+
         // Also combine raw data if available
-        if (dailyResult.raw && dailyResult.raw.timestamp) {
-          EW_trace('BACKFILL', `${ticker}: Daily raw data structure - timestamps: ${dailyResult.raw.timestamp.length}, has indicators: ${!!dailyResult.raw.indicators}`);
-          // Append timestamps
-          yahooResult.raw.timestamps = yahooResult.raw.timestamps.concat(dailyResult.raw.timestamp);
-          // Get quote data from indicators structure
-          const quote = dailyResult.raw.indicators.quote[0];
-          yahooResult.raw.quotes.open = yahooResult.raw.quotes.open.concat(quote.open || []);
-          yahooResult.raw.quotes.high = yahooResult.raw.quotes.high.concat(quote.high || []);
-          yahooResult.raw.quotes.low = yahooResult.raw.quotes.low.concat(quote.low || []);
-          yahooResult.raw.quotes.close = yahooResult.raw.quotes.close.concat(quote.close || []);
-          yahooResult.raw.quotes.volume = yahooResult.raw.quotes.volume.concat(quote.volume || []);
+        // Handle both cached data format (timestamps + quotes) and API format (timestamp + indicators.quote[0])
+        if (dailyResult.raw) {
+          // Check if this is cached daily data format (from EW_checkCachedDailyRange)
+          if (dailyResult.raw.timestamps && dailyResult.raw.quotes) {
+            EW_trace('BACKFILL', `${ticker}: Daily raw data (cached format) - timestamps: ${dailyResult.raw.timestamps.length}`);
+            // Append timestamps
+            yahooResult.raw.timestamps = yahooResult.raw.timestamps.concat(dailyResult.raw.timestamps);
+            // Get quote data from quotes structure
+            const quote = dailyResult.raw.quotes;
+            yahooResult.raw.quotes.open = yahooResult.raw.quotes.open.concat(quote.open || []);
+            yahooResult.raw.quotes.high = yahooResult.raw.quotes.high.concat(quote.high || []);
+            yahooResult.raw.quotes.low = yahooResult.raw.quotes.low.concat(quote.low || []);
+            yahooResult.raw.quotes.close = yahooResult.raw.quotes.close.concat(quote.close || []);
+            yahooResult.raw.quotes.volume = yahooResult.raw.quotes.volume.concat(quote.volume || []);
+          }
+          // Check if this is API data format (from EW_getYahooHistoricalRangeWithInterval)
+          else if (dailyResult.raw.timestamp && dailyResult.raw.indicators) {
+            EW_trace('BACKFILL', `${ticker}: Daily raw data (API format) - timestamps: ${dailyResult.raw.timestamp.length}, has indicators: ${!!dailyResult.raw.indicators}`);
+            // Append timestamps
+            yahooResult.raw.timestamps = yahooResult.raw.timestamps.concat(dailyResult.raw.timestamp);
+            // Get quote data from indicators structure
+            const quote = dailyResult.raw.indicators.quote[0];
+            yahooResult.raw.quotes.open = yahooResult.raw.quotes.open.concat(quote.open || []);
+            yahooResult.raw.quotes.high = yahooResult.raw.quotes.high.concat(quote.high || []);
+            yahooResult.raw.quotes.low = yahooResult.raw.quotes.low.concat(quote.low || []);
+            yahooResult.raw.quotes.close = yahooResult.raw.quotes.close.concat(quote.close || []);
+            yahooResult.raw.quotes.volume = yahooResult.raw.quotes.volume.concat(quote.volume || []);
+          } else {
+            EW_trace('BACKFILL', `${ticker}: Daily raw data format unrecognized - keys: ${Object.keys(dailyResult.raw).join(', ')}`);
+          }
         } else {
           EW_trace('BACKFILL', `${ticker}: No raw data in daily result`);
         }
