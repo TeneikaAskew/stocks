@@ -311,29 +311,29 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
   
   // Set time range based on interval
   let startDate, endDate;
-  
+
   if (interval === '1d') {
-    // For daily data, get last 30 days to ensure we have the date
+    // For daily data, fetch only the specific date requested
     startDate = new Date(date);
-    startDate.setDate(startDate.getDate() - 30);
+    startDate.setHours(0, 0, 0, 0);
     endDate = new Date(date);
-    endDate.setDate(endDate.getDate() + 1);
+    endDate.setHours(23, 59, 59, 999);
   } else {
     // For intraday data, check if date is recent enough
     const today = new Date();
     const daysSinceDate = Math.floor((today - date) / (1000 * 60 * 60 * 24));
-    
+
     // 1-minute data is typically only available for last 7 days
     if (interval === '1m' && daysSinceDate > 7) {
       EW_trace('YAHOO', `1-minute data not available for ${ticker} on ${EW_formatDate(date)} (${daysSinceDate} days ago)`);
       throw new Error(`1-minute data only available for last 7 days`);
     }
-    
+
     // For intraday data, use the simplified approach
     // Always get full trading day data
     startDate = new Date(date);
     endDate = new Date(date);
-    
+
     if (interval === '1m') {
       // For 1-minute data, use regular trading hours only
       startDate.setHours(9, 30, 0, 0);   // 9:30 AM
@@ -343,7 +343,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       startDate.setHours(4, 0, 0, 0);    // 4:00 AM pre-market
       endDate.setHours(20, 0, 0, 0);     // 8:00 PM after-hours
     }
-    
+
     // Important: Don't adjust end time for today - always request full day
     // Yahoo will return whatever data is available up to current time
   }
@@ -516,7 +516,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
     if (hitTime) {
       // Calculate indicators at the point where strike was hit
       const hitIndicators = EW_calculateIndicatorsFromYahoo(timestamps, quotes, hitData.index);
-      
+
       logEntry.hitDetected = true;
       logEntry.hitPrice = targetPrice;
       logEntry.hitTime = EW_formatDateTime(hitTime);
@@ -531,24 +531,29 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
         };
       }
       EW_logApiCall(logEntry, data);
-      
+
       // Get daily OHLC data
       let dayOpen = null;
-      let dayClose = lastClose;
+      let lastClose = null;
       let dayVolume = 0;
-      
-      // Find first open price of the day
+
+      // Find first open price, last close, and total volume of the day
       for (let i = 0; i < timestamps.length; i++) {
         const dataTime = new Date(timestamps[i] * 1000);
         if (dataTime >= targetDateStart && dataTime <= targetDateEnd) {
           if (dayOpen === null && quotes.open[i] !== null) {
             dayOpen = quotes.open[i];
           }
+          if (quotes.close[i] !== null) {
+            lastClose = quotes.close[i];
+          }
           if (quotes.volume && quotes.volume[i]) {
             dayVolume += quotes.volume[i];
           }
         }
       }
+
+      const dayClose = lastClose;
       
       const returnObj = {
         hit: true,
