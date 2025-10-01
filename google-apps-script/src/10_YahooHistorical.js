@@ -688,6 +688,7 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
     interval: '1m',
     startDate: EW_formatDate(startDate),
     endDate: EW_formatDate(endDate),
+    dateRequested: EW_formatDate(startDate),  // Use startDate for cache filename
     url: url,
     type: 'historical_range'
   };
@@ -886,6 +887,7 @@ function EW_getYahooHistoricalRangeWithInterval(ticker, startDate, endDate, inte
     interval: interval,
     startDate: EW_formatDate(startDate),
     endDate: EW_formatDate(endDate),
+    dateRequested: EW_formatDate(startDate),  // Use startDate for cache filename
     url: url,
     type: 'historical_range_interval'
   };
