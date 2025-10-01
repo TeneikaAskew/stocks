@@ -93,9 +93,11 @@ function getApiSummaryFolderId() {
 
 /**
  * Initialize or get today's API log file
+ * Validates file is not corrupted and recreates if needed
+ * @param {boolean} forceNew - Force creation of new file (for corruption recovery)
  * @returns {Object} File object for today's log
  */
-function EW_getApiLogFile() {
+function EW_getApiLogFile(forceNew = false) {
   try {
     const folderId = getApiSummaryFolderId();
     console.log(`Attempting to access DAILY_REPORTS folder with ID: ${folderId}`);
@@ -107,15 +109,42 @@ function EW_getApiLogFile() {
     const dateStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
     const fileName = `yahoo_api_log_${dateStr}.json`;
     console.log(`Looking for or creating file: ${fileName}`);
-    
+
     // Check if today's log file already exists
-    const files = folder.getFilesByName(fileName);
-    if (files.hasNext()) {
-      const existingFile = files.next();
-      console.log(`Found existing log file: ${existingFile.getName()}`);
-      return existingFile;
+    if (!forceNew) {
+      const files = folder.getFilesByName(fileName);
+      if (files.hasNext()) {
+        const existingFile = files.next();
+        console.log(`Found existing log file: ${existingFile.getName()}`);
+
+        // Validate the file is not corrupted
+        try {
+          const content = existingFile.getBlob().getDataAsString();
+
+          // Check if empty
+          if (!content || content.trim().length === 0) {
+            console.error(`API LOG: File is empty, will recreate`);
+            existingFile.setTrashed(true);
+            // Continue to create new file below
+          } else {
+            JSON.parse(content); // Will throw if corrupted JSON
+            return existingFile;
+          }
+        } catch (parseError) {
+          console.error(`API LOG: File corrupted - ${parseError.message}`);
+          console.error(`Corruption reasons could be:`);
+          console.error(`  1. Incomplete write (script timeout)`);
+          console.error(`  2. Concurrent modification by multiple executions`);
+          console.error(`  3. Drive sync issue`);
+          console.error(`  4. Invalid JSON syntax`);
+
+          // Delete the corrupted file
+          existingFile.setTrashed(true);
+          // Continue to create new file below
+        }
+      }
     }
-    
+
     // Create new log file for today
     console.log(`Creating new log file: ${fileName}`);
     const initialData = {
@@ -123,21 +152,21 @@ function EW_getApiLogFile() {
       created: Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'),
       calls: []
     };
-    
+
     const blob = Utilities.newBlob(JSON.stringify(initialData, null, 2), 'application/json', fileName);
     const newFile = folder.createFile(blob);
     console.log(`Created new log file: ${newFile.getName()} with ID: ${newFile.getId()}`);
     return newFile;
-    
+
   } catch (error) {
     console.error(`API LOG ERROR: Failed to get/create log file: ${error.message}`);
     console.error(`Error stack: ${error.stack}`);
-    
+
     // Log all Script Properties when there's an error
     const scriptProperties = PropertiesService.getScriptProperties();
     const allProps = scriptProperties.getProperties();
     console.error('Current Script Properties:', JSON.stringify(allProps, null, 2));
-    
+
     EW_trace('API_LOG', `Failed to get/create log file: ${error.message}`);
     return null;
   }
@@ -152,18 +181,33 @@ function EW_logApiCall(callData, rawResponse = null) {
   try {
     const file = EW_getApiLogFile();
     if (!file) return;
-    
+
     // Get existing content
     const content = file.getBlob().getDataAsString();
-    const logData = JSON.parse(content);
-    
+    let logData;
+
+    try {
+      logData = JSON.parse(content);
+    } catch (parseError) {
+      // File is corrupted or empty - recreate it
+      console.error(`API LOG ERROR: Corrupted log file detected, recreating: ${parseError.message}`);
+      const today = new Date();
+      const dateStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      logData = {
+        date: dateStr,
+        created: Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'),
+        calls: [],
+        note: 'File was corrupted and recreated'
+      };
+    }
+
     // Add timestamp to call data
     const now = new Date();
     callData.timestamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
-    
+
     // Add the new call
     logData.calls.push(callData);
-    
+
     // Update file
     file.setContent(JSON.stringify(logData, null, 2));
     
@@ -199,8 +243,15 @@ function EW_getApiCallSummary(date = new Date()) {
     
     const file = files.next();
     const content = file.getBlob().getDataAsString();
-    const logData = JSON.parse(content);
-    
+
+    let logData;
+    try {
+      logData = JSON.parse(content);
+    } catch (parseError) {
+      console.error(`API SUMMARY ERROR: Corrupted log file: ${parseError.message}`);
+      return { error: `Corrupted log file: ${parseError.message}` };
+    }
+
     // Calculate summary statistics
     const summary = {
       date: logData.date,
