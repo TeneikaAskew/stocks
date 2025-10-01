@@ -196,7 +196,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
   const hdrMap = EW_headerMap(headers);
   
   // Check required columns - handle spreads that have longStrike/shortStrike instead of strike
-  const baseRequiredCols = ['tickerCol', 'runDateCol', 'daysToExpCol', 'strikeHitCol'];
+  const baseRequiredCols = ['tickerCol', 'runDateCol', 'strikeHitCol'];
   for (const col of baseRequiredCols) {
     if (!hdrMap[col]) {
       EW_trace('ACTIVE_TRACKING', `${strategyName}: Missing required column ${col}`);
