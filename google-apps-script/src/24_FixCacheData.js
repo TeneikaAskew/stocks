@@ -15,8 +15,22 @@ function EW_validateAndFixRecentCache() {
   const ss = SpreadsheetApp.getActive();
   const ui = SpreadsheetApp.getUi();
 
-  // Get all strategy sheets
-  const strategyNames = Object.keys(EW.STRATEGY_ENDPOINTS);
+  // Get current active sheet only
+  const sheet = ss.getActiveSheet();
+  const strategyName = sheet.getName();
+
+  // Validate this is a strategy sheet
+  if (!EW.STRATEGY_ENDPOINTS[strategyName]) {
+    ui.alert('Invalid Sheet', `"${strategyName}" is not a valid strategy sheet.`, ui.ButtonSet.OK);
+    return;
+  }
+
+  if (sheet.getLastRow() < 2) {
+    ui.alert('No Data', `No data rows found in ${strategyName}.`, ui.ButtonSet.OK);
+    return;
+  }
+
+  console.log(`Processing ${strategyName}...`);
 
   const results = {
     totalRows: 0,
@@ -28,38 +42,31 @@ function EW_validateAndFixRecentCache() {
     details: []
   };
 
-  // Process each strategy sheet
-  for (const strategyName of strategyNames) {
-    const sheet = ss.getSheetByName(strategyName);
-    if (!sheet || sheet.getLastRow() < 2) continue;
+  // Get headers
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
 
-    console.log(`\nProcessing ${strategyName}...`);
+  // Check required columns
+  if (!hdrMap.tickerCol || !hdrMap.runDateCol) {
+    ui.alert('Missing Columns', `${strategyName} is missing required columns (ticker, runDate).`, ui.ButtonSet.OK);
+    return;
+  }
 
-    // Get headers
-    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    const hdrMap = EW_headerMap(headers);
+  // Get all data
+  const lastRow = sheet.getLastRow();
+  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
 
-    // Check required columns
-    if (!hdrMap.tickerCol || !hdrMap.runDateCol) {
-      console.log(`${strategyName}: Missing required columns`);
-      continue;
-    }
+  // Determine strike column (handle spreads)
+  const isSpread = strategyName.toUpperCase().includes('SPREAD');
+  const strikeCol = isSpread ? hdrMap.longStrikeCol : hdrMap.strikeCol;
 
-    // Get all data
-    const lastRow = sheet.getLastRow();
-    const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  if (!strikeCol) {
+    ui.alert('Missing Column', `${strategyName} is missing strike column.`, ui.ButtonSet.OK);
+    return;
+  }
 
-    // Determine strike column (handle spreads)
-    const isSpread = strategyName.toUpperCase().includes('SPREAD');
-    const strikeCol = isSpread ? hdrMap.longStrikeCol : hdrMap.strikeCol;
-
-    if (!strikeCol) {
-      console.log(`${strategyName}: Missing strike column`);
-      continue;
-    }
-
-    // Check each row
-    for (let i = 0; i < data.length; i++) {
+  // Check each row
+  for (let i = 0; i < data.length; i++) {
       const rowNum = i + 2;
       const row = data[i];
 
@@ -124,11 +131,10 @@ function EW_validateAndFixRecentCache() {
         }
       }
 
-      // Check execution time
-      if (new Date() - startTime > 4.5 * 60 * 1000) {
-        console.log('Approaching time limit, stopping...');
-        break;
-      }
+    // Check execution time (29.5 min limit for premium account)
+    if (new Date() - startTime > 29.5 * 60 * 1000) {
+      console.log('Approaching time limit, stopping...');
+      break;
     }
   }
 
@@ -177,8 +183,22 @@ function EW_validateAndFixHistoricalCache() {
   const ss = SpreadsheetApp.getActive();
   const ui = SpreadsheetApp.getUi();
 
-  // Get all strategy sheets
-  const strategyNames = Object.keys(EW.STRATEGY_ENDPOINTS);
+  // Get current active sheet only
+  const sheet = ss.getActiveSheet();
+  const strategyName = sheet.getName();
+
+  // Validate this is a strategy sheet
+  if (!EW.STRATEGY_ENDPOINTS[strategyName]) {
+    ui.alert('Invalid Sheet', `"${strategyName}" is not a valid strategy sheet.`, ui.ButtonSet.OK);
+    return;
+  }
+
+  if (sheet.getLastRow() < 2) {
+    ui.alert('No Data', `No data rows found in ${strategyName}.`, ui.ButtonSet.OK);
+    return;
+  }
+
+  console.log(`Processing ${strategyName}...`);
 
   const results = {
     totalRows: 0,
@@ -190,38 +210,31 @@ function EW_validateAndFixHistoricalCache() {
     details: []
   };
 
-  // Process each strategy sheet
-  for (const strategyName of strategyNames) {
-    const sheet = ss.getSheetByName(strategyName);
-    if (!sheet || sheet.getLastRow() < 2) continue;
+  // Get headers
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
 
-    console.log(`\nProcessing ${strategyName}...`);
+  // Check required columns
+  if (!hdrMap.tickerCol || !hdrMap.runDateCol) {
+    ui.alert('Missing Columns', `${strategyName} is missing required columns (ticker, runDate).`, ui.ButtonSet.OK);
+    return;
+  }
 
-    // Get headers
-    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    const hdrMap = EW_headerMap(headers);
+  // Get all data
+  const lastRow = sheet.getLastRow();
+  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
 
-    // Check required columns
-    if (!hdrMap.tickerCol || !hdrMap.runDateCol) {
-      console.log(`${strategyName}: Missing required columns`);
-      continue;
-    }
+  // Determine strike column (handle spreads)
+  const isSpread = strategyName.toUpperCase().includes('SPREAD');
+  const strikeCol = isSpread ? hdrMap.longStrikeCol : hdrMap.strikeCol;
 
-    // Get all data
-    const lastRow = sheet.getLastRow();
-    const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  if (!strikeCol) {
+    ui.alert('Missing Column', `${strategyName} is missing strike column.`, ui.ButtonSet.OK);
+    return;
+  }
 
-    // Determine strike column (handle spreads)
-    const isSpread = strategyName.toUpperCase().includes('SPREAD');
-    const strikeCol = isSpread ? hdrMap.longStrikeCol : hdrMap.strikeCol;
-
-    if (!strikeCol) {
-      console.log(`${strategyName}: Missing strike column`);
-      continue;
-    }
-
-    // Check each row
-    for (let i = 0; i < data.length; i++) {
+  // Check each row
+  for (let i = 0; i < data.length; i++) {
       const rowNum = i + 2;
       const row = data[i];
 
@@ -286,11 +299,10 @@ function EW_validateAndFixHistoricalCache() {
         }
       }
 
-      // Check execution time
-      if (new Date() - startTime > 4.5 * 60 * 1000) {
-        console.log('Approaching time limit, stopping...');
-        break;
-      }
+    // Check execution time (29.5 min limit for premium account)
+    if (new Date() - startTime > 29.5 * 60 * 1000) {
+      console.log('Approaching time limit, stopping...');
+      break;
     }
   }
 
