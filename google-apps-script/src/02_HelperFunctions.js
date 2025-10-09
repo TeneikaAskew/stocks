@@ -299,14 +299,14 @@ function EW_addGFHeaders(header) {
 function getOptionsSheetHeaders() {
   const sheets = [
     'Long Calls', 'Bull Spreads', 'Covered Calls',
-    'Long Puts', 'Bear Spreads', 'Short Calls', 
+    'Long Puts', 'Bear Spreads', 'Short Calls',
     'Strangles', 'Straddles', 'Short Puts'
   ];
-  
+
   const result = [["Sheet Name", "Headers"]];
-  
+
   console.log('=== Options Sheet Headers Analysis ===');
-  
+
   sheets.forEach(sheetName => {
     try {
       const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
@@ -314,22 +314,22 @@ function getOptionsSheetHeaders() {
         const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
         const headerText = headers.filter(h => h !== "").join(" | ");
         result.push([sheetName, headerText]);
-        
+
         // Console logging
         console.log(`\n${sheetName}:`);
         console.log(`  Total columns: ${headers.length}`);
         console.log(`  Non-empty columns: ${headers.filter(h => h !== "").length}`);
         console.log(`  Headers: ${headerText}`);
-        
+
         // Check for critical columns
         const hasStrikeHit = headers.some(h => h === 'Strike_Hit');
         const hasStrategy = headers.some(h => h === 'Strategy');
         const hasRunDate = headers.some(h => h === 'Run Date');
-        
+
         if (!hasStrikeHit) console.log(`  ⚠️ WARNING: Missing Strike_Hit column`);
         if (!hasStrategy) console.log(`  ⚠️ WARNING: Missing Strategy column`);
         if (!hasRunDate) console.log(`  ⚠️ WARNING: Missing Run Date column`);
-        
+
       } else {
         result.push([sheetName, "Sheet not found"]);
         console.log(`\n${sheetName}: ❌ Sheet not found`);
@@ -339,12 +339,64 @@ function getOptionsSheetHeaders() {
       console.log(`\n${sheetName}: ❌ Error - ${e.toString()}`);
     }
   });
-  
+
   console.log('\n=== Summary ===');
   console.log(`Total sheets checked: ${sheets.length}`);
   console.log(`Sheets found: ${result.filter(r => r[1] !== "Sheet not found" && !r[1].startsWith("Error")).length - 1}`);
-  
+
   return result;
+}
+
+/**
+ * Diagnostic function to check header mapping for Bull/Bear Spreads
+ * Helps debug the "Missing Column: Required column strikeCol not found" error
+ */
+function EW_diagnoseSpreadHeaders() {
+  const ss = SpreadsheetApp.getActive();
+  const sheets = ['Bull Spreads', 'Bear Spreads'];
+
+  console.log('=== Spread Headers Diagnostic ===\n');
+
+  sheets.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      console.log(`${sheetName}: Sheet not found`);
+      return;
+    }
+
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    console.log(`\n${sheetName}:`);
+    console.log(`Total columns: ${headers.length}`);
+
+    // Show all headers with their positions
+    headers.forEach((h, i) => {
+      if (h) {
+        const norm = EW_norm(h);
+        console.log(`  Col ${i + 1}: "${h}" -> normalized: "${norm}"`);
+      }
+    });
+
+    // Create header map and check what was found
+    const hdrMap = EW_headerMap(headers);
+    console.log('\nHeader Map Results:');
+    console.log(`  tickerCol: ${hdrMap.tickerCol}`);
+    console.log(`  runDateCol: ${hdrMap.runDateCol}`);
+    console.log(`  strategyCol: ${hdrMap.strategyCol}`);
+    console.log(`  strikeCol: ${hdrMap.strikeCol}`);
+    console.log(`  longStrikeCol: ${hdrMap.longStrikeCol}`);
+    console.log(`  shortStrikeCol: ${hdrMap.shortStrikeCol}`);
+
+    // Check which column should be used
+    const isSpread = sheetName.toUpperCase().includes('SPREAD');
+    const strikeColumn = isSpread ? 'longStrikeCol' : 'strikeCol';
+    console.log(`\nStrategy check:`);
+    console.log(`  Is spread: ${isSpread}`);
+    console.log(`  Should use: ${strikeColumn}`);
+    console.log(`  Value: ${hdrMap[strikeColumn]}`);
+    console.log(`  Status: ${hdrMap[strikeColumn] ? '✓ FOUND' : '✗ MISSING'}`);
+  });
+
+  console.log('\n=== End Diagnostic ===');
 }
 
 // ======= COOKIE AND SESSION UTILITIES =======
@@ -1447,14 +1499,18 @@ function EW_recalculateIndicatorsForSelected() {
   }
   
   EW_trace('INDICATORS', `Recalculating indicators for ${numRows} selected rows`, true);
-  
+
   // Get headers
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(headers);
-  
-  // Check required columns exist
-  const requiredCols = ['tickerCol', 'runDateCol', 'strikeCol', 'strikeHitCol'];
-  
+
+  // Check required columns exist - handle spreads vs single-leg strategies
+  const sheetName = sheet.getName();
+  const isSpread = sheetName.toUpperCase().includes('SPREAD');
+  const strikeColumn = isSpread ? 'longStrikeCol' : 'strikeCol';
+
+  const requiredCols = ['tickerCol', 'runDateCol', strikeColumn, 'strikeHitCol'];
+
   for (const col of requiredCols) {
     if (!hdrMap[col]) {
       EW_safeAlert('Missing Column', `Required column ${col} not found`);
@@ -1469,10 +1525,10 @@ function EW_recalculateIndicatorsForSelected() {
   for (let i = 0; i < numRows; i++) {
     const rowNum = startRow + i;
     const rowData = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
-    
+
     const ticker = rowData[hdrMap.tickerCol - 1];
     const runDateStr = rowData[hdrMap.runDateCol - 1];
-    const strike = parseFloat(rowData[hdrMap.strikeCol - 1]);
+    const strike = parseFloat(rowData[hdrMap[strikeColumn] - 1]);
     const strikeHitData = rowData[hdrMap.strikeHitCol - 1];
     
     if (!ticker || !runDateStr || !strike) {
