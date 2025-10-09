@@ -602,35 +602,99 @@ function EW_checkExistingApiLog(ticker, date) {
 
         console.log(`Found existing API log: ${fileName}`);
 
-        // Read and parse the file
-        const content = file.getBlob().getDataAsString();
-        const logData = JSON.parse(content);
-
-        // CRITICAL: Validate the cached data actually contains the requested date
-        // The filename might say 2025-09-22, but the actual data might be from 2025-09-23+
-        // This happens when Yahoo no longer has data for the requested date
-        if (logData.response && logData.response.chart && logData.response.chart.result) {
-          const result = logData.response.chart.result[0];
-          if (result.timestamp && result.timestamp.length > 0) {
-            // Check the first timestamp to see what date the data is actually from
-            const firstTimestamp = result.timestamp[0] * 1000; // Convert to milliseconds
-            const firstDataDate = new Date(firstTimestamp);
-
-            // Normalize both dates to midnight for comparison
-            const requestedDate = new Date(date);
-            requestedDate.setHours(0, 0, 0, 0);
-            const actualDate = new Date(firstDataDate);
-            actualDate.setHours(0, 0, 0, 0);
-
-            // If the actual data is for a different date than requested, skip this file
-            if (actualDate.getTime() !== requestedDate.getTime()) {
-              console.log(`CACHE MISMATCH: ${fileName} contains data for ${actualDate.toISOString().split('T')[0]}, not ${dateStr}. Skipping.`);
-              continue; // Try next file
-            }
-          }
+        // STEP 1: Read and parse the file with JSON validation
+        let logData;
+        try {
+          const content = file.getBlob().getDataAsString();
+          logData = JSON.parse(content);
+        } catch (parseError) {
+          console.log(`CACHE REJECTED: ${fileName} - Corrupted JSON: ${parseError.message}. Deleting file.`);
+          file.setTrashed(true);
+          continue; // Try next file
         }
 
-        // Return the response data only if it matches the requested date
+        // STEP 2: Validate completeness of data structure
+        if (!logData.response) {
+          console.log(`CACHE REJECTED: ${fileName} - Missing response object. Deleting file.`);
+          file.setTrashed(true);
+          continue;
+        }
+
+        if (!logData.response.chart) {
+          console.log(`CACHE REJECTED: ${fileName} - Missing chart object. Deleting file.`);
+          file.setTrashed(true);
+          continue;
+        }
+
+        if (!logData.response.chart.result || !Array.isArray(logData.response.chart.result) || logData.response.chart.result.length === 0) {
+          console.log(`CACHE REJECTED: ${fileName} - Missing or empty result array. Deleting file.`);
+          file.setTrashed(true);
+          continue;
+        }
+
+        const result = logData.response.chart.result[0];
+
+        if (!result.timestamp || !Array.isArray(result.timestamp) || result.timestamp.length === 0) {
+          console.log(`CACHE REJECTED: ${fileName} - Missing or empty timestamp array. Deleting file.`);
+          file.setTrashed(true);
+          continue;
+        }
+
+        if (!result.indicators || !result.indicators.quote || !Array.isArray(result.indicators.quote) || result.indicators.quote.length === 0) {
+          console.log(`CACHE REJECTED: ${fileName} - Missing or empty quote data. Deleting file.`);
+          file.setTrashed(true);
+          continue;
+        }
+
+        const quote = result.indicators.quote[0];
+        const requiredFields = ['open', 'high', 'low', 'close', 'volume'];
+        const missingFields = requiredFields.filter(field => !quote[field] || quote[field].length === 0);
+
+        if (missingFields.length > 0) {
+          console.log(`CACHE REJECTED: ${fileName} - Missing required quote fields: ${missingFields.join(', ')}. Deleting file.`);
+          file.setTrashed(true);
+          continue;
+        }
+
+        // STEP 3: Check for API errors in metadata
+        if (logData.metadata && logData.metadata.success === false) {
+          console.log(`CACHE REJECTED: ${fileName} - Metadata indicates API failure. Deleting file.`);
+          file.setTrashed(true);
+          continue;
+        }
+
+        if (logData.response.chart.error) {
+          console.log(`CACHE REJECTED: ${fileName} - Contains API error: ${JSON.stringify(logData.response.chart.error)}. Deleting file.`);
+          file.setTrashed(true);
+          continue;
+        }
+
+        // STEP 4: Validate the cached data actually contains the requested date
+        // The filename might say 2025-09-22, but the actual data might be from 2025-09-23+
+        // This happens when Yahoo no longer has data for the requested date
+        const firstTimestamp = result.timestamp[0] * 1000; // Convert to milliseconds
+        const lastTimestamp = result.timestamp[result.timestamp.length - 1] * 1000;
+        const firstDataDate = new Date(firstTimestamp);
+        const lastDataDate = new Date(lastTimestamp);
+
+        // Normalize both dates to midnight for comparison
+        const requestedDate = new Date(date);
+        requestedDate.setHours(0, 0, 0, 0);
+        const actualDate = new Date(firstDataDate);
+        actualDate.setHours(0, 0, 0, 0);
+
+        // If the actual data is for a different date than requested, delete and skip
+        if (actualDate.getTime() !== requestedDate.getTime()) {
+          console.log(`CACHE REJECTED: ${fileName} - Date mismatch: contains data for ${actualDate.toISOString().split('T')[0]}, not ${dateStr}. Deleting file.`);
+          file.setTrashed(true);
+          continue; // Try next file
+        }
+
+        // STEP 5: Log success and return validated data
+        const dataRangeStr = `${firstDataDate.toISOString().split('T')[0]} to ${lastDataDate.toISOString().split('T')[0]}`;
+        const dataPointCount = result.timestamp.length;
+        console.log(`CACHE ACCEPTED: ${fileName} - Valid data with ${dataPointCount} points spanning ${dataRangeStr}`);
+
         return logData;
       }
     }
