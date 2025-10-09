@@ -1219,9 +1219,15 @@ function EW_processBackfillPosition(params) {
         }
       }
 
-      EW_trace('BACKFILL', `${ticker}: Fetching minute data from ${EW_formatDate(sevenDaysAgo)} to ${EW_formatDate(endDate)}`);
-      // Get minute data for recent period (7 days ago to endDate)
-      const minuteResult = EW_getYahooHistoricalRange(ticker, sevenDaysAgo, endDate, true);
+      // Only fetch minute data if the range is valid (endDate is after sevenDaysAgo)
+      let minuteResult = null;
+      if (sevenDaysAgo <= endDate) {
+        EW_trace('BACKFILL', `${ticker}: Fetching minute data from ${EW_formatDate(sevenDaysAgo)} to ${EW_formatDate(endDate)}`);
+        // Get minute data for recent period (7 days ago to endDate)
+        minuteResult = EW_getYahooHistoricalRange(ticker, sevenDaysAgo, endDate, true);
+      } else {
+        EW_trace('BACKFILL', `${ticker}: Skipping minute data fetch (endDate ${EW_formatDate(endDate)} is before 7-day cutoff ${EW_formatDate(sevenDaysAgo)})`);
+      }
       
       // Combine the results - match Yahoo API structure
       yahooResult = {
