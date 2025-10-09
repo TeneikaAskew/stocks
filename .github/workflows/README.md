@@ -292,3 +292,200 @@ To add features or fix issues:
 
 ## License
 Included in main repository license.
+---
+
+## Earnings Options Analytics Workflow
+
+### Overview
+Automated pipeline for analyzing earnings options trading data with comprehensive insights on timing, indicators, risk, and strategy performance.
+
+### Workflow File
+`.github/workflows/earnings-options-analytics.yml`
+
+### Triggers
+
+**Automatic:**
+- **Push to main**: When changes occur in `earnings_options_analytics/` or `google-apps-script/data/`
+- **Pull Requests**: When PRs modify analytics code (runs tests only)
+- **Daily Schedule**: Every day at 2:00 AM UTC (full analysis)
+
+**Manual:**
+- **Workflow Dispatch**: Run on-demand via GitHub Actions UI with options:
+  - Analysis Type: `quick`, `full`, or `test-only`
+  - Export Charts: true/false
+  - Export CSV: true/false
+
+### Jobs
+
+#### 1. Test Job
+- Validates analytics system functionality
+- Runs `test_system.py` (4 test suite)
+- Checks data quality (target: >80%)
+- Uploads test results as artifacts
+
+#### 2. Analyze Job
+- Depends on test job passing
+- Skips on pull requests
+- Runs analytics based on configuration
+- Generates reports and visualizations
+
+**Quick Mode** (default for push):
+```bash
+python earnings_options_analytics.py --quick --export-csv
+```
+- Execution time: ~15-30 seconds
+- Generates CSV reports only
+- Skips ML and detailed visualizations
+
+**Full Mode** (default for scheduled):
+```bash
+python earnings_options_analytics.py --full --export-csv --export-charts
+```
+- Execution time: ~1-2 minutes
+- Generates CSV, charts, and HTML report
+- Complete analysis with all modules
+
+#### 3. Notify Job
+- Creates summary of pipeline results
+- Only for scheduled and manual runs
+- Aggregates status from all jobs
+
+### Artifacts
+
+All artifacts have 30-day retention:
+
+1. **CSV Reports** (`csv-reports-{run_number}`)
+   - 15+ analysis reports
+   - Strategy, timing, indicator, risk metrics
+
+2. **Charts** (`charts-{run_number}`)
+   - 7 PNG visualizations (300 DPI)
+   - Strategy comparison, timing, indicators, risk
+
+3. **HTML Report** (`html-report-{run_number}`)
+   - Comprehensive report with embedded charts
+   - Responsive design, professional styling
+
+4. **Analysis Log** (`analysis-log-{run_number}`)
+   - Full console output, 7-day retention
+
+5. **Run Summary** (`run-summary-{run_number}`)
+   - Markdown summary with file counts
+
+### Manual Execution
+
+1. Navigate to **Actions** tab
+2. Select **Earnings Options Analytics**
+3. Click **Run workflow**
+4. Configure:
+   - Analysis Type: Choose mode
+   - Export Charts: Enable for visualizations
+   - Export CSV: Enable for detailed data
+5. Click **Run workflow**
+
+### Data Requirements
+
+- CSV files must exist in `google-apps-script/data/`
+- Supported strategies: Long Calls, Bull Spreads, Covered Calls, Long Puts, Bear Spreads, Short Calls, Strangles, Straddles, Short Puts
+- Columns must include: Strike_Hit, OHLC_Volume, technical indicators
+
+### Success Criteria
+
+✅ All tests pass (4/4)
+✅ Data files available
+✅ Analysis completes without errors
+✅ Outputs generated successfully
+
+### Integration Example
+
+Chain with Google Sheets download:
+
+```yaml
+# In download-google-sheets.yml
+on:
+  workflow_run:
+    workflows: ["Download Google Sheets"]
+    types:
+      - completed
+
+jobs:
+  trigger-analytics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger analytics
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'earnings-options-analytics.yml',
+              ref: 'main',
+              inputs: {
+                analysis_type: 'full',
+                export_charts: 'true',
+                export_csv: 'true'
+              }
+            });
+```
+
+### Customization
+
+**Change Schedule:**
+```yaml
+schedule:
+  - cron: '0 2 * * *'  # Daily at 2 AM UTC
+  # Examples:
+  # - cron: '0 */6 * * *'    # Every 6 hours
+  # - cron: '0 0 * * 1'      # Monday at midnight
+  # - cron: '0 12 * * 1-5'   # Weekdays at noon
+```
+
+**Adjust Retention:**
+```yaml
+retention-days: 30  # Change to 7, 14, 60, or 90
+```
+
+### Cost Estimate
+
+**GitHub Actions Minutes:**
+- Quick analysis: ~2 minutes
+- Full analysis: ~3 minutes
+- Daily scheduled: ~90 minutes/month
+- Well within free tier (2,000 minutes/month)
+
+**Storage:**
+- Per run: ~10-50 MB compressed
+- 30-day retention manageable
+- Within free tier (500 MB)
+
+### Troubleshooting
+
+**Workflow doesn't trigger:**
+- Check file paths in trigger conditions
+- Verify changes in monitored directories
+
+**Analysis job skipped:**
+- Ensure CSV files exist in data directory
+- Check test job didn't fail
+
+**No artifacts generated:**
+- Review job logs for errors
+- Verify outputs directory created
+- Check analysis completed successfully
+
+**Charts missing:**
+- Ensure `export_charts` enabled
+- Check matplotlib/seaborn installed
+- Review analysis log for errors
+
+### Documentation
+
+- Main Script: `earnings_options_analytics/earnings_options_analytics.py`
+- Project Summary: `earnings_options_analytics/PROJECT_SUMMARY.md`
+- Implementation Status: `earnings_options_analytics/IMPLEMENTATION_STATUS.md`
+- User Guide: `earnings_options_analytics/README.md`
+
+---
+
+**Last Updated:** 2025-10-09
