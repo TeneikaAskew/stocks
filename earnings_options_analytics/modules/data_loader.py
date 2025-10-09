@@ -9,6 +9,7 @@ import os
 import glob
 from datetime import datetime, timedelta
 import sys
+import warnings
 
 # Add parent directory to path for config import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -110,12 +111,25 @@ class DataLoader:
                 print(f"  Parsing {col}...")
 
             def parse_json_safe(val):
-                """Safely parse JSON, handling errors"""
+                """Safely parse JSON, handling errors and converting to numeric where appropriate"""
                 if pd.isna(val) or val == '' or val is None:
                     return None
                 try:
                     if isinstance(val, str):
-                        return json.loads(val)
+                        parsed = json.loads(val)
+                        # If it's a list, try to convert elements to float
+                        if isinstance(parsed, list):
+                            numeric_list = []
+                            for item in parsed:
+                                if item is None or item == 'NO_DATA' or item == '':
+                                    numeric_list.append(None)
+                                else:
+                                    try:
+                                        numeric_list.append(float(item))
+                                    except (ValueError, TypeError):
+                                        numeric_list.append(item)
+                            return numeric_list
+                        return parsed
                     return val
                 except (json.JSONDecodeError, TypeError):
                     return None
@@ -163,7 +177,24 @@ class DataLoader:
         # Calculate peak profit across all days
         profit_cols = [f'Day{d}_Profit_Pct' for d in range(6)]
         df['Peak_Profit_Pct'] = df[profit_cols].max(axis=1)
-        df['Peak_Profit_Day'] = df[profit_cols].idxmax(axis=1).str.replace('Day', '').str.replace('_Profit_Pct', '')
+
+        # Handle all-NA rows to avoid FutureWarning
+        # Suppress FutureWarning for idxmax with all-NA values
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore',
+                                  message='.*idxmax with all-NA values.*',
+                                  category=FutureWarning)
+
+            # Check if each row has any non-NA values first
+            has_data = df[profit_cols].notna().any(axis=1)
+
+            # Initialize with default value
+            df['Peak_Profit_Day'] = '0'
+
+            # Only calculate idxmax for rows with data
+            if has_data.sum() > 0:
+                peak_day_series = df.loc[has_data, profit_cols].idxmax(axis=1)
+                df.loc[has_data, 'Peak_Profit_Day'] = peak_day_series.str.replace('Day', '').str.replace('_Profit_Pct', '')
 
         # Calculate average profit
         df['Avg_Profit_Pct'] = df[profit_cols].mean(axis=1)
