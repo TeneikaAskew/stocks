@@ -824,30 +824,34 @@ function EW_headerMap(headerRow) {
     return null;
   }
 
+  // Keep byName as alias for byLowerCase for backward compatibility
+  const byName = byLowerCase;
+  const byNorm = byLowerCase;
+
   // Common aliases for upstream data
   const tickerCol   = find(['ticker','symbol','sym','underlying','root']);
   const runDateCol  = find(['Run Date','run date','rundate','dateadded','RunDate','RUNDATE']);
   // (add more if needed: expiration/strike/etc for dedupe later)
 
   // GF/derived columns we ourselves add — locate by exact labels or normalized
-  const nameCol     = find(['GF_Name']);
-  const priceCol    = find(['GF_Price']);
-  const chgPctCol   = find(['GF_ChangePct']);
-  const highCol     = find(['GF_High']);
-  const lowCol      = find(['GF_Low']);
-  const high52Col   = find(['GF_High52','GF_52w High']);
-  const low52Col    = find(['GF_Low52','GF_52w Low']);
-  const volCol      = find(['GF_Volume']);
-  const avgVol10Col = find(['GF_AvgVol10','GF_Avg Vol 10']);
-  const mcapCol     = find(['GF_MktCap','GF_Market Cap']);
-  const peCol       = find(['GF_PE']);
-  const betaCol     = find(['GF_Beta']);
+  // const nameCol     = find(['GF_Name']);
+  // const priceCol    = find(['GF_Price']);
+  // const chgPctCol   = find(['GF_ChangePct']);
+  // const highCol     = find(['GF_High']);
+  // const lowCol      = find(['GF_Low']);
+  // const high52Col   = find(['GF_High52','GF_52w High']);
+  // const low52Col    = find(['GF_Low52','GF_52w Low']);
+  // const volCol      = find(['GF_Volume']);
+  // const avgVol10Col = find(['GF_AvgVol10','GF_Avg Vol 10']);
+  // const mcapCol     = find(['GF_MktCap','GF_Market Cap']);
+  // const peCol       = find(['GF_PE']);
+  // const betaCol     = find(['GF_Beta']);
 
-  const hv30Col     = find(['HV_30D']);
-  const rvol10Col   = find(['RVOL_10']);
-  const ret5Col     = find(['Ret_5D']);
-  const ret20Col    = find(['Ret_20D']);
-  const gapPctCol   = find(['GapPct','Gap %']);
+  // const hv30Col     = find(['HV_30D']);
+  // const rvol10Col   = find(['RVOL_10']);
+  // const ret5Col     = find(['Ret_5D']);
+  // const ret20Col    = find(['Ret_20D']);
+  // const gapPctCol   = find(['GapPct','Gap %']);
 
   // Tracking columns
   const daysToExpCol    = find(['Days_To_Exp']);
