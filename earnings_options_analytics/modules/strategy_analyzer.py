@@ -379,14 +379,26 @@ class StrategyAnalyzer:
                 metric_data.to_csv(filepath, index=False)
                 print(f"✓ Exported {metric_name} to {filepath}")
             elif isinstance(metric_data, dict):
-                # Convert dict to DataFrame if possible
-                try:
-                    df = pd.DataFrame([metric_data])
-                    filepath = os.path.join(output_path, f'{metric_name}.csv')
-                    df.to_csv(filepath, index=False)
-                    print(f"✓ Exported {metric_name} to {filepath}")
-                except:
-                    pass
+                # Special handling for multi_day which has Series inside
+                if metric_name == 'multi_day' and 'distribution' in metric_data:
+                    dist = metric_data['distribution']
+                    if isinstance(dist, pd.Series):
+                        df = pd.DataFrame({
+                            'Consecutive_Days': dist.index,
+                            'Trade_Count': dist.values
+                        })
+                        filepath = os.path.join(output_path, f'{metric_name}.csv')
+                        df.to_csv(filepath, index=False)
+                        print(f"✓ Exported {metric_name} to {filepath}")
+                else:
+                    # Convert dict to DataFrame if possible
+                    try:
+                        df = pd.DataFrame([metric_data])
+                        filepath = os.path.join(output_path, f'{metric_name}.csv')
+                        df.to_csv(filepath, index=False)
+                        print(f"✓ Exported {metric_name} to {filepath}")
+                    except:
+                        pass
 
     @staticmethod
     def _print_metrics(metrics_dict):
