@@ -7,6 +7,151 @@
  */
 
 /**
+ * Extract historical data from cached API log
+ * @param {Object} cachedData - The cached API log data
+ * @param {boolean} includeRaw - Whether to include raw data
+ * @returns {Object|Array} Formatted data matching the expected return format
+ */
+function EW_extractCachedHistoricalData(cachedData, includeRaw = false) {
+  try {
+    if (!cachedData.response || !cachedData.response.chart || !cachedData.response.chart.result) {
+      return includeRaw ? { data: [], raw: null } : [];
+    }
+
+    const result = cachedData.response.chart.result[0];
+    if (!result.timestamp || !result.indicators || !result.indicators.quote) {
+      return includeRaw ? { data: [], raw: null } : [];
+    }
+
+    const timestamps = result.timestamp;
+    const quote = result.indicators.quote[0];
+    const processedData = [];
+
+    // Process each data point
+    for (let i = 0; i < timestamps.length; i++) {
+      if (quote.high[i] && quote.low[i]) {
+        processedData.push({
+          date: new Date(timestamps[i] * 1000),
+          high: quote.high[i],
+          low: quote.low[i],
+          open: quote.open[i],
+          close: quote.close[i],
+          volume: quote.volume[i] || 0
+        });
+      }
+    }
+
+    if (includeRaw) {
+      return {
+        data: processedData,
+        raw: {
+          timestamps: timestamps,
+          quotes: {
+            open: quote.open || [],
+            high: quote.high || [],
+            low: quote.low || [],
+            close: quote.close || [],
+            volume: quote.volume || []
+          }
+        }
+      };
+    }
+
+    return processedData;
+  } catch (error) {
+    console.error(`Error extracting cached data: ${error.message}`);
+    return includeRaw ? { data: [], raw: null } : [];
+  }
+}
+
+/**
+ * Check for cached daily data across a date range
+ * @param {string} ticker - The ticker symbol
+ * @param {Date} startDate - Start date
+ * @param {Date} endDate - End date
+ * @returns {Object|null} Aggregated cached data if complete, null otherwise
+ */
+function EW_checkCachedDailyRange(ticker, startDate, endDate) {
+  try {
+    const aggregatedData = [];
+    const aggregatedRaw = {
+      timestamps: [],
+      quotes: {
+        open: [],
+        high: [],
+        low: [],
+        close: [],
+        volume: []
+      }
+    };
+
+    // Iterate through each day in the range
+    const currentDate = new Date(startDate);
+    while (currentDate <= endDate) {
+      // Skip weekends
+      if (currentDate.getDay() === 0 || currentDate.getDay() === 6) {
+        currentDate.setDate(currentDate.getDate() + 1);
+        continue;
+      }
+
+      // Check for cached data for this specific day
+      const cachedData = EW_checkExistingApiLog(ticker, currentDate);
+      if (!cachedData) {
+        // Missing data for this day, can't use cache
+        console.log(`CACHE MISS: No cached data for ${ticker} on ${EW_formatDate(currentDate)}`);
+        return null;
+      }
+
+      // Extract the day's data
+      const dayData = EW_extractCachedHistoricalData(cachedData, true);
+      if (dayData.data && dayData.data.length > 0) {
+        // For daily data, aggregate to get day's OHLC
+        const dayHigh = Math.max(...dayData.data.map(d => d.high).filter(h => h != null));
+        const dayLow = Math.min(...dayData.data.map(d => d.low).filter(l => l != null));
+        const dayOpen = dayData.data[0].open;
+        const dayClose = dayData.data[dayData.data.length - 1].close;
+        const dayVolume = dayData.data.reduce((sum, d) => sum + (d.volume || 0), 0);
+
+        aggregatedData.push({
+          date: currentDate,
+          high: dayHigh,
+          low: dayLow,
+          open: dayOpen,
+          close: dayClose,
+          volume: dayVolume
+        });
+
+        // Add to raw data
+        if (dayData.raw) {
+          aggregatedRaw.timestamps.push(Math.floor(currentDate.getTime() / 1000));
+          aggregatedRaw.quotes.open.push(dayOpen);
+          aggregatedRaw.quotes.high.push(dayHigh);
+          aggregatedRaw.quotes.low.push(dayLow);
+          aggregatedRaw.quotes.close.push(dayClose);
+          aggregatedRaw.quotes.volume.push(dayVolume);
+        }
+      }
+
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    if (aggregatedData.length > 0) {
+      console.log(`CACHE: Aggregated ${aggregatedData.length} days of cached data for ${ticker}`);
+      return {
+        data: aggregatedData,
+        raw: aggregatedRaw,
+        complete: true
+      };
+    }
+
+    return null;
+  } catch (error) {
+    console.error(`Error checking cached daily range: ${error.message}`);
+    return null;
+  }
+}
+
+/**
  * Check if a stock hit a target price on a specific date
  * Uses 1-minute interval data to capture full trading day
  * @param {string} ticker - Stock ticker symbol
@@ -19,7 +164,7 @@ function EW_checkStockIntraday(ticker, targetPrice, date = new Date()) {
   const dayOfWeek = date.getDay();
   if (dayOfWeek === 0 || dayOfWeek === 6) {
     const dayName = dayOfWeek === 0 ? 'Sunday' : 'Saturday';
-    const dateStr = date.toISOString().split('T')[0];
+    const dateStr = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
     console.log(`YAHOO: Skipping intraday check for ${ticker} on ${dateStr} (${dayName}) - markets closed`);
     return {
       ticker: ticker,
@@ -77,12 +222,12 @@ function EW_checkStockIntraday(ticker, targetPrice, date = new Date()) {
           ticker: ticker,
           interval: interval,
           targetPrice: targetPrice,
-          dateRequested: date.toISOString().split('T')[0],
+          dateRequested: EW_formatDate(date),
           type: 'fallback_success',
           originalInterval: '1m',
           fallbackInterval: interval,
           reason: 'Original 1m interval failed',
-          timestamp: new Date().toISOString()
+          timestamp: EW_formatDateTime(new Date())
         });
         
         // console.log(`\n=== EW_checkStockIntraday FALLBACK SUCCESS for ${ticker} ===`);
@@ -100,8 +245,8 @@ function EW_checkStockIntraday(ticker, targetPrice, date = new Date()) {
     }
   }
   
-  console.log(`YAHOO ERROR: No data available for ${ticker} on ${date.toISOString()} with any interval`);
-  Logger.log(`YAHOO ERROR: Failed to retrieve data for ${ticker} on ${date.toISOString()} with all intervals`);
+  console.log(`YAHOO ERROR: No data available for ${ticker} on ${EW_formatDate(date)} with any interval`);
+  Logger.log(`YAHOO ERROR: Failed to retrieve data for ${ticker} on ${EW_formatDate(date)} with all intervals`);
   return { hit: false, error: 'No data available for any interval' };
 }
 
@@ -118,7 +263,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
   const requestedDayOfWeek = date.getDay();
   if (requestedDayOfWeek === 0 || requestedDayOfWeek === 6) {
     const dayName = requestedDayOfWeek === 0 ? 'Sunday' : 'Saturday';
-    const dateStr = date.toISOString().split('T')[0];
+    const dateStr = EW_formatDate(date);
     EW_trace('YAHOO', `Skipping ${dateStr} (${dayName}) - markets closed on weekends`);
     console.log(`YAHOO: Skipping ${ticker} for ${dateStr} - ${dayName}, markets closed`);
     
@@ -139,7 +284,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
   // Check for cached API data first
   const cachedData = EW_getCachedApiData(ticker, date);
   if (cachedData) {
-    console.log(`YAHOO: Using cached data for ${ticker} on ${date.toISOString().split('T')[0]}`);
+    console.log(`YAHOO: Using cached data for ${ticker} on ${EW_formatDate(date)}`);
     
     // Build result from cached data
     const hit = targetPrice ? 
@@ -166,29 +311,29 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
   
   // Set time range based on interval
   let startDate, endDate;
-  
+
   if (interval === '1d') {
-    // For daily data, get last 30 days to ensure we have the date
+    // For daily data, fetch only the specific date requested
     startDate = new Date(date);
-    startDate.setDate(startDate.getDate() - 30);
+    startDate.setHours(0, 0, 0, 0);
     endDate = new Date(date);
-    endDate.setDate(endDate.getDate() + 1);
+    endDate.setHours(23, 59, 59, 999);
   } else {
     // For intraday data, check if date is recent enough
     const today = new Date();
     const daysSinceDate = Math.floor((today - date) / (1000 * 60 * 60 * 24));
-    
+
     // 1-minute data is typically only available for last 7 days
     if (interval === '1m' && daysSinceDate > 7) {
-      EW_trace('YAHOO', `1-minute data not available for ${ticker} on ${date.toISOString()} (${daysSinceDate} days ago)`);
+      EW_trace('YAHOO', `1-minute data not available for ${ticker} on ${EW_formatDate(date)} (${daysSinceDate} days ago)`);
       throw new Error(`1-minute data only available for last 7 days`);
     }
-    
+
     // For intraday data, use the simplified approach
     // Always get full trading day data
     startDate = new Date(date);
     endDate = new Date(date);
-    
+
     if (interval === '1m') {
       // For 1-minute data, use regular trading hours only
       startDate.setHours(9, 30, 0, 0);   // 9:30 AM
@@ -198,7 +343,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
       startDate.setHours(4, 0, 0, 0);    // 4:00 AM pre-market
       endDate.setHours(20, 0, 0, 0);     // 8:00 PM after-hours
     }
-    
+
     // Important: Don't adjust end time for today - always request full day
     // Yahoo will return whatever data is available up to current time
   }
@@ -208,21 +353,21 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
   
   // Ensure start is before end
   if (period1 >= period2) {
-    console.error(`YAHOO ERROR: Start time (${startDate.toISOString()}) is after end time (${endDate.toISOString()})`);
+    console.error(`YAHOO ERROR: Start time (${EW_formatDateTime(startDate)}) is after end time (${EW_formatDateTime(endDate)})`);
     // If we're checking today and it's before market open, adjust to yesterday
     if (interval !== '1d' && date.toDateString() === new Date().toDateString()) {
       const yesterday = new Date(date);
       yesterday.setDate(yesterday.getDate() - 1);
-      console.log(`YAHOO: Adjusting to previous trading day: ${yesterday.toISOString()}`);
+      console.log(`YAHOO: Adjusting to previous trading day: ${EW_formatDate(yesterday)}`);
       return EW_fetchYahooData(ticker, targetPrice, yesterday, interval);
     }
     throw new Error(`Invalid date range: start ${period1} >= end ${period2}`);
   }
-  
+
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=${interval}&events=history`;
-  
+
   console.log(`YAHOO API: ${url}`);
-  EW_trace('YAHOO', `Fetching ${ticker} with ${interval} interval from ${startDate.toISOString()} to ${endDate.toISOString()}`);
+  EW_trace('YAHOO', `Fetching ${ticker} with ${interval} interval from ${EW_formatDateTime(startDate)} to ${EW_formatDateTime(endDate)}`);
   EW_trace('YAHOO', `URL: ${url}`);
   
   // Log API call attempt
@@ -231,9 +376,9 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
     ticker: ticker,
     interval: interval,
     targetPrice: targetPrice,
-    dateRequested: date.toISOString().split('T')[0],
-    startDate: startDate.toISOString(),
-    endDate: endDate.toISOString(),
+    dateRequested: EW_formatDate(date),
+    startDate: EW_formatDateTime(startDate),
+    endDate: EW_formatDateTime(endDate),
     period1: period1,
     period2: period2,
     url: url,
@@ -346,7 +491,7 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
               close: close,
               index: i  // Store index for indicator calculation
             };
-            EW_trace('YAHOO', `🎯 TARGET HIT! ${ticker} hit ${targetPrice} at ${hitTime.toISOString()}`);
+            EW_trace('YAHOO', `🎯 TARGET HIT! ${ticker} hit ${targetPrice} at ${EW_formatDateTime(hitTime)}`);
           }
         }
       }
@@ -371,10 +516,10 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
     if (hitTime) {
       // Calculate indicators at the point where strike was hit
       const hitIndicators = EW_calculateIndicatorsFromYahoo(timestamps, quotes, hitData.index);
-      
+
       logEntry.hitDetected = true;
       logEntry.hitPrice = targetPrice;
-      logEntry.hitTime = hitTime.toISOString();
+      logEntry.hitTime = EW_formatDateTime(hitTime);
       logEntry.dayHigh = dayHigh;
       logEntry.dayLow = dayLow;
       if (hitIndicators) {
@@ -386,24 +531,29 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
         };
       }
       EW_logApiCall(logEntry, data);
-      
+
       // Get daily OHLC data
       let dayOpen = null;
-      let dayClose = lastClose;
+      let lastClose = null;
       let dayVolume = 0;
-      
-      // Find first open price of the day
+
+      // Find first open price, last close, and total volume of the day
       for (let i = 0; i < timestamps.length; i++) {
         const dataTime = new Date(timestamps[i] * 1000);
         if (dataTime >= targetDateStart && dataTime <= targetDateEnd) {
           if (dayOpen === null && quotes.open[i] !== null) {
             dayOpen = quotes.open[i];
           }
+          if (quotes.close[i] !== null) {
+            lastClose = quotes.close[i];
+          }
           if (quotes.volume && quotes.volume[i]) {
             dayVolume += quotes.volume[i];
           }
         }
       }
+
+      const dayClose = lastClose;
       
       const returnObj = {
         hit: true,
@@ -511,18 +661,78 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
  * @returns {Array|Object} Array of daily price data or object with data and raw
  */
 function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = false) {
+  // First check if we have cached data for this range
+  // For minute data, check Drive cache for each day in the range
+  const startDateStr = EW_formatDate(startDate);
+  const endDateStr = EW_formatDate(endDate);
+
+  // Check if this is a single-day request (most common for minute data)
+  if (startDateStr === endDateStr) {
+    const cachedData = EW_checkExistingApiLog(ticker, startDate);
+    if (cachedData && cachedData.response && !cachedData.metadata?.error) {
+      console.log(`CACHE HIT: Using cached minute data for ${ticker} on ${startDateStr}`);
+      // Extract and return the data in the expected format
+      return EW_extractCachedHistoricalData(cachedData, includeRaw);
+    }
+  } else {
+    // Multi-day request - check if ALL days are cached in Drive
+    console.log(`CACHE CHECK: Checking Drive for ${ticker} from ${startDateStr} to ${endDateStr}`);
+
+    let allDaysCached = true;
+    let cachedFiles = [];
+    let currentDate = new Date(startDate);
+    const end = new Date(endDate);
+
+    // Check each day in the range
+    while (currentDate <= end) {
+      const cachedData = EW_checkExistingApiLog(ticker, currentDate);
+      if (cachedData && cachedData.response && !cachedData.metadata?.error) {
+        cachedFiles.push(cachedData);
+      } else {
+        allDaysCached = false;
+        console.log(`CACHE MISS: ${ticker} ${EW_formatDate(currentDate)} not found in Drive`);
+        break;
+      }
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    // If all days are cached, combine and return them
+    if (allDaysCached && cachedFiles.length > 0) {
+      console.log(`CACHE HIT: All ${cachedFiles.length} days found in Drive for ${ticker}`);
+      // Combine data from all cached files
+      let combinedData = [];
+      let rawData = null;
+
+      for (const cachedFile of cachedFiles) {
+        const extracted = EW_extractCachedHistoricalData(cachedFile, false);
+        if (extracted && Array.isArray(extracted)) {
+          combinedData = combinedData.concat(extracted);
+        }
+        // Use first file's raw data for indicators
+        if (!rawData && cachedFile.response) {
+          rawData = cachedFile.response;
+        }
+      }
+
+      return includeRaw ? { data: combinedData, raw: rawData } : combinedData;
+    }
+
+    console.log(`CACHE MISS: Not all days cached, will call Yahoo API`);
+  }
+
   const period1 = Math.floor(startDate.getTime() / 1000);
   const period2 = Math.floor(endDate.getTime() / 1000);
-  
+
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1m&events=history`;
-  
+
   // Log API call attempt
   const callStartTime = new Date();
   const logEntry = {
     ticker: ticker,
     interval: '1m',
-    startDate: startDate.toISOString().split('T')[0],
-    endDate: endDate.toISOString().split('T')[0],
+    startDate: EW_formatDate(startDate),
+    endDate: EW_formatDate(endDate),
+    dateRequested: EW_formatDate(startDate),  // Use startDate for cache filename
     url: url,
     type: 'historical_range'
   };
@@ -569,10 +779,10 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
       // Calculate days since start date to provide context
       const daysSince = Math.floor((new Date() - startDate) / (1000 * 60 * 60 * 24));
       const currentTime = new Date();
-      console.log(`[YAHOO] Current time: ${currentTime.toISOString()}, Request range: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+      console.log(`[YAHOO] Current time: ${EW_formatDateTime(currentTime)}, Request range: ${EW_formatDateTime(startDate)} to ${EW_formatDateTime(endDate)}`);
       console.log(`[YAHOO] Days since start: ${daysSince}, Period1: ${period1}, Period2: ${period2}`);
-      
-      EW_trace('BACKFILL', `${ticker}: No 1-minute data available for period ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (${daysSince} days ago). 1-minute data typically available for last 7 days only.`);
+
+      EW_trace('BACKFILL', `${ticker}: No 1-minute data available for period ${EW_formatDate(startDate)} to ${EW_formatDate(endDate)} (${daysSince} days ago). 1-minute data typically available for last 7 days only.`);
       
       return includeRaw ? { data: [], raw: null } : [];
     }
@@ -653,8 +863,8 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
     
     // Log data retrieval details
     if (historicalData.length > 0) {
-      const firstDate = historicalData[0].date.toISOString();
-      const lastDate = historicalData[historicalData.length - 1].date.toISOString();
+      const firstDate = EW_formatDateTime(historicalData[0].date);
+      const lastDate = EW_formatDateTime(historicalData[historicalData.length - 1].date);
       EW_trace('BACKFILL', `${ticker}: Retrieved ${historicalData.length} 1-minute data points from ${firstDate} to ${lastDate}`);
       
       // Validate timestamps are in expected range (Unix seconds, not milliseconds)
@@ -700,18 +910,28 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
  * @return {Object} Historical price data with high, low, close, volume and optionally raw data
  */
 function EW_getYahooHistoricalRangeWithInterval(ticker, startDate, endDate, interval = '1m', includeRaw = false) {
+  // For daily data (1d interval), check cache for the date range
+  if (interval === '1d') {
+    const cachedDailyData = EW_checkCachedDailyRange(ticker, startDate, endDate);
+    if (cachedDailyData && cachedDailyData.complete) {
+      console.log(`CACHE HIT: Using cached daily data for ${ticker} from ${EW_formatDate(startDate)} to ${EW_formatDate(endDate)}`);
+      return includeRaw ? cachedDailyData : cachedDailyData.data;
+    }
+  }
+
   const period1 = Math.floor(startDate.getTime() / 1000);
   const period2 = Math.floor(endDate.getTime() / 1000);
-  
+
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=${interval}&events=history`;
-  
+
   // Log API call attempt
   const callStartTime = new Date();
   const logEntry = {
     ticker: ticker,
     interval: interval,
-    startDate: startDate.toISOString().split('T')[0],
-    endDate: endDate.toISOString().split('T')[0],
+    startDate: EW_formatDate(startDate),
+    endDate: EW_formatDate(endDate),
+    dateRequested: EW_formatDate(startDate),  // Use startDate for cache filename
     url: url,
     type: 'historical_range_interval'
   };
@@ -757,7 +977,7 @@ function EW_getYahooHistoricalRangeWithInterval(ticker, startDate, endDate, inte
       
       // Calculate days since start date to provide context
       const daysSince = Math.floor((new Date() - startDate) / (1000 * 60 * 60 * 24));
-      EW_trace('BACKFILL', `${ticker}: No ${interval} data available for period ${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]} (${daysSince} days ago).`);
+      EW_trace('BACKFILL', `${ticker}: No ${interval} data available for period ${EW_formatDate(startDate)} to ${EW_formatDate(endDate)} (${daysSince} days ago).`);
       
       return { data: [], raw: null };
     }
@@ -808,10 +1028,10 @@ function EW_getYahooHistoricalRangeWithInterval(ticker, startDate, endDate, inte
     
     // Log successful retrieval
     logEntry.processedPoints = priceData.length;
-    EW_logApiCall(logEntry, { 
-      dataPoints: timestamps.length, 
+    EW_logApiCall(logEntry, {
+      dataPoints: timestamps.length,
       processedPoints: priceData.length,
-      dateRange: `${priceData[0]?.date.toISOString()} to ${priceData[priceData.length - 1]?.date.toISOString()}`
+      dateRange: `${EW_formatDateTime(priceData[0]?.date)} to ${EW_formatDateTime(priceData[priceData.length - 1]?.date)}`
     });
     
     // Prepare result object
@@ -1183,7 +1403,7 @@ function EW_fetchYahooHistoricalForDate(ticker, date, useCache = true) {
     if (useCache) {
       const cachedData = EW_getCachedApiData(ticker, date);
       if (cachedData) {
-        console.log(`Using cached data for ${ticker} on ${date.toISOString().split('T')[0]}`);
+        console.log(`Using cached data for ${ticker} on ${EW_formatDate(date)}`);
         return cachedData;
       }
     }

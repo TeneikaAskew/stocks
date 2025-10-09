@@ -22,15 +22,15 @@
  */
 function EW_formatDateForReport(dateValue) {
   if (!dateValue) return 'N/A';
-  
+
   try {
     if (dateValue instanceof Date) {
-      return dateValue.toISOString().split('T')[0]; // YYYY-MM-DD format
+      return EW_formatDate(dateValue); // YYYY-MM-DD format in local timezone
     } else if (typeof dateValue === 'string') {
       // If already a string, try to parse and reformat
       const date = new Date(dateValue);
       if (!isNaN(date.getTime())) {
-        return date.toISOString().split('T')[0];
+        return EW_formatDate(date);
       }
       return dateValue; // Return as-is if can't parse
     }

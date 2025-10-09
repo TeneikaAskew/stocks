@@ -1,4 +1,4 @@
-name: Update Market Data and Events
+name: Update Economic Events Calendar
 
 on:
   schedule:
@@ -28,7 +28,10 @@ on:
 jobs:
   update_market_data:
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write
+      issues: write
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
