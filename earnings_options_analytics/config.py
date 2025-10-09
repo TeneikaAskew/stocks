@@ -44,6 +44,7 @@ SPREAD_COLUMNS = ['longStrike', 'shortStrike', 'maxProfit', 'maxLoss', 'breakeve
 
 # Analysis parameters
 MIN_TRADES_FOR_ANALYSIS = 30  # Minimum trades needed for statistical significance
+MIN_SAMPLE_SIZE = 5  # Minimum sample size for per-day analysis
 TOP_N_PLAYS = 50  # Number of top plays to profile
 INDICATOR_BINS = 10  # Number of bins for indicator histograms
 ML_TEST_SPLIT = 0.2  # Train/test split for ML models
