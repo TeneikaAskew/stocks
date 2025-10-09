@@ -1,0 +1,117 @@
+name: Download Google Sheets Data
+
+on:
+  schedule:
+    # Run weekly on Sundays at 6:00 PM EST (11:00 PM UTC)
+    - cron: '0 23 * * 0'
+  workflow_dispatch:  # Allow manual triggering
+    inputs:
+      sheets:
+        description: 'Specific sheets to download (space-separated, leave empty for all)'
+        required: false
+        default: ''
+        type: string
+      force_download:
+        description: 'Force re-download even if data exists'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      output_format:
+        description: 'Output format for downloaded data'
+        required: false
+        default: 'csv'
+        type: choice
+        options:
+          - 'csv'
+          - 'json'
+          - 'both'
+
+jobs:
+  download-sheets:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-google-api-${{ hashFiles('requirements-google-api.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-google-api-
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+
+    - name: Set up Google credentials
+      run: |
+        mkdir -p credentials
+        echo '${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}' > credentials/google-sheets-credentials.json
+
+    - name: Download Google Sheets
+      run: |
+        ARGS="--spreadsheet-id ${{ secrets.GOOGLE_SPREADSHEET_ID }} --credentials credentials/google-sheets-credentials.json"
+
+        # Add specific sheets if provided
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.sheets }}" ]; then
+          ARGS="$ARGS --sheets ${{ github.event.inputs.sheets }}"
+        fi
+
+        # Add force download flag if enabled
+        if [ "${{ github.event.inputs.force_download }}" = "true" ]; then
+          ARGS="$ARGS --force"
+        fi
+
+        # Add output format if specified
+        if [ -n "${{ github.event.inputs.output_format }}" ]; then
+          ARGS="$ARGS --format ${{ github.event.inputs.output_format }}"
+        fi
+
+        python scripts/download_google_sheets.py $ARGS
+
+    - name: Clean up credentials
+      if: always()
+      run: |
+        rm -f credentials/google-sheets-credentials.json
+
+    - name: Commit and push data
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+
+        # Add CSV files in data directory
+        git add google-apps-script/data/*.csv 2>/dev/null || true
+
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          # Get current date for commit message
+          COMMIT_DATE=$(date +'%Y-%m-%d')
+
+          # Create commit message
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.sheets }}" ]; then
+            git commit -m "update: Google Sheets data - $COMMIT_DATE (${{ github.event.inputs.sheets }})"
+          else
+            git commit -m "update: Google Sheets data - $COMMIT_DATE"
+          fi
+
+          git push
+        fi
