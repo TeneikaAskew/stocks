@@ -94,15 +94,20 @@ class IndicatorAnalyzer:
 
             # Win rate by indicator quartiles
             if 'Peak_Profit_Pct' in valid_df.columns:
-                quartiles = pd.qcut(valid_ind, q=4, labels=['Q1', 'Q2', 'Q3', 'Q4'], duplicates='drop')
-                valid_df['Quartile'] = quartiles
+                try:
+                    quartiles = pd.qcut(valid_ind, q=4, labels=['Q1', 'Q2', 'Q3', 'Q4'], duplicates='drop')
+                    valid_df['Quartile'] = quartiles
 
-                q1_win_rate = (valid_df[valid_df['Quartile'] == 'Q1']['Peak_Profit_Pct'] > 0).mean() * 100
-                q4_win_rate = (valid_df[valid_df['Quartile'] == 'Q4']['Peak_Profit_Pct'] > 0).mean() * 100
+                    q1_win_rate = float((valid_df[valid_df['Quartile'] == 'Q1']['Peak_Profit_Pct'] > 0).mean() * 100)
+                    q4_win_rate = float((valid_df[valid_df['Quartile'] == 'Q4']['Peak_Profit_Pct'] > 0).mean() * 100)
 
-                metrics['Q1_Win_Rate'] = q1_win_rate
-                metrics['Q4_Win_Rate'] = q4_win_rate
-                metrics['Q4_vs_Q1_Lift'] = q4_win_rate - q1_win_rate
+                    metrics['Q1_Win_Rate'] = q1_win_rate if not pd.isna(q1_win_rate) else 0.0
+                    metrics['Q4_Win_Rate'] = q4_win_rate if not pd.isna(q4_win_rate) else 0.0
+                    metrics['Q4_vs_Q1_Lift'] = (q4_win_rate - q1_win_rate) if not (pd.isna(q4_win_rate) or pd.isna(q1_win_rate)) else 0.0
+                except Exception as e:
+                    metrics['Q1_Win_Rate'] = 0.0
+                    metrics['Q4_Win_Rate'] = 0.0
+                    metrics['Q4_vs_Q1_Lift'] = 0.0
 
             correlations.append(metrics)
 

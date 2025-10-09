@@ -42,7 +42,11 @@
       "Bash(timeout 60 python:*)",
       "Bash(timeout 90 python earnings_options_analytics.py --quick)",
       "Bash(git pull:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(git revert:*)",
+      "Bash(git reset:*)",
+      "Bash(timeout:*)",
+      "Bash(timeout 120 python:*)"
     ],
     "deny": []
   }

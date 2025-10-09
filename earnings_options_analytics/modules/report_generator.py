@@ -288,7 +288,12 @@ class ReportGenerator:
                 def format_metric(key, default=0):
                     val = overall.get(key, default)
                     if isinstance(val, str):
-                        return val  # Already formatted
+                        # Remove % if present and try to convert
+                        val_clean = val.replace('%', '').strip()
+                        try:
+                            return f"{float(val_clean):.1f}"
+                        except (ValueError, TypeError):
+                            return val  # Return original if can't convert
                     try:
                         return f"{float(val):.1f}"
                     except (ValueError, TypeError):
@@ -397,9 +402,17 @@ class ReportGenerator:
 
                 if 'best_entry_window' in recommendations:
                     window = recommendations['best_entry_window']
+                    win_rate = window.get('win_rate', 0)
+                    # Ensure win_rate is numeric
+                    try:
+                        win_rate_val = float(win_rate)
+                        win_rate_str = f"{win_rate_val:.1f}"
+                    except (ValueError, TypeError):
+                        win_rate_str = str(win_rate) if win_rate else "0.0"
+
                     section_html += f"""
                     <li>Best Entry Window: <strong>{window.get('window', 'N/A')}</strong>
-                        (Win Rate: {window.get('win_rate', 0):.1f}%)</li>
+                        (Win Rate: {win_rate_str}%)</li>
                     """
 
                 if 'top_entry_days' in recommendations:

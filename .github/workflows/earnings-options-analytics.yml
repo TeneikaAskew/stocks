@@ -299,6 +299,24 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+      - name: Commit outputs to repository
+        if: steps.check_data.outputs.has_data == 'true' && steps.analysis_config.outputs.analysis_type != 'test-only'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add all outputs (will overwrite existing files)
+          git add -f earnings_options_analytics/outputs/
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "update: analytics outputs - $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            git push
+            echo "✓ Outputs committed and pushed to repository"
+          fi
+
       - name: Create summary comment
         if: steps.check_data.outputs.has_data == 'true' && github.event_name == 'pull_request'
         uses: actions/github-script@v7

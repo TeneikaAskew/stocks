@@ -54,6 +54,26 @@ python earnings_options_analytics.py --quick
 python earnings_options_analytics.py --strategies "Long Calls" "Bull Spreads"
 ```
 
+### 4. Launch Interactive Dashboard
+
+**Start the Dashboard** (recommended for data exploration):
+```bash
+./run_dashboard.sh
+```
+
+Or manually:
+```bash
+streamlit run dashboard_app.py
+```
+
+The dashboard will open at http://localhost:8501 with:
+- 📊 **Overview** - Executive summary with key metrics
+- 📈 **Strategy Performance** - Interactive strategy comparisons
+- ⏰ **Earnings Timing** - Entry window optimization
+- 🎯 **Risk Management** - Position sizing and risk/reward
+- 📉 **Indicators** - Technical indicator effectiveness
+- 🔍 **Data Explorer** - Raw data browsing and export
+
 ## 📊 Outputs
 
 All outputs are saved to `outputs/` directory:
@@ -85,17 +105,24 @@ All outputs are saved to `outputs/` directory:
 - `earnings_timing.png` - Optimal entry windows
 - `risk_reward_distribution.png` - R/R buckets analysis
 
-### Dashboard (`outputs/dashboards/`)
-- `interactive_dashboard.html` - Interactive Plotly dashboard
+### Interactive Dashboard
+Launch with `./run_dashboard.sh` or `streamlit run dashboard_app.py`
+- Real-time interactive visualizations
+- Multi-page navigation (Overview, Strategy, Timing, Risk, Indicators, Explorer)
+- Filterable data tables
+- Downloadable datasets
+- Responsive charts with zoom/pan/hover
 
 ### Master Report (`outputs/`)
-- `earnings_options_master_report.pdf` - Comprehensive PDF report
+- `earnings_options_report.html` - Comprehensive HTML report
 
 ## 📁 Project Structure
 
 ```
 earnings_options_analytics/
-├── earnings_options_analytics.py    # Main script
+├── earnings_options_analytics.py    # Main CLI script
+├── dashboard_app.py                 # Interactive Streamlit dashboard
+├── run_dashboard.sh                 # Dashboard launcher script
 ├── config.py                         # Configuration settings
 ├── requirements.txt                  # Python dependencies
 ├── README.md                         # This file
@@ -108,13 +135,12 @@ earnings_options_analytics/
 │   ├── risk_analyzer.py             # Risk/reward analysis
 │   ├── visualizations.py            # Chart generation
 │   ├── predictive_model.py          # ML models (optional)
-│   └── report_generator.py          # PDF report generation
+│   └── report_generator.py          # HTML report generation
 │
 └── outputs/
     ├── csv_reports/                 # CSV exports
-    ├── charts/                      # PNG/PDF charts
-    ├── dashboards/                  # Interactive HTML
-    └── master_report.pdf            # Final report
+    ├── charts/                      # PNG charts
+    └── earnings_options_report.html # HTML report
 ```
 
 ## 🔧 Configuration
