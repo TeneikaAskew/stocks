@@ -43,9 +43,19 @@ st.markdown("""
         margin: 0.5rem 0;
     }
     .stMetric {
-        background-color: white;
-        padding: 10px;
-        border-radius: 5px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 15px;
+        border-radius: 10px;
+        color: white;
+    }
+    .stMetric label {
+        color: rgba(255, 255, 255, 0.9) !important;
+        font-weight: 500;
+    }
+    .stMetric [data-testid="stMetricValue"] {
+        color: white !important;
+        font-size: 1.8rem !important;
+        font-weight: bold !important;
     }
 </style>
 """, unsafe_allow_html=True)
