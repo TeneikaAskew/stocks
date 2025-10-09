@@ -59,13 +59,24 @@ python earnings_options_analytics.py --strategies "Long Calls" "Bull Spreads"
 All outputs are saved to `outputs/` directory:
 
 ### CSV Reports (`outputs/csv_reports/`)
+**Strategy Analysis:**
 - `overall.csv` - Overall performance metrics
 - `strategy_breakdown.csv` - Performance by strategy
 - `holding_period.csv` - Day 0-5 profitability
 - `risk_reward.csv` - Risk/reward distribution
-- `indicator_effectiveness.csv` - Predictive power ranking
-- `earnings_timing.csv` - Performance by entry window
-- `top_winners.csv` - Best 50 trades with full profiles
+- `strategy_type.csv` - Performance by strategy type
+
+**Earnings Timing Analysis (NEW):**
+- `earnings_timing_entry_window.csv` - Performance by entry window (0-2, 3-5 days, etc.)
+- `earnings_timing_release_time.csv` - Before/after market impact
+- `earnings_timing_pre_vs_post.csv` - Pre vs post earnings performance
+- `earnings_timing_optimal_days.csv` - Best specific entry days
+- `earnings_timing_time_to_hit.csv` - Strike hit speed by window
+- `earnings_timing_recommendations.csv` - Actionable trading insights
+
+**Future Reports:**
+- `indicator_effectiveness.csv` - Predictive power ranking (coming soon)
+- `top_winners.csv` - Best 50 trades with full profiles (coming soon)
 
 ### Charts (`outputs/charts/`)
 - `strategy_comparison.png` - Multi-metric strategy comparison
