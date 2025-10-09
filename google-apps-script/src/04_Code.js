@@ -801,23 +801,24 @@ const EW_TRACKING_LABELS = [
 /**
  * Creates a mapping object from header row for easy column access
  * Maps header names to 1-based column indices and provides friendly column references
+ * Uses simple lowercase comparison for predictable, maintainable matching
  * @param {Array} headerRow - Array of header names from first row
- * @returns {Object} Object with byName mapping and specific column references
+ * @returns {Object} Object with column references by friendly names
  */
 function EW_headerMap(headerRow) {
-  const byName = {};               // raw key -> 1-based index
-  const byNorm = {};               // normalized key -> 1-based index
+  const byLowerCase = {};  // lowercase key -> 1-based index
+
+  // Build simple lowercase mapping
   headerRow.forEach((h, i) => {
-    const raw  = String(h || '').trim();
-    const norm = EW_norm(raw);
-    if (raw)  byName[raw.toLowerCase()] = i + 1;
-    if (norm) byNorm[norm] = i + 1;
+    const key = String(h || '').trim().toLowerCase();
+    if (key) byLowerCase[key] = i + 1;
   });
 
-  // Helper: first match among aliases (by normalized name)
+  // Helper: first match among aliases (case-insensitive)
   function find(aliases) {
     for (const a of aliases) {
-      const ix = byNorm[EW_norm(a)];
+      const key = String(a || '').trim().toLowerCase();
+      const ix = byLowerCase[key];
       if (ix) return ix;
     }
     return null;

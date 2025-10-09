@@ -23,8 +23,14 @@ function EW_url(path) {
 /**
  * Normalizes string for comparison (lowercase, trimmed)
  * Used for case-insensitive string matching
+ *
+ * NOTE: This function is more complex than typically needed. For simple header
+ * matching, use .trim().toLowerCase() instead. This is kept for backward
+ * compatibility with code that may rely on its specific normalization behavior.
+ *
  * @param {string} s - String to normalize
  * @returns {string} Normalized string
+ * @deprecated Consider using simple .trim().toLowerCase() for most cases
  */
 function EW_norm(s) {
   if (typeof s !== 'string') return '';
@@ -349,7 +355,7 @@ function getOptionsSheetHeaders() {
 
 /**
  * Diagnostic function to check header mapping for Bull/Bear Spreads
- * Helps debug the "Missing Column: Required column strikeCol not found" error
+ * Helps debug column mapping issues and verify the simplified lowercase matching
  */
 function EW_diagnoseSpreadHeaders() {
   const ss = SpreadsheetApp.getActive();
@@ -368,11 +374,11 @@ function EW_diagnoseSpreadHeaders() {
     console.log(`\n${sheetName}:`);
     console.log(`Total columns: ${headers.length}`);
 
-    // Show all headers with their positions
+    // Show all headers with their positions and simple lowercase keys
     headers.forEach((h, i) => {
       if (h) {
-        const norm = EW_norm(h);
-        console.log(`  Col ${i + 1}: "${h}" -> normalized: "${norm}"`);
+        const key = String(h).trim().toLowerCase();
+        console.log(`  Col ${i + 1}: "${h}" -> lowercase: "${key}"`);
       }
     });
 
