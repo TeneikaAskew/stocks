@@ -56,15 +56,23 @@ python earnings_options_analytics.py --strategies "Long Calls" "Bull Spreads"
 
 ### 4. Launch Interactive Dashboard
 
-**Start the Dashboard** (recommended for data exploration):
+**IMPORTANT:** You must run the dashboard from the `earnings_options_analytics/` directory:
+
+**Option 1 - Using the launcher script (recommended):**
 ```bash
 ./run_dashboard.sh
 ```
 
-Or manually:
+**Option 2 - Direct streamlit command (must be in correct directory):**
 ```bash
+# From the earnings_options_analytics directory:
 streamlit run dashboard_app.py
+
+# OR from parent directory, use full path with cd:
+cd earnings_options_analytics && streamlit run dashboard_app.py
 ```
+
+⚠️ **Don't run**: `streamlit run earnings_options_analytics/dashboard_app.py` from parent directory - this will fail to load data!
 
 The dashboard will open at http://localhost:8501 with:
 - 📊 **Overview** - Executive summary with key metrics
