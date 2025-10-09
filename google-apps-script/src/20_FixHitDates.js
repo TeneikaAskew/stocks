@@ -271,13 +271,17 @@ function EW_fixStrikeHitValues() {
   
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  
+
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(headers);
-  
-  // Check required columns
-  if (!hdrMap.strikeHitCol || !hdrMap.ohlcVolumeCol || !hdrMap.strategyCol || !hdrMap.strikeCol) {
-    EW_safeAlert('Missing Columns', 'Required columns not found (Strike_Hit, OHLC_Volume, Strategy, Strike)');
+
+  // Check required columns - handle spreads vs single-leg strategies
+  const sheetName = sheet.getName();
+  const isSpread = sheetName.toUpperCase().includes('SPREAD');
+  const strikeColumn = isSpread ? 'longStrikeCol' : 'strikeCol';
+
+  if (!hdrMap.strikeHitCol || !hdrMap.ohlcVolumeCol || !hdrMap.strategyCol || !hdrMap[strikeColumn]) {
+    EW_safeAlert('Missing Columns', 'Required columns not found (Strike_Hit, OHLC_Volume, Strategy, Strike/LongStrike)');
     return;
   }
   
@@ -289,7 +293,7 @@ function EW_fixStrikeHitValues() {
   data.forEach((row, index) => {
     const rowNum = index + 2;
     const strategy = row[hdrMap.strategyCol - 1];
-    const strike = parseFloat(row[hdrMap.strikeCol - 1]);
+    const strike = parseFloat(row[hdrMap[strikeColumn] - 1]);
     const ohlcData = row[hdrMap.ohlcVolumeCol - 1];
     const currentStrikeHit = row[hdrMap.strikeHitCol - 1];
     const ticker = row[hdrMap.tickerCol - 1] || 'Unknown';
