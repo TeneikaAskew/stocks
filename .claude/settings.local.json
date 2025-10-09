@@ -46,7 +46,10 @@
       "Bash(git revert:*)",
       "Bash(git reset:*)",
       "Bash(timeout:*)",
-      "Bash(timeout 120 python:*)"
+      "Bash(timeout 120 python:*)",
+      "Bash(tee:*)",
+      "Read(//tmp/**)",
+      "Bash(cat:*)"
     ],
     "deny": []
   }
