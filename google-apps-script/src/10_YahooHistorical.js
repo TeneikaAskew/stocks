@@ -661,8 +661,8 @@ function EW_fetchYahooData(ticker, targetPrice, date, interval) {
  * @returns {Array|Object} Array of daily price data or object with data and raw
  */
 function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = false) {
-  // First check if we have cached data for this exact range
-  // For minute data, we typically fetch day by day, so check for cached daily data
+  // First check if we have cached data for this range
+  // For minute data, check Drive cache for each day in the range
   const startDateStr = EW_formatDate(startDate);
   const endDateStr = EW_formatDate(endDate);
 
@@ -674,6 +674,50 @@ function EW_getYahooHistoricalRange(ticker, startDate, endDate, includeRaw = fal
       // Extract and return the data in the expected format
       return EW_extractCachedHistoricalData(cachedData, includeRaw);
     }
+  } else {
+    // Multi-day request - check if ALL days are cached in Drive
+    console.log(`CACHE CHECK: Checking Drive for ${ticker} from ${startDateStr} to ${endDateStr}`);
+
+    let allDaysCached = true;
+    let cachedFiles = [];
+    let currentDate = new Date(startDate);
+    const end = new Date(endDate);
+
+    // Check each day in the range
+    while (currentDate <= end) {
+      const cachedData = EW_checkExistingApiLog(ticker, currentDate);
+      if (cachedData && cachedData.response && !cachedData.metadata?.error) {
+        cachedFiles.push(cachedData);
+      } else {
+        allDaysCached = false;
+        console.log(`CACHE MISS: ${ticker} ${EW_formatDate(currentDate)} not found in Drive`);
+        break;
+      }
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+
+    // If all days are cached, combine and return them
+    if (allDaysCached && cachedFiles.length > 0) {
+      console.log(`CACHE HIT: All ${cachedFiles.length} days found in Drive for ${ticker}`);
+      // Combine data from all cached files
+      let combinedData = [];
+      let rawData = null;
+
+      for (const cachedFile of cachedFiles) {
+        const extracted = EW_extractCachedHistoricalData(cachedFile, false);
+        if (extracted && Array.isArray(extracted)) {
+          combinedData = combinedData.concat(extracted);
+        }
+        // Use first file's raw data for indicators
+        if (!rawData && cachedFile.response) {
+          rawData = cachedFile.response;
+        }
+      }
+
+      return includeRaw ? { data: combinedData, raw: rawData } : combinedData;
+    }
+
+    console.log(`CACHE MISS: Not all days cached, will call Yahoo API`);
   }
 
   const period1 = Math.floor(startDate.getTime() / 1000);
