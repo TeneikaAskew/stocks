@@ -1188,10 +1188,21 @@ function EW_processBackfillPosition(params) {
     } else {
       // Position is older than 7 days, need hybrid approach
       // Daily data: from marketRunDate to day before sevenDaysAgo (to avoid overlap)
-      // Minute data: from sevenDaysAgo to endDate
-      const dailyEndDate = new Date(sevenDaysAgo);
-      dailyEndDate.setDate(dailyEndDate.getDate() - 1);
-      dailyEndDate.setHours(16, 0, 0, 0); // Set to market close
+      // OR to endDate if endDate is before sevenDaysAgo (entire position is old)
+      // Minute data: from sevenDaysAgo to endDate (only if endDate >= sevenDaysAgo)
+
+      // Calculate the appropriate end date for daily data
+      let dailyEndDate;
+      if (endDate < sevenDaysAgo) {
+        // Entire position is older than 7 days - use actual endDate for daily data
+        dailyEndDate = new Date(endDate);
+        EW_trace('BACKFILL', `${ticker}: Position entirely before 7-day cutoff, using endDate for daily data`);
+      } else {
+        // Position spans the 7-day cutoff - use day before sevenDaysAgo to avoid overlap
+        dailyEndDate = new Date(sevenDaysAgo);
+        dailyEndDate.setDate(dailyEndDate.getDate() - 1);
+        dailyEndDate.setHours(16, 0, 0, 0);
+      }
 
       EW_trace('BACKFILL', `${ticker}: Using hybrid data (${daysSinceRun} days old)`);
 
