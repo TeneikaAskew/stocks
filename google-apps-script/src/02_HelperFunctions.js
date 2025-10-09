@@ -1514,15 +1514,22 @@ function EW_recalculateIndicatorsForSelected() {
       const marketRunDate = EW_adjustToMarketHours(runDate);
       
       // Calculate the date range we need data for
+      // Limit to 7 days max to stay within Yahoo's 1-minute data availability
       const endDate = new Date();
       endDate.setHours(16, 0, 0, 0);
-      
-      // Fetch the historical data with indicators
+
+      const maxEndDate = new Date(marketRunDate);
+      maxEndDate.setDate(maxEndDate.getDate() + 7);
+
+      // Use the earlier of: today or 7 days from start
+      const actualEndDate = endDate < maxEndDate ? endDate : maxEndDate;
+
+      // Fetch the historical data with indicators (checks Drive cache first)
       const startDateStr = Utilities.formatDate(marketRunDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-      const endDateStr = Utilities.formatDate(endDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      const endDateStr = Utilities.formatDate(actualEndDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
       EW_trace('INDICATORS', `Fetching data for ${ticker} from ${startDateStr} to ${endDateStr}`);
-      
-      const yahooResult = EW_getYahooHistoricalRange(ticker, marketRunDate, endDate, true);
+
+      const yahooResult = EW_getYahooHistoricalRange(ticker, marketRunDate, actualEndDate, true);
       
       if (!yahooResult || !yahooResult.data || yahooResult.data.length === 0) {
         EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): Unable to fetch Yahoo data`);
@@ -1532,26 +1539,38 @@ function EW_recalculateIndicatorsForSelected() {
       
       // Analyze the data to get indicators at strike hit points
       const analysis = EW_analyzeHistoricalData(
-        ticker, 
-        sheet.getName(), 
-        strike, 
-        yahooResult.data, 
-        marketRunDate, 
+        ticker,
+        sheet.getName(),
+        strike,
+        yahooResult.data,
+        marketRunDate,
         null, // shortStrike
         yahooResult.raw
       );
-      
+
       if (!analysis || !analysis.dailyIndicators) {
         EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): No indicators calculated`);
         skippedCount++;
         continue;
       }
-      
+
       // Format the indicator arrays
       const indicatorArrays = EW_formatIndicatorArraysForStorage(analysis.dailyIndicators);
-      
-      // Update only the indicator columns
+
+      // Update columns
       let updated = false;
+
+      // Fill in OHLC_Volume if it has the data from analysis
+      EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): OHLC check - hasCol=${!!hdrMap.ohlcVolumeCol}, hasArray=${!!analysis.ohlcVolumeArray}, arrayLen=${analysis.ohlcVolumeArray ? analysis.ohlcVolumeArray.length : 0}`);
+      if (hdrMap.ohlcVolumeCol && analysis.ohlcVolumeArray && analysis.ohlcVolumeArray.length > 0) {
+        // Get existing OHLC data
+        const existingOHLC = rowData[hdrMap.ohlcVolumeCol - 1];
+        // Merge with new data (prefer new data over existing)
+        const mergedArray = EW_mergeArrays ? EW_mergeArrays(existingOHLC, analysis.ohlcVolumeArray) : analysis.ohlcVolumeArray;
+        sheet.getRange(rowNum, hdrMap.ohlcVolumeCol).setValue(JSON.stringify(mergedArray));
+        EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): Updated OHLC_Volume with ${mergedArray.length} days`);
+        updated = true;
+      }
       
       if (hdrMap.hitRSICol && indicatorArrays.rsi) {
         sheet.getRange(rowNum, hdrMap.hitRSICol).setValue(indicatorArrays.rsi);

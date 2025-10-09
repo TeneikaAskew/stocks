@@ -566,29 +566,37 @@ function EW_scheduleBackfillContinuation(functionName = 'EW_backfillHistoricalTr
  */
 function EW_backfillContinuationTrigger() {
   console.log('BACKFILL: Continuation trigger fired');
-  
+
   // Get the function name to continue
   const scriptProperties = PropertiesService.getScriptProperties();
   const functionName = scriptProperties.getProperty('BACKFILL_FUNCTION') || 'EW_backfillHistoricalTracking';
-  
+
+  // Determine the correct state key based on the function
+  let stateKey = 'BACKFILL_STATE';
+  if (functionName === 'EW_updateActiveStrikeHits') {
+    stateKey = 'ACTIVE_TRACKING_STATE';
+  }
+
   // Check if there's a state to continue from
-  const state = EW_getBackfillState('BACKFILL_STATE');
+  const state = EW_getBackfillState(stateKey);
   if (!state) {
-    console.log('BACKFILL: No continuation state found, trigger removed');
+    console.log(`BACKFILL: No continuation state found for ${functionName} (key: ${stateKey}), trigger removed`);
     scriptProperties.deleteProperty('BACKFILL_FUNCTION');
     return;
   }
-  
+
   console.log(`BACKFILL: Continuing ${functionName} from strategy index ${state.currentStrategyIndex}`);
   console.log(`BACKFILL: This is continuation #${state.continuationCount + 1}`);
-  
+
   // Continue the appropriate backfill process
   if (functionName === 'EW_backfillHistoricalTracking') {
     EW_backfillHistoricalTracking();
   } else if (functionName === 'EW_backfillHistoricalTrackingWithContinuation') {
     EW_backfillHistoricalTrackingWithContinuation();
+  } else if (functionName === 'EW_updateActiveStrikeHits') {
+    EW_updateActiveStrikeHits();
   }
-  
+
   // Clean up the function name property after use
   scriptProperties.deleteProperty('BACKFILL_FUNCTION');
 }
