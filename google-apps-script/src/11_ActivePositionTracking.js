@@ -429,20 +429,27 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
           .setValue(EW_arrayToJson(updatedOHLC));
       }
       
-      // Update Hit_Date and First_Hit_Date if strike was hit
-      if (result.hit) {
-        const hitDateStr = EW_formatDate(result.hitDate);
-        
-        // Update Hit_Date (most recent hit)
-        if (hdrMap.hitDateCol) {
-          dataRange.getCell(position.rowIndex + 1, hdrMap.hitDateCol).setValue(hitDateStr);
+      // Update Hit_Date based on Strike_Hit array
+      // Hit_Date should be the day number (0-5) when position first became profitable
+      if (hdrMap.hitDateCol) {
+        // Find first profitable day from Strike_Hit array
+        let firstProfitableDay = null;
+        for (let i = 0; i < updatedStrikeHit.length && i <= 5; i++) {
+          const value = updatedStrikeHit[i];
+          if (value !== null && parseFloat(value) > 0) {
+            firstProfitableDay = i;
+            break;
+          }
         }
-        
-        // Update First_Hit_Date (only if not already set)
-        if (hdrMap.firstHitDateCol) {
-          const existingFirstHit = row[hdrMap.firstHitDateCol - 1];
-          if (!existingFirstHit) {
-            dataRange.getCell(position.rowIndex + 1, hdrMap.firstHitDateCol).setValue(hitDateStr);
+
+        // Update Hit_Date with day number (or clear if never profitable)
+        const existingHitDate = row[hdrMap.hitDateCol - 1];
+        const newHitDate = firstProfitableDay !== null ? firstProfitableDay.toString() : '';
+
+        if (existingHitDate !== newHitDate) {
+          dataRange.getCell(position.rowIndex + 1, hdrMap.hitDateCol).setValue(newHitDate);
+          if (newHitDate) {
+            console.log(`ACTIVE TRACKING: ${position.ticker} - Set Hit_Date to Day ${newHitDate}`);
           }
         }
       }
