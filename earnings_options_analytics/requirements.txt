@@ -27,3 +27,6 @@ tqdm>=4.65.0
 
 # Date handling
 python-dateutil>=2.8.0
+
+# Interactive Dashboard
+streamlit>=1.28.0
