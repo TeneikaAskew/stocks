@@ -203,6 +203,19 @@ Setup:
         help='Specific sheet names to download (default: all strategy sheets)'
     )
 
+    parser.add_argument(
+        '--format',
+        choices=['csv', 'json', 'both'],
+        default='csv',
+        help='Output format (default: csv)'
+    )
+
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Force re-download even if files exist'
+    )
+
     args = parser.parse_args()
 
     try:
