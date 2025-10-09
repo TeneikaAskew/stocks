@@ -23,8 +23,14 @@ function EW_url(path) {
 /**
  * Normalizes string for comparison (lowercase, trimmed)
  * Used for case-insensitive string matching
+ *
+ * NOTE: This function is more complex than typically needed. For simple header
+ * matching, use .trim().toLowerCase() instead. This is kept for backward
+ * compatibility with code that may rely on its specific normalization behavior.
+ *
  * @param {string} s - String to normalize
  * @returns {string} Normalized string
+ * @deprecated Consider using simple .trim().toLowerCase() for most cases
  */
 function EW_norm(s) {
   if (typeof s !== 'string') return '';
@@ -37,6 +43,27 @@ function EW_norm(s) {
 }
 
 // ======= DATE AND TIME UTILITIES =======
+
+/**
+ * Format date to local timezone YYYY-MM-DD
+ * Replaces .toISOString().split('T')[0] to avoid UTC timezone issues
+ * @param {Date} date - Date to format
+ * @returns {string} Formatted date string YYYY-MM-DD
+ */
+function EW_formatDate(date) {
+  if (!date || !(date instanceof Date)) return '';
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+/**
+ * Format date and time to local timezone
+ * @param {Date} date - Date to format
+ * @returns {string} Formatted datetime string YYYY-MM-DD HH:mm:ss
+ */
+function EW_formatDateTime(date) {
+  if (!date || !(date instanceof Date)) return '';
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+}
 
 /**
  * Convert UTC Date to EDT/EST string
@@ -84,30 +111,30 @@ function EW_toEDT(date) {
  * @param {string} level - Log level: 'ERROR', 'WARN', 'INFO', 'DEBUG' (default: 'INFO')
  */
 function EW_trace(scope, msg, alsoSheet = false, level = 'INFO') {
-  const timestamp = new Date().toISOString();
+  const timestamp = EW_formatDateTime(new Date());
   const line = `[${timestamp}] [${level}] [${scope}] ${msg}`;
   
-  // Always log to console with appropriate method
-  try {
-    switch(level) {
-      case 'ERROR':
-        console.error(line);
-        break;
-      case 'WARN':
-        console.warn(line);
-        break;
-      case 'DEBUG':
-        // Only log debug messages if debug mode is enabled
-        if (EW.DEBUG_MODE || false) {
-          console.log(line);
-        }
-        break;
-      default:
-        console.log(line);
-    }
-  } catch (_) {}
-  
-  // Also log to Google's Logger for Stackdriver
+  // Commented out console logging to avoid duplicates with Logger.log below
+  // try {
+  //   switch(level) {
+  //     case 'ERROR':
+  //       console.error(line);
+  //       break;
+  //     case 'WARN':
+  //       console.warn(line);
+  //       break;
+  //     case 'DEBUG':
+  //       // Only log debug messages if debug mode is enabled
+  //       if (EW.DEBUG_MODE || false) {
+  //         console.log(line);
+  //       }
+  //       break;
+  //     default:
+  //       console.log(line);
+  //   }
+  // } catch (_) {}
+
+  // Log to Google's Logger for Cloud Logging
   try {
     Logger.log(line);
   } catch (_) {}
@@ -151,7 +178,7 @@ function EW_trackError(scope, msg) {
     const errors = JSON.parse(scriptProperties.getProperty('ERROR_LOG') || '[]');
     
     errors.push({
-      timestamp: new Date().toISOString(),
+      timestamp: EW_formatDateTime(new Date()),
       scope: scope,
       message: msg
     });
@@ -278,14 +305,14 @@ function EW_addGFHeaders(header) {
 function getOptionsSheetHeaders() {
   const sheets = [
     'Long Calls', 'Bull Spreads', 'Covered Calls',
-    'Long Puts', 'Bear Spreads', 'Short Calls', 
+    'Long Puts', 'Bear Spreads', 'Short Calls',
     'Strangles', 'Straddles', 'Short Puts'
   ];
-  
+
   const result = [["Sheet Name", "Headers"]];
-  
+
   console.log('=== Options Sheet Headers Analysis ===');
-  
+
   sheets.forEach(sheetName => {
     try {
       const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
@@ -293,22 +320,22 @@ function getOptionsSheetHeaders() {
         const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
         const headerText = headers.filter(h => h !== "").join(" | ");
         result.push([sheetName, headerText]);
-        
+
         // Console logging
         console.log(`\n${sheetName}:`);
         console.log(`  Total columns: ${headers.length}`);
         console.log(`  Non-empty columns: ${headers.filter(h => h !== "").length}`);
         console.log(`  Headers: ${headerText}`);
-        
+
         // Check for critical columns
         const hasStrikeHit = headers.some(h => h === 'Strike_Hit');
         const hasStrategy = headers.some(h => h === 'Strategy');
         const hasRunDate = headers.some(h => h === 'Run Date');
-        
+
         if (!hasStrikeHit) console.log(`  ⚠️ WARNING: Missing Strike_Hit column`);
         if (!hasStrategy) console.log(`  ⚠️ WARNING: Missing Strategy column`);
         if (!hasRunDate) console.log(`  ⚠️ WARNING: Missing Run Date column`);
-        
+
       } else {
         result.push([sheetName, "Sheet not found"]);
         console.log(`\n${sheetName}: ❌ Sheet not found`);
@@ -318,12 +345,64 @@ function getOptionsSheetHeaders() {
       console.log(`\n${sheetName}: ❌ Error - ${e.toString()}`);
     }
   });
-  
+
   console.log('\n=== Summary ===');
   console.log(`Total sheets checked: ${sheets.length}`);
   console.log(`Sheets found: ${result.filter(r => r[1] !== "Sheet not found" && !r[1].startsWith("Error")).length - 1}`);
-  
+
   return result;
+}
+
+/**
+ * Diagnostic function to check header mapping for Bull/Bear Spreads
+ * Helps debug column mapping issues and verify the simplified lowercase matching
+ */
+function EW_diagnoseSpreadHeaders() {
+  const ss = SpreadsheetApp.getActive();
+  const sheets = ['Bull Spreads', 'Bear Spreads'];
+
+  console.log('=== Spread Headers Diagnostic ===\n');
+
+  sheets.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      console.log(`${sheetName}: Sheet not found`);
+      return;
+    }
+
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    console.log(`\n${sheetName}:`);
+    console.log(`Total columns: ${headers.length}`);
+
+    // Show all headers with their positions and simple lowercase keys
+    headers.forEach((h, i) => {
+      if (h) {
+        const key = String(h).trim().toLowerCase();
+        console.log(`  Col ${i + 1}: "${h}" -> lowercase: "${key}"`);
+      }
+    });
+
+    // Create header map and check what was found
+    const hdrMap = EW_headerMap(headers);
+    console.log('\nHeader Map Results:');
+    console.log(`  tickerCol: ${hdrMap.tickerCol}`);
+    console.log(`  runDateCol: ${hdrMap.runDateCol}`);
+    console.log(`  strategyCol: ${hdrMap.strategyCol}`);
+    console.log(`  strikeCol: ${hdrMap.strikeCol}`);
+    console.log(`  longStrikeCol: ${hdrMap.longStrikeCol}`);
+    console.log(`  shortStrikeCol: ${hdrMap.shortStrikeCol}`);
+
+    // Check which column should be used
+    const isSpread = sheetName.toUpperCase().includes('SPREAD');
+    const strikeColumn = isSpread ? 'longStrikeCol' : 'strikeCol';
+    console.log(`\nStrategy check:`);
+    console.log(`  Is spread: ${isSpread}`);
+    console.log(`  Should use: ${strikeColumn}`);
+    console.log(`  Value: ${hdrMap[strikeColumn]}`);
+    console.log(`  Status: ${hdrMap[strikeColumn] ? '✓ FOUND' : '✗ MISSING'}`);
+  });
+
+  console.log('\n=== End Diagnostic ===');
 }
 
 // ======= COOKIE AND SESSION UTILITIES =======
@@ -519,7 +598,7 @@ function EW_createError(code, message, details = {}) {
     code,
     message,
     details,
-    timestamp: new Date().toISOString()
+    timestamp: EW_formatDateTime(new Date())
   };
 }
 
@@ -1159,7 +1238,7 @@ function EW_batchCheckActivePositions(sheet, hdrMap, data, strategyName) {
   
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const todayStr = today.toISOString().split('T')[0];
+  const todayStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   const sevenDaysAgo = new Date(today);
   sevenDaysAgo.setDate(today.getDate() - 7);
   
@@ -1169,8 +1248,8 @@ function EW_batchCheckActivePositions(sheet, hdrMap, data, strategyName) {
   data.forEach((row, index) => {
     const ticker = row[hdrMap.tickerCol - 1];
     const runDateStr = row[hdrMap.runDateCol - 1];
-    const daysToExp = hdrMap.daysToExpCol ? parseFloat(row[hdrMap.daysToExpCol - 1]) : null;
-    
+    const expDateStr = hdrMap.expDateCol ? row[hdrMap.expDateCol - 1] : null;
+
     // Skip if missing required data
     if (!ticker || !runDateStr) {
       if (!ticker && !runDateStr) {
@@ -1180,10 +1259,19 @@ function EW_batchCheckActivePositions(sheet, hdrMap, data, strategyName) {
       skippedMissingData.push(index + 2);
       return;
     }
-    
-    // Skip expired positions (> 7 days old or daysToExp < -7)
+
+    // Skip expired positions (> 7 days past expiration or > 7 days old with no expDate)
     const runDate = new Date(runDateStr);
-    if (runDate < sevenDaysAgo || (daysToExp !== null && daysToExp < -7)) {
+    let isExpired = runDate < sevenDaysAgo; // Default: check if run date is too old
+
+    if (expDateStr) {
+      const expDate = new Date(expDateStr);
+      const sevenDaysAfterExp = new Date(expDate);
+      sevenDaysAfterExp.setDate(expDate.getDate() + 7);
+      isExpired = today > sevenDaysAfterExp; // Check if more than 7 days past expiration
+    }
+
+    if (isExpired) {
       skippedExpired.push(index + 2);
       return;
     }
@@ -1234,7 +1322,7 @@ function EW_batchCheckActivePositions(sheet, hdrMap, data, strategyName) {
       shortStrike: shortStrike,
       runDate: runDate,
       runDateStr: runDateStr,
-      daysToExp: daysToExp,
+      expDateStr: expDateStr,
       rowIndex: index,
       rowNum: index + 2,
       dayIndex: daysSinceRun
@@ -1417,14 +1505,18 @@ function EW_recalculateIndicatorsForSelected() {
   }
   
   EW_trace('INDICATORS', `Recalculating indicators for ${numRows} selected rows`, true);
-  
+
   // Get headers
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = EW_headerMap(headers);
-  
-  // Check required columns exist
-  const requiredCols = ['tickerCol', 'runDateCol', 'strikeCol', 'strikeHitCol'];
-  
+
+  // Check required columns exist - handle spreads vs single-leg strategies
+  const sheetName = sheet.getName();
+  const isSpread = sheetName.toUpperCase().includes('SPREAD');
+  const strikeColumn = isSpread ? 'longStrikeCol' : 'strikeCol';
+
+  const requiredCols = ['tickerCol', 'runDateCol', strikeColumn, 'strikeHitCol'];
+
   for (const col of requiredCols) {
     if (!hdrMap[col]) {
       EW_safeAlert('Missing Column', `Required column ${col} not found`);
@@ -1439,10 +1531,10 @@ function EW_recalculateIndicatorsForSelected() {
   for (let i = 0; i < numRows; i++) {
     const rowNum = startRow + i;
     const rowData = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
-    
+
     const ticker = rowData[hdrMap.tickerCol - 1];
     const runDateStr = rowData[hdrMap.runDateCol - 1];
-    const strike = parseFloat(rowData[hdrMap.strikeCol - 1]);
+    const strike = parseFloat(rowData[hdrMap[strikeColumn] - 1]);
     const strikeHitData = rowData[hdrMap.strikeHitCol - 1];
     
     if (!ticker || !runDateStr || !strike) {
@@ -1484,13 +1576,22 @@ function EW_recalculateIndicatorsForSelected() {
       const marketRunDate = EW_adjustToMarketHours(runDate);
       
       // Calculate the date range we need data for
+      // Limit to 7 days max to stay within Yahoo's 1-minute data availability
       const endDate = new Date();
       endDate.setHours(16, 0, 0, 0);
-      
-      // Fetch the historical data with indicators
-      EW_trace('INDICATORS', `Fetching data for ${ticker} from ${marketRunDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}`);
-      
-      const yahooResult = EW_getYahooHistoricalRange(ticker, marketRunDate, endDate, true);
+
+      const maxEndDate = new Date(marketRunDate);
+      maxEndDate.setDate(maxEndDate.getDate() + 7);
+
+      // Use the earlier of: today or 7 days from start
+      const actualEndDate = endDate < maxEndDate ? endDate : maxEndDate;
+
+      // Fetch the historical data with indicators (checks Drive cache first)
+      const startDateStr = Utilities.formatDate(marketRunDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      const endDateStr = Utilities.formatDate(actualEndDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      EW_trace('INDICATORS', `Fetching data for ${ticker} from ${startDateStr} to ${endDateStr}`);
+
+      const yahooResult = EW_getYahooHistoricalRange(ticker, marketRunDate, actualEndDate, true);
       
       if (!yahooResult || !yahooResult.data || yahooResult.data.length === 0) {
         EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): Unable to fetch Yahoo data`);
@@ -1500,26 +1601,38 @@ function EW_recalculateIndicatorsForSelected() {
       
       // Analyze the data to get indicators at strike hit points
       const analysis = EW_analyzeHistoricalData(
-        ticker, 
-        sheet.getName(), 
-        strike, 
-        yahooResult.data, 
-        marketRunDate, 
+        ticker,
+        sheet.getName(),
+        strike,
+        yahooResult.data,
+        marketRunDate,
         null, // shortStrike
         yahooResult.raw
       );
-      
+
       if (!analysis || !analysis.dailyIndicators) {
         EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): No indicators calculated`);
         skippedCount++;
         continue;
       }
-      
+
       // Format the indicator arrays
       const indicatorArrays = EW_formatIndicatorArraysForStorage(analysis.dailyIndicators);
-      
-      // Update only the indicator columns
+
+      // Update columns
       let updated = false;
+
+      // Fill in OHLC_Volume if it has the data from analysis
+      EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): OHLC check - hasCol=${!!hdrMap.ohlcVolumeCol}, hasArray=${!!analysis.ohlcVolumeArray}, arrayLen=${analysis.ohlcVolumeArray ? analysis.ohlcVolumeArray.length : 0}`);
+      if (hdrMap.ohlcVolumeCol && analysis.ohlcVolumeArray && analysis.ohlcVolumeArray.length > 0) {
+        // Get existing OHLC data
+        const existingOHLC = rowData[hdrMap.ohlcVolumeCol - 1];
+        // Merge with new data (prefer new data over existing)
+        const mergedArray = EW_mergeArrays ? EW_mergeArrays(existingOHLC, analysis.ohlcVolumeArray) : analysis.ohlcVolumeArray;
+        sheet.getRange(rowNum, hdrMap.ohlcVolumeCol).setValue(JSON.stringify(mergedArray));
+        EW_trace('INDICATORS', `Row ${rowNum} (${ticker}): Updated OHLC_Volume with ${mergedArray.length} days`);
+        updated = true;
+      }
       
       if (hdrMap.hitRSICol && indicatorArrays.rsi) {
         sheet.getRange(rowNum, hdrMap.hitRSICol).setValue(indicatorArrays.rsi);

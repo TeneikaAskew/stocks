@@ -11,8 +11,8 @@
 function EW_updateActiveStrikeHits() {
   const MAX_RUNTIME_MS = 25 * 60 * 1000; // 25 minutes (leaving 5 min buffer)
   const startTime = new Date();
-  console.log(`ACTIVE TRACKING: Started at ${startTime.toISOString()}`);
-  Logger.log(`ACTIVE TRACKING: Strike_Hit update started at ${startTime.toISOString()}`);
+  console.log(`ACTIVE TRACKING: Started at ${EW_formatDateTime(startTime)}`);
+  Logger.log(`ACTIVE TRACKING: Strike_Hit update started at ${EW_formatDateTime(startTime)}`);
   
   // Check if today is a weekend - skip if Saturday (6) or Sunday (0)
   const dayOfWeek = startTime.getDay();
@@ -196,7 +196,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
   const hdrMap = EW_headerMap(headers);
   
   // Check required columns - handle spreads that have longStrike/shortStrike instead of strike
-  const baseRequiredCols = ['tickerCol', 'runDateCol', 'daysToExpCol', 'strikeHitCol'];
+  const baseRequiredCols = ['tickerCol', 'runDateCol', 'strikeHitCol'];
   for (const col of baseRequiredCols) {
     if (!hdrMap[col]) {
       EW_trace('ACTIVE_TRACKING', `${strategyName}: Missing required column ${col}`);
@@ -284,7 +284,7 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
           currentPositionIndex: index,
           updatedInStrategy: updatedCount,
           totalPositions: results.length,
-          timestamp: new Date().toISOString()
+          timestamp: EW_formatDateTime(new Date())
         };
         EW_saveBackfillState(positionState, 'ACTIVE_POSITION_STATE');
       }
@@ -429,20 +429,27 @@ function EW_updateStrategyActiveStrikes(ss, strategyName, startTime = null, maxR
           .setValue(EW_arrayToJson(updatedOHLC));
       }
       
-      // Update Hit_Date and First_Hit_Date if strike was hit
-      if (result.hit) {
-        const hitDateStr = result.hitDate.toISOString().split('T')[0];
-        
-        // Update Hit_Date (most recent hit)
-        if (hdrMap.hitDateCol) {
-          dataRange.getCell(position.rowIndex + 1, hdrMap.hitDateCol).setValue(hitDateStr);
+      // Update Hit_Date based on Strike_Hit array
+      // Hit_Date should be the day number (0-5) when position first became profitable
+      if (hdrMap.hitDateCol) {
+        // Find first profitable day from Strike_Hit array
+        let firstProfitableDay = null;
+        for (let i = 0; i < updatedStrikeHit.length && i <= 5; i++) {
+          const value = updatedStrikeHit[i];
+          if (value !== null && parseFloat(value) > 0) {
+            firstProfitableDay = i;
+            break;
+          }
         }
-        
-        // Update First_Hit_Date (only if not already set)
-        if (hdrMap.firstHitDateCol) {
-          const existingFirstHit = row[hdrMap.firstHitDateCol - 1];
-          if (!existingFirstHit) {
-            dataRange.getCell(position.rowIndex + 1, hdrMap.firstHitDateCol).setValue(hitDateStr);
+
+        // Update Hit_Date with day number (or clear if never profitable)
+        const existingHitDate = row[hdrMap.hitDateCol - 1];
+        const newHitDate = firstProfitableDay !== null ? firstProfitableDay.toString() : '';
+
+        if (existingHitDate !== newHitDate) {
+          dataRange.getCell(position.rowIndex + 1, hdrMap.hitDateCol).setValue(newHitDate);
+          if (newHitDate) {
+            console.log(`ACTIVE TRACKING: ${position.ticker} - Set Hit_Date to Day ${newHitDate}`);
           }
         }
       }
@@ -560,8 +567,8 @@ function EW_testActivePositionTracking() {
   console.log(`  Ticker: ${testConfig.ticker}`);
   console.log(`  Strategy: ${testConfig.strategy}`);
   console.log(`  Strike: ${testConfig.strike}`);
-  console.log(`  Run Date: ${testConfig.runDate.toISOString().split('T')[0]}`);
-  console.log(`  Exp Date: ${testConfig.expDate.toISOString().split('T')[0]}`);
+  console.log(`  Run Date: ${EW_formatDate(testConfig.runDate)}`);
+  console.log(`  Exp Date: ${EW_formatDate(testConfig.expDate)}`);
   console.log(`  Days Since Entry: ${daysSinceEntry}`);
   console.log(`  Current Day Index: ${dayIndex}`);
   
@@ -679,8 +686,8 @@ function EW_testActivePositionTracking() {
   console.log(`  Risk_Reward: ${riskReward || ''}`);
   console.log(`  Day${dayIndex}_Check: ${dayCheckValue}`);
   if (result.hit) {
-    console.log(`  Hit_Date: ${result.hitDate.toISOString().split('T')[0]}`);
-    console.log(`  First_Hit_Date: ${result.hitDate.toISOString().split('T')[0]} (if not already set)`);
+    console.log(`  Hit_Date: ${EW_formatDate(result.hitDate)}`);
+    console.log(`  First_Hit_Date: ${EW_formatDate(result.hitDate)} (if not already set)`);
   }
   
   const endTime = new Date();
