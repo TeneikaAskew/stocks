@@ -52,9 +52,21 @@ class RiskAnalyzer:
 
             # Calculate max adverse excursion from Min_Unfavorable
             if 'Min_Unfavorable_parsed' in strategy_df.columns:
-                min_unf = strategy_df['Min_Unfavorable_parsed'].apply(
-                    lambda x: min([v for v in x if v is not None]) if isinstance(x, list) and len(x) > 0 else np.nan
-                )
+                def get_min_unfavorable(x):
+                    """Safely extract minimum unfavorable value"""
+                    if not isinstance(x, list) or len(x) == 0:
+                        return np.nan
+                    # Filter out None values and convert to numeric
+                    numeric_vals = []
+                    for v in x:
+                        if v is not None:
+                            try:
+                                numeric_vals.append(float(v))
+                            except (ValueError, TypeError):
+                                pass
+                    return min(numeric_vals) if numeric_vals else np.nan
+
+                min_unf = strategy_df['Min_Unfavorable_parsed'].apply(get_min_unfavorable)
 
                 valid_mask = ~min_unf.isna()
                 if valid_mask.sum() > 0:
@@ -103,9 +115,21 @@ class RiskAnalyzer:
             return pd.DataFrame()
 
         # Extract MAE (most negative point)
-        mae = self.df['Min_Unfavorable_parsed'].apply(
-            lambda x: min([v for v in x if v is not None]) if isinstance(x, list) and len(x) > 0 else np.nan
-        )
+        def get_min_unfavorable(x):
+            """Safely extract minimum unfavorable value"""
+            if not isinstance(x, list) or len(x) == 0:
+                return np.nan
+            # Filter out None values and convert to numeric
+            numeric_vals = []
+            for v in x:
+                if v is not None:
+                    try:
+                        numeric_vals.append(float(v))
+                    except (ValueError, TypeError):
+                        pass
+            return min(numeric_vals) if numeric_vals else np.nan
+
+        mae = self.df['Min_Unfavorable_parsed'].apply(get_min_unfavorable)
 
         analysis_df = self.df.copy()
         analysis_df['MAE'] = mae
@@ -184,9 +208,21 @@ class RiskAnalyzer:
             return pd.DataFrame()
 
         # Calculate risk (MAE) and reward (peak profit)
-        mae = self.df['Min_Unfavorable_parsed'].apply(
-            lambda x: min([v for v in x if v is not None]) if isinstance(x, list) and len(x) > 0 else np.nan
-        )
+        def get_min_unfavorable(x):
+            """Safely extract minimum unfavorable value"""
+            if not isinstance(x, list) or len(x) == 0:
+                return np.nan
+            # Filter out None values and convert to numeric
+            numeric_vals = []
+            for v in x:
+                if v is not None:
+                    try:
+                        numeric_vals.append(float(v))
+                    except (ValueError, TypeError):
+                        pass
+            return min(numeric_vals) if numeric_vals else np.nan
+
+        mae = self.df['Min_Unfavorable_parsed'].apply(get_min_unfavorable)
 
         analysis_df = self.df.copy()
         analysis_df['Risk'] = abs(mae)

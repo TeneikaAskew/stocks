@@ -58,6 +58,9 @@ class IndicatorAnalyzer:
             else:
                 ind_values = self.df[indicator]
 
+            # Ensure values are numeric
+            ind_values = pd.to_numeric(ind_values, errors='coerce')
+
             # Filter valid values
             valid_mask = ~ind_values.isna()
 
@@ -144,6 +147,9 @@ class IndicatorAnalyzer:
             else:
                 ind_values = self.df[indicator]
 
+            # Ensure values are numeric
+            ind_values = pd.to_numeric(ind_values, errors='coerce')
+
             # Filter to profitable trades only
             if 'Peak_Profit_Pct' not in self.df.columns:
                 continue
@@ -216,6 +222,9 @@ class IndicatorAnalyzer:
                 )
             else:
                 ind_values = self.df[col_name]
+
+            # Ensure values are numeric
+            ind_values = pd.to_numeric(ind_values, errors='coerce')
 
             # Check if in winning range
             if 'winning_range' in ind_config:
@@ -328,6 +337,10 @@ class IndicatorAnalyzer:
             day5_values = self.df[ind_col].apply(
                 lambda x: x[5] if isinstance(x, list) and len(x) > 5 and x[5] is not None else np.nan
             )
+
+            # Ensure values are numeric
+            day0_values = pd.to_numeric(day0_values, errors='coerce')
+            day5_values = pd.to_numeric(day5_values, errors='coerce')
 
             # Filter to trades with both values
             valid_mask = (~day0_values.isna()) & (~day5_values.isna())
