@@ -109,13 +109,13 @@ def main():
     try:
         from modules.indicator_analyzer import IndicatorAnalyzer
         indicator_analyzer = IndicatorAnalyzer(unified_df)
-        indicator_metrics = indicator_analyzer.analyze_all_indicators()
+        indicator_metrics = indicator_analyzer.analyze_indicators()
 
         if args.export_csv:
             print("\nExporting indicator analysis to CSV...")
             indicator_analyzer.export_results(config.CSV_REPORTS_PATH)
-    except ImportError:
-        print("⚠️  Indicator analyzer module not yet implemented. Skipping...")
+    except Exception as e:
+        print(f"⚠️  Indicator analysis failed: {e}")
 
     # STEP 4: Earnings Timing Analysis
     print("\nSTEP 4: Earnings Timing Analysis")
@@ -128,8 +128,8 @@ def main():
         if args.export_csv:
             print("\nExporting earnings timing analysis to CSV...")
             timing_analyzer.export_results(config.CSV_REPORTS_PATH)
-    except ImportError:
-        print("⚠️  Earnings timing analyzer module not yet implemented. Skipping...")
+    except Exception as e:
+        print(f"⚠️  Earnings timing analysis failed: {e}")
 
     # STEP 5: Risk Analysis
     print("\nSTEP 5: Risk Analysis")
@@ -137,24 +137,40 @@ def main():
     try:
         from modules.risk_analyzer import RiskAnalyzer
         risk_analyzer = RiskAnalyzer(unified_df)
-        risk_metrics = risk_analyzer.analyze_risk_metrics()
+        risk_metrics = risk_analyzer.analyze_risk()
 
         if args.export_csv:
             print("\nExporting risk analysis to CSV...")
             risk_analyzer.export_results(config.CSV_REPORTS_PATH)
-    except ImportError:
-        print("⚠️  Risk analyzer module not yet implemented. Skipping...")
+    except Exception as e:
+        print(f"⚠️  Risk analysis failed: {e}")
 
     # STEP 6: Visualizations
     if args.export_charts:
         print("\nSTEP 6: Generating Visualizations")
         print("-" * 70)
         try:
-            from modules.visualizations import VisualizationEngine
-            viz_engine = VisualizationEngine(unified_df, metrics)
-            viz_engine.generate_all_charts(config.CHARTS_PATH)
-        except ImportError:
-            print("⚠️  Visualization module not yet implemented. Skipping...")
+            from modules.visualizations import Visualizer
+
+            # Collect all results
+            strategy_results = {
+                'overall': metrics.get('overall', {}) if 'metrics' in locals() else {},
+                'strategy_breakdown': metrics.get('strategy_breakdown') if 'metrics' in locals() else None,
+                'holding_period': metrics.get('holding_period') if 'metrics' in locals() else None,
+            }
+
+            viz_results = {
+                'strategy_analyzer': strategy_results,
+                'earnings_timing': timing_metrics if 'timing_metrics' in locals() else {},
+                'indicator_analyzer': indicator_metrics if 'indicator_metrics' in locals() else {},
+                'risk_analyzer': risk_metrics if 'risk_metrics' in locals() else {},
+            }
+
+            visualizer = Visualizer(viz_results)
+            chart_paths = visualizer.generate_all_charts()
+        except Exception as e:
+            print(f"⚠️  Visualization generation failed: {e}")
+            chart_paths = {}
 
     # STEP 7: Machine Learning (Full analysis only)
     if args.full and not args.quick:
@@ -176,11 +192,26 @@ def main():
     print("-" * 70)
     try:
         from modules.report_generator import ReportGenerator
-        report_gen = ReportGenerator(unified_df, metrics)
-        report_path = report_gen.generate_master_report(config.OUTPUT_PATH)
+
+        # Collect all results
+        strategy_results = {
+            'overall': metrics.get('overall', {}) if 'metrics' in locals() else {},
+            'strategy_breakdown': metrics.get('strategy_breakdown') if 'metrics' in locals() else None,
+            'holding_period': metrics.get('holding_period') if 'metrics' in locals() else None,
+        }
+
+        report_results = {
+            'strategy_analyzer': strategy_results,
+            'earnings_timing': timing_metrics if 'timing_metrics' in locals() else {},
+            'indicator_analyzer': indicator_metrics if 'indicator_metrics' in locals() else {},
+            'risk_analyzer': risk_metrics if 'risk_metrics' in locals() else {},
+        }
+
+        report_gen = ReportGenerator(report_results, chart_paths if 'chart_paths' in locals() else {})
+        report_path = report_gen.generate_html_report()
         print(f"✓ Master report generated: {report_path}")
-    except ImportError:
-        print("⚠️  Report generator module not yet implemented. Skipping...")
+    except Exception as e:
+        print(f"⚠️  Report generation failed: {e}")
 
     # Summary
     print("\n" + "="*70)
