@@ -284,11 +284,21 @@ class ReportGenerator:
                 <div class="metric-grid">
                 """
 
+                # Handle both numeric and pre-formatted string values
+                def format_metric(key, default=0):
+                    val = overall.get(key, default)
+                    if isinstance(val, str):
+                        return val  # Already formatted
+                    try:
+                        return f"{float(val):.1f}"
+                    except (ValueError, TypeError):
+                        return str(val)
+
                 metrics = [
                     ('Total Trades', overall.get('Total Trades', 0), ''),
-                    ('Hit Rate', f"{overall.get('Hit Rate', 0):.1f}", '%'),
-                    ('Win Rate', f"{overall.get('Profitable Rate', 0):.1f}", '%'),
-                    ('Avg Profit', f"{overall.get('Avg Profit', 0):.2f}", '%'),
+                    ('Hit Rate', format_metric('Hit Rate'), ''),
+                    ('Win Rate', format_metric('Profitable Rate'), ''),
+                    ('Avg Profit', format_metric('Avg Profit'), ''),
                 ]
 
                 for label, value, suffix in metrics:
@@ -573,7 +583,23 @@ class ReportGenerator:
         formatted_df = display_df.copy()
         for col in formatted_df.columns:
             if formatted_df[col].dtype in ['float64', 'float32']:
-                formatted_df[col] = formatted_df[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+                # Ensure values are numeric before formatting
+                formatted_df[col] = formatted_df[col].apply(
+                    lambda x: f"{float(x):.2f}" if pd.notna(x) and isinstance(x, (int, float)) else "N/A"
+                )
+            elif formatted_df[col].dtype == 'object':
+                # For object columns, try to convert to numeric and format if possible
+                def format_value(x):
+                    if pd.isna(x):
+                        return "N/A"
+                    try:
+                        # Try to convert to float
+                        num_val = float(x)
+                        return f"{num_val:.2f}"
+                    except (ValueError, TypeError):
+                        # Keep as string if not numeric
+                        return str(x)
+                formatted_df[col] = formatted_df[col].apply(format_value)
 
         return formatted_df.to_html(index=False, classes='data-table', border=0)
 
