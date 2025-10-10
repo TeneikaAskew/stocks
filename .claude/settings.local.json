@@ -49,7 +49,11 @@
       "Bash(timeout 120 python:*)",
       "Bash(tee:*)",
       "Read(//tmp/**)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(for:*)",
+      "Bash(done)",
+      "Bash(do echo \"=== $file ===\")",
+      "Bash(python3:*)"
     ],
     "deny": []
   }

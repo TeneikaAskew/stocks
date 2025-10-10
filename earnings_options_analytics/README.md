@@ -115,6 +115,7 @@ All outputs are saved to `outputs/` directory:
 
 ### Interactive Dashboard
 Launch with `./run_dashboard.sh` or `streamlit run dashboard_app.py`
+cd /workspaces/stocks/earnings_options_analytics && streamlit run dashboard_app.py
 - Real-time interactive visualizations
 - Multi-page navigation (Overview, Strategy, Timing, Risk, Indicators, Explorer)
 - Filterable data tables
@@ -150,6 +151,27 @@ earnings_options_analytics/
     ├── charts/                      # PNG charts
     └── earnings_options_report.html # HTML report
 ```
+
+## 📚 Documentation
+
+### Data Reference
+- **[DATA_DICTIONARY.md](DATA_DICTIONARY.md)** - Complete reference for all 100+ data columns
+  - Column definitions, calculations, and formulas
+  - Array structures and Day 0-5 indexing
+  - Strategy-specific columns
+  - Data sources and flow
+- **[COLUMN_QUICK_REFERENCE.md](COLUMN_QUICK_REFERENCE.md)** - Quick lookup guide
+  - Column categories and counts
+  - Common calculations and formulas
+  - Python integration notes
+- **[DASHBOARD_GUIDE.md](DASHBOARD_GUIDE.md)** - Interactive dashboard documentation
+  - Dashboard features and usage
+  - Customization options
+  - Troubleshooting
+
+### Implementation Guides
+- **[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md)** - Development roadmap and status
+- **[README.md](README.md)** - This file (getting started guide)
 
 ## 🔧 Configuration
 
