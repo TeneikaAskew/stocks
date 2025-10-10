@@ -36,7 +36,24 @@
       "Bash(head:*)",
       "Bash(git push:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(xargs:*)",
+      "Bash(git merge:*)",
+      "Bash(timeout 60 python:*)",
+      "Bash(timeout 90 python earnings_options_analytics.py --quick)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "Bash(git revert:*)",
+      "Bash(git reset:*)",
+      "Bash(timeout:*)",
+      "Bash(timeout 120 python:*)",
+      "Bash(tee:*)",
+      "Read(//tmp/**)",
+      "Bash(cat:*)",
+      "Bash(for:*)",
+      "Bash(done)",
+      "Bash(do echo \"=== $file ===\")",
+      "Bash(python3:*)"
     ],
     "deny": []
   }
