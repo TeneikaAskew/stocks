@@ -115,12 +115,25 @@ function EW_updateStrategyTracking(ss, strategyName) {
       // Skip if no price data
       if (currentPrice === 0) return;
       
-      // Update Hit_Date if strike was hit and not already recorded
-      if (hdrMap.hitDateCol && (strikeHit === 'HIT' || strikeHit === 'FAVORABLE')) {
+      // Update Hit_Date based on Strike_Hit array
+      // Hit_Date should be the day number (0-5) when position first became profitable
+      if (hdrMap.hitDateCol && strikeHitArray && strikeHitArray.length > 0) {
+        // Find first profitable day from Strike_Hit array
+        let firstProfitableDay = null;
+        for (let i = 0; i < strikeHitArray.length && i <= 5; i++) {
+          const value = strikeHitArray[i];
+          if (value !== null && value !== '' && parseFloat(value) > 0) {
+            firstProfitableDay = i;
+            break;
+          }
+        }
+
+        // Update Hit_Date with day number (or clear if never profitable)
         const existingHitDate = row[hdrMap.hitDateCol - 1];
-        if (!existingHitDate) {
-          // This is first time hit - record today's date
-          dataRange.getCell(rowIndex + 1, hdrMap.hitDateCol).setValue(today.toISOString().split('T')[0]);
+        const newHitDate = firstProfitableDay !== null ? firstProfitableDay.toString() : '';
+
+        if (existingHitDate !== newHitDate) {
+          dataRange.getCell(rowIndex + 1, hdrMap.hitDateCol).setValue(newHitDate);
           updatedCount++;
         }
       }
