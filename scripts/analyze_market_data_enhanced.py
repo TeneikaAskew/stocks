@@ -21,6 +21,7 @@ class MarketAnalyzer:
         self.tickers = ['IWM', 'SPY', 'QQQ', 'SPX']
         self.market_data = {}
         self.signals = {}
+        self.min_periods_for_indicators = 2  # Allow calculation with minimal data
         
     def load_ticker_data(self, ticker):
         """Load parquet data for a specific ticker."""
@@ -91,6 +92,45 @@ class MarketAnalyzer:
         
         return stoch_rsi_k, stoch_rsi_d
     
+    def calculate_rsi(self, prices, period=14):
+        """Calculate RSI with proper Wilder's smoothing."""
+        delta = prices.diff()
+        gain = (delta.where(delta > 0, 0))
+        loss = (-delta.where(delta < 0, 0))
+        
+        # Use exponential weighted mean for RSI calculation
+        avg_gain = gain.rolling(window=period, min_periods=1).mean()
+        avg_loss = loss.rolling(window=period, min_periods=1).mean()
+        
+        # For proper Wilder's smoothing (after initial period)
+        for i in range(period, len(prices)):
+            avg_gain.iloc[i] = (avg_gain.iloc[i-1] * (period - 1) + gain.iloc[i]) / period
+            avg_loss.iloc[i] = (avg_loss.iloc[i-1] * (period - 1) + loss.iloc[i]) / period
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    def calculate_atr(self, df, period=14):
+        """Calculate Average True Range."""
+        high = df['High']
+        low = df['Low']
+        close = df['Close']
+        
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(window=period, min_periods=1).mean()
+        
+        # Apply Wilder's smoothing
+        for i in range(period, len(tr)):
+            if i > 0:
+                atr.iloc[i] = (atr.iloc[i-1] * (period - 1) + tr.iloc[i]) / period
+        
+        return atr
+    
     def add_enhanced_indicators(self, df, ticker):
         """Add comprehensive technical indicators to dataframe."""
         print(f"  Calculating enhanced indicators for {ticker}...")
@@ -100,34 +140,113 @@ class MarketAnalyzer:
             print(f"    Warning: No Close price data for {ticker}")
             return df
         
-        # Price changes
+        # Convert Last to Close if needed
+        if 'Last' in df.columns and 'Close' not in df.columns:
+            df['Close'] = df['Last']
+        elif 'Last' in df.columns:
+            df['Close'] = df['Close'].fillna(df['Last'])
+        
+        # Basic price metrics
         df['price_change'] = df['Close'].pct_change() * 100
-        df['price_ma3'] = df['price_change'].rolling(3).mean()
+        df['price_change_dollar'] = df['Close'].diff()
+        
+        # Volume metrics
+        if 'Volume' in df.columns:
+            df['volume_ma'] = df['Volume'].rolling(window=20, min_periods=1).mean()
+            df['rvol'] = df['Volume'] / df['volume_ma']
+            df['dollar_volume'] = df['Close'] * df['Volume']
+        
+        # Moving averages - use min_periods for limited data
+        df['sma_5'] = df['Close'].rolling(window=5, min_periods=1).mean()
+        df['sma_10'] = df['Close'].rolling(window=10, min_periods=1).mean()
+        df['sma_20'] = df['Close'].rolling(window=20, min_periods=1).mean()
+        df['sma_50'] = df['Close'].rolling(window=50, min_periods=1).mean()
+        df['sma_200'] = df['Close'].rolling(window=200, min_periods=1).mean()
+        
+        # Exponential moving averages
+        df['ema_9'] = df['Close'].ewm(span=9, min_periods=1, adjust=False).mean()
+        df['ema_21'] = df['Close'].ewm(span=21, min_periods=1, adjust=False).mean()
+        df['ema_50'] = df['Close'].ewm(span=50, min_periods=1, adjust=False).mean()
+        
+        # RSI calculation
+        df['rsi_14'] = self.calculate_rsi(df['Close'], period=14)
+        df['rsi_9'] = self.calculate_rsi(df['Close'], period=9)
+        
+        # ATR calculation
+        df['atr_14'] = self.calculate_atr(df, period=14)
+        df['atr_percent'] = (df['atr_14'] / df['Close']) * 100
+        
+        # Bollinger Bands
+        df['bb_middle'] = df['sma_20']
+        df['bb_std'] = df['Close'].rolling(window=20, min_periods=1).std()
+        df['bb_upper'] = df['bb_middle'] + (df['bb_std'] * 2)
+        df['bb_lower'] = df['bb_middle'] - (df['bb_std'] * 2)
+        df['bb_width'] = df['bb_upper'] - df['bb_lower']
+        df['bb_percent'] = (df['Close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+        
+        # MACD
+        exp1 = df['Close'].ewm(span=12, min_periods=1, adjust=False).mean()
+        exp2 = df['Close'].ewm(span=26, min_periods=1, adjust=False).mean()
+        df['macd'] = exp1 - exp2
+        df['macd_signal'] = df['macd'].ewm(span=9, min_periods=1, adjust=False).mean()
+        df['macd_histogram'] = df['macd'] - df['macd_signal']
+        
+        # Stochastic Oscillator
+        low_min = df['Low'].rolling(window=14, min_periods=1).min()
+        high_max = df['High'].rolling(window=14, min_periods=1).max()
+        df['stoch_k'] = 100 * ((df['Close'] - low_min) / (high_max - low_min))
+        df['stoch_d'] = df['stoch_k'].rolling(window=3, min_periods=1).mean()
+        
+        # Price position metrics
+        df['high_52w'] = df['High'].rolling(window=252, min_periods=1).max()
+        df['low_52w'] = df['Low'].rolling(window=252, min_periods=1).min()
+        df['pct_from_52w_high'] = ((df['Close'] - df['high_52w']) / df['high_52w']) * 100
+        df['pct_from_52w_low'] = ((df['Close'] - df['low_52w']) / df['low_52w']) * 100
         
         # Consecutive movement detection
         df['up_move'] = df['price_change'] > 0
         df['down_move'] = df['price_change'] < 0
-        df['consecutive_up'] = df['up_move'].rolling(3).sum()
-        df['consecutive_down'] = df['down_move'].rolling(3).sum()
+        df['consecutive_up'] = df['up_move'].rolling(3, min_periods=1).sum()
+        df['consecutive_down'] = df['down_move'].rolling(3, min_periods=1).sum()
         
-        # Enhanced technical indicators
-        if 'rsi_14' in df.columns:
-            # Calculate Stochastic RSI
-            df['stoch_rsi_k'], df['stoch_rsi_d'] = self.calculate_stoch_rsi(df['rsi_14'])
+        # Support and Resistance levels
+        df['resistance_1'] = df['High'].rolling(window=20, min_periods=1).max()
+        df['support_1'] = df['Low'].rolling(window=20, min_periods=1).min()
+        df['pivot'] = (df['High'] + df['Low'] + df['Close']) / 3
         
-        # VWAP approximation (using daily data)
-        # For true VWAP, we'd need minute data
-        df['typical_price'] = (df['High'] + df['Low'] + df['Close']) / 3
-        df['tpv'] = df['typical_price'] * df['Volume']
-        df['vwap_approx'] = df['tpv'].cumsum() / df['Volume'].cumsum()
+        # Calculate Stochastic RSI
+        df['stoch_rsi_k'], df['stoch_rsi_d'] = self.calculate_stoch_rsi(df['rsi_14'])
+        
+        # VWAP calculation
+        if 'Volume' in df.columns:
+            df['typical_price'] = (df['High'] + df['Low'] + df['Close']) / 3
+            df['tpv'] = df['typical_price'] * df['Volume']
+            
+            # Calculate daily VWAP (reset each day)
+            df['vwap'] = df.groupby(df.index.date).apply(
+                lambda x: (x['tpv'].cumsum() / x['Volume'].cumsum()) if len(x) > 0 else x['typical_price']
+            ).reset_index(level=0, drop=True)
+            
+            # If VWAP is NaN, use typical price
+            df['vwap'] = df['vwap'].fillna(df['typical_price'])
         
         # Price position relative to indicators
-        if 'ema_9' in df.columns:
-            df['price_vs_ema9'] = (df['Close'] / df['ema_9'] - 1) * 100
-        if 'ema_21' in df.columns:
-            df['price_vs_ema21'] = (df['Close'] / df['ema_21'] - 1) * 100
-        if 'vwap_approx' in df.columns:
-            df['price_vs_vwap'] = (df['Close'] / df['vwap_approx'] - 1) * 100
+        df['price_vs_sma20'] = ((df['Close'] - df['sma_20']) / df['sma_20']) * 100
+        df['price_vs_sma50'] = ((df['Close'] - df['sma_50']) / df['sma_50']) * 100
+        df['price_vs_ema9'] = ((df['Close'] - df['ema_9']) / df['ema_9']) * 100
+        df['price_vs_ema21'] = ((df['Close'] - df['ema_21']) / df['ema_21']) * 100
+        
+        if 'vwap' in df.columns:
+            df['price_vs_vwap'] = ((df['Close'] - df['vwap']) / df['vwap']) * 100
+        
+        # Gap analysis
+        df['gap'] = df['Open'] - df['Close'].shift(1)
+        df['gap_percent'] = (df['gap'] / df['Close'].shift(1)) * 100
+        
+        # Range metrics
+        df['daily_range'] = df['High'] - df['Low']
+        df['daily_range_percent'] = (df['daily_range'] / df['Close']) * 100
+        df['close_vs_range'] = (df['Close'] - df['Low']) / df['daily_range']
         
         return df
     
@@ -204,11 +323,11 @@ class MarketAnalyzer:
             # Generate signal if enough conditions are met
             min_conditions = 3
             
-            if call_conditions >= min_conditions and call_conditions > put_conditions:
+            if call_conditions >= min_conditions:
                 signal = 'CALL'
                 signal_strength = call_conditions
                 signal_conditions = conditions_detail
-            elif put_conditions >= min_conditions and put_conditions > call_conditions:
+            elif put_conditions >= min_conditions:
                 signal = 'PUT'
                 signal_strength = put_conditions
                 signal_conditions = put_conditions_detail
@@ -296,26 +415,130 @@ class MarketAnalyzer:
         print(f"  Date Range: {df.index.min().date()} to {df.index.max().date()}")
         print(f"  Total Trading Days: {len(df)}")
         
-        # Price statistics
+        # Get latest values
         latest = df.iloc[-1]
-        print(f"\nPrice Analysis:")
-        print(f"  Current Price: ${latest['Close']:.2f}")
-        if len(df) >= 252:
-            print(f"  52-Week High: ${df['Close'].tail(252).max():.2f}")
-            print(f"  52-Week Low: ${df['Close'].tail(252).min():.2f}")
-            year_return = (latest['Close'] / df['Close'].iloc[-252] - 1) * 100
-            print(f"  1-Year Return: {year_return:.2f}%")
+        prev = df.iloc[-2] if len(df) > 1 else latest
         
-        # Technical indicators
-        print(f"\nTechnical Indicators (Latest):")
-        if 'rsi_14' in df.columns and not pd.isna(latest.get('rsi_14')):
-            print(f"  RSI(14): {latest['rsi_14']:.2f}")
-        if 'stoch_rsi_k' in df.columns and not pd.isna(latest.get('stoch_rsi_k')):
+        # Price Analysis
+        print(f"\n{'='*40}")
+        print(f"PRICE ANALYSIS")
+        print(f"{'='*40}")
+        print(f"  Current Price: ${latest['Close']:.2f}")
+        print(f"  Previous Close: ${prev['Close']:.2f}")
+        print(f"  Change: ${latest.get('price_change_dollar', 0):.2f} ({latest.get('price_change', 0):.2f}%)")
+        print(f"  Day Range: ${latest['Low']:.2f} - ${latest['High']:.2f}")
+        print(f"  Open: ${latest['Open']:.2f}")
+        
+        if 'Volume' in df.columns:
+            print(f"  Volume: {latest['Volume']:,.0f}")
+            if 'rvol' in df.columns and not pd.isna(latest['rvol']):
+                print(f"  RVOL: {latest['rvol']:.2f}x")
+            if 'dollar_volume' in df.columns:
+                print(f"  Dollar Volume: ${latest['dollar_volume']:,.0f}")
+        
+        # Historical ranges
+        if len(df) >= 5:
+            print(f"\n  5-Day Range: ${df['Low'].tail(5).min():.2f} - ${df['High'].tail(5).max():.2f}")
+            print(f"  5-Day Return: {((latest['Close'] / df['Close'].iloc[-5]) - 1) * 100:.2f}%")
+        
+        if len(df) >= 20:
+            print(f"  20-Day Range: ${df['Low'].tail(20).min():.2f} - ${df['High'].tail(20).max():.2f}")
+            print(f"  20-Day Return: {((latest['Close'] / df['Close'].iloc[-20]) - 1) * 100:.2f}%")
+        
+        if 'high_52w' in df.columns and not pd.isna(latest['high_52w']):
+            print(f"\n  52-Week High: ${latest['high_52w']:.2f}")
+            print(f"  52-Week Low: ${latest['low_52w']:.2f}")
+            print(f"  % from 52W High: {latest['pct_from_52w_high']:.2f}%")
+            print(f"  % from 52W Low: {latest['pct_from_52w_low']:.2f}%")
+        
+        # Technical Indicators
+        print(f"\n{'='*40}")
+        print(f"TECHNICAL INDICATORS")
+        print(f"{'='*40}")
+        
+        # Momentum Indicators
+        print(f"\nMomentum:")
+        if not pd.isna(latest.get('rsi_14')):
+            rsi_val = latest['rsi_14']
+            rsi_status = "Overbought" if rsi_val > 70 else "Oversold" if rsi_val < 30 else "Neutral"
+            print(f"  RSI(14): {rsi_val:.2f} ({rsi_status})")
+        if not pd.isna(latest.get('rsi_9')):
+            print(f"  RSI(9): {latest['rsi_9']:.2f}")
+        
+        if not pd.isna(latest.get('stoch_k')):
+            print(f"  Stochastic %K: {latest['stoch_k']:.2f}")
+            print(f"  Stochastic %D: {latest['stoch_d']:.2f}")
+        
+        if not pd.isna(latest.get('stoch_rsi_k')):
             print(f"  Stochastic RSI K: {latest['stoch_rsi_k']:.2f}")
-        if 'rvol' in df.columns and not pd.isna(latest.get('rvol')):
-            print(f"  RVOL: {latest['rvol']:.2f}x")
-        if 'atr_14' in df.columns and not pd.isna(latest.get('atr_14')):
+            print(f"  Stochastic RSI D: {latest['stoch_rsi_d']:.2f}")
+        
+        if not pd.isna(latest.get('macd')):
+            print(f"\n  MACD: {latest['macd']:.4f}")
+            print(f"  MACD Signal: {latest['macd_signal']:.4f}")
+            print(f"  MACD Histogram: {latest['macd_histogram']:.4f}")
+        
+        # Moving Averages
+        print(f"\nMoving Averages:")
+        for ma in ['sma_5', 'sma_10', 'sma_20', 'sma_50', 'sma_200']:
+            if ma in df.columns and not pd.isna(latest[ma]):
+                ma_val = latest[ma]
+                position = "Above" if latest['Close'] > ma_val else "Below"
+                print(f"  {ma.upper().replace('_', '')}:  ${ma_val:.2f} ({position})")
+        
+        print(f"\nExponential MAs:")
+        for ema in ['ema_9', 'ema_21', 'ema_50']:
+            if ema in df.columns and not pd.isna(latest[ema]):
+                ema_val = latest[ema]
+                position = "Above" if latest['Close'] > ema_val else "Below"
+                print(f"  {ema.upper().replace('_', '')}:  ${ema_val:.2f} ({position})")
+        
+        # Volatility
+        print(f"\nVolatility:")
+        if not pd.isna(latest.get('atr_14')):
             print(f"  ATR(14): ${latest['atr_14']:.2f}")
+            print(f"  ATR %: {latest.get('atr_percent', 0):.2f}%")
+        
+        if not pd.isna(latest.get('bb_upper')):
+            print(f"\nBollinger Bands:")
+            print(f"  Upper: ${latest['bb_upper']:.2f}")
+            print(f"  Middle: ${latest['bb_middle']:.2f}")
+            print(f"  Lower: ${latest['bb_lower']:.2f}")
+            print(f"  Width: ${latest['bb_width']:.2f}")
+            bb_position = latest.get('bb_percent', 0.5)
+            bb_status = "Above Upper" if bb_position > 1 else "Below Lower" if bb_position < 0 else f"{bb_position*100:.1f}% in band"
+            print(f"  Position: {bb_status}")
+        
+        # Support/Resistance
+        if not pd.isna(latest.get('support_1')):
+            print(f"\nSupport/Resistance:")
+            print(f"  Support: ${latest['support_1']:.2f}")
+            print(f"  Resistance: ${latest['resistance_1']:.2f}")
+            print(f"  Pivot: ${latest['pivot']:.2f}")
+        
+        # VWAP
+        if 'vwap' in df.columns and not pd.isna(latest.get('vwap')):
+            print(f"\nVWAP: ${latest['vwap']:.2f}")
+            print(f"  Price vs VWAP: {latest.get('price_vs_vwap', 0):.2f}%")
+        
+        # Price Position
+        print(f"\nPrice Position:")
+        for col in ['price_vs_sma20', 'price_vs_sma50', 'price_vs_ema9', 'price_vs_ema21']:
+            if col in df.columns and not pd.isna(latest.get(col)):
+                indicator = col.replace('price_vs_', '').upper()
+                print(f"  vs {indicator}: {latest[col]:+.2f}%")
+        
+        # Pattern Detection
+        if not pd.isna(latest.get('consecutive_up')):
+            print(f"\nPattern Detection:")
+            print(f"  Consecutive Up Days: {int(latest['consecutive_up'])}")
+            print(f"  Consecutive Down Days: {int(latest['consecutive_down'])}")
+        
+        if not pd.isna(latest.get('gap_percent')):
+            print(f"  Gap: {latest['gap_percent']:.2f}%")
+        
+        if not pd.isna(latest.get('close_vs_range')):
+            print(f"  Close Position in Range: {latest['close_vs_range']*100:.1f}%")
         
         # Signal analysis
         if not signals_df.empty:
@@ -415,10 +638,24 @@ def main():
                        help='Show only signal analysis')
     parser.add_argument('--compare', action='store_true',
                        help='Show comparison across all tickers')
+    parser.add_argument('--target-date', type=str, 
+                       help='Target date for analysis (YYYY-MM-DD)')
+    parser.add_argument('--start-date', type=str, 
+                       help='Start date for range analysis (YYYY-MM-DD)')
+    parser.add_argument('--end-date', type=str, 
+                       help='End date for range analysis (YYYY-MM-DD)')
     
     args = parser.parse_args()
     
     analyzer = MarketAnalyzer()
+    
+    # Add date filtering if specified
+    if args.target_date or (args.start_date and args.end_date):
+        print(f"Date filtering enabled:")
+        if args.target_date:
+            print(f"  Target date: {args.target_date}")
+        if args.start_date and args.end_date:
+            print(f"  Date range: {args.start_date} to {args.end_date}")
     
     if args.ticker == 'ALL':
         # Analyze all tickers
