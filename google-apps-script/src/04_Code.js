@@ -137,12 +137,31 @@ function onOpen() {
         .addItem('Open Log Folders', 'EW_getApiResponsesFolderUrl')
         .addItem('Cleanup Old Logs', 'EW_cleanupOldApiLogs')
       )
+      .addSeparator()
+      .addSubMenu(ui.createMenu('Cache Management')
+        .addItem('Validate Recent Cache (All)', 'EW_validateAndFixRecentCache')
+        .addItem('Validate Historical Cache (All)', 'EW_validateAndFixHistoricalCache')
+        .addItem('Validate Selected Rows', 'EW_validateSelectedRowsCache')
+        .addSeparator()
+        .addItem('Clear File List Cache', 'EW_clearFileListCache')
+      )
+      .addSeparator()
+      .addItem('📱 Update Menu Sheet', 'EW_updateMenuSheet')
     )
     
     .addToUi();
-    
+
   // Auto-create success report on first run
   EW_ensureSuccessReportExists();
+
+  // Auto-create/update menu sheet for mobile access
+  // Check if menu sheet exists, if not create it
+  const ss = SpreadsheetApp.getActive();
+  const menuSheet = ss.getSheetByName('📱 Menu');
+  if (!menuSheet) {
+    EW_createMenuSheet();
+    EW_installMenuSheetTrigger();
+  }
 }
 
 /**
@@ -782,27 +801,32 @@ const EW_TRACKING_LABELS = [
 /**
  * Creates a mapping object from header row for easy column access
  * Maps header names to 1-based column indices and provides friendly column references
+ * Uses simple lowercase comparison for predictable, maintainable matching
  * @param {Array} headerRow - Array of header names from first row
- * @returns {Object} Object with byName mapping and specific column references
+ * @returns {Object} Object with column references by friendly names
  */
 function EW_headerMap(headerRow) {
-  const byName = {};               // raw key -> 1-based index
-  const byNorm = {};               // normalized key -> 1-based index
+  const byLowerCase = {};  // lowercase key -> 1-based index
+
+  // Build simple lowercase mapping
   headerRow.forEach((h, i) => {
-    const raw  = String(h || '').trim();
-    const norm = EW_norm(raw);
-    if (raw)  byName[raw.toLowerCase()] = i + 1;
-    if (norm) byNorm[norm] = i + 1;
+    const key = String(h || '').trim().toLowerCase();
+    if (key) byLowerCase[key] = i + 1;
   });
 
-  // Helper: first match among aliases (by normalized name)
+  // Helper: first match among aliases (case-insensitive)
   function find(aliases) {
     for (const a of aliases) {
-      const ix = byNorm[EW_norm(a)];
+      const key = String(a || '').trim().toLowerCase();
+      const ix = byLowerCase[key];
       if (ix) return ix;
     }
     return null;
   }
+
+  // Keep byName as alias for byLowerCase for backward compatibility
+  const byName = byLowerCase;
+  const byNorm = byLowerCase;
 
   // Common aliases for upstream data
   const tickerCol   = find(['ticker','symbol','sym','underlying','root']);
