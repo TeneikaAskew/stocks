@@ -31,6 +31,7 @@ class DataLoader:
         self.data_path = data_path or config.DATA_PATH
         self.data = {}  # Dictionary to store DataFrames by strategy
         self.unified_df = None  # Combined DataFrame across all strategies
+        self.incomplete_df = None  # DataFrame of incomplete/excluded trades
 
     def load_all_strategies(self, verbose=True):
         """
@@ -372,6 +373,20 @@ class DataLoader:
         # Combine all DataFrames
         self.unified_df = pd.concat(processed_dfs, ignore_index=True)
 
+        # Separate incomplete trades (no profit data) before filtering
+        initial_count = len(self.unified_df)
+        if 'Peak_Profit_Pct' in self.unified_df.columns:
+            # Save incomplete trades for analysis
+            self.incomplete_df = self.unified_df[self.unified_df['Peak_Profit_Pct'].isna()].copy()
+
+            # Keep only complete trades
+            self.unified_df = self.unified_df[self.unified_df['Peak_Profit_Pct'].notna()].copy()
+            filtered_count = initial_count - len(self.unified_df)
+
+            if verbose and filtered_count > 0:
+                print(f"\n⚠️  Filtered out {filtered_count} incomplete trades (no profit data)")
+                print(f"    Incomplete trades saved for inspection")
+
         if verbose:
             print(f"\n{'='*60}")
             print(f"✓ Unified dataset created: {len(self.unified_df)} total rows")
@@ -386,6 +401,10 @@ class DataLoader:
     def get_unified_df(self):
         """Get unified DataFrame across all strategies"""
         return self.unified_df
+
+    def get_incomplete_df(self):
+        """Get DataFrame of incomplete/excluded trades"""
+        return self.incomplete_df
 
     def summary_stats(self):
         """Print summary statistics of loaded data"""
