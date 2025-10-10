@@ -110,9 +110,10 @@ def load_unified_data():
         loader = DataLoader(config.DATA_PATH)
         loader.load_all_strategies(verbose=False)
         unified_df = loader.create_unified_dataset(verbose=False)
-        return unified_df
+        incomplete_df = loader.get_incomplete_df()
+        return unified_df, incomplete_df
     except:
-        return None
+        return None, None
 
 
 def create_strategy_comparison_chart(df):
@@ -307,7 +308,7 @@ def main():
     page = st.sidebar.radio(
         "Select Analysis",
         ["Overview", "Strategy Performance", "Earnings Timing",
-         "Risk Management", "Indicators", "Data Explorer"]
+         "Risk Management", "Indicators", "Data Explorer", "Incomplete Trades"]
     )
 
     st.sidebar.markdown("---")
@@ -326,13 +327,161 @@ def main():
         show_indicators(data)
     elif page == "Data Explorer":
         show_data_explorer(data)
+    elif page == "Incomplete Trades":
+        show_incomplete_trades()
+
+
+def calculate_avg_premium(df, premium_pct=0.02):
+    """
+    Calculate average premium based on strike prices in dataset
+
+    Args:
+        df: DataFrame with strike data
+        premium_pct: Typical premium as % of strike (default 2% for ATM options)
+
+    Returns:
+        Average estimated premium in dollars
+    """
+    if df is None or df.empty:
+        return 200  # Default fallback
+
+    # Try to get strike from longStrike or strike columns
+    strike_col = None
+    if 'longStrike' in df.columns:
+        strike_col = 'longStrike'
+    elif 'strike' in df.columns:
+        strike_col = 'strike'
+
+    if strike_col:
+        avg_strike = df[strike_col].mean()
+        if pd.notna(avg_strike) and avg_strike > 0:
+            # Estimate premium as percentage of strike (typically 1-3% for ATM options)
+            # Multiply by 100 because options contracts represent 100 shares
+            estimated_premium = avg_strike * premium_pct * 100
+            return round(estimated_premium, 0)
+
+    return 200  # Default fallback
+
+
+def estimate_options_profit(stock_move_pct, premium_paid=200, delta=0.5, contracts=1):
+    """
+    Estimate options profit from stock percentage move
+
+    Args:
+        stock_move_pct: Percentage move in underlying stock (e.g., 7.0 for 7%)
+        premium_paid: Premium paid per contract in dollars (default $200)
+        delta: Option delta - sensitivity to stock price (0.5 = ATM, 0.7 = ITM, 0.3 = OTM)
+        contracts: Number of contracts
+
+    Returns:
+        dict with profit estimates
+    """
+    # Assume ATM strike around $100 for calculation (scales proportionally)
+    assumed_stock_price = 100
+    stock_dollar_move = assumed_stock_price * (stock_move_pct / 100)
+
+    # Options move = stock move * delta * 100 (multiplier per contract)
+    option_dollar_move = stock_dollar_move * delta * 100 * contracts
+
+    # Profit = option value change - premium paid
+    profit_dollars = option_dollar_move - (premium_paid * contracts)
+    profit_pct = (profit_dollars / (premium_paid * contracts)) * 100 if premium_paid > 0 else 0
+
+    return {
+        'profit_dollars': profit_dollars,
+        'profit_pct': profit_pct,
+        'option_value_change': option_dollar_move
+    }
+
+
+def calculate_metrics_from_df(df):
+    """Calculate key metrics from a DataFrame"""
+    if df is None or df.empty:
+        return {}
+
+    metrics = {}
+    metrics['Total Trades'] = len(df)
+
+    if 'Strike_Ever_Hit' in df.columns:
+        metrics['Hit Rate'] = f"{df['Strike_Ever_Hit'].mean() * 100:.1f}%"
+
+    if 'Peak_Profit_Pct' in df.columns:
+        profitable = df['Peak_Profit_Pct'] > 0
+        metrics['Profitable Rate'] = f"{profitable.mean() * 100:.1f}%"
+        metrics['Avg Profit'] = f"{df['Peak_Profit_Pct'].mean():.2f}%"
+        metrics['Avg Win'] = f"{df.loc[profitable, 'Peak_Profit_Pct'].mean():.2f}%" if profitable.sum() > 0 else "N/A"
+        metrics['Avg Loss'] = f"{df.loc[~profitable, 'Peak_Profit_Pct'].mean():.2f}%" if (~profitable).sum() > 0 else "N/A"
+
+        # Add raw values for options calculator
+        metrics['Avg Profit Raw'] = df['Peak_Profit_Pct'].mean()
+        metrics['Avg Win Raw'] = df.loc[profitable, 'Peak_Profit_Pct'].mean() if profitable.sum() > 0 else 0
+
+    return metrics
+
+
+def calculate_strategy_breakdown(df):
+    """Calculate strategy breakdown from unified DataFrame"""
+    if df is None or df.empty or 'Strategy' not in df.columns:
+        return None
+
+    breakdown = df.groupby('Strategy').agg({
+        'Strike_Ever_Hit': lambda x: x.mean() * 100,
+        'Peak_Profit_Pct': ['mean', 'count'],
+    }).round(2)
+
+    breakdown.columns = ['Hit_Rate', 'Avg_Profit', 'Total_Trades']
+    breakdown = breakdown.reset_index()
+
+    # Calculate profit factor
+    for idx, row in breakdown.iterrows():
+        strategy_data = df[df['Strategy'] == row['Strategy']]
+        winners = strategy_data[strategy_data['Peak_Profit_Pct'] > 0]
+        losers = strategy_data[strategy_data['Peak_Profit_Pct'] <= 0]
+
+        total_wins = winners['Peak_Profit_Pct'].sum() if len(winners) > 0 else 0
+        total_losses = abs(losers['Peak_Profit_Pct'].sum()) if len(losers) > 0 else 0
+
+        breakdown.loc[idx, 'Profit_Factor'] = (total_wins / total_losses) if total_losses > 0 else 0
+
+    return breakdown
+
+
+def calculate_holding_period_stats(df):
+    """Calculate holding period statistics from unified DataFrame"""
+    if df is None or df.empty:
+        return None
+
+    profit_cols = [f'Day{d}_Profit_Pct' for d in range(6)]
+    available_cols = [col for col in profit_cols if col in df.columns]
+
+    if not available_cols:
+        return None
+
+    holding_stats = []
+    for day_idx, col in enumerate(available_cols):
+        profitable_rate = (df[col] > 0).mean() * 100
+        avg_profit = df[col].mean()
+
+        holding_stats.append({
+            'Day': day_idx,
+            'Profitable_Rate': round(profitable_rate, 1),
+            'Avg_Profit': round(avg_profit, 2)
+        })
+
+    return pd.DataFrame(holding_stats)
 
 
 def show_overview(data):
     """Display overview dashboard"""
 
     # Load unified data for filtering
-    unified_df = load_unified_data()
+    unified_df, _ = load_unified_data()
+
+    # Initialize session state
+    if 'filtered_df' not in st.session_state:
+        st.session_state['filtered_df'] = unified_df
+    if 'filters_applied' not in st.session_state:
+        st.session_state['filters_applied'] = False
 
     # Filters Section
     st.header("🔍 Data Filters")
@@ -394,18 +543,20 @@ def show_overview(data):
             with filter_cols2[2]:
                 # Profit Range
                 if 'Peak_Profit_Pct' in unified_df.columns:
+                    min_possible = float(unified_df['Peak_Profit_Pct'].min())
                     filters['min_profit'] = st.number_input(
                         "Min Profit %",
-                        value=-100.0,
+                        value=min_possible,
                         step=1.0,
                         key='overview_min_profit'
                     )
 
             with filter_cols2[3]:
                 if 'Peak_Profit_Pct' in unified_df.columns:
+                    max_possible = float(unified_df['Peak_Profit_Pct'].max())
                     filters['max_profit'] = st.number_input(
                         "Max Profit %",
-                        value=200.0,
+                        value=max_possible,
                         step=1.0,
                         key='overview_max_profit'
                     )
@@ -453,12 +604,16 @@ def show_overview(data):
 
                 # Apply profit range filter
                 if 'Peak_Profit_Pct' in filtered_df.columns:
-                    filtered_df = filtered_df[
-                        (filtered_df['Peak_Profit_Pct'] >= filters.get('min_profit', -100)) &
-                        (filtered_df['Peak_Profit_Pct'] <= filters.get('max_profit', 200))
-                    ]
+                    min_profit = filters.get('min_profit')
+                    max_profit = filters.get('max_profit')
+                    if min_profit is not None and max_profit is not None:
+                        filtered_df = filtered_df[
+                            (filtered_df['Peak_Profit_Pct'] >= min_profit) &
+                            (filtered_df['Peak_Profit_Pct'] <= max_profit)
+                        ]
 
                 st.session_state['filtered_df'] = filtered_df
+                st.session_state['filters_applied'] = True
                 st.success(f"✅ Filtered to {len(filtered_df):,} trades (from {len(unified_df):,} total)")
 
                 # Show sample of filtered data
@@ -468,45 +623,157 @@ def show_overview(data):
                     available_cols = [col for col in display_cols if col in filtered_df.columns]
                     st.dataframe(filtered_df[available_cols].head(20))
 
+        # Show reset button if filters are applied
+        if st.session_state.get('filters_applied', False):
+            if st.button("Reset Filters", key='reset_filters'):
+                st.session_state['filtered_df'] = unified_df
+                st.session_state['filters_applied'] = False
+                st.rerun()
+
     st.markdown("---")
     st.header("Executive Summary")
 
-    # Key metrics
-    if 'overall' in data:
-        overall_df = data['overall']
-        if not overall_df.empty:
-            cols = st.columns(4)
+    # Show filter status
+    if st.session_state.get('filters_applied', False):
+        filtered_count = len(st.session_state['filtered_df'])
+        total_count = len(unified_df) if unified_df is not None else 0
+        st.info(f"🔍 **Filters Active**: Showing {filtered_count:,} of {total_count:,} trades")
 
-            # Extract metrics (handle both dict and DataFrame)
-            if isinstance(overall_df, pd.DataFrame):
-                metrics = overall_df.to_dict('records')[0] if len(overall_df) > 0 else {}
-            else:
-                metrics = overall_df
+    # Key metrics - use filtered data if available
+    display_df = st.session_state.get('filtered_df', unified_df)
+    if display_df is not None and not display_df.empty:
+        metrics = calculate_metrics_from_df(display_df)
 
-            with cols[0]:
-                st.metric("Total Trades", f"{metrics.get('Total Trades', 0):,}")
-            with cols[1]:
-                st.metric("Hit Rate", metrics.get('Hit Rate', 'N/A'))
-            with cols[2]:
-                st.metric("Win Rate", metrics.get('Profitable Rate', 'N/A'))
-            with cols[3]:
-                st.metric("Avg Profit", metrics.get('Avg Profit', 'N/A'))
+        cols = st.columns(4)
+        with cols[0]:
+            st.metric("Total Trades", f"{metrics.get('Total Trades', 0):,}")
+        with cols[1]:
+            st.metric("Hit Rate", metrics.get('Hit Rate', 'N/A'))
+        with cols[2]:
+            st.metric("Win Rate", metrics.get('Profitable Rate', 'N/A'))
+        with cols[3]:
+            st.metric("Avg Profit", metrics.get('Avg Profit', 'N/A'))
+
+        # Options Profit Estimator
+        st.markdown("---")
+        st.subheader("💰 Options Profit Estimator")
+        st.info("⚠️ **Note**: The 'Avg Profit %' above represents the **stock price move from strike**, not the actual options profit. Use this calculator to estimate realistic options returns.")
+
+        # Calculate average premium from dataset
+        avg_premium = calculate_avg_premium(display_df)
+
+        with st.expander("Estimate Real Options Profit", expanded=False):
+            # Show dataset stats
+            if 'longStrike' in display_df.columns or 'strike' in display_df.columns:
+                strike_col = 'longStrike' if 'longStrike' in display_df.columns else 'strike'
+                avg_strike = display_df[strike_col].mean()
+                st.caption(f"📊 Dataset avg strike: ${avg_strike:.2f} | Estimated avg premium: ${avg_premium:.0f} (2% of strike × 100 shares)")
+
+            st.markdown("""
+            **How this works:**
+            - The percentage shown in "Avg Profit" above is the **stock's price movement** from the strike price
+            - Options profit depends on: premium paid, delta (option sensitivity), and stock movement
+            - **Delta** represents how much the option price changes per $1 stock move:
+              - **0.3** = Out-of-the-Money (OTM) - cheaper, lower probability
+              - **0.5** = At-the-Money (ATM) - balanced risk/reward
+              - **0.7-0.8** = In-the-Money (ITM) - expensive, higher probability
+            - Each contract controls **100 shares**, so a $1 stock move with 0.5 delta = $50 option value change
+            """)
+
+            est_cols = st.columns(4)
+
+            with est_cols[0]:
+                premium = st.number_input(
+                    "Premium Paid (per contract)",
+                    min_value=10,
+                    max_value=10000,
+                    value=int(avg_premium),
+                    step=10,
+                    help="How much you paid for the option contract (e.g., $200)"
+                )
+
+            with est_cols[1]:
+                delta = st.slider(
+                    "Delta",
+                    min_value=0.1,
+                    max_value=1.0,
+                    value=0.5,
+                    step=0.05,
+                    help="0.3 = OTM, 0.5 = ATM, 0.7-0.8 = ITM"
+                )
+
+            with est_cols[2]:
+                contracts = st.number_input(
+                    "Number of Contracts",
+                    min_value=1,
+                    max_value=100,
+                    value=1,
+                    step=1
+                )
+
+            with est_cols[3]:
+                stock_move = st.number_input(
+                    "Stock Move %",
+                    min_value=-50.0,
+                    max_value=50.0,
+                    value=metrics.get('Avg Win Raw', 7.0),
+                    step=0.5,
+                    help="Use your avg profit % or custom value"
+                )
+
+            # Calculate estimates
+            if stock_move != 0:
+                result = estimate_options_profit(stock_move, premium, delta, contracts)
+
+                st.markdown("#### Estimated Profit/Loss")
+                result_cols = st.columns(3)
+
+                profit_color = "green" if result['profit_dollars'] >= 0 else "red"
+                profit_sign = "+" if result['profit_dollars'] >= 0 else ""
+
+                with result_cols[0]:
+                    st.markdown(f"**Profit/Loss:** <span style='color:{profit_color}; font-size:1.5rem; font-weight:bold'>{profit_sign}${result['profit_dollars']:,.0f}</span>", unsafe_allow_html=True)
+
+                with result_cols[1]:
+                    st.markdown(f"**Return %:** <span style='color:{profit_color}; font-size:1.5rem; font-weight:bold'>{profit_sign}{result['profit_pct']:.1f}%</span>", unsafe_allow_html=True)
+
+                with result_cols[2]:
+                    st.markdown(f"**Option Value Change:** ${result['option_value_change']:,.0f}")
+
+                # Show example scenarios
+                st.markdown("#### Quick Scenarios (with current settings)")
+                scenario_data = []
+                for scenario_move in [3, 5, 7, 10, 15]:
+                    scenario_result = estimate_options_profit(scenario_move, premium, delta, contracts)
+                    scenario_data.append({
+                        'Stock Move': f"{scenario_move}%",
+                        'Profit/Loss': f"${scenario_result['profit_dollars']:,.0f}",
+                        'Return %': f"{scenario_result['profit_pct']:.1f}%"
+                    })
+
+                st.dataframe(pd.DataFrame(scenario_data), use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
-    # Strategy comparison
-    if 'strategy_breakdown' in data:
-        st.subheader("Strategy Comparison")
-        fig = create_strategy_comparison_chart(data['strategy_breakdown'])
+    # Strategy comparison - use filtered data
+    st.subheader("Strategy Comparison")
+    strategy_df = calculate_strategy_breakdown(display_df)
+    if strategy_df is not None:
+        fig = create_strategy_comparison_chart(strategy_df)
         if fig:
             st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No data available for strategy comparison")
 
-    # Holding period
-    if 'holding_period' in data:
-        st.subheader("Optimal Holding Period")
-        fig = create_holding_period_chart(data['holding_period'])
+    # Holding period - use filtered data
+    st.subheader("Optimal Holding Period")
+    holding_df = calculate_holding_period_stats(display_df)
+    if holding_df is not None:
+        fig = create_holding_period_chart(holding_df)
         if fig:
             st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No data available for holding period analysis")
 
 
 def show_strategy_performance(data):
@@ -551,11 +818,15 @@ def show_strategy_performance(data):
     # Multi-day profitability
     if 'multi_day' in data:
         st.subheader("Multi-Day Profitability")
-        df = data['multi_day']
+        df = data['multi_day'].copy()
+
+        # Calculate percentage
+        df['Percentage'] = (df['Trade_Count'] / df['Trade_Count'].sum() * 100).round(1)
 
         fig = px.bar(df, x='Consecutive_Days', y='Trade_Count',
                     title='Distribution of Consecutive Winning Days',
                     text='Percentage')
+        fig.update_traces(texttemplate='%{text}%', textposition='outside')
         st.plotly_chart(fig, use_container_width=True)
 
 
@@ -712,6 +983,60 @@ def show_data_explorer(data):
         # Column stats
         if st.checkbox("Show Column Statistics"):
             st.write(df.describe())
+
+
+def show_incomplete_trades():
+    """Display incomplete/excluded trades (trades with no profit data)"""
+    st.header("Incomplete Trades (Excluded from Analysis)")
+
+    st.info("⚠️ These trades have no profit data and are excluded from all analysis. "
+            "This typically indicates missing tracking data or incomplete trade records.")
+
+    # Load incomplete data
+    _, incomplete_df = load_unified_data()
+
+    if incomplete_df is None or incomplete_df.empty:
+        st.success("✅ No incomplete trades found! All trades have complete profit data.")
+        return
+
+    # Summary stats
+    st.subheader(f"Summary: {len(incomplete_df):,} Incomplete Trades")
+
+    # Breakdown by strategy
+    if 'Strategy' in incomplete_df.columns:
+        st.subheader("Breakdown by Strategy")
+        strategy_counts = incomplete_df['Strategy'].value_counts().reset_index()
+        strategy_counts.columns = ['Strategy', 'Count']
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.dataframe(strategy_counts, use_container_width=True)
+
+        with col2:
+            fig = px.pie(strategy_counts, values='Count', names='Strategy',
+                        title='Incomplete Trades by Strategy')
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Sample data
+    st.subheader("Sample of Incomplete Trades")
+    display_cols = ['Strategy', 'ticker', 'Run Date', 'expDate', 'strike', 'longStrike',
+                   'Day0_Profit_Pct', 'Day1_Profit_Pct', 'Day2_Profit_Pct', 'Peak_Profit_Pct']
+    available_cols = [col for col in display_cols if col in incomplete_df.columns]
+    st.dataframe(incomplete_df[available_cols].head(50), use_container_width=True)
+
+    # Download option
+    st.subheader("Export Incomplete Trades")
+    csv = incomplete_df.to_csv(index=False)
+    st.download_button(
+        label="Download CSV",
+        data=csv,
+        file_name="incomplete_trades.csv",
+        mime="text/csv"
+    )
+
+    # Full data view
+    if st.checkbox("Show All Incomplete Trades"):
+        st.dataframe(incomplete_df, use_container_width=True)
 
 
 if __name__ == "__main__":
