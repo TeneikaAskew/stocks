@@ -330,6 +330,145 @@ def main():
 
 def show_overview(data):
     """Display overview dashboard"""
+
+    # Load unified data for filtering
+    unified_df = load_unified_data()
+
+    # Filters Section
+    st.header("🔍 Data Filters")
+
+    with st.expander("Filter Data", expanded=False):
+        filter_cols = st.columns(4)
+
+        filters = {}
+
+        if unified_df is not None and not unified_df.empty:
+            with filter_cols[0]:
+                # Strategy filter
+                strategies = ['All'] + sorted(unified_df['Strategy'].unique().tolist())
+                filters['strategy'] = st.selectbox("Strategy", strategies, key='overview_strategy')
+
+            with filter_cols[1]:
+                # Ticker filter
+                tickers = ['All'] + sorted(unified_df['ticker'].unique().tolist())
+                filters['ticker'] = st.selectbox("Ticker", tickers, key='overview_ticker')
+
+            with filter_cols[2]:
+                # Date range
+                if 'Run Date' in unified_df.columns:
+                    min_date = pd.to_datetime(unified_df['Run Date']).min()
+                    max_date = pd.to_datetime(unified_df['Run Date']).max()
+                    filters['date_range'] = st.date_input(
+                        "Date Range",
+                        value=(min_date, max_date),
+                        min_value=min_date,
+                        max_value=max_date,
+                        key='overview_date'
+                    )
+
+            with filter_cols[3]:
+                # Strike Hit filter
+                strike_options = ['All', 'Hit Only', 'Not Hit']
+                filters['strike_hit'] = st.selectbox("Strike Hit", strike_options, key='overview_strike')
+
+            # Additional filters in second row
+            filter_cols2 = st.columns(4)
+
+            with filter_cols2[0]:
+                # Win/Loss filter
+                win_options = ['All', 'Winners Only', 'Losers Only']
+                filters['win_loss'] = st.selectbox("Win/Loss", win_options, key='overview_winloss')
+
+            with filter_cols2[1]:
+                # Earnings Window
+                if 'Days_Before_Earnings' in unified_df.columns:
+                    min_days = int(unified_df['Days_Before_Earnings'].min())
+                    max_days = int(unified_df['Days_Before_Earnings'].max())
+                    filters['earnings_window'] = st.slider(
+                        "Days Before Earnings",
+                        min_days, max_days,
+                        (min_days, max_days),
+                        key='overview_earnings'
+                    )
+
+            with filter_cols2[2]:
+                # Profit Range
+                if 'Peak_Profit_Pct' in unified_df.columns:
+                    filters['min_profit'] = st.number_input(
+                        "Min Profit %",
+                        value=-100.0,
+                        step=1.0,
+                        key='overview_min_profit'
+                    )
+
+            with filter_cols2[3]:
+                if 'Peak_Profit_Pct' in unified_df.columns:
+                    filters['max_profit'] = st.number_input(
+                        "Max Profit %",
+                        value=200.0,
+                        step=1.0,
+                        key='overview_max_profit'
+                    )
+
+            # Apply filters button
+            if st.button("Apply Filters", type="primary", key='overview_apply'):
+                filtered_df = unified_df.copy()
+
+                # Apply strategy filter
+                if filters.get('strategy') and filters['strategy'] != 'All':
+                    filtered_df = filtered_df[filtered_df['Strategy'] == filters['strategy']]
+
+                # Apply ticker filter
+                if filters.get('ticker') and filters['ticker'] != 'All':
+                    filtered_df = filtered_df[filtered_df['ticker'] == filters['ticker']]
+
+                # Apply date filter
+                if filters.get('date_range') and len(filters['date_range']) == 2:
+                    filtered_df['Run Date'] = pd.to_datetime(filtered_df['Run Date'])
+                    start_date, end_date = filters['date_range']
+                    filtered_df = filtered_df[
+                        (filtered_df['Run Date'] >= pd.Timestamp(start_date)) &
+                        (filtered_df['Run Date'] <= pd.Timestamp(end_date))
+                    ]
+
+                # Apply strike hit filter
+                if filters.get('strike_hit') == 'Hit Only':
+                    filtered_df = filtered_df[filtered_df['Strike_Ever_Hit'] == True]
+                elif filters.get('strike_hit') == 'Not Hit':
+                    filtered_df = filtered_df[filtered_df['Strike_Ever_Hit'] == False]
+
+                # Apply win/loss filter
+                if filters.get('win_loss') == 'Winners Only':
+                    filtered_df = filtered_df[filtered_df['Peak_Profit_Pct'] > 0]
+                elif filters.get('win_loss') == 'Losers Only':
+                    filtered_df = filtered_df[filtered_df['Peak_Profit_Pct'] <= 0]
+
+                # Apply earnings window filter
+                if filters.get('earnings_window'):
+                    min_days, max_days = filters['earnings_window']
+                    filtered_df = filtered_df[
+                        (filtered_df['Days_Before_Earnings'] >= min_days) &
+                        (filtered_df['Days_Before_Earnings'] <= max_days)
+                    ]
+
+                # Apply profit range filter
+                if 'Peak_Profit_Pct' in filtered_df.columns:
+                    filtered_df = filtered_df[
+                        (filtered_df['Peak_Profit_Pct'] >= filters.get('min_profit', -100)) &
+                        (filtered_df['Peak_Profit_Pct'] <= filters.get('max_profit', 200))
+                    ]
+
+                st.session_state['filtered_df'] = filtered_df
+                st.success(f"✅ Filtered to {len(filtered_df):,} trades (from {len(unified_df):,} total)")
+
+                # Show sample of filtered data
+                with st.expander("Preview Filtered Data"):
+                    display_cols = ['Strategy', 'ticker', 'Run Date', 'longStrike', 'Strike_Ever_Hit',
+                                  'Peak_Profit_Pct', 'Days_Before_Earnings']
+                    available_cols = [col for col in display_cols if col in filtered_df.columns]
+                    st.dataframe(filtered_df[available_cols].head(20))
+
+    st.markdown("---")
     st.header("Executive Summary")
 
     # Key metrics
