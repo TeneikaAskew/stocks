@@ -53,7 +53,8 @@
       "Bash(for:*)",
       "Bash(done)",
       "Bash(do echo \"=== $file ===\")",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(GIT_SEQUENCE_EDITOR=\"sed -i ''1s/pick/edit/''\" git rebase -i c01cbc4^)"
     ],
     "deny": []
   }
