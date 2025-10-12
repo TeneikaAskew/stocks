@@ -730,17 +730,39 @@ function formatStrategiesForWeb(strategies) {
 
 function formatTopPlaysForWeb(topPlays) {
   if (!topPlays || !Array.isArray(topPlays)) return [];
-  
-  return topPlays.slice(0, 20).map(play => ({
-    symbol: play.symbol || 'N/A',
-    entryDate: play.entryDate || new Date().toISOString(),
-    strategy: play.strategy || 'N/A',
-    maxProfit: play.maxProfit || 0,
-    daysToHit: play.daysToHit || 0,
-    rsi: play.rsi || null,
-    priceVsSMA20: play.priceVsSMA20 || null,
-    rvol: play.rvol || null
-  }));
+
+  return topPlays.slice(0, 20).map(play => {
+    const profitValue = (() => {
+      if (typeof play.maxProfit === 'number') {
+        return play.maxProfit;
+      }
+
+      if (typeof play.maxProfit === 'string') {
+        const cleaned = play.maxProfit.replace('%', '').trim();
+        const parsed = parseFloat(cleaned);
+        if (!isNaN(parsed)) {
+          return parsed;
+        }
+      }
+
+      if (typeof play.maxFavorableValue === 'number') {
+        return play.maxFavorableValue * 100;
+      }
+
+      return 0;
+    })();
+
+    return {
+      symbol: play.ticker || play.symbol || 'N/A',
+      entryDate: play.entryDate || new Date().toISOString(),
+      strategy: play.strategy || 'N/A',
+      maxProfit: profitValue,
+      daysToHit: play.daysToHit || 0,
+      rsi: play.rsi || null,
+      priceVsSMA20: play.priceVsSMA20 || null,
+      rvol: play.rvol || null
+    };
+  });
 }
 
 /**

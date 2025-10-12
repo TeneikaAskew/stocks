@@ -419,20 +419,27 @@ class TradingDashboard {
                     </tr>
                 </thead>
                 <tbody>
-                    ${topPlays.map(play => `
+                    ${topPlays.map(play => {
+                        const maxProfit = Number(play.maxProfit);
+                        const priceVsSMA20 = Number(play.priceVsSMA20);
+                        const rsi = Number(play.rsi);
+                        const rvol = Number(play.rvol);
+
+                        return `
                         <tr>
                             <td><strong>${play.symbol}</strong></td>
                             <td>${new Date(play.entryDate).toLocaleDateString()}</td>
                             <td>${play.strategy}</td>
-                            <td class="text-success">${play.maxProfit.toFixed(2)}%</td>
-                            <td>${play.daysToHit}</td>
-                            <td>${play.rsi?.toFixed(1) || '-'}</td>
-                            <td class="${play.priceVsSMA20 >= 0 ? 'text-success' : 'text-danger'}">
-                                ${play.priceVsSMA20?.toFixed(2) || '-'}%
+                            <td class="text-success">${Number.isFinite(maxProfit) ? maxProfit.toFixed(2) : '-'}%</td>
+                            <td>${play.daysToHit ?? '-'}</td>
+                            <td>${Number.isFinite(rsi) ? rsi.toFixed(1) : '-'}</td>
+                            <td class="${Number.isFinite(priceVsSMA20) && priceVsSMA20 >= 0 ? 'text-success' : 'text-danger'}">
+                                ${Number.isFinite(priceVsSMA20) ? priceVsSMA20.toFixed(2) : '-'}%
                             </td>
-                            <td>${play.rvol?.toFixed(2) || '-'}</td>
+                            <td>${Number.isFinite(rvol) ? rvol.toFixed(2) : '-'}</td>
                         </tr>
-                    `).join('')}
+                        `;
+                    }).join('')}
                 </tbody>
             </table>
         `;
