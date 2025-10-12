@@ -200,16 +200,22 @@ function formatStrategyData(strategies) {
  * Format top plays data for web
  */
 function formatTopPlays(topPlays) {
-  return (topPlays || []).slice(0, 20).map(play => ({
-    symbol: play.symbol,
-    entryDate: play.entryDate,
-    strategy: play.strategy,
-    maxProfit: play.maxProfit,
-    daysToHit: play.daysToHit,
-    rsi: play.rsi,
-    priceVsSMA20: play.priceVsSMA20,
-    rvol: play.rvol
-  }));
+  return (topPlays || []).slice(0, 20).map(play => {
+    const rawProfit = typeof play.maxProfit === 'number'
+      ? play.maxProfit
+      : (typeof play.maxFavorableValue === 'number' ? play.maxFavorableValue : parseFloat(play.maxProfit) || 0);
+
+    return {
+      symbol: play.ticker || play.symbol || 'N/A',
+      entryDate: play.entryDate,
+      strategy: play.strategy,
+      maxProfit: rawProfit * 100,
+      daysToHit: play.daysToHit,
+      rsi: play.rsi,
+      priceVsSMA20: play.priceVsSMA20,
+      rvol: play.rvol
+    };
+  });
 }
 
 /**
