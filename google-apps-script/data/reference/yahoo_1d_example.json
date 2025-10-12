@@ -1,0 +1,84 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "currency": "USD",
+          "symbol": "PLAY",
+          "exchangeName": "NMS",
+          "fullExchangeName": "NasdaqGS",
+          "instrumentType": "EQUITY",
+          "firstTradeDate": 1412947800,
+          "regularMarketTime": 1755892800,
+          "hasPrePostMarketData": true,
+          "gmtoffset": -14400,
+          "timezone": "EDT",
+          "exchangeTimezoneName": "America/New_York",
+          "regularMarketPrice": 25.34,
+          "fiftyTwoWeekHigh": 43.73,
+          "fiftyTwoWeekLow": 15.08,
+          "regularMarketDayHigh": 25.55,
+          "regularMarketDayLow": 23.96,
+          "regularMarketVolume": 887562,
+          "longName": "Dave & Buster's Entertainment, Inc.",
+          "shortName": "Dave & Buster's Entertainment, ",
+          "chartPreviousClose": 23.98,
+          "priceHint": 2,
+          "currentTradingPeriod": {
+            "pre": {
+              "timezone": "EDT",
+              "start": 1755849600,
+              "end": 1755869400,
+              "gmtoffset": -14400
+            },
+            "regular": {
+              "timezone": "EDT",
+              "start": 1755869400,
+              "end": 1755892800,
+              "gmtoffset": -14400
+            },
+            "post": {
+              "timezone": "EDT",
+              "start": 1755892800,
+              "end": 1755907200,
+              "gmtoffset": -14400
+            }
+          },
+          "dataGranularity": "1d",
+          "range": "",
+          "validRanges": [
+            "1d",
+            "5d",
+            "1mo",
+            "3mo",
+            "6mo",
+            "1y",
+            "2y",
+            "5y",
+            "10y",
+            "ytd",
+            "max"
+          ]
+        },
+        "timestamp": [1755696600],
+        "indicators": {
+          "quote": [
+            {
+              "low": [24],
+              "high": [24.8400001525879],
+              "close": [24.1100006103516],
+              "volume": [627600],
+              "open": [24.6599998474121]
+            }
+          ],
+          "adjclose": [
+            {
+              "adjclose": [24.1100006103516]
+            }
+          ]
+        }
+      }
+    ],
+    "error": null
+  }
+}
