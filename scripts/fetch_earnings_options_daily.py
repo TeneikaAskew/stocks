@@ -353,8 +353,10 @@ def update_summary_log(df, output_path, date_str):
         'total_contracts': len(df)
     })
 
-    # Keep only last 30 days of history
-    summary['fetch_history'] = summary['fetch_history'][-30:]
+    # Keep an extended rolling history (default: 180 days) so we preserve more than six months of data
+    history_retention_days = 180
+    if len(summary['fetch_history']) > history_retention_days:
+        summary['fetch_history'] = summary['fetch_history'][-history_retention_days:]
 
     # Save updated summary
     with open(summary_file, 'w') as f:
