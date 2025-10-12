@@ -1,0 +1,115 @@
+name: Fetch Earnings Options Data
+
+on:
+  schedule:
+    # 9:00 AM EST (2:00 PM UTC) - Pre-market/opening
+    - cron: '0 14 * * 1-5'
+    # 9:35 AM EST (2:35 PM UTC) - Opening settlement
+    - cron: '35 14 * * 1-5'
+    # 10:00 AM EST (3:00 PM UTC) - IV normalization
+    - cron: '0 15 * * 1-5'
+    # 12:00 PM EST (5:00 PM UTC) - Mid-day check
+    - cron: '0 17 * * 1-5'
+    # 3:50 PM EST (8:50 PM UTC) - Near close
+    - cron: '50 20 * * 1-5'
+    # 4:30 PM EST (9:30 PM UTC) - After close
+    - cron: '30 21 * * 1-5'
+  workflow_dispatch:  # Allow manual triggering
+    inputs:
+      tickers:
+        description: 'Specific tickers (space-separated, leave empty for CSV auto-load)'
+        required: false
+        default: ''
+        type: string
+      limit:
+        description: 'Limit number of tickers (for testing)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  fetch-earnings-options:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-options-${{ hashFiles('**/requirements*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-options-
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install yahooquery pandas pyarrow py_vollib numpy
+
+    - name: Fetch earnings options data
+      run: |
+        ARGS=""
+
+        # Add specific tickers if provided
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tickers }}" ]; then
+          ARGS="$ARGS ${{ github.event.inputs.tickers }}"
+        fi
+
+        # Add limit if provided
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.limit }}" ]; then
+          ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"
+        fi
+
+        # Add skip-existing flag to avoid re-fetching same tickers
+        ARGS="$ARGS --skip-existing"
+
+        python scripts/fetch_earnings_options_daily.py $ARGS
+
+    - name: Commit and push data
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+
+        # Get current date and time for commit message
+        COMMIT_DATE=$(date +'%Y-%m-%d')
+        COMMIT_TIME=$(date +'%H:%M')
+
+        # Add parquet and JSON files (CSV files are large, optional)
+        git add -f data/options/earnings/*.parquet 2>/dev/null || true
+        git add -f data/options/earnings/*.json 2>/dev/null || true
+
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          # Determine which snapshot this is based on time
+          HOUR=$(date +'%H')
+          if [ "$HOUR" -eq "14" ]; then
+            SNAPSHOT="opening"
+          elif [ "$HOUR" -eq "15" ]; then
+            SNAPSHOT="IV-check"
+          elif [ "$HOUR" -eq "17" ]; then
+            SNAPSHOT="mid-day"
+          elif [ "$HOUR" -eq "20" ]; then
+            SNAPSHOT="near-close"
+          elif [ "$HOUR" -eq "21" ]; then
+            SNAPSHOT="after-hours"
+          else
+            SNAPSHOT="manual"
+          fi
+
+          git commit -m "update: Earnings options data - $COMMIT_DATE $COMMIT_TIME ($SNAPSHOT)"
+          git push
+        fi
