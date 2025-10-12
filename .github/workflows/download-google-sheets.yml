@@ -2,8 +2,8 @@ name: Download Google Sheets Data
 
 on:
   schedule:
-    # Run weekly on Sundays at 6:00 PM EST (11:00 PM UTC)
-    - cron: '0 23 * * 0'
+    # Run daily at 8:30 AM EST (1:30 PM UTC) - After Google Sheets update
+    - cron: '30 13 * * *'
   workflow_dispatch:  # Allow manual triggering
     inputs:
       sheets:
