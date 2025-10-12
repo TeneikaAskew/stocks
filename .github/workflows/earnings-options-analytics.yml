@@ -1,0 +1,389 @@
+name: Earnings Options Analytics
+
+on:
+  # Run on push to main branch
+  push:
+    branches:
+      - main
+    paths:
+      - 'earnings_options_analytics/**'
+      - 'google-apps-script/data/**'
+      - '.github/workflows/earnings-options-analytics.yml'
+
+  # Run on pull requests
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'earnings_options_analytics/**'
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      analysis_type:
+        description: 'Type of analysis to run'
+        required: true
+        default: 'quick'
+        type: choice
+        options:
+          - quick
+          - full
+          - test-only
+      export_charts:
+        description: 'Generate and export charts'
+        required: false
+        default: false
+        type: boolean
+      export_csv:
+        description: 'Export CSV reports'
+        required: false
+        default: true
+        type: boolean
+
+  # Run on schedule (daily at 2 AM UTC)
+  schedule:
+    - cron: '0 2 * * *'
+
+jobs:
+  test:
+    name: Test Analytics System
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy matplotlib seaborn
+
+      - name: Check for data files
+        id: check_test_data
+        working-directory: google-apps-script/data
+        run: |
+          if [ -n "$(ls -A *.csv 2>/dev/null)" ]; then
+            echo "has_data=true" >> $GITHUB_OUTPUT
+            echo "✓ Data files found for testing"
+          else
+            echo "has_data=false" >> $GITHUB_OUTPUT
+            echo "⚠️  No CSV data files found - tests will be skipped"
+          fi
+
+      - name: Run test suite (with data)
+        if: steps.check_test_data.outputs.has_data == 'true'
+        working-directory: earnings_options_analytics
+        run: |
+          python test_system.py
+
+      - name: Skip tests (no data)
+        if: steps.check_test_data.outputs.has_data == 'false'
+        run: |
+          echo "⚠️  Skipping tests - no data files available"
+          echo "This is expected if data hasn't been uploaded yet."
+          echo "To run tests, add CSV files to google-apps-script/data/"
+          echo ""
+          echo "✓ Test job passed (no data to test)"
+
+      - name: Upload test results
+        if: always() && steps.check_test_data.outputs.has_data == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: earnings_options_analytics/test_results.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  analyze:
+    name: Run Analytics
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy matplotlib seaborn
+
+      - name: Check for data files
+        id: check_data
+        working-directory: google-apps-script/data
+        run: |
+          if [ -n "$(ls -A *.csv 2>/dev/null)" ]; then
+            echo "has_data=true" >> $GITHUB_OUTPUT
+            echo "✓ Data files found:"
+            ls -lh *.csv
+          else
+            echo "has_data=false" >> $GITHUB_OUTPUT
+            echo "⚠️  No CSV data files found in google-apps-script/data/"
+          fi
+
+      - name: Determine analysis type
+        id: analysis_config
+        run: |
+          # Default to quick analysis
+          ANALYSIS_TYPE="quick"
+          EXPORT_CHARTS="false"
+          EXPORT_CSV="true"
+
+          # Override with workflow dispatch inputs
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ANALYSIS_TYPE="${{ github.event.inputs.analysis_type }}"
+            EXPORT_CHARTS="${{ github.event.inputs.export_charts }}"
+            EXPORT_CSV="${{ github.event.inputs.export_csv }}"
+          fi
+
+          # Override for scheduled runs (full analysis)
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            ANALYSIS_TYPE="full"
+            EXPORT_CHARTS="true"
+            EXPORT_CSV="true"
+          fi
+
+          echo "analysis_type=${ANALYSIS_TYPE}" >> $GITHUB_OUTPUT
+          echo "export_charts=${EXPORT_CHARTS}" >> $GITHUB_OUTPUT
+          echo "export_csv=${EXPORT_CSV}" >> $GITHUB_OUTPUT
+
+          echo "Analysis Configuration:"
+          echo "  Type: ${ANALYSIS_TYPE}"
+          echo "  Export Charts: ${EXPORT_CHARTS}"
+          echo "  Export CSV: ${EXPORT_CSV}"
+
+      - name: Run analytics (test-only mode)
+        if: steps.analysis_config.outputs.analysis_type == 'test-only'
+        working-directory: earnings_options_analytics
+        run: |
+          echo "Running tests only..."
+          python test_system.py
+
+      - name: Run analytics (quick mode)
+        if: steps.check_data.outputs.has_data == 'true' && steps.analysis_config.outputs.analysis_type == 'quick'
+        working-directory: earnings_options_analytics
+        run: |
+          echo "Running quick analysis..."
+          CMD="python earnings_options_analytics.py --quick"
+
+          if [ "${{ steps.analysis_config.outputs.export_csv }}" = "true" ]; then
+            CMD="${CMD} --export-csv"
+          fi
+
+          echo "Command: ${CMD}"
+          ${CMD} 2>&1 | tee analysis_output.log
+
+      - name: Run analytics (full mode)
+        if: steps.check_data.outputs.has_data == 'true' && steps.analysis_config.outputs.analysis_type == 'full'
+        working-directory: earnings_options_analytics
+        run: |
+          echo "Running full analysis..."
+          CMD="python earnings_options_analytics.py --full"
+
+          if [ "${{ steps.analysis_config.outputs.export_csv }}" = "true" ]; then
+            CMD="${CMD} --export-csv"
+          fi
+
+          if [ "${{ steps.analysis_config.outputs.export_charts }}" = "true" ]; then
+            CMD="${CMD} --export-charts"
+          fi
+
+          echo "Command: ${CMD}"
+          ${CMD} 2>&1 | tee analysis_output.log
+
+      - name: Generate analysis summary
+        if: steps.check_data.outputs.has_data == 'true' && steps.analysis_config.outputs.analysis_type != 'test-only'
+        working-directory: earnings_options_analytics
+        run: |
+          echo "# Analytics Run Summary" > run_summary.md
+          echo "" >> run_summary.md
+          echo "**Run Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> run_summary.md
+          echo "**Analysis Type:** ${{ steps.analysis_config.outputs.analysis_type }}" >> run_summary.md
+          echo "**Trigger:** ${{ github.event_name }}" >> run_summary.md
+          echo "" >> run_summary.md
+
+          # Count outputs
+          if [ -d "outputs/csv_reports" ]; then
+            CSV_COUNT=$(find outputs/csv_reports -name "*.csv" 2>/dev/null | wc -l)
+            echo "**CSV Reports Generated:** ${CSV_COUNT}" >> run_summary.md
+          fi
+
+          if [ -d "outputs/charts" ]; then
+            CHART_COUNT=$(find outputs/charts -name "*.png" 2>/dev/null | wc -l)
+            echo "**Charts Generated:** ${CHART_COUNT}" >> run_summary.md
+          fi
+
+          if [ -f "outputs/earnings_options_report.html" ]; then
+            echo "**HTML Report:** ✓ Generated" >> run_summary.md
+          fi
+
+          echo "" >> run_summary.md
+          echo "## Output Files" >> run_summary.md
+          echo "" >> run_summary.md
+
+          if [ -d "outputs/csv_reports" ]; then
+            echo "### CSV Reports" >> run_summary.md
+            echo "\`\`\`" >> run_summary.md
+            ls -lh outputs/csv_reports/ >> run_summary.md 2>/dev/null || echo "None" >> run_summary.md
+            echo "\`\`\`" >> run_summary.md
+            echo "" >> run_summary.md
+          fi
+
+          if [ -d "outputs/charts" ]; then
+            echo "### Charts" >> run_summary.md
+            echo "\`\`\`" >> run_summary.md
+            ls -lh outputs/charts/ >> run_summary.md 2>/dev/null || echo "None" >> run_summary.md
+            echo "\`\`\`" >> run_summary.md
+            echo "" >> run_summary.md
+          fi
+
+          cat run_summary.md
+
+      - name: Upload CSV reports
+        if: steps.check_data.outputs.has_data == 'true' && steps.analysis_config.outputs.export_csv == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: csv-reports-${{ github.run_number }}
+          path: earnings_options_analytics/outputs/csv_reports/
+          retention-days: 30
+
+      - name: Upload charts
+        if: steps.check_data.outputs.has_data == 'true' && steps.analysis_config.outputs.export_charts == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: charts-${{ github.run_number }}
+          path: earnings_options_analytics/outputs/charts/
+          retention-days: 30
+
+      - name: Upload HTML report
+        if: steps.check_data.outputs.has_data == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: html-report-${{ github.run_number }}
+          path: earnings_options_analytics/outputs/earnings_options_report.html
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload analysis output log
+        if: steps.check_data.outputs.has_data == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-log-${{ github.run_number }}
+          path: earnings_options_analytics/analysis_output.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload run summary
+        if: steps.check_data.outputs.has_data == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-summary-${{ github.run_number }}
+          path: earnings_options_analytics/run_summary.md
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Commit outputs to repository
+        if: steps.check_data.outputs.has_data == 'true' && steps.analysis_config.outputs.analysis_type != 'test-only'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add all outputs (will overwrite existing files)
+          git add -f earnings_options_analytics/outputs/
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "update: analytics outputs - $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            git push
+            echo "✓ Outputs committed and pushed to repository"
+          fi
+
+      - name: Create summary comment
+        if: steps.check_data.outputs.has_data == 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('earnings_options_analytics/run_summary.md', 'utf8');
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## Earnings Options Analytics - Job Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Analysis Type:** ${{ steps.analysis_config.outputs.analysis_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Data Available:** ${{ steps.check_data.outputs.has_data }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.check_data.outputs.has_data }}" = "true" ] && [ -f "earnings_options_analytics/run_summary.md" ]; then
+            cat earnings_options_analytics/run_summary.md >> $GITHUB_STEP_SUMMARY
+          fi
+
+  notify:
+    name: Send Notification
+    runs-on: ubuntu-latest
+    needs: [test, analyze]
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+
+    steps:
+      - name: Check job results
+        id: check_results
+        run: |
+          TEST_RESULT="${{ needs.test.result }}"
+          ANALYZE_RESULT="${{ needs.analyze.result }}"
+
+          if [ "${TEST_RESULT}" = "success" ] && [ "${ANALYZE_RESULT}" = "success" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "message=✓ Analytics completed successfully" >> $GITHUB_OUTPUT
+          elif [ "${TEST_RESULT}" = "failure" ]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "message=✗ Tests failed" >> $GITHUB_OUTPUT
+          elif [ "${ANALYZE_RESULT}" = "failure" ]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "message=✗ Analysis failed" >> $GITHUB_OUTPUT
+          else
+            echo "status=warning" >> $GITHUB_OUTPUT
+            echo "message=⚠ Analysis completed with warnings" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create job summary
+        run: |
+          echo "## Analytics Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ steps.check_results.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Message:** ${{ steps.check_results.outputs.message }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run Number:** ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Test: ${{ needs.test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Analyze: ${{ needs.analyze.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View artifacts in the [Actions tab](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
