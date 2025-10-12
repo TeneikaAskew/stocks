@@ -1,0 +1,63 @@
+name: Fetch ETF Options Data
+
+on:
+  schedule:
+    # Market open - 9:30 AM ET (13:30 UTC)
+    - cron: '30 13 * * 1-5'
+    # 5 mins after open - 9:35 AM ET (13:35 UTC)
+    - cron: '35 13 * * 1-5'
+    # 10 mins after open - 9:40 AM ET (13:40 UTC)
+    - cron: '40 13 * * 1-5'
+    # Volatility settling - 10:00 AM ET (14:00 UTC)
+    - cron: '0 14 * * 1-5'
+    # Mid-morning - 11:30 AM ET (15:30 UTC)
+    - cron: '30 15 * * 1-5'
+    # Post-lunch - 1:00 PM ET (17:00 UTC)
+    - cron: '0 17 * * 1-5'
+    # Afternoon session - 2:30 PM ET (18:30 UTC)
+    - cron: '30 18 * * 1-5'
+    # Power hour - 3:30 PM ET (19:30 UTC)
+    - cron: '30 19 * * 1-5'
+    # After close - 4:05 PM ET (20:05 UTC)
+    - cron: '5 20 * * 1-5'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  fetch-etf-options:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Create data directories
+        run: |
+          mkdir -p data/options/etfs
+
+      - name: Fetch ETF options data
+        run: |
+          python scripts/fetch_etf_options_intraday.py
+        env:
+          TZ: America/New_York
+
+      - name: Commit and push data
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add data/options/etfs/*.parquet
+          git diff --staged --quiet || git commit -m "Update ETF options data - $(date +'%Y-%m-%d %H:%M:%S %Z')"
+          git push
+        env:
+          TZ: America/New_York
