@@ -61,6 +61,11 @@ jobs:
         pip install pandas numpy yfinance requests beautifulsoup4 pyarrow
         pip install matplotlib seaborn plotly fredapi
         
+    - name: Create data directory
+      run: |
+        mkdir -p data
+        echo "Data directory ready"
+
     - name: Set date environment variables
       run: |
         if [ -n "${{ github.event.inputs.target_date }}" ]; then
@@ -68,17 +73,17 @@ jobs:
         else
           echo "TARGET_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
         fi
-        
+
         if [ -n "${{ github.event.inputs.date_range_start }}" ]; then
           echo "DATE_RANGE_START=${{ github.event.inputs.date_range_start }}" >> $GITHUB_ENV
         fi
-        
+
         if [ -n "${{ github.event.inputs.date_range_end }}" ]; then
           echo "DATE_RANGE_END=${{ github.event.inputs.date_range_end }}" >> $GITHUB_ENV
         fi
-        
+
         echo "Analysis date: ${TARGET_DATE}"
-    
+
     - name: Update market events calendar
       run: |
         echo "Updating market events calendar for date: ${TARGET_DATE}"
@@ -89,6 +94,15 @@ jobs:
           python scripts/market_events_tracker.py --target-date "${TARGET_DATE}"
         else
           python scripts/market_events_tracker.py
+        fi
+
+        # Verify the file was created
+        if [ -f "data/market_events.csv" ]; then
+          echo "✓ market_events.csv created successfully"
+          echo "MARKET_EVENTS_EXISTS=true" >> $GITHUB_ENV
+        else
+          echo "✗ Warning: market_events.csv was not created"
+          echo "MARKET_EVENTS_EXISTS=false" >> $GITHUB_ENV
         fi
       continue-on-error: true
     
@@ -199,10 +213,18 @@ jobs:
   notify_upcoming_events:
     runs-on: ubuntu-latest
     needs: update_market_data
+    if: always()  # Run even if previous job has errors
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
+      with:
+        ref: main  # Ensure we get the latest from main branch
+
+    - name: Pull latest changes
+      run: |
+        git pull origin main
+        echo "Pulled latest changes from main"
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -219,24 +241,36 @@ jobs:
         python -c "
         import pandas as pd
         from datetime import datetime, timedelta
-        
+        import os
+        from pathlib import Path
+
+        # Check if file exists
+        events_file = Path('data/market_events.csv')
+        if not events_file.exists():
+            print('⚠️  Warning: market_events.csv not found')
+            print('The file may not have been created by the previous job.')
+            print('This could indicate the market_events_tracker.py script failed.')
+            exit(0)  # Exit gracefully without error
+
         # Load events
         events_df = pd.read_csv('data/market_events.csv')
         events_df['date'] = pd.to_datetime(events_df['date'])
-        
+
         # Check for events in next 3 days
         today = pd.Timestamp.now().normalize()
         future_date = today + timedelta(days=3)
-        
+
         upcoming = events_df[
-            (events_df['date'] >= today) & 
+            (events_df['date'] >= today) &
             (events_df['date'] <= future_date) &
             (events_df['expected_impact'].isin(['High', 'Very High']))
         ]
-        
+
         if not upcoming.empty:
-            print('UPCOMING HIGH IMPACT EVENTS:')
+            print('📅 UPCOMING HIGH IMPACT EVENTS:')
             for _, event in upcoming.iterrows():
                 days_until = (event['date'] - today).days
                 print(f'  {event[\"date\"].strftime(\"%Y-%m-%d\")} ({days_until} days): {event[\"event\"]} [{event[\"expected_impact\"]}]')
+        else:
+            print('✓ No high-impact events in the next 3 days')
         "
