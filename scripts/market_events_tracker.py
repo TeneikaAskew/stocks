@@ -19,7 +19,6 @@ class MarketEventsTracker:
     
     def __init__(self):
         self.events_file = Path("data/market_events.json")
-        self.events_csv_file = Path("data/market_events.csv")  # Legacy support
         self.events_archive_file = Path("data/market_events_archive.json")
         self.events_df = pd.DataFrame()
         self.initialize_event_types()
@@ -188,13 +187,6 @@ class MarketEventsTracker:
             self.events_df = pd.read_json(self.events_file, orient='records')
             self.events_df['date'] = pd.to_datetime(self.events_df['date'])
             print(f"Loaded {len(self.events_df)} existing events from JSON")
-        elif self.events_csv_file.exists():
-            # Legacy: Load from CSV if JSON doesn't exist
-            self.events_df = pd.read_csv(self.events_csv_file)
-            self.events_df['date'] = pd.to_datetime(self.events_df['date'])
-            print(f"Loaded {len(self.events_df)} existing events from CSV (legacy)")
-            # Save as JSON for future use
-            self.save_events()
         else:
             # Initialize with known events
             self.events_df = self.get_2025_economic_calendar()
@@ -205,18 +197,14 @@ class MarketEventsTracker:
         return self.events_df
 
     def save_events(self):
-        """Save events to JSON file (and optionally CSV for compatibility)."""
+        """Save events to JSON file."""
         # Convert datetime to string for JSON serialization
         events_to_save = self.events_df.copy()
         events_to_save['date'] = events_to_save['date'].dt.strftime('%Y-%m-%d')
 
-        # Save as JSON (primary format)
+        # Save as JSON
         events_to_save.to_json(self.events_file, orient='records', indent=2)
         print(f"Saved {len(self.events_df)} events to {self.events_file}")
-
-        # Also save as CSV for backward compatibility
-        self.events_df.to_csv(self.events_csv_file, index=False)
-        print(f"Also saved to {self.events_csv_file} (legacy format)")
     
     def add_event(self, date, event_type, event, expected_impact='Medium', actual=None, consensus=None, notes=None):
         """Add a new event to the tracker."""
