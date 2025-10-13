@@ -25,6 +25,9 @@ on:
         required: false
         default: ''
       
+permissions:
+  contents: write  # Required for git push
+
 jobs:
   update_market_data:
     runs-on: ubuntu-latest

@@ -17,6 +17,9 @@ on:
         default: ''
         type: string
 
+permissions:
+  contents: write  # Required for git push
+
 jobs:
   fetch-market-data:
     runs-on: ubuntu-latest
