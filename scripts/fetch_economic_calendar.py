@@ -29,7 +29,8 @@ class EconomicCalendarFetcher:
     
     def __init__(self):
         self.data_dir = Path("data")
-        self.events_file = self.data_dir / "market_events.csv"
+        self.events_file = self.data_dir / "market_events.json"
+        self.events_csv_file = self.data_dir / "market_events.csv"  # Legacy
         self.ml_features_file = self.data_dir / "ml_features.csv"
         self.fred_api_key = os.environ.get('FRED_API_KEY')
         self.fred_client = None
@@ -222,9 +223,12 @@ class EconomicCalendarFetcher:
         """Create comprehensive features for ML model."""
         features = []
         
-        # Load existing events
+        # Load existing events (try JSON first, then CSV)
         if self.events_file.exists():
-            events_df = pd.read_csv(self.events_file)
+            events_df = pd.read_json(self.events_file, orient='records')
+            events_df['date'] = pd.to_datetime(events_df['date'])
+        elif self.events_csv_file.exists():
+            events_df = pd.read_csv(self.events_csv_file)
             events_df['date'] = pd.to_datetime(events_df['date'])
             
             # Create features for each day
