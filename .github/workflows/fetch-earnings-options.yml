@@ -27,6 +27,9 @@ on:
         default: ''
         type: string
 
+permissions:
+  contents: write  # Required for git push
+
 jobs:
   fetch-earnings-options:
     runs-on: ubuntu-latest

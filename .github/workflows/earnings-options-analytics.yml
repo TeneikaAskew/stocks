@@ -44,6 +44,9 @@ on:
   schedule:
     - cron: '0 2 * * *'
 
+permissions:
+  contents: write  # Required for git push
+
 jobs:
   test:
     name: Test Analytics System
