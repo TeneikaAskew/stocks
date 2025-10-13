@@ -143,9 +143,155 @@ function storeSuccessReportData(insights) {
  * Format multi-day profitability data for web
  */
 function formatMultiDayData(multiDay) {
+  const toNumber = (value) => {
+    if (value === null || value === undefined) return 0;
+    if (typeof value === 'number') {
+      return isNaN(value) ? 0 : value;
+    }
+    if (typeof value === 'string') {
+      const cleaned = value.replace(/[^0-9.-]/g, '');
+      if (cleaned === '') return 0;
+      const parsed = parseFloat(cleaned);
+      return isNaN(parsed) ? 0 : parsed;
+    }
+    return 0;
+  };
+
+  const normalizeRate = (value) => {
+    const num = toNumber(value);
+    if (!isFinite(num)) return 0;
+    return Math.abs(num) > 1 ? num / 100 : num;
+  };
+
+  const normalizePercentValue = (value) => {
+    const num = toNumber(value);
+    if (!isFinite(num)) return 0;
+    return Math.abs(num) > 1 ? num : num * 100;
+  };
+
+  const profitabilitySource = multiDay?.profitabilityByDay || multiDay?.profitByDay || [];
+  const profitabilityByDay = [];
+
+  if (Array.isArray(profitabilitySource)) {
+    profitabilitySource.forEach(item => {
+      if (!item) return;
+      const dayValue = toNumber(item.day ?? item.dayIndex);
+      profitabilityByDay.push({
+        day: dayValue,
+        rate: normalizeRate(item.rate ?? item.successRate ?? item.profitableRate),
+        count: Math.round(toNumber(item.count ?? item.totalTrades ?? item.total)),
+        profitable: Math.round(toNumber(item.profitable ?? item.profitableCount)),
+        avgProfit: normalizePercentValue(item.avgProfit ?? item.profit ?? item.avgReturn)
+      });
+    });
+  } else if (profitabilitySource && typeof profitabilitySource === 'object') {
+    Object.entries(profitabilitySource).forEach(([dayKey, stats]) => {
+      if (!stats) return;
+      const dayValue = toNumber(stats.day ?? dayKey);
+      profitabilityByDay.push({
+        day: dayValue,
+        rate: normalizeRate(stats.rate ?? stats.successRate ?? stats.profitableRate),
+        count: Math.round(toNumber(stats.count ?? stats.totalTrades ?? stats.total)),
+        profitable: Math.round(toNumber(stats.profitable ?? stats.profitableCount)),
+        avgProfit: normalizePercentValue(stats.avgProfit ?? stats.profit ?? stats.avgReturn)
+      });
+    });
+  }
+
+  profitabilityByDay.sort((a, b) => a.day - b.day);
+
+  const rateByDay = profitabilityByDay.reduce((acc, entry) => {
+    acc[entry.day] = entry.rate;
+    return acc;
+  }, {});
+
+  const sustainedSource = multiDay?.sustainedProfitability || multiDay?.sustainedProfitable || multiDay?.sustainedWinners || [];
+  let sustainedWinners = [];
+
+  const mapAggregateEntry = (daysValue, stats = {}) => ({
+    days: toNumber(daysValue),
+    count: Math.round(toNumber(stats.count ?? stats.total ?? stats.tradeCount)),
+    successRate: normalizeRate(stats.successRate ?? stats.rate ?? stats.profitableRate ?? stats.hitRate),
+    avgProfit: normalizePercentValue(stats.avgProfit ?? stats.profit ?? stats.avgReturn)
+  });
+
+  if (Array.isArray(sustainedSource)) {
+    const hasAggregateFields = sustainedSource.some(item => item && (item.days !== undefined || item.count !== undefined || item.successRate !== undefined));
+
+    if (hasAggregateFields) {
+      sustainedWinners = sustainedSource.map(item => mapAggregateEntry(item.days ?? item.day ?? item.consecutiveDays, item));
+    } else {
+      const grouped = {};
+
+      sustainedSource.forEach(trade => {
+        if (!trade) return;
+        const days = toNumber(trade.days ?? trade.consecutiveDays);
+        if (!isFinite(days) || days <= 0) return;
+
+        if (!grouped[days]) {
+          grouped[days] = {
+            days: days,
+            count: 0,
+            totalProfit: 0,
+            successRateSum: 0,
+            successRateCount: 0,
+            hitCount: 0,
+            hitObservations: 0
+          };
+        }
+
+        const group = grouped[days];
+        group.count += 1;
+
+        const profitValue = normalizePercentValue(trade.avgProfit ?? trade.peakValue ?? trade.maxProfit ?? trade.profit);
+        if (isFinite(profitValue)) {
+          group.totalProfit += profitValue;
+        }
+
+        if (trade.successRate !== undefined || trade.rate !== undefined || trade.hitRate !== undefined) {
+          group.successRateSum += normalizeRate(trade.successRate ?? trade.rate ?? trade.hitRate);
+          group.successRateCount += 1;
+        } else if (typeof trade.wasHit === 'boolean') {
+          group.hitCount += trade.wasHit ? 1 : 0;
+          group.hitObservations += 1;
+        }
+      });
+
+      sustainedWinners = Object.values(grouped).map(group => {
+        let successRate = 0;
+        if (group.successRateCount > 0) {
+          successRate = group.successRateSum / group.successRateCount;
+        } else if (group.hitObservations > 0) {
+          successRate = group.hitObservations > 0 ? group.hitCount / group.hitObservations : 0;
+        } else if (rateByDay[group.days] !== undefined) {
+          successRate = rateByDay[group.days];
+        }
+
+        return {
+          days: group.days,
+          count: group.count,
+          successRate: successRate,
+          avgProfit: group.count > 0 ? group.totalProfit / group.count : 0
+        };
+      });
+    }
+  } else if (sustainedSource && typeof sustainedSource === 'object') {
+    sustainedWinners = Object.entries(sustainedSource).map(([daysKey, stats]) => mapAggregateEntry(daysKey, stats));
+  }
+
+  sustainedWinners = sustainedWinners
+    .filter(item => item && isFinite(item.days))
+    .map(item => ({
+      days: toNumber(item.days),
+      count: Math.max(0, Math.round(toNumber(item.count))),
+      successRate: normalizeRate(item.successRate),
+      avgProfit: normalizePercentValue(item.avgProfit)
+    }))
+    .sort((a, b) => a.days - b.days);
+
   return {
-    profitabilityByDay: multiDay.profitByDay || [],
-    sustainedWinners: multiDay.sustainedWinners || []
+    profitabilityByDay,
+    sustainedWinners
   };
 }
 
