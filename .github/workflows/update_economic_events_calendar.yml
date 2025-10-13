@@ -27,6 +27,7 @@ on:
       
 permissions:
   contents: write  # Required for git push
+  issues: write    # Required for creating issues on failure
 
 jobs:
   update_market_data:
