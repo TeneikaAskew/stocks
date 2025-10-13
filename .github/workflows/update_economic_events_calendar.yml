@@ -244,20 +244,15 @@ jobs:
         import os
         from pathlib import Path
 
-        # Check if JSON file exists (primary) or CSV (fallback)
+        # Check if JSON file exists
         events_json = Path('data/market_events.json')
-        events_csv = Path('data/market_events.csv')
 
         if events_json.exists():
             events_df = pd.read_json('data/market_events.json', orient='records')
             events_df['date'] = pd.to_datetime(events_df['date'])
             print('✓ Loaded events from market_events.json')
-        elif events_csv.exists():
-            events_df = pd.read_csv('data/market_events.csv')
-            events_df['date'] = pd.to_datetime(events_df['date'])
-            print('✓ Loaded events from market_events.csv (legacy)')
         else:
-            print('⚠️  Warning: No market_events file found (neither .json nor .csv)')
+            print('⚠️  Warning: market_events.json not found')
             print('The file may not have been created by the previous job.')
             print('This could indicate the market_events_tracker.py script failed.')
             exit(0)  # Exit gracefully without error
