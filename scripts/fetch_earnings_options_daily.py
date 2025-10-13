@@ -553,34 +553,31 @@ def fetch_daily_snapshot(tickers, output_dir='data/options/earnings', skip_exist
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Timestamp for filenames (date only for daily)
+    # Timestamp for filenames
     date_str = now.strftime('%Y%m%d')
+    timestamp_str = now.strftime('%Y%m%d_%H%M%S')
 
-    # Merge with existing data if file exists
-    combined_file = output_path / f"earnings_options_{date_str}.parquet"
-    if combined_file.exists():
+    # Save snapshot file with timestamp (each run gets its own file)
+    snapshot_file = output_path / f"earnings_options_{timestamp_str}.parquet"
+    combined_df.to_parquet(snapshot_file, compression='snappy', index=False)
+    print(f"\n✓ Saved snapshot: {snapshot_file}")
+
+    # Append to daily combined file (all snapshots from today)
+    daily_file = output_path / f"earnings_options_{date_str}.parquet"
+    if daily_file.exists():
         try:
-            existing_df = pd.read_parquet(combined_file)
-            print(f"\n✓ Found existing file with {len(existing_df)} rows ({existing_df['symbol'].nunique()} tickers)")
-            print(f"  Merging with {len(combined_df)} new rows ({combined_df['symbol'].nunique()} tickers)")
+            existing_df = pd.read_parquet(daily_file)
+            print(f"✓ Found daily file with {len(existing_df)} rows")
 
-            # Remove duplicates - keep new data
-            existing_df = existing_df[~existing_df['symbol'].isin(combined_df['symbol'].unique())]
+            # Append new data (don't remove duplicates - keep all snapshots)
             combined_df = pd.concat([existing_df, combined_df], ignore_index=True)
-
-            print(f"  Final: {len(combined_df)} rows ({combined_df['symbol'].nunique()} unique tickers)")
+            print(f"  Appended {len(combined_df) - len(existing_df)} new rows")
+            print(f"  Total: {len(combined_df)} rows")
         except Exception as e:
-            print(f"\n⚠ Could not merge with existing file: {e}")
-            print(f"  Overwriting instead...")
+            print(f"⚠ Could not append to daily file: {e}")
 
-    # Save combined file
-    combined_df.to_parquet(combined_file, compression='snappy', index=False)
-    print(f"\n✓ Saved combined: {combined_file}")
-
-    # Also save CSV for easy inspection
-    csv_file = output_path / f"earnings_options_{date_str}.csv"
-    combined_df.to_csv(csv_file, index=False)
-    print(f"✓ Saved CSV: {csv_file}")
+    combined_df.to_parquet(daily_file, compression='snappy', index=False)
+    print(f"✓ Saved daily file: {daily_file}")
 
     # Individual ticker files (commented out - combined parquet is sufficient)
     # ticker_dir = output_path / date_str
