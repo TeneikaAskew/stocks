@@ -29,6 +29,9 @@ on:
           - 'json'
           - 'both'
 
+permissions:
+  contents: write  # Required for git push
+
 jobs:
   download-sheets:
     runs-on: ubuntu-latest
