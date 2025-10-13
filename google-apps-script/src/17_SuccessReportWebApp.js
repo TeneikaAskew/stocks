@@ -446,50 +446,104 @@ function collectMultiDayData(ss) {
  */
 function collectIndicatorsData(ss) {
   const sheet = ss.getSheetByName('SR_Indicators');
-  if (!sheet) return {};
-  
-  const data = sheet.getDataRange().getValues();
-  const indicators = {
-    highImpact: [],
-    mediumImpact: []
+  if (!sheet) return [];
+
+  const values = sheet.getDataRange().getValues();
+  const indicators = [];
+  let currentSignificance = 'HIGH';
+
+  const formatIndicatorLabel = (value) => {
+    if (!value) return '';
+    const spaced = value
+      .replace(/_/g, ' ')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .trim();
+
+    return spaced.split(/\s+/).map(part => {
+      if (/^[A-Z0-9]+$/.test(part)) return part;
+      if (/^[a-z0-9]+$/.test(part)) {
+        if (part.length <= 4 || /\d/.test(part)) {
+          return part.toUpperCase();
+        }
+        return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+      }
+      return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+    }).join(' ');
   };
-  
-  // Parse high impact indicators
-  let highStartRow = 2; // After header
-  for (let i = highStartRow; i < data.length && data[i][0]; i++) {
-    if (data[i][0] === 'MEDIUM IMPACT INDICATORS') break;
-    
-    indicators.highImpact.push({
-      type: data[i][0],
-      indicator: data[i][1],
-      correlation: data[i][2],
-      dataCompleteness: data[i][3],
-      bullishRange: data[i][4],
-      bearishRange: data[i][5]
+
+  const normalizeRange = (label, rawValue) => {
+    if (!rawValue || rawValue === 'N/A') return '';
+    const value = rawValue.toString().trim();
+    if (!value) return '';
+    return `${label}: ${value}`;
+  };
+
+  const extractAvgFromRange = (rawValue) => {
+    if (!rawValue) return null;
+    const match = /\(([-+]?\d+(?:\.\d+)?)%\)/.exec(rawValue);
+    return match ? parseFloat(match[1]) : null;
+  };
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const firstCell = (row[0] || '').toString().trim();
+
+    if (!firstCell) {
+      continue;
+    }
+
+    const upperCell = firstCell.toUpperCase();
+    if (upperCell.includes('HIGH IMPACT')) {
+      currentSignificance = 'HIGH';
+      continue;
+    }
+
+    if (upperCell.includes('MEDIUM IMPACT')) {
+      currentSignificance = 'MEDIUM';
+      continue;
+    }
+
+    if (upperCell === 'TYPE') {
+      // Header row
+      continue;
+    }
+
+    const indicatorName = (row[1] || '').toString().trim();
+    if (!indicatorName) {
+      continue;
+    }
+
+    const correlation = Number(row[2]) || 0;
+    const dataCompleteness = (row[3] || 'N/A').toString();
+    const bullishRangeRaw = row[4] ? row[4].toString().trim() : '';
+    const bearishRangeRaw = row[5] ? row[5].toString().trim() : '';
+    const bullishRange = normalizeRange('Bullish', bullishRangeRaw);
+    const bearishRange = normalizeRange('Bearish', bearishRangeRaw);
+
+    const avgValues = [];
+    const bullishAvg = extractAvgFromRange(bullishRangeRaw);
+    const bearishAvg = extractAvgFromRange(bearishRangeRaw);
+    if (bullishAvg !== null) avgValues.push(bullishAvg);
+    if (bearishAvg !== null) avgValues.push(bearishAvg);
+
+    const formattedName = `${formatIndicatorLabel(indicatorName)}${firstCell ? ` (${formatIndicatorLabel(firstCell)})` : ''}`.trim();
+
+    indicators.push({
+      name: formattedName || indicatorName,
+      type: firstCell ? firstCell.toString().toUpperCase() : 'GENERAL',
+      correlation,
+      significance: currentSignificance,
+      profitableRange: [bullishRange, bearishRange].filter(Boolean).join(' | ') || 'N/A',
+      bullishRange: bullishRange || 'N/A',
+      bearishRange: bearishRange || 'N/A',
+      hitRate: 0,
+      avgProfit: avgValues.length > 0 ? avgValues.reduce((sum, val) => sum + val, 0) / avgValues.length : 0,
+      sampleSize: null,
+      dataCompleteness
     });
   }
-  
-  // Find medium impact section
-  let medStartRow = -1;
-  for (let i = 0; i < data.length; i++) {
-    if (data[i][0] === 'MEDIUM IMPACT INDICATORS') {
-      medStartRow = i + 2; // Skip header
-      break;
-    }
-  }
-  
-  if (medStartRow > 0) {
-    for (let i = medStartRow; i < data.length && data[i][0]; i++) {
-      indicators.mediumImpact.push({
-        type: data[i][0],
-        indicator: data[i][1],
-        correlation: data[i][2],
-        dataCompleteness: data[i][3]
-      });
-    }
-  }
-  
-  return indicators;
+
+  return indicators.sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation));
 }
 
 /**
