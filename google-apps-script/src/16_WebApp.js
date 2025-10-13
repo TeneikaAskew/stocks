@@ -128,7 +128,10 @@ function storeSuccessReportData(insights) {
       avgDaysToHit: insights.overview.avgDaysToHit
     },
     multiDayProfitability: formatMultiDayData(insights.multiDayProfitability),
-    indicatorEffectiveness: formatIndicatorData(insights.indicatorEffectiveness),
+    indicatorEffectiveness: formatIndicatorData(
+      insights.indicatorEffectiveness,
+      insights.overview || {}
+    ),
     earningsTiming: formatEarningsData(insights.earningsTiming),
     strategyPerformance: formatStrategyData(insights.strategyPerformance),
     topPlays: formatTopPlays(insights.topPlays)
@@ -152,15 +155,108 @@ function formatMultiDayData(multiDay) {
 /**
  * Format indicator effectiveness data for web
  */
-function formatIndicatorData(indicators) {
-  return Object.entries(indicators || {}).map(([name, data]) => ({
-    name: name,
-    correlation: data.correlation || 0,
-    significance: data.significance || 'LOW',
-    profitableRange: data.profitableRange || 'N/A',
-    hitRate: data.hitRate || 0,
-    avgProfit: data.avgProfit || 0
-  }));
+function formatIndicatorData(indicators, overviewStats) {
+  if (!indicators) return [];
+
+  const totalTrades = Number(overviewStats?.totalTrades) || 0;
+
+  const formatIndicatorLabel = (value) => {
+    if (!value) return '';
+    const spaced = value
+      .replace(/_/g, ' ')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .trim();
+
+    return spaced.split(/\s+/).map(part => {
+      if (/^[A-Z0-9]+$/.test(part)) return part;
+      if (/^[a-z0-9]+$/.test(part)) {
+        if (part.length <= 4 || /\d/.test(part)) {
+          return part.toUpperCase();
+        }
+        return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+      }
+      return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+    }).join(' ');
+  };
+
+  const formatRange = (label, range) => {
+    if (!range || !range.count) return '';
+
+    const min = typeof range.min === 'number' ? range.min.toFixed(2) : range.min;
+    const max = typeof range.max === 'number' ? range.max.toFixed(2) : range.max;
+    const avgProfit = typeof range.avgProfit === 'number' ? range.avgProfit.toFixed(2) : null;
+    const parts = [];
+
+    if (min !== null && min !== undefined && max !== null && max !== undefined) {
+      parts.push(`${min}-${max}`);
+    }
+
+    if (avgProfit !== null) {
+      const prefix = range.avgProfit >= 0 ? '+' : '';
+      parts.push(`${prefix}${avgProfit}% avg`);
+    }
+
+    parts.push(`${range.count} trades`);
+
+    return `${label}: ${parts.join(' | ')}`;
+  };
+
+  const formatted = Object.entries(indicators).map(([key, data]) => {
+    const rawCorrelation = data?.correlationWithProfit ?? data?.correlation ?? 0;
+    const correlation = Number(rawCorrelation) || 0;
+    const absCorrelation = Math.abs(correlation);
+    const inferredSignificance = absCorrelation > 0.3 ? 'HIGH' : absCorrelation > 0.15 ? 'MEDIUM' : 'LOW';
+    const significance = data?.significance || inferredSignificance;
+
+    const keyParts = key.split('_');
+    const typeFromKey = (data?.type || keyParts[0] || '').toLowerCase();
+    const indicatorNameParts = keyParts.length > 1 ? keyParts.slice(1) : keyParts;
+    const indicatorName = indicatorNameParts.join('_');
+    const displayName = `${formatIndicatorLabel(indicatorName)}${typeFromKey ? ` (${typeFromKey.toUpperCase()})` : ''}`.trim();
+
+    const ranges = data?.profitableRanges || {};
+    const bullishRangeText = formatRange('Bullish', ranges.bullish);
+    const bearishRangeText = formatRange('Bearish', ranges.bearish);
+    const profitableRange = [bullishRangeText, bearishRangeText]
+      .filter(text => text)
+      .join(' | ')
+      || 'N/A';
+
+    const bullishCount = ranges?.bullish?.count || 0;
+    const bearishCount = ranges?.bearish?.count || 0;
+    const totalProfitableCount = bullishCount + bearishCount;
+
+    const weightedProfitSum =
+      (typeof ranges?.bullish?.avgProfit === 'number' ? ranges.bullish.avgProfit * bullishCount : 0) +
+      (typeof ranges?.bearish?.avgProfit === 'number' ? ranges.bearish.avgProfit * bearishCount : 0);
+    const avgProfit = totalProfitableCount > 0 ? weightedProfitSum / totalProfitableCount : 0;
+
+    let hitRate = 0;
+    if (typeof data?.hitRate === 'number') {
+      hitRate = data.hitRate > 1 ? data.hitRate / 100 : data.hitRate;
+    } else if (totalTrades > 0 && totalProfitableCount > 0) {
+      hitRate = totalProfitableCount / totalTrades;
+    }
+    if (hitRate > 1) {
+      hitRate = 1;
+    }
+
+    return {
+      name: displayName || key,
+      type: typeFromKey ? typeFromKey.toUpperCase() : 'GENERAL',
+      correlation,
+      significance,
+      profitableRange,
+      bullishRange: bullishRangeText || 'N/A',
+      bearishRange: bearishRangeText || 'N/A',
+      hitRate,
+      avgProfit,
+      sampleSize: totalProfitableCount,
+      dataCompleteness: data?.dataCompleteness || 'N/A'
+    };
+  });
+
+  return formatted.sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation));
 }
 
 /**
@@ -237,7 +333,7 @@ function calculateNextUpdateTime() {
 function extractReportDataFromSheet(reportSheet) {
   // This is a simplified extraction - you'd need to parse the actual sheet structure
   const data = reportSheet.getDataRange().getValues();
-  
+
   // Basic structure - would need proper parsing based on your sheet layout
   return {
     overview: {
@@ -254,7 +350,7 @@ function extractReportDataFromSheet(reportSheet) {
       profitabilityByDay: [],
       sustainedWinners: []
     },
-    indicatorEffectiveness: [],
+    indicatorEffectiveness: collectIndicatorsData(SpreadsheetApp.getActive()),
     earningsTiming: {
       preEarnings: {},
       postEarnings: {},
@@ -266,3 +362,6 @@ function extractReportDataFromSheet(reportSheet) {
     lastUpdated: new Date().toISOString()
   };
 }
+
+// collectIndicatorsData is defined in 17_SuccessReportWebApp.js. We call that version so
+// both the stored report and dashboard fallback use the same normalization logic.
