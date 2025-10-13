@@ -187,13 +187,56 @@ function formatEarningsData(earnings) {
  * Format strategy performance data for web
  */
 function formatStrategyData(strategies) {
-  return Object.entries(strategies || {}).map(([strategy, data]) => ({
-    strategy: strategy,
-    tradeCount: data.count || 0,
-    hitRate: data.hitRate || 0,
-    profitFactor: data.profitFactor || 1,
-    avgDaysToHit: data.avgDaysToHit || 0
-  }));
+  if (!strategies) return [];
+
+  const toNumber = value => {
+    if (value === null || value === undefined || value === '') return 0;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+  };
+
+  const hasValue = value => value !== undefined && value !== null && value !== '';
+
+  return Object.entries(strategies).map(([strategy, data]) => {
+    const totalTrades = toNumber(data.totalTrades ?? data.tradeCount ?? data.count);
+    const hitTrades = toNumber(data.hitTrades ?? data.hitCount ?? data.hits);
+    const totalProfit = toNumber(data.totalProfit);
+    const totalLoss = toNumber(data.totalLoss);
+
+    const hitRate = hasValue(data.hitRate)
+      ? toNumber(data.hitRate)
+      : (totalTrades > 0 ? hitTrades / totalTrades : 0);
+
+    const avgProfit = hasValue(data.avgProfit)
+      ? toNumber(data.avgProfit)
+      : (totalTrades > 0 ? totalProfit / totalTrades : 0);
+
+    const avgLoss = hasValue(data.avgLoss)
+      ? toNumber(data.avgLoss)
+      : (totalTrades > 0 ? totalLoss / totalTrades : 0);
+
+    const profitFactor = hasValue(data.profitFactor)
+      ? toNumber(data.profitFactor)
+      : (totalLoss > 0 ? totalProfit / totalLoss : (totalProfit > 0 ? totalTrades || hitTrades || 0 : 0));
+
+    const avgDaysToHit = hasValue(data.avgDaysToHit)
+      ? toNumber(data.avgDaysToHit)
+      : (hitTrades > 0 ? toNumber(data.totalDaysToHit) / hitTrades : 0);
+
+    return {
+      strategy: strategy,
+      tradeCount: totalTrades,
+      hitCount: hitTrades,
+      hitRate: hitRate,
+      profitFactor: profitFactor,
+      avgDaysToHit: avgDaysToHit,
+      avgProfit: avgProfit,
+      avgLoss: avgLoss,
+      totalProfit: totalProfit,
+      totalLoss: totalLoss,
+      bestPerformers: Array.isArray(data.bestPerformers) ? data.bestPerformers : []
+    };
+  });
 }
 
 /**
