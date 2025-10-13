@@ -191,6 +191,7 @@ jobs:
       if: steps.verify_changes.outputs.has_changes == 'true'
       run: |
         git commit -m "Auto-update: Market data and events $(date +'%Y-%m-%d %H:%M:%S')"
+        git pull --rebase
         git push
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
