@@ -332,51 +332,113 @@ function collectHoldingPeriodData(ss) {
  */
 function collectMultiDayData(ss) {
   const sheet = ss.getSheetByName('SR_MultiDay');
-  if (!sheet) return {};
-  
+  if (!sheet) {
+    return { profitabilityByDay: [], sustainedWinners: [] };
+  }
+
   const data = sheet.getDataRange().getValues();
-  const multiDay = {
-    sustainedProfitable: [],
-    profitabilityByDay: []
+
+  const toNumber = (value) => {
+    if (value === null || value === undefined) return 0;
+    if (typeof value === 'number') {
+      return isNaN(value) ? 0 : value;
+    }
+    if (typeof value === 'string') {
+      const cleaned = value.replace(/[^0-9.-]/g, '');
+      if (cleaned === '') return 0;
+      const parsed = parseFloat(cleaned);
+      return isNaN(parsed) ? 0 : parsed;
+    }
+    return 0;
   };
-  
-  // Parse sustained profitable trades
-  let sustainedStartRow = 2; // After header
-  for (let i = sustainedStartRow; i < data.length && data[i][0]; i++) {
+
+  const parseRate = (value) => {
+    const num = toNumber(value);
+    if (!isFinite(num)) return 0;
+    return Math.abs(num) > 1 ? num / 100 : num;
+  };
+
+  const parsePercentValue = (value) => {
+    const num = toNumber(value);
+    if (!isFinite(num)) return 0;
+    return Math.abs(num) > 1 ? num : num * 100;
+  };
+
+  const sustainedTrades = [];
+  const profitabilityByDay = [];
+
+  // Parse sustained profitable trades section (starts at row 2 after title/header)
+  for (let i = 2; i < data.length && data[i][0]; i++) {
     if (data[i][0] === 'PROFITABILITY BY DAY') break;
-    
-    multiDay.sustainedProfitable.push({
-      ticker: data[i][0],
-      strategy: data[i][1],
-      consecutiveDays: data[i][2],
-      peakDay: data[i][3],
-      peakValue: data[i][4],
-      strike: data[i][5]
+
+    sustainedTrades.push({
+      consecutiveDays: toNumber(data[i][2]),
+      peakValue: parsePercentValue(data[i][4])
     });
   }
-  
-  // Find profitability by day section
+
+  // Locate profitability by day header
   let dayStartRow = -1;
   for (let i = 0; i < data.length; i++) {
     if (data[i][0] === 'PROFITABILITY BY DAY') {
-      dayStartRow = i + 2; // Skip header
+      dayStartRow = i + 2; // Skip header row and column names
       break;
     }
   }
-  
+
   if (dayStartRow > 0) {
     for (let i = dayStartRow; i < data.length && data[i][0]; i++) {
-      multiDay.profitabilityByDay.push({
-        day: data[i][0],
-        totalTrades: data[i][1],
-        profitable: data[i][2],
-        successRate: data[i][3],
-        avgProfit: data[i][4]
+      const dayNumber = toNumber(data[i][0]);
+      const totalTrades = Math.round(toNumber(data[i][1]));
+      const profitableCount = Math.round(toNumber(data[i][2]));
+      const rate = parseRate(data[i][3]);
+      const avgProfit = parsePercentValue(data[i][4]);
+
+      profitabilityByDay.push({
+        day: dayNumber,
+        rate: rate,
+        count: totalTrades,
+        profitable: profitableCount,
+        avgProfit: avgProfit
       });
     }
   }
-  
-  return multiDay;
+
+  profitabilityByDay.sort((a, b) => a.day - b.day);
+
+  const rateByDay = profitabilityByDay.reduce((acc, entry) => {
+    acc[entry.day] = entry.rate;
+    return acc;
+  }, {});
+
+  const grouped = {};
+  sustainedTrades.forEach(trade => {
+    const days = trade.consecutiveDays;
+    if (!isFinite(days) || days <= 0) return;
+
+    if (!grouped[days]) {
+      grouped[days] = { days: days, count: 0, totalProfit: 0 };
+    }
+
+    grouped[days].count += 1;
+    if (isFinite(trade.peakValue)) {
+      grouped[days].totalProfit += trade.peakValue;
+    }
+  });
+
+  const sustainedWinners = Object.values(grouped)
+    .map(group => ({
+      days: group.days,
+      count: group.count,
+      successRate: rateByDay[group.days] !== undefined ? rateByDay[group.days] : 0,
+      avgProfit: group.count > 0 ? group.totalProfit / group.count : 0
+    }))
+    .sort((a, b) => a.days - b.days);
+
+  return {
+    profitabilityByDay,
+    sustainedWinners
+  };
 }
 
 /**
