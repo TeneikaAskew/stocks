@@ -19,20 +19,20 @@ function EW_setupTriggersIfMissing() {
     let skippedCount = 0;
     let messages = [];
     
-    // Check and setup 30-minute tracking trigger
-    if (!EW_triggerExists(EW_TRIGGER_FUNCTIONS.AUTO_UPDATE)) {
-      ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.AUTO_UPDATE)
-        .timeBased()
-        .everyMinutes(EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES)
-        .create();
-      setupCount++;
-      messages.push(`✅ Created: 30-minute tracking updates`);
-      console.log(`Created trigger: ${EW_TRIGGER_FUNCTIONS.AUTO_UPDATE}`);
-    } else {
-      skippedCount++;
-      messages.push(`⏭️ Exists: 30-minute tracking updates`);
-      console.log(`Skipped existing trigger: ${EW_TRIGGER_FUNCTIONS.AUTO_UPDATE}`);
-    }
+    // DEPRECATED: 30-minute tracking updates (was for Google Finance formulas)
+    // if (!EW_triggerExists(EW_TRIGGER_FUNCTIONS.AUTO_UPDATE)) {
+    //   ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.AUTO_UPDATE)
+    //     .timeBased()
+    //     .everyMinutes(EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES)
+    //     .create();
+    //   setupCount++;
+    //   messages.push(`✅ Created: 30-minute tracking updates`);
+    //   console.log(`Created trigger: ${EW_TRIGGER_FUNCTIONS.AUTO_UPDATE}`);
+    // } else {
+    //   skippedCount++;
+    //   messages.push(`⏭️ Exists: 30-minute tracking updates`);
+    //   console.log(`Skipped existing trigger: ${EW_TRIGGER_FUNCTIONS.AUTO_UPDATE}`);
+    // }
     
     // Check and setup daily data fetch trigger (8 AM)
     if (!EW_triggerExists(EW_TRIGGER_FUNCTIONS.DAILY_DATA)) {
@@ -159,13 +159,13 @@ function EW_setupAutoTracking() {
     
     // Delete existing triggers to avoid duplicates
     EW_stopAutoTracking();
-    
-    // Create new 30-minute tracking trigger
-    ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.AUTO_UPDATE)
-      .timeBased()
-      .everyMinutes(EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES)
-      .create();
-    
+
+    // DEPRECATED: 30-minute tracking trigger (was for Google Finance formulas)
+    // ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.AUTO_UPDATE)
+    //   .timeBased()
+    //   .everyMinutes(EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES)
+    //   .create();
+
     // Create daily report update trigger
     ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.DAILY_REPORT)
       .timeBased()
@@ -195,14 +195,12 @@ function EW_setupAutoTracking() {
       'Automated schedule created:\n\n' +
       `• ${EW_AUTO_TRACKING.DAILY_DATA_HOUR}:00 AM: Daily data fetch\n` +
       `• ${EW_AUTO_TRACKING.DAILY_REPORT_HOUR}:00 AM: Daily success report update\n` +
-      `• Every ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES} minutes: Tracking refresh (9 AM - 5 PM ET only)\n` +
       `• 5:00 PM ET: Daily backfill (processes all incomplete positions)\n\n` +
-      'Historical data will be preserved permanently.\n' +
-      'Note: 30-minute updates only run during market hours.'
+      'Historical data will be preserved permanently.'
     );
     
     console.log('Auto tracking triggers created successfully');
-    EW_trace('TRIGGERS', 'Auto tracking setup complete - 8AM daily runAll, 9AM reports, 30min updates');
+    EW_trace('TRIGGERS', 'Auto tracking setup complete - 8AM daily runAll, 9AM reports, 5PM backfill');
     
   } catch (error) {
     console.error('Error setting up auto tracking:', error);
@@ -258,11 +256,12 @@ function EW_stopAutoTracking() {
     
     triggers.forEach(trigger => {
       let handlerFunction = trigger.getHandlerFunction();
-    if (handlerFunction === EW_TRIGGER_FUNCTIONS.AUTO_UPDATE ||
+    if (// handlerFunction === EW_TRIGGER_FUNCTIONS.AUTO_UPDATE || // DEPRECATED
       handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_REPORT ||
       handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_DATA ||
       handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_BACKFILL ||
-      handlerFunction === 'EW_updateActiveStrikeHits') { // Remove old active tracking
+      handlerFunction === 'EW_updateActiveStrikeHits' || // Remove old active tracking
+      handlerFunction === 'EW_autoUpdateTracking') { // Remove old tracking updates
         ScriptApp.deleteTrigger(trigger);
         deletedCount++;
         console.log(`Deleted trigger: ${handlerFunction}`);
@@ -276,7 +275,6 @@ function EW_stopAutoTracking() {
         'All automated functions have been disabled:\n' +
         `• Daily data fetch (${EW_AUTO_TRACKING.DAILY_DATA_HOUR} AM)\n` +
         `• Daily reports (${EW_AUTO_TRACKING.DAILY_REPORT_HOUR} AM)\n` +
-        `• ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES}-minute updates (9 AM - 5 PM ET)\n` +
         `• Daily backfill (5 PM ET)\n\n` +
         'You can restart using "Setup Auto Tracking" from the menu.'
       );
@@ -583,7 +581,7 @@ function EW_validateTriggers() {
     let expectedTriggers = [
       EW_TRIGGER_FUNCTIONS.DAILY_DATA,
       EW_TRIGGER_FUNCTIONS.DAILY_REPORT,
-      EW_TRIGGER_FUNCTIONS.AUTO_UPDATE,
+      // EW_TRIGGER_FUNCTIONS.AUTO_UPDATE, // DEPRECATED - was for Google Finance formulas
       EW_TRIGGER_FUNCTIONS.DAILY_BACKFILL
     ];
     let foundTriggers = triggers.map(t => t.getHandlerFunction());
@@ -671,7 +669,7 @@ function EW_testAllTriggers() {
   const expectedTriggers = [
     { name: EW_TRIGGER_FUNCTIONS.DAILY_DATA, desc: '8 AM Daily data fetch', time: '8:00 AM' },
     { name: EW_TRIGGER_FUNCTIONS.DAILY_REPORT, desc: '9 AM Success reports', time: '9:00 AM' },
-    { name: EW_TRIGGER_FUNCTIONS.AUTO_UPDATE, desc: '30-min updates (market hours)', time: 'Every 30 min (9-5 ET)' },
+    // { name: EW_TRIGGER_FUNCTIONS.AUTO_UPDATE, desc: '30-min updates (market hours)', time: 'Every 30 min (9-5 ET)' }, // DEPRECATED
     { name: EW_TRIGGER_FUNCTIONS.DAILY_BACKFILL, desc: '5 PM Daily backfill', time: '5:00 PM ET' }
   ];
   
