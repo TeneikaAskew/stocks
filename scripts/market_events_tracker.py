@@ -382,7 +382,7 @@ class MarketEventsTracker:
                 'actual': None,
                 'consensus': None,
                 'notes': None,
-                'source': 'MANUAL'
+                'source': 'NYSE'  # New York Stock Exchange official calendar
             })
 
         return holidays
