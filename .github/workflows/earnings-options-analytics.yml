@@ -44,6 +44,10 @@ on:
   schedule:
     - cron: '0 2 * * *'
 
+permissions:
+  contents: write  # Required for git push
+  issues: write    # Required for creating issues on failure
+
 jobs:
   test:
     name: Test Analytics System
@@ -387,3 +391,57 @@ jobs:
           echo "- Analyze: ${{ needs.analyze.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "View artifacts in the [Actions tab](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create issue on failure
+        if: steps.check_results.outputs.status == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '❌ Analytics Workflow Failed';
+            const body = `## Analytics Pipeline Failed
+
+            **Workflow:** ${context.workflow}
+            **Run:** [#${context.runNumber}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+            **Triggered by:** ${context.eventName}
+            **Time:** ${new Date().toISOString()}
+
+            ### Job Results
+            - Test: ${{ needs.test.result }}
+            - Analyze: ${{ needs.analyze.result }}
+
+            ### Error Details
+            Check the [workflow logs](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for more details.
+
+            ### Action Required
+            Please investigate and fix the issue. This workflow runs daily for analytics.
+
+            ---
+            *This issue was automatically created by GitHub Actions*`;
+
+            // Check if there's already an open issue for this workflow
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: ['workflow-failure', 'analytics'],
+              per_page: 1
+            });
+
+            if (issues.data.length === 0) {
+              // Create new issue
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['workflow-failure', 'analytics', 'automated']
+              });
+            } else {
+              // Add comment to existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: `### Additional Failure\n${body}`
+              });
+            }

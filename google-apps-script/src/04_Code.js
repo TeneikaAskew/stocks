@@ -35,17 +35,18 @@ function onOpen() {
     // Quick Actions (most common tasks)
     .addItem('🚀 Run All Strategies', 'EW_runAll')
     .addItem('📊 Generate Success Report', 'EW_generateSuccessReport')
-    .addItem('🔄 Update Active Positions', 'EW_updateActiveStrikeHits')
+    .addItem('🔄 Backfill All Positions', 'EW_backfillHistoricalTracking')
     .addSeparator()
-    
+
     // Data Management submenu
     .addSubMenu(ui.createMenu('📈 Data Management')
-      .addSubMenu(ui.createMenu('Tracking Updates')
-        .addItem('Update Formulas Only', 'EW_updateTrackingData')
-        .addItem('Update & Fill Columns', 'EW_updateAllTrackingData')
-        .addItem('Update Active Strikes', 'EW_updateActiveStrikeHits')
-      )
-      .addSeparator()
+      // DEPRECATED: Tracking Updates submenu (was for Google Finance formulas)
+      // .addSubMenu(ui.createMenu('Tracking Updates')
+      //   .addItem('Update Formulas Only', 'EW_updateTrackingData')
+      //   .addItem('Update & Fill Columns', 'EW_updateAllTrackingData')
+      //   .addItem('Backfill All Positions', 'EW_backfillHistoricalTracking')
+      // )
+      // .addSeparator()
       .addSubMenu(ui.createMenu('Historical Backfill')
         .addItem('Backfill All Data', 'EW_backfillHistoricalTracking')
         .addItem('Backfill Selected Rows', 'EW_backfillSelectedRows')
@@ -1296,8 +1297,7 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
   );
 
   // Strike_Hit is now populated by scripts (not a formula column)
-  // See EW_updateActiveStrikeHits() for active positions
-  // See EW_backfillHistoricalTracking() for expired positions
+  // See EW_backfillHistoricalTracking() which processes all positions daily at 5 PM
 
   // Enhanced Success Score with historical data
   setHeaderArrayMultiCol(
