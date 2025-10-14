@@ -302,90 +302,125 @@ class MarketEventsTracker:
         return 'OTHER', 'Low'
 
     def get_market_holidays(self, year):
-        """Get US market holidays for a given year."""
-        holidays = [
-            {'date': f'{year}-01-01', 'event_type': 'SPECIAL', 'event': "New Year's Day - Markets Closed", 'expected_impact': 'Market Closed'},
-            {'date': f'{year}-07-04', 'event_type': 'SPECIAL', 'event': 'Independence Day - Markets Closed', 'expected_impact': 'Market Closed'},
-            {'date': f'{year}-12-25', 'event_type': 'SPECIAL', 'event': 'Christmas - Markets Closed', 'expected_impact': 'Market Closed'},
-        ]
+        """
+        Get US market holidays and early closes for a given year using pandas-market-calendars.
+        This fetches official NYSE holidays from the maintained library.
+        Holidays are calculated as weekdays NOT in the trading schedule.
+        """
+        try:
+            import pandas_market_calendars as mcal
 
-        # Third Monday of January (MLK Day)
-        from datetime import date
-        jan_1 = date(year, 1, 1)
-        days_until_monday = (7 - jan_1.weekday()) % 7
-        first_monday = jan_1 + timedelta(days=days_until_monday)
-        mlk_day = first_monday + timedelta(days=14)  # Third Monday
-        holidays.append({
-            'date': mlk_day.strftime('%Y-%m-%d'),
-            'event_type': 'SPECIAL',
-            'event': 'Martin Luther King Jr. Day - Markets Closed',
-            'expected_impact': 'Market Closed'
-        })
+            # Get NYSE calendar
+            nyse = mcal.get_calendar('XNYS')
 
-        # Third Monday of February (Presidents Day)
-        feb_1 = date(year, 2, 1)
-        days_until_monday = (7 - feb_1.weekday()) % 7
-        first_monday = feb_1 + timedelta(days=days_until_monday)
-        presidents_day = first_monday + timedelta(days=14)  # Third Monday
-        holidays.append({
-            'date': presidents_day.strftime('%Y-%m-%d'),
-            'event_type': 'SPECIAL',
-            'event': 'Presidents Day - Markets Closed',
-            'expected_impact': 'Market Closed'
-        })
+            # Get date range for the year
+            start_date = f'{year}-01-01'
+            end_date = f'{year}-12-31'
 
-        # Last Monday of May (Memorial Day)
-        may_31 = date(year, 5, 31)
-        days_back = (may_31.weekday() - 0) % 7
-        memorial_day = may_31 - timedelta(days=days_back)
-        holidays.append({
-            'date': memorial_day.strftime('%Y-%m-%d'),
-            'event_type': 'SPECIAL',
-            'event': 'Memorial Day - Markets Closed',
-            'expected_impact': 'Market Closed'
-        })
+            # Get trading schedule (tz-aware index of trading days)
+            schedule = nyse.schedule(start_date=start_date, end_date=end_date)
 
-        # Juneteenth (June 19th, or observed)
-        holidays.append({
-            'date': f'{year}-06-19',
-            'event_type': 'SPECIAL',
-            'event': 'Juneteenth - Markets Closed',
-            'expected_impact': 'Market Closed'
-        })
+            # Calculate full-day holidays = weekdays NOT in the trading schedule
+            trading_days = schedule.index.tz_localize(None)  # Strip timezone
+            all_weekdays = pd.date_range(start_date, end_date, freq='B')  # Business days (Mon-Fri)
+            holiday_dates = all_weekdays.difference(trading_days)  # Market closed weekdays
 
-        # First Monday of September (Labor Day)
-        sep_1 = date(year, 9, 1)
-        days_until_monday = (7 - sep_1.weekday()) % 7
-        labor_day = sep_1 + timedelta(days=days_until_monday)
-        holidays.append({
-            'date': labor_day.strftime('%Y-%m-%d'),
-            'event_type': 'SPECIAL',
-            'event': 'Labor Day - Markets Closed',
-            'expected_impact': 'Market Closed'
-        })
+            # Get early closes
+            early_closes = nyse.early_closes(schedule)
+            if not early_closes.empty:
+                early_closes.index = early_closes.index.tz_localize(None)  # Remove timezone
 
-        # Fourth Thursday of November (Thanksgiving)
-        nov_1 = date(year, 11, 1)
-        days_until_thursday = (3 - nov_1.weekday()) % 7
-        first_thursday = nov_1 + timedelta(days=days_until_thursday)
-        thanksgiving = first_thursday + timedelta(days=21)  # Fourth Thursday
-        holidays.append({
-            'date': thanksgiving.strftime('%Y-%m-%d'),
-            'event_type': 'SPECIAL',
-            'event': 'Thanksgiving - Markets Closed',
-            'expected_impact': 'Market Closed'
-        })
+            # Convert holidays to our format
+            holidays = []
+            for holiday_date in holiday_dates:
+                # Get the holiday name
+                holiday_name = holiday_date.strftime('%Y-%m-%d')
 
-        # Add default fields
-        for holiday in holidays:
-            holiday.update({
-                'actual': None,
-                'consensus': None,
-                'notes': None,
-                'source': 'NYSE'  # New York Stock Exchange official calendar
-            })
+                # Try to get a descriptive name
+                date_obj = pd.to_datetime(holiday_date)
+                month_day = date_obj.strftime('%m-%d')
 
-        return holidays
+                # Map common holidays to names
+                holiday_names = {
+                    '01-01': "New Year's Day",
+                    '01-02': "New Year's Day (Observed)",
+                    '07-03': "Independence Day (Observed)",
+                    '07-04': "Independence Day",
+                    '07-05': "Independence Day (Observed)",
+                    '12-24': "Christmas (Observed)",
+                    '12-25': "Christmas",
+                    '12-26': "Christmas (Observed)",
+                    '06-19': "Juneteenth",
+                    '06-20': "Juneteenth (Observed)",
+                }
+
+                # Determine name based on date or day of week
+                if month_day in holiday_names:
+                    event_name = holiday_names[month_day]
+                elif date_obj.month == 1 and date_obj.day > 14 and date_obj.day < 22:
+                    event_name = "Martin Luther King Jr. Day"
+                elif date_obj.month == 2 and date_obj.day > 14 and date_obj.day < 22:
+                    event_name = "Presidents Day"
+                elif date_obj.month == 5 and date_obj.day > 24:
+                    event_name = "Memorial Day"
+                elif date_obj.month == 9 and date_obj.day < 8:
+                    event_name = "Labor Day"
+                elif date_obj.month == 11 and date_obj.day > 21 and date_obj.day < 29:
+                    event_name = "Thanksgiving"
+                elif date_obj.month == 11 and date_obj.day == 29:
+                    event_name = "Day after Thanksgiving (Early Close)"
+                else:
+                    event_name = "Market Holiday"
+
+                holidays.append({
+                    'date': holiday_date.strftime('%Y-%m-%d'),
+                    'event_type': 'SPECIAL',
+                    'event': f'{event_name} - Markets Closed',
+                    'expected_impact': 'Market Closed',
+                    'actual': None,
+                    'consensus': None,
+                    'notes': f'NYSE Holiday - {event_name}',
+                    'source': 'NYSE'  # Fetched from pandas-market-calendars
+                })
+
+            # Add early closes
+            if not early_closes.empty:
+                for early_date, row in early_closes.iterrows():
+                    close_time = row['market_close'].strftime('%I:%M %p') if 'market_close' in row else 'Early'
+
+                    # Determine early close name
+                    date_obj = pd.to_datetime(early_date)
+                    if date_obj.month == 7:
+                        early_name = "Independence Day"
+                    elif date_obj.month == 11:
+                        early_name = "Thanksgiving"
+                    elif date_obj.month == 12:
+                        early_name = "Christmas"
+                    else:
+                        early_name = "Market Holiday"
+
+                    holidays.append({
+                        'date': early_date.strftime('%Y-%m-%d'),
+                        'event_type': 'SPECIAL',
+                        'event': f'Early Close - {early_name} ({close_time})',
+                        'expected_impact': 'Early Close',
+                        'actual': None,
+                        'consensus': None,
+                        'notes': f'NYSE Early Close - Market closes at {close_time}',
+                        'source': 'NYSE'
+                    })
+
+            print(f"  Fetched {len(holidays)} NYSE holidays/early closes for {year}")
+            return holidays
+
+        except ImportError:
+            print(f"  Warning: pandas-market-calendars not installed. Install with: pip install pandas-market-calendars")
+            print(f"  Falling back to empty holiday list for {year}")
+            return []
+        except Exception as e:
+            print(f"  Error fetching NYSE holidays for {year}: {e}")
+            print(f"  Falling back to empty holiday list")
+            return []
 
     def get_official_2025_calendar(self):
         """
