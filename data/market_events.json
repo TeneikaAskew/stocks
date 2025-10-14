@@ -1,523 +1,93 @@
 [
   {
-    "date":"2025-01-14",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
+    "date":"2024-01-01",
+    "event_type":"SPECIAL",
+    "event":"New Year's Day - Markets Closed",
+    "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"BLS"
+    "source":"MANUAL"
   },
   {
-    "date":"2025-02-13",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
+    "date":"2024-01-15",
+    "event_type":"SPECIAL",
+    "event":"Martin Luther King Jr. Day - Markets Closed",
+    "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"BLS"
+    "source":"MANUAL"
   },
   {
-    "date":"2025-03-12",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
+    "date":"2024-02-19",
+    "event_type":"SPECIAL",
+    "event":"Presidents Day - Markets Closed",
+    "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"BLS"
+    "source":"MANUAL"
   },
   {
-    "date":"2025-04-10",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
+    "date":"2024-05-27",
+    "event_type":"SPECIAL",
+    "event":"Memorial Day - Markets Closed",
+    "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"BLS"
+    "source":"MANUAL"
   },
   {
-    "date":"2025-05-14",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
+    "date":"2024-06-19",
+    "event_type":"SPECIAL",
+    "event":"Juneteenth - Markets Closed",
+    "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"BLS"
+    "source":"MANUAL"
   },
   {
-    "date":"2025-06-12",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
+    "date":"2024-07-04",
+    "event_type":"SPECIAL",
+    "event":"Independence Day - Markets Closed",
+    "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"BLS"
+    "source":"MANUAL"
   },
   {
-    "date":"2025-07-11",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
+    "date":"2024-09-02",
+    "event_type":"SPECIAL",
+    "event":"Labor Day - Markets Closed",
+    "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"BLS"
+    "source":"MANUAL"
   },
   {
-    "date":"2025-08-13",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
+    "date":"2024-11-28",
+    "event_type":"SPECIAL",
+    "event":"Thanksgiving - Markets Closed",
+    "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"BLS"
+    "source":"MANUAL"
   },
   {
-    "date":"2025-09-11",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
+    "date":"2024-12-25",
+    "event_type":"SPECIAL",
+    "event":"Christmas - Markets Closed",
+    "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-10-10",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-11-13",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-12-11",
-    "event_type":"CPI",
-    "event":"CPI Release",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-01-29",
-    "event_type":"FOMC",
-    "event":"FOMC Meeting & Decision",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-03-19",
-    "event_type":"FOMC",
-    "event":"FOMC Meeting & Decision",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-05-07",
-    "event_type":"FOMC",
-    "event":"FOMC Meeting & Decision",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-06-18",
-    "event_type":"FOMC",
-    "event":"FOMC Meeting & Decision",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-07-30",
-    "event_type":"FOMC",
-    "event":"FOMC Meeting & Decision",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-09-17",
-    "event_type":"FOMC",
-    "event":"FOMC Meeting & Decision",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-11-05",
-    "event_type":"FOMC",
-    "event":"FOMC Meeting & Decision",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-12-17",
-    "event_type":"FOMC",
-    "event":"FOMC Meeting & Decision",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-01-10",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-02-07",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-03-07",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-04-04",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-05-02",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-06-06",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-07-03",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-08-01",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-09-05",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-10-03",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-11-07",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-12-05",
-    "event_type":"NFP",
-    "event":"Non-Farm Payrolls",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BLS"
-  },
-  {
-    "date":"2025-01-30",
-    "event_type":"GDP",
-    "event":"GDP Q4 2024 Advance",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-02-27",
-    "event_type":"GDP",
-    "event":"GDP Q4 2024 Second",
-    "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-03-27",
-    "event_type":"GDP",
-    "event":"GDP Q4 2024 Final",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-04-30",
-    "event_type":"GDP",
-    "event":"GDP Q1 2025 Advance",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-05-29",
-    "event_type":"GDP",
-    "event":"GDP Q1 2025 Second",
-    "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-06-26",
-    "event_type":"GDP",
-    "event":"GDP Q1 2025 Final",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-07-31",
-    "event_type":"GDP",
-    "event":"GDP Q2 2025 Advance",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-08-28",
-    "event_type":"GDP",
-    "event":"GDP Q2 2025 Second",
-    "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-09-26",
-    "event_type":"GDP",
-    "event":"GDP Q2 2025 Final",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-10-30",
-    "event_type":"GDP",
-    "event":"GDP Q3 2025 Advance",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-01-31",
-    "event_type":"PCE",
-    "event":"PCE Price Index",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-02-28",
-    "event_type":"PCE",
-    "event":"PCE Price Index",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-03-28",
-    "event_type":"PCE",
-    "event":"PCE Price Index",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-04-30",
-    "event_type":"PCE",
-    "event":"PCE Price Index",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-05-30",
-    "event_type":"PCE",
-    "event":"PCE Price Index",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-06-27",
-    "event_type":"PCE",
-    "event":"PCE Price Index",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-07-31",
-    "event_type":"PCE",
-    "event":"PCE Price Index",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-08-29",
-    "event_type":"PCE",
-    "event":"PCE Price Index",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-09-26",
-    "event_type":"PCE",
-    "event":"PCE Price Index",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
-  },
-  {
-    "date":"2025-10-31",
-    "event_type":"PCE",
-    "event":"PCE Price Index",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"BEA"
+    "source":"MANUAL"
   },
   {
     "date":"2025-01-01",
@@ -540,6 +110,26 @@
     "source":"UnusualWhales"
   },
   {
+    "date":"2025-01-10",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-01-14",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
     "date":"2025-01-20",
     "event_type":"SPECIAL",
     "event":"Markets Closed - Martin Luther King Jr. Day",
@@ -548,6 +138,56 @@
     "consensus":null,
     "notes":"https:\/\/unusualwhales.com\/market-holidays",
     "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-01-29",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-01-30",
+    "event_type":"GDP",
+    "event":"GDP Q4 2024 Advance",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-01-31",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-02-07",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-02-13",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
   },
   {
     "date":"2025-02-17",
@@ -560,6 +200,76 @@
     "source":"UnusualWhales"
   },
   {
+    "date":"2025-02-27",
+    "event_type":"GDP",
+    "event":"GDP Q4 2024 Second",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-02-28",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-03-07",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-03-12",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-03-19",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-03-27",
+    "event_type":"GDP",
+    "event":"GDP Q4 2024 Final",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-03-28",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
+  },
+  {
     "date":"2025-04-02",
     "event_type":"OTHER",
     "event":"Liberation Day",
@@ -567,6 +277,36 @@
     "actual":null,
     "consensus":null,
     "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-04-04",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-04-10",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-04-18",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Good Friday",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
     "source":"UnusualWhales"
   },
   {
@@ -580,13 +320,53 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-04-18",
-    "event_type":"SPECIAL",
-    "event":"Markets Closed - Good Friday",
-    "expected_impact":"Market Closed",
+    "date":"2025-04-27",
+    "event_type":"EARNINGS_SEASON",
+    "event":"Earnings season",
+    "expected_impact":"Medium",
     "actual":null,
     "consensus":null,
-    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "notes":"https:\/\/unusualwhales.com\/earnings",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-04-30",
+    "event_type":"GDP",
+    "event":"GDP Q1 2025 Advance",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-04-30",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-05-01",
+    "event_type":"OTHER",
+    "event":"BOJ outlook",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-05-01",
+    "event_type":"EARNINGS",
+    "event":"AAPL earnings",
+    "expected_impact":"Variable",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/stock\/AAPL\/earnings",
     "source":"UnusualWhales"
   },
   {
@@ -600,10 +380,50 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-05-01",
-    "event_type":"OTHER",
-    "event":"BOJ outlook",
-    "expected_impact":"Low",
+    "date":"2025-05-02",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-05-07",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-05-13",
+    "event_type":"CPI",
+    "event":"CPI",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-05-14",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-05-14",
+    "event_type":"FOMC",
+    "event":"FOMC",
+    "expected_impact":"Very High",
     "actual":null,
     "consensus":null,
     "notes":null,
@@ -630,33 +450,13 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-05-13",
-    "event_type":"CPI",
-    "event":"CPI",
-    "expected_impact":"High",
+    "date":"2025-05-26",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Memorial Day",
+    "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-05-14",
-    "event_type":"FOMC",
-    "event":"FOMC",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-05-01",
-    "event_type":"EARNINGS",
-    "event":"AAPL earnings",
-    "expected_impact":"Variable",
-    "actual":null,
-    "consensus":null,
-    "notes":"https:\/\/unusualwhales.com\/stock\/AAPL\/earnings",
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
     "source":"UnusualWhales"
   },
   {
@@ -670,24 +470,54 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-04-27",
-    "event_type":"EARNINGS_SEASON",
-    "event":"Earnings season",
+    "date":"2025-05-29",
+    "event_type":"GDP",
+    "event":"GDP Q1 2025 Second",
     "expected_impact":"Medium",
     "actual":null,
     "consensus":null,
-    "notes":"https:\/\/unusualwhales.com\/earnings",
-    "source":"UnusualWhales"
+    "notes":null,
+    "source":"BEA"
   },
   {
-    "date":"2025-05-26",
-    "event_type":"SPECIAL",
-    "event":"Markets Closed - Memorial Day",
-    "expected_impact":"Market Closed",
+    "date":"2025-05-30",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
     "actual":null,
     "consensus":null,
-    "notes":"https:\/\/unusualwhales.com\/market-holidays",
-    "source":"UnusualWhales"
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-06-06",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-06-12",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-06-18",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"Federal Reserve"
   },
   {
     "date":"2025-06-19",
@@ -700,19 +530,29 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-07-03",
-    "event_type":"OTHER",
-    "event":"Early Close (1 PM ET)",
+    "date":"2025-06-26",
+    "event_type":"GDP",
+    "event":"GDP Q1 2025 Final",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
-    "notes":"https:\/\/unusualwhales.com\/market-holidays",
-    "source":"UnusualWhales"
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-06-27",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
   },
   {
     "date":"2025-07-01",
     "event_type":"OTHER",
-    "event":"Fed Chair Jerome Powell speech",
+    "event":"Construction spending",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -732,7 +572,7 @@
   {
     "date":"2025-07-01",
     "event_type":"OTHER",
-    "event":"Construction spending",
+    "event":"ISM manufacturing",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -752,7 +592,7 @@
   {
     "date":"2025-07-01",
     "event_type":"OTHER",
-    "event":"ISM manufacturing",
+    "event":"Fed Chair Jerome Powell speech",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -832,7 +672,27 @@
   {
     "date":"2025-07-03",
     "event_type":"OTHER",
+    "event":"Early Close (1 PM ET)",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
     "event":"S&P final U.S. services PMI",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"Atlanta Fed President Raphael Bostic speech",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -852,6 +712,26 @@
   {
     "date":"2025-07-03",
     "event_type":"OTHER",
+    "event":"Early Close (1 PM ET) - Day before Independence Day",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
     "event":"ISM services",
     "expected_impact":"Low",
     "actual":null,
@@ -860,9 +740,19 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-07-03",
+    "date":"2025-07-04",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Independence Day",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-08",
     "event_type":"OTHER",
-    "event":"Atlanta Fed President Raphael Bostic speech",
+    "event":"Consumer credit",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -873,16 +763,6 @@
     "date":"2025-07-08",
     "event_type":"OTHER",
     "event":"NFIB optimism index",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-08",
-    "event_type":"OTHER",
-    "event":"Consumer credit",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -950,9 +830,29 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-07-15",
+    "date":"2025-07-11",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-07-14",
     "event_type":"OTHER",
-    "event":"Empire State manufacturing survey",
+    "event":"Treasury Auction - 13-Week Bills - 82 Billion offering, CUSIP: 912797QF7",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-14",
+    "event_type":"OTHER",
+    "event":"Treasury Auction - 26-Week Bills - 73 Billion offering, CUSIP: 912797RJ8",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -961,39 +861,9 @@
   },
   {
     "date":"2025-07-15",
-    "event_type":"CPI",
-    "event":"CPI year over year",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-15",
-    "event_type":"CPI",
-    "event":"Consumer price index",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-15",
-    "event_type":"CPI",
-    "event":"Core CPI year over year",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-15",
-    "event_type":"CPI",
-    "event":"Core CPI",
-    "expected_impact":"High",
+    "event_type":"OTHER",
+    "event":"Boston Fed President Susan Collins speech",
+    "expected_impact":"Low",
     "actual":null,
     "consensus":null,
     "notes":null,
@@ -1021,9 +891,9 @@
   },
   {
     "date":"2025-07-15",
-    "event_type":"OTHER",
-    "event":"Boston Fed President Susan Collins speech",
-    "expected_impact":"Low",
+    "event_type":"CPI",
+    "event":"Core CPI year over year",
+    "expected_impact":"High",
     "actual":null,
     "consensus":null,
     "notes":null,
@@ -1033,6 +903,86 @@
     "date":"2025-07-15",
     "event_type":"OTHER",
     "event":"Dallas Fed President Lorie Logan speech",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"EARNINGS_SEASON",
+    "event":"Earnings season",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/earnings",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"OTHER",
+    "event":"Treasury Auction - 6-Week Bills - 70 Billion offering, CUSIP: 912797PQ4",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"EARNINGS_SEASON",
+    "event":"Earnings season",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/earnings",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"EARNINGS_SEASON",
+    "event":"Earnings season",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/earnings",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"CPI",
+    "event":"Core CPI",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"CPI",
+    "event":"Consumer price index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"CPI",
+    "event":"CPI year over year",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"OTHER",
+    "event":"Empire State manufacturing survey",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -1092,47 +1042,7 @@
   {
     "date":"2025-07-17",
     "event_type":"OTHER",
-    "event":"Initial jobless claims",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-17",
-    "event_type":"OTHER",
-    "event":"Philadelphia Fed manufacturing survey",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-17",
-    "event_type":"RETAIL_SALES",
-    "event":"Retail sales minus autos",
-    "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-17",
-    "event_type":"OTHER",
-    "event":"Import price index",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-17",
-    "event_type":"OTHER",
-    "event":"Import price index minus fuel",
+    "event":"Home builder confidence index",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -1152,6 +1062,46 @@
   {
     "date":"2025-07-17",
     "event_type":"OTHER",
+    "event":"Import price index minus fuel",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"OTHER",
+    "event":"Import price index",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"RETAIL_SALES",
+    "event":"Retail sales minus autos",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"OTHER",
+    "event":"Philadelphia Fed manufacturing survey",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"OTHER",
     "event":"Business inventories",
     "expected_impact":"Low",
     "actual":null,
@@ -1162,7 +1112,7 @@
   {
     "date":"2025-07-17",
     "event_type":"OTHER",
-    "event":"Home builder confidence index",
+    "event":"Initial jobless claims",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -1200,46 +1150,6 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-07-15",
-    "event_type":"EARNINGS_SEASON",
-    "event":"Earnings season",
-    "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":"https:\/\/unusualwhales.com\/earnings",
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-29",
-    "event_type":"FOMC",
-    "event":"FOMC",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-03",
-    "event_type":"OTHER",
-    "event":"Early Close (1 PM ET) - Day before Independence Day",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":"https:\/\/unusualwhales.com\/market-holidays",
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-04",
-    "event_type":"SPECIAL",
-    "event":"Markets Closed - Independence Day",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":"https:\/\/unusualwhales.com\/market-holidays",
-    "source":"UnusualWhales"
-  },
-  {
     "date":"2025-07-18",
     "event_type":"OPEX",
     "event":"OPEX",
@@ -1250,39 +1160,9 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-07-14",
-    "event_type":"OTHER",
-    "event":"Treasury Auction - 13-Week Bills - 82 Billion offering, CUSIP: 912797QF7",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-14",
-    "event_type":"OTHER",
-    "event":"Treasury Auction - 26-Week Bills - 73 Billion offering, CUSIP: 912797RJ8",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-15",
-    "event_type":"OTHER",
-    "event":"Treasury Auction - 6-Week Bills - 70 Billion offering, CUSIP: 912797PQ4",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
     "date":"2025-07-21",
     "event_type":"OTHER",
-    "event":"CP - Commercial Paper",
+    "event":"H.15 - Selected Interest Rates",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -1301,6 +1181,16 @@
   },
   {
     "date":"2025-07-21",
+    "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-22",
     "event_type":"OTHER",
     "event":"H.15 - Selected Interest Rates",
     "expected_impact":"Low",
@@ -1330,16 +1220,6 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-07-22",
-    "event_type":"OTHER",
-    "event":"H.15 - Selected Interest Rates",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
     "date":"2025-07-23",
     "event_type":"OTHER",
     "event":"CP - Commercial Paper",
@@ -1363,16 +1243,6 @@
     "date":"2025-07-24",
     "event_type":"OTHER",
     "event":"CP - Commercial Paper",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-24",
-    "event_type":"OTHER",
-    "event":"H.15 - Selected Interest Rates",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -1383,6 +1253,16 @@
     "date":"2025-07-24",
     "event_type":"OTHER",
     "event":"H.4.1 - Factors Affecting Reserve Balances",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-24",
+    "event_type":"OTHER",
+    "event":"H.15 - Selected Interest Rates",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -1422,7 +1302,7 @@
   {
     "date":"2025-07-28",
     "event_type":"OTHER",
-    "event":"CP - Commercial Paper",
+    "event":"H.15 - Selected Interest Rates",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -1442,6 +1322,16 @@
   {
     "date":"2025-07-28",
     "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-29",
+    "event_type":"OTHER",
     "event":"H.15 - Selected Interest Rates",
     "expected_impact":"Low",
     "actual":null,
@@ -1461,9 +1351,9 @@
   },
   {
     "date":"2025-07-29",
-    "event_type":"OTHER",
-    "event":"H.15 - Selected Interest Rates",
-    "expected_impact":"Low",
+    "event_type":"FOMC",
+    "event":"FOMC",
+    "expected_impact":"Very High",
     "actual":null,
     "consensus":null,
     "notes":null,
@@ -1472,7 +1362,7 @@
   {
     "date":"2025-07-30",
     "event_type":"OTHER",
-    "event":"CP - Commercial Paper",
+    "event":"H.15 - Selected Interest Rates",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -1491,6 +1381,36 @@
   },
   {
     "date":"2025-07-30",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-07-30",
+    "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-31",
+    "event_type":"OTHER",
+    "event":"H.4.1 - Factors Affecting Reserve Balances",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-31",
     "event_type":"OTHER",
     "event":"H.15 - Selected Interest Rates",
     "expected_impact":"Low",
@@ -1521,23 +1441,23 @@
   },
   {
     "date":"2025-07-31",
-    "event_type":"OTHER",
-    "event":"H.15 - Selected Interest Rates",
-    "expected_impact":"Low",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"UnusualWhales"
+    "source":"BEA"
   },
   {
     "date":"2025-07-31",
-    "event_type":"OTHER",
-    "event":"H.4.1 - Factors Affecting Reserve Balances",
-    "expected_impact":"Low",
+    "event_type":"GDP",
+    "event":"GDP Q2 2025 Advance",
+    "expected_impact":"High",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"UnusualWhales"
+    "source":"BEA"
   },
   {
     "date":"2025-08-01",
@@ -1550,6 +1470,26 @@
     "source":"UnusualWhales"
   },
   {
+    "date":"2025-08-01",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-08-13",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
     "date":"2025-08-14",
     "event_type":"OTHER",
     "event":"13F Deadline",
@@ -1560,17 +1500,87 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-07-15",
-    "event_type":"EARNINGS_SEASON",
-    "event":"Earnings season",
+    "date":"2025-08-15",
+    "event_type":"OPEX",
+    "event":"OPEX",
     "expected_impact":"Medium",
     "actual":null,
     "consensus":null,
-    "notes":"https:\/\/unusualwhales.com\/earnings",
+    "notes":null,
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-08-15",
+    "date":"2025-08-28",
+    "event_type":"GDP",
+    "event":"GDP Q2 2025 Second",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-08-29",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-09-01",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Labor Day",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-09-05",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-09-11",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-09-16",
+    "event_type":"FOMC",
+    "event":"FOMC",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-09-17",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-09-19",
     "event_type":"OPEX",
     "event":"OPEX",
     "expected_impact":"Medium",
@@ -1590,37 +1600,47 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-07-15",
-    "event_type":"EARNINGS_SEASON",
-    "event":"Earnings season",
-    "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":"https:\/\/unusualwhales.com\/earnings",
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-09-16",
-    "event_type":"FOMC",
-    "event":"FOMC",
-    "expected_impact":"Very High",
+    "date":"2025-09-26",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"UnusualWhales"
+    "source":"BEA"
   },
   {
-    "date":"2025-09-01",
-    "event_type":"SPECIAL",
-    "event":"Markets Closed - Labor Day",
-    "expected_impact":"Market Closed",
+    "date":"2025-09-26",
+    "event_type":"GDP",
+    "event":"GDP Q2 2025 Final",
+    "expected_impact":"Low",
     "actual":null,
     "consensus":null,
-    "notes":"https:\/\/unusualwhales.com\/market-holidays",
-    "source":"UnusualWhales"
+    "notes":null,
+    "source":"BEA"
   },
   {
-    "date":"2025-09-19",
+    "date":"2025-10-03",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-10-10",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-10-17",
     "event_type":"OPEX",
     "event":"OPEX",
     "expected_impact":"Medium",
@@ -1640,20 +1660,70 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-10-17",
-    "event_type":"OPEX",
-    "event":"OPEX",
-    "expected_impact":"Medium",
+    "date":"2025-10-30",
+    "event_type":"GDP",
+    "event":"GDP Q3 2025 Advance",
+    "expected_impact":"High",
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"UnusualWhales"
+    "source":"BEA"
+  },
+  {
+    "date":"2025-10-31",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BEA"
+  },
+  {
+    "date":"2025-11-05",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-11-07",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-11-13",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
   },
   {
     "date":"2025-11-14",
     "event_type":"OTHER",
     "event":"13F Deadline",
     "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-11-21",
+    "event_type":"OPEX",
+    "event":"OPEX",
+    "expected_impact":"Medium",
     "actual":null,
     "consensus":null,
     "notes":null,
@@ -1680,14 +1750,34 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-11-21",
-    "event_type":"OPEX",
-    "event":"OPEX",
-    "expected_impact":"Medium",
+    "date":"2025-12-05",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
+  },
+  {
+    "date":"2025-12-09",
+    "event_type":"FOMC",
+    "event":"FOMC",
+    "expected_impact":"Very High",
     "actual":null,
     "consensus":null,
     "notes":null,
     "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-12-11",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"BLS"
   },
   {
     "date":"2025-12-12",
@@ -1698,6 +1788,16 @@
     "consensus":null,
     "notes":null,
     "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-12-17",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"Federal Reserve"
   },
   {
     "date":"2025-12-19",
@@ -1720,10 +1820,10 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-12-09",
-    "event_type":"FOMC",
-    "event":"FOMC",
-    "expected_impact":"Very High",
+    "date":"2025-12-19",
+    "event_type":"OPEX",
+    "event":"OPEX",
+    "expected_impact":"Medium",
     "actual":null,
     "consensus":null,
     "notes":null,
@@ -1750,129 +1850,9 @@
     "source":"UnusualWhales"
   },
   {
-    "date":"2025-12-19",
-    "event_type":"OPEX",
-    "event":"OPEX",
-    "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2024-01-01",
-    "event_type":"SPECIAL",
-    "event":"New Year's Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2024-07-04",
-    "event_type":"SPECIAL",
-    "event":"Independence Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2024-12-25",
-    "event_type":"SPECIAL",
-    "event":"Christmas - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2024-01-15",
-    "event_type":"SPECIAL",
-    "event":"Martin Luther King Jr. Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2024-02-19",
-    "event_type":"SPECIAL",
-    "event":"Presidents Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2024-05-27",
-    "event_type":"SPECIAL",
-    "event":"Memorial Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2024-06-19",
-    "event_type":"SPECIAL",
-    "event":"Juneteenth - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2024-09-02",
-    "event_type":"SPECIAL",
-    "event":"Labor Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2024-11-28",
-    "event_type":"SPECIAL",
-    "event":"Thanksgiving - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
     "date":"2026-01-01",
     "event_type":"SPECIAL",
     "event":"New Year's Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2026-07-04",
-    "event_type":"SPECIAL",
-    "event":"Independence Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2026-12-25",
-    "event_type":"SPECIAL",
-    "event":"Christmas - Markets Closed",
     "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
@@ -1920,6 +1900,16 @@
     "source":"MANUAL"
   },
   {
+    "date":"2026-07-04",
+    "event_type":"SPECIAL",
+    "event":"Independence Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
     "date":"2026-09-07",
     "event_type":"SPECIAL",
     "event":"Labor Day - Markets Closed",
@@ -1933,6 +1923,16 @@
     "date":"2026-11-26",
     "event_type":"SPECIAL",
     "event":"Thanksgiving - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2026-12-25",
+    "event_type":"SPECIAL",
+    "event":"Christmas - Markets Closed",
     "expected_impact":"Market Closed",
     "actual":null,
     "consensus":null,
