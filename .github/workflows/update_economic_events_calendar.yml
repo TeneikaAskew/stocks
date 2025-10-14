@@ -2,10 +2,8 @@ name: Update Economic Events Calendar
 
 on:
   schedule:
-    # Run daily at 6 AM EST (11 AM UTC)
-    - cron: '0 11 * * *'
-    # Run at market close 4:30 PM EST (9:30 PM UTC) on weekdays
-    - cron: '30 21 * * 1-5'
+    # Run weekly on Sundays at 6 AM EST (11 AM UTC)
+    - cron: '0 11 * * 0'
   workflow_dispatch:  # Allow manual trigger
     inputs:
       fetch_historical:
