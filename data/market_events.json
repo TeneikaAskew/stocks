@@ -7,7 +7,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2024-01-15",
@@ -17,7 +17,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2024-02-19",
@@ -27,7 +27,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2024-05-27",
@@ -37,7 +37,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2024-06-19",
@@ -47,7 +47,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2024-07-04",
@@ -57,7 +57,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2024-09-02",
@@ -67,7 +67,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2024-11-28",
@@ -77,7 +77,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2024-12-25",
@@ -87,7 +87,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2025-01-01",
@@ -1857,7 +1857,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2026-01-19",
@@ -1867,7 +1867,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2026-02-16",
@@ -1877,7 +1877,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2026-05-25",
@@ -1887,7 +1887,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2026-06-19",
@@ -1897,7 +1897,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2026-07-04",
@@ -1907,7 +1907,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2026-09-07",
@@ -1917,7 +1917,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2026-11-26",
@@ -1927,7 +1927,7 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   },
   {
     "date":"2026-12-25",
@@ -1937,6 +1937,6 @@
     "actual":null,
     "consensus":null,
     "notes":null,
-    "source":"MANUAL"
+    "source":"NYSE"
   }
 ]
