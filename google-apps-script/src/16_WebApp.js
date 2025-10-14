@@ -188,7 +188,7 @@ function formatTradeRecordsForWeb(trades) {
 
     const maxDrawdown = typeof trade.maxUnfavorableValue === 'number'
       ? trade.maxUnfavorableValue
-      : Math.max(...unfavorable.filter(value => value !== null), 0);
+      : Math.min(...unfavorable.filter(value => value !== null), 0);
 
     const runDateIso = toIsoString(trade.runDate);
     const daysBeforeEarnings = calculateDaysBetween(trade.runDate, trade.nextEPSDate);
