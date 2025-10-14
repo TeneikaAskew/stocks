@@ -381,12 +381,12 @@
     "day_of_week": 2,
     "month": 4,
     "quarter": 2,
-    "event_type": "PCE",
+    "event_type": "GDP",
     "impact_level": 4,
     "is_fomc": 0,
     "is_cpi": 0,
     "is_nfp": 0,
-    "is_gdp": 0,
+    "is_gdp": 1,
     "is_market_closed": 0
   },
   {
@@ -394,12 +394,12 @@
     "day_of_week": 2,
     "month": 4,
     "quarter": 2,
-    "event_type": "GDP",
+    "event_type": "PCE",
     "impact_level": 4,
     "is_fomc": 0,
     "is_cpi": 0,
     "is_nfp": 0,
-    "is_gdp": 1,
+    "is_gdp": 0,
     "is_market_closed": 0
   },
   {
