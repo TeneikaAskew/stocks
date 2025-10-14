@@ -129,6 +129,29 @@ jobs:
           echo "✗ Warning: market_events.json was not created"
           echo "MARKET_EVENTS_EXISTS=false" >> $GITHUB_ENV
         fi
+      env:
+        FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      continue-on-error: true
+
+    - name: Fetch earnings calendar
+      run: |
+        echo "Fetching upcoming earnings calendar..."
+        if [ -n "${DATE_RANGE_START}" ] && [ -n "${DATE_RANGE_END}" ]; then
+          echo "Date range: ${DATE_RANGE_START} to ${DATE_RANGE_END}"
+          python scripts/fetch_earnings_calendar.py --start-date "${DATE_RANGE_START}" --end-date "${DATE_RANGE_END}"
+        else
+          # Default: fetch next 90 days of earnings
+          python scripts/fetch_earnings_calendar.py --days 90
+        fi
+
+        # Verify the earnings file was created
+        if [ -f "data/earnings/earnings_calendar.json" ]; then
+          echo "✓ earnings_calendar.json created successfully"
+          echo "EARNINGS_CALENDAR_EXISTS=true" >> $GITHUB_ENV
+        else
+          echo "✗ Warning: earnings_calendar.json was not created"
+          echo "EARNINGS_CALENDAR_EXISTS=false" >> $GITHUB_ENV
+        fi
       continue-on-error: true
     
     - name: Fetch economic calendar data
