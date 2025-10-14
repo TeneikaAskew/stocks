@@ -11,8 +11,17 @@ import json
 import requests
 from pathlib import Path
 import yfinance as yf
+import os
 import warnings
 warnings.filterwarnings('ignore')
+
+# Try to import fredapi, but make it optional
+try:
+    from fredapi import Fred
+    FRED_AVAILABLE = True
+except ImportError:
+    FRED_AVAILABLE = False
+    print("Warning: fredapi not installed. Install with: pip install fredapi")
 
 
 class EconomicCalendarFetcher:
@@ -20,18 +29,40 @@ class EconomicCalendarFetcher:
     
     def __init__(self):
         self.data_dir = Path("data")
-        self.events_file = self.data_dir / "market_events.csv"
+        self.events_file = self.data_dir / "market_events.json"
         self.ml_features_file = self.data_dir / "ml_features.csv"
-        
-    def fetch_fred_data(self):
+        self.fred_api_key = os.environ.get('FRED_API_KEY')
+        self.fred_client = None
+
+        # Initialize FRED client if API key is available
+        if self.fred_api_key and FRED_AVAILABLE:
+            try:
+                self.fred_client = Fred(api_key=self.fred_api_key)
+                print("FRED API client initialized successfully")
+            except Exception as e:
+                print(f"Warning: Could not initialize FRED client: {e}")
+        elif not self.fred_api_key:
+            print("Warning: FRED_API_KEY not found in environment variables")
+
+    def fetch_fred_data(self, start_date='2024-01-01', end_date=None):
         """
         Fetch economic indicators from FRED (Federal Reserve Economic Data).
-        Note: Requires FRED API key for actual implementation.
+        Requires FRED_API_KEY environment variable.
+
+        Args:
+            start_date: Start date for data fetch (YYYY-MM-DD)
+            end_date: End date for data fetch (defaults to today)
+
+        Returns:
+            DataFrame with FRED economic indicators
         """
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+
         # FRED indicators to track
         indicators = {
             'DFF': 'Federal Funds Rate',
-            'UNRATE': 'Unemployment Rate', 
+            'UNRATE': 'Unemployment Rate',
             'CPIAUCSL': 'Consumer Price Index',
             'GDP': 'Gross Domestic Product',
             'DEXUSEU': 'USD/EUR Exchange Rate',
@@ -41,23 +72,71 @@ class EconomicCalendarFetcher:
             'DCOILWTICO': 'WTI Crude Oil Price',
             'GOLDAMGBD228NLBM': 'Gold Price'
         }
-        
-        # This would normally fetch from FRED API
-        # For now, return sample data structure
+
+        # If FRED client is available, fetch real data
+        if self.fred_client:
+            print(f"Fetching FRED data from {start_date} to {end_date}...")
+            fred_series = {}
+
+            for series_id, description in indicators.items():
+                try:
+                    data = self.fred_client.get_series(
+                        series_id,
+                        observation_start=start_date,
+                        observation_end=end_date
+                    )
+                    fred_series[series_id] = data
+                    print(f"  ✓ Fetched {description} ({series_id}): {len(data)} observations")
+                except Exception as e:
+                    print(f"  ✗ Error fetching {description} ({series_id}): {e}")
+
+            # Combine all series into a single DataFrame
+            if fred_series:
+                fred_df = pd.DataFrame(fred_series)
+                fred_df.index.name = 'date'
+                fred_df = fred_df.reset_index()
+
+                # Rename columns to more readable names
+                column_mapping = {
+                    'DFF': 'fed_funds_rate',
+                    'UNRATE': 'unemployment_rate',
+                    'CPIAUCSL': 'cpi',
+                    'GDP': 'gdp',
+                    'DEXUSEU': 'usd_eur',
+                    'DGS10': 'treasury_10y',
+                    'DGS2': 'treasury_2y',
+                    'VIXCLS': 'vix',
+                    'DCOILWTICO': 'oil_price',
+                    'GOLDAMGBD228NLBM': 'gold_price'
+                }
+                fred_df = fred_df.rename(columns=column_mapping)
+
+                # Forward fill missing values (FRED data has gaps)
+                fred_df = fred_df.ffill()
+
+                # Save to file
+                fred_file = self.data_dir / "fred_economic_data.csv"
+                fred_df.to_csv(fred_file, index=False)
+                print(f"\nSaved FRED data to {fred_file} ({len(fred_df)} rows)")
+
+                return fred_df
+
+        # Fallback: return sample data if FRED API is not available
+        print("Warning: Using sample data (FRED API not available)")
         fred_data = {
-            'date': pd.date_range(start='2025-01-01', end='2025-12-31', freq='D'),
-            'fed_funds_rate': np.random.uniform(4.5, 5.5, 365),
-            'unemployment_rate': np.random.uniform(3.5, 4.5, 365),
-            'cpi': np.random.uniform(2.0, 3.0, 365),
-            'gdp_growth': np.random.uniform(1.5, 3.0, 365),
-            'usd_eur': np.random.uniform(0.9, 1.1, 365),
-            'treasury_10y': np.random.uniform(3.5, 4.5, 365),
-            'treasury_2y': np.random.uniform(3.0, 4.0, 365),
-            'vix': np.random.uniform(12, 25, 365),
-            'oil_price': np.random.uniform(70, 90, 365),
-            'gold_price': np.random.uniform(1900, 2100, 365)
+            'date': pd.date_range(start=start_date, end=end_date, freq='D'),
+            'fed_funds_rate': np.random.uniform(4.5, 5.5, len(pd.date_range(start=start_date, end=end_date, freq='D'))),
+            'unemployment_rate': np.random.uniform(3.5, 4.5, len(pd.date_range(start=start_date, end=end_date, freq='D'))),
+            'cpi': np.random.uniform(2.0, 3.0, len(pd.date_range(start=start_date, end=end_date, freq='D'))),
+            'gdp': np.random.uniform(1.5, 3.0, len(pd.date_range(start=start_date, end=end_date, freq='D'))),
+            'usd_eur': np.random.uniform(0.9, 1.1, len(pd.date_range(start=start_date, end=end_date, freq='D'))),
+            'treasury_10y': np.random.uniform(3.5, 4.5, len(pd.date_range(start=start_date, end=end_date, freq='D'))),
+            'treasury_2y': np.random.uniform(3.0, 4.0, len(pd.date_range(start=start_date, end=end_date, freq='D'))),
+            'vix': np.random.uniform(12, 25, len(pd.date_range(start=start_date, end=end_date, freq='D'))),
+            'oil_price': np.random.uniform(70, 90, len(pd.date_range(start=start_date, end=end_date, freq='D'))),
+            'gold_price': np.random.uniform(1900, 2100, len(pd.date_range(start=start_date, end=end_date, freq='D')))
         }
-        
+
         return pd.DataFrame(fred_data)
     
     def fetch_market_data(self, tickers=['SPY', 'QQQ', 'IWM', 'DIA', 'TLT', 'GLD', 'USO']):
@@ -143,9 +222,9 @@ class EconomicCalendarFetcher:
         """Create comprehensive features for ML model."""
         features = []
         
-        # Load existing events
+        # Load existing events from JSON
         if self.events_file.exists():
-            events_df = pd.read_csv(self.events_file)
+            events_df = pd.read_json(self.events_file, orient='records')
             events_df['date'] = pd.to_datetime(events_df['date'])
             
             # Create features for each day

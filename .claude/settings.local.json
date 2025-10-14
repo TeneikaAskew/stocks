@@ -54,7 +54,11 @@
       "Bash(done)",
       "Bash(do echo \"=== $file ===\")",
       "Bash(python3:*)",
-      "Bash(GIT_SEQUENCE_EDITOR=\"sed -i ''1s/pick/edit/''\" git rebase -i c01cbc4^)"
+      "Bash(GIT_SEQUENCE_EDITOR=\"sed -i ''1s/pick/edit/''\" git rebase -i c01cbc4^)",
+      "Bash(git stash show:*)",
+      "Bash(git stash drop:*)",
+      "Bash(curl -s \"https://unusualwhales.com/_next/data/Ui6QDaUtULN6ysDpOxm1a/economic-calendar.json\")",
+      "Bash(curl -s \"https://phx.unusualwhales.com/api/companies_earnings/upcoming_earnings_v2\")"
     ],
     "deny": []
   }

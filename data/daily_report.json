@@ -1,11 +1,10 @@
 {
-  "generated_at": "2025-10-12T11:15:55.258437",
-  "date": "2025-10-12",
+  "generated_at": "2025-10-13T21:38:20.718141",
+  "date": "2025-10-13",
   "date_range_start": "",
   "date_range_end": "",
   "market_status": "Updated",
-  "events_processed": true,
+  "events_processed": false,
   "analysis_complete": true,
-  "total_events": 61,
   "signals_generated": 4
 }

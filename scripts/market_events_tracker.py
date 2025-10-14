@@ -18,7 +18,7 @@ class MarketEventsTracker:
     """Track and analyze economic events and their market impact."""
     
     def __init__(self):
-        self.events_file = Path("data/market_events.csv")
+        self.events_file = Path("data/market_events.json")
         self.events_archive_file = Path("data/market_events_archive.json")
         self.events_df = pd.DataFrame()
         self.initialize_event_types()
@@ -98,106 +98,361 @@ class MarketEventsTracker:
             }
         }
         
-    def get_2025_economic_calendar(self):
-        """Get the 2025 economic calendar with known dates."""
-        # Known 2025 economic event dates
-        events = [
-            # CPI Releases (Monthly, typically around 13th)
-            {'date': '2025-01-14', 'event_type': 'CPI', 'event': 'CPI Release', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-02-13', 'event_type': 'CPI', 'event': 'CPI Release', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-03-12', 'event_type': 'CPI', 'event': 'CPI Release', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-04-10', 'event_type': 'CPI', 'event': 'CPI Release', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-05-14', 'event_type': 'CPI', 'event': 'CPI Release', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-06-12', 'event_type': 'CPI', 'event': 'CPI Release', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-07-11', 'event_type': 'CPI', 'event': 'CPI Release', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-08-13', 'event_type': 'CPI', 'event': 'CPI Release', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-09-11', 'event_type': 'CPI', 'event': 'CPI Release - September 2025', 'expected_impact': 'High', 
-             'actual': '2.4% YoY', 'consensus': '2.3% YoY', 'notes': 'Higher than expected, caused market volatility'},
-            {'date': '2025-10-10', 'event_type': 'CPI', 'event': 'CPI Release', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-11-13', 'event_type': 'CPI', 'event': 'CPI Release', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-12-11', 'event_type': 'CPI', 'event': 'CPI Release', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            
-            # FOMC Meetings (8 per year)
-            {'date': '2025-01-29', 'event_type': 'FOMC', 'event': 'FOMC Meeting & Decision', 'expected_impact': 'Very High', 'actual': None, 'consensus': None},
-            {'date': '2025-03-19', 'event_type': 'FOMC', 'event': 'FOMC Meeting & Decision', 'expected_impact': 'Very High', 'actual': None, 'consensus': None},
-            {'date': '2025-05-07', 'event_type': 'FOMC', 'event': 'FOMC Meeting & Decision', 'expected_impact': 'Very High', 'actual': None, 'consensus': None},
-            {'date': '2025-06-18', 'event_type': 'FOMC', 'event': 'FOMC Meeting & Decision', 'expected_impact': 'Very High', 'actual': None, 'consensus': None},
-            {'date': '2025-07-30', 'event_type': 'FOMC', 'event': 'FOMC Meeting & Decision', 'expected_impact': 'Very High', 'actual': None, 'consensus': None},
-            {'date': '2025-09-17', 'event_type': 'FOMC', 'event': 'FOMC Meeting & Decision', 'expected_impact': 'Very High', 'actual': None, 'consensus': None},
-            {'date': '2025-11-05', 'event_type': 'FOMC', 'event': 'FOMC Meeting & Decision', 'expected_impact': 'Very High', 'actual': None, 'consensus': None},
-            {'date': '2025-12-17', 'event_type': 'FOMC', 'event': 'FOMC Meeting & Decision', 'expected_impact': 'Very High', 'actual': None, 'consensus': None},
-            
-            # NFP (First Friday of each month)
-            {'date': '2025-01-10', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-02-07', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-03-07', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-04-04', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-05-02', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-06-06', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-07-03', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-08-01', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-09-05', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls - September 2025', 'expected_impact': 'High', 
-             'actual': '142K', 'consensus': '165K', 'notes': 'Below expectations, raised recession concerns'},
-            {'date': '2025-10-03', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-11-07', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-12-05', 'event_type': 'NFP', 'event': 'Non-Farm Payrolls', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            
-            # GDP (Quarterly)
-            {'date': '2025-01-30', 'event_type': 'GDP', 'event': 'GDP Q4 2024 Advance', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-02-27', 'event_type': 'GDP', 'event': 'GDP Q4 2024 Second', 'expected_impact': 'Medium', 'actual': None, 'consensus': None},
-            {'date': '2025-03-27', 'event_type': 'GDP', 'event': 'GDP Q4 2024 Final', 'expected_impact': 'Low', 'actual': None, 'consensus': None},
-            {'date': '2025-04-30', 'event_type': 'GDP', 'event': 'GDP Q1 2025 Advance', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-05-29', 'event_type': 'GDP', 'event': 'GDP Q1 2025 Second', 'expected_impact': 'Medium', 'actual': None, 'consensus': None},
-            {'date': '2025-06-26', 'event_type': 'GDP', 'event': 'GDP Q1 2025 Final', 'expected_impact': 'Low', 'actual': None, 'consensus': None},
-            {'date': '2025-07-31', 'event_type': 'GDP', 'event': 'GDP Q2 2025 Advance', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-08-28', 'event_type': 'GDP', 'event': 'GDP Q2 2025 Second', 'expected_impact': 'Medium', 'actual': None, 'consensus': None},
-            {'date': '2025-09-26', 'event_type': 'GDP', 'event': 'GDP Q2 2025 Final', 'expected_impact': 'Low', 'actual': None, 'consensus': None},
-            {'date': '2025-10-30', 'event_type': 'GDP', 'event': 'GDP Q3 2025 Advance', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            
-            # PCE (Monthly, typically end of month)
-            {'date': '2025-01-31', 'event_type': 'PCE', 'event': 'PCE Price Index', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-02-28', 'event_type': 'PCE', 'event': 'PCE Price Index', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-03-28', 'event_type': 'PCE', 'event': 'PCE Price Index', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-04-30', 'event_type': 'PCE', 'event': 'PCE Price Index', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-05-30', 'event_type': 'PCE', 'event': 'PCE Price Index', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-06-27', 'event_type': 'PCE', 'event': 'PCE Price Index', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-07-31', 'event_type': 'PCE', 'event': 'PCE Price Index', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-08-29', 'event_type': 'PCE', 'event': 'PCE Price Index', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-09-26', 'event_type': 'PCE', 'event': 'PCE Price Index', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            {'date': '2025-10-31', 'event_type': 'PCE', 'event': 'PCE Price Index', 'expected_impact': 'High', 'actual': None, 'consensus': None},
-            
-            # Special Events
-            {'date': '2025-01-20', 'event_type': 'SPECIAL', 'event': 'Martin Luther King Jr. Day - Markets Closed', 'expected_impact': 'Market Closed', 'actual': None, 'consensus': None},
-            {'date': '2025-02-17', 'event_type': 'SPECIAL', 'event': 'Presidents Day - Markets Closed', 'expected_impact': 'Market Closed', 'actual': None, 'consensus': None},
-            {'date': '2025-04-18', 'event_type': 'SPECIAL', 'event': 'Good Friday - Markets Closed', 'expected_impact': 'Market Closed', 'actual': None, 'consensus': None},
-            {'date': '2025-05-26', 'event_type': 'SPECIAL', 'event': 'Memorial Day - Markets Closed', 'expected_impact': 'Market Closed', 'actual': None, 'consensus': None},
-            {'date': '2025-06-19', 'event_type': 'SPECIAL', 'event': 'Juneteenth - Markets Closed', 'expected_impact': 'Market Closed', 'actual': None, 'consensus': None},
-            {'date': '2025-07-04', 'event_type': 'SPECIAL', 'event': 'Independence Day - Markets Closed', 'expected_impact': 'Market Closed', 'actual': None, 'consensus': None},
-            {'date': '2025-09-01', 'event_type': 'SPECIAL', 'event': 'Labor Day - Markets Closed', 'expected_impact': 'Market Closed', 'actual': None, 'consensus': None},
-            {'date': '2025-11-27', 'event_type': 'SPECIAL', 'event': 'Thanksgiving - Markets Closed', 'expected_impact': 'Market Closed', 'actual': None, 'consensus': None},
-            {'date': '2025-12-25', 'event_type': 'SPECIAL', 'event': 'Christmas - Markets Closed', 'expected_impact': 'Market Closed', 'actual': None, 'consensus': None},
+    def fetch_fred_releases(self, start_date=None, end_date=None):
+        """Fetch economic events from FRED releases/dates API."""
+        import os
+
+        fred_api_key = os.environ.get('FRED_API_KEY')
+        if not fred_api_key:
+            print("Warning: FRED_API_KEY not found in environment variables")
+            return pd.DataFrame()
+
+        # Default date range: 2024-01-01 to 2026-12-31
+        if not start_date:
+            start_date = '2024-01-01'
+        if not end_date:
+            end_date = '2026-12-31'
+
+        url = 'https://api.stlouisfed.org/fred/releases/dates'
+        params = {
+            'api_key': fred_api_key,
+            'file_type': 'json',
+            'realtime_start': start_date,
+            'realtime_end': end_date,
+            'limit': 10000  # Get all events in range
+        }
+
+        try:
+            print(f"Fetching FRED releases from {start_date} to {end_date}...")
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if 'release_dates' not in data:
+                print("Warning: No release_dates in FRED API response")
+                return pd.DataFrame()
+
+            events = []
+            for release in data['release_dates']:
+                # Auto-classify event type based on release name
+                event_type, expected_impact = self._classify_fred_event(release['release_name'])
+
+                events.append({
+                    'date': release['date'],
+                    'event_type': event_type,
+                    'event': release['release_name'],
+                    'expected_impact': expected_impact,
+                    'actual': None,
+                    'consensus': None,
+                    'notes': None,
+                    'source': 'FRED'
+                })
+
+            print(f"Fetched {len(events)} events from FRED API")
+            return pd.DataFrame(events)
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching from FRED API: {e}")
+            return pd.DataFrame()
+
+    def _classify_fred_event(self, release_name):
+        """Classify FRED event type and impact level based on release name."""
+        release_lower = release_name.lower()
+
+        # Very High Impact Events
+        if 'fomc' in release_lower or 'federal open market' in release_lower:
+            return 'FOMC', 'Very High'
+
+        # High Impact Events
+        if 'consumer price index' in release_lower or 'cpi' in release_lower:
+            return 'CPI', 'High'
+        if 'employment situation' in release_lower or 'non-farm payroll' in release_lower or 'nonfarm payroll' in release_lower:
+            return 'NFP', 'High'
+        if 'gdp' in release_lower or 'gross domestic product' in release_lower:
+            return 'GDP', 'High'
+        if 'personal consumption expenditures' in release_lower or 'pce' in release_lower:
+            return 'PCE', 'High'
+
+        # Medium Impact Events
+        if 'retail sales' in release_lower or 'advance retail' in release_lower:
+            return 'RETAIL_SALES', 'Medium'
+        if 'ism' in release_lower or 'pmi' in release_lower or 'purchasing managers' in release_lower:
+            return 'ISM_PMI', 'Medium'
+        if 'ppi' in release_lower or 'producer price' in release_lower:
+            return 'PPI', 'Medium'
+        if 'housing starts' in release_lower or 'building permits' in release_lower:
+            return 'HOUSING_STARTS', 'Medium'
+        if 'industrial production' in release_lower:
+            return 'INDUSTRIAL_PRODUCTION', 'Medium'
+        if 'durable goods' in release_lower:
+            return 'DURABLE_GOODS', 'Medium'
+
+        # Low-Medium Impact Events
+        if 'jobless claims' in release_lower or 'unemployment insurance' in release_lower:
+            return 'JOBLESS_CLAIMS', 'Low-Medium'
+        if 'consumer sentiment' in release_lower or 'consumer confidence' in release_lower:
+            return 'CONSUMER_SENTIMENT', 'Low-Medium'
+        if 'trade balance' in release_lower or 'international trade' in release_lower:
+            return 'TRADE_BALANCE', 'Low-Medium'
+
+        # Default classification
+        return 'OTHER', 'Low'
+
+    def fetch_unusual_whales_calendar(self):
+        """Fetch economic calendar from Unusual Whales."""
+        try:
+            # Economic calendar endpoint
+            url = 'https://unusualwhales.com/_next/data/Ui6QDaUtULN6ysDpOxm1a/economic-calendar.json'
+
+            print("Fetching Unusual Whales economic calendar...")
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            events = []
+
+            # Parse the response structure (adapt based on actual structure)
+            if 'pageProps' in data and 'data' in data['pageProps']:
+                calendar_data = data['pageProps']['data']
+
+                for event_item in calendar_data:
+                    # Skip events without dates
+                    event_date = event_item.get('date')
+                    if not event_date:
+                        continue
+
+                    # Extract event details (adapt field names based on actual API response)
+                    events.append({
+                        'date': event_date,
+                        'event_type': self._classify_unusual_whales_event(event_item.get('title', '')),
+                        'event': event_item.get('title', event_item.get('name', 'Unknown Event')),
+                        'expected_impact': event_item.get('impact', 'Medium'),
+                        'actual': event_item.get('actual'),
+                        'consensus': event_item.get('forecast', event_item.get('consensus')),
+                        'notes': event_item.get('notes'),
+                        'source': 'UnusualWhales'
+                    })
+
+            print(f"Fetched {len(events)} events from Unusual Whales")
+            return pd.DataFrame(events)
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching from Unusual Whales API: {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            print(f"Error parsing Unusual Whales data: {e}")
+            return pd.DataFrame()
+
+    def _classify_unusual_whales_event(self, event_name):
+        """Classify event type from Unusual Whales event name."""
+        event_lower = event_name.lower()
+
+        if 'cpi' in event_lower or 'consumer price' in event_lower:
+            return 'CPI'
+        if 'fomc' in event_lower or 'fed' in event_lower and 'decision' in event_lower:
+            return 'FOMC'
+        if 'nfp' in event_lower or 'non-farm' in event_lower or 'payroll' in event_lower:
+            return 'NFP'
+        if 'gdp' in event_lower:
+            return 'GDP'
+        if 'pce' in event_lower:
+            return 'PCE'
+        if 'retail sales' in event_lower:
+            return 'RETAIL_SALES'
+        if 'earnings' in event_lower:
+            return 'EARNINGS'
+
+        return 'OTHER'
+
+    def get_market_holidays(self, year):
+        """Get US market holidays for a given year."""
+        holidays = [
+            {'date': f'{year}-01-01', 'event_type': 'SPECIAL', 'event': "New Year's Day - Markets Closed", 'expected_impact': 'Market Closed'},
+            {'date': f'{year}-07-04', 'event_type': 'SPECIAL', 'event': 'Independence Day - Markets Closed', 'expected_impact': 'Market Closed'},
+            {'date': f'{year}-12-25', 'event_type': 'SPECIAL', 'event': 'Christmas - Markets Closed', 'expected_impact': 'Market Closed'},
         ]
-        
-        return pd.DataFrame(events)
-    
-    def load_events(self):
-        """Load existing events from file."""
-        if self.events_file.exists():
-            self.events_df = pd.read_csv(self.events_file)
-            self.events_df['date'] = pd.to_datetime(self.events_df['date'])
-            print(f"Loaded {len(self.events_df)} existing events")
-        else:
-            # Initialize with known events
-            self.events_df = self.get_2025_economic_calendar()
-            self.events_df['date'] = pd.to_datetime(self.events_df['date'])
-            self.save_events()
-            print(f"Initialized with {len(self.events_df)} events for 2025")
-        
+
+        # Third Monday of January (MLK Day)
+        from datetime import date
+        jan_1 = date(year, 1, 1)
+        days_until_monday = (7 - jan_1.weekday()) % 7
+        first_monday = jan_1 + timedelta(days=days_until_monday)
+        mlk_day = first_monday + timedelta(days=14)  # Third Monday
+        holidays.append({
+            'date': mlk_day.strftime('%Y-%m-%d'),
+            'event_type': 'SPECIAL',
+            'event': 'Martin Luther King Jr. Day - Markets Closed',
+            'expected_impact': 'Market Closed'
+        })
+
+        # Third Monday of February (Presidents Day)
+        feb_1 = date(year, 2, 1)
+        days_until_monday = (7 - feb_1.weekday()) % 7
+        first_monday = feb_1 + timedelta(days=days_until_monday)
+        presidents_day = first_monday + timedelta(days=14)  # Third Monday
+        holidays.append({
+            'date': presidents_day.strftime('%Y-%m-%d'),
+            'event_type': 'SPECIAL',
+            'event': 'Presidents Day - Markets Closed',
+            'expected_impact': 'Market Closed'
+        })
+
+        # Last Monday of May (Memorial Day)
+        may_31 = date(year, 5, 31)
+        days_back = (may_31.weekday() - 0) % 7
+        memorial_day = may_31 - timedelta(days=days_back)
+        holidays.append({
+            'date': memorial_day.strftime('%Y-%m-%d'),
+            'event_type': 'SPECIAL',
+            'event': 'Memorial Day - Markets Closed',
+            'expected_impact': 'Market Closed'
+        })
+
+        # Juneteenth (June 19th, or observed)
+        holidays.append({
+            'date': f'{year}-06-19',
+            'event_type': 'SPECIAL',
+            'event': 'Juneteenth - Markets Closed',
+            'expected_impact': 'Market Closed'
+        })
+
+        # First Monday of September (Labor Day)
+        sep_1 = date(year, 9, 1)
+        days_until_monday = (7 - sep_1.weekday()) % 7
+        labor_day = sep_1 + timedelta(days=days_until_monday)
+        holidays.append({
+            'date': labor_day.strftime('%Y-%m-%d'),
+            'event_type': 'SPECIAL',
+            'event': 'Labor Day - Markets Closed',
+            'expected_impact': 'Market Closed'
+        })
+
+        # Fourth Thursday of November (Thanksgiving)
+        nov_1 = date(year, 11, 1)
+        days_until_thursday = (3 - nov_1.weekday()) % 7
+        first_thursday = nov_1 + timedelta(days=days_until_thursday)
+        thanksgiving = first_thursday + timedelta(days=21)  # Fourth Thursday
+        holidays.append({
+            'date': thanksgiving.strftime('%Y-%m-%d'),
+            'event_type': 'SPECIAL',
+            'event': 'Thanksgiving - Markets Closed',
+            'expected_impact': 'Market Closed'
+        })
+
+        # Add default fields
+        for holiday in holidays:
+            holiday.update({
+                'actual': None,
+                'consensus': None,
+                'notes': None,
+                'source': 'MANUAL'
+            })
+
+        return holidays
+
+    def fetch_all_events(self, start_date=None, end_date=None):
+        """Fetch events from all sources and combine them."""
+        all_events = []
+
+        # Fetch from FRED
+        fred_events = self.fetch_fred_releases(start_date, end_date)
+        if not fred_events.empty:
+            all_events.append(fred_events)
+
+        # Fetch from Unusual Whales
+        uw_events = self.fetch_unusual_whales_calendar()
+        if not uw_events.empty:
+            all_events.append(uw_events)
+
+        # Add market holidays for 2024-2026
+        years = [2024, 2025, 2026]
+        for year in years:
+            holidays = self.get_market_holidays(year)
+            all_events.append(pd.DataFrame(holidays))
+
+        if not all_events:
+            print("Warning: No events fetched from any source")
+            return pd.DataFrame()
+
+        # Combine all events
+        combined_df = pd.concat(all_events, ignore_index=True)
+        combined_df['date'] = pd.to_datetime(combined_df['date'], errors='coerce')
+
+        # Remove events with invalid dates (NaT)
+        before_count = len(combined_df)
+        combined_df = combined_df.dropna(subset=['date'])
+        invalid_removed = before_count - len(combined_df)
+
+        if invalid_removed > 0:
+            print(f"Removed {invalid_removed} events with invalid dates")
+
+        print(f"Combined {len(combined_df)} total events from all sources")
+        return combined_df
+
+    def merge_and_deduplicate_events(self, new_events_df):
+        """Merge new events with existing events and remove duplicates."""
+        if new_events_df.empty:
+            print("No new events to merge")
+            return
+
+        # Load existing events
+        existing_df = self.events_df if not self.events_df.empty else pd.DataFrame()
+
+        if existing_df.empty:
+            # No existing events, just use new ones
+            self.events_df = new_events_df
+            print(f"Initialized with {len(self.events_df)} new events")
+            return
+
+        # Combine existing and new events
+        combined = pd.concat([existing_df, new_events_df], ignore_index=True)
+
+        # Remove duplicates based on date + event name
+        # Keep the first occurrence (existing events take precedence)
+        before_count = len(combined)
+        combined = combined.drop_duplicates(subset=['date', 'event'], keep='first')
+        duplicates_removed = before_count - len(combined)
+
+        # Sort by date
+        combined = combined.sort_values('date').reset_index(drop=True)
+
+        self.events_df = combined
+        print(f"Merged events: {len(existing_df)} existing + {len(new_events_df)} new = {len(combined)} total ({duplicates_removed} duplicates removed)")
+
         return self.events_df
     
+    def load_events(self, fetch_new=True, start_date=None, end_date=None):
+        """Load existing events from file and optionally fetch new events from APIs."""
+        # Load existing events from JSON if file exists
+        if self.events_file.exists():
+            self.events_df = pd.read_json(self.events_file, orient='records')
+            self.events_df['date'] = pd.to_datetime(self.events_df['date'])
+            print(f"Loaded {len(self.events_df)} existing events from JSON")
+        else:
+            self.events_df = pd.DataFrame()
+            print("No existing events file found, will fetch from APIs")
+
+        # Fetch new events from APIs and merge
+        if fetch_new:
+            print("\nFetching new events from APIs...")
+            new_events = self.fetch_all_events(start_date, end_date)
+
+            if not new_events.empty:
+                self.merge_and_deduplicate_events(new_events)
+                self.save_events()
+            else:
+                print("No new events fetched from APIs")
+
+        return self.events_df
+
     def save_events(self):
-        """Save events to CSV file."""
-        self.events_df.to_csv(self.events_file, index=False)
+        """Save events to JSON file."""
+        # Convert datetime to string for JSON serialization
+        events_to_save = self.events_df.copy()
+        events_to_save['date'] = events_to_save['date'].dt.strftime('%Y-%m-%d')
+
+        # Save as JSON
+        events_to_save.to_json(self.events_file, orient='records', indent=2)
         print(f"Saved {len(self.events_df)} events to {self.events_file}")
     
     def add_event(self, date, event_type, event, expected_impact='Medium', actual=None, consensus=None, notes=None):
@@ -338,22 +593,26 @@ class MarketEventsTracker:
         """
         
         today = pd.Timestamp.now().normalize()
-        
+
         for _, event in self.events_df.sort_values('date').iterrows():
+            # Skip events with invalid dates (NaT)
+            if pd.isna(event['date']):
+                continue
+
             row_class = []
-            
+
             if event['expected_impact'] == 'Very High':
                 row_class.append('very-high-impact')
             elif event['expected_impact'] == 'High':
                 row_class.append('high-impact')
             elif event['expected_impact'] == 'Market Closed':
                 row_class.append('market-closed')
-            
+
             if event['date'] < today:
                 row_class.append('past-event')
-            
+
             class_str = ' '.join(row_class)
-            
+
             html_content += f"""
                 <tr class="{class_str}">
                     <td>{event['date'].strftime('%Y-%m-%d')}</td>
@@ -422,30 +681,34 @@ class MarketEventsTracker:
         print("\n" + "="*60)
         print("MARKET EVENTS SUMMARY")
         print("="*60)
-        
+
         print(f"\nTotal Events: {len(self.events_df)}")
-        
+
+        if self.events_df.empty:
+            print("\nNo events in database. Run without --no-fetch to fetch events from APIs.")
+            return
+
         # Events by type
         print("\nEvents by Type:")
         for event_type in self.events_df['event_type'].unique():
             count = len(self.events_df[self.events_df['event_type'] == event_type])
             print(f"  {event_type}: {count}")
-        
+
         # Upcoming events
         upcoming = self.get_upcoming_events(30)
         print(f"\nUpcoming Events (Next 30 Days): {len(upcoming)}")
-        
+
         if not upcoming.empty:
             print("\nNext 5 Events:")
             for _, event in upcoming.head(5).iterrows():
                 days_until = (event['date'] - pd.Timestamp.now()).days
                 print(f"  {event['date'].strftime('%Y-%m-%d')} ({days_until} days): {event['event']} [{event['expected_impact']}]")
-        
+
         # High impact events
         high_impact = self.get_high_impact_events()
         future_high_impact = high_impact[high_impact['date'] >= pd.Timestamp.now()]
         print(f"\nUpcoming High Impact Events: {len(future_high_impact)}")
-        
+
         if not future_high_impact.empty:
             print("\nNext 3 High Impact Events:")
             for _, event in future_high_impact.head(3).iterrows():
@@ -455,65 +718,74 @@ class MarketEventsTracker:
 def main():
     """Main function to run the market events tracker."""
     import argparse
-    
-    parser = argparse.ArgumentParser(description='Market Events Tracker')
+
+    parser = argparse.ArgumentParser(description='Market Events Tracker - Fetch and manage economic events')
     parser.add_argument('--target-date', type=str, help='Target date for analysis (YYYY-MM-DD)')
-    parser.add_argument('--start-date', type=str, help='Start date for range analysis (YYYY-MM-DD)')
-    parser.add_argument('--end-date', type=str, help='End date for range analysis (YYYY-MM-DD)')
-    
+    parser.add_argument('--start-date', type=str, help='Start date for fetching events (YYYY-MM-DD), default: 2024-01-01')
+    parser.add_argument('--end-date', type=str, help='End date for fetching events (YYYY-MM-DD), default: 2026-12-31')
+    parser.add_argument('--no-fetch', action='store_true', help='Skip fetching new events from APIs')
+
     args = parser.parse_args()
-    
+
+    # Determine date range for API fetching
+    fetch_start = args.start_date if args.start_date else '2024-01-01'
+    fetch_end = args.end_date if args.end_date else '2026-12-31'
+
     tracker = MarketEventsTracker()
-    
-    # Load events
-    events_df = tracker.load_events()
-    
+
+    # Load existing events and fetch new ones from APIs
+    fetch_new = not args.no_fetch
+    events_df = tracker.load_events(fetch_new=fetch_new, start_date=fetch_start, end_date=fetch_end)
+
     # Print summary
     tracker.print_summary()
-    
+
     # Create HTML calendar
     tracker.create_event_calendar_html()
-    
+
     # Export for ML
     tracker.export_for_ml()
-    
+
     # Show events for target date or date range
     today_events = pd.DataFrame()  # Initialize
     today = pd.Timestamp.now().normalize()
-    
-    if args.start_date and args.end_date:
-        print(f"\n{'='*60}")
-        print(f"EVENTS FOR DATE RANGE: {args.start_date} to {args.end_date}")
-        print(f"{'='*60}")
-        range_events = tracker.get_events_for_date_range(args.start_date, args.end_date)
-        if not range_events.empty:
-            for _, event in range_events.iterrows():
-                print(f"\n{event['date'].strftime('%Y-%m-%d')}: {event['event']}")
-                print(f"  Type: {event['event_type']}, Impact: {event['expected_impact']}")
-    elif args.target_date:
+
+    if args.target_date:
+        # Show events for specific target date
         target_date = pd.Timestamp(args.target_date)
         today_events = tracker.get_events_for_date_range(target_date, target_date)
+
+        if not today_events.empty:
+            date_str = args.target_date
+            print(f"\n{'='*60}")
+            print(f"EVENTS FOR {date_str}")
+            print(f"{'='*60}")
+            for _, event in today_events.iterrows():
+                print(f"\nEvent: {event['event']}")
+                print(f"Type: {event['event_type']}")
+                print(f"Expected Impact: {event['expected_impact']}")
+                if event.get('actual'):
+                    print(f"Actual: {event['actual']}")
+                if event.get('consensus'):
+                    print(f"Consensus: {event['consensus']}")
+                if event.get('notes'):
+                    print(f"Notes: {event['notes']}")
     else:
+        # Show today's events by default
         today_events = tracker.get_events_for_date_range(today, today)
-    
-    if not today_events.empty and not (args.start_date and args.end_date):
-        date_str = args.target_date if args.target_date else today.strftime('%Y-%m-%d')
-        print(f"\n{'='*60}")
-        print(f"EVENTS FOR {date_str}")
-        print(f"{'='*60}")
-        for _, event in today_events.iterrows():
-            print(f"\nEvent: {event['event']}")
-            print(f"Type: {event['event_type']}")
-            print(f"Expected Impact: {event['expected_impact']}")
-            if event.get('actual'):
-                print(f"Actual: {event['actual']}")
-            if event.get('consensus'):
-                print(f"Consensus: {event['consensus']}")
-            if event.get('notes'):
-                print(f"Notes: {event['notes']}")
-    
+
+        if not today_events.empty:
+            print(f"\n{'='*60}")
+            print(f"EVENTS FOR TODAY ({today.strftime('%Y-%m-%d')})")
+            print(f"{'='*60}")
+            for _, event in today_events.iterrows():
+                print(f"\nEvent: {event['event']}")
+                print(f"Type: {event['event_type']}")
+                print(f"Expected Impact: {event['expected_impact']}")
+
     print("\n" + "="*60)
-    print("Market Events Tracker Initialized Successfully!")
+    print("Market Events Tracker Completed Successfully!")
+    print(f"Total events in database: {len(tracker.events_df)}")
     print("="*60)
 
 

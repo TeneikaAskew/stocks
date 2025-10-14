@@ -2,16 +2,15 @@ name: Update Economic Events Calendar
 
 on:
   schedule:
-    # Run daily at 6 AM EST (11 AM UTC)
-    - cron: '0 11 * * *'
-    # Run at market close 4:30 PM EST (9:30 PM UTC) on weekdays
-    - cron: '30 21 * * 1-5'
+    # Run weekly on Sundays at 6 AM EST (11 AM UTC)
+    - cron: '0 11 * * 0'
   workflow_dispatch:  # Allow manual trigger
     inputs:
       fetch_historical:
-        description: 'Fetch historical data'
+        description: 'Fetch historical market data (daily OHLCV beyond 7-day window)'
         required: false
-        default: 'false'
+        default: false
+        type: boolean
       target_date:
         description: 'Target date for analysis (YYYY-MM-DD format)'
         required: false
@@ -25,6 +24,10 @@ on:
         required: false
         default: ''
       
+permissions:
+  contents: write  # Required for git push
+  issues: write    # Required for creating issues on failure
+
 jobs:
   update_market_data:
     runs-on: ubuntu-latest
@@ -36,7 +39,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        persist-credentials: true
     
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -55,8 +58,39 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pandas numpy yfinance requests beautifulsoup4 pyarrow
-        pip install matplotlib seaborn plotly
+        pip install matplotlib seaborn plotly fredapi
         
+    - name: Create data directory
+      run: |
+        mkdir -p data
+        echo "Data directory ready"
+
+    - name: Fetch historical market data
+      if: ${{ github.event.inputs.fetch_historical == 'true' }}
+      run: |
+        echo "Fetching historical market data for all tickers..."
+
+        # Determine date range for historical fetch
+        if [ -n "${{ github.event.inputs.date_range_start }}" ] && [ -n "${{ github.event.inputs.date_range_end }}" ]; then
+          START_DATE="${{ github.event.inputs.date_range_start }}"
+          END_DATE="${{ github.event.inputs.date_range_end }}"
+        else
+          # Default: fetch last 365 days of historical data
+          START_DATE=$(date -d '365 days ago' +'%Y-%m-%d')
+          END_DATE=$(date +'%Y-%m-%d')
+        fi
+
+        echo "Fetching historical data from ${START_DATE} to ${END_DATE}"
+
+        # Fetch historical data for each ticker
+        for ticker in SPY QQQ IWM SPX; do
+          echo "Fetching ${ticker}..."
+          python scripts/fetch_market_data.py --tickers ${ticker} --historical --start-date ${START_DATE} --end-date ${END_DATE}
+        done
+
+        echo "Historical data fetch complete"
+      continue-on-error: true
+
     - name: Set date environment variables
       run: |
         if [ -n "${{ github.event.inputs.target_date }}" ]; then
@@ -64,17 +98,17 @@ jobs:
         else
           echo "TARGET_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
         fi
-        
+
         if [ -n "${{ github.event.inputs.date_range_start }}" ]; then
           echo "DATE_RANGE_START=${{ github.event.inputs.date_range_start }}" >> $GITHUB_ENV
         fi
-        
+
         if [ -n "${{ github.event.inputs.date_range_end }}" ]; then
           echo "DATE_RANGE_END=${{ github.event.inputs.date_range_end }}" >> $GITHUB_ENV
         fi
-        
+
         echo "Analysis date: ${TARGET_DATE}"
-    
+
     - name: Update market events calendar
       run: |
         echo "Updating market events calendar for date: ${TARGET_DATE}"
@@ -86,9 +120,43 @@ jobs:
         else
           python scripts/market_events_tracker.py
         fi
+
+        # Verify the JSON file was created
+        if [ -f "data/market_events.json" ]; then
+          echo "✓ market_events.json created successfully"
+          echo "MARKET_EVENTS_EXISTS=true" >> $GITHUB_ENV
+        else
+          echo "✗ Warning: market_events.json was not created"
+          echo "MARKET_EVENTS_EXISTS=false" >> $GITHUB_ENV
+        fi
+      env:
+        FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      continue-on-error: true
+
+    - name: Fetch earnings calendar
+      run: |
+        echo "Fetching upcoming earnings calendar..."
+        if [ -n "${DATE_RANGE_START}" ] && [ -n "${DATE_RANGE_END}" ]; then
+          echo "Date range: ${DATE_RANGE_START} to ${DATE_RANGE_END}"
+          python scripts/fetch_earnings_calendar.py --start-date "${DATE_RANGE_START}" --end-date "${DATE_RANGE_END}"
+        else
+          # Default: fetch next 90 days of earnings
+          python scripts/fetch_earnings_calendar.py --days 90
+        fi
+
+        # Verify the earnings file was created
+        if [ -f "data/earnings/earnings_calendar.json" ]; then
+          echo "✓ earnings_calendar.json created successfully"
+          echo "EARNINGS_CALENDAR_EXISTS=true" >> $GITHUB_ENV
+        else
+          echo "✗ Warning: earnings_calendar.json was not created"
+          echo "EARNINGS_CALENDAR_EXISTS=false" >> $GITHUB_ENV
+        fi
       continue-on-error: true
     
     - name: Fetch economic calendar data
+      env:
+        FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       run: |
         echo "Fetching economic calendar data..."
         if [ -n "${DATE_RANGE_START}" ] && [ -n "${DATE_RANGE_END}" ]; then
@@ -193,10 +261,18 @@ jobs:
   notify_upcoming_events:
     runs-on: ubuntu-latest
     needs: update_market_data
+    if: always()  # Run even if previous job has errors
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
+      with:
+        ref: main  # Ensure we get the latest from main branch
+
+    - name: Pull latest changes
+      run: |
+        git pull origin main
+        echo "Pulled latest changes from main"
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -213,24 +289,37 @@ jobs:
         python -c "
         import pandas as pd
         from datetime import datetime, timedelta
-        
-        # Load events
-        events_df = pd.read_csv('data/market_events.csv')
-        events_df['date'] = pd.to_datetime(events_df['date'])
-        
+        import os
+        from pathlib import Path
+
+        # Check if JSON file exists
+        events_json = Path('data/market_events.json')
+
+        if events_json.exists():
+            events_df = pd.read_json('data/market_events.json', orient='records')
+            events_df['date'] = pd.to_datetime(events_df['date'])
+            print('✓ Loaded events from market_events.json')
+        else:
+            print('⚠️  Warning: market_events.json not found')
+            print('The file may not have been created by the previous job.')
+            print('This could indicate the market_events_tracker.py script failed.')
+            exit(0)  # Exit gracefully without error
+
         # Check for events in next 3 days
         today = pd.Timestamp.now().normalize()
         future_date = today + timedelta(days=3)
-        
+
         upcoming = events_df[
-            (events_df['date'] >= today) & 
+            (events_df['date'] >= today) &
             (events_df['date'] <= future_date) &
             (events_df['expected_impact'].isin(['High', 'Very High']))
         ]
-        
+
         if not upcoming.empty:
-            print('UPCOMING HIGH IMPACT EVENTS:')
+            print('📅 UPCOMING HIGH IMPACT EVENTS:')
             for _, event in upcoming.iterrows():
                 days_until = (event['date'] - today).days
                 print(f'  {event[\"date\"].strftime(\"%Y-%m-%d\")} ({days_until} days): {event[\"event\"]} [{event[\"expected_impact\"]}]')
+        else:
+            print('✓ No high-impact events in the next 3 days')
         "
