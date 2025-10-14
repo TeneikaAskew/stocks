@@ -41,12 +41,19 @@ class EarningsCalendarFetcher:
         """
         try:
             # Unusual Whales upcoming earnings endpoint
-            url = "https://phx.unusualwhales.com/api/companies_earnings/upcoming_earnings_v2"
+            # Using formats=table to get all available earnings data
+            url = "https://phx.unusualwhales.com/api/companies_earnings/upcoming_earnings_v2?formats=table"
 
             print(f"Fetching earnings calendar from Unusual Whales...")
             print(f"URL: {url}")
 
-            response = requests.get(url, timeout=30)
+            # Add headers to avoid being blocked
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+            }
+
+            response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
             data = response.json()
 
@@ -131,7 +138,8 @@ class EarningsCalendarFetcher:
 
     def save_earnings(self, earnings_df):
         """
-        Save earnings data to JSON file.
+        Save earnings data to JSON file with deduplication.
+        Merges new data with existing data and removes duplicates.
 
         Args:
             earnings_df: DataFrame with earnings data
@@ -139,6 +147,37 @@ class EarningsCalendarFetcher:
         if earnings_df.empty:
             print("No earnings data to save")
             return
+
+        # Load existing earnings if file exists
+        if self.earnings_file.exists():
+            try:
+                with open(self.earnings_file, "r") as f:
+                    existing_data = json.load(f)
+                existing_df = pd.DataFrame(existing_data)
+                print(f"Loaded {len(existing_df)} existing earnings records")
+
+                # Combine new and existing data
+                combined_df = pd.concat([existing_df, earnings_df], ignore_index=True)
+
+                # Remove duplicates based on ticker and date
+                before_dedup = len(combined_df)
+                combined_df = combined_df.drop_duplicates(
+                    subset=['ticker', 'date'],
+                    keep='last'  # Keep the most recent fetch
+                )
+                after_dedup = len(combined_df)
+                duplicates_removed = before_dedup - after_dedup
+
+                print(f"Merged data: {len(existing_df)} existing + {len(earnings_df)} new = {after_dedup} total ({duplicates_removed} duplicates removed)")
+
+                earnings_df = combined_df
+
+            except Exception as e:
+                print(f"Note: Could not load existing earnings file: {e}")
+                print("Saving new data only")
+
+        # Sort by date for easier reading
+        earnings_df = earnings_df.sort_values('date').reset_index(drop=True)
 
         # Convert to list of dicts for JSON
         earnings_data = earnings_df.to_dict(orient="records")
@@ -148,7 +187,7 @@ class EarningsCalendarFetcher:
             json.dump(earnings_data, f, indent=2)
 
         print(f"\n{'='*80}")
-        print(f"Saved {len(earnings_data)} earnings announcements to {self.earnings_file}")
+        print(f"Saved {len(earnings_data)} earnings announcements to {self.earnings_file} (sorted by date)")
         print(f"{'='*80}")
 
     def print_summary(self, earnings_df):
