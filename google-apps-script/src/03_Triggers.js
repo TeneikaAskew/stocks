@@ -66,33 +66,33 @@ function EW_setupTriggersIfMissing() {
       console.log(`Skipped existing trigger: ${EW_TRIGGER_FUNCTIONS.DAILY_REPORT}`);
     }
     
-    // Check and setup active position tracking trigger (5 PM)
-    // Now uses the main function with built-in continuation support
-    const activeTrackingFunction = 'EW_updateActiveStrikeHits';
-    
-    // Remove old wrapper function trigger if it exists
-    // Use the already declared 'triggers' variable from line 15
+    // Check and setup daily backfill trigger (5 PM)
+    // Backfill processes ALL positions (active and expired) with incomplete data
+    const backfillFunction = 'EW_backfillHistoricalTracking';
+
+    // Remove old active tracking triggers if they exist
     triggers.forEach(trigger => {
-      if (trigger.getHandlerFunction() === 'EW_updateActiveStrikeHitsWithContinuation') {
+      const funcName = trigger.getHandlerFunction();
+      if (funcName === 'EW_updateActiveStrikeHits' || funcName === 'EW_updateActiveStrikeHitsWithContinuation') {
         ScriptApp.deleteTrigger(trigger);
-        console.log('Removed old wrapper function trigger');
+        console.log(`Removed old active tracking trigger: ${funcName}`);
       }
     });
-    
-    if (!EW_triggerExists(activeTrackingFunction)) {
-      ScriptApp.newTrigger(activeTrackingFunction)
+
+    if (!EW_triggerExists(backfillFunction)) {
+      ScriptApp.newTrigger(backfillFunction)
         .timeBased()
         .everyDays(1)
         .atHour(17) // 5 PM
         .inTimezone('America/New_York')
         .create();
       setupCount++;
-      messages.push(`✅ Created: Active position tracking with continuation (5 PM ET)`);
-      console.log(`Created trigger: ${activeTrackingFunction}`);
+      messages.push(`✅ Created: Daily backfill (processes all incomplete positions, 5 PM ET)`);
+      console.log(`Created trigger: ${backfillFunction}`);
     } else {
       skippedCount++;
-      messages.push(`⏭️ Exists: Active position tracking (5 PM ET)`);
-      console.log(`Skipped existing trigger: ${activeTrackingFunction}`);
+      messages.push(`⏭️ Exists: Daily backfill (5 PM ET)`);
+      console.log(`Skipped existing trigger: ${backfillFunction}`);
     }
 
     // Check and setup daily formatting trigger (8 PM)
@@ -180,8 +180,8 @@ function EW_setupAutoTracking() {
       .atHour(EW_AUTO_TRACKING.DAILY_DATA_HOUR)
       .create();
     
-    // Create active position tracking trigger (5 PM ET)
-    ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING)
+    // Create daily backfill trigger (5 PM ET)
+    ScriptApp.newTrigger(EW_TRIGGER_FUNCTIONS.DAILY_BACKFILL)
       .timeBased()
       .everyDays(1)
       .atHour(17) // 5 PM
@@ -196,7 +196,7 @@ function EW_setupAutoTracking() {
       `• ${EW_AUTO_TRACKING.DAILY_DATA_HOUR}:00 AM: Daily data fetch\n` +
       `• ${EW_AUTO_TRACKING.DAILY_REPORT_HOUR}:00 AM: Daily success report update\n` +
       `• Every ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES} minutes: Tracking refresh (9 AM - 5 PM ET only)\n` +
-      `• 5:00 PM ET: Active position tracking with Yahoo Finance\n\n` +
+      `• 5:00 PM ET: Daily backfill (processes all incomplete positions)\n\n` +
       'Historical data will be preserved permanently.\n' +
       'Note: 30-minute updates only run during market hours.'
     );
@@ -258,10 +258,11 @@ function EW_stopAutoTracking() {
     
     triggers.forEach(trigger => {
       let handlerFunction = trigger.getHandlerFunction();
-    if (handlerFunction === EW_TRIGGER_FUNCTIONS.AUTO_UPDATE || 
+    if (handlerFunction === EW_TRIGGER_FUNCTIONS.AUTO_UPDATE ||
       handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_REPORT ||
       handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_DATA ||
-      handlerFunction === EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING) {
+      handlerFunction === EW_TRIGGER_FUNCTIONS.DAILY_BACKFILL ||
+      handlerFunction === 'EW_updateActiveStrikeHits') { // Remove old active tracking
         ScriptApp.deleteTrigger(trigger);
         deletedCount++;
         console.log(`Deleted trigger: ${handlerFunction}`);
@@ -276,7 +277,7 @@ function EW_stopAutoTracking() {
         `• Daily data fetch (${EW_AUTO_TRACKING.DAILY_DATA_HOUR} AM)\n` +
         `• Daily reports (${EW_AUTO_TRACKING.DAILY_REPORT_HOUR} AM)\n` +
         `• ${EW_AUTO_TRACKING.TRIGGER_INTERVAL_MINUTES}-minute updates (9 AM - 5 PM ET)\n` +
-        `• Active position tracking (5 PM ET)\n\n` +
+        `• Daily backfill (5 PM ET)\n\n` +
         'You can restart using "Setup Auto Tracking" from the menu.'
       );
       console.log(`Deleted ${deletedCount} auto tracking triggers`);
@@ -580,10 +581,10 @@ function EW_validateTriggers() {
   try {
     let triggers = ScriptApp.getProjectTriggers();
     let expectedTriggers = [
-      EW_TRIGGER_FUNCTIONS.DAILY_DATA, 
-      EW_TRIGGER_FUNCTIONS.DAILY_REPORT, 
+      EW_TRIGGER_FUNCTIONS.DAILY_DATA,
+      EW_TRIGGER_FUNCTIONS.DAILY_REPORT,
       EW_TRIGGER_FUNCTIONS.AUTO_UPDATE,
-      EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING
+      EW_TRIGGER_FUNCTIONS.DAILY_BACKFILL
     ];
     let foundTriggers = triggers.map(t => t.getHandlerFunction());
     
@@ -657,55 +658,8 @@ function EW_validateTriggers() {
     //     console.error('Error removing empty rows:', error);
     //   }
     // }
-// Note: The 4:30 PM tracking trigger has been consolidated into the 5 PM Yahoo-based active tracking.
-// All tracking updates are now handled by EW_updateActiveStrikeHits which runs at 5 PM ET.
-
-/**
- * Setup automated trigger for active position tracking
- * Runs daily at 5 PM ET after market close to capture full day data
- */
-function EW_setupActiveTrackingTrigger() {
-  // Remove existing active tracking triggers
-  const triggers = ScriptApp.getProjectTriggers();
-  triggers.forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'EW_updateActiveStrikeHits') {
-      ScriptApp.deleteTrigger(trigger);
-    }
-  });
-  
-  // Create new daily trigger at 5 PM ET (after market close)
-  ScriptApp.newTrigger('EW_updateActiveStrikeHits')
-    .timeBased()
-    .atHour(17) // 5 PM
-    .everyDays(1)
-    .inTimezone('America/New_York')
-    .create();
-    
-  EW_trace('ACTIVE_TRACKING', 'Active position tracking trigger created for 5 PM ET daily', true);
-  EW_safeAlert('Active Tracking Trigger Created', 'Strike_Hit updates will run daily at 5 PM ET to capture full day data');
-}
-
-/**
- * Remove active tracking trigger
- */
-function EW_removeActiveTrackingTrigger() {
-  const triggers = ScriptApp.getProjectTriggers();
-  let removed = 0;
-  
-  triggers.forEach(trigger => {
-    if (trigger.getHandlerFunction() === 'EW_updateActiveStrikeHits') {
-      ScriptApp.deleteTrigger(trigger);
-      removed++;
-    }
-  });
-  
-  const msg = removed > 0 ? 
-    `Removed ${removed} active tracking trigger(s)` : 
-    'No active tracking triggers found to remove';
-    
-  EW_trace('ACTIVE_TRACKING', msg, true);
-  EW_safeAlert('Active Tracking Trigger Removed', msg);
-}
+// Note: Active tracking consolidated into daily backfill.
+// All tracking updates are now handled by EW_backfillHistoricalTracking which runs at 5 PM ET.
 
 /**
  * Test function to verify all triggers are properly configured
@@ -718,7 +672,7 @@ function EW_testAllTriggers() {
     { name: EW_TRIGGER_FUNCTIONS.DAILY_DATA, desc: '8 AM Daily data fetch', time: '8:00 AM' },
     { name: EW_TRIGGER_FUNCTIONS.DAILY_REPORT, desc: '9 AM Success reports', time: '9:00 AM' },
     { name: EW_TRIGGER_FUNCTIONS.AUTO_UPDATE, desc: '30-min updates (market hours)', time: 'Every 30 min (9-5 ET)' },
-    { name: EW_TRIGGER_FUNCTIONS.ACTIVE_TRACKING, desc: '5 PM Active tracking', time: '5:00 PM ET' }
+    { name: EW_TRIGGER_FUNCTIONS.DAILY_BACKFILL, desc: '5 PM Daily backfill', time: '5:00 PM ET' }
   ];
   
   const triggers = ScriptApp.getProjectTriggers();
