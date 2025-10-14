@@ -564,14 +564,17 @@ class MarketEventsTracker:
         return self.events_df
 
     def save_events(self):
-        """Save events to JSON file."""
+        """Save events to JSON file, sorted by date."""
+        # Sort by date before saving
+        self.events_df = self.events_df.sort_values('date').reset_index(drop=True)
+
         # Convert datetime to string for JSON serialization
         events_to_save = self.events_df.copy()
         events_to_save['date'] = events_to_save['date'].dt.strftime('%Y-%m-%d')
 
         # Save as JSON
         events_to_save.to_json(self.events_file, orient='records', indent=2)
-        print(f"Saved {len(self.events_df)} events to {self.events_file}")
+        print(f"Saved {len(self.events_df)} events to {self.events_file} (sorted by date)")
     
     def add_event(self, date, event_type, event, expected_impact='Medium', actual=None, consensus=None, notes=None):
         """Add a new event to the tracker."""
