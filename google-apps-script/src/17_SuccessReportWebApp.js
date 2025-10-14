@@ -372,51 +372,113 @@ function collectHoldingPeriodData(ss) {
  */
 function collectMultiDayData(ss) {
   const sheet = ss.getSheetByName('SR_MultiDay');
-  if (!sheet) return {};
-  
+  if (!sheet) {
+    return { profitabilityByDay: [], sustainedWinners: [] };
+  }
+
   const data = sheet.getDataRange().getValues();
-  const multiDay = {
-    sustainedProfitable: [],
-    profitabilityByDay: []
+
+  const toNumber = (value) => {
+    if (value === null || value === undefined) return 0;
+    if (typeof value === 'number') {
+      return isNaN(value) ? 0 : value;
+    }
+    if (typeof value === 'string') {
+      const cleaned = value.replace(/[^0-9.-]/g, '');
+      if (cleaned === '') return 0;
+      const parsed = parseFloat(cleaned);
+      return isNaN(parsed) ? 0 : parsed;
+    }
+    return 0;
   };
-  
-  // Parse sustained profitable trades
-  let sustainedStartRow = 2; // After header
-  for (let i = sustainedStartRow; i < data.length && data[i][0]; i++) {
+
+  const parseRate = (value) => {
+    const num = toNumber(value);
+    if (!isFinite(num)) return 0;
+    return Math.abs(num) > 1 ? num / 100 : num;
+  };
+
+  const parsePercentValue = (value) => {
+    const num = toNumber(value);
+    if (!isFinite(num)) return 0;
+    return Math.abs(num) > 1 ? num : num * 100;
+  };
+
+  const sustainedTrades = [];
+  const profitabilityByDay = [];
+
+  // Parse sustained profitable trades section (starts at row 2 after title/header)
+  for (let i = 2; i < data.length && data[i][0]; i++) {
     if (data[i][0] === 'PROFITABILITY BY DAY') break;
-    
-    multiDay.sustainedProfitable.push({
-      ticker: data[i][0],
-      strategy: data[i][1],
-      consecutiveDays: data[i][2],
-      peakDay: data[i][3],
-      peakValue: data[i][4],
-      strike: data[i][5]
+
+    sustainedTrades.push({
+      consecutiveDays: toNumber(data[i][2]),
+      peakValue: parsePercentValue(data[i][4])
     });
   }
-  
-  // Find profitability by day section
+
+  // Locate profitability by day header
   let dayStartRow = -1;
   for (let i = 0; i < data.length; i++) {
     if (data[i][0] === 'PROFITABILITY BY DAY') {
-      dayStartRow = i + 2; // Skip header
+      dayStartRow = i + 2; // Skip header row and column names
       break;
     }
   }
-  
+
   if (dayStartRow > 0) {
     for (let i = dayStartRow; i < data.length && data[i][0]; i++) {
-      multiDay.profitabilityByDay.push({
-        day: data[i][0],
-        totalTrades: data[i][1],
-        profitable: data[i][2],
-        successRate: parsePercentToDecimal(data[i][3]),
-        avgProfit: parsePercentToDecimal(data[i][4])
+      const dayNumber = toNumber(data[i][0]);
+      const totalTrades = Math.round(toNumber(data[i][1]));
+      const profitableCount = Math.round(toNumber(data[i][2]));
+      const rate = parseRate(data[i][3]);
+      const avgProfit = parsePercentValue(data[i][4]);
+
+      profitabilityByDay.push({
+        day: dayNumber,
+        rate: rate,
+        count: totalTrades,
+        profitable: profitableCount,
+        avgProfit: avgProfit
       });
     }
   }
 
-  return multiDay;
+  profitabilityByDay.sort((a, b) => a.day - b.day);
+
+  const rateByDay = profitabilityByDay.reduce((acc, entry) => {
+    acc[entry.day] = entry.rate;
+    return acc;
+  }, {});
+
+  const grouped = {};
+  sustainedTrades.forEach(trade => {
+    const days = trade.consecutiveDays;
+    if (!isFinite(days) || days <= 0) return;
+
+    if (!grouped[days]) {
+      grouped[days] = { days: days, count: 0, totalProfit: 0 };
+    }
+
+    grouped[days].count += 1;
+    if (isFinite(trade.peakValue)) {
+      grouped[days].totalProfit += trade.peakValue;
+    }
+  });
+
+  const sustainedWinners = Object.values(grouped)
+    .map(group => ({
+      days: group.days,
+      count: group.count,
+      successRate: rateByDay[group.days] !== undefined ? rateByDay[group.days] : 0,
+      avgProfit: group.count > 0 ? group.totalProfit / group.count : 0
+    }))
+    .sort((a, b) => a.days - b.days);
+
+  return {
+    profitabilityByDay,
+    sustainedWinners
+  };
 }
 
 /**
@@ -424,50 +486,104 @@ function collectMultiDayData(ss) {
  */
 function collectIndicatorsData(ss) {
   const sheet = ss.getSheetByName('SR_Indicators');
-  if (!sheet) return {};
-  
-  const data = sheet.getDataRange().getValues();
-  const indicators = {
-    highImpact: [],
-    mediumImpact: []
-  };
-  
-  // Parse high impact indicators
-  let highStartRow = 2; // After header
-  for (let i = highStartRow; i < data.length && data[i][0]; i++) {
-    if (data[i][0] === 'MEDIUM IMPACT INDICATORS') break;
+  if (!sheet) return [];
 
-    indicators.highImpact.push({
-      type: data[i][0],
-      indicator: data[i][1],
-      correlation: parseNumber(data[i][2]),
-      dataCompleteness: parsePercentToDecimal(data[i][3]),
-      bullishRange: data[i][4],
-      bearishRange: data[i][5]
+  const values = sheet.getDataRange().getValues();
+  const indicators = [];
+  let currentSignificance = 'HIGH';
+
+  const formatIndicatorLabel = (value) => {
+    if (!value) return '';
+    const spaced = value
+      .replace(/_/g, ' ')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .trim();
+
+    return spaced.split(/\s+/).map(part => {
+      if (/^[A-Z0-9]+$/.test(part)) return part;
+      if (/^[a-z0-9]+$/.test(part)) {
+        if (part.length <= 4 || /\d/.test(part)) {
+          return part.toUpperCase();
+        }
+        return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+      }
+      return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+    }).join(' ');
+  };
+
+  const normalizeRange = (label, rawValue) => {
+    if (!rawValue || rawValue === 'N/A') return '';
+    const value = rawValue.toString().trim();
+    if (!value) return '';
+    return `${label}: ${value}`;
+  };
+
+  const extractAvgFromRange = (rawValue) => {
+    if (!rawValue) return null;
+    const match = /\(([-+]?\d+(?:\.\d+)?)%\)/.exec(rawValue);
+    return match ? parseFloat(match[1]) : null;
+  };
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const firstCell = (row[0] || '').toString().trim();
+
+    if (!firstCell) {
+      continue;
+    }
+
+    const upperCell = firstCell.toUpperCase();
+    if (upperCell.includes('HIGH IMPACT')) {
+      currentSignificance = 'HIGH';
+      continue;
+    }
+
+    if (upperCell.includes('MEDIUM IMPACT')) {
+      currentSignificance = 'MEDIUM';
+      continue;
+    }
+
+    if (upperCell === 'TYPE') {
+      // Header row
+      continue;
+    }
+
+    const indicatorName = (row[1] || '').toString().trim();
+    if (!indicatorName) {
+      continue;
+    }
+
+    const correlation = Number(row[2]) || 0;
+    const dataCompleteness = (row[3] || 'N/A').toString();
+    const bullishRangeRaw = row[4] ? row[4].toString().trim() : '';
+    const bearishRangeRaw = row[5] ? row[5].toString().trim() : '';
+    const bullishRange = normalizeRange('Bullish', bullishRangeRaw);
+    const bearishRange = normalizeRange('Bearish', bearishRangeRaw);
+
+    const avgValues = [];
+    const bullishAvg = extractAvgFromRange(bullishRangeRaw);
+    const bearishAvg = extractAvgFromRange(bearishRangeRaw);
+    if (bullishAvg !== null) avgValues.push(bullishAvg);
+    if (bearishAvg !== null) avgValues.push(bearishAvg);
+
+    const formattedName = `${formatIndicatorLabel(indicatorName)}${firstCell ? ` (${formatIndicatorLabel(firstCell)})` : ''}`.trim();
+
+    indicators.push({
+      name: formattedName || indicatorName,
+      type: firstCell ? firstCell.toString().toUpperCase() : 'GENERAL',
+      correlation,
+      significance: currentSignificance,
+      profitableRange: [bullishRange, bearishRange].filter(Boolean).join(' | ') || 'N/A',
+      bullishRange: bullishRange || 'N/A',
+      bearishRange: bearishRange || 'N/A',
+      hitRate: 0,
+      avgProfit: avgValues.length > 0 ? avgValues.reduce((sum, val) => sum + val, 0) / avgValues.length : 0,
+      sampleSize: null,
+      dataCompleteness
     });
   }
-  
-  // Find medium impact section
-  let medStartRow = -1;
-  for (let i = 0; i < data.length; i++) {
-    if (data[i][0] === 'MEDIUM IMPACT INDICATORS') {
-      medStartRow = i + 2; // Skip header
-      break;
-    }
-  }
-  
-  if (medStartRow > 0) {
-    for (let i = medStartRow; i < data.length && data[i][0]; i++) {
-      indicators.mediumImpact.push({
-        type: data[i][0],
-        indicator: data[i][1],
-        correlation: parseNumber(data[i][2]),
-        dataCompleteness: parsePercentToDecimal(data[i][3])
-      });
-    }
-  }
 
-  return indicators;
+  return indicators.sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation));
 }
 
 /**
@@ -936,29 +1052,92 @@ function formatEarningsForWeb(earnings) {
 
 function formatStrategiesForWeb(strategies) {
   if (!strategies) return [];
-  
-  return Object.entries(strategies).map(([strategy, data]) => ({
-    strategy: strategy,
-    tradeCount: data.count || 0,
-    hitRate: data.hitRate || 0,
-    profitFactor: data.profitFactor || 1,
-    avgDaysToHit: data.avgDaysToHit || 0
-  })).sort((a, b) => b.hitRate - a.hitRate);
+
+  const toNumber = value => {
+    if (value === null || value === undefined || value === '') return 0;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+  };
+
+  const hasValue = value => value !== undefined && value !== null && value !== '';
+
+  return Object.entries(strategies).map(([strategy, data]) => {
+    const totalTrades = toNumber(data.totalTrades ?? data.tradeCount ?? data.count);
+    const hitTrades = toNumber(data.hitTrades ?? data.hitCount ?? data.hits);
+    const totalProfit = toNumber(data.totalProfit);
+    const totalLoss = toNumber(data.totalLoss);
+
+    const hitRate = hasValue(data.hitRate)
+      ? toNumber(data.hitRate)
+      : (totalTrades > 0 ? hitTrades / totalTrades : 0);
+
+    const avgProfit = hasValue(data.avgProfit)
+      ? toNumber(data.avgProfit)
+      : (totalTrades > 0 ? totalProfit / totalTrades : 0);
+
+    const avgLoss = hasValue(data.avgLoss)
+      ? toNumber(data.avgLoss)
+      : (totalTrades > 0 ? totalLoss / totalTrades : 0);
+
+    const profitFactor = hasValue(data.profitFactor)
+      ? toNumber(data.profitFactor)
+      : (totalLoss > 0 ? totalProfit / totalLoss : (totalProfit > 0 ? totalTrades || hitTrades || 0 : 0));
+
+    const avgDaysToHit = hasValue(data.avgDaysToHit)
+      ? toNumber(data.avgDaysToHit)
+      : (hitTrades > 0 ? toNumber(data.totalDaysToHit) / hitTrades : 0);
+
+    return {
+      strategy: strategy,
+      tradeCount: totalTrades,
+      hitCount: hitTrades,
+      hitRate: hitRate,
+      profitFactor: profitFactor,
+      avgDaysToHit: avgDaysToHit,
+      avgProfit: avgProfit,
+      avgLoss: avgLoss,
+      totalProfit: totalProfit,
+      totalLoss: totalLoss,
+      bestPerformers: Array.isArray(data.bestPerformers) ? data.bestPerformers : []
+    };
+  }).sort((a, b) => b.hitRate - a.hitRate);
 }
 
 function formatTopPlaysForWeb(topPlays) {
   if (!topPlays || !Array.isArray(topPlays)) return [];
-  
-  return topPlays.slice(0, 20).map(play => ({
-    symbol: play.symbol || 'N/A',
-    entryDate: play.entryDate || new Date().toISOString(),
-    strategy: play.strategy || 'N/A',
-    maxProfit: play.maxProfit || 0,
-    daysToHit: play.daysToHit || 0,
-    rsi: play.rsi || null,
-    priceVsSMA20: play.priceVsSMA20 || null,
-    rvol: play.rvol || null
-  }));
+
+  return topPlays.slice(0, 20).map(play => {
+    const profitValue = (() => {
+      if (typeof play.maxProfit === 'number') {
+        return play.maxProfit;
+      }
+
+      if (typeof play.maxProfit === 'string') {
+        const cleaned = play.maxProfit.replace('%', '').trim();
+        const parsed = parseFloat(cleaned);
+        if (!isNaN(parsed)) {
+          return parsed;
+        }
+      }
+
+      if (typeof play.maxFavorableValue === 'number') {
+        return play.maxFavorableValue * 100;
+      }
+
+      return 0;
+    })();
+
+    return {
+      symbol: play.ticker || play.symbol || 'N/A',
+      entryDate: play.entryDate || new Date().toISOString(),
+      strategy: play.strategy || 'N/A',
+      maxProfit: profitValue,
+      daysToHit: play.daysToHit || 0,
+      rsi: play.rsi || null,
+      priceVsSMA20: play.priceVsSMA20 || null,
+      rvol: play.rvol || null
+    };
+  });
 }
 
 /**

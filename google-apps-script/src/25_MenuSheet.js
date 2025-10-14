@@ -96,15 +96,6 @@ function EW_parseMenuStructure() {
       ]
     },
     {
-      name: '📈 Active Tracking',
-      items: [
-        { label: 'Update Active Positions', function: 'EW_updateActiveStrikeHits', description: 'Check strikes for non-expired positions' },
-        { label: 'Continue Active Tracking', function: 'EW_continueActiveTracking', description: 'Resume interrupted tracking' },
-        { label: 'Check Active Tracking Status', function: 'EW_checkActiveTrackingStatus', description: 'View tracking progress' },
-        { label: 'Reset Active Tracking State', function: 'EW_resetActiveTrackingState', description: 'Clear tracking continuation state' }
-      ]
-    },
-    {
       name: '⚙️ Setup & Config',
       items: [
         { label: 'Set Script Properties', function: 'EW_setScriptProperties', description: 'Configure API keys and folder IDs' },

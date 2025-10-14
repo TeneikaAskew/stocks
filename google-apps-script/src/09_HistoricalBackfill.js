@@ -1,7 +1,7 @@
 /**
- * Historical Backfill - Functions to populate tracking data for historical positions
+ * Historical Backfill - Functions to populate tracking data for all positions
  * Uses Yahoo Finance historical data to retroactively fill tracking columns
- * Only processes positions with Days_To_Exp < 0 (expired positions)
+ * Processes ALL positions (active and expired) with incomplete data
  * 
  * COLUMN UPDATE CONSISTENCY:
  * All backfill functions MUST update the following columns when data is available:
