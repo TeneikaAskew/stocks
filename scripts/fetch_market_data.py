@@ -287,13 +287,78 @@ def calculate_all_indicators(df, ticker_symbol, is_minute_data=False):
     
     return df
 
-def fetch_ticker_data(ticker_symbol, ticker_name=None, target_date=None):
+def fetch_historical_daily_data(ticker_symbol, start_date, end_date):
+    """
+    Fetch historical daily data from Yahoo Finance.
+    This is used for data beyond the 7-day minute data window.
+
+    Args:
+        ticker_symbol: Yahoo Finance ticker symbol
+        start_date: Start date (YYYY-MM-DD or datetime.date)
+        end_date: End date (YYYY-MM-DD or datetime.date)
+
+    Returns:
+        DataFrame with daily OHLCV data
+    """
+    try:
+        print(f"  Fetching historical daily data from {start_date} to {end_date}...")
+
+        # Download daily data
+        df = yf.download(
+            ticker_symbol,
+            start=start_date,
+            end=end_date,
+            interval="1d",
+            progress=False,
+            auto_adjust=True,
+            threads=False
+        )
+
+        if not df.empty:
+            # Handle multi-level columns from yfinance
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
+            # Standardize column names
+            expected_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            if not all(col in df.columns for col in expected_columns):
+                column_mapping = {}
+                for col in df.columns:
+                    col_lower = str(col).lower()
+                    if 'open' in col_lower:
+                        column_mapping[col] = 'Open'
+                    elif 'high' in col_lower:
+                        column_mapping[col] = 'High'
+                    elif 'low' in col_lower:
+                        column_mapping[col] = 'Low'
+                    elif 'close' in col_lower:
+                        column_mapping[col] = 'Close'
+                    elif 'volume' in col_lower:
+                        column_mapping[col] = 'Volume'
+
+                if column_mapping:
+                    df = df.rename(columns=column_mapping)
+
+            print(f"  Fetched {len(df)} days of historical data")
+            return df
+
+        return pd.DataFrame()
+
+    except Exception as e:
+        print(f"  Error fetching historical data: {e}")
+        return pd.DataFrame()
+
+def fetch_ticker_data(ticker_symbol, ticker_name=None, target_date=None, historical=False, start_date=None, end_date=None):
     """
     Fetch and process data for a specific ticker.
-    
+
     Args:
         ticker_symbol: Yahoo Finance ticker symbol (e.g., 'SPY', '^GSPC' for SPX)
         ticker_name: Display name for the ticker (e.g., 'SPX' for '^GSPC')
+        target_date: Target date for single-day fetch (YYYY-MM-DD)
+        historical: If True, fetch historical daily data beyond 7-day window
+        start_date: Start date for historical fetch (YYYY-MM-DD)
+        end_date: End date for historical fetch (YYYY-MM-DD)
     """
     try:
         # Use display name if provided, otherwise use symbol
@@ -325,7 +390,64 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None, target_date=None):
         print(f"\n{'='*60}")
         print(f"Fetching {display_name} ({ticker_symbol}) Data")
         print(f"{'='*60}")
-        
+
+        # Handle historical data fetch (daily data beyond 7-day window)
+        if historical and start_date and end_date:
+            print(f"Historical mode: Fetching daily data from {start_date} to {end_date}")
+
+            # Fetch historical daily data
+            historical_df = fetch_historical_daily_data(ticker_symbol, start_date, end_date)
+
+            if not historical_df.empty:
+                # Add metadata
+                historical_df['ticker'] = display_name
+                historical_df['ticker_symbol'] = ticker_symbol
+                historical_df['fetch_timestamp'] = datetime.now()
+                historical_df['data_source'] = 'daily_historical'
+
+                # Calculate all indicators
+                historical_df = calculate_all_indicators(historical_df, ticker_symbol, is_minute_data=False)
+
+                # Save to parquet
+                # Group by year and save to separate files
+                for year in historical_df.index.year.unique():
+                    year_data = historical_df[historical_df.index.year == year]
+                    year_parquet = ticker_dir / f"{display_name_lower}_{year}.parquet"
+
+                    # Merge with existing data if file exists
+                    if year_parquet.exists():
+                        existing_df = pd.read_parquet(year_parquet)
+                        combined_df = pd.concat([existing_df, year_data])
+                        combined_df = combined_df[~combined_df.index.duplicated(keep='last')]
+                        combined_df = combined_df.sort_index()
+                        year_data = calculate_all_indicators(combined_df, ticker_symbol, is_minute_data=False)
+
+                    year_data.to_parquet(year_parquet, compression='snappy', index=True)
+                    print(f"  Saved {len(year_data)} records to {year_parquet}")
+
+                # Update summary
+                summary_file = ticker_dir / f"{display_name_lower}_summary.json"
+                summary = {
+                    "ticker": display_name,
+                    "ticker_symbol": ticker_symbol,
+                    "last_update": datetime.now().isoformat(),
+                    "last_date": str(historical_df.index.max()),
+                    "first_date": str(historical_df.index.min()),
+                    "total_daily_records": len(historical_df),
+                    "current_year_file": f"{display_name_lower}_{current_year}.parquet",
+                    "latest_close": float(historical_df['Close'].iloc[-1]),
+                    "latest_volume": int(historical_df['Volume'].iloc[-1]) if 'Volume' in historical_df.columns else 0,
+                    "data_source": "historical_daily",
+                }
+
+                with open(summary_file, 'w') as f:
+                    json.dump(summary, f, indent=2)
+
+                print(f"\nHistorical fetch complete: {len(historical_df)} days")
+                print(f"Latest close: ${summary['latest_close']:.2f}")
+
+            return True
+
         # Determine dates to fetch
         # Yahoo Finance only provides minute data for last 7 days
         max_lookback = 7
@@ -522,13 +644,19 @@ def main():
     Main function to fetch data for specified tickers.
     """
     parser = argparse.ArgumentParser(description='Fetch market data for specified tickers')
-    parser.add_argument('--tickers', nargs='+', 
+    parser.add_argument('--tickers', nargs='+',
                        choices=['IWM', 'SPY', 'QQQ', 'SPX', 'ALL'],
                        default=['ALL'],
                        help='Tickers to fetch (default: ALL)')
-    parser.add_argument('--date', type=str, 
+    parser.add_argument('--date', type=str,
                        help='Date to fetch data for (YYYY-MM-DD format). If not provided, uses current date.')
-    
+    parser.add_argument('--historical', action='store_true',
+                       help='Fetch historical daily data beyond 7-day minute window')
+    parser.add_argument('--start-date', type=str,
+                       help='Start date for historical fetch (YYYY-MM-DD format)')
+    parser.add_argument('--end-date', type=str,
+                       help='End date for historical fetch (YYYY-MM-DD format)')
+
     args = parser.parse_args()
     
     # Define ticker mappings
@@ -556,7 +684,14 @@ def main():
     # Fetch data for each ticker
     for ticker in tickers_to_fetch:
         symbol, display_name = ticker_mappings[ticker]
-        success = fetch_ticker_data(symbol, display_name, args.date)
+        success = fetch_ticker_data(
+            symbol,
+            display_name,
+            args.date,
+            historical=args.historical,
+            start_date=args.start_date,
+            end_date=args.end_date
+        )
         results[ticker] = success
     
     # Print summary
