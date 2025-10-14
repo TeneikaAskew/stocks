@@ -198,33 +198,108 @@ class MarketEventsTracker:
         # Default classification
         return 'OTHER', 'Low'
 
-    def fetch_unusual_whales_calendar(self):
-        """Fetch economic calendar from Unusual Whales (DEPRECATED - API no longer available)."""
-        # This API endpoint is no longer available and returns 404
-        # Returning empty DataFrame for backwards compatibility
-        print("Note: Unusual Whales API is no longer available, skipping...")
-        return pd.DataFrame()
+    def fetch_unusual_whales_trading_calendar(self, year=2025):
+        """
+        Fetch trading calendar from Unusual Whales API.
+        This includes FOMC meetings, market holidays, OPEX dates, and major events.
 
-    def _classify_unusual_whales_event(self, event_name):
-        """Classify event type from Unusual Whales event name."""
+        API: https://phx.unusualwhales.com/api/trading-calendar?month=X&year=YYYY
+        """
+        all_events = []
+
+        try:
+            print(f"Fetching Unusual Whales trading calendar for {year}...")
+
+            # Fetch data for each month of the year
+            # Add headers to avoid being blocked
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+            }
+
+            for month in range(1, 13):
+                url = f"https://phx.unusualwhales.com/api/trading-calendar?month={month}&year={year}"
+
+                response = requests.get(url, headers=headers, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                if not data or "data" not in data:
+                    continue
+
+                month_events = data["data"]
+
+                for event_item in month_events:
+                    # Parse event details
+                    event_date = event_item.get('start_date')
+                    if not event_date:
+                        continue
+
+                    event_name = event_item.get('event', 'Unknown Event')
+                    event_type = event_item.get('event_type', '')
+                    description = event_item.get('description', '')
+
+                    # Classify event type and impact
+                    classified_type, impact = self._classify_unusual_whales_event(event_name, event_type)
+
+                    # Build event description
+                    full_event_name = event_name
+                    if description:
+                        full_event_name = f"{event_name} - {description}"
+
+                    all_events.append({
+                        'date': event_date,
+                        'event_type': classified_type,
+                        'event': full_event_name,
+                        'expected_impact': impact,
+                        'actual': None,
+                        'consensus': None,
+                        'notes': event_item.get('link'),
+                        'source': 'UnusualWhales'
+                    })
+
+            print(f"Fetched {len(all_events)} events from Unusual Whales trading calendar")
+            return pd.DataFrame(all_events)
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching from Unusual Whales API: {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            print(f"Error parsing Unusual Whales data: {e}")
+            return pd.DataFrame()
+
+    def _classify_unusual_whales_event(self, event_name, event_type=''):
+        """Classify event type from Unusual Whales event name and type."""
         event_lower = event_name.lower()
+        type_lower = event_type.lower() if event_type else ''
 
+        # Check event_type field first
+        if type_lower == 'market_closed' or 'closed' in event_lower:
+            return 'SPECIAL', 'Market Closed'
+        if type_lower == 'opex' or 'opex' in event_lower:
+            return 'OPEX', 'Medium'
+
+        # Check event name
+        if 'fomc' in event_lower:
+            return 'FOMC', 'Very High'
         if 'cpi' in event_lower or 'consumer price' in event_lower:
-            return 'CPI'
-        if 'fomc' in event_lower or 'fed' in event_lower and 'decision' in event_lower:
-            return 'FOMC'
+            return 'CPI', 'High'
         if 'nfp' in event_lower or 'non-farm' in event_lower or 'payroll' in event_lower:
-            return 'NFP'
+            return 'NFP', 'High'
         if 'gdp' in event_lower:
-            return 'GDP'
+            return 'GDP', 'High'
         if 'pce' in event_lower:
-            return 'PCE'
+            return 'PCE', 'High'
         if 'retail sales' in event_lower:
-            return 'RETAIL_SALES'
+            return 'RETAIL_SALES', 'Medium'
+        if 'earnings season' in event_lower:
+            return 'EARNINGS_SEASON', 'Medium'
+        if 'rebalance' in event_lower:
+            return 'INDEX_REBALANCE', 'Medium'
         if 'earnings' in event_lower:
-            return 'EARNINGS'
+            return 'EARNINGS', 'Variable'
 
-        return 'OTHER'
+        return 'OTHER', 'Low'
 
     def get_market_holidays(self, year):
         """Get US market holidays for a given year."""
@@ -393,7 +468,7 @@ class MarketEventsTracker:
         """Fetch events from all sources and combine them."""
         all_events = []
 
-        # Add official 2025 calendar
+        # Add official 2025 calendar (backup for key economic events)
         calendar_2025 = self.get_official_2025_calendar()
         all_events.append(pd.DataFrame(calendar_2025))
 
@@ -402,13 +477,13 @@ class MarketEventsTracker:
         if not fred_events.empty:
             all_events.append(fred_events)
 
-        # Unusual Whales API is no longer available (deprecated)
-        # uw_events = self.fetch_unusual_whales_calendar()
-        # if not uw_events.empty:
-        #     all_events.append(uw_events)
+        # Fetch from Unusual Whales trading calendar (2025)
+        uw_events = self.fetch_unusual_whales_trading_calendar(year=2025)
+        if not uw_events.empty:
+            all_events.append(uw_events)
 
-        # Add market holidays for 2024-2026
-        years = [2024, 2025, 2026]
+        # Add market holidays for 2024-2026 (backup)
+        years = [2024, 2026]  # 2025 already covered by UW API
         for year in years:
             holidays = self.get_market_holidays(year)
             all_events.append(pd.DataFrame(holidays))

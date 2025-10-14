@@ -520,6 +520,1246 @@
     "source":"BEA"
   },
   {
+    "date":"2025-01-01",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - New Year's Day",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-01-09",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-01-20",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Martin Luther King Jr. Day",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-02-17",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Presidents' Day",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-04-02",
+    "event_type":"OTHER",
+    "event":"Liberation Day",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-04-27",
+    "event_type":"EARNINGS_SEASON",
+    "event":"Earnings season",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/earnings",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-04-18",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Good Friday",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-05-01",
+    "event_type":"OTHER",
+    "event":"Market Close",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-05-01",
+    "event_type":"OTHER",
+    "event":"BOJ outlook",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-05-15",
+    "event_type":"OTHER",
+    "event":"13F releases",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/institutions",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-05-17",
+    "event_type":"OTHER",
+    "event":"ECB announcement",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-05-13",
+    "event_type":"CPI",
+    "event":"CPI",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-05-14",
+    "event_type":"FOMC",
+    "event":"FOMC",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-05-01",
+    "event_type":"EARNINGS",
+    "event":"AAPL earnings",
+    "expected_impact":"Variable",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/stock\/AAPL\/earnings",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-05-27",
+    "event_type":"OTHER",
+    "event":"JPM collar",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/stock\/JPM\/earnings",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-04-27",
+    "event_type":"EARNINGS_SEASON",
+    "event":"Earnings season",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/earnings",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-05-26",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Memorial Day",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-06-19",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Juneteenth",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"Early Close (1 PM ET)",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-01",
+    "event_type":"OTHER",
+    "event":"Fed Chair Jerome Powell speech",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-01",
+    "event_type":"OTHER",
+    "event":"S&P final U.S. manufacturing PMI",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-01",
+    "event_type":"OTHER",
+    "event":"Construction spending",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-01",
+    "event_type":"OTHER",
+    "event":"Job openings",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-01",
+    "event_type":"OTHER",
+    "event":"ISM manufacturing",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-02",
+    "event_type":"OTHER",
+    "event":"ADP employment",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-02",
+    "event_type":"OTHER",
+    "event":"Richmond Fed President Tom Barkin TV interview",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"Hourly wages year over year",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"U.S. hourly wages",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"U.S. employment report",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"U.S. trade deficit",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"Initial jobless claims",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"S&P final U.S. services PMI",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"Factory orders",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"ISM services",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"Atlanta Fed President Raphael Bostic speech",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-08",
+    "event_type":"OTHER",
+    "event":"NFIB optimism index",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-08",
+    "event_type":"OTHER",
+    "event":"Consumer credit",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-09",
+    "event_type":"OTHER",
+    "event":"Wholesale inventories",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-09",
+    "event_type":"FOMC",
+    "event":"Minutes of Fed's May FOMC meeting",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-10",
+    "event_type":"OTHER",
+    "event":"Initial jobless claims",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-10",
+    "event_type":"OTHER",
+    "event":"St. Louis Fed President Alberto Musalem speech",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-10",
+    "event_type":"OTHER",
+    "event":"San Francisco Fed President Mary Daly speech",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-11",
+    "event_type":"OTHER",
+    "event":"Monthly U.S. federal budget",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"OTHER",
+    "event":"Empire State manufacturing survey",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"CPI",
+    "event":"CPI year over year",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"CPI",
+    "event":"Consumer price index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"CPI",
+    "event":"Core CPI year over year",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"CPI",
+    "event":"Core CPI",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"OTHER",
+    "event":"Capacity utilization",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"OTHER",
+    "event":"Industrial production",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"OTHER",
+    "event":"Boston Fed President Susan Collins speech",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"OTHER",
+    "event":"Dallas Fed President Lorie Logan speech",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-16",
+    "event_type":"OTHER",
+    "event":"PPI year over year",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-16",
+    "event_type":"OTHER",
+    "event":"Core PPI year over year",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-16",
+    "event_type":"OTHER",
+    "event":"Core PPI",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-16",
+    "event_type":"OTHER",
+    "event":"Producer price index",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-16",
+    "event_type":"OTHER",
+    "event":"Fed Beige Book",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"OTHER",
+    "event":"Initial jobless claims",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"OTHER",
+    "event":"Philadelphia Fed manufacturing survey",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"RETAIL_SALES",
+    "event":"Retail sales minus autos",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"OTHER",
+    "event":"Import price index",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"OTHER",
+    "event":"Import price index minus fuel",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"RETAIL_SALES",
+    "event":"U.S. retail sales",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"OTHER",
+    "event":"Business inventories",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"OTHER",
+    "event":"Home builder confidence index",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-18",
+    "event_type":"OTHER",
+    "event":"Building permits",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-18",
+    "event_type":"OTHER",
+    "event":"Housing starts",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-18",
+    "event_type":"OTHER",
+    "event":"Consumer sentiment (prelim)",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"EARNINGS_SEASON",
+    "event":"Earnings season",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/earnings",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-29",
+    "event_type":"FOMC",
+    "event":"FOMC",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"Early Close (1 PM ET) - Day before Independence Day",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-04",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Independence Day",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-18",
+    "event_type":"OPEX",
+    "event":"OPEX",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-14",
+    "event_type":"OTHER",
+    "event":"Treasury Auction - 13-Week Bills - 82 Billion offering, CUSIP: 912797QF7",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-14",
+    "event_type":"OTHER",
+    "event":"Treasury Auction - 26-Week Bills - 73 Billion offering, CUSIP: 912797RJ8",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"OTHER",
+    "event":"Treasury Auction - 6-Week Bills - 70 Billion offering, CUSIP: 912797PQ4",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-21",
+    "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-21",
+    "event_type":"OTHER",
+    "event":"H.10 - Foreign Exchange Rates",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-21",
+    "event_type":"OTHER",
+    "event":"H.15 - Selected Interest Rates",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-22",
+    "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-22",
+    "event_type":"OTHER",
+    "event":"H.6 - Money Stock Measures",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-22",
+    "event_type":"OTHER",
+    "event":"H.15 - Selected Interest Rates",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-23",
+    "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-23",
+    "event_type":"OTHER",
+    "event":"H.15 - Selected Interest Rates",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-24",
+    "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-24",
+    "event_type":"OTHER",
+    "event":"H.15 - Selected Interest Rates",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-24",
+    "event_type":"OTHER",
+    "event":"H.4.1 - Factors Affecting Reserve Balances",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-25",
+    "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-25",
+    "event_type":"OTHER",
+    "event":"H.15 - Selected Interest Rates",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-25",
+    "event_type":"OTHER",
+    "event":"H.8 - Assets and Liabilities of Commercial Banks in the U.S.",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-28",
+    "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-28",
+    "event_type":"OTHER",
+    "event":"H.10 - Foreign Exchange Rates",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-28",
+    "event_type":"OTHER",
+    "event":"H.15 - Selected Interest Rates",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-29",
+    "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-29",
+    "event_type":"OTHER",
+    "event":"H.15 - Selected Interest Rates",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-30",
+    "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-30",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting Decision & Press Conference - Two-day meeting, July 29-July 30",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-30",
+    "event_type":"OTHER",
+    "event":"H.15 - Selected Interest Rates",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-31",
+    "event_type":"OTHER",
+    "event":"G.20 - Finance Companies - Publication date for this release is approximate",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-31",
+    "event_type":"OTHER",
+    "event":"CP - Commercial Paper",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-31",
+    "event_type":"OTHER",
+    "event":"H.15 - Selected Interest Rates",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-31",
+    "event_type":"OTHER",
+    "event":"H.4.1 - Factors Affecting Reserve Balances",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-08-01",
+    "event_type":"OTHER",
+    "event":"Tariff Implementation Date [Extended]",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-08-14",
+    "event_type":"OTHER",
+    "event":"13F Deadline",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"EARNINGS_SEASON",
+    "event":"Earnings season",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/earnings",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-08-15",
+    "event_type":"OPEX",
+    "event":"OPEX",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-09-19",
+    "event_type":"INDEX_REBALANCE",
+    "event":"S&P 400, 500, 600 Quarterly Rebalance",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"EARNINGS_SEASON",
+    "event":"Earnings season",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/earnings",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-09-16",
+    "event_type":"FOMC",
+    "event":"FOMC",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-09-01",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Labor Day",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-09-19",
+    "event_type":"OPEX",
+    "event":"OPEX",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-10-28",
+    "event_type":"FOMC",
+    "event":"FOMC",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-10-17",
+    "event_type":"OPEX",
+    "event":"OPEX",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-11-14",
+    "event_type":"OTHER",
+    "event":"13F Deadline",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-11-27",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Thanksgiving Day",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-11-28",
+    "event_type":"OTHER",
+    "event":"Early Close (1 PM ET) - Day after Thanksgiving",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-11-21",
+    "event_type":"OPEX",
+    "event":"OPEX",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-12-12",
+    "event_type":"OTHER",
+    "event":"Nasdaq Index Additions\/Deletions Announced",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-12-19",
+    "event_type":"INDEX_REBALANCE",
+    "event":"Nasdaq Index Rebalance",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-12-19",
+    "event_type":"INDEX_REBALANCE",
+    "event":"S&P 400, 500, 600 Quarterly Rebalance",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-12-09",
+    "event_type":"FOMC",
+    "event":"FOMC",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-12-24",
+    "event_type":"OTHER",
+    "event":"Early Close (1 PM ET) - Christmas Eve",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-12-25",
+    "event_type":"SPECIAL",
+    "event":"Markets Closed - Christmas Day",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-12-19",
+    "event_type":"OPEX",
+    "event":"OPEX",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
     "date":"2024-01-01",
     "event_type":"SPECIAL",
     "event":"New Year's Day - Markets Closed",
@@ -601,96 +1841,6 @@
   },
   {
     "date":"2024-11-28",
-    "event_type":"SPECIAL",
-    "event":"Thanksgiving - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2025-01-01",
-    "event_type":"SPECIAL",
-    "event":"New Year's Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2025-07-04",
-    "event_type":"SPECIAL",
-    "event":"Independence Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2025-12-25",
-    "event_type":"SPECIAL",
-    "event":"Christmas - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2025-01-20",
-    "event_type":"SPECIAL",
-    "event":"Martin Luther King Jr. Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2025-02-17",
-    "event_type":"SPECIAL",
-    "event":"Presidents Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2025-05-26",
-    "event_type":"SPECIAL",
-    "event":"Memorial Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2025-06-19",
-    "event_type":"SPECIAL",
-    "event":"Juneteenth - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2025-09-01",
-    "event_type":"SPECIAL",
-    "event":"Labor Day - Markets Closed",
-    "expected_impact":"Market Closed",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"MANUAL"
-  },
-  {
-    "date":"2025-11-27",
     "event_type":"SPECIAL",
     "event":"Thanksgiving - Markets Closed",
     "expected_impact":"Market Closed",
