@@ -301,6 +301,164 @@ class MarketEventsTracker:
 
         return 'OTHER', 'Low'
 
+    def fetch_federal_reserve_calendar(self):
+        """
+        Fetch Federal Reserve official calendar.
+        This includes FOMC meetings, Fed speeches, testimonies, and statistical releases.
+
+        API: https://www.federalreserve.gov/json/calendar.json
+        """
+        all_events = []
+
+        try:
+            print("Fetching Federal Reserve official calendar...")
+
+            url = "https://www.federalreserve.gov/json/calendar.json"
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+            }
+
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if not data:
+                print("Warning: No data in Federal Reserve calendar response")
+                return pd.DataFrame()
+
+            # Check if data is a list or dict
+            if isinstance(data, dict):
+                # If it's a dict, it might have a 'events' key or similar
+                # Try to find the actual events list
+                if 'events' in data:
+                    data = data['events']
+                else:
+                    print("Warning: Federal Reserve calendar JSON structure not recognized")
+                    return pd.DataFrame()
+
+            if not isinstance(data, list):
+                print(f"Warning: Federal Reserve calendar data is not a list, got {type(data)}")
+                return pd.DataFrame()
+
+            # Parse each event - filter to only Speeches and FOMC meetings
+            for event_item in data:
+                # Skip if not a dict
+                if not isinstance(event_item, dict):
+                    continue
+                # Extract fields
+                title = event_item.get('title', 'Unknown Event')
+                description = event_item.get('description', '')
+                event_type_raw = event_item.get('type', '')
+                location = event_item.get('location', '')
+                time = event_item.get('time', '')
+                month = event_item.get('month', '')  # Format: YYYY-MM
+                day = event_item.get('days', '')  # Day of month
+                live_url = event_item.get('live', '')
+
+                # Filter: only include Speeches and FOMC meetings
+                type_lower = event_type_raw.lower() if event_type_raw else ''
+                if type_lower not in ['speeches', 'fomc']:
+                    continue
+
+                # Construct date
+                if not month or not day:
+                    continue
+
+                try:
+                    event_date = f"{month}-{day.zfill(2)}"
+                    # Validate date
+                    pd.to_datetime(event_date)
+                except Exception:
+                    continue
+
+                # Classify event type and impact
+                classified_type, impact = self._classify_fed_calendar_event(title, description, event_type_raw)
+
+                # Build full event name
+                full_event_name = title
+                if time:
+                    full_event_name = f"{title} ({time})"
+
+                # Build notes
+                notes = []
+                if description:
+                    notes.append(description)
+                if location:
+                    notes.append(location)
+                if live_url:
+                    notes.append(f"Live: {live_url}")
+                notes_str = " | ".join(notes) if notes else None
+
+                all_events.append({
+                    'date': event_date,
+                    'event_type': classified_type,
+                    'event': full_event_name,
+                    'expected_impact': impact,
+                    'actual': None,
+                    'consensus': None,
+                    'notes': notes_str,
+                    'source': 'Federal Reserve'
+                })
+
+            print(f"Fetched {len(all_events)} events from Federal Reserve calendar")
+            return pd.DataFrame(all_events)
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching from Federal Reserve calendar: {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            print(f"Error parsing Federal Reserve calendar data: {e}")
+            return pd.DataFrame()
+
+    def _classify_fed_calendar_event(self, title, description, event_type):
+        """Classify Federal Reserve calendar event type and impact."""
+        title_lower = title.lower()
+        desc_lower = description.lower() if description else ''
+        type_lower = event_type.lower() if event_type else ''
+
+        # FOMC meetings are the highest impact
+        if type_lower == 'fomc' or 'fomc' in title_lower or 'fomc' in desc_lower:
+            return 'FOMC', 'Very High'
+
+        # Congressional testimony is high impact
+        if type_lower == 'testimony' or 'testimony' in title_lower or 'testimony' in desc_lower:
+            return 'FED_TESTIMONY', 'High'
+
+        # Statistical releases
+        if type_lower == 'stat' or 'statistical release' in title_lower:
+            # Check what kind of stat
+            if 'consumer credit' in title_lower or 'consumer credit' in desc_lower:
+                return 'CONSUMER_CREDIT', 'Low-Medium'
+            if 'industrial production' in title_lower or 'industrial production' in desc_lower:
+                return 'INDUSTRIAL_PRODUCTION', 'Medium'
+            if 'flow of funds' in title_lower or 'financial accounts' in desc_lower:
+                return 'FLOW_OF_FUNDS', 'Low'
+            return 'FED_STAT_RELEASE', 'Low-Medium'
+
+        # Fed speeches can move markets depending on speaker
+        if type_lower == 'speeches' or 'speech' in title_lower or 'remarks' in title_lower:
+            # Chair speeches are higher impact
+            if 'chair' in title_lower or 'powell' in title_lower:
+                return 'FED_CHAIR_SPEECH', 'High'
+            # Vice chair and governors are medium impact
+            if 'vice chair' in title_lower or 'governor' in title_lower:
+                return 'FED_SPEECH', 'Medium'
+            # Other Fed officials
+            return 'FED_SPEECH', 'Low-Medium'
+
+        # Board meetings and other events
+        if 'board meeting' in title_lower:
+            return 'FED_BOARD_MEETING', 'Low'
+
+        # Holidays
+        if 'holiday' in title_lower or 'closed' in title_lower:
+            return 'SPECIAL', 'Market Closed'
+
+        # Default
+        return 'FED_EVENT', 'Low'
+
     def get_market_holidays(self, year):
         """
         Get US market holidays and early closes for a given year using pandas-market-calendars.
@@ -506,6 +664,11 @@ class MarketEventsTracker:
         # Add official 2025 calendar (backup for key economic events)
         calendar_2025 = self.get_official_2025_calendar()
         all_events.append(pd.DataFrame(calendar_2025))
+
+        # Fetch from Federal Reserve official calendar (Speeches and FOMC meetings)
+        fed_calendar = self.fetch_federal_reserve_calendar()
+        if not fed_calendar.empty:
+            all_events.append(fed_calendar)
 
         # Fetch from FRED (optional, requires API key)
         fred_events = self.fetch_fred_releases(start_date, end_date)
