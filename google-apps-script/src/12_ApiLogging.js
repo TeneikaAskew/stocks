@@ -376,12 +376,13 @@ function EW_createDailyApiReport() {
 }
 
 /**
- * Clean up old log files (keep last 30 days)
+ * Clean up old log files (keep last 180 days)
  */
 function EW_cleanupOldApiLogs() {
   try {
     const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - 30);
+    const retentionDays = 180;
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
     let deletedCount = 0;
     
     // Clean up detailed response files in main folder
@@ -431,7 +432,7 @@ function EW_cleanupOldApiLogs() {
       EW_trace('API_LOG', `Cleaned up ${deletedCount} old API log/response files`);
     }
     
-    EW_safeAlert('Cleanup Complete', `Deleted ${deletedCount} files older than 30 days`);
+    EW_safeAlert('Cleanup Complete', `Deleted ${deletedCount} files older than ${retentionDays} days`);
     
   } catch (error) {
     console.error(`API LOG CLEANUP ERROR: ${error.message}`);
