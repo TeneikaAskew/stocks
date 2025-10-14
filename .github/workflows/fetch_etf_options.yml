@@ -70,7 +70,7 @@ jobs:
 
           git commit -m "Update ETF options data - $(date +'%Y-%m-%d %H:%M:%S %Z')"
 
-          # Retry push up to 3 times with pull/rebase on conflict
+          # Retry push up to 3 times on failure
           MAX_RETRIES=3
           RETRY_COUNT=0
           PUSH_SUCCESS=false
@@ -78,11 +78,8 @@ jobs:
           while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$PUSH_SUCCESS" = "false" ]; do
             if [ $RETRY_COUNT -gt 0 ]; then
               echo "Push failed, attempt $((RETRY_COUNT + 1))/$MAX_RETRIES"
-              echo "Waiting 10 seconds before retry..."
-              sleep 10
-
-              echo "Pulling with rebase to sync with remote..."
-              git pull --rebase origin main
+              echo "Waiting 10-15 seconds before retry..."
+              sleep $((10 + RANDOM % 6))  # Random sleep 10-15 seconds to stagger workflows
             fi
 
             if git push; then
