@@ -167,6 +167,11 @@
             text-align: center;
         }
 
+        .metric-card.highlight {
+            background: linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(37, 99, 235, 0.05));
+            border: 1px solid rgba(37, 99, 235, 0.2);
+        }
+
         .metric-card h3 {
             font-size: 14px;
             font-weight: 500;
@@ -186,10 +191,167 @@
             color: var(--text-secondary);
         }
 
+        .grid-two-columns {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 24px;
+            margin-top: 32px;
+        }
+
+        .filter-card {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 24px;
+            box-shadow: var(--shadow);
+        }
+
+        .filter-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            gap: 12px;
+        }
+
+        .filter-header h2 {
+            font-size: 18px;
+        }
+
+        .filter-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+        }
+
+        .filter-field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .filter-field label {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+        }
+
+        .filter-field select,
+        .filter-field input {
+            padding: 10px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 14px;
+            background: var(--bg-secondary);
+        }
+
+        .filter-field input[type="number"] {
+            -moz-appearance: textfield;
+        }
+
+        .filter-field input::-webkit-outer-spin-button,
+        .filter-field input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        .filter-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 16px;
+            flex-wrap: wrap;
+        }
+
+        .btn-secondary {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover {
+            background: #e5e7eb;
+        }
+
+        .filter-status {
+            margin-top: 12px;
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
         .chart-container {
             position: relative;
             height: 400px;
             margin-bottom: 32px;
+        }
+
+        .estimator-card {
+            background: var(--bg-secondary);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: inset 0 0 0 1px rgba(17, 24, 39, 0.05);
+        }
+
+        .estimator-card h3 {
+            margin-bottom: 12px;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .form-grid label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .form-grid input,
+        .form-grid select {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .estimator-metrics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .estimator-metric {
+            flex: 1 1 140px;
+            background: white;
+            border-radius: 10px;
+            padding: 12px;
+            text-align: center;
+            box-shadow: var(--shadow);
+        }
+
+        .estimator-metric h4 {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .estimator-value {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .data-section {
+            margin-top: 32px;
+        }
+
+        .data-table-container {
+            margin-top: 16px;
+            overflow-x: auto;
         }
 
         .data-table {
@@ -214,6 +376,51 @@
 
         .data-table tr:hover {
             background: var(--bg-secondary);
+        }
+
+        .info-banner {
+            background: rgba(37, 99, 235, 0.08);
+            border: 1px solid rgba(37, 99, 235, 0.2);
+            padding: 16px;
+            border-radius: 10px;
+            color: var(--text-primary);
+            margin-bottom: 16px;
+        }
+
+        .recommendations-list {
+            list-style: disc inside;
+            color: var(--text-secondary);
+            margin-top: 12px;
+        }
+
+        .dataset-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .dataset-controls select {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            font-size: 14px;
+        }
+
+        .dataset-summary {
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        .btn-secondary {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover {
+            background: #e5e7eb;
         }
 
         .indicators-grid {
@@ -294,13 +501,17 @@
                 flex-direction: column;
                 text-align: center;
             }
-            
+
             .metrics-grid {
                 grid-template-columns: 1fr;
             }
-            
+
             .chart-container {
                 height: 300px;
+            }
+
+            .grid-two-columns {
+                grid-template-columns: 1fr;
             }
         }
     </style>
@@ -317,10 +528,14 @@
         
         <nav class="nav-tabs">
             <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
-            <button class="tab-btn" data-tab="multiday" onclick="switchTab('multiday')">Multi-Day Analysis</button>
-            <button class="tab-btn" data-tab="indicators" onclick="switchTab('indicators')">Indicator Effectiveness</button>
-            <button class="tab-btn" data-tab="earnings" onclick="switchTab('earnings')">Earnings Timing</button>
             <button class="tab-btn" data-tab="strategies" onclick="switchTab('strategies')">Strategy Performance</button>
+            <button class="tab-btn" data-tab="earnings" onclick="switchTab('earnings')">Earnings Timing</button>
+            <button class="tab-btn" data-tab="risk" onclick="switchTab('risk')">Risk Management</button>
+            <button class="tab-btn" data-tab="indicators" onclick="switchTab('indicators')">Indicator Effectiveness</button>
+            <button class="tab-btn" data-tab="multiday" onclick="switchTab('multiday')">Multi-Day Analysis</button>
+            <button class="tab-btn" data-tab="dataquality" onclick="switchTab('dataquality')">Data Quality</button>
+            <button class="tab-btn" data-tab="dataexplorer" onclick="switchTab('dataexplorer')">Data Explorer</button>
+            <button class="tab-btn" data-tab="incomplete" onclick="switchTab('incomplete')">Incomplete Trades</button>
             <button class="tab-btn" data-tab="topplays" onclick="switchTab('topplays')">Top Plays</button>
         </nav>
         
@@ -330,6 +545,66 @@
             
             <!-- Overview Tab -->
             <div id="overview" class="tab-content">
+                <div id="overviewFilters" class="filter-card" style="display:none;">
+                    <div class="filter-header">
+                        <h2>🔍 Data Filters</h2>
+                        <button id="resetFilters" class="btn btn-secondary" type="button">Reset Filters</button>
+                    </div>
+                    <div class="filter-grid">
+                        <div class="filter-field">
+                            <label for="filterStrategy">Strategy</label>
+                            <select id="filterStrategy"></select>
+                        </div>
+                        <div class="filter-field">
+                            <label for="filterTicker">Ticker</label>
+                            <select id="filterTicker"></select>
+                        </div>
+                        <div class="filter-field">
+                            <label for="filterStartDate">Start Date</label>
+                            <input type="date" id="filterStartDate">
+                        </div>
+                        <div class="filter-field">
+                            <label for="filterEndDate">End Date</label>
+                            <input type="date" id="filterEndDate">
+                        </div>
+                        <div class="filter-field">
+                            <label for="filterStrike">Strike Hit</label>
+                            <select id="filterStrike">
+                                <option value="all">All</option>
+                                <option value="hit">Hit Only</option>
+                                <option value="miss">Not Hit</option>
+                            </select>
+                        </div>
+                        <div class="filter-field">
+                            <label for="filterWinLoss">Win / Loss</label>
+                            <select id="filterWinLoss">
+                                <option value="all">All</option>
+                                <option value="winners">Winners Only</option>
+                                <option value="losers">Losers Only</option>
+                            </select>
+                        </div>
+                        <div class="filter-field">
+                            <label for="filterEarningsMin">Days Before Earnings (Min)</label>
+                            <input type="number" id="filterEarningsMin" step="1">
+                        </div>
+                        <div class="filter-field">
+                            <label for="filterEarningsMax">Days Before Earnings (Max)</label>
+                            <input type="number" id="filterEarningsMax" step="1">
+                        </div>
+                        <div class="filter-field">
+                            <label for="filterProfitMin">Min Profit %</label>
+                            <input type="number" id="filterProfitMin" step="0.5">
+                        </div>
+                        <div class="filter-field">
+                            <label for="filterProfitMax">Max Profit %</label>
+                            <input type="number" id="filterProfitMax" step="0.5">
+                        </div>
+                    </div>
+                    <div class="filter-actions">
+                        <button id="applyFilters" class="btn btn-primary" type="button">Apply Filters</button>
+                    </div>
+                    <div id="filterStatus" class="filter-status"></div>
+                </div>
                 <div class="metrics-grid">
                     <div class="metric-card">
                         <h3>Hit Rate</h3>
@@ -342,6 +617,11 @@
                         <div class="metric-label">profitable trades</div>
                     </div>
                     <div class="metric-card">
+                        <h3>Profit Factor</h3>
+                        <div class="metric-value" id="profitFactor">--</div>
+                        <div class="metric-label">profit / loss ratio</div>
+                    </div>
+                    <div class="metric-card">
                         <h3>Avg Risk/Reward</h3>
                         <div class="metric-value" id="avgRiskReward">--</div>
                         <div class="metric-label">risk/reward ratio</div>
@@ -351,44 +631,77 @@
                         <div class="metric-value" id="avgDaysToHit">--</div>
                         <div class="metric-label">days</div>
                     </div>
+                    <div class="metric-card">
+                        <h3>Avg Profit</h3>
+                        <div class="metric-value" id="avgProfit">--</div>
+                        <div class="metric-label">average winning move</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Avg Loss</h3>
+                        <div class="metric-value" id="avgLoss">--</div>
+                        <div class="metric-label">average drawdown</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Total Trades</h3>
+                        <div class="metric-value" id="totalTrades">--</div>
+                        <div class="metric-label">analyzed trades</div>
+                    </div>
                 </div>
-                
+
                 <div class="chart-container">
                     <canvas id="overviewChart"></canvas>
                 </div>
-            </div>
-            
-            <!-- Multi-Day Analysis Tab -->
-            <div id="multiday" class="tab-content">
-                <div class="section-header">
-                    <h2>Multi-Day Profitability Analysis</h2>
-                    <p>Trades that remained profitable for consecutive days</p>
+
+                <div class="grid-two-columns">
+                    <div>
+                        <div class="section-header">
+                            <h2>Optimal Holding Period</h2>
+                            <p>Win rate and profit trend across holding days</p>
+                        </div>
+                        <div class="chart-container" id="holdingChartWrapper">
+                            <canvas id="holdingChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="estimator-card">
+                        <h3>Options Profit Estimator</h3>
+                        <p class="text-muted">Estimate contract outcomes using average trade performance.</p>
+                        <div class="form-grid">
+                            <div>
+                                <label for="premiumInput">Premium Paid (per contract)</label>
+                                <input type="number" id="premiumInput" class="estimator-input" min="10" max="10000" step="10" value="200">
+                            </div>
+                            <div>
+                                <label for="deltaInput">Delta</label>
+                                <input type="number" id="deltaInput" class="estimator-input" min="0.1" max="1" step="0.05" value="0.5">
+                            </div>
+                            <div>
+                                <label for="contractsInput">Contracts</label>
+                                <input type="number" id="contractsInput" class="estimator-input" min="1" max="100" step="1" value="1">
+                            </div>
+                            <div>
+                                <label for="stockMoveInput">Stock Move %</label>
+                                <input type="number" id="stockMoveInput" class="estimator-input" min="-50" max="50" step="0.5" value="5">
+                            </div>
+                        </div>
+                        <div class="estimator-metrics">
+                            <div class="estimator-metric">
+                                <h4>Profit / Loss</h4>
+                                <div class="estimator-value" id="estimatorProfit">--</div>
+                            </div>
+                            <div class="estimator-metric">
+                                <h4>Return %</h4>
+                                <div class="estimator-value" id="estimatorReturn">--</div>
+                            </div>
+                            <div class="estimator-metric">
+                                <h4>Option Value Change</h4>
+                                <div class="estimator-value" id="estimatorValueChange">--</div>
+                            </div>
+                        </div>
+                        <div id="estimatorScenarios" class="data-table-container"></div>
+                    </div>
                 </div>
-                <div class="chart-container">
-                    <canvas id="multiDayChart"></canvas>
-                </div>
-                <div id="multiDayTable" class="data-table-container"></div>
-            </div>
-            
-            <!-- Indicator Effectiveness Tab -->
-            <div id="indicators" class="tab-content">
-                <div class="section-header">
-                    <h2>Indicator Effectiveness Analysis</h2>
-                    <p>Correlation between indicators and profitability</p>
-                </div>
-                <div class="indicators-grid" id="indicatorsGrid"></div>
-            </div>
-            
-            <!-- Earnings Timing Tab -->
-            <div id="earnings" class="tab-content">
-                <div class="section-header">
-                    <h2>Earnings Timing Analysis</h2>
-                    <p>Pre vs Post earnings performance patterns</p>
-                </div>
-                <div class="chart-container">
-                    <canvas id="earningsChart"></canvas>
-                </div>
-                <div id="earningsInsights" class="insights-container"></div>
+
+                <div class="data-section" id="overviewSummary"></div>
             </div>
             
             <!-- Strategy Performance Tab -->
@@ -402,7 +715,104 @@
                 </div>
                 <div id="strategyTable" class="data-table-container"></div>
             </div>
-            
+
+            <!-- Earnings Timing Tab -->
+            <div id="earnings" class="tab-content">
+                <div class="section-header">
+                    <h2>Earnings Timing Analysis</h2>
+                    <p>Pre vs post earnings performance patterns</p>
+                </div>
+                <div class="chart-container">
+                    <canvas id="earningsChart"></canvas>
+                </div>
+                <div id="earningsInsights" class="insights-container"></div>
+                <div class="data-table-container" id="earningsWindowTable"></div>
+                <div class="data-table-container" id="earningsReleaseTable"></div>
+            </div>
+
+            <!-- Risk Management Tab -->
+            <div id="risk" class="tab-content">
+                <div class="section-header">
+                    <h2>Risk Management</h2>
+                    <p>Risk/reward distribution and Kelly sizing recommendations</p>
+                </div>
+                <div class="chart-container">
+                    <canvas id="riskRewardChart"></canvas>
+                </div>
+                <div id="riskRewardTable" class="data-table-container"></div>
+                <div class="data-section">
+                    <h3>Kelly Position Sizing</h3>
+                    <p class="text-muted">Use half-Kelly sizing for conservative allocation.</p>
+                    <div id="kellyTable" class="data-table-container"></div>
+                </div>
+            </div>
+
+            <!-- Indicator Effectiveness Tab -->
+            <div id="indicators" class="tab-content">
+                <div class="section-header">
+                    <h2>Indicator Effectiveness Analysis</h2>
+                    <p>Correlation between indicators and profitability</p>
+                </div>
+                <div class="indicators-grid" id="indicatorsGrid"></div>
+            </div>
+
+            <!-- Multi-Day Analysis Tab -->
+            <div id="multiday" class="tab-content">
+                <div class="section-header">
+                    <h2>Multi-Day Profitability Analysis</h2>
+                    <p>Trades that remained profitable for consecutive days</p>
+                </div>
+                <div class="chart-container">
+                    <canvas id="multiDayChart"></canvas>
+                </div>
+                <div id="multiDayTable" class="data-table-container"></div>
+            </div>
+
+            <!-- Data Quality Tab -->
+            <div id="dataquality" class="tab-content">
+                <div class="section-header">
+                    <h2>Data Quality Overview</h2>
+                    <p>Field completeness and recommended cleanup actions</p>
+                </div>
+                <div class="metrics-grid">
+                    <div class="metric-card highlight">
+                        <h3>Overall Data Quality</h3>
+                        <div class="metric-value" id="dataQualityScore">--</div>
+                        <div class="metric-label" id="dataQualityStatus">--</div>
+                    </div>
+                </div>
+                <div id="dataQualityTable" class="data-table-container"></div>
+                <div id="dataQualityMessage" class="info-banner" style="display:none;"></div>
+                <div id="dataQualityRecommendations" class="insights-container" style="display:none;"></div>
+            </div>
+
+            <!-- Data Explorer Tab -->
+            <div id="dataexplorer" class="tab-content">
+                <div class="section-header">
+                    <h2>Data Explorer</h2>
+                    <p>Browse key datasets and export to CSV</p>
+                </div>
+                <div class="dataset-controls">
+                    <label for="datasetSelect">Dataset
+                        <select id="datasetSelect"></select>
+                    </label>
+                    <button class="btn btn-secondary" id="downloadDataset">Download CSV</button>
+                    <span class="dataset-summary" id="datasetSummary"></span>
+                </div>
+                <div id="dataExplorerTable" class="data-table-container"></div>
+            </div>
+
+            <!-- Incomplete Trades Tab -->
+            <div id="incomplete" class="tab-content">
+                <div class="section-header">
+                    <h2>Incomplete Trades</h2>
+                    <p>Trades missing profit data and excluded from analytics</p>
+                </div>
+                <div id="incompleteSummary" class="info-banner"></div>
+                <div id="incompleteBreakdown" class="data-table-container"></div>
+                <div id="incompleteSample" class="data-table-container"></div>
+            </div>
+
             <!-- Top Plays Tab -->
             <div id="topplays" class="tab-content">
                 <div class="section-header">
@@ -420,6 +830,530 @@
         // Global variables
         let reportData = null;
         let charts = {};
+        let dataExplorerDatasets = {};
+        let currentDatasetKey = null;
+        let estimatorInitialized = false;
+        let filtersInitialized = false;
+        let filtersApplied = false;
+        let filteredTrades = null;
+        let currentOverviewMetrics = null;
+        let currentHoldingStats = [];
+        let filterDefaults = null;
+
+        function formatPercent(value, decimals = 1) {
+            if (value === null || value === undefined || isNaN(value)) return '--';
+            return (value * 100).toFixed(decimals) + '%';
+        }
+
+        function formatNumber(value, decimals = 2) {
+            if (value === null || value === undefined || isNaN(value)) return '--';
+            return Number(value).toFixed(decimals);
+        }
+
+        function formatInteger(value) {
+            if (value === null || value === undefined || isNaN(value)) return '--';
+            return Number(value).toLocaleString();
+        }
+
+        function formatCurrency(value, decimals = 0) {
+            if (value === null || value === undefined || isNaN(value)) return '--';
+            return Number(value).toLocaleString('en-US', {
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: decimals,
+                maximumFractionDigits: decimals
+            });
+        }
+
+        function getAllTrades() {
+            if (!reportData || !Array.isArray(reportData.tradeRecords)) {
+                return [];
+            }
+            return reportData.tradeRecords;
+        }
+
+        function getActiveTrades() {
+            if (filtersApplied && Array.isArray(filteredTrades)) {
+                return filteredTrades;
+            }
+            return getAllTrades();
+        }
+
+        function populateSelect(selectEl, options) {
+            if (!selectEl) return;
+            selectEl.innerHTML = '';
+            options.forEach(option => {
+                const opt = document.createElement('option');
+                opt.value = option.value;
+                opt.textContent = option.label;
+                selectEl.appendChild(opt);
+            });
+        }
+
+        function formatDateInputValue(dateValue) {
+            if (!dateValue) return '';
+            const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+            if (isNaN(date.getTime())) return '';
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        function initializeFilters() {
+            if (filtersInitialized) return;
+
+            const filterCard = document.getElementById('overviewFilters');
+            if (!filterCard) {
+                filtersInitialized = true;
+                return;
+            }
+
+            const trades = getAllTrades();
+            if (!trades || trades.length === 0) {
+                filterCard.style.display = 'none';
+                filtersInitialized = true;
+                return;
+            }
+
+            filterCard.style.display = 'block';
+
+            const strategySelect = document.getElementById('filterStrategy');
+            const tickerSelect = document.getElementById('filterTicker');
+            const strategies = Array.from(new Set(trades.map(trade => trade.strategy).filter(Boolean))).sort();
+            const tickers = Array.from(new Set(trades.map(trade => trade.ticker).filter(Boolean))).sort();
+
+            populateSelect(strategySelect, [{ value: 'all', label: 'All Strategies' }, ...strategies.map(value => ({ value, label: value }))]);
+            populateSelect(tickerSelect, [{ value: 'all', label: 'All Tickers' }, ...tickers.map(value => ({ value, label: value }))]);
+
+            const runDates = trades
+                .map(trade => trade.runDate ? new Date(trade.runDate) : null)
+                .filter(date => date && !isNaN(date.getTime()));
+
+            const startDateInput = document.getElementById('filterStartDate');
+            const endDateInput = document.getElementById('filterEndDate');
+
+            let minDateValue = '';
+            let maxDateValue = '';
+
+            if (runDates.length > 0) {
+                const minDate = new Date(Math.min(...runDates.map(date => date.getTime())));
+                const maxDate = new Date(Math.max(...runDates.map(date => date.getTime())));
+                minDateValue = formatDateInputValue(minDate);
+                maxDateValue = formatDateInputValue(maxDate);
+
+                if (startDateInput) {
+                    startDateInput.value = minDateValue;
+                    startDateInput.min = minDateValue;
+                    startDateInput.max = maxDateValue;
+                }
+                if (endDateInput) {
+                    endDateInput.value = maxDateValue;
+                    endDateInput.min = minDateValue;
+                    endDateInput.max = maxDateValue;
+                }
+            }
+
+            const earningsValues = trades
+                .map(trade => typeof trade.daysBeforeEarnings === 'number' ? trade.daysBeforeEarnings : null)
+                .filter(value => value !== null && !isNaN(value));
+
+            const earningsMinInput = document.getElementById('filterEarningsMin');
+            const earningsMaxInput = document.getElementById('filterEarningsMax');
+            const earningsMin = earningsValues.length > 0 ? Math.min(...earningsValues) : '';
+            const earningsMax = earningsValues.length > 0 ? Math.max(...earningsValues) : '';
+
+            if (earningsMinInput) {
+                earningsMinInput.value = earningsMin !== '' ? earningsMin : '';
+            }
+            if (earningsMaxInput) {
+                earningsMaxInput.value = earningsMax !== '' ? earningsMax : '';
+            }
+
+            const profitValues = trades
+                .map(trade => typeof trade.peakProfit === 'number' ? trade.peakProfit * 100 : null)
+                .filter(value => value !== null && !isNaN(value));
+
+            const profitMinInput = document.getElementById('filterProfitMin');
+            const profitMaxInput = document.getElementById('filterProfitMax');
+            const profitMin = profitValues.length > 0 ? Math.floor(Math.min(...profitValues)) : 0;
+            const profitMax = profitValues.length > 0 ? Math.ceil(Math.max(...profitValues)) : 0;
+
+            if (profitMinInput) {
+                profitMinInput.value = profitMin;
+            }
+            if (profitMaxInput) {
+                profitMaxInput.value = profitMax;
+            }
+
+            filterDefaults = {
+                strategy: 'all',
+                ticker: 'all',
+                startDate: startDateInput ? startDateInput.value : '',
+                endDate: endDateInput ? endDateInput.value : '',
+                strike: 'all',
+                winLoss: 'all',
+                earningsMin: earningsMinInput ? earningsMinInput.value : '',
+                earningsMax: earningsMaxInput ? earningsMaxInput.value : '',
+                profitMin: profitMinInput ? profitMinInput.value : '',
+                profitMax: profitMaxInput ? profitMaxInput.value : ''
+            };
+
+            const applyBtn = document.getElementById('applyFilters');
+            const resetBtn = document.getElementById('resetFilters');
+
+            if (applyBtn && !applyBtn.dataset.bound) {
+                applyBtn.addEventListener('click', applyOverviewFilters);
+                applyBtn.dataset.bound = 'true';
+            }
+
+            if (resetBtn && !resetBtn.dataset.bound) {
+                resetBtn.addEventListener('click', resetOverviewFilters);
+                resetBtn.dataset.bound = 'true';
+            }
+
+            updateFilterStatus(trades.length, trades.length);
+            filtersInitialized = true;
+        }
+
+        function areFiltersDefault() {
+            if (!filterDefaults) return true;
+
+            const strategy = document.getElementById('filterStrategy')?.value || 'all';
+            const ticker = document.getElementById('filterTicker')?.value || 'all';
+            const startDate = document.getElementById('filterStartDate')?.value || '';
+            const endDate = document.getElementById('filterEndDate')?.value || '';
+            const strike = document.getElementById('filterStrike')?.value || 'all';
+            const winLoss = document.getElementById('filterWinLoss')?.value || 'all';
+            const earningsMin = document.getElementById('filterEarningsMin')?.value || '';
+            const earningsMax = document.getElementById('filterEarningsMax')?.value || '';
+            const profitMin = document.getElementById('filterProfitMin')?.value || '';
+            const profitMax = document.getElementById('filterProfitMax')?.value || '';
+
+            return (
+                strategy === filterDefaults.strategy &&
+                ticker === filterDefaults.ticker &&
+                startDate === filterDefaults.startDate &&
+                endDate === filterDefaults.endDate &&
+                strike === filterDefaults.strike &&
+                winLoss === filterDefaults.winLoss &&
+                earningsMin === filterDefaults.earningsMin &&
+                earningsMax === filterDefaults.earningsMax &&
+                String(profitMin) === String(filterDefaults.profitMin) &&
+                String(profitMax) === String(filterDefaults.profitMax)
+            );
+        }
+
+        function updateFilterStatus(totalCount, filteredCount) {
+            const statusEl = document.getElementById('filterStatus');
+            if (!statusEl) return;
+
+            if (!totalCount) {
+                statusEl.textContent = 'No trades available.';
+                return;
+            }
+
+            if (filtersApplied) {
+                statusEl.textContent = `🔍 Filters active: showing ${formatInteger(filteredCount)} of ${formatInteger(totalCount)} trades`;
+            } else {
+                statusEl.textContent = `Showing all ${formatInteger(totalCount)} trades`;
+            }
+        }
+
+        function applyOverviewFilters() {
+            const trades = getAllTrades();
+            if (!trades || trades.length === 0) return;
+
+            let filtered = trades.slice();
+
+            const strategy = document.getElementById('filterStrategy')?.value || 'all';
+            const ticker = document.getElementById('filterTicker')?.value || 'all';
+            const startDateValue = document.getElementById('filterStartDate')?.value || '';
+            const endDateValue = document.getElementById('filterEndDate')?.value || '';
+            const strikeFilter = document.getElementById('filterStrike')?.value || 'all';
+            const winLossFilter = document.getElementById('filterWinLoss')?.value || 'all';
+            const earningsMinValue = document.getElementById('filterEarningsMin')?.value || '';
+            const earningsMaxValue = document.getElementById('filterEarningsMax')?.value || '';
+            const profitMinValue = document.getElementById('filterProfitMin')?.value || '';
+            const profitMaxValue = document.getElementById('filterProfitMax')?.value || '';
+
+            if (strategy !== 'all') {
+                filtered = filtered.filter(trade => trade.strategy === strategy);
+            }
+
+            if (ticker !== 'all') {
+                filtered = filtered.filter(trade => trade.ticker === ticker);
+            }
+
+            if (startDateValue) {
+                const startDate = new Date(startDateValue);
+                filtered = filtered.filter(trade => {
+                    if (!trade.runDate) return false;
+                    const runDate = new Date(trade.runDate);
+                    if (isNaN(runDate.getTime())) return false;
+                    return runDate >= startDate;
+                });
+            }
+
+            if (endDateValue) {
+                const endDate = new Date(endDateValue);
+                if (!isNaN(endDate.getTime())) {
+                    endDate.setHours(23, 59, 59, 999);
+                    filtered = filtered.filter(trade => {
+                        if (!trade.runDate) return false;
+                        const runDate = new Date(trade.runDate);
+                        if (isNaN(runDate.getTime())) return false;
+                        return runDate <= endDate;
+                    });
+                }
+            }
+
+            if (strikeFilter === 'hit') {
+                filtered = filtered.filter(trade => trade.strikeHit === true);
+            } else if (strikeFilter === 'miss') {
+                filtered = filtered.filter(trade => trade.strikeHit === false);
+            }
+
+            if (winLossFilter === 'winners') {
+                filtered = filtered.filter(trade => (trade.peakProfit || 0) > 0);
+            } else if (winLossFilter === 'losers') {
+                filtered = filtered.filter(trade => (trade.peakProfit || 0) <= 0);
+            }
+
+            if (earningsMinValue !== '') {
+                const minVal = parseInt(earningsMinValue, 10);
+                if (!isNaN(minVal)) {
+                    filtered = filtered.filter(trade => {
+                        if (trade.daysBeforeEarnings === null || trade.daysBeforeEarnings === undefined) return true;
+                        return trade.daysBeforeEarnings >= minVal;
+                    });
+                }
+            }
+
+            if (earningsMaxValue !== '') {
+                const maxVal = parseInt(earningsMaxValue, 10);
+                if (!isNaN(maxVal)) {
+                    filtered = filtered.filter(trade => {
+                        if (trade.daysBeforeEarnings === null || trade.daysBeforeEarnings === undefined) return true;
+                        return trade.daysBeforeEarnings <= maxVal;
+                    });
+                }
+            }
+
+            if (profitMinValue !== '') {
+                const minProfit = parseFloat(profitMinValue);
+                if (!isNaN(minProfit)) {
+                    filtered = filtered.filter(trade => (trade.peakProfit || 0) * 100 >= minProfit);
+                }
+            }
+
+            if (profitMaxValue !== '') {
+                const maxProfit = parseFloat(profitMaxValue);
+                if (!isNaN(maxProfit)) {
+                    filtered = filtered.filter(trade => (trade.peakProfit || 0) * 100 <= maxProfit);
+                }
+            }
+
+            if (areFiltersDefault()) {
+                filteredTrades = null;
+                filtersApplied = false;
+            } else {
+                filteredTrades = filtered;
+                filtersApplied = true;
+            }
+
+            updateFilterStatus(trades.length, filteredTrades ? filteredTrades.length : trades.length);
+            renderOverview();
+
+            // Reset data explorer datasets so the filtered set can be exported
+            dataExplorerDatasets = {};
+            if (document.getElementById('dataexplorer')?.classList.contains('active')) {
+                renderDataExplorer(true);
+            }
+        }
+
+        function resetOverviewFilters() {
+            if (!filterDefaults) return;
+
+            const strategySelect = document.getElementById('filterStrategy');
+            const tickerSelect = document.getElementById('filterTicker');
+            const startDateInput = document.getElementById('filterStartDate');
+            const endDateInput = document.getElementById('filterEndDate');
+            const strikeSelect = document.getElementById('filterStrike');
+            const winLossSelect = document.getElementById('filterWinLoss');
+            const earningsMinInput = document.getElementById('filterEarningsMin');
+            const earningsMaxInput = document.getElementById('filterEarningsMax');
+            const profitMinInput = document.getElementById('filterProfitMin');
+            const profitMaxInput = document.getElementById('filterProfitMax');
+
+            if (strategySelect) strategySelect.value = filterDefaults.strategy;
+            if (tickerSelect) tickerSelect.value = filterDefaults.ticker;
+            if (startDateInput) startDateInput.value = filterDefaults.startDate;
+            if (endDateInput) endDateInput.value = filterDefaults.endDate;
+            if (strikeSelect) strikeSelect.value = filterDefaults.strike;
+            if (winLossSelect) winLossSelect.value = filterDefaults.winLoss;
+            if (earningsMinInput) earningsMinInput.value = filterDefaults.earningsMin;
+            if (earningsMaxInput) earningsMaxInput.value = filterDefaults.earningsMax;
+            if (profitMinInput) profitMinInput.value = filterDefaults.profitMin;
+            if (profitMaxInput) profitMaxInput.value = filterDefaults.profitMax;
+
+            filteredTrades = null;
+            filtersApplied = false;
+            updateFilterStatus(getAllTrades().length, getAllTrades().length);
+            renderOverview();
+
+            dataExplorerDatasets = {};
+            if (document.getElementById('dataexplorer')?.classList.contains('active')) {
+                renderDataExplorer(true);
+            }
+        }
+
+        function calculateAvgPremium(trades) {
+            const strikes = trades
+                .map(trade => {
+                    const strike = trade.longStrike || trade.strike;
+                    const numeric = typeof strike === 'number' ? strike : parseFloat(strike);
+                    return isNaN(numeric) ? null : numeric;
+                })
+                .filter(value => value !== null && value > 0);
+
+            if (strikes.length === 0) {
+                return 200;
+            }
+
+            const avgStrike = strikes.reduce((sum, value) => sum + value, 0) / strikes.length;
+            if (!avgStrike || avgStrike <= 0) {
+                return 200;
+            }
+
+            return Math.round(avgStrike * 0.02 * 100);
+        }
+
+        function calculateHoldingStats(trades) {
+            if (!trades || trades.length === 0) {
+                return [];
+            }
+
+            const stats = [];
+            for (let day = 0; day <= 5; day++) {
+                let observations = 0;
+                let wins = 0;
+                let sumProfit = 0;
+
+                trades.forEach(trade => {
+                    const favorable = Array.isArray(trade.maxFavorable) ? trade.maxFavorable[day] : null;
+                    const unfavorable = Array.isArray(trade.minUnfavorable) ? trade.minUnfavorable[day] : null;
+
+                    if (favorable === null && unfavorable === null) return;
+
+                    const fav = typeof favorable === 'number' && !isNaN(favorable) ? favorable : 0;
+                    const unfav = typeof unfavorable === 'number' && !isNaN(unfavorable) ? unfavorable : 0;
+                    const profit = fav - unfav;
+                    if (isNaN(profit)) return;
+
+                    observations++;
+                    if (profit > 0) wins++;
+                    sumProfit += profit;
+                });
+
+                if (observations > 0) {
+                    stats.push({
+                        day: day,
+                        profitableRate: wins / observations,
+                        avgProfit: sumProfit / observations
+                    });
+                }
+            }
+
+            return stats;
+        }
+
+        function deriveOverviewMetrics(trades) {
+            if (!trades || trades.length === 0) {
+                return {
+                    totalTrades: 0,
+                    totalHits: 0,
+                    profitableTrades: 0,
+                    hitRate: 0,
+                    profitableRate: 0,
+                    profitFactor: 0,
+                    avgRiskReward: 0,
+                    avgDaysToHit: 0,
+                    avgWin: 0,
+                    avgLoss: 0,
+                    multiDayWinners: 0,
+                    avgPremiumEstimate: 200
+                };
+            }
+
+            let hitCount = 0;
+            let profitableCount = 0;
+            let sumProfit = 0;
+            let sumLoss = 0;
+            let winCount = 0;
+            let lossCount = 0;
+            let sumRiskReward = 0;
+            let rrCount = 0;
+            let sumDaysToHit = 0;
+            let daysCount = 0;
+            let multiDay = 0;
+
+            trades.forEach(trade => {
+                if (trade.strikeHit) {
+                    hitCount++;
+                }
+
+                const peakProfit = typeof trade.peakProfit === 'number' ? trade.peakProfit : 0;
+                const maxDrawdown = typeof trade.maxDrawdown === 'number' ? trade.maxDrawdown : 0;
+
+                if (peakProfit > 0) {
+                    profitableCount++;
+                    sumProfit += peakProfit;
+                    winCount++;
+                }
+
+                if (maxDrawdown > 0) {
+                    sumLoss += maxDrawdown;
+                    lossCount++;
+                }
+
+                if (peakProfit > 0 && maxDrawdown > 0) {
+                    sumRiskReward += peakProfit / maxDrawdown;
+                    rrCount++;
+                }
+
+                if (typeof trade.daysToHit === 'number' && !isNaN(trade.daysToHit)) {
+                    sumDaysToHit += trade.daysToHit;
+                    daysCount++;
+                }
+
+                if ((trade.profitableDays || 0) >= 3) {
+                    multiDay++;
+                }
+            });
+
+            const profitFactor = sumLoss > 0 ? sumProfit / sumLoss : (sumProfit > 0 ? sumProfit : 0);
+            const avgWin = winCount > 0 ? sumProfit / winCount : 0;
+            const avgLoss = lossCount > 0 ? -(sumLoss / lossCount) : 0;
+            const avgRiskReward = rrCount > 0 ? sumRiskReward / rrCount : 0;
+            const avgDaysToHit = daysCount > 0 ? sumDaysToHit / daysCount : 0;
+            const avgPremium = calculateAvgPremium(trades);
+
+            return {
+                totalTrades: trades.length,
+                totalHits: hitCount,
+                profitableTrades: profitableCount,
+                hitRate: trades.length > 0 ? hitCount / trades.length : 0,
+                profitableRate: trades.length > 0 ? profitableCount / trades.length : 0,
+                profitFactor: profitFactor,
+                avgRiskReward: avgRiskReward,
+                avgDaysToHit: avgDaysToHit,
+                avgWin: avgWin,
+                avgLoss: avgLoss,
+                multiDayWinners: multiDay,
+                avgPremiumEstimate: avgPremium
+            };
+        }
         
         // Initialize on load
         window.onload = function() {
@@ -463,10 +1397,18 @@
         // Handle successful data load
         function handleDataSuccess(data) {
             reportData = data;
+            dataExplorerDatasets = {};
+            currentDatasetKey = null;
+            filteredTrades = null;
+            filtersApplied = false;
+            filtersInitialized = false;
+            filterDefaults = null;
+            currentOverviewMetrics = null;
+            currentHoldingStats = [];
             showLoading(false);
             updateLastUpdated();
             renderAllTabs();
-            
+
             // Show overview tab by default
             switchTab('overview');
         }
@@ -534,6 +1476,24 @@
                         case 'strategies':
                             renderStrategies();
                             break;
+                        case 'risk':
+                            renderRiskManagement();
+                            break;
+                        case 'indicators':
+                            renderIndicators();
+                            break;
+                        case 'dataquality':
+                            renderDataQuality();
+                            break;
+                        case 'dataexplorer':
+                            renderDataExplorer();
+                            break;
+                        case 'incomplete':
+                            renderIncompleteTrades();
+                            break;
+                        case 'topplays':
+                            renderTopPlays();
+                            break;
                     }
                 }, 100);
             }
@@ -544,79 +1504,328 @@
             if (!reportData) return;
             
             renderOverview();
-            renderMultiDay();
-            renderIndicators();
-            renderEarnings();
             renderStrategies();
+            renderEarnings();
+            renderRiskManagement();
+            renderIndicators();
+            renderMultiDay();
+            renderDataQuality();
+            renderDataExplorer();
+            renderIncompleteTrades();
             renderTopPlays();
         }
         
         // Render overview tab
         function renderOverview() {
-            const overview = reportData.overview;
-            
-            // Update metric cards
-            document.getElementById('hitRate').textContent = (overview.hitRate * 100).toFixed(1) + '%';
-            document.getElementById('profitableRate').textContent = (overview.profitableRate * 100).toFixed(1) + '%';
-            document.getElementById('avgRiskReward').textContent = overview.avgRiskReward.toFixed(2);
-            document.getElementById('avgDaysToHit').textContent = overview.avgDaysToHit.toFixed(1);
-            
-            // Create overview chart
-            const ctx = document.getElementById('overviewChart').getContext('2d');
-            
+            initializeFilters();
+
+            const trades = getActiveTrades();
+            const totalTrades = getAllTrades().length;
+            currentOverviewMetrics = deriveOverviewMetrics(trades);
+            currentHoldingStats = calculateHoldingStats(trades);
+
+            updateFilterStatus(totalTrades, trades ? trades.length : 0);
+
+            const metrics = currentOverviewMetrics || {};
+            const hasTrades = trades && trades.length > 0;
+
+            document.getElementById('hitRate').textContent = hasTrades ? formatPercent(metrics.hitRate, 1) : '--';
+            document.getElementById('profitableRate').textContent = hasTrades ? formatPercent(metrics.profitableRate, 1) : '--';
+            document.getElementById('profitFactor').textContent = hasTrades ? formatNumber(metrics.profitFactor || 0, 2) : '--';
+            document.getElementById('avgRiskReward').textContent = hasTrades ? formatNumber(metrics.avgRiskReward || 0, 2) : '--';
+            document.getElementById('avgDaysToHit').textContent = hasTrades ? formatNumber(metrics.avgDaysToHit || 0, 1) : '--';
+            document.getElementById('avgProfit').textContent = hasTrades ? formatPercent(metrics.avgWin || 0, 2) : '--';
+            document.getElementById('avgLoss').textContent = hasTrades ? formatPercent(metrics.avgLoss || 0, 2) : '--';
+            document.getElementById('totalTrades').textContent = hasTrades ? formatInteger(metrics.totalTrades || 0) : '--';
+
+            const overviewCanvas = document.getElementById('overviewChart');
             if (charts.overview) {
                 charts.overview.destroy();
+                charts.overview = null;
             }
-            
-            charts.overview = new Chart(ctx, {
-                type: 'bar',
+
+            if (overviewCanvas && overviewCanvas.getContext) {
+                const ctx = overviewCanvas.getContext('2d');
+                charts.overview = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['Total Trades', 'Strikes Hit', 'Profitable', 'Multi-Day Winners'],
+                        datasets: [{
+                            label: 'Count',
+                            data: [
+                                metrics.totalTrades || 0,
+                                metrics.totalHits || 0,
+                                metrics.profitableTrades || 0,
+                                metrics.multiDayWinners || 0
+                            ],
+                            backgroundColor: ['#3b82f6', '#10b981', '#22c55e', '#f59e0b']
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            }
+
+            renderHoldingChart();
+            setupOptionEstimator();
+            renderOverviewSummary();
+        }
+
+        function renderHoldingChart() {
+            const container = document.getElementById('holdingChartWrapper');
+            if (!container) return;
+
+            if (charts.holding) {
+                charts.holding.destroy();
+                charts.holding = null;
+            }
+
+            let holdingData = [];
+            if (currentHoldingStats && currentHoldingStats.length > 0) {
+                holdingData = currentHoldingStats;
+            } else if (reportData?.holdingPeriod?.byDay) {
+                holdingData = reportData.holdingPeriod.byDay.map(entry => {
+                    const dayValue = typeof entry.day === 'number'
+                        ? entry.day
+                        : parseInt(String(entry.day).replace(/[^0-9]/g, ''), 10);
+                    return {
+                        day: isNaN(dayValue) ? entry.day : dayValue,
+                        profitableRate: entry.profitableRate !== undefined ? entry.profitableRate : (entry.hitRate || 0),
+                        avgProfit: entry.avgProfit || 0
+                    };
+                });
+            }
+
+            if (!holdingData || holdingData.length === 0) {
+                container.innerHTML = '<div class="info-banner">No holding period data available yet.</div>';
+                return;
+            }
+
+            container.innerHTML = '<canvas id="holdingChart"></canvas>';
+            const ctx = document.getElementById('holdingChart').getContext('2d');
+
+            const labels = holdingData.map(entry => {
+                if (typeof entry.day === 'number' && !isNaN(entry.day)) {
+                    return 'Day ' + entry.day;
+                }
+                const text = String(entry.day || 'Day');
+                return text.startsWith('Day') ? text.replace('Day', 'Day ') : 'Day ' + text;
+            });
+            const winRates = holdingData.map(entry => (entry.profitableRate || 0) * 100);
+            const avgProfits = holdingData.map(entry => (entry.avgProfit || 0) * 100);
+
+            charts.holding = new Chart(ctx, {
+                type: 'line',
                 data: {
-                    labels: ['Total Trades', 'Strikes Hit', 'Profitable', 'Multi-Day Winners'],
-                    datasets: [{
-                        label: 'Count',
-                        data: [
-                            overview.totalTrades,
-                            overview.totalHits,
-                            overview.profitableTrades,
-                            overview.multiDayWinners
-                        ],
-                        backgroundColor: ['#3b82f6', '#10b981', '#22c55e', '#f59e0b']
-                    }]
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Win Rate %',
+                            data: winRates,
+                            borderColor: '#2563eb',
+                            backgroundColor: 'rgba(37, 99, 235, 0.2)',
+                            tension: 0.3,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Avg Profit %',
+                            data: avgProfits,
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                            tension: 0.3,
+                            yAxisID: 'y1'
+                        }
+                    ]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            display: false
+                    interaction: { mode: 'index', intersect: false },
+                    stacked: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: value => value + '%'
+                            }
+                        },
+                        y1: {
+                            position: 'right',
+                            beginAtZero: true,
+                            grid: { drawOnChartArea: false },
+                            ticks: {
+                                callback: value => value + '%'
+                            }
                         }
                     }
                 }
             });
         }
+
+        function setupOptionEstimator() {
+            const inputs = document.querySelectorAll('.estimator-input');
+            if (inputs.length === 0) return;
+
+            const metrics = currentOverviewMetrics || reportData.overview || {};
+            const premiumInput = document.getElementById('premiumInput');
+            const stockMoveInput = document.getElementById('stockMoveInput');
+
+            if (premiumInput && metrics.avgPremiumEstimate) {
+                premiumInput.value = Math.round(metrics.avgPremiumEstimate);
+            }
+
+            const avgWinValue = metrics.avgWin !== undefined ? metrics.avgWin : (reportData.overview?.avgWin || reportData.overview?.avgProfit || 0);
+            if (stockMoveInput && avgWinValue !== undefined && !isNaN(avgWinValue)) {
+                stockMoveInput.value = (avgWinValue * 100).toFixed(1);
+            }
+
+            if (!estimatorInitialized) {
+                inputs.forEach(input => {
+                    input.addEventListener('input', updateOptionEstimator);
+                });
+                estimatorInitialized = true;
+            }
+
+            updateOptionEstimator();
+        }
+
+        function estimateOptionsProfit(stockMovePct, premiumPaid, delta, contracts) {
+            const assumedStockPrice = 100;
+            const stockMoveDollar = assumedStockPrice * (stockMovePct / 100);
+            const optionValueChange = stockMoveDollar * delta * 100 * contracts;
+            const totalPremium = premiumPaid * contracts;
+            const profitDollars = optionValueChange - totalPremium;
+            const profitPct = totalPremium > 0 ? (profitDollars / totalPremium) * 100 : 0;
+
+            return {
+                profitDollars,
+                profitPct,
+                optionValueChange
+            };
+        }
+
+        function updateOptionEstimator() {
+            const premium = parseFloat(document.getElementById('premiumInput')?.value || '0');
+            const delta = parseFloat(document.getElementById('deltaInput')?.value || '0');
+            const contracts = parseFloat(document.getElementById('contractsInput')?.value || '0');
+            const stockMove = parseFloat(document.getElementById('stockMoveInput')?.value || '0');
+
+            if ([premium, delta, contracts, stockMove].some(v => isNaN(v))) {
+                return;
+            }
+
+            const result = estimateOptionsProfit(stockMove, premium, delta, contracts);
+            document.getElementById('estimatorProfit').textContent = formatCurrency(result.profitDollars, 0);
+            document.getElementById('estimatorReturn').textContent = formatNumber(result.profitPct, 1) + '%';
+            document.getElementById('estimatorValueChange').textContent = formatCurrency(result.optionValueChange, 0);
+
+            const scenarios = [3, 5, 7, 10, 15];
+            let tableHtml = '<table class="data-table"><thead><tr><th>Stock Move</th><th>Profit / Loss</th><th>Return %</th></tr></thead><tbody>';
+            scenarios.forEach(move => {
+                const scenario = estimateOptionsProfit(move, premium, delta, contracts);
+                tableHtml += `<tr><td>${move}%</td><td>${formatCurrency(scenario.profitDollars, 0)}</td><td>${formatNumber(scenario.profitPct, 1)}%</td></tr>`;
+            });
+            tableHtml += '</tbody></table>';
+            document.getElementById('estimatorScenarios').innerHTML = tableHtml;
+        }
+
+        function renderOverviewSummary() {
+            const container = document.getElementById('overviewSummary');
+            if (!container) return;
+
+            const metrics = currentOverviewMetrics || reportData.overview || {};
+            const trades = getActiveTrades();
+
+            if (!trades || trades.length === 0) {
+                container.innerHTML = '<div class="info-banner">No trades available for summary.</div>';
+                return;
+            }
+
+            let bestHoldingLabel = reportData.overview?.bestHoldingDay || 'Day 1';
+            if (currentHoldingStats && currentHoldingStats.length > 0) {
+                const bestDay = currentHoldingStats.reduce((best, entry) => {
+                    if (!best) return entry;
+                    return (entry.profitableRate || 0) > (best.profitableRate || 0) ? entry : best;
+                }, null);
+                if (bestDay) {
+                    bestHoldingLabel = typeof bestDay.day === 'number' ? `Day ${bestDay.day}` : String(bestDay.day);
+                }
+            }
+
+            container.innerHTML = `
+                <div class="insights-container">
+                    <div class="insight-item">
+                        <span class="insight-icon">📊</span>
+                        <div><strong>Total Trades:</strong> ${formatInteger(metrics.totalTrades || 0)} &nbsp; | &nbsp; <strong>Profitable:</strong> ${formatInteger(metrics.profitableTrades || 0)}</div>
+                    </div>
+                    <div class="insight-item">
+                        <span class="insight-icon">⏱️</span>
+                        <div><strong>Best Exit:</strong> ${bestHoldingLabel} &nbsp; | &nbsp; <strong>Avg Days to Hit:</strong> ${formatNumber(metrics.avgDaysToHit || 0, 1)} days</div>
+                    </div>
+                    <div class="insight-item">
+                        <span class="insight-icon">🔥</span>
+                        <div><strong>Multi-Day Winners:</strong> ${formatInteger(metrics.multiDayWinners || 0)} &nbsp; | &nbsp; <strong>Avg Premium Estimate:</strong> ${formatCurrency(metrics.avgPremiumEstimate || 200)}</div>
+                    </div>
+                </div>
+            `;
+        }
         
         // Render multi-day analysis
         function renderMultiDay() {
-            const multiDay = reportData.multiDayProfitability;
-            
-            // Create chart
-            const ctx = document.getElementById('multiDayChart').getContext('2d');
-            
+            const container = document.getElementById('multiDayTable');
+            const chartCanvas = document.getElementById('multiDayChart');
+            const multiDay = reportData.multiDayProfitability || {};
+
             if (charts.multiDay) {
                 charts.multiDay.destroy();
+                charts.multiDay = null;
             }
-            
+
+            const dayData = (multiDay.profitabilityByDay || []).filter(entry => entry);
+            if (!chartCanvas || dayData.length === 0) {
+                if (container) {
+                    container.innerHTML = '<div class="info-banner">No multi-day profitability data available.</div>';
+                }
+                return;
+            }
+
+            const ctx = chartCanvas.getContext('2d');
+            const labels = dayData.map(d => 'Day ' + d.day);
+            const winRates = dayData.map(d => (d.rate !== undefined ? d.rate : d.successRate || 0) * 100);
+            const avgProfits = dayData.map(d => (d.avgProfit || 0) * 100);
+
             charts.multiDay = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: multiDay.profitabilityByDay.map(d => 'Day ' + d.day),
-                    datasets: [{
-                        label: 'Profitability Rate',
-                        data: multiDay.profitabilityByDay.map(d => d.rate * 100),
-                        borderColor: '#10b981',
-                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                        tension: 0.4
-                    }]
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Success Rate %',
+                            data: winRates,
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Avg Profit %',
+                            data: avgProfits,
+                            borderColor: '#f59e0b',
+                            backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                            tension: 0.4
+                        }
+                    ]
                 },
                 options: {
                     responsive: true,
@@ -624,81 +1833,208 @@
                     scales: {
                         y: {
                             beginAtZero: true,
-                            max: 100,
                             ticks: {
-                                callback: function(value) {
-                                    return value + '%';
-                                }
+                                callback: value => value + '%'
                             }
                         }
                     }
                 }
             });
-            
-            // Create table
-            let tableHtml = '<table class="data-table"><thead><tr>' +
-                '<th>Days Profitable</th><th>Trade Count</th><th>Success Rate</th><th>Avg Profit</th>' +
-                '</tr></thead><tbody>';
-            
-            multiDay.sustainedWinners.forEach(row => {
-                tableHtml += '<tr>' +
-                    '<td>' + row.days + '+ days</td>' +
-                    '<td>' + row.count + '</td>' +
-                    '<td class="text-success">' + (row.successRate * 100).toFixed(1) + '%</td>' +
-                    '<td class="' + (row.avgProfit >= 0 ? 'text-success' : 'text-danger') + '">' +
-                    row.avgProfit.toFixed(2) + '%</td>' +
-                    '</tr>';
-            });
-            
-            tableHtml += '</tbody></table>';
-            document.getElementById('multiDayTable').innerHTML = tableHtml;
+
+            if (container) {
+                let tableHtml = '<table class="data-table"><thead><tr>' +
+                    '<th>Days Profitable</th><th>Trade Count</th><th>Success Rate</th><th>Avg Profit</th>' +
+                    '</tr></thead><tbody>';
+
+                (multiDay.sustainedWinners || []).forEach(row => {
+                    const successRate = row.successRate !== undefined ? row.successRate : 0;
+                    const avgProfit = row.avgProfit !== undefined ? row.avgProfit : 0;
+                    tableHtml += '<tr>' +
+                        '<td>' + (row.days || 0) + '+ days</td>' +
+                        '<td>' + formatInteger(row.count || 0) + '</td>' +
+                        '<td class="text-success">' + formatNumber(successRate * 100, 1) + '%</td>' +
+                        '<td class="' + (avgProfit >= 0 ? 'text-success' : 'text-danger') + '">' + formatNumber(avgProfit * 100, 2) + '%</td>' +
+                        '</tr>';
+                });
+
+                tableHtml += '</tbody></table>';
+                container.innerHTML = tableHtml;
+            }
         }
         
+        function renderRiskManagement() {
+            const risk = reportData.riskManagement || {};
+            const riskReward = risk.riskReward || {};
+            const buckets = riskReward.buckets || [];
+            const chartCanvas = document.getElementById('riskRewardChart');
+
+            if (charts.riskReward) {
+                charts.riskReward.destroy();
+                charts.riskReward = null;
+            }
+
+            if (!chartCanvas || buckets.length === 0) {
+                document.getElementById('riskRewardTable').innerHTML = '<div class="info-banner">No risk/reward distribution data available.</div>';
+            } else {
+                const ctx = chartCanvas.getContext('2d');
+                charts.riskReward = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: buckets.map(b => b.range),
+                        datasets: [{
+                            label: 'Trade Percentage',
+                            data: buckets.map(b => b.percentage || 0),
+                            backgroundColor: '#6366f1'
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: value => value + '%'
+                                }
+                            }
+                        }
+                    }
+                });
+
+                let tableHtml = '<table class="data-table"><thead><tr><th>Risk/Reward Bucket</th><th>Trades</th><th>Share of Trades</th><th>Win Rate</th><th>Avg Max Profit</th><th>Recommendation</th></tr></thead><tbody>';
+                buckets.forEach(bucket => {
+                    tableHtml += `<tr><td>${bucket.range}</td><td>${formatInteger(bucket.count || 0)}</td>` +
+                        `<td>${formatNumber(bucket.percentage || 0, 1)}%</td>` +
+                        `<td>${formatNumber((bucket.hitRate || 0), 1)}%</td>` +
+                        `<td>${formatNumber((bucket.avgMaxProfit || 0), 2)}%</td>` +
+                        `<td>${bucket.recommendation || ''}</td></tr>`;
+                });
+                tableHtml += '</tbody></table>';
+                document.getElementById('riskRewardTable').innerHTML = tableHtml;
+            }
+
+            const kellyTable = document.getElementById('kellyTable');
+            const kellyData = risk.kellySizing || [];
+            if (!kellyTable) return;
+
+            if (kellyData.length === 0) {
+                kellyTable.innerHTML = '<div class="info-banner">Kelly sizing recommendations will appear once strategy metrics are available.</div>';
+                return;
+            }
+
+            let kellyHtml = '<table class="data-table"><thead><tr><th>Strategy</th><th>Win Rate</th><th>Avg Win</th><th>Avg Loss</th><th>Full Kelly</th><th>Half Kelly</th></tr></thead><tbody>';
+            kellyData.forEach(row => {
+                kellyHtml += `<tr><td>${row.strategy}</td>` +
+                    `<td>${formatNumber(row.winRate || 0, 1)}%</td>` +
+                    `<td>${formatNumber(row.avgWin || 0, 1)}%</td>` +
+                    `<td>${formatNumber(row.avgLoss || 0, 1)}%</td>` +
+                    `<td>${formatNumber(row.fullKelly || 0, 1)}%</td>` +
+                    `<td>${formatNumber(row.halfKelly || 0, 1)}%</td></tr>`;
+            });
+            kellyHtml += '</tbody></table>';
+            kellyTable.innerHTML = kellyHtml;
+        }
+
         // Render indicators
         function renderIndicators() {
             const indicators = reportData.indicatorEffectiveness;
-            
+
             let gridHtml = '';
             indicators.forEach(ind => {
-                const significanceClass = 
-                    ind.correlation > 0.3 ? 'high' : 
+                const significanceClass =
+                    ind.correlation > 0.3 ? 'high' :
                     ind.correlation > 0.15 ? 'medium' : 'low';
-                
+
                 gridHtml += '<div class="indicator-card ' + significanceClass + '">' +
                     '<div class="indicator-name">' + ind.name + '</div>' +
-                    '<div>Correlation: ' + ind.correlation.toFixed(3) + '</div>' +
+                    '<div>Correlation: ' + formatNumber(ind.correlation, 3) + '</div>' +
                     '<div>Profitable Range: ' + ind.profitableRange + '</div>' +
                     '<div class="indicator-stats">' +
-                    '<span>Hit Rate: ' + (ind.hitRate * 100).toFixed(1) + '%</span>' +
+                    '<span>Hit Rate: ' + formatPercent(ind.hitRate, 1) + '</span>' +
                     '<span class="' + (ind.avgProfit >= 0 ? 'text-success' : 'text-danger') + '">' +
-                    'Avg: ' + ind.avgProfit.toFixed(2) + '%</span>' +
+                    'Avg: ' + formatNumber((ind.avgProfit || 0) * 100, 2) + '%</span>' +
                     '</div></div>';
             });
-            
+
             document.getElementById('indicatorsGrid').innerHTML = gridHtml;
         }
-        
+
+        function renderDataQuality() {
+            const quality = reportData.dataQuality || {};
+            const scoreEl = document.getElementById('dataQualityScore');
+            const statusEl = document.getElementById('dataQualityStatus');
+            const tableEl = document.getElementById('dataQualityTable');
+            const messageEl = document.getElementById('dataQualityMessage');
+            const recEl = document.getElementById('dataQualityRecommendations');
+
+            if (!scoreEl || !statusEl || !tableEl) return;
+
+            const overallScore = quality.overallScore || 0;
+            scoreEl.textContent = formatNumber(overallScore, 1) + '%';
+
+            let statusText = 'Needs review';
+            if (overallScore >= 80) {
+                statusText = '✅ Healthy data coverage';
+            } else if (overallScore >= 60) {
+                statusText = '⚠️ Moderate coverage - prioritize improvements';
+            } else {
+                statusText = '❌ Significant gaps - address data collection';
+            }
+            statusEl.textContent = statusText;
+
+            const fieldEntries = Array.isArray(quality.fieldCompleteness)
+                ? quality.fieldCompleteness
+                : Object.entries(quality.fieldCompleteness || {}).map(([field, value]) => ({
+                    field,
+                    completeness: typeof value === 'object' ? value.percentage : value,
+                    missing: value?.missing
+                }));
+
+            let tableHtml = '<table class="data-table"><thead><tr><th>Field</th><th>Completeness</th><th>Missing Records</th></tr></thead><tbody>';
+            fieldEntries.forEach(entry => {
+                tableHtml += `<tr><td>${entry.field}</td>` +
+                    `<td>${formatNumber(entry.completeness || 0, 1)}%</td>` +
+                    `<td>${entry.missing !== undefined ? formatInteger(entry.missing) : '—'}</td></tr>`;
+            });
+            tableHtml += '</tbody></table>';
+            tableEl.innerHTML = tableHtml;
+
+            if (messageEl) {
+                messageEl.style.display = 'block';
+                messageEl.textContent = `${formatInteger(quality.totalTrades || 0)} trades evaluated across ${fieldEntries.length} key data fields.`;
+            }
+
+            if (recEl) {
+                const recs = quality.recommendations || [];
+                if (recs.length === 0) {
+                    recEl.style.display = 'none';
+                } else {
+                    recEl.style.display = 'block';
+                    recEl.innerHTML = '<h3>Data Quality Recommendations</h3><ul class="recommendations-list">' +
+                        recs.map(rec => `<li>${rec}</li>`).join('') + '</ul>';
+                }
+            }
+        }
+
         // Render earnings timing
         function renderEarnings() {
-            const earnings = reportData.earningsTiming;
-            
-            // Create chart
+            const earnings = reportData.earningsTiming || {};
             const ctx = document.getElementById('earningsChart').getContext('2d');
-            
+
             if (charts.earnings) {
                 charts.earnings.destroy();
             }
-            
+
+            const preHit = earnings.preEarnings?.hitRate || 0;
+            const postHit = earnings.postEarnings?.hitRate || 0;
+
             charts.earnings = new Chart(ctx, {
                 type: 'bar',
                 data: {
                     labels: ['Pre-Earnings', 'Post-Earnings'],
                     datasets: [{
                         label: 'Hit Rate %',
-                        data: [
-                            earnings.preEarnings.hitRate * 100,
-                            earnings.postEarnings.hitRate * 100
-                        ],
+                        data: [preHit * 100, postHit * 100],
                         backgroundColor: ['#3b82f6', '#10b981']
                     }]
                 },
@@ -710,42 +2046,61 @@
                             beginAtZero: true,
                             max: 100,
                             ticks: {
-                                callback: function(value) {
-                                    return value + '%';
-                                }
+                                callback: value => value + '%'
                             }
                         }
                     }
                 }
             });
-            
-            // Render insights
-            const insightsHtml = 
+
+            const insightsHtml =
                 '<div class="insight-item">' +
                 '<span class="insight-icon">📊</span>' +
                 '<div><strong>Pre-Earnings Performance:</strong> ' +
-                (earnings.preEarnings.hitRate > earnings.postEarnings.hitRate ? 
-                    'Higher hit rate before earnings announcements' : 
-                    'Lower hit rate before earnings') +
+                (preHit > postHit ?
+                    'Higher hit rate before earnings announcements' :
+                    'Post-earnings entries show stronger results') +
                 '</div></div>' +
                 '<div class="insight-item">' +
                 '<span class="insight-icon">⏱️</span>' +
                 '<div><strong>Optimal Entry:</strong> ' +
-                earnings.optimalDaysBeforeEarnings + ' days before earnings</div>' +
+                (earnings.optimalDaysBeforeEarnings !== undefined ? earnings.optimalDaysBeforeEarnings : 'N/A') + ' days before earnings</div>' +
                 '</div>' +
                 '<div class="insight-item">' +
                 '<span class="insight-icon">💡</span>' +
                 '<div><strong>Recommendation:</strong> ' +
-                earnings.recommendation + '</div>' +
+                (earnings.recommendation || 'Collect more data to refine earnings strategies.') + '</div>' +
                 '</div>';
-            
+
             document.getElementById('earningsInsights').innerHTML = insightsHtml;
+
+            const byDays = earnings.byDaysToEarnings || [];
+            let windowHtml = '<table class="data-table"><thead><tr><th>Entry Window</th><th>Trades</th><th>Hits</th><th>Hit Rate</th><th>Avg Profit</th><th>Avg Days to Hit</th></tr></thead><tbody>';
+            byDays.forEach(row => {
+                windowHtml += `<tr><td>${row.window}</td><td>${formatInteger(row.trades || 0)}</td><td>${formatInteger(row.hits || 0)}</td>` +
+                    `<td>${formatNumber((row.hitRate || 0) * 100, 1)}%</td>` +
+                    `<td>${formatNumber((row.avgProfit || 0) * 100, 2)}%</td>` +
+                    `<td>${formatNumber(row.avgDaysToHit || 0, 1)}</td></tr>`;
+            });
+            windowHtml += '</tbody></table>';
+            document.getElementById('earningsWindowTable').innerHTML = windowHtml;
+
+            const byRelease = earnings.byReleaseTime || [];
+            let releaseHtml = '<table class="data-table"><thead><tr><th>Release Time</th><th>Trades</th><th>Hits</th><th>Hit Rate</th><th>Avg Profit</th><th>Avg Days</th></tr></thead><tbody>';
+            byRelease.forEach(row => {
+                releaseHtml += `<tr><td>${row.releaseTime}</td><td>${formatInteger(row.total || 0)}</td><td>${formatInteger(row.hits || 0)}</td>` +
+                    `<td>${formatNumber((row.hitRate || 0) * 100, 1)}%</td>` +
+                    `<td>${formatNumber((row.avgProfit || 0) * 100, 2)}%</td>` +
+                    `<td>${formatNumber(row.avgDays || 0, 1)}</td></tr>`;
+            });
+            releaseHtml += '</tbody></table>';
+            document.getElementById('earningsReleaseTable').innerHTML = releaseHtml;
         }
         
         // Render strategy performance
         function renderStrategies() {
             const strategies = reportData.strategyPerformance;
-            
+
             // Create chart
             const ctx = document.getElementById('strategyChart').getContext('2d');
             
@@ -783,25 +2138,360 @@
             
             // Create table
             let tableHtml = '<table class="data-table"><thead><tr>' +
-                '<th>Strategy</th><th>Trades</th><th>Hit Rate</th><th>Profit Factor</th><th>Avg Days to Hit</th>' +
+                '<th>Strategy</th><th>Trades</th><th>Hit Rate</th><th>Avg Profit</th><th>Avg Loss</th><th>Profit Factor</th><th>Avg Days to Hit</th>' +
                 '</tr></thead><tbody>';
-            
+
             strategies.forEach(row => {
                 tableHtml += '<tr>' +
                     '<td>' + row.strategy + '</td>' +
-                    '<td>' + row.tradeCount + '</td>' +
-                    '<td class="text-success">' + (row.hitRate * 100).toFixed(1) + '%</td>' +
+                    '<td>' + formatInteger(row.tradeCount || 0) + '</td>' +
+                    '<td class="text-success">' + formatPercent(row.hitRate, 1) + '</td>' +
+                    '<td>' + formatPercent(row.avgProfit, 2) + '</td>' +
+                    '<td class="' + ((row.avgLoss || 0) <= 0 ? 'text-success' : 'text-danger') + '">' + formatPercent(row.avgLoss, 2) + '</td>' +
                     '<td class="' + (row.profitFactor >= 1 ? 'text-success' : 'text-danger') + '">' +
-                    row.profitFactor.toFixed(2) + '</td>' +
-                    '<td>' + row.avgDaysToHit.toFixed(1) + '</td>' +
+                    formatNumber(row.profitFactor, 2) + '</td>' +
+                    '<td>' + formatNumber(row.avgDaysToHit, 1) + '</td>' +
                     '</tr>';
             });
-            
+
             tableHtml += '</tbody></table>';
             document.getElementById('strategyTable').innerHTML = tableHtml;
         }
         
         // Render top plays
+        function renderDataExplorer(forceRebuild = false) {
+            const select = document.getElementById('datasetSelect');
+            const tableEl = document.getElementById('dataExplorerTable');
+            const summaryEl = document.getElementById('datasetSummary');
+            const downloadBtn = document.getElementById('downloadDataset');
+
+            if (!select || !tableEl) return;
+
+            if (forceRebuild) {
+                dataExplorerDatasets = {};
+            }
+
+            if (forceRebuild || Object.keys(dataExplorerDatasets).length === 0) {
+                const previousKey = currentDatasetKey;
+                dataExplorerDatasets = buildDataExplorerDatasets();
+                select.innerHTML = '';
+                const datasetKeys = Object.keys(dataExplorerDatasets);
+                datasetKeys.forEach((key, index) => {
+                    const option = document.createElement('option');
+                    option.value = key;
+                    option.textContent = key;
+                    select.appendChild(option);
+                    if (index === 0 && !currentDatasetKey) {
+                        currentDatasetKey = key;
+                    }
+                });
+                if (previousKey && dataExplorerDatasets[previousKey]) {
+                    currentDatasetKey = previousKey;
+                }
+                if (!select.dataset.bound) {
+                    select.addEventListener('change', () => {
+                        currentDatasetKey = select.value;
+                        renderDataExplorer();
+                    });
+                    select.dataset.bound = 'true';
+                }
+                if (downloadBtn && !downloadBtn.dataset.bound) {
+                    downloadBtn.addEventListener('click', downloadCurrentDataset);
+                    downloadBtn.dataset.bound = 'true';
+                }
+            }
+
+            if (!currentDatasetKey || !dataExplorerDatasets[currentDatasetKey]) {
+                const keys = Object.keys(dataExplorerDatasets);
+                currentDatasetKey = keys.length > 0 ? keys[0] : null;
+            }
+
+            const dataset = dataExplorerDatasets[currentDatasetKey];
+            if (!dataset) {
+                tableEl.innerHTML = '<div class="info-banner">No dataset available.</div>';
+                if (summaryEl) summaryEl.textContent = '';
+                return;
+            }
+
+            select.value = currentDatasetKey;
+
+            let tableHtml = '<table class="data-table"><thead><tr>' +
+                dataset.columns.map(col => `<th>${col}</th>`).join('') +
+                '</tr></thead><tbody>';
+            dataset.rows.forEach(row => {
+                tableHtml += '<tr>' + row.map(cell => `<td>${cell}</td>`).join('') + '</tr>';
+            });
+            tableHtml += '</tbody></table>';
+            tableEl.innerHTML = tableHtml;
+
+            if (summaryEl) {
+                summaryEl.textContent = `${dataset.rows.length.toLocaleString()} rows × ${dataset.columns.length} columns`;
+            }
+        }
+
+        function renderIncompleteTrades() {
+            const data = reportData.incompleteTrades || {};
+            const summaryEl = document.getElementById('incompleteSummary');
+            const breakdownEl = document.getElementById('incompleteBreakdown');
+            const sampleEl = document.getElementById('incompleteSample');
+
+            if (!summaryEl || !breakdownEl || !sampleEl) return;
+
+            if (data.message && (!data.totalCount || data.totalCount === 0)) {
+                summaryEl.textContent = data.message;
+                breakdownEl.innerHTML = '';
+                sampleEl.innerHTML = '';
+                return;
+            }
+
+            summaryEl.textContent = `${formatInteger(data.totalCount || 0)} trades missing profit data.`;
+
+            const breakdown = data.byStrategy || [];
+            if (breakdown.length > 0) {
+                let breakdownHtml = '<table class="data-table"><thead><tr><th>Strategy</th><th>Missing Trades</th></tr></thead><tbody>';
+                breakdown.forEach(row => {
+                    breakdownHtml += `<tr><td>${row.strategy}</td><td>${formatInteger(row.count || 0)}</td></tr>`;
+                });
+                breakdownHtml += '</tbody></table>';
+                breakdownEl.innerHTML = breakdownHtml;
+            } else {
+                breakdownEl.innerHTML = '<div class="info-banner">No incomplete trades found.</div>';
+            }
+
+            const sample = data.sample || [];
+            if (sample.length > 0) {
+                let sampleHtml = '<table class="data-table"><thead><tr><th>Strategy</th><th>Ticker</th><th>Run Date</th><th>Exp Date</th><th>Strike</th><th>Long Strike</th><th>Missing Fields</th></tr></thead><tbody>';
+                sample.forEach(row => {
+                    sampleHtml += `<tr><td>${row.strategy || '-'}</td><td>${row.ticker || '-'}</td>` +
+                        `<td>${row.runDate || '-'}</td><td>${row.expDate || '-'}</td>` +
+                        `<td>${row.strike || '-'}</td><td>${row.longStrike || '-'}</td>` +
+                        `<td>${Array.isArray(row.missingFields) ? row.missingFields.join(', ') : '-'}</td></tr>`;
+                });
+                sampleHtml += '</tbody></table>';
+                sampleEl.innerHTML = sampleHtml;
+            } else {
+                sampleEl.innerHTML = '<div class="info-banner">No sample trades available.</div>';
+            }
+        }
+
+        function buildDataExplorerDatasets() {
+            const datasets = {};
+            const overview = reportData.overview || {};
+            const trades = getAllTrades();
+
+            const formatDateForTable = (value) => {
+                if (!value) return '-';
+                const date = new Date(value);
+                if (isNaN(date.getTime())) return value;
+                return date.toLocaleDateString();
+            };
+
+            if (trades.length > 0) {
+                datasets['All Trades (Raw)'] = {
+                    columns: ['Strategy', 'Ticker', 'Run Date', 'Strike Hit', 'Peak Profit %', 'Max Drawdown %', 'Days to Hit', 'Days Before Earnings'],
+                    rows: trades.map(trade => [
+                        trade.strategy || '-',
+                        trade.ticker || '-',
+                        formatDateForTable(trade.runDate),
+                        trade.strikeHit ? 'Yes' : 'No',
+                        formatNumber((trade.peakProfit || 0) * 100, 2) + '%',
+                        formatNumber((trade.maxDrawdown || 0) * 100, 2) + '%',
+                        trade.daysToHit !== null && trade.daysToHit !== undefined ? formatNumber(trade.daysToHit, 1) : '—',
+                        trade.daysBeforeEarnings !== null && trade.daysBeforeEarnings !== undefined ? formatNumber(trade.daysBeforeEarnings, 0) : '—'
+                    ])
+                };
+            }
+
+            if (filtersApplied && Array.isArray(filteredTrades) && filteredTrades.length > 0) {
+                datasets['Filtered Trades (Overview Filters)'] = {
+                    columns: ['Strategy', 'Ticker', 'Run Date', 'Strike Hit', 'Peak Profit %', 'Max Drawdown %', 'Days to Hit', 'Days Before Earnings'],
+                    rows: filteredTrades.map(trade => [
+                        trade.strategy || '-',
+                        trade.ticker || '-',
+                        formatDateForTable(trade.runDate),
+                        trade.strikeHit ? 'Yes' : 'No',
+                        formatNumber((trade.peakProfit || 0) * 100, 2) + '%',
+                        formatNumber((trade.maxDrawdown || 0) * 100, 2) + '%',
+                        trade.daysToHit !== null && trade.daysToHit !== undefined ? formatNumber(trade.daysToHit, 1) : '—',
+                        trade.daysBeforeEarnings !== null && trade.daysBeforeEarnings !== undefined ? formatNumber(trade.daysBeforeEarnings, 0) : '—'
+                    ])
+                };
+            }
+
+            if (overview.byStrategy) {
+                const rows = Object.entries(overview.byStrategy).map(([name, stats]) => [
+                    name,
+                    formatInteger(stats.trades || stats.totalTrades || 0),
+                    formatPercent(stats.hitRate, 1),
+                    formatPercent(stats.profitableRate, 1),
+                    formatNumber(stats.profitFactor || 0, 2),
+                    formatPercent(stats.avgWin || stats.avgProfit || 0, 2),
+                    formatPercent(stats.avgLoss || 0, 2)
+                ]);
+                datasets['Overview by Strategy'] = {
+                    columns: ['Strategy', 'Trades', 'Hit Rate', 'Profitable Rate', 'Profit Factor', 'Avg Win', 'Avg Loss'],
+                    rows
+                };
+            }
+
+            const strategies = reportData.strategyPerformance || [];
+            if (strategies.length > 0) {
+                datasets['Strategy Performance'] = {
+                    columns: ['Strategy', 'Trades', 'Hit Rate', 'Avg Profit', 'Avg Loss', 'Profit Factor', 'Avg Days to Hit'],
+                    rows: strategies.map(row => [
+                        row.strategy,
+                        formatInteger(row.tradeCount || 0),
+                        formatPercent(row.hitRate, 1),
+                        formatPercent(row.avgProfit, 2),
+                        formatPercent(row.avgLoss, 2),
+                        formatNumber(row.profitFactor || 0, 2),
+                        formatNumber(row.avgDaysToHit || 0, 1)
+                    ])
+                };
+            }
+
+            const risk = reportData.riskManagement || {};
+            const buckets = risk.riskReward?.buckets || [];
+            if (buckets.length > 0) {
+                datasets['Risk/Reward Buckets'] = {
+                    columns: ['Bucket', 'Trades', 'Share of Trades', 'Win Rate', 'Avg Max Profit', 'Recommendation'],
+                    rows: buckets.map(bucket => [
+                        bucket.range,
+                        formatInteger(bucket.count || 0),
+                        formatNumber(bucket.percentage || 0, 1) + '%',
+                        formatNumber(bucket.hitRate || 0, 1) + '%',
+                        formatNumber(bucket.avgMaxProfit || 0, 2) + '%',
+                        bucket.recommendation || ''
+                    ])
+                };
+            }
+
+            const kelly = risk.kellySizing || [];
+            if (kelly.length > 0) {
+                datasets['Kelly Position Sizing'] = {
+                    columns: ['Strategy', 'Win Rate', 'Avg Win', 'Avg Loss', 'Full Kelly', 'Half Kelly'],
+                    rows: kelly.map(row => [
+                        row.strategy,
+                        formatNumber(row.winRate || 0, 1) + '%',
+                        formatNumber(row.avgWin || 0, 1) + '%',
+                        formatNumber(row.avgLoss || 0, 1) + '%',
+                        formatNumber(row.fullKelly || 0, 1) + '%',
+                        formatNumber(row.halfKelly || 0, 1) + '%'
+                    ])
+                };
+            }
+
+            const multiDay = reportData.multiDayProfitability || {};
+            if ((multiDay.profitabilityByDay || []).length > 0) {
+                datasets['Multi-Day Profitability'] = {
+                    columns: ['Day', 'Success Rate', 'Avg Profit'],
+                    rows: (multiDay.profitabilityByDay || []).map(row => [
+                        row.day,
+                        formatNumber(((row.rate !== undefined ? row.rate : row.successRate || 0) * 100), 1) + '%',
+                        formatNumber((row.avgProfit || 0) * 100, 2) + '%'
+                    ])
+                };
+            }
+
+            if ((multiDay.sustainedWinners || []).length > 0) {
+                datasets['Sustained Winners'] = {
+                    columns: ['Days Profitable', 'Trades', 'Success Rate', 'Avg Profit'],
+                    rows: (multiDay.sustainedWinners || []).map(row => [
+                        row.days + '+',
+                        formatInteger(row.count || 0),
+                        formatNumber((row.successRate || 0) * 100, 1) + '%',
+                        formatNumber((row.avgProfit || 0) * 100, 2) + '%'
+                    ])
+                };
+            }
+
+            const indicators = reportData.indicatorEffectiveness || [];
+            if (indicators.length > 0) {
+                datasets['Indicator Effectiveness'] = {
+                    columns: ['Indicator', 'Correlation', 'Profitable Range', 'Hit Rate', 'Avg Profit'],
+                    rows: indicators.map(ind => [
+                        ind.name,
+                        formatNumber(ind.correlation || 0, 3),
+                        ind.profitableRange || '-',
+                        formatPercent(ind.hitRate, 1),
+                        formatNumber((ind.avgProfit || 0) * 100, 2) + '%'
+                    ])
+                };
+            }
+
+            const earnings = reportData.earningsTiming || {};
+            if ((earnings.byDaysToEarnings || []).length > 0) {
+                datasets['Earnings by Entry Window'] = {
+                    columns: ['Entry Window', 'Trades', 'Hits', 'Hit Rate', 'Avg Profit', 'Avg Days to Hit'],
+                    rows: earnings.byDaysToEarnings.map(row => [
+                        row.window,
+                        formatInteger(row.trades || 0),
+                        formatInteger(row.hits || 0),
+                        formatNumber((row.hitRate || 0) * 100, 1) + '%',
+                        formatNumber((row.avgProfit || 0) * 100, 2) + '%',
+                        formatNumber(row.avgDaysToHit || 0, 1)
+                    ])
+                };
+            }
+
+            if ((earnings.byReleaseTime || []).length > 0) {
+                datasets['Earnings by Release Time'] = {
+                    columns: ['Release Time', 'Trades', 'Hits', 'Hit Rate', 'Avg Profit', 'Avg Days'],
+                    rows: earnings.byReleaseTime.map(row => [
+                        row.releaseTime,
+                        formatInteger(row.total || 0),
+                        formatInteger(row.hits || 0),
+                        formatNumber((row.hitRate || 0) * 100, 1) + '%',
+                        formatNumber((row.avgProfit || 0) * 100, 2) + '%',
+                        formatNumber(row.avgDays || 0, 1)
+                    ])
+                };
+            }
+
+            const topPlays = reportData.topPlays || [];
+            if (topPlays.length > 0) {
+                datasets['Top Plays'] = {
+                    columns: ['Symbol', 'Entry Date', 'Strategy', 'Max Profit %', 'Days to Hit', 'RSI', 'Price vs SMA20 %', 'RVOL'],
+                    rows: topPlays.map(play => [
+                        play.symbol,
+                        play.entryDate ? new Date(play.entryDate).toLocaleDateString() : '-',
+                        play.strategy,
+                        formatNumber((play.maxProfit || 0) * 100, 2),
+                        formatNumber(play.daysToHit || 0, 1),
+                        play.rsi ? formatNumber(play.rsi, 1) : '-',
+                        play.priceVsSMA20 !== undefined && play.priceVsSMA20 !== null ? formatNumber(play.priceVsSMA20 * 100, 2) : '-',
+                        play.rvol ? formatNumber(play.rvol, 2) : '-'
+                    ])
+                };
+            }
+
+            return datasets;
+        }
+
+        function downloadCurrentDataset() {
+            if (!currentDatasetKey || !dataExplorerDatasets[currentDatasetKey]) return;
+
+            const dataset = dataExplorerDatasets[currentDatasetKey];
+            let csv = dataset.columns.join(',') + '\n';
+            dataset.rows.forEach(row => {
+                const line = row.map(value => {
+                    const cell = String(value).replace(/"/g, '""');
+                    return `"${cell}"`;
+                }).join(',');
+                csv += line + '\n';
+            });
+
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = currentDatasetKey.replace(/\s+/g, '_').toLowerCase() + '.csv';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }
+
         function renderTopPlays() {
             const topPlays = reportData.topPlays;
             
@@ -811,17 +2501,17 @@
                 '</tr></thead><tbody>';
             
             topPlays.forEach(play => {
-                const entryDate = new Date(play.entryDate).toLocaleDateString();
+                const entryDate = play.entryDate ? new Date(play.entryDate).toLocaleDateString() : '-';
                 tableHtml += '<tr>' +
                     '<td><strong>' + play.symbol + '</strong></td>' +
                     '<td>' + entryDate + '</td>' +
                     '<td>' + play.strategy + '</td>' +
-                    '<td class="text-success">' + play.maxProfit.toFixed(2) + '%</td>' +
-                    '<td>' + play.daysToHit + '</td>' +
-                    '<td>' + (play.rsi ? play.rsi.toFixed(1) : '-') + '</td>' +
-                    '<td class="' + (play.priceVsSMA20 >= 0 ? 'text-success' : 'text-danger') + '">' +
-                    (play.priceVsSMA20 ? play.priceVsSMA20.toFixed(2) + '%' : '-') + '</td>' +
-                    '<td>' + (play.rvol ? play.rvol.toFixed(2) : '-') + '</td>' +
+                    '<td class="text-success">' + formatNumber((play.maxProfit || 0) * 100, 2) + '%</td>' +
+                    '<td>' + formatNumber(play.daysToHit || 0, 1) + '</td>' +
+                    '<td>' + (play.rsi ? formatNumber(play.rsi, 1) : '-') + '</td>' +
+                    '<td class="' + ((play.priceVsSMA20 || 0) >= 0 ? 'text-success' : 'text-danger') + '">' +
+                    (play.priceVsSMA20 !== null && play.priceVsSMA20 !== undefined ? formatNumber(play.priceVsSMA20 * 100, 2) + '%' : '-') + '</td>' +
+                    '<td>' + (play.rvol ? formatNumber(play.rvol, 2) : '-') + '</td>' +
                     '</tr>';
             });
             

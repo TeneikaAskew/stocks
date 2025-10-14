@@ -3,6 +3,32 @@
  * Serves HTML interface and handles data requests
  */
 
+function parseNumber(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[,%]/g, '').trim();
+    const num = parseFloat(cleaned);
+    return isNaN(num) ? 0 : num;
+  }
+  return 0;
+}
+
+function parsePercentToDecimal(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') {
+    // If already in range 0-1 assume decimal
+    return value > 1 ? value / 100 : value;
+  }
+  if (typeof value === 'string') {
+    const cleaned = value.replace('%', '').trim();
+    const num = parseFloat(cleaned);
+    if (isNaN(num)) return 0;
+    return num / 100;
+  }
+  return 0;
+}
+
 /**
  * Main entry point for GET requests
  */
@@ -76,13 +102,15 @@ function getSuccessReportDataForWeb() {
   if (storedData) {
     try {
       const data = JSON.parse(storedData);
-      data.lastUpdated = scriptProperties.getProperty('SUCCESS_REPORT_TIMESTAMP') || new Date().toISOString();
-      return data;
+      const timestamp = scriptProperties.getProperty('SUCCESS_REPORT_TIMESTAMP') || new Date().toISOString();
+      const completeData = ensureSuccessReportShape(data);
+      completeData.lastUpdated = timestamp;
+      return completeData;
     } catch (e) {
       console.error('Error parsing stored data:', e);
     }
   }
-  
+
   // If no stored data, collect it fresh
   console.log('No stored data found, collecting fresh data...');
   return collectFreshReportData();
@@ -132,10 +160,19 @@ function collectFreshReportData() {
     earningsTiming: collectEarningsData(ss),
     strategyPerformance: collectStrategiesData(ss),
     topPlays: collectTopPlaysData(ss),
-    riskReward: collectRiskRewardData(ss),
     lastUpdated: new Date().toISOString()
   };
-  
+
+  const riskReward = collectRiskRewardData(ss);
+  const kellySizing = calculateKellySizingFromStrategies(webData.strategyPerformance);
+  webData.riskManagement = {
+    riskReward: riskReward,
+    kellySizing: kellySizing
+  };
+  webData.riskReward = riskReward; // Backwards compatibility
+  webData.incompleteTrades = collectIncompleteTradesData(ss);
+  webData.tradeRecords = collectTradeRecords(ss);
+
   // Store for next time
   const scriptProperties = PropertiesService.getScriptProperties();
   scriptProperties.setProperty('SUCCESS_REPORT_DATA', JSON.stringify(webData));
@@ -158,7 +195,7 @@ function collectOverviewData(ss) {
   for (let i = 1; i < Math.min(11, data.length); i++) {
     const metric = data[i][0];
     const value = data[i][1];
-    
+
     switch(metric) {
       case 'Total Trades':
         overview.totalTrades = value;
@@ -167,25 +204,25 @@ function collectOverviewData(ss) {
         overview.totalObservations = value;
         break;
       case 'Hit Rate':
-        overview.hitRate = value;
+        overview.hitRate = parsePercentToDecimal(value);
         break;
       case 'Profitable Rate':
-        overview.profitableRate = value;
+        overview.profitableRate = parsePercentToDecimal(value);
         break;
       case 'Profit Factor':
-        overview.profitFactor = value;
+        overview.profitFactor = parseNumber(value);
         break;
       case 'Avg Profit':
-        overview.avgProfit = value;
+        overview.avgProfit = parsePercentToDecimal(value);
         break;
       case 'Avg Loss':
-        overview.avgLoss = value;
+        overview.avgLoss = parsePercentToDecimal(value);
         break;
       case 'Avg Risk/Reward':
-        overview.avgRiskReward = value;
+        overview.avgRiskReward = parseNumber(value);
         break;
       case 'Avg Days to Hit':
-        overview.avgDaysToHit = value;
+        overview.avgDaysToHit = parseNumber(value);
         break;
       case 'Best Holding Day':
         overview.bestHoldingDay = value;
@@ -210,15 +247,18 @@ function collectOverviewData(ss) {
       overview.byStrategy[strategy] = {
         trades: data[i][1],
         observations: data[i][2],
-        hitRate: data[i][3],
-        profitableRate: data[i][4],
-        profitFactor: data[i][5],
-        avgWin: data[i][6],
-        avgLoss: data[i][7]
+        hitRate: parsePercentToDecimal(data[i][3]),
+        profitableRate: parsePercentToDecimal(data[i][4]),
+        profitFactor: parseNumber(data[i][5]),
+        avgWin: parsePercentToDecimal(data[i][6]),
+        avgLoss: parsePercentToDecimal(data[i][7])
       };
     }
   }
-  
+
+  overview.avgWin = overview.avgProfit;
+  overview.avgPremiumEstimate = 200;
+
   return overview;
 }
 
@@ -231,7 +271,7 @@ function collectDataQualityData(ss) {
   
   const data = sheet.getDataRange().getValues();
   const quality = {
-    overallScore: data[0][1] || 'N/A',
+    overallScore: parseNumber(data[0][1]),
     fieldCompleteness: {},
     recommendations: []
   };
@@ -249,10 +289,10 @@ function collectDataQualityData(ss) {
     for (let i = fieldStartRow; i < data.length && data[i][0]; i++) {
       const field = data[i][0];
       if (field === 'RECOMMENDATIONS') break;
-      
+
       quality.fieldCompleteness[field] = {
-        percentage: data[i][1],
-        missing: data[i][2],
+        percentage: parseNumber(data[i][1]),
+        missing: parseNumber(data[i][2]),
         status: data[i][3]
       };
     }
@@ -293,7 +333,7 @@ function collectHoldingPeriodData(ss) {
   // Parse optimal exit
   holding.optimalExit = {
     bestDay: data[1][1] || 'N/A',
-    profitableRate: data[2][1] || 'N/A',
+    profitableRate: parsePercentToDecimal(data[2][1]) || 0,
     recommendation: data[3][1] || 'N/A'
   };
   
@@ -314,12 +354,12 @@ function collectHoldingPeriodData(ss) {
         day: data[i][0],
         totalObs: data[i][1],
         profitable: data[i][2],
-        hitRate: data[i][3],
-        profitableRate: data[i][4],
-        avgWin: data[i][5],
-        avgLoss: data[i][6],
-        profitFactor: data[i][7],
-        avgMove: data[i][8]
+        hitRate: parsePercentToDecimal(data[i][3]),
+        profitableRate: parsePercentToDecimal(data[i][4]),
+        avgWin: parsePercentToDecimal(data[i][5]),
+        avgLoss: parsePercentToDecimal(data[i][6]),
+        profitFactor: parseNumber(data[i][7]),
+        avgMove: parsePercentToDecimal(data[i][8])
       });
     }
   }
@@ -580,14 +620,14 @@ function collectEarningsData(ss) {
   if (daysStartRow > 0) {
     for (let i = daysStartRow; i < data.length && data[i][0]; i++) {
       if (data[i][0] === 'PERFORMANCE BY RELEASE TIME') break;
-      
+
       earnings.byDaysToEarnings.push({
         window: data[i][0],
         trades: data[i][1],
         hits: data[i][2],
-        hitRate: data[i][3],
-        avgProfit: data[i][4],
-        avgDaysToHit: data[i][5]
+        hitRate: parsePercentToDecimal(data[i][3]),
+        avgProfit: parsePercentToDecimal(data[i][4]),
+        avgDaysToHit: parseNumber(data[i][5])
       });
     }
   }
@@ -607,13 +647,13 @@ function collectEarningsData(ss) {
         releaseTime: data[i][0],
         total: data[i][1],
         hits: data[i][2],
-        hitRate: data[i][3],
-        avgProfit: data[i][4],
-        avgDays: data[i][5]
+        hitRate: parsePercentToDecimal(data[i][3]),
+        avgProfit: parsePercentToDecimal(data[i][4]),
+        avgDays: parseNumber(data[i][5])
       });
     }
   }
-  
+
   return earnings;
 }
 
@@ -633,16 +673,16 @@ function collectStrategiesData(ss) {
       strategy: data[i][0],
       totalTrades: data[i][1],
       hitCount: data[i][2],
-      hitRate: data[i][3],
-      avgProfit: data[i][4],
-      avgLoss: data[i][5],
-      profitFactor: data[i][6],
-      avgDaysToHit: data[i][7],
-      totalProfit: data[i][8],
-      totalLoss: data[i][9]
+      hitRate: parsePercentToDecimal(data[i][3]),
+      avgProfit: parsePercentToDecimal(data[i][4]),
+      avgLoss: parsePercentToDecimal(data[i][5]),
+      profitFactor: parseNumber(data[i][6]),
+      avgDaysToHit: parseNumber(data[i][7]),
+      totalProfit: parseNumber(data[i][8]),
+      totalLoss: parseNumber(data[i][9])
     });
   }
-  
+
   return strategies;
 }
 
@@ -667,9 +707,9 @@ function collectTopPlaysData(ss) {
       entryDate: data[i][3],
       strike: data[i][4],
       hitPrice: data[i][5],
-      maxProfit: data[i][6],
+      maxProfit: parsePercentToDecimal(data[i][6]),
       daysToHit: data[i][7],
-      riskReward: data[i][8],
+      riskReward: parseNumber(data[i][8]),
       profitableDays: data[i][9]
     });
   }
@@ -701,7 +741,7 @@ function collectTopPlaysData(ss) {
 function collectRiskRewardData(ss) {
   const sheet = ss.getSheetByName('SR_RiskReward');
   if (!sheet) return {};
-  
+
   const data = sheet.getDataRange().getValues();
   const riskReward = {
     overview: {},
@@ -713,7 +753,7 @@ function collectRiskRewardData(ss) {
     if (data[i][0] === 'RISK/REWARD DISTRIBUTION') break;
     const key = data[i][0];
     const value = data[i][1];
-    if (key) riskReward.overview[key] = value;
+    if (key) riskReward.overview[key] = parseNumber(value);
   }
   
   // Find distribution section
@@ -729,13 +769,191 @@ function collectRiskRewardData(ss) {
     for (let i = distStartRow; i < data.length && data[i][0]; i++) {
       riskReward.distribution.push({
         range: data[i][0],
-        count: data[i][1],
-        percentage: data[i][2]
+        count: parseNumber(data[i][1]),
+        percentage: parseNumber(data[i][2])
       });
     }
   }
-  
+
   return riskReward;
+}
+
+function collectIncompleteTradesData(ss) {
+  // Try to reuse stored data if available
+  try {
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const stored = scriptProperties.getProperty('SUCCESS_REPORT_DATA');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed && parsed.incompleteTrades) {
+        return parsed.incompleteTrades;
+      }
+    }
+  } catch (err) {
+    console.warn('Unable to reuse stored incomplete trades:', err);
+  }
+
+  const sheet = ss.getSheetByName('SR_IncompleteTrades');
+  if (!sheet) {
+    return {
+      totalCount: 0,
+      byStrategy: [],
+      sample: [],
+      message: 'No incomplete trades sheet found. Run the full success report to generate details.'
+    };
+  }
+
+  const data = sheet.getDataRange().getValues();
+  if (!data || data.length < 2) {
+    return {
+      totalCount: 0,
+      byStrategy: [],
+      sample: [],
+      message: 'Incomplete trades sheet is empty.'
+    };
+  }
+
+  const headers = data[0];
+  const rows = data.slice(1).filter(row => row.some(cell => cell !== ''));
+
+  const strategyIndex = headers.indexOf('Strategy');
+  const tickerIndex = headers.indexOf('Ticker');
+  const runDateIndex = headers.indexOf('Run Date');
+  const expDateIndex = headers.indexOf('Exp Date');
+  const strikeIndex = headers.indexOf('Strike');
+  const longStrikeIndex = headers.indexOf('Long Strike');
+
+  const strategyCounts = {};
+  const sample = [];
+
+  rows.forEach((row, idx) => {
+    const strategy = strategyIndex >= 0 ? row[strategyIndex] : 'Unknown';
+    if (strategy) {
+      strategyCounts[strategy] = (strategyCounts[strategy] || 0) + 1;
+    }
+
+    if (idx < 25) {
+      sample.push({
+        strategy: strategy,
+        ticker: tickerIndex >= 0 ? row[tickerIndex] : '',
+        runDate: runDateIndex >= 0 ? row[runDateIndex] : '',
+        expDate: expDateIndex >= 0 ? row[expDateIndex] : '',
+        strike: strikeIndex >= 0 ? row[strikeIndex] : '',
+        longStrike: longStrikeIndex >= 0 ? row[longStrikeIndex] : ''
+      });
+    }
+  });
+
+  const byStrategy = Object.entries(strategyCounts)
+    .map(([strategy, count]) => ({ strategy, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    totalCount: rows.length,
+    byStrategy: byStrategy,
+    sample: sample
+  };
+}
+
+function collectTradeRecords(ss) {
+  try {
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const stored = scriptProperties.getProperty('SUCCESS_REPORT_DATA');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed && parsed.tradeRecords) {
+        return parsed.tradeRecords;
+      }
+    }
+  } catch (err) {
+    console.warn('Unable to reuse stored trade records:', err);
+  }
+
+  return [];
+}
+
+function ensureSuccessReportShape(data) {
+  const base = {
+    overview: {
+      totalTrades: 0,
+      totalObservations: 0,
+      totalHits: 0,
+      profitableTrades: 0,
+      hitRate: 0,
+      profitableRate: 0,
+      profitFactor: 0,
+      avgProfit: 0,
+      avgLoss: 0,
+      avgRiskReward: 0,
+      avgDaysToHit: 0,
+      avgPremiumEstimate: 200
+    },
+    dataQuality: {
+      overallScore: 0,
+      fieldCompleteness: {},
+      recommendations: []
+    },
+    holdingPeriod: {
+      optimalExit: { bestDay: 'Day 1', profitableRate: 0, recommendation: '' },
+      byDay: [],
+      decayAnalysis: {}
+    },
+    multiDayProfitability: { profitabilityByDay: [], sustainedWinners: [] },
+    indicatorEffectiveness: [],
+    earningsTiming: {
+      summary: {},
+      byDaysToEarnings: [],
+      byReleaseTime: []
+    },
+    strategyPerformance: [],
+    riskManagement: {
+      riskReward: { buckets: [], exitTiming: [] },
+      kellySizing: []
+    },
+    topPlays: [],
+    incompleteTrades: { totalCount: 0, byStrategy: [], sample: [] },
+    tradeRecords: []
+  };
+
+  const merged = Object.assign({}, base, data || {});
+  merged.overview = Object.assign({}, base.overview, data?.overview || {});
+  merged.dataQuality = Object.assign({}, base.dataQuality, data?.dataQuality || {});
+  merged.holdingPeriod = Object.assign({}, base.holdingPeriod, data?.holdingPeriod || {});
+  merged.multiDayProfitability = Object.assign({}, base.multiDayProfitability, data?.multiDayProfitability || {});
+  merged.earningsTiming = Object.assign({}, base.earningsTiming, data?.earningsTiming || {});
+  merged.riskManagement = Object.assign({}, base.riskManagement, data?.riskManagement || {});
+  merged.riskManagement.riskReward = Object.assign({}, base.riskManagement.riskReward, data?.riskManagement?.riskReward || {});
+  merged.incompleteTrades = Object.assign({}, base.incompleteTrades, data?.incompleteTrades || {});
+  merged.tradeRecords = Array.isArray(data?.tradeRecords) ? data.tradeRecords : [];
+
+  if (!merged.riskReward) {
+    merged.riskReward = merged.riskManagement.riskReward;
+  }
+
+  return merged;
+}
+
+function calculateKellySizingFromStrategies(strategies) {
+  if (!strategies || strategies.length === 0) return [];
+
+  return strategies.map(strategy => {
+    const winRate = strategy.hitRate || 0;
+    const avgWin = Math.abs(strategy.avgProfit || 0);
+    const avgLoss = Math.abs(strategy.avgLoss || 0);
+    const payoutRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
+    const fullKelly = payoutRatio > 0
+      ? Math.max(0, winRate - ((1 - winRate) / payoutRatio))
+      : 0;
+
+    return {
+      strategy: strategy.strategy,
+      fullKelly: fullKelly * 100,
+      halfKelly: fullKelly * 50,
+      winRate: winRate * 100,
+      avgWin: avgWin * 100,
+      avgLoss: avgLoss * 100
+    };
+  }).sort((a, b) => b.fullKelly - a.fullKelly);
 }
 
 /**
