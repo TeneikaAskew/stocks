@@ -9,9 +9,10 @@ on:
   workflow_dispatch:  # Allow manual trigger
     inputs:
       fetch_historical:
-        description: 'Fetch historical data'
+        description: 'Fetch historical market data (daily OHLCV beyond 7-day window)'
         required: false
-        default: 'false'
+        default: false
+        type: boolean
       target_date:
         description: 'Target date for analysis (YYYY-MM-DD format)'
         required: false
@@ -65,6 +66,32 @@ jobs:
       run: |
         mkdir -p data
         echo "Data directory ready"
+
+    - name: Fetch historical market data
+      if: ${{ github.event.inputs.fetch_historical == 'true' }}
+      run: |
+        echo "Fetching historical market data for all tickers..."
+
+        # Determine date range for historical fetch
+        if [ -n "${{ github.event.inputs.date_range_start }}" ] && [ -n "${{ github.event.inputs.date_range_end }}" ]; then
+          START_DATE="${{ github.event.inputs.date_range_start }}"
+          END_DATE="${{ github.event.inputs.date_range_end }}"
+        else
+          # Default: fetch last 365 days of historical data
+          START_DATE=$(date -d '365 days ago' +'%Y-%m-%d')
+          END_DATE=$(date +'%Y-%m-%d')
+        fi
+
+        echo "Fetching historical data from ${START_DATE} to ${END_DATE}"
+
+        # Fetch historical data for each ticker
+        for ticker in SPY QQQ IWM SPX; do
+          echo "Fetching ${ticker}..."
+          python scripts/fetch_market_data.py --tickers ${ticker} --historical --start-date ${START_DATE} --end-date ${END_DATE}
+        done
+
+        echo "Historical data fetch complete"
+      continue-on-error: true
 
     - name: Set date environment variables
       run: |
