@@ -216,9 +216,14 @@ class MarketEventsTracker:
                 calendar_data = data['pageProps']['data']
 
                 for event_item in calendar_data:
+                    # Skip events without dates
+                    event_date = event_item.get('date')
+                    if not event_date:
+                        continue
+
                     # Extract event details (adapt field names based on actual API response)
                     events.append({
-                        'date': event_item.get('date'),
+                        'date': event_date,
                         'event_type': self._classify_unusual_whales_event(event_item.get('title', '')),
                         'event': event_item.get('title', event_item.get('name', 'Unknown Event')),
                         'expected_impact': event_item.get('impact', 'Medium'),
@@ -371,7 +376,15 @@ class MarketEventsTracker:
 
         # Combine all events
         combined_df = pd.concat(all_events, ignore_index=True)
-        combined_df['date'] = pd.to_datetime(combined_df['date'])
+        combined_df['date'] = pd.to_datetime(combined_df['date'], errors='coerce')
+
+        # Remove events with invalid dates (NaT)
+        before_count = len(combined_df)
+        combined_df = combined_df.dropna(subset=['date'])
+        invalid_removed = before_count - len(combined_df)
+
+        if invalid_removed > 0:
+            print(f"Removed {invalid_removed} events with invalid dates")
 
         print(f"Combined {len(combined_df)} total events from all sources")
         return combined_df
@@ -580,22 +593,26 @@ class MarketEventsTracker:
         """
         
         today = pd.Timestamp.now().normalize()
-        
+
         for _, event in self.events_df.sort_values('date').iterrows():
+            # Skip events with invalid dates (NaT)
+            if pd.isna(event['date']):
+                continue
+
             row_class = []
-            
+
             if event['expected_impact'] == 'Very High':
                 row_class.append('very-high-impact')
             elif event['expected_impact'] == 'High':
                 row_class.append('high-impact')
             elif event['expected_impact'] == 'Market Closed':
                 row_class.append('market-closed')
-            
+
             if event['date'] < today:
                 row_class.append('past-event')
-            
+
             class_str = ' '.join(row_class)
-            
+
             html_content += f"""
                 <tr class="{class_str}">
                     <td>{event['date'].strftime('%Y-%m-%d')}</td>
@@ -664,30 +681,34 @@ class MarketEventsTracker:
         print("\n" + "="*60)
         print("MARKET EVENTS SUMMARY")
         print("="*60)
-        
+
         print(f"\nTotal Events: {len(self.events_df)}")
-        
+
+        if self.events_df.empty:
+            print("\nNo events in database. Run without --no-fetch to fetch events from APIs.")
+            return
+
         # Events by type
         print("\nEvents by Type:")
         for event_type in self.events_df['event_type'].unique():
             count = len(self.events_df[self.events_df['event_type'] == event_type])
             print(f"  {event_type}: {count}")
-        
+
         # Upcoming events
         upcoming = self.get_upcoming_events(30)
         print(f"\nUpcoming Events (Next 30 Days): {len(upcoming)}")
-        
+
         if not upcoming.empty:
             print("\nNext 5 Events:")
             for _, event in upcoming.head(5).iterrows():
                 days_until = (event['date'] - pd.Timestamp.now()).days
                 print(f"  {event['date'].strftime('%Y-%m-%d')} ({days_until} days): {event['event']} [{event['expected_impact']}]")
-        
+
         # High impact events
         high_impact = self.get_high_impact_events()
         future_high_impact = high_impact[high_impact['date'] >= pd.Timestamp.now()]
         print(f"\nUpcoming High Impact Events: {len(future_high_impact)}")
-        
+
         if not future_high_impact.empty:
             print("\nNext 3 High Impact Events:")
             for _, event in future_high_impact.head(3).iterrows():
@@ -697,65 +718,74 @@ class MarketEventsTracker:
 def main():
     """Main function to run the market events tracker."""
     import argparse
-    
-    parser = argparse.ArgumentParser(description='Market Events Tracker')
+
+    parser = argparse.ArgumentParser(description='Market Events Tracker - Fetch and manage economic events')
     parser.add_argument('--target-date', type=str, help='Target date for analysis (YYYY-MM-DD)')
-    parser.add_argument('--start-date', type=str, help='Start date for range analysis (YYYY-MM-DD)')
-    parser.add_argument('--end-date', type=str, help='End date for range analysis (YYYY-MM-DD)')
-    
+    parser.add_argument('--start-date', type=str, help='Start date for fetching events (YYYY-MM-DD), default: 2024-01-01')
+    parser.add_argument('--end-date', type=str, help='End date for fetching events (YYYY-MM-DD), default: 2026-12-31')
+    parser.add_argument('--no-fetch', action='store_true', help='Skip fetching new events from APIs')
+
     args = parser.parse_args()
-    
+
+    # Determine date range for API fetching
+    fetch_start = args.start_date if args.start_date else '2024-01-01'
+    fetch_end = args.end_date if args.end_date else '2026-12-31'
+
     tracker = MarketEventsTracker()
-    
-    # Load events
-    events_df = tracker.load_events()
-    
+
+    # Load existing events and fetch new ones from APIs
+    fetch_new = not args.no_fetch
+    events_df = tracker.load_events(fetch_new=fetch_new, start_date=fetch_start, end_date=fetch_end)
+
     # Print summary
     tracker.print_summary()
-    
+
     # Create HTML calendar
     tracker.create_event_calendar_html()
-    
+
     # Export for ML
     tracker.export_for_ml()
-    
+
     # Show events for target date or date range
     today_events = pd.DataFrame()  # Initialize
     today = pd.Timestamp.now().normalize()
-    
-    if args.start_date and args.end_date:
-        print(f"\n{'='*60}")
-        print(f"EVENTS FOR DATE RANGE: {args.start_date} to {args.end_date}")
-        print(f"{'='*60}")
-        range_events = tracker.get_events_for_date_range(args.start_date, args.end_date)
-        if not range_events.empty:
-            for _, event in range_events.iterrows():
-                print(f"\n{event['date'].strftime('%Y-%m-%d')}: {event['event']}")
-                print(f"  Type: {event['event_type']}, Impact: {event['expected_impact']}")
-    elif args.target_date:
+
+    if args.target_date:
+        # Show events for specific target date
         target_date = pd.Timestamp(args.target_date)
         today_events = tracker.get_events_for_date_range(target_date, target_date)
+
+        if not today_events.empty:
+            date_str = args.target_date
+            print(f"\n{'='*60}")
+            print(f"EVENTS FOR {date_str}")
+            print(f"{'='*60}")
+            for _, event in today_events.iterrows():
+                print(f"\nEvent: {event['event']}")
+                print(f"Type: {event['event_type']}")
+                print(f"Expected Impact: {event['expected_impact']}")
+                if event.get('actual'):
+                    print(f"Actual: {event['actual']}")
+                if event.get('consensus'):
+                    print(f"Consensus: {event['consensus']}")
+                if event.get('notes'):
+                    print(f"Notes: {event['notes']}")
     else:
+        # Show today's events by default
         today_events = tracker.get_events_for_date_range(today, today)
-    
-    if not today_events.empty and not (args.start_date and args.end_date):
-        date_str = args.target_date if args.target_date else today.strftime('%Y-%m-%d')
-        print(f"\n{'='*60}")
-        print(f"EVENTS FOR {date_str}")
-        print(f"{'='*60}")
-        for _, event in today_events.iterrows():
-            print(f"\nEvent: {event['event']}")
-            print(f"Type: {event['event_type']}")
-            print(f"Expected Impact: {event['expected_impact']}")
-            if event.get('actual'):
-                print(f"Actual: {event['actual']}")
-            if event.get('consensus'):
-                print(f"Consensus: {event['consensus']}")
-            if event.get('notes'):
-                print(f"Notes: {event['notes']}")
-    
+
+        if not today_events.empty:
+            print(f"\n{'='*60}")
+            print(f"EVENTS FOR TODAY ({today.strftime('%Y-%m-%d')})")
+            print(f"{'='*60}")
+            for _, event in today_events.iterrows():
+                print(f"\nEvent: {event['event']}")
+                print(f"Type: {event['event_type']}")
+                print(f"Expected Impact: {event['expected_impact']}")
+
     print("\n" + "="*60)
-    print("Market Events Tracker Initialized Successfully!")
+    print("Market Events Tracker Completed Successfully!")
+    print(f"Total events in database: {len(tracker.events_df)}")
     print("="*60)
 
 
