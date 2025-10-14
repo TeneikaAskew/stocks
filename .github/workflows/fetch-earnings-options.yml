@@ -97,25 +97,53 @@ jobs:
         # Check if there are changes to commit
         if git diff --staged --quiet; then
           echo "No changes to commit"
+          exit 0
+        fi
+
+        # Determine which snapshot this is based on time
+        HOUR=$(date +'%H')
+        if [ "$HOUR" -eq "14" ]; then
+          SNAPSHOT="opening"
+        elif [ "$HOUR" -eq "15" ]; then
+          SNAPSHOT="IV-check"
+        elif [ "$HOUR" -eq "17" ]; then
+          SNAPSHOT="mid-day"
+        elif [ "$HOUR" -eq "20" ]; then
+          SNAPSHOT="near-close"
+        elif [ "$HOUR" -eq "21" ]; then
+          SNAPSHOT="after-hours"
         else
-          # Determine which snapshot this is based on time
-          HOUR=$(date +'%H')
-          if [ "$HOUR" -eq "14" ]; then
-            SNAPSHOT="opening"
-          elif [ "$HOUR" -eq "15" ]; then
-            SNAPSHOT="IV-check"
-          elif [ "$HOUR" -eq "17" ]; then
-            SNAPSHOT="mid-day"
-          elif [ "$HOUR" -eq "20" ]; then
-            SNAPSHOT="near-close"
-          elif [ "$HOUR" -eq "21" ]; then
-            SNAPSHOT="after-hours"
-          else
-            SNAPSHOT="manual"
+          SNAPSHOT="manual"
+        fi
+
+        git commit -m "update: Earnings options data - $COMMIT_DATE $COMMIT_TIME ($SNAPSHOT)"
+
+        # Retry push up to 3 times with pull/rebase on conflict
+        MAX_RETRIES=3
+        RETRY_COUNT=0
+        PUSH_SUCCESS=false
+
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$PUSH_SUCCESS" = "false" ]; do
+          if [ $RETRY_COUNT -gt 0 ]; then
+            echo "Push failed, attempt $((RETRY_COUNT + 1))/$MAX_RETRIES"
+            echo "Waiting 10 seconds before retry..."
+            sleep 10
+
+            echo "Pulling with rebase to sync with remote..."
+            git pull --rebase origin main
           fi
 
-          git commit -m "update: Earnings options data - $COMMIT_DATE $COMMIT_TIME ($SNAPSHOT)"
-          git push
+          if git push; then
+            echo "Push successful!"
+            PUSH_SUCCESS=true
+          else
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+          fi
+        done
+
+        if [ "$PUSH_SUCCESS" = "false" ]; then
+          echo "Failed to push after $MAX_RETRIES attempts"
+          exit 1
         fi
 
     - name: Create issue on failure

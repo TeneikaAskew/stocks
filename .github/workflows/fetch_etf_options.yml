@@ -61,8 +61,42 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add data/options/etfs/*.parquet
-          git diff --staged --quiet || git commit -m "Update ETF options data - $(date +'%Y-%m-%d %H:%M:%S %Z')"
-          git push
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "Update ETF options data - $(date +'%Y-%m-%d %H:%M:%S %Z')"
+
+          # Retry push up to 3 times with pull/rebase on conflict
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          PUSH_SUCCESS=false
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$PUSH_SUCCESS" = "false" ]; do
+            if [ $RETRY_COUNT -gt 0 ]; then
+              echo "Push failed, attempt $((RETRY_COUNT + 1))/$MAX_RETRIES"
+              echo "Waiting 10 seconds before retry..."
+              sleep 10
+
+              echo "Pulling with rebase to sync with remote..."
+              git pull --rebase origin main
+            fi
+
+            if git push; then
+              echo "Push successful!"
+              PUSH_SUCCESS=true
+            else
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+            fi
+          done
+
+          if [ "$PUSH_SUCCESS" = "false" ]; then
+            echo "Failed to push after $MAX_RETRIES attempts"
+            exit 1
+          fi
         env:
           TZ: America/New_York
 
