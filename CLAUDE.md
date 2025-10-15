@@ -118,6 +118,41 @@ Follow this rigorous testing approach:
 # npm run typecheck
 ```
 
+### GitHub Actions Workflows
+
+This project uses GitHub Actions for automated data fetching, analysis, and system maintenance. All workflows follow consistent patterns and include automated failure handling.
+
+#### Workflow Development Best Practices
+
+1. **Always Include Failure Handling**
+   - Every workflow MUST include the `handle-failure` job
+   - This ensures issues and PRs are automatically created on failure
+   - See the "Automated Workflow Failure Handling" section below for details
+
+2. **Use Consistent Permissions**
+   - Main job: `contents: write` (for git operations), `issues: write` (for reporting)
+   - Failure handler: Add `pull-requests: write` and `actions: read`
+
+3. **Implement Continue-on-Error Strategically**
+   - Use `continue-on-error: true` for non-critical steps
+   - Track failures with step outputs and check them in a dedicated step
+   - This allows workflows to complete partially while still reporting failures
+
+4. **Use Proper Job Dependencies**
+   - Use `needs:` to chain jobs that depend on each other
+   - Use `if: always()` for jobs that should run regardless of previous job status
+   - Use `if: failure()` for failure handling jobs
+
+5. **Test Workflows Locally When Possible**
+   - Use `act` tool to test GitHub Actions locally: https://github.com/nektos/act
+   - Test scripts independently before integrating into workflows
+   - Use `workflow_dispatch` for manual testing in GitHub
+
+6. **Label Workflows Consistently**
+   - Use descriptive, unique labels for each workflow type
+   - Format: `workflow-failure,<specific-workflow-type>,automated`
+   - Examples: `workflow-failure,etf-options,automated` or `workflow-failure,market-data,automated`
+
 ### GitHub Issue Management
 Use GitHub CLI (`gh`) to manage repository issues:
 
@@ -213,7 +248,11 @@ All major workflows in this project use automated failure handling:
 - `fetch-market-data.yml` - Daily market data updates
 - `earnings-options-analytics.yml` - Analytics pipeline
 - `update_economic_events_calendar.yml` - Economic calendar updates
+- `fetch-economic-events-calendar.yml` - Economic events calendar fetching
+- `analyze-market-data.yml` - Market data analysis
 - `download-google-sheets.yml` - Google Sheets data downloads
+
+**Important**: When creating new workflows, always add the failure handler job to ensure consistent error tracking and automated issue creation.
 
 #### Working with Auto-Created Issues and PRs
 
@@ -277,23 +316,52 @@ gh pr view <pr-number>
 gh issue close <issue-number> --comment "Fixed in PR #<pr-number>"
 ```
 
-#### Customizing Failure Handling
+#### Adding Failure Handling to New Workflows
 
-Each workflow specifies its failure handling configuration:
+When creating or updating workflows, always add the failure handler job. Here's the standard pattern:
 
 ```yaml
-handle-failure:
-  needs: main-job
-  if: failure()
-  uses: ./.github/workflows/handle-workflow-failure.yml
-  with:
-    workflow_name: "Human-readable name"
-    failure_title: "❌ Title for the issue"
-    issue_labels: "workflow-failure,specific-label,automated"
-    workflow_file: "workflow-filename.yml"
-    # ... other context parameters
-    create_pr: true  # Set to false to skip PR creation
+jobs:
+  main-job:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      # Your workflow steps here
+      - name: Your step
+        run: echo "Do work"
+
+  # Always add this failure handler job
+  handle-failure:
+    needs: main-job
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read  # Required to read workflow run details and logs
+    with:
+      workflow_name: "Human-readable name"
+      failure_title: "❌ Descriptive failure title"
+      issue_labels: "workflow-failure,specific-label,automated"
+      workflow_file: "workflow-filename.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: true  # Set to false to skip PR creation
 ```
+
+**Key Points:**
+- The `handle-failure` job must have `needs: main-job` (or whatever your main job is called)
+- Use `if: failure()` to trigger only on failure
+- Always include `actions: read` permission for log access
+- Use descriptive, unique labels for each workflow type
+- Set `create_pr: false` if you only want issue creation without a PR
 
 #### Troubleshooting
 
