@@ -82,52 +82,176 @@ function handleDataRequest(params) {
 }
 
 /**
- * Get success report data formatted for web display
+ * Calculate success report data directly from strategy sheets
+ * This bypasses the SR_* sheet dependency and ensures fresh, accurate data
+ * Uses same analysis functions as EW_generateSuccessReport()
  */
-function getSuccessReportDataForWeb() {
+function getSuccessReportDataDirect() {
+  const startTime = new Date();
+  console.log('=== CALCULATING WEB APP DATA DIRECTLY FROM STRATEGY SHEETS ===');
+
   const ss = SpreadsheetApp.getActive();
-  const reportSheet = ss.getSheetByName('Success_Report');
-  
-  // If no report exists, generate it
-  if (!reportSheet) {
-    console.log('No Success_Report sheet found, generating...');
-    EW_generateSuccessReport();
-    return getSuccessReportDataForWeb(); // Recursive call
-  }
-  
-  // Try to get from stored properties first
-  const scriptProperties = PropertiesService.getScriptProperties();
-  const storedData = scriptProperties.getProperty('SUCCESS_REPORT_DATA');
-  
-  if (storedData) {
-    try {
-      const data = JSON.parse(storedData);
-      const timestamp = scriptProperties.getProperty('SUCCESS_REPORT_TIMESTAMP') || new Date().toISOString();
-      const completeData = ensureSuccessReportShape(data);
-      completeData.lastUpdated = timestamp;
-      return completeData;
-    } catch (e) {
-      console.error('Error parsing stored data:', e);
-    }
+  const strategies = Object.keys(EW.STRATEGY_ENDPOINTS || {});
+
+  if (strategies.length === 0) {
+    console.warn('No strategies found in EW.STRATEGY_ENDPOINTS');
+    return ensureSuccessReportShape({});
   }
 
-  // If no stored data, collect it fresh
-  console.log('No stored data found, collecting fresh data...');
-  return collectFreshReportData();
+  // Step 1: Extract all trades from strategy sheets
+  const allTrades = [];
+
+  for (const strategy of strategies) {
+    const sheet = ss.getSheetByName(strategy);
+    if (!sheet || sheet.getLastRow() < 2) {
+      console.log(`Skipping ${strategy} - no data`);
+      continue;
+    }
+
+    const trades = EW_extractTradeData(sheet, strategy);
+    allTrades.push(...trades);
+    console.log(`Extracted ${trades.length} trades from ${strategy}`);
+  }
+
+  console.log(`Total trades extracted: ${allTrades.length}`);
+
+  if (allTrades.length === 0) {
+    console.warn('No trades found in any strategy sheet');
+    return ensureSuccessReportShape({});
+  }
+
+  // Step 2: Run all analyses (same functions as success report generation)
+  console.log('Running analyses...');
+
+  const webData = {
+    overview: EW_analyzeOverview(allTrades),
+    dataQuality: EW_analyzeDataQuality(allTrades),
+    holdingPeriod: EW_analyzeHoldingPeriod(allTrades),
+    multiDayProfitability: EW_analyzeMultiDayProfitability(allTrades),
+    indicatorEffectiveness: EW_analyzeIndicatorEffectiveness(allTrades),
+    earningsTiming: EW_analyzeEarningsTiming(allTrades),
+    strategyPerformance: EW_analyzeStrategyPerformance(allTrades),
+    topPlays: EW_identifyTopPlays(allTrades),
+    lastUpdated: new Date().toISOString()
+  };
+
+  // Step 3: Calculate risk management metrics
+  const riskReward = EW_analyzeRiskRewardPatterns(allTrades);
+  const kellySizing = calculateKellySizingFromStrategies(webData.strategyPerformance);
+
+  webData.riskManagement = {
+    riskReward: riskReward,
+    kellySizing: kellySizing
+  };
+  webData.riskReward = riskReward; // Backwards compatibility
+
+  // Step 4: Add incomplete trades analysis
+  webData.incompleteTrades = analyzeIncompleteTrades(allTrades);
+  webData.tradeRecords = allTrades.slice(0, 1000); // Store first 1000 for data explorer
+
+  const duration = Math.round((new Date() - startTime) / 1000);
+  console.log(`Direct calculation complete in ${duration} seconds`);
+  console.log(`Data summary: ${allTrades.length} trades, ${webData.strategyPerformance.length} strategies, ${webData.topPlays.length} top plays`);
+
+  return ensureSuccessReportShape(webData);
+}
+
+/**
+ * Analyze incomplete trades from the trades array
+ */
+function analyzeIncompleteTrades(allTrades) {
+  const incompleteTrades = allTrades.filter(trade => {
+    // A trade is incomplete if it's missing critical tracking data
+    const hasStrikeHit = trade.strikeHit && trade.strikeHit.length > 0;
+    const hasMaxFavorable = trade.maxFavorable && trade.maxFavorable.length > 0;
+    const hasExpResult = trade.expResult && trade.expResult !== '';
+
+    // Consider incomplete if missing strike hit data but position should be trackable
+    return !hasStrikeHit || !hasMaxFavorable;
+  });
+
+  // Group by strategy
+  const byStrategy = {};
+  incompleteTrades.forEach(trade => {
+    if (!byStrategy[trade.strategy]) {
+      byStrategy[trade.strategy] = 0;
+    }
+    byStrategy[trade.strategy]++;
+  });
+
+  const byStrategyArray = Object.entries(byStrategy)
+    .map(([strategy, count]) => ({ strategy, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    totalCount: incompleteTrades.length,
+    byStrategy: byStrategyArray,
+    sample: incompleteTrades.slice(0, 25).map(trade => ({
+      strategy: trade.strategy,
+      ticker: trade.ticker,
+      runDate: trade.runDate,
+      expDate: trade.expDate,
+      strike: trade.strike,
+      longStrike: trade.longStrike
+    }))
+  };
+}
+
+/**
+ * Get success report data formatted for web display
+ * NEW APPROACH: Calculate directly from strategy sheets, use cache for performance
+ */
+function getSuccessReportDataForWeb() {
+  // Try cache first (5 minute TTL)
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'WEB_APP_DATA_V2';
+
+  try {
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      console.log('Returning cached web app data');
+      return JSON.parse(cached);
+    }
+  } catch (e) {
+    console.warn('Cache retrieval failed:', e);
+  }
+
+  // Cache miss or error - calculate fresh data directly from strategy sheets
+  console.log('Cache miss - calculating fresh data from strategy sheets...');
+  const freshData = getSuccessReportDataDirect();
+
+  // Cache for next request (5 minutes)
+  try {
+    cache.put(cacheKey, JSON.stringify(freshData), 300); // 5 minutes
+  } catch (e) {
+    console.warn('Failed to cache data (possibly too large):', e);
+    // Continue without caching
+  }
+
+  return freshData;
 }
 
 /**
  * Refresh data and return it
+ * Clears cache and forces fresh calculation
  */
 function refreshAndGetData() {
   try {
-    EW_generateSuccessReport();
+    // Clear cache to force fresh calculation
+    const cache = CacheService.getScriptCache();
+    cache.remove('WEB_APP_DATA_V2');
+    console.log('Cache cleared - forcing fresh calculation');
+
+    // Get fresh data (will recalculate and cache)
+    const data = getSuccessReportDataForWeb();
+
     return {
       success: true,
-      data: getSuccessReportDataForWeb(),
-      message: 'Report refreshed successfully'
+      data: data,
+      message: 'Report refreshed successfully - calculated directly from strategy sheets'
     };
   } catch (error) {
+    console.error('Refresh failed:', error);
     return {
       success: false,
       error: error.toString()
@@ -137,6 +261,9 @@ function refreshAndGetData() {
 
 /**
  * Collect fresh report data from individual analysis sheets
+ * DEPRECATED: This function reads from SR_* sheets which may be stale/missing
+ * Use getSuccessReportDataDirect() instead which calculates from source data
+ * Kept for backwards compatibility only
  */
 function collectFreshReportData() {
   const ss = SpreadsheetApp.getActive();
@@ -1145,4 +1272,261 @@ function formatTopPlaysForWeb(topPlays) {
  */
 function include(filename) {
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
+}
+
+// ============================================================================
+// TESTING FUNCTIONS - Run these in Apps Script editor to verify refactoring
+// ============================================================================
+
+/**
+ * Test direct data collection and verify all components work
+ * Run this in Apps Script editor after deployment
+ */
+function testDirectDataCollection() {
+  console.log('=== TESTING DIRECT DATA COLLECTION ===\n');
+
+  const startTime = new Date();
+  const data = getSuccessReportDataDirect();
+  const duration = (new Date() - startTime) / 1000;
+
+  console.log('⏱️  Calculation Time:', duration.toFixed(2) + 's');
+  console.log('\n=== DATA SUMMARY ===');
+  console.log('Total Trades:', data.overview?.totalTrades || 0);
+  console.log('Successful Trades:', data.overview?.successfulTrades || 0);
+  console.log('Hit Rate:', ((data.overview?.hitRate || 0) * 100).toFixed(1) + '%');
+  console.log('Average Profit:', ((data.overview?.avgProfit || 0) * 100).toFixed(2) + '%');
+
+  console.log('\n=== STRATEGIES ===');
+  console.log('Strategies Found:', data.strategyPerformance?.length || 0);
+  if (data.strategyPerformance && data.strategyPerformance.length > 0) {
+    data.strategyPerformance.forEach(s => {
+      console.log(`  - ${s.name}: ${s.tradeCount} trades, ${(s.hitRate * 100).toFixed(1)}% hit rate`);
+    });
+  }
+
+  console.log('\n=== TOP PLAYS ===');
+  console.log('Top Plays Found:', data.topPlays?.length || 0);
+
+  // Check for undefined tickers (was a bug in old implementation)
+  const undefinedTickers = (data.topPlays || []).filter(p => !p.symbol || p.symbol === 'N/A' || p.symbol === 'undefined');
+  if (undefinedTickers.length > 0) {
+    console.warn('⚠️  Found', undefinedTickers.length, 'plays with undefined/missing tickers');
+  } else {
+    console.log('✅ All top plays have valid ticker symbols');
+  }
+
+  console.log('\n=== INDICATORS ===');
+  console.log('Indicators Found:', data.indicatorEffectiveness?.length || 0);
+
+  // Check for zero correlations (was a bug in old implementation)
+  const zeroCorr = (data.indicatorEffectiveness || []).filter(i => i.correlation === 0);
+  if (zeroCorr.length === data.indicatorEffectiveness?.length) {
+    console.warn('⚠️  All indicators have zero correlation - possible calculation issue');
+  } else {
+    console.log('✅ Indicators have non-zero correlations');
+    if (data.indicatorEffectiveness && data.indicatorEffectiveness.length > 0) {
+      const top3 = data.indicatorEffectiveness.slice(0, 3);
+      top3.forEach(i => {
+        console.log(`  - ${i.name}: ${(i.correlation * 100).toFixed(1)}% correlation`);
+      });
+    }
+  }
+
+  console.log('\n=== INCOMPLETE TRADES ===');
+  console.log('Incomplete Trades:', data.incompleteTrades?.totalCount || 0);
+  if (data.incompleteTrades?.byStrategy) {
+    data.incompleteTrades.byStrategy.forEach(item => {
+      console.log(`  - ${item.strategy}: ${item.count} incomplete`);
+    });
+  }
+
+  console.log('\n=== MULTI-DAY ANALYSIS ===');
+  if (data.multiDayProfitability?.profitabilityByDay) {
+    console.log('Days Analyzed:', data.multiDayProfitability.profitabilityByDay.length);
+  }
+
+  console.log('\n=== RISK MANAGEMENT ===');
+  if (data.riskManagement?.riskReward) {
+    console.log('Risk Patterns:', data.riskManagement.riskReward.patterns?.length || 0);
+  }
+  if (data.riskManagement?.kellySizing) {
+    console.log('Kelly Sizing Data:', Object.keys(data.riskManagement.kellySizing).length, 'strategies');
+  }
+
+  console.log('\n=== DATA QUALITY ===');
+  if (data.dataQuality) {
+    console.log('Completeness Score:', ((data.dataQuality.completenessScore || 0) * 100).toFixed(1) + '%');
+    console.log('Trades with Missing Data:', data.dataQuality.missingDataCount || 0);
+  }
+
+  console.log('\n✅ Test Complete!');
+  return data;
+}
+
+/**
+ * Compare cache performance
+ * Tests how fast cached vs fresh data retrieval is
+ */
+function testCachePerformance() {
+  console.log('=== TESTING CACHE PERFORMANCE ===\n');
+
+  // Clear cache first
+  const cache = CacheService.getScriptCache();
+  cache.remove('WEB_APP_DATA_V2');
+  console.log('Cache cleared\n');
+
+  // First call (no cache) - should calculate fresh
+  console.log('1️⃣ First call (no cache):');
+  const start1 = new Date();
+  const data1 = getSuccessReportDataForWeb();
+  const duration1 = (new Date() - start1) / 1000;
+  console.log('   Time:', duration1.toFixed(2) + 's (calculated fresh)');
+  console.log('   Trades:', data1.overview?.totalTrades || 0);
+
+  // Second call (cached) - should be instant
+  console.log('\n2️⃣ Second call (cached):');
+  const start2 = new Date();
+  const data2 = getSuccessReportDataForWeb();
+  const duration2 = (new Date() - start2) / 1000;
+  console.log('   Time:', duration2.toFixed(2) + 's (from cache)');
+  console.log('   Trades:', data2.overview?.totalTrades || 0);
+
+  console.log('\n📊 Performance Improvement:', (duration1 / duration2).toFixed(1) + 'x faster with cache');
+
+  // Test refresh
+  console.log('\n3️⃣ Testing refresh (clears cache):');
+  const start3 = new Date();
+  const refreshResult = refreshAndGetData();
+  const duration3 = (new Date() - start3) / 1000;
+  console.log('   Time:', duration3.toFixed(2) + 's');
+  console.log('   Success:', refreshResult.success);
+  console.log('   Message:', refreshResult.message);
+
+  console.log('\n✅ Cache Test Complete!');
+}
+
+/**
+ * Validate data structure matches what dashboard expects
+ * Ensures all required fields are present
+ */
+function testDataStructure() {
+  console.log('=== TESTING DATA STRUCTURE ===\n');
+
+  const data = getSuccessReportDataDirect();
+  const issues = [];
+
+  // Check required top-level keys
+  const requiredKeys = [
+    'overview', 'dataQuality', 'holdingPeriod', 'multiDayProfitability',
+    'indicatorEffectiveness', 'earningsTiming', 'strategyPerformance',
+    'topPlays', 'riskManagement', 'incompleteTrades', 'tradeRecords', 'lastUpdated'
+  ];
+
+  console.log('Checking required keys...');
+  requiredKeys.forEach(key => {
+    if (!data[key]) {
+      issues.push(`Missing key: ${key}`);
+      console.warn('❌', key, '- MISSING');
+    } else {
+      console.log('✅', key);
+    }
+  });
+
+  // Check overview structure
+  console.log('\nChecking overview structure...');
+  const overviewKeys = ['totalTrades', 'successfulTrades', 'hitRate', 'avgProfit', 'totalProfit'];
+  overviewKeys.forEach(key => {
+    if (data.overview && data.overview[key] === undefined) {
+      issues.push(`Missing overview.${key}`);
+      console.warn('❌', key);
+    } else {
+      console.log('✅', key);
+    }
+  });
+
+  // Check strategy performance structure
+  console.log('\nChecking strategy performance...');
+  if (data.strategyPerformance && data.strategyPerformance.length > 0) {
+    const stratKeys = ['name', 'tradeCount', 'hitRate', 'avgProfit'];
+    const firstStrat = data.strategyPerformance[0];
+    stratKeys.forEach(key => {
+      if (firstStrat[key] === undefined) {
+        issues.push(`Missing strategyPerformance[0].${key}`);
+        console.warn('❌', key);
+      } else {
+        console.log('✅', key);
+      }
+    });
+  }
+
+  // Check indicator effectiveness structure
+  console.log('\nChecking indicator effectiveness...');
+  if (data.indicatorEffectiveness && data.indicatorEffectiveness.length > 0) {
+    const indKeys = ['name', 'correlation', 'significance', 'hitRate'];
+    const firstInd = data.indicatorEffectiveness[0];
+    indKeys.forEach(key => {
+      if (firstInd[key] === undefined) {
+        issues.push(`Missing indicatorEffectiveness[0].${key}`);
+        console.warn('❌', key);
+      } else {
+        console.log('✅', key);
+      }
+    });
+  }
+
+  // Summary
+  console.log('\n=== VALIDATION SUMMARY ===');
+  if (issues.length === 0) {
+    console.log('✅ All data structure checks passed!');
+  } else {
+    console.warn('⚠️  Found', issues.length, 'issues:');
+    issues.forEach(issue => console.warn('  -', issue));
+  }
+
+  return { valid: issues.length === 0, issues: issues };
+}
+
+/**
+ * Run all tests in sequence
+ * Use this as a comprehensive verification after deployment
+ */
+function runAllWebAppTests() {
+  console.log('╔════════════════════════════════════════════════════════════════╗');
+  console.log('║         WEB APP REFACTORING - COMPREHENSIVE TEST SUITE         ║');
+  console.log('╚════════════════════════════════════════════════════════════════╝\n');
+
+  try {
+    // Test 1: Direct data collection
+    testDirectDataCollection();
+    console.log('\n' + '─'.repeat(70) + '\n');
+
+    // Test 2: Cache performance
+    testCachePerformance();
+    console.log('\n' + '─'.repeat(70) + '\n');
+
+    // Test 3: Data structure
+    const structureResult = testDataStructure();
+    console.log('\n' + '─'.repeat(70) + '\n');
+
+    console.log('╔════════════════════════════════════════════════════════════════╗');
+    console.log('║                      ALL TESTS COMPLETE                        ║');
+    console.log('╚════════════════════════════════════════════════════════════════╝');
+
+    if (structureResult.valid) {
+      console.log('\n✅ WEB APP REFACTORING SUCCESSFUL!');
+      console.log('\n📋 Next Steps:');
+      console.log('   1. Deploy web app from Apps Script editor');
+      console.log('   2. Test in browser to verify dashboard displays correctly');
+      console.log('   3. Check that all tabs (Overview, Strategies, etc.) load data');
+      console.log('   4. Verify no "undefined" tickers or zero correlations appear');
+    } else {
+      console.warn('\n⚠️  TESTS COMPLETED WITH ISSUES');
+      console.warn('Review the issues above before deploying');
+    }
+
+  } catch (error) {
+    console.error('\n❌ TEST SUITE FAILED');
+    console.error('Error:', error.toString());
+    console.error('Stack:', error.stack);
+  }
 }
