@@ -18,7 +18,7 @@ class MarketEventsTracker:
     """Track and analyze economic events and their market impact."""
     
     def __init__(self):
-        self.events_file = Path("data/market_events.json")
+        self.events_file = Path("data/economic_events/market_events.json")
         self.events_archive_file = Path("data/market_events_archive.json")
         self.events_df = pd.DataFrame()
         self.initialize_event_types()
@@ -866,7 +866,7 @@ class MarketEventsTracker:
         
         return impact
     
-    def create_event_calendar_html(self, output_file='data/event_calendar.html'):
+    def create_event_calendar_html(self, output_file='data/economic_events/event_calendar.html'):
         """Create an HTML calendar view of events."""
         html_content = """
         <!DOCTYPE html>
