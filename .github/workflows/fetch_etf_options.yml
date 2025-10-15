@@ -106,6 +106,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+      actions: read  # Required to read workflow run details and logs
     with:
       workflow_name: "ETF Options Fetch"
       failure_title: "❌ ETF Options Fetch Failed"
