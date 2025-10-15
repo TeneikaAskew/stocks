@@ -129,10 +129,12 @@ class WorkflowFailureHandler:
         url = f"{self.api_base}/repos/{self.owner}/{self.repo}/actions/jobs/{job_id}/logs"
 
         try:
-            response = requests.get(url, headers=self.headers, timeout=30)
+            response = requests.get(url, headers=self.headers, timeout=30, allow_redirects=True)
             response.raise_for_status()
+            print(f"Successfully fetched logs for job {job_id} ({len(response.text)} characters)")
             return response.text
-        except requests.exceptions.RequestException:
+        except requests.exceptions.RequestException as e:
+            print(f"Warning: Failed to fetch job logs for job {job_id}: {e}")
             return "Unable to fetch job logs"
 
     def extract_error_from_logs(self, logs: str, max_lines: int = 50) -> str:
@@ -149,27 +151,42 @@ class WorkflowFailureHandler:
         if not logs or logs == "Unable to fetch job logs":
             return logs
 
+        # Remove ANSI escape codes (color codes) from GitHub Actions logs
+        import re
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        logs = ansi_escape.sub('', logs)
+
         lines = logs.split('\n')
+        print(f"Log has {len(lines)} lines total")
 
         # Look for error indicators
-        error_keywords = ['error', 'failed', 'exception', 'traceback', 'fatal']
+        error_keywords = ['##[error]', 'error:', 'failed', 'exception', 'traceback', 'fatal', 'exit code']
         error_lines = []
+        error_indices = set()
 
         for i, line in enumerate(lines):
-            if any(keyword in line.lower() for keyword in error_keywords):
-                # Include context around error (5 lines before and after)
-                start = max(0, i - 5)
+            line_lower = line.lower()
+            if any(keyword in line_lower for keyword in error_keywords):
+                # Include context around error (3 lines before and 5 after)
+                start = max(0, i - 3)
                 end = min(len(lines), i + 6)
-                error_lines.extend(lines[start:end])
 
-                if len(error_lines) >= max_lines:
-                    break
+                # Track which lines we're adding to avoid duplicates
+                for idx in range(start, end):
+                    if idx not in error_indices:
+                        error_indices.add(idx)
 
-        # If no specific errors found, return last N lines
-        if not error_lines:
+        # Convert indices to sorted list and extract lines
+        if error_indices:
+            sorted_indices = sorted(error_indices)
+            error_lines = [lines[i] for i in sorted_indices[:max_lines]]
+            print(f"Extracted {len(error_lines)} error-related lines")
+        else:
+            # If no specific errors found, return last N lines
             error_lines = lines[-max_lines:]
+            print(f"No error keywords found, using last {len(error_lines)} lines")
 
-        return '\n'.join(error_lines[:max_lines])
+        return '\n'.join(error_lines)
 
     def find_existing_issue(self, labels: List[str]) -> Optional[int]:
         """
