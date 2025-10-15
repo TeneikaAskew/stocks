@@ -58,7 +58,26 @@
       "Bash(git stash show:*)",
       "Bash(git stash drop:*)",
       "Bash(curl -s \"https://unusualwhales.com/_next/data/Ui6QDaUtULN6ysDpOxm1a/economic-calendar.json\")",
-      "Bash(curl -s \"https://phx.unusualwhales.com/api/companies_earnings/upcoming_earnings_v2\")"
+      "Bash(curl -s \"https://phx.unusualwhales.com/api/companies_earnings/upcoming_earnings_v2\")",
+      "Bash(curl -s \"https://phx.unusualwhales.com/api/trading-calendar?month=10&year=2025\")",
+      "Bash(git log:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(gh issue list:*)",
+      "Bash(curl -s \"https://api.github.com/repos/TeneikaAskew/stocks/issues?state=open\")",
+      "Bash(curl -s -I \"https://github.com/TeneikaAskew/stocks\")",
+      "Bash(where gh)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" issue list)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" issue view 4)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" run list --limit 5)",
+      "Bash(if [ -d \"data/economic_events\" ])",
+      "Bash(then echo \"Directory exists\")",
+      "Bash(else echo \"Directory does not exist\")",
+      "Bash(git mv:*)",
+      "Bash(git diff:*)",
+      "Bash(if [ \"$basename\" != \"handle-workflow-failure.yml\" ])",
+      "Bash(then if grep -q \"handle-failure:\" \"$file\")",
+      "Bash(then echo \"✓ $basename - HAS failure handler\")",
+      "Bash(else echo \"✗ $basename - MISSING failure handler\")"
     ],
     "deny": []
   }
