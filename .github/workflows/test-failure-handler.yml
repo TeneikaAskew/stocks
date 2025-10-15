@@ -12,8 +12,6 @@ permissions:
 jobs:
   test-job:
     runs-on: ubuntu-latest
-    outputs:
-      has_failures: ${{ steps.check_failures.outputs.has_failures }}
 
     steps:
     - name: Checkout repository
@@ -29,26 +27,14 @@ jobs:
       run: |
         echo "This step will fail intentionally to test the failure handler"
         echo "Simulating an error condition..."
+        echo "ERROR: Test error message that should be extracted"
+        echo "TRACEBACK: Fake stack trace for testing"
         exit 1
-      continue-on-error: true
-
-    - name: Check for failures
-      id: check_failures
-      if: always()
-      run: |
-        # Use 'outcome' instead of 'conclusion' when continue-on-error is true
-        if [ "${{ steps.failing_step.outcome }}" = "failure" ]; then
-          echo "has_failures=true" >> $GITHUB_OUTPUT
-          echo "⚠️ Detected failure in previous step"
-        else
-          echo "has_failures=false" >> $GITHUB_OUTPUT
-          echo "✓ No failures detected"
-        fi
 
   # This should trigger and create an issue + PR
   handle-failure:
     needs: test-job
-    if: failure() || (success() && needs.test-job.outputs.has_failures == 'true')
+    if: failure()
     uses: ./.github/workflows/handle-workflow-failure.yml
     permissions:
       contents: write
