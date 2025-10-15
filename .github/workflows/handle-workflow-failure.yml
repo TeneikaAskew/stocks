@@ -49,7 +49,7 @@ on:
         type: boolean
         default: true
     secrets:
-      WORKFLOW_TOKEN:
+      PR_WORKFLOW_TOKEN:
         description: 'Personal Access Token with repo scope for creating PRs'
         required: true
 
@@ -80,7 +80,7 @@ jobs:
 
       - name: Run failure handler script
         env:
-          GITHUB_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python scripts/handle_workflow_failure.py \
