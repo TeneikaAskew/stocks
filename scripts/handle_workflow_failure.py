@@ -220,6 +220,40 @@ class WorkflowFailureHandler:
         data = {"body": body}
         self._make_request("POST", f"/repos/{self.owner}/{self.repo}/issues/{issue_number}/comments", data)
 
+    def find_existing_pr(self, workflow_file: str) -> Optional[int]:
+        """
+        Find an existing open PR for the workflow.
+
+        Args:
+            workflow_file: Workflow filename (without .yml extension)
+
+        Returns:
+            PR number if found, None otherwise
+        """
+        # Look for PRs with branch pattern fix/workflow-{workflow_file}-*
+        workflow_base = workflow_file.replace('.yml', '')
+        head_pattern = f"{self.owner}:fix/workflow-{workflow_base}-"
+
+        try:
+            # Search for open PRs
+            endpoint = f"/repos/{self.owner}/{self.repo}/pulls?state=open&per_page=100"
+            response = self._make_request("GET", endpoint)
+
+            for pr in response:
+                pr_head = pr.get('head', {}).get('label', '')
+                # Check if PR head matches the pattern
+                if pr_head.startswith(head_pattern):
+                    return pr['number']
+
+        except GitHubAPIError:
+            pass
+
+        return None
+
+    def add_pr_comment(self, pr_number: int, body: str) -> None:
+        """Add a comment to an existing PR (same endpoint as issues)."""
+        self.add_issue_comment(pr_number, body)
+
     def create_branch(self, branch_name: str, sha: str) -> Tuple[bool, str]:
         """
         Create a new branch.
@@ -505,40 +539,64 @@ Based on the workflow, these files may need attention:
 
         pr_number = None
         if create_pr:
-            # Create branch and PR
-            branch_name = f"fix/workflow-{workflow_file.replace('.yml', '')}-{run_number}"
-            print(f"Creating branch: {branch_name}")
+            # Check for existing PR first
+            print(f"Checking for existing PR for workflow: {workflow_file}")
+            existing_pr = self.find_existing_pr(workflow_file)
 
-            try:
-                branch_created, branch_head_sha = self.create_branch(branch_name, commit_sha)
-
-                if branch_created:
-                    print("Creating placeholder commit so the PR can be opened...")
-                    branch_head_sha = self.create_placeholder_commit(branch_name, branch_head_sha)
-
-                # Create PR
-                pr_title = f"Fix: {failure_title.replace('❌', '').strip()}"
+            if existing_pr:
+                print(f"Found existing PR #{existing_pr}, adding comment...")
+                # Add comment to existing PR
                 error_summary = error_logs[:500] + "..." if len(error_logs) > 500 else error_logs
+                pr_comment = f"""### Additional Failure Detected
 
-                pr_body = self.format_pr_body(
-                    workflow_name, issue_number, run_url, run_number,
-                    timestamp, error_summary, workflow_file
-                )
+**Workflow Run:** [#{run_number}]({run_url})
+**Failed At:** {timestamp}
+**Related Issue:** #{issue_number}
 
-                print("Creating draft pull request...")
-                pr_number = self.create_pull_request(pr_title, pr_body, branch_name, "main", draft=True)
-                print(f"Created PR #{pr_number}")
+### Error Summary
+```
+{error_summary}
+```
 
-                # Update issue with PR link if this is a new issue
-                if not existing_issue:
-                    pr_link = f"\n\n### Linked Pull Request\nA draft PR has been created to track the fix: #{pr_number}"
-                    current_issue = self._make_request("GET", f"/repos/{self.owner}/{self.repo}/issues/{issue_number}")
-                    updated_body = current_issue['body'] + pr_link
-                    self._make_request("PATCH", f"/repos/{self.owner}/{self.repo}/issues/{issue_number}", {"body": updated_body})
+**Action:** Please review this additional failure and update the fix in this PR accordingly.
+"""
+                self.add_pr_comment(existing_pr, pr_comment)
+                pr_number = existing_pr
+            else:
+                # Create branch and PR
+                branch_name = f"fix/workflow-{workflow_file.replace('.yml', '')}-{run_number}"
+                print(f"Creating branch: {branch_name}")
 
-            except GitHubAPIError as e:
-                print(f"Warning: Failed to create PR: {e}")
-                print("Issue was created/updated successfully")
+                try:
+                    branch_created, branch_head_sha = self.create_branch(branch_name, commit_sha)
+
+                    if branch_created:
+                        print("Creating placeholder commit so the PR can be opened...")
+                        branch_head_sha = self.create_placeholder_commit(branch_name, branch_head_sha)
+
+                    # Create PR
+                    pr_title = f"Fix: {failure_title.replace('❌', '').strip()}"
+                    error_summary = error_logs[:500] + "..." if len(error_logs) > 500 else error_logs
+
+                    pr_body = self.format_pr_body(
+                        workflow_name, issue_number, run_url, run_number,
+                        timestamp, error_summary, workflow_file
+                    )
+
+                    print("Creating draft pull request...")
+                    pr_number = self.create_pull_request(pr_title, pr_body, branch_name, "main", draft=True)
+                    print(f"Created PR #{pr_number}")
+
+                    # Update issue with PR link if this is a new issue
+                    if not existing_issue:
+                        pr_link = f"\n\n### Linked Pull Request\nA draft PR has been created to track the fix: #{pr_number}"
+                        current_issue = self._make_request("GET", f"/repos/{self.owner}/{self.repo}/issues/{issue_number}")
+                        updated_body = current_issue['body'] + pr_link
+                        self._make_request("PATCH", f"/repos/{self.owner}/{self.repo}/issues/{issue_number}", {"body": updated_body})
+
+                except GitHubAPIError as e:
+                    print(f"Warning: Failed to create PR: {e}")
+                    print("Issue was created/updated successfully")
 
         print(f"✓ Failure handling complete: Issue #{issue_number}" + (f", PR #{pr_number}" if pr_number else ""))
         return issue_number, pr_number
