@@ -1,0 +1,802 @@
+[
+  {
+    "date":"2024-01-01",
+    "event_type":"SPECIAL",
+    "event":"New Year's Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2024-01-15",
+    "event_type":"SPECIAL",
+    "event":"Martin Luther King Jr. Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2024-02-19",
+    "event_type":"SPECIAL",
+    "event":"Presidents Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2024-05-27",
+    "event_type":"SPECIAL",
+    "event":"Memorial Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2024-06-19",
+    "event_type":"SPECIAL",
+    "event":"Juneteenth - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2024-07-04",
+    "event_type":"SPECIAL",
+    "event":"Independence Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2024-09-02",
+    "event_type":"SPECIAL",
+    "event":"Labor Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2024-11-28",
+    "event_type":"SPECIAL",
+    "event":"Thanksgiving - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2024-12-25",
+    "event_type":"SPECIAL",
+    "event":"Christmas - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2025-01-01",
+    "event_type":"SPECIAL",
+    "event":"New Year's Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2025-01-10",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-01-14",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-01-20",
+    "event_type":"SPECIAL",
+    "event":"Martin Luther King Jr. Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-01-29",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-01-30",
+    "event_type":"GDP",
+    "event":"GDP Q4 2024 Advance",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-01-31",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-02-07",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-02-13",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-02-17",
+    "event_type":"SPECIAL",
+    "event":"Presidents Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-02-27",
+    "event_type":"GDP",
+    "event":"GDP Q4 2024 Second",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-02-28",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-03-07",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-03-12",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-03-19",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-03-27",
+    "event_type":"GDP",
+    "event":"GDP Q4 2024 Final",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-03-28",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-04-04",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-04-10",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-04-18",
+    "event_type":"SPECIAL",
+    "event":"Good Friday - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-04-30",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-04-30",
+    "event_type":"GDP",
+    "event":"GDP Q1 2025 Advance",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-05-02",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-05-07",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-05-14",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-05-26",
+    "event_type":"SPECIAL",
+    "event":"Memorial Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-05-29",
+    "event_type":"GDP",
+    "event":"GDP Q1 2025 Second",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-05-30",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-06-06",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-06-12",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-06-18",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-06-19",
+    "event_type":"SPECIAL",
+    "event":"Juneteenth - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-06-26",
+    "event_type":"GDP",
+    "event":"GDP Q1 2025 Final",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-06-27",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-07-04",
+    "event_type":"SPECIAL",
+    "event":"Independence Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-07-11",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-07-30",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-07-31",
+    "event_type":"GDP",
+    "event":"GDP Q2 2025 Advance",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-07-31",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-08-01",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-08-13",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-08-28",
+    "event_type":"GDP",
+    "event":"GDP Q2 2025 Second",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-08-29",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-09-01",
+    "event_type":"SPECIAL",
+    "event":"Labor Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-09-05",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls - September 2025",
+    "expected_impact":"High",
+    "actual":"142K",
+    "consensus":"165K",
+    "notes":"Below expectations, raised recession concerns",
+    "source":null
+  },
+  {
+    "date":"2025-09-11",
+    "event_type":"CPI",
+    "event":"CPI Release - September 2025",
+    "expected_impact":"High",
+    "actual":"2.4% YoY",
+    "consensus":"2.3% YoY",
+    "notes":"Higher than expected, caused market volatility",
+    "source":null
+  },
+  {
+    "date":"2025-09-17",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-09-26",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-09-26",
+    "event_type":"GDP",
+    "event":"GDP Q2 2025 Final",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-10-03",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-10-10",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-10-30",
+    "event_type":"GDP",
+    "event":"GDP Q3 2025 Advance",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-10-31",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-11-05",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-11-07",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-11-13",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-11-27",
+    "event_type":"SPECIAL",
+    "event":"Thanksgiving - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-12-05",
+    "event_type":"NFP",
+    "event":"Non-Farm Payrolls",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-12-11",
+    "event_type":"CPI",
+    "event":"CPI Release",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-12-17",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2025-12-25",
+    "event_type":"SPECIAL",
+    "event":"Christmas - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":null
+  },
+  {
+    "date":"2026-01-01",
+    "event_type":"SPECIAL",
+    "event":"New Year's Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2026-01-19",
+    "event_type":"SPECIAL",
+    "event":"Martin Luther King Jr. Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2026-02-16",
+    "event_type":"SPECIAL",
+    "event":"Presidents Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2026-05-25",
+    "event_type":"SPECIAL",
+    "event":"Memorial Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2026-06-19",
+    "event_type":"SPECIAL",
+    "event":"Juneteenth - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2026-07-04",
+    "event_type":"SPECIAL",
+    "event":"Independence Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2026-09-07",
+    "event_type":"SPECIAL",
+    "event":"Labor Day - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2026-11-26",
+    "event_type":"SPECIAL",
+    "event":"Thanksgiving - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  },
+  {
+    "date":"2026-12-25",
+    "event_type":"SPECIAL",
+    "event":"Christmas - Markets Closed",
+    "expected_impact":"Market Closed",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"MANUAL"
+  }
+]
