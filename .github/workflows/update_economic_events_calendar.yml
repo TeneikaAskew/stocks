@@ -235,7 +235,8 @@ jobs:
       if: always()
       run: |
         # Check if any critical steps failed
-        if [ "${{ steps.fetch_earnings.outcome }}" = "failure" ]; then
+        # Use 'conclusion' instead of 'outcome' to detect failures even with continue-on-error
+        if [ "${{ steps.fetch_earnings.conclusion }}" = "failure" ]; then
           echo "has_failures=true" >> $GITHUB_OUTPUT
           echo "⚠️ Earnings calendar fetch failed"
         else
