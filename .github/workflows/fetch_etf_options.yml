@@ -25,6 +25,8 @@ on:
 permissions:
   contents: write  # Required for git push
   issues: write    # Required for creating issues on failure
+  pull-requests: write  # Required for creating PRs on failure
+  actions: read    # Required for reading workflow run details
 
 jobs:
   fetch-etf-options:
