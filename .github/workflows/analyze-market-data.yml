@@ -1,0 +1,240 @@
+name: Analyze Market Data
+
+on:
+  schedule:
+    # Run daily at 5 PM EST (22:00 UTC) - after market close
+    - cron: '0 22 * * 1-5'  # Monday-Friday only
+  workflow_dispatch:  # Allow manual trigger
+    inputs:
+      fetch_historical:
+        description: 'Fetch historical market data (daily OHLCV beyond 7-day window)'
+        required: false
+        default: false
+        type: boolean
+      target_date:
+        description: 'Target date for analysis (YYYY-MM-DD format)'
+        required: false
+        default: ''
+      date_range_start:
+        description: 'Start date for date range analysis (YYYY-MM-DD)'
+        required: false
+        default: ''
+      date_range_end:
+        description: 'End date for date range analysis (YYYY-MM-DD)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write  # Required for git push
+  issues: write    # Required for creating issues on failure
+
+jobs:
+  analyze_market_data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    outputs:
+      has_failures: ${{ steps.check_failures.outputs.has_failures }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        persist-credentials: true
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas numpy yfinance requests beautifulsoup4 pyarrow
+        pip install matplotlib seaborn plotly
+
+    - name: Create data directories
+      run: |
+        mkdir -p data/signals
+        mkdir -p data/spy data/qqq data/iwm data/spx
+        echo "Data directories ready"
+
+    - name: Fetch historical market data
+      if: ${{ github.event.inputs.fetch_historical == 'true' }}
+      run: |
+        echo "Fetching historical market data for all tickers..."
+
+        # Determine date range for historical fetch
+        if [ -n "${{ github.event.inputs.date_range_start }}" ] && [ -n "${{ github.event.inputs.date_range_end }}" ]; then
+          START_DATE="${{ github.event.inputs.date_range_start }}"
+          END_DATE="${{ github.event.inputs.date_range_end }}"
+        else
+          # Default: fetch last 365 days of historical data
+          START_DATE=$(date -d '365 days ago' +'%Y-%m-%d')
+          END_DATE=$(date +'%Y-%m-%d')
+        fi
+
+        echo "Fetching historical data from ${START_DATE} to ${END_DATE}"
+
+        # Fetch historical data for each ticker
+        for ticker in SPY QQQ IWM SPX; do
+          echo "Fetching ${ticker}..."
+          python scripts/fetch_market_data.py --tickers ${ticker} --historical --start-date ${START_DATE} --end-date ${END_DATE}
+        done
+
+        echo "Historical data fetch complete"
+      continue-on-error: true
+
+    - name: Set date environment variables
+      run: |
+        if [ -n "${{ github.event.inputs.target_date }}" ]; then
+          echo "TARGET_DATE=${{ github.event.inputs.target_date }}" >> $GITHUB_ENV
+        else
+          echo "TARGET_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+        fi
+
+        if [ -n "${{ github.event.inputs.date_range_start }}" ]; then
+          echo "DATE_RANGE_START=${{ github.event.inputs.date_range_start }}" >> $GITHUB_ENV
+        fi
+
+        if [ -n "${{ github.event.inputs.date_range_end }}" ]; then
+          echo "DATE_RANGE_END=${{ github.event.inputs.date_range_end }}" >> $GITHUB_ENV
+        fi
+
+        echo "Analysis date: ${TARGET_DATE}"
+
+    - name: Run enhanced market analysis
+      id: market_analysis
+      run: |
+        echo "Running enhanced market analysis..."
+        if [ -n "${DATE_RANGE_START}" ] && [ -n "${DATE_RANGE_END}" ]; then
+          python scripts/analyze_market_data_enhanced.py --ticker ALL --export --start-date "${DATE_RANGE_START}" --end-date "${DATE_RANGE_END}"
+        elif [ -n "${TARGET_DATE}" ]; then
+          python scripts/analyze_market_data_enhanced.py --ticker ALL --export --target-date "${TARGET_DATE}"
+        else
+          python scripts/analyze_market_data_enhanced.py --ticker ALL --export
+        fi
+
+        # Verify signals were generated
+        if [ -d "data/signals" ] && [ "$(ls -A data/signals/*.csv 2>/dev/null)" ]; then
+          echo "✓ Trading signals generated successfully"
+          echo "SIGNALS_GENERATED=true" >> $GITHUB_ENV
+        else
+          echo "⚠️ Warning: No trading signals generated"
+          echo "SIGNALS_GENERATED=false" >> $GITHUB_ENV
+        fi
+      continue-on-error: true
+
+    - name: Generate analysis report
+      run: |
+        python -c "
+        import pandas as pd
+        from datetime import datetime
+        import json
+        import os
+        from pathlib import Path
+
+        # Get target date from environment or use today
+        target_date = os.environ.get('TARGET_DATE', datetime.now().strftime('%Y-%m-%d'))
+        date_range_start = os.environ.get('DATE_RANGE_START', '')
+        date_range_end = os.environ.get('DATE_RANGE_END', '')
+
+        # Create market analysis report
+        report = {
+            'generated_at': datetime.now().isoformat(),
+            'date': target_date,
+            'date_range_start': date_range_start,
+            'date_range_end': date_range_end,
+            'type': 'market_analysis',
+            'analysis_complete': False,
+            'signals_generated': 0
+        }
+
+        # Check if analysis was completed
+        signals_dir = Path('data/signals')
+        if signals_dir.exists():
+            signal_files = list(signals_dir.glob('*.csv'))
+            if signal_files:
+                report['analysis_complete'] = True
+                report['signals_generated'] = len(signal_files)
+
+                # Count total signals across all files
+                total_signals = 0
+                for signal_file in signal_files:
+                    try:
+                        df = pd.read_csv(signal_file)
+                        total_signals += len(df)
+                    except Exception as e:
+                        print(f'Warning: Could not read {signal_file}: {e}')
+
+                report['total_signals'] = total_signals
+
+                print(f'Analysis complete: {len(signal_files)} signal files generated with {total_signals} total signals')
+
+        # Save report
+        report_file = Path('data/market_analysis_report.json')
+        with open(report_file, 'w') as f:
+            json.dump(report, f, indent=2)
+
+        print(f'Market analysis report generated: {report}')
+        "
+
+    - name: Check for step failures
+      id: check_failures
+      if: always()
+      run: |
+        # Check if market analysis failed
+        if [ "${{ steps.market_analysis.conclusion }}" = "failure" ]; then
+          echo "has_failures=true" >> $GITHUB_OUTPUT
+          echo "⚠️ Market analysis failed"
+        else
+          echo "has_failures=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Check for changes
+      id: verify_changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add -A
+        git diff --staged --quiet || echo "has_changes=true" >> $GITHUB_OUTPUT
+
+    - name: Commit and push changes
+      if: steps.verify_changes.outputs.has_changes == 'true'
+      run: |
+        git commit -m "Auto-update: Market analysis $(date +'%Y-%m-%d %H:%M:%S')"
+        git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Handle workflow failures by creating/updating issues and PRs
+  handle-failure:
+    needs: analyze_market_data
+    if: failure() || (success() && needs.analyze_market_data.outputs.has_failures == 'true')
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read  # Required to read workflow run details and logs
+    with:
+      workflow_name: "Market Data Analysis"
+      failure_title: "❌ Market Analysis Failed"
+      issue_labels: "workflow-failure,market-analysis,automated"
+      workflow_file: "analyze-market-data.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: true
