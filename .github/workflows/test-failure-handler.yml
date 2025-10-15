@@ -56,7 +56,7 @@ jobs:
       pull-requests: write
       actions: read
     secrets:
-      WORKFLOW_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
     with:
       workflow_name: "Failure Handler Test"
       failure_title: "🧪 Test: Failure Handler Verification"
