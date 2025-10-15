@@ -29,7 +29,7 @@ class EconomicCalendarFetcher:
     
     def __init__(self):
         self.data_dir = Path("data")
-        self.events_file = self.data_dir / "market_events.json"
+        self.events_file = self.data_dir / "economic_events" / "market_events.json"
         self.ml_features_file = self.data_dir / "ml_features.csv"
         self.fred_api_key = os.environ.get('FRED_API_KEY')
         self.fred_client = None

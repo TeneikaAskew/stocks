@@ -18,7 +18,7 @@
 ## Current System Overview
 
 ### Components
-- **market_events.json** (12KB, 61 events) - Primary data file, JSON format, tracked in git
+- **data/economic_events/market_events.json** (12KB, 61 events) - Primary data file, JSON format, tracked in git
 - **market_events_tracker.py** - Manages event calendar, hardcoded 2025 events
 - **fetch_economic_calendar.py** - Fetches FRED economic data via API
 - **update_economic_events_calendar.yml** - GitHub Actions workflow (runs 2x daily)
@@ -204,7 +204,7 @@ The script defines these event types in `market_events_tracker.py:64-98` but doe
 Early warning system that scans for high-impact economic events in the next 3 days and logs alerts to GitHub Actions.
 
 **Workflow**:
-1. Loads `data/market_events.json` from repository
+1. Loads `data/economic_events/market_events.json` from repository
 2. Filters events in next 3 days (today + 3)
 3. Shows only "High" or "Very High" impact events
 4. Prints to GitHub Actions workflow logs
