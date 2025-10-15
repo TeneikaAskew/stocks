@@ -22,6 +22,7 @@ permissions:
   issues: write    # Required for creating issues on failure
   pull-requests: write  # Required for creating PRs on failure
   actions: read    # Required for reading workflow run details
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
 
 jobs:
   fetch-market-data:
@@ -148,6 +149,8 @@ jobs:
       issues: write
       pull-requests: write
       actions: read  # Required to read workflow run details and logs
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
     with:
       workflow_name: "Market Data Fetch"
       failure_title: "❌ Market Data Fetch Failed"
