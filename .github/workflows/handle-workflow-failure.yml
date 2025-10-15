@@ -1,0 +1,103 @@
+name: Handle Workflow Failure
+
+on:
+  workflow_call:
+    inputs:
+      workflow_name:
+        description: 'Human-readable workflow name (e.g., "ETF Options Fetch")'
+        required: true
+        type: string
+      failure_title:
+        description: 'Issue title (e.g., "❌ ETF Options Fetch Failed")'
+        required: true
+        type: string
+      issue_labels:
+        description: 'Comma-separated issue labels (e.g., "workflow-failure,etf-options,automated")'
+        required: true
+        type: string
+      workflow_file:
+        description: 'Workflow filename (e.g., "fetch_etf_options.yml")'
+        required: true
+        type: string
+      run_id:
+        description: 'Workflow run ID'
+        required: true
+        type: string
+      run_number:
+        description: 'Workflow run number'
+        required: true
+        type: string
+      run_url:
+        description: 'Workflow run URL'
+        required: true
+        type: string
+      event_name:
+        description: 'Event that triggered the workflow'
+        required: true
+        type: string
+      branch:
+        description: 'Branch name'
+        required: true
+        type: string
+      commit_sha:
+        description: 'Commit SHA'
+        required: true
+        type: string
+      create_pr:
+        description: 'Whether to create a draft PR (true/false)'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write  # Required for creating branches
+  issues: write    # Required for creating/updating issues
+  pull-requests: write  # Required for creating PRs
+
+jobs:
+  handle-failure:
+    runs-on: ubuntu-latest
+    name: Create/Update Issue and PR
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run failure handler script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python scripts/handle_workflow_failure.py \
+            --workflow-name "${{ inputs.workflow_name }}" \
+            --failure-title "${{ inputs.failure_title }}" \
+            --issue-labels "${{ inputs.issue_labels }}" \
+            --workflow-file "${{ inputs.workflow_file }}" \
+            --run-id "${{ inputs.run_id }}" \
+            --run-number "${{ inputs.run_number }}" \
+            --run-url "${{ inputs.run_url }}" \
+            --event-name "${{ inputs.event_name }}" \
+            --branch "${{ inputs.branch }}" \
+            --commit-sha "${{ inputs.commit_sha }}" \
+            ${{ inputs.create_pr == false && '--no-pr' || '' }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Workflow Failure Handler" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow:** ${{ inputs.workflow_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Run:** [${{ inputs.run_number }}](${{ inputs.run_url }})" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** Issue and PR created/updated successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check the repository issues and pull requests for details." >> $GITHUB_STEP_SUMMARY
