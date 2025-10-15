@@ -24,15 +24,17 @@ class GitHubAPIError(Exception):
 class WorkflowFailureHandler:
     """Handles workflow failures by creating/updating issues and PRs."""
 
-    def __init__(self, token: str, repository: str):
+    def __init__(self, token: str, repository: str, pr_token: Optional[str] = None):
         """
         Initialize the handler.
 
         Args:
-            token: GitHub API token
+            token: GitHub API token (for reading actions data)
             repository: Repository in format "owner/repo"
+            pr_token: Optional PAT for creating PRs (uses token if not provided)
         """
         self.token = token
+        self.pr_token = pr_token or token
         self.repository = repository
         self.owner, self.repo = repository.split('/')
         self.api_base = "https://api.github.com"
@@ -41,8 +43,14 @@ class WorkflowFailureHandler:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28"
         }
+        # Headers for PR operations (uses PAT if provided)
+        self.pr_headers = {
+            "Authorization": f"Bearer {self.pr_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
 
-    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict:
+    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None, use_pr_token: bool = False) -> Dict:
         """
         Make a GitHub API request.
 
@@ -50,6 +58,7 @@ class WorkflowFailureHandler:
             method: HTTP method (GET, POST, PATCH)
             endpoint: API endpoint (without base URL)
             data: Optional request body
+            use_pr_token: If True, use PR token for this request
 
         Returns:
             Response JSON
@@ -58,14 +67,15 @@ class WorkflowFailureHandler:
             GitHubAPIError: If request fails
         """
         url = f"{self.api_base}{endpoint}"
+        headers = self.pr_headers if use_pr_token else self.headers
 
         try:
             if method == "GET":
-                response = requests.get(url, headers=self.headers, timeout=30)
+                response = requests.get(url, headers=headers, timeout=30)
             elif method == "POST":
-                response = requests.post(url, headers=self.headers, json=data, timeout=30)
+                response = requests.post(url, headers=headers, json=data, timeout=30)
             elif method == "PATCH":
-                response = requests.patch(url, headers=self.headers, json=data, timeout=30)
+                response = requests.patch(url, headers=headers, json=data, timeout=30)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -202,7 +212,7 @@ class WorkflowFailureHandler:
         }
 
         try:
-            self._make_request("POST", f"/repos/{self.owner}/{self.repo}/git/refs", data)
+            self._make_request("POST", f"/repos/{self.owner}/{self.repo}/git/refs", data, use_pr_token=True)
         except GitHubAPIError as e:
             # Branch might already exist
             if "Reference already exists" not in str(e):
@@ -230,7 +240,7 @@ class WorkflowFailureHandler:
             "draft": draft
         }
 
-        response = self._make_request("POST", f"/repos/{self.owner}/{self.repo}/pulls", data)
+        response = self._make_request("POST", f"/repos/{self.owner}/{self.repo}/pulls", data, use_pr_token=True)
         return response['number']
 
     def format_issue_body(
@@ -470,6 +480,7 @@ def main():
 
     # Get GitHub token and repository from environment
     token = os.environ.get('GITHUB_TOKEN')
+    pr_token = os.environ.get('PR_TOKEN')
     repository = os.environ.get('GITHUB_REPOSITORY')
 
     if not token:
@@ -485,7 +496,7 @@ def main():
 
     # Create handler and process failure
     try:
-        handler = WorkflowFailureHandler(token, repository)
+        handler = WorkflowFailureHandler(token, repository, pr_token)
         issue_number, pr_number = handler.handle_failure(
             workflow_name=args.workflow_name,
             failure_title=args.failure_title,
