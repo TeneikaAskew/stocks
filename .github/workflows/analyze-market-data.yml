@@ -264,6 +264,8 @@ jobs:
       issues: write
       pull-requests: write
       actions: read  # Required to read workflow run details and logs
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
     with:
       workflow_name: "Market Data Analysis"
       failure_title: "❌ Market Analysis Failed"
