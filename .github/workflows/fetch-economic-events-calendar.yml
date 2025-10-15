@@ -1,0 +1,294 @@
+name: Fetch Economic Events Calendar
+
+on:
+  schedule:
+    # Run weekly on Sundays at 6 AM EST (11 AM UTC)
+    - cron: '0 11 * * 0'
+  workflow_dispatch:  # Allow manual trigger
+    inputs:
+      target_date:
+        description: 'Target date for events (YYYY-MM-DD format)'
+        required: false
+        default: ''
+      date_range_start:
+        description: 'Start date for date range (YYYY-MM-DD)'
+        required: false
+        default: ''
+      date_range_end:
+        description: 'End date for date range (YYYY-MM-DD)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write  # Required for git push
+  issues: write    # Required for creating issues on failure
+
+jobs:
+  fetch_economic_events:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    outputs:
+      has_failures: ${{ steps.check_failures.outputs.has_failures }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        persist-credentials: true
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas numpy yfinance requests beautifulsoup4 pyarrow fredapi
+
+    - name: Create data directories
+      run: |
+        mkdir -p data/economic_events
+        mkdir -p data/earnings
+        echo "Data directories ready"
+
+    - name: Set date environment variables
+      run: |
+        if [ -n "${{ github.event.inputs.target_date }}" ]; then
+          echo "TARGET_DATE=${{ github.event.inputs.target_date }}" >> $GITHUB_ENV
+        else
+          echo "TARGET_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+        fi
+
+        if [ -n "${{ github.event.inputs.date_range_start }}" ]; then
+          echo "DATE_RANGE_START=${{ github.event.inputs.date_range_start }}" >> $GITHUB_ENV
+        fi
+
+        if [ -n "${{ github.event.inputs.date_range_end }}" ]; then
+          echo "DATE_RANGE_END=${{ github.event.inputs.date_range_end }}" >> $GITHUB_ENV
+        fi
+
+        echo "Processing date: ${TARGET_DATE}"
+
+    - name: Update market events calendar
+      id: market_events
+      run: |
+        echo "Updating market events calendar for date: ${TARGET_DATE}"
+        if [ -n "${DATE_RANGE_START}" ] && [ -n "${DATE_RANGE_END}" ]; then
+          echo "Date range: ${DATE_RANGE_START} to ${DATE_RANGE_END}"
+          python scripts/market_events_tracker.py --start-date "${DATE_RANGE_START}" --end-date "${DATE_RANGE_END}"
+        elif [ -n "${TARGET_DATE}" ]; then
+          python scripts/market_events_tracker.py --target-date "${TARGET_DATE}"
+        else
+          python scripts/market_events_tracker.py
+        fi
+
+        # Verify the JSON file was created
+        if [ -f "data/economic_events/market_events.json" ]; then
+          echo "✓ market_events.json created successfully"
+          echo "MARKET_EVENTS_EXISTS=true" >> $GITHUB_ENV
+        else
+          echo "✗ Warning: market_events.json was not created"
+          echo "MARKET_EVENTS_EXISTS=false" >> $GITHUB_ENV
+        fi
+      env:
+        FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      continue-on-error: true
+
+    - name: Fetch earnings calendar
+      id: fetch_earnings
+      run: |
+        echo "Fetching upcoming earnings calendar..."
+        if [ -n "${DATE_RANGE_START}" ] && [ -n "${DATE_RANGE_END}" ]; then
+          echo "Date range: ${DATE_RANGE_START} to ${DATE_RANGE_END}"
+          python scripts/fetch_earnings_calendar.py --start-date "${DATE_RANGE_START}" --end-date "${DATE_RANGE_END}"
+        else
+          # Default: fetch next 90 days of earnings
+          python scripts/fetch_earnings_calendar.py --days 90
+        fi
+
+        # Verify the earnings file was created
+        if [ -f "data/earnings/earnings_calendar.json" ]; then
+          echo "✓ earnings_calendar.json created successfully"
+          echo "EARNINGS_CALENDAR_EXISTS=true" >> $GITHUB_ENV
+        else
+          echo "✗ Warning: earnings_calendar.json was not created"
+          echo "EARNINGS_CALENDAR_EXISTS=false" >> $GITHUB_ENV
+        fi
+      continue-on-error: true
+
+    - name: Fetch economic calendar data
+      id: fetch_economic_calendar
+      env:
+        FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      run: |
+        echo "Fetching economic calendar data..."
+        if [ -n "${DATE_RANGE_START}" ] && [ -n "${DATE_RANGE_END}" ]; then
+          python scripts/fetch_economic_calendar.py --start-date "${DATE_RANGE_START}" --end-date "${DATE_RANGE_END}"
+        elif [ -n "${TARGET_DATE}" ]; then
+          python scripts/fetch_economic_calendar.py --target-date "${TARGET_DATE}"
+        else
+          python scripts/fetch_economic_calendar.py
+        fi
+      continue-on-error: true
+
+    - name: List upcoming high-impact events
+      if: always()
+      run: |
+        echo "Checking for upcoming high-impact events..."
+        python -c "
+        import pandas as pd
+        from datetime import datetime, timedelta
+        import os
+        from pathlib import Path
+
+        # Check if JSON file exists
+        events_json = Path('data/economic_events/market_events.json')
+
+        if events_json.exists():
+            events_df = pd.read_json('data/economic_events/market_events.json', orient='records')
+            events_df['date'] = pd.to_datetime(events_df['date'])
+            print('✓ Loaded events from market_events.json')
+        else:
+            print('⚠️  Warning: market_events.json not found')
+            print('The file may not have been created.')
+            exit(0)  # Exit gracefully without error
+
+        # Check for events in next 7 days
+        today = pd.Timestamp.now().normalize()
+        future_date = today + timedelta(days=7)
+
+        upcoming = events_df[
+            (events_df['date'] >= today) &
+            (events_df['date'] <= future_date) &
+            (events_df['expected_impact'].isin(['High', 'Very High']))
+        ]
+
+        if not upcoming.empty:
+            print('')
+            print('='*60)
+            print('📅 UPCOMING HIGH IMPACT EVENTS (Next 7 Days):')
+            print('='*60)
+            for _, event in upcoming.iterrows():
+                days_until = (event['date'] - today).days
+                print(f\"  {event['date'].strftime('%Y-%m-%d')} ({days_until} days): {event['event']} [{event['expected_impact']}]\")
+            print('='*60)
+        else:
+            print('✓ No high-impact events in the next 7 days')
+        "
+
+    - name: Generate events report
+      run: |
+        python -c "
+        import pandas as pd
+        from datetime import datetime
+        import json
+        import os
+        from pathlib import Path
+
+        # Get target date from environment or use today
+        target_date = os.environ.get('TARGET_DATE', datetime.now().strftime('%Y-%m-%d'))
+        date_range_start = os.environ.get('DATE_RANGE_START', '')
+        date_range_end = os.environ.get('DATE_RANGE_END', '')
+
+        # Create economic events report
+        report = {
+            'generated_at': datetime.now().isoformat(),
+            'date': target_date,
+            'date_range_start': date_range_start,
+            'date_range_end': date_range_end,
+            'type': 'economic_events',
+            'market_events_processed': False,
+            'earnings_calendar_processed': False,
+            'economic_calendar_processed': False
+        }
+
+        # Check if market events were processed
+        market_events_file = Path('data/economic_events/market_events.json')
+        if market_events_file.exists():
+            events_df = pd.read_json(market_events_file, orient='records')
+            report['market_events_processed'] = True
+            report['total_market_events'] = len(events_df)
+
+        # Check if earnings calendar was processed
+        earnings_file = Path('data/earnings/earnings_calendar.json')
+        if earnings_file.exists():
+            earnings_df = pd.read_json(earnings_file, orient='records')
+            report['earnings_calendar_processed'] = True
+            report['total_earnings_events'] = len(earnings_df)
+
+        # Check if economic calendar was processed
+        ml_features_file = Path('data/ml_features.csv')
+        if ml_features_file.exists():
+            report['economic_calendar_processed'] = True
+
+        # Save report
+        report_file = Path('data/economic_events_report.json')
+        with open(report_file, 'w') as f:
+            json.dump(report, f, indent=2)
+
+        print(f'Economic events report generated: {report}')
+        "
+
+    - name: Check for step failures
+      id: check_failures
+      if: always()
+      run: |
+        # Check if any critical steps failed
+        if [ "${{ steps.market_events.conclusion }}" = "failure" ] || \
+           [ "${{ steps.fetch_earnings.conclusion }}" = "failure" ] || \
+           [ "${{ steps.fetch_economic_calendar.conclusion }}" = "failure" ]; then
+          echo "has_failures=true" >> $GITHUB_OUTPUT
+          echo "⚠️ One or more economic event fetches failed"
+        else
+          echo "has_failures=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Check for changes
+      id: verify_changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add -A
+        git diff --staged --quiet || echo "has_changes=true" >> $GITHUB_OUTPUT
+
+    - name: Commit and push changes
+      if: steps.verify_changes.outputs.has_changes == 'true'
+      run: |
+        git commit -m "Auto-update: Economic events calendar $(date +'%Y-%m-%d %H:%M:%S')"
+        git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Handle workflow failures by creating/updating issues and PRs
+  handle-failure:
+    needs: fetch_economic_events
+    if: failure() || (success() && needs.fetch_economic_events.outputs.has_failures == 'true')
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read  # Required to read workflow run details and logs
+    with:
+      workflow_name: "Economic Events Calendar Fetch"
+      failure_title: "❌ Economic Events Calendar Failed"
+      issue_labels: "workflow-failure,economic-calendar,automated"
+      workflow_file: "fetch-economic-events-calendar.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: true
