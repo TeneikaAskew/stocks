@@ -124,7 +124,7 @@ jobs:
         fi
 
         # Verify the JSON file was created
-        if [ -f "data/market_events.json" ]; then
+        if [ -f "data/economic_events/market_events.json" ]; then
           echo "✓ market_events.json created successfully"
           echo "MARKET_EVENTS_EXISTS=true" >> $GITHUB_ENV
         else
@@ -209,7 +209,7 @@ jobs:
         }
         
         # Check if events were processed
-        events_file = Path('data/market_events.csv')
+        events_file = Path('data/economic_events/market_events.csv')
         if events_file.exists():
             events_df = pd.read_csv(events_file)
             report['events_processed'] = True
@@ -317,10 +317,10 @@ jobs:
         from pathlib import Path
 
         # Check if JSON file exists
-        events_json = Path('data/market_events.json')
+        events_json = Path('data/economic_events/market_events.json')
 
         if events_json.exists():
-            events_df = pd.read_json('data/market_events.json', orient='records')
+            events_df = pd.read_json('data/economic_events/market_events.json', orient='records')
             events_df['date'] = pd.to_datetime(events_df['date'])
             print('✓ Loaded events from market_events.json')
         else:
