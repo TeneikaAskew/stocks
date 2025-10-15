@@ -32,8 +32,6 @@ permissions:
   issues: write    # Required for creating issues on failure
   pull-requests: write  # Required for creating PRs on failure
   actions: read    # Required for reading workflow run details
-      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
-
 jobs:
   fetch-earnings-options:
     runs-on: ubuntu-latest
