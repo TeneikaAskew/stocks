@@ -291,8 +291,8 @@
   },
   {
     "date":"2025-04-30",
-    "event_type":"GDP",
-    "event":"GDP Q1 2025 Advance",
+    "event_type":"PCE",
+    "event":"PCE Price Index",
     "expected_impact":"High",
     "actual":null,
     "consensus":null,
@@ -301,8 +301,8 @@
   },
   {
     "date":"2025-04-30",
-    "event_type":"PCE",
-    "event":"PCE Price Index",
+    "event_type":"GDP",
+    "event":"GDP Q1 2025 Advance",
     "expected_impact":"High",
     "actual":null,
     "consensus":null,
