@@ -53,6 +53,7 @@ permissions:
   contents: write  # Required for creating branches
   issues: write    # Required for creating/updating issues
   pull-requests: write  # Required for creating PRs
+  actions: read    # Required for reading workflow run details and logs
 
 jobs:
   handle-failure:
