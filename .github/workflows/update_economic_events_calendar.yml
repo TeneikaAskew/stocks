@@ -251,11 +251,48 @@ jobs:
         git add -A
         git diff --staged --quiet || echo "has_changes=true" >> $GITHUB_OUTPUT
     
-    - name: Commit and push changes
+    - name: Commit and push changes with retry
       if: steps.verify_changes.outputs.has_changes == 'true'
       run: |
+        # Commit the changes
         git commit -m "Auto-update: Market data and events $(date +'%Y-%m-%d %H:%M:%S')"
-        git push
+
+        # Pull-rebase-push with retry logic to handle concurrent workflow pushes
+        MAX_RETRIES=5
+        RETRY_COUNT=0
+
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+          echo "Push attempt $((RETRY_COUNT + 1)) of $MAX_RETRIES..."
+
+          # Try to push
+          if git push origin main; then
+            echo "✓ Successfully pushed changes"
+            exit 0
+          fi
+
+          # Push failed, pull with rebase and retry
+          echo "Push failed, pulling latest changes with rebase..."
+          git pull --rebase origin main
+
+          # Check if rebase had conflicts
+          if [ $? -ne 0 ]; then
+            echo "⚠️ Rebase conflict detected, attempting to resolve..."
+            # For data files, prefer our version (the newer data)
+            git checkout --ours data/
+            git add data/
+            git rebase --continue
+          fi
+
+          RETRY_COUNT=$((RETRY_COUNT + 1))
+
+          # Wait briefly before retry (exponential backoff)
+          WAIT_TIME=$((RETRY_COUNT * 2))
+          echo "Waiting ${WAIT_TIME}s before retry..."
+          sleep $WAIT_TIME
+        done
+
+        echo "✗ Failed to push after $MAX_RETRIES attempts"
+        exit 1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
