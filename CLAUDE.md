@@ -118,6 +118,201 @@ Follow this rigorous testing approach:
 # npm run typecheck
 ```
 
+### GitHub Issue Management
+Use GitHub CLI (`gh`) to manage repository issues:
+
+#### Setup (One-time)
+If `gh` is not installed:
+```bash
+# Windows (PowerShell)
+winget install --id GitHub.cli
+
+# Authenticate (required on first use)
+gh auth login
+```
+
+#### Common Commands
+```bash
+# List all open issues
+"C:\Program Files\GitHub CLI\gh.exe" issue list
+
+# List issues with specific state
+gh issue list --state open
+gh issue list --state closed
+gh issue list --state all
+
+# View a specific issue
+gh issue view <issue-number>
+
+# Create a new issue
+gh issue create --title "Issue title" --body "Issue description"
+
+# Close an issue
+gh issue close <issue-number>
+
+# Reopen an issue
+gh issue reopen <issue-number>
+
+# Add labels to an issue
+gh issue edit <issue-number> --add-label "bug,automated"
+
+# Search issues
+gh issue list --search "error"
+gh issue list --label "bug"
+```
+
+**Note for Windows**: If PATH is not updated after installation, use the full path:
+```powershell
+& "C:\Program Files\GitHub CLI\gh.exe" issue list
+```
+
+### Automated Workflow Failure Handling
+
+This project uses an automated system to handle workflow failures by creating/updating GitHub issues and pull requests.
+
+#### How It Works
+
+When any GitHub Actions workflow fails:
+1. **Issue Creation**: An issue is automatically created (or updated if one already exists) with:
+   - Workflow run details (run number, URL, timestamp)
+   - Failed step information
+   - Last 50 lines of error logs from failed steps
+   - Link to the workflow logs for full details
+
+2. **Pull Request Creation**: A draft PR is automatically created with:
+   - Branch named `fix/workflow-{workflow-name}-{run-number}`
+   - Link to the related issue
+   - Error summary and diagnostic information
+   - Checklist for fixing the issue
+
+3. **Duplicate Prevention**: If an issue already exists for a workflow failure:
+   - No new issue is created
+   - A comment is added to the existing issue with the new failure details
+   - This prevents issue clutter and keeps all related failures in one place
+
+#### Architecture
+
+The system consists of two main components:
+
+1. **Reusable Workflow**: [`.github/workflows/handle-workflow-failure.yml`](.github/workflows/handle-workflow-failure.yml)
+   - Called by other workflows when they fail
+   - Receives workflow context and failure details
+   - Orchestrates the failure handling process
+
+2. **Python Script**: [`scripts/handle_workflow_failure.py`](scripts/handle_workflow_failure.py)
+   - Fetches workflow run details via GitHub API
+   - Extracts error logs from failed jobs
+   - Creates/updates issues and PRs
+   - Handles duplicate detection
+
+#### Workflows Using This System
+
+All major workflows in this project use automated failure handling:
+- `fetch_etf_options.yml` - ETF options data fetching
+- `fetch-earnings-options.yml` - Earnings options data fetching
+- `fetch-market-data.yml` - Daily market data updates
+- `earnings-options-analytics.yml` - Analytics pipeline
+- `update_economic_events_calendar.yml` - Economic calendar updates
+- `download-google-sheets.yml` - Google Sheets data downloads
+
+#### Working with Auto-Created Issues and PRs
+
+**When a workflow fails:**
+
+1. **Check the Issue**: Navigate to the auto-created issue to see:
+   - What failed and when
+   - Error logs and diagnostics
+   - Link to the related PR
+
+2. **Review the Logs**: Click through to the workflow run to see complete logs:
+   ```bash
+   # Or use gh CLI to view the issue
+   gh issue view <issue-number>
+   ```
+
+3. **Work on the Fix**: The auto-created PR provides a branch to work on:
+   ```bash
+   # Checkout the auto-created branch
+   git fetch origin
+   git checkout fix/workflow-{name}-{run-number}
+
+   # Make your fixes
+   # Test locally
+
+   # Push your fixes
+   git add .
+   git commit -m "fix: resolve workflow failure"
+   git push origin fix/workflow-{name}-{run-number}
+   ```
+
+4. **Mark as Ready**: Once fixed:
+   - Convert the draft PR to ready for review
+   - The PR will automatically close the issue when merged
+
+**Managing Multiple Failures:**
+
+If a workflow fails multiple times:
+- All failures are tracked in a single issue (via comments)
+- Each comment includes the specific run details
+- The most recent PR link is shown in the issue
+- Close old PRs if the fix is consolidated into a newer one
+
+**Using gh CLI with Auto-Created Items:**
+
+```bash
+# List workflow failure issues
+gh issue list --label "workflow-failure"
+
+# View specific workflow failures
+gh issue list --label "workflow-failure,etf-options"
+gh issue list --label "workflow-failure,market-data"
+
+# List auto-created PRs
+gh pr list --label "automated"
+
+# View a specific failure PR
+gh pr view <pr-number>
+
+# Close resolved issues
+gh issue close <issue-number> --comment "Fixed in PR #<pr-number>"
+```
+
+#### Customizing Failure Handling
+
+Each workflow specifies its failure handling configuration:
+
+```yaml
+handle-failure:
+  needs: main-job
+  if: failure()
+  uses: ./.github/workflows/handle-workflow-failure.yml
+  with:
+    workflow_name: "Human-readable name"
+    failure_title: "❌ Title for the issue"
+    issue_labels: "workflow-failure,specific-label,automated"
+    workflow_file: "workflow-filename.yml"
+    # ... other context parameters
+    create_pr: true  # Set to false to skip PR creation
+```
+
+#### Troubleshooting
+
+**If failure handling itself fails:**
+- Check the "handle-failure" job in the workflow run
+- Verify `GITHUB_TOKEN` permissions are set correctly
+- Ensure `scripts/handle_workflow_failure.py` is accessible
+- Check that `requests` library is installed (in `requirements.txt`)
+
+**If logs aren't being captured:**
+- The script fetches logs via GitHub API
+- Logs are limited to last 50 lines of errors
+- Full logs are always available via the workflow run link
+
+**If duplicate issues are created:**
+- The system checks for open issues with matching labels
+- Ensure label names are consistent in workflow configurations
+- Check that the issue search is working correctly
+
 ## Example Workflow
 
 1. User requests a feature
