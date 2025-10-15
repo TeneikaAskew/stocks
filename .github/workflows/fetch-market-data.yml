@@ -109,6 +109,7 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+      actions: read  # Required to read workflow run details and logs
     with:
       workflow_name: "Market Data Fetch"
       failure_title: "❌ Market Data Fetch Failed"
