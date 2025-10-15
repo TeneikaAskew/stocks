@@ -48,6 +48,10 @@ on:
         required: false
         type: boolean
         default: true
+    secrets:
+      WORKFLOW_TOKEN:
+        description: 'Personal Access Token with repo scope for creating PRs'
+        required: true
 
 permissions:
   contents: write  # Required for creating branches
@@ -76,7 +80,7 @@ jobs:
 
       - name: Run failure handler script
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python scripts/handle_workflow_failure.py \
