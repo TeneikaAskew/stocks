@@ -45,9 +45,13 @@ class WorkflowFailureHandler:
         }
         # Headers for PR operations (uses PAT if provided)
         # Fine-grained tokens use "Bearer", classic tokens use "token"
-        # Try Bearer first (for fine-grained tokens)
+        if self.pr_token.startswith("github_pat_"):
+            pr_auth = f"Bearer {self.pr_token}"
+        else:
+            pr_auth = f"token {self.pr_token}"
+
         self.pr_headers = {
-            "Authorization": f"token {self.pr_token}",
+            "Authorization": pr_auth,
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28"
         }
@@ -81,9 +85,25 @@ class WorkflowFailureHandler:
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
-            response.raise_for_status()
-            return response.json()
+            if response.status_code == 204:
+                return {}
 
+            response.raise_for_status()
+
+            try:
+                return response.json()
+            except ValueError:
+                return {}
+
+        except requests.exceptions.HTTPError as e:
+            error_detail = ""
+            if e.response is not None:
+                try:
+                    error_json = e.response.json()
+                    error_detail = f" Response body: {json.dumps(error_json)}"
+                except ValueError:
+                    error_detail = f" Response body: {e.response.text}"
+            raise GitHubAPIError(f"GitHub API request failed: {e}.{error_detail}")
         except requests.exceptions.RequestException as e:
             raise GitHubAPIError(f"GitHub API request failed: {e}")
 
@@ -200,13 +220,15 @@ class WorkflowFailureHandler:
         data = {"body": body}
         self._make_request("POST", f"/repos/{self.owner}/{self.repo}/issues/{issue_number}/comments", data)
 
-    def create_branch(self, branch_name: str, sha: str) -> None:
+    def create_branch(self, branch_name: str, sha: str) -> Tuple[bool, str]:
         """
         Create a new branch.
 
         Args:
             branch_name: Name of the branch to create
             sha: Commit SHA to branch from
+        Returns:
+            Tuple of (whether a new branch was created, resulting branch SHA)
         """
         data = {
             "ref": f"refs/heads/{branch_name}",
@@ -214,11 +236,66 @@ class WorkflowFailureHandler:
         }
 
         try:
-            self._make_request("POST", f"/repos/{self.owner}/{self.repo}/git/refs", data, use_pr_token=True)
+            response = self._make_request("POST", f"/repos/{self.owner}/{self.repo}/git/refs", data, use_pr_token=True)
+            return True, response.get('object', {}).get('sha', sha)
         except GitHubAPIError as e:
             # Branch might already exist
             if "Reference already exists" not in str(e):
                 raise
+
+            ref = self._make_request(
+                "GET",
+                f"/repos/{self.owner}/{self.repo}/git/refs/heads/{branch_name}",
+                use_pr_token=True
+            )
+            return False, ref.get('object', {}).get('sha', sha)
+
+    def create_placeholder_commit(self, branch_name: str, parent_sha: str) -> str:
+        """
+        Create an empty placeholder commit so the branch differs from base.
+
+        Args:
+            branch_name: Branch to update
+            parent_sha: SHA of parent commit
+
+        Returns:
+            The SHA of the new commit
+        """
+        parent_commit = self._make_request(
+            "GET",
+            f"/repos/{self.owner}/{self.repo}/git/commits/{parent_sha}",
+            use_pr_token=True
+        )
+
+        tree_sha = parent_commit.get('tree', {}).get('sha')
+        if not tree_sha:
+            raise GitHubAPIError("Unable to determine tree SHA for parent commit")
+
+        commit_message = f"chore: track workflow failure for {branch_name}"
+
+        new_commit = self._make_request(
+            "POST",
+            f"/repos/{self.owner}/{self.repo}/git/commits",
+            {
+                "message": commit_message,
+                "tree": tree_sha,
+                "parents": [parent_sha]
+            },
+            use_pr_token=True
+        )
+
+        new_sha = new_commit.get('sha')
+        if not new_sha:
+            raise GitHubAPIError("Failed to create placeholder commit")
+
+        self._make_request(
+            "PATCH",
+            f"/repos/{self.owner}/{self.repo}/git/refs/heads/{branch_name}",
+            {"sha": new_sha},
+            use_pr_token=True
+        )
+
+        return new_sha
 
     def create_pull_request(self, title: str, body: str, head: str, base: str, draft: bool = True) -> int:
         """
@@ -237,7 +314,7 @@ class WorkflowFailureHandler:
         data = {
             "title": title,
             "body": body,
-            "head": head,
+            "head": f"{self.owner}:{head}",
             "base": base,
             "draft": draft
         }
@@ -433,7 +510,11 @@ Based on the workflow, these files may need attention:
             print(f"Creating branch: {branch_name}")
 
             try:
-                self.create_branch(branch_name, commit_sha)
+                branch_created, branch_head_sha = self.create_branch(branch_name, commit_sha)
+
+                if branch_created:
+                    print("Creating placeholder commit so the PR can be opened...")
+                    branch_head_sha = self.create_placeholder_commit(branch_name, branch_head_sha)
 
                 # Create PR
                 pr_title = f"Fix: {failure_title.replace('❌', '').strip()}"
