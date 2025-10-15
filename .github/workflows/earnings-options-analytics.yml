@@ -303,7 +303,7 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-      - name: Commit outputs to repository
+      - name: Commit outputs to repository with retry
         if: steps.check_data.outputs.has_data == 'true' && steps.analysis_config.outputs.analysis_type != 'test-only'
         run: |
           git config user.name "github-actions[bot]"
@@ -317,8 +317,44 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "update: analytics outputs - $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            git push
-            echo "✓ Outputs committed and pushed to repository"
+
+            # Pull-rebase-push with retry logic to handle concurrent workflow pushes
+            MAX_RETRIES=5
+            RETRY_COUNT=0
+
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              echo "Push attempt $((RETRY_COUNT + 1)) of $MAX_RETRIES..."
+
+              # Try to push
+              if git push origin main; then
+                echo "✓ Successfully pushed changes"
+                echo "✓ Outputs committed and pushed to repository"
+                exit 0
+              fi
+
+              # Push failed, pull with rebase and retry
+              echo "Push failed, pulling latest changes with rebase..."
+              git pull --rebase origin main
+
+              # Check if rebase had conflicts
+              if [ $? -ne 0 ]; then
+                echo "⚠️ Rebase conflict detected, attempting to resolve..."
+                # For analytics outputs, prefer our version (the newer outputs)
+                git checkout --ours earnings_options_analytics/outputs/
+                git add earnings_options_analytics/outputs/
+                git rebase --continue
+              fi
+
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+
+              # Wait briefly before retry (exponential backoff)
+              WAIT_TIME=$((RETRY_COUNT * 2))
+              echo "Waiting ${WAIT_TIME}s before retry..."
+              sleep $WAIT_TIME
+            done
+
+            echo "✗ Failed to push after $MAX_RETRIES attempts"
+            exit 1
           fi
 
       - name: Create summary comment

@@ -56,7 +56,7 @@ jobs:
         env:
           TZ: America/New_York
 
-      - name: Commit and push data
+      - name: Commit and push data with retry
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
@@ -70,30 +70,42 @@ jobs:
 
           git commit -m "Update ETF options data - $(date +'%Y-%m-%d %H:%M:%S %Z')"
 
-          # Retry push up to 3 times on failure
-          MAX_RETRIES=3
+          # Pull-rebase-push with retry logic to handle concurrent workflow pushes
+          MAX_RETRIES=5
           RETRY_COUNT=0
-          PUSH_SUCCESS=false
 
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$PUSH_SUCCESS" = "false" ]; do
-            if [ $RETRY_COUNT -gt 0 ]; then
-              echo "Push failed, attempt $((RETRY_COUNT + 1))/$MAX_RETRIES"
-              echo "Waiting 10-15 seconds before retry..."
-              sleep $((10 + RANDOM % 6))  # Random sleep 10-15 seconds to stagger workflows
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "Push attempt $((RETRY_COUNT + 1)) of $MAX_RETRIES..."
+
+            # Try to push
+            if git push origin main; then
+              echo "✓ Successfully pushed changes"
+              exit 0
             fi
 
-            if git push; then
-              echo "Push successful!"
-              PUSH_SUCCESS=true
-            else
-              RETRY_COUNT=$((RETRY_COUNT + 1))
+            # Push failed, pull with rebase and retry
+            echo "Push failed, pulling latest changes with rebase..."
+            git pull --rebase origin main
+
+            # Check if rebase had conflicts
+            if [ $? -ne 0 ]; then
+              echo "⚠️ Rebase conflict detected, attempting to resolve..."
+              # For options data, prefer our version (the newer data)
+              git checkout --ours data/options/etfs/
+              git add data/options/etfs/
+              git rebase --continue
             fi
+
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+
+            # Wait briefly before retry (exponential backoff)
+            WAIT_TIME=$((RETRY_COUNT * 2))
+            echo "Waiting ${WAIT_TIME}s before retry..."
+            sleep $WAIT_TIME
           done
 
-          if [ "$PUSH_SUCCESS" = "false" ]; then
-            echo "Failed to push after $MAX_RETRIES attempts"
-            exit 1
-          fi
+          echo "✗ Failed to push after $MAX_RETRIES attempts"
+          exit 1
         env:
           TZ: America/New_York
 
