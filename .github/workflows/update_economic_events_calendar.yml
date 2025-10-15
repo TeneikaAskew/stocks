@@ -243,20 +243,27 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
-    - name: Create issue on failure
-      if: failure()
-      uses: actions/github-script@v6
-      with:
-        script: |
-          const date = new Date().toISOString().split('T')[0];
-          const issue = await github.rest.issues.create({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            title: `Market Data Update Failed - ${date}`,
-            body: `The automated market data update failed on ${date}. Please check the workflow logs.`,
-            labels: ['bug', 'automated']
-          });
-          console.log(`Created issue #${issue.data.number}`);
+  # Handle workflow failures by creating/updating issues and PRs
+  handle-failure:
+    needs: update_market_data
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    with:
+      workflow_name: "Economic Events Calendar Update"
+      failure_title: "❌ Market Data Update Failed"
+      issue_labels: "workflow-failure,economic-calendar,automated"
+      workflow_file: "update_economic_events_calendar.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: true
 
   notify_upcoming_events:
     runs-on: ubuntu-latest
