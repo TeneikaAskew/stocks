@@ -80,7 +80,8 @@ jobs:
 
       - name: Run failure handler script
         env:
-          GITHUB_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python scripts/handle_workflow_failure.py \
