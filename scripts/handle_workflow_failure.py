@@ -45,9 +45,13 @@ class WorkflowFailureHandler:
         }
         # Headers for PR operations (uses PAT if provided)
         # Fine-grained tokens use "Bearer", classic tokens use "token"
-        # Try Bearer first (for fine-grained tokens)
+        if self.pr_token.startswith("github_pat_"):
+            pr_auth = f"Bearer {self.pr_token}"
+        else:
+            pr_auth = f"token {self.pr_token}"
+
         self.pr_headers = {
-            "Authorization": f"token {self.pr_token}",
+            "Authorization": pr_auth,
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28"
         }
@@ -81,15 +85,47 @@ class WorkflowFailureHandler:
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
-            response.raise_for_status()
-            return response.json()
+            if response.status_code == 204:
+                return {}
 
+            response.raise_for_status()
+
+            try:
+                return response.json()
+            except ValueError:
+                return {}
+
+        except requests.exceptions.HTTPError as e:
+            error_detail = ""
+            if e.response is not None:
+                try:
+                    error_json = e.response.json()
+                    error_detail = f" Response body: {json.dumps(error_json)}"
+                except ValueError:
+                    error_detail = f" Response body: {e.response.text}"
+            raise GitHubAPIError(f"GitHub API request failed: {e}.{error_detail}")
         except requests.exceptions.RequestException as e:
             raise GitHubAPIError(f"GitHub API request failed: {e}")
 
     def get_workflow_run_details(self, run_id: int) -> Dict:
         """Get workflow run details."""
         return self._make_request("GET", f"/repos/{self.owner}/{self.repo}/actions/runs/{run_id}")
+
+    @staticmethod
+    def _format_timestamp(iso_timestamp: Optional[str]) -> Optional[str]:
+        """Format an ISO timestamp from the API into a human-readable value."""
+        if not iso_timestamp:
+            return None
+
+        # The GitHub API uses Zulu time; handle both fractional and whole seconds
+        for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
+            try:
+                parsed = datetime.strptime(iso_timestamp, fmt)
+                return parsed.strftime("%Y-%m-%d %H:%M:%S UTC")
+            except ValueError:
+                continue
+
+        return iso_timestamp
 
     def get_workflow_jobs(self, run_id: int) -> List[Dict]:
         """Get all jobs for a workflow run."""
@@ -149,7 +185,8 @@ class WorkflowFailureHandler:
         if not error_lines:
             error_lines = lines[-max_lines:]
 
-        return '\n'.join(error_lines[:max_lines])
+        snippet = '\n'.join(error_lines[:max_lines])
+        return snippet.strip()
 
     def find_existing_issue(self, labels: List[str]) -> Optional[int]:
         """
@@ -200,13 +237,15 @@ class WorkflowFailureHandler:
         data = {"body": body}
         self._make_request("POST", f"/repos/{self.owner}/{self.repo}/issues/{issue_number}/comments", data)
 
-    def create_branch(self, branch_name: str, sha: str) -> None:
+    def create_branch(self, branch_name: str, sha: str) -> Tuple[bool, str]:
         """
         Create a new branch.
 
         Args:
             branch_name: Name of the branch to create
             sha: Commit SHA to branch from
+        Returns:
+            Tuple of (whether a new branch was created, resulting branch SHA)
         """
         data = {
             "ref": f"refs/heads/{branch_name}",
@@ -214,11 +253,66 @@ class WorkflowFailureHandler:
         }
 
         try:
-            self._make_request("POST", f"/repos/{self.owner}/{self.repo}/git/refs", data, use_pr_token=True)
+            response = self._make_request("POST", f"/repos/{self.owner}/{self.repo}/git/refs", data, use_pr_token=True)
+            return True, response.get('object', {}).get('sha', sha)
         except GitHubAPIError as e:
             # Branch might already exist
             if "Reference already exists" not in str(e):
                 raise
+
+            ref = self._make_request(
+                "GET",
+                f"/repos/{self.owner}/{self.repo}/git/refs/heads/{branch_name}",
+                use_pr_token=True
+            )
+            return False, ref.get('object', {}).get('sha', sha)
+
+    def create_placeholder_commit(self, branch_name: str, parent_sha: str) -> str:
+        """
+        Create an empty placeholder commit so the branch differs from base.
+
+        Args:
+            branch_name: Branch to update
+            parent_sha: SHA of parent commit
+
+        Returns:
+            The SHA of the new commit
+        """
+        parent_commit = self._make_request(
+            "GET",
+            f"/repos/{self.owner}/{self.repo}/git/commits/{parent_sha}",
+            use_pr_token=True
+        )
+
+        tree_sha = parent_commit.get('tree', {}).get('sha')
+        if not tree_sha:
+            raise GitHubAPIError("Unable to determine tree SHA for parent commit")
+
+        commit_message = f"chore: track workflow failure for {branch_name}"
+
+        new_commit = self._make_request(
+            "POST",
+            f"/repos/{self.owner}/{self.repo}/git/commits",
+            {
+                "message": commit_message,
+                "tree": tree_sha,
+                "parents": [parent_sha]
+            },
+            use_pr_token=True
+        )
+
+        new_sha = new_commit.get('sha')
+        if not new_sha:
+            raise GitHubAPIError("Failed to create placeholder commit")
+
+        self._make_request(
+            "PATCH",
+            f"/repos/{self.owner}/{self.repo}/git/refs/heads/{branch_name}",
+            {"sha": new_sha},
+            use_pr_token=True
+        )
+
+        return new_sha
 
     def create_pull_request(self, title: str, body: str, head: str, base: str, draft: bool = True) -> int:
         """
@@ -237,13 +331,107 @@ class WorkflowFailureHandler:
         data = {
             "title": title,
             "body": body,
-            "head": head,
+            "head": f"{self.owner}:{head}",
             "base": base,
             "draft": draft
         }
 
         response = self._make_request("POST", f"/repos/{self.owner}/{self.repo}/pulls", data, use_pr_token=True)
         return response['number']
+
+    def _format_failed_jobs(self, failed_jobs: List[Dict]) -> str:
+        """Render a markdown summary of failed jobs and their errored steps."""
+        if not failed_jobs:
+            return "- No failed jobs were detected in this run."
+
+        sections: List[str] = []
+
+        for job in failed_jobs:
+            job_name = job.get("name", "Unnamed job")
+            job_url = job.get("url")
+            job_conclusion = job.get("conclusion", "failure").replace("_", " ").title()
+            completed_at = job.get("completed_at")
+
+            job_header = f"- **{job_name}**"
+            if job_url:
+                job_header += f" ([View Logs]({job_url}))"
+
+            job_header += f" — {job_conclusion}"
+            if completed_at:
+                job_header += f" (completed {completed_at})"
+
+            sections.append(job_header)
+
+            failed_steps = job.get("steps", [])
+            if failed_steps:
+                sections.append("  - Failed steps:")
+                for step in failed_steps:
+                    step_number = step.get("number")
+                    step_name = step.get("name", "Unnamed step")
+                    step_conclusion = step.get("conclusion", "failure").replace("_", " ").title()
+                    step_completed_at = step.get("completed_at")
+
+                    bullet = f"    - Step {step_number}: {step_name} — {step_conclusion}"
+                    if step_completed_at:
+                        bullet += f" (finished {step_completed_at})"
+                    sections.append(bullet)
+
+            snippet = job.get("error_snippet")
+            if snippet:
+                sections.append("  - Error snippet:")
+                sections.append("    ```")
+                for line in snippet.splitlines() or [snippet]:
+                    sections.append(f"    {line}")
+                sections.append("    ```")
+
+        return "\n".join(sections)
+
+    def build_failure_summary(
+        self,
+        workflow_name: str,
+        run_url: str,
+        run_number: int,
+        event_name: str,
+        branch: str,
+        commit_sha: str,
+        timestamp: str,
+        actor: Optional[str],
+        run_attempt: Optional[int],
+        workflow_file: str,
+        commit_message: Optional[str],
+        failed_jobs: List[Dict],
+        primary_error: str
+    ) -> str:
+        """Compose the reusable markdown snippet that captures the failure context."""
+
+        actor_text = actor or "unknown"
+        attempt_text = run_attempt if run_attempt else 1
+        commit_line = commit_sha
+        if commit_message:
+            commit_line += f" — {commit_message}"
+
+        failed_jobs_section = self._format_failed_jobs(failed_jobs)
+
+        summary = f"""### Workflow Run
+- **Workflow:** {workflow_name}
+- **Workflow file:** `.github/workflows/{workflow_file}`
+- **Run:** [#{run_number}]({run_url}) (attempt {attempt_text})
+- **Triggered by:** {event_name}
+- **Actor:** {actor_text}
+- **Branch:** {branch}
+- **Commit:** {commit_line}
+- **Detected at:** {timestamp}
+
+### Failed Jobs
+{failed_jobs_section}
+
+### Primary Error Snippet
+```
+{primary_error}
+```
+"""
+
+        return summary
 
     def format_issue_body(
         self,
@@ -254,36 +442,40 @@ class WorkflowFailureHandler:
         branch: str,
         commit_sha: str,
         timestamp: str,
-        failed_steps: List[str],
-        error_logs: str,
+        actor: Optional[str],
+        run_attempt: Optional[int],
+        workflow_file: str,
+        commit_message: Optional[str],
+        failed_jobs: List[Dict],
+        primary_error: str,
         pr_number: Optional[int] = None
     ) -> str:
         """Format the issue body with all failure details."""
 
-        failed_steps_text = '\n'.join([f"- {step}" for step in failed_steps]) if failed_steps else "- No specific step information available"
+        summary = self.build_failure_summary(
+            workflow_name,
+            run_url,
+            run_number,
+            event_name,
+            branch,
+            commit_sha,
+            timestamp,
+            actor,
+            run_attempt,
+            workflow_file,
+            commit_message,
+            failed_jobs,
+            primary_error,
+        )
 
         pr_section = ""
         if pr_number:
             pr_section = f"\n### Linked Pull Request\nA draft PR has been created to track the fix: #{pr_number}\n"
 
-        body = f"""## Workflow Failed
+        body = f"""## Workflow Failure Detected
 
-**Workflow:** {workflow_name}
-**Run:** [#{run_number}]({run_url})
-**Triggered by:** {event_name}
-**Branch:** {branch}
-**Commit:** {commit_sha}
-**Time:** {timestamp}
-
-### Failed Steps
-{failed_steps_text}
-
-### Error Logs (Last 50 lines)
-```
-{error_logs}
-```
-{pr_section}
-### Action Required
+{summary}
+{pr_section}### Action Required
 Please investigate and fix the issue. This workflow runs automatically.
 
 ---
@@ -299,9 +491,23 @@ Please investigate and fix the issue. This workflow runs automatically.
         run_number: int,
         timestamp: str,
         error_summary: str,
-        workflow_file: str
+        workflow_file: str,
+        actor: Optional[str],
+        event_name: str,
+        run_attempt: Optional[int],
+        branch: str,
+        commit_sha: str,
+        commit_message: Optional[str],
+        failed_jobs: List[Dict]
     ) -> str:
         """Format the PR body with fix tracking information."""
+
+        failed_jobs_section = self._format_failed_jobs(failed_jobs)
+        actor_text = actor or "unknown"
+        attempt_text = run_attempt if run_attempt else 1
+        commit_line = commit_sha
+        if commit_message:
+            commit_line += f" — {commit_message}"
 
         body = f"""## Fix: {workflow_name} Failure
 
@@ -311,13 +517,21 @@ This PR is automatically created to track the fix for workflow failure.
 Closes #{issue_number}
 
 ### Failure Details
-- **Workflow Run:** [#{run_number}]({run_url})
+- **Workflow file:** `.github/workflows/{workflow_file}`
+- **Workflow Run:** [#{run_number}]({run_url}) (attempt {attempt_text})
 - **Failed At:** {timestamp}
+- **Event:** {event_name}
+- **Actor:** {actor_text}
+- **Branch:** {branch}
+- **Commit:** {commit_line}
 
 ### Error Summary
 ```
 {error_summary}
 ```
+
+### Failed Jobs Overview
+{failed_jobs_section}
 
 ### Next Steps
 - [ ] Review workflow logs: [View Logs]({run_url})
@@ -374,34 +588,57 @@ Based on the workflow, these files may need attention:
 
         # Get workflow run details and jobs
         print("Fetching workflow run details...")
+        run_details = self.get_workflow_run_details(run_id)
         jobs = self.get_workflow_jobs(run_id)
 
+        actor = run_details.get('actor', {}).get('login') if run_details else None
+        run_attempt = run_details.get('run_attempt') if run_details else None
+        commit_message = run_details.get('head_commit', {}).get('message') if run_details else None
+
+        completed_at = run_details.get('updated_at') if run_details else None
+        timestamp = self._format_timestamp(completed_at) or datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+
         # Find failed jobs and extract logs
-        failed_steps = []
-        error_logs = ""
+        failed_jobs: List[Dict] = []
+        primary_error = ""
 
         for job in jobs:
             if job.get('conclusion') == 'failure':
-                print(f"Found failed job: {job.get('name')}")
+                job_name = job.get('name')
+                print(f"Found failed job: {job_name}")
                 job_id = job.get('id')
 
-                # Get job steps
-                for step in job.get('steps', []):
-                    if step.get('conclusion') == 'failure':
-                        step_name = step.get('name')
-                        failed_steps.append(f"Step: {step_name} (outcome: failure)")
+                job_details: Dict = {
+                    "name": job_name,
+                    "url": job.get('html_url'),
+                    "conclusion": job.get('conclusion'),
+                    "completed_at": self._format_timestamp(job.get('completed_at')),
+                    "steps": [],
+                    "error_snippet": "",
+                }
 
-                # Get logs for the first failed job
-                if not error_logs:
+                for step in job.get('steps', []) or []:
+                    if step.get('conclusion') in {'failure', 'timed_out', 'cancelled'}:
+                        job_details.setdefault('steps', []).append({
+                            "number": step.get('number'),
+                            "name": step.get('name'),
+                            "conclusion": step.get('conclusion'),
+                            "completed_at": self._format_timestamp(step.get('completed_at')),
+                        })
+
+                if job_id:
                     print(f"Fetching logs for job {job_id}...")
                     logs = self.get_job_logs(job_id)
-                    error_logs = self.extract_error_from_logs(logs)
+                    snippet = self.extract_error_from_logs(logs)
+                    job_details['error_snippet'] = snippet or "Unable to extract error logs from job output."
 
-        if not error_logs:
-            error_logs = "Unable to extract error logs. Check the workflow run for details."
+                    if not primary_error and snippet:
+                        primary_error = snippet
 
-        # Get timestamp
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+                failed_jobs.append(job_details)
+
+        if not primary_error:
+            primary_error = "Unable to extract error logs. Check the workflow run for details."
 
         # Check for existing issue
         print(f"Checking for existing issue with labels: {issue_labels}")
@@ -410,18 +647,43 @@ Based on the workflow, these files may need attention:
         if existing_issue:
             print(f"Found existing issue #{existing_issue}, adding comment...")
             # Create update body
-            update_body = self.format_issue_body(
-                workflow_name, run_url, run_number, event_name,
-                branch, commit_sha, timestamp, failed_steps, error_logs
+            summary = self.build_failure_summary(
+                workflow_name,
+                run_url,
+                run_number,
+                event_name,
+                branch,
+                commit_sha,
+                timestamp,
+                actor,
+                run_attempt,
+                workflow_file,
+                commit_message,
+                failed_jobs,
+                primary_error,
             )
-            self.add_issue_comment(existing_issue, f"### Additional Failure\n{update_body}")
+            self.add_issue_comment(
+                existing_issue,
+                f"### Additional Failure Detected ({timestamp})\n\n{summary}",
+            )
             issue_number = existing_issue
         else:
             print("No existing issue found, creating new issue...")
             # Create new issue
             issue_body = self.format_issue_body(
-                workflow_name, run_url, run_number, event_name,
-                branch, commit_sha, timestamp, failed_steps, error_logs
+                workflow_name,
+                run_url,
+                run_number,
+                event_name,
+                branch,
+                commit_sha,
+                timestamp,
+                actor,
+                run_attempt,
+                workflow_file,
+                commit_message,
+                failed_jobs,
+                primary_error,
             )
             issue_number = self.create_issue(failure_title, issue_body, issue_labels)
             print(f"Created issue #{issue_number}")
@@ -433,15 +695,31 @@ Based on the workflow, these files may need attention:
             print(f"Creating branch: {branch_name}")
 
             try:
-                self.create_branch(branch_name, commit_sha)
+                branch_created, branch_head_sha = self.create_branch(branch_name, commit_sha)
+
+                if branch_created:
+                    print("Creating placeholder commit so the PR can be opened...")
+                    branch_head_sha = self.create_placeholder_commit(branch_name, branch_head_sha)
 
                 # Create PR
                 pr_title = f"Fix: {failure_title.replace('❌', '').strip()}"
-                error_summary = error_logs[:500] + "..." if len(error_logs) > 500 else error_logs
+                error_summary = primary_error[:500] + "..." if len(primary_error) > 500 else primary_error
 
                 pr_body = self.format_pr_body(
-                    workflow_name, issue_number, run_url, run_number,
-                    timestamp, error_summary, workflow_file
+                    workflow_name,
+                    issue_number,
+                    run_url,
+                    run_number,
+                    timestamp,
+                    error_summary,
+                    workflow_file,
+                    actor,
+                    event_name,
+                    run_attempt,
+                    branch,
+                    commit_sha,
+                    commit_message,
+                    failed_jobs,
                 )
 
                 print("Creating draft pull request...")
