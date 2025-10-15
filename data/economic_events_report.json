@@ -1,0 +1,12 @@
+{
+  "generated_at": "2025-10-15T17:53:34.827045",
+  "date": "2025-10-15",
+  "date_range_start": "",
+  "date_range_end": "",
+  "type": "economic_events",
+  "market_events_processed": true,
+  "earnings_calendar_processed": true,
+  "economic_calendar_processed": true,
+  "total_market_events": 771,
+  "total_earnings_events": 313
+}
