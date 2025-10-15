@@ -34,6 +34,8 @@ jobs:
     permissions:
       contents: write
       issues: write
+    outputs:
+      has_failures: ${{ steps.check_failures.outputs.has_failures }}
 
     steps:
     - name: Checkout repository
@@ -134,6 +136,7 @@ jobs:
       continue-on-error: true
 
     - name: Fetch earnings calendar
+      id: fetch_earnings
       run: |
         echo "Fetching upcoming earnings calendar..."
         if [ -n "${DATE_RANGE_START}" ] && [ -n "${DATE_RANGE_END}" ]; then
@@ -227,6 +230,18 @@ jobs:
         print(f'Report generated: {report}')
         "
     
+    - name: Check for step failures
+      id: check_failures
+      if: always()
+      run: |
+        # Check if any critical steps failed
+        if [ "${{ steps.fetch_earnings.outcome }}" = "failure" ]; then
+          echo "has_failures=true" >> $GITHUB_OUTPUT
+          echo "⚠️ Earnings calendar fetch failed"
+        else
+          echo "has_failures=false" >> $GITHUB_OUTPUT
+        fi
+
     - name: Check for changes
       id: verify_changes
       run: |
@@ -246,7 +261,7 @@ jobs:
   # Handle workflow failures by creating/updating issues and PRs
   handle-failure:
     needs: update_market_data
-    if: failure()
+    if: failure() || (success() && needs.update_market_data.outputs.has_failures == 'true')
     uses: ./.github/workflows/handle-workflow-failure.yml
     permissions:
       contents: write
