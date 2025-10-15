@@ -15,6 +15,13 @@ google-apps-script/.clasp.json
 .env.test.local
 .env.production.local
 
+# Credentials and secrets
+credentials/
+*.pem
+*.key
+*-credentials.json
+service-account*.json
+
 # Logs
 logs
 *.log
