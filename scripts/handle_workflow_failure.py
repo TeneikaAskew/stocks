@@ -44,8 +44,10 @@ class WorkflowFailureHandler:
             "X-GitHub-Api-Version": "2022-11-28"
         }
         # Headers for PR operations (uses PAT if provided)
+        # Fine-grained tokens use "Bearer", classic tokens use "token"
+        # Try Bearer first (for fine-grained tokens)
         self.pr_headers = {
-            "Authorization": f"Bearer {self.pr_token}",
+            "Authorization": f"token {self.pr_token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28"
         }
