@@ -5,6 +5,30 @@ This repository contains tools for analyzing stock market data (IWM, SPY, QQQ, S
 
 ## Main Components
 
+### IREN Performance & Outlook App (`scripts/iren_analysis_app.py`)
+Command-line tool focused on **Iris Energy Limited (IREN)** (or any ticker you supply) that:
+- Downloads recent price history directly from Yahoo Finance
+- Summarizes current performance (daily/weekly/monthly/annual returns, 52-week range, RSI, trend/volume context)
+- Builds a short-term linear regression model using technical factors to forecast forward returns
+- Reports the expected price move, confidence range, and recent directional accuracy of the model
+
+Run it from the repository root:
+
+```bash
+python scripts/iren_analysis_app.py                # default: IREN, last 2 years, 5-day outlook
+python scripts/iren_analysis_app.py --ticker BTC-USD --period 3y --horizon 10
+python scripts/iren_analysis_app.py --no-prediction  # skip modeling if you only want the snapshot
+```
+
+### IREN Interactive Dashboard (`scripts/iren_analysis_dashboard.py`)
+Launch a Streamlit front end that visualizes the same performance metrics and runs the predictive model on demand:
+
+```bash
+streamlit run scripts/iren_analysis_dashboard.py
+```
+
+Use the sidebar to change tickers, history length, and forecast horizon. Toggle the predictive model to view only historical context when desired.
+
 ### 1. IWM Analysis (`iwm_analysis.py`)
 Comprehensive stock analysis tool that:
 - **Combines CSV data**: Merges multiple CSV files containing historical stock price data
