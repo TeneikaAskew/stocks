@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IREN Market Insights Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-content">
+                <h1>IREN Limited</h1>
+                <p class="subtitle">Real-Time Market Insights & Predictions</p>
+                <div class="last-updated">Last Updated: <span id="lastUpdated">Loading...</span></div>
+            </div>
+        </header>
+
+        <div class="dashboard">
+            <!-- Key Metrics Section -->
+            <section class="metrics-grid">
+                <div class="metric-card primary">
+                    <div class="metric-label">Current Price</div>
+                    <div class="metric-value" id="currentPrice">$--</div>
+                    <div class="metric-change" id="dailyChange">--</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">Market Cap</div>
+                    <div class="metric-value" id="marketCap">$--</div>
+                    <div class="metric-info">Financial Services</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">30-Day Change</div>
+                    <div class="metric-value" id="change30d">--</div>
+                    <div class="metric-info">vs. Last Month</div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-label">90-Day Change</div>
+                    <div class="metric-value" id="change90d">--</div>
+                    <div class="metric-info">Quarterly Performance</div>
+                </div>
+            </section>
+
+            <!-- Market Movement Chart -->
+            <section class="chart-section">
+                <h2>Price Movement Trends</h2>
+                <div class="chart-container">
+                    <canvas id="priceChart"></canvas>
+                </div>
+            </section>
+
+            <!-- Volume Analysis -->
+            <section class="analysis-section">
+                <h2>Volume Analysis</h2>
+                <div class="analysis-grid">
+                    <div class="analysis-card">
+                        <div class="analysis-label">Current Volume</div>
+                        <div class="analysis-value" id="currentVolume">--</div>
+                    </div>
+                    <div class="analysis-card">
+                        <div class="analysis-label">30-Day Avg Volume</div>
+                        <div class="analysis-value" id="avgVolume">--</div>
+                    </div>
+                    <div class="analysis-card">
+                        <div class="analysis-label">Volume Ratio</div>
+                        <div class="analysis-value" id="volumeRatio">--</div>
+                        <div class="analysis-info" id="volumeStatus">--</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Technical Indicators -->
+            <section class="technical-section">
+                <h2>Technical Indicators</h2>
+                <div class="technical-grid">
+                    <div class="technical-card">
+                        <div class="technical-label">52-Week High</div>
+                        <div class="technical-value" id="high52w">$--</div>
+                    </div>
+                    <div class="technical-card">
+                        <div class="technical-label">52-Week Low</div>
+                        <div class="technical-value" id="low52w">$--</div>
+                    </div>
+                    <div class="technical-card">
+                        <div class="technical-label">Beta</div>
+                        <div class="technical-value" id="beta">--</div>
+                        <div class="technical-info">Volatility Measure</div>
+                    </div>
+                    <div class="technical-card">
+                        <div class="technical-label">P/E Ratio</div>
+                        <div class="technical-value" id="peRatio">--</div>
+                        <div class="technical-info">Valuation</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Key Insights -->
+            <section class="insights-section">
+                <h2>Key Market Insights</h2>
+                <div class="insights-container" id="insightsContainer">
+                    <div class="insight-card">
+                        <div class="insight-icon">📈</div>
+                        <div class="insight-content">
+                            <h3>Strong Momentum</h3>
+                            <p id="momentumInsight">Analyzing market trends...</p>
+                        </div>
+                    </div>
+                    <div class="insight-card">
+                        <div class="insight-icon">📊</div>
+                        <div class="insight-content">
+                            <h3>Volume Activity</h3>
+                            <p id="volumeInsight">Evaluating trading volume...</p>
+                        </div>
+                    </div>
+                    <div class="insight-card">
+                        <div class="insight-icon">⚡</div>
+                        <div class="insight-content">
+                            <h3>Volatility Profile</h3>
+                            <p id="volatilityInsight">Assessing risk metrics...</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Predictions -->
+            <section class="predictions-section">
+                <h2>Market Predictions & Outlook</h2>
+                <div class="predictions-container">
+                    <div class="prediction-card bullish">
+                        <div class="prediction-header">
+                            <span class="prediction-label">Short-Term (7 Days)</span>
+                            <span class="prediction-confidence" id="shortTermConfidence">--</span>
+                        </div>
+                        <div class="prediction-body">
+                            <div class="prediction-direction" id="shortTermDirection">--</div>
+                            <p class="prediction-text" id="shortTermPrediction">Analyzing short-term trends...</p>
+                        </div>
+                    </div>
+
+                    <div class="prediction-card neutral">
+                        <div class="prediction-header">
+                            <span class="prediction-label">Medium-Term (30 Days)</span>
+                            <span class="prediction-confidence" id="mediumTermConfidence">--</span>
+                        </div>
+                        <div class="prediction-body">
+                            <div class="prediction-direction" id="mediumTermDirection">--</div>
+                            <p class="prediction-text" id="mediumTermPrediction">Analyzing medium-term trends...</p>
+                        </div>
+                    </div>
+
+                    <div class="prediction-card cautious">
+                        <div class="prediction-header">
+                            <span class="prediction-label">Risk Assessment</span>
+                            <span class="prediction-confidence" id="riskLevel">--</span>
+                        </div>
+                        <div class="prediction-body">
+                            <div class="prediction-direction" id="riskDirection">⚠️</div>
+                            <p class="prediction-text" id="riskAssessment">Evaluating risk factors...</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <footer>
+            <p>Data provided by Yahoo Finance API | This dashboard is for informational purposes only and should not be considered financial advice.</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
