@@ -10,7 +10,7 @@ const EW = {
     'Long Puts':    '/api/getlongput', //E
     'Short Puts':   '/api/getshortput', //E
     'Bull Spreads': '/api/getbullcallspread', //Y
-    'Strangles':    '/api/getstrangle',  //E
+    'Strangles':    '/api/getshortstrangle',  //Y
     'Covered Calls':'/api/getcoveredcall', //Y
     'Straddles':    '/api/getstraddle',   //E
     'Short Calls':  '/api/getshortcalls', //E
@@ -30,22 +30,7 @@ const EW = {
   }
 };
 
-function EW_runSingle(tabName) {
-  tabName = 'Long Puts'
-  EW_trace('MAIN', `EW_runSingle(${tabName})`);
-  const path = EW.STRATEGY_ENDPOINTS[tabName];
-  if (!path) {
-    EW_trace('MAIN', `Unknown tabName: ${tabName}`, true);
-    return;
-  }
-  let cookies = {};
-  if (EW.p.user && EW.p.pass) {
-    try { cookies = EW_login(); } catch (e) {}
-  }
-  const ss = SpreadsheetApp.getActive();
-  EW_runOneInternal(ss, tabName, path, cookies);
-  EW_trace('MAIN', `EW_runSingle(${tabName}) done`, true);
-}
+
 // ======= GLOBAL CONSTANTS =======
 
 // Default values for tracking
