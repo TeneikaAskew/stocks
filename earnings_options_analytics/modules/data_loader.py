@@ -286,10 +286,55 @@ class DataLoader:
             df['releaseTime'] = df['releaseTime'].astype(str)
             release_lower = df['releaseTime'].str.lower().str.strip()
             release_lower = release_lower.replace({'nan': '', 'none': ''})
+            release_collapsed = release_lower.str.replace(r'[\s\-_]', '', regex=True)
 
-            before_open_mask = release_lower.str.contains('beforeopen', na=False) | release_lower.isin(['1'])
-            after_close_mask = release_lower.str.contains('afterclose', na=False) | release_lower.isin(['3'])
-            during_market_mask = release_lower.str.contains('during', na=False) | release_lower.isin(['2'])
+            before_exact = {
+                '1',
+                'beforeopen',
+                'beforetheopen',
+                'premarket',
+                'preopen',
+                'prethemarket',
+                'pretheopen',
+                'bmo',
+                'amopen',
+                'amrelease',
+                'amclose',
+            }
+            after_exact = {
+                '3',
+                'afterclose',
+                'afterhours',
+                'postmarket',
+                'postclose',
+                'pmclose',
+                'pmc',
+                'amc',
+                'pmrelease',
+            }
+            during_exact = {
+                '2',
+                'duringmarket',
+                'duringtrading',
+                'intraday',
+                'marketopen',
+            }
+
+            before_open_mask = release_collapsed.isin(before_exact)
+            before_open_mask |= release_lower.str.contains(r'\bbefore\s*(?:the\s*)?open\b', regex=True, na=False)
+            before_open_mask |= release_lower.str.contains(r'\bpre[-\s]?market\b', regex=True, na=False)
+            before_open_mask |= release_lower.str.contains(r'\bpre[-\s]?open\b', regex=True, na=False)
+
+            after_close_mask = release_collapsed.isin(after_exact)
+            after_close_mask |= release_lower.str.contains(r'\bafter\s*(?:the\s*)?close\b', regex=True, na=False)
+            after_close_mask |= release_lower.str.contains(r'\bpost[-\s]?market\b', regex=True, na=False)
+            after_close_mask |= release_lower.str.contains(r'\bpost[-\s]?close\b', regex=True, na=False)
+
+            during_market_mask = release_collapsed.isin(during_exact)
+            during_market_mask |= release_lower.str.contains(r'\bduring\b', regex=True, na=False)
+            during_market_mask |= release_lower.str.contains(r'\bintra[-\s]?day\b', regex=True, na=False)
+            during_market_mask |= release_lower.str.contains(r'\bmid[-\s]?day\b', regex=True, na=False)
+            during_market_mask |= release_lower.str.contains(r'\bmarket\s*hours\b', regex=True, na=False)
 
             df['Is_Before_Open'] = before_open_mask
             df['Is_After_Close'] = after_close_mask
