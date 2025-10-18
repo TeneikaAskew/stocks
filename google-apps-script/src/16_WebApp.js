@@ -213,6 +213,9 @@ function formatTradeRecordsForWeb(trades) {
       maxDrawdown: maxDrawdown || 0,
       profitableDays: profitableDays || 0,
       daysBeforeEarnings: daysBeforeEarnings,
+      includesPostEarnings: Boolean(trade.includesPostEarnings),
+      releaseTimeCode: typeof trade.releaseTime === 'number' ? trade.releaseTime : null,
+      releaseTimeLabel: trade.releaseTimeLabel || '',
       maxFavorable: favorable,
       minUnfavorable: unfavorable
     };

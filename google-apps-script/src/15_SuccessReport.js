@@ -40,6 +40,131 @@ function EW_formatDateForReport(dateValue) {
   }
 }
 
+/**
+ * Safely parse a sheet value into a Date object
+ */
+function SR_parseDateValue(value) {
+  if (!value && value !== 0) return null;
+
+  if (value instanceof Date) {
+    return isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === 'number' && !isNaN(value)) {
+    if (value > 2000000000) {
+      const msDate = new Date(value);
+      return isNaN(msDate.getTime()) ? null : msDate;
+    }
+    // Google Sheets typically returns dates as Date objects, but handle raw numbers defensively
+    const serialDate = new Date(Math.round((value - 25569) * 86400000));
+    return isNaN(serialDate.getTime()) ? null : serialDate;
+  }
+
+  const stringValue = String(value).trim();
+  if (stringValue === '') return null;
+
+  const parsed = new Date(stringValue);
+  return isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * Normalize release time values from the sheet into a consistent structure
+ */
+function SR_normalizeReleaseTime(value) {
+  if (value === null || value === undefined) {
+    return { code: 0, label: '', raw: value };
+  }
+
+  if (typeof value === 'number' && !isNaN(value)) {
+    const rounded = Math.round(value);
+    return { code: rounded, label: String(rounded), raw: value };
+  }
+
+  const normalized = String(value).toLowerCase().trim();
+  if (normalized === '') {
+    return { code: 0, label: '', raw: value };
+  }
+
+  const collapsed = normalized.replace(/\s+/g, '');
+  const releaseMap = [
+    { match: /^(1|beforeopen|bmo)$/, code: 1, label: 'beforeopen' },
+    { match: /^(2|duringmarket|duringtrading|intraday)$/, code: 2, label: 'duringmarket' },
+    { match: /^(3|afterclose|afterhours|postclose|pmc|amc)$/, code: 3, label: 'afterclose' }
+  ];
+
+  for (let i = 0; i < releaseMap.length; i++) {
+    if (releaseMap[i].match.test(collapsed)) {
+      return { code: releaseMap[i].code, label: releaseMap[i].label, raw: value };
+    }
+  }
+
+  const firstChar = collapsed.charAt(0);
+
+  if (firstChar === '1' || collapsed.includes('before') || collapsed === 'bmo') {
+    return { code: 1, label: collapsed, raw: value };
+  }
+  if (firstChar === '3' || collapsed.includes('after') || collapsed.includes('post') || collapsed === 'pm' || collapsed === 'pmc' || collapsed === 'amc') {
+    return { code: 3, label: collapsed, raw: value };
+  }
+  if (firstChar === '2' || collapsed.includes('during') || collapsed.includes('market')) {
+    return { code: 2, label: collapsed, raw: value };
+  }
+
+  const numeric = parseFloat(collapsed);
+  if (!isNaN(numeric)) {
+    return { code: Math.round(numeric), label: collapsed, raw: value };
+  }
+
+  return { code: 0, label: collapsed, raw: value };
+}
+
+/**
+ * Determine whether a trade's observation window includes post-earnings data
+ */
+function SR_calculateIncludesPostEarnings(runDateValue, epsDateValue, releaseInfo) {
+  const runDate = SR_parseDateValue(runDateValue);
+  const epsDate = SR_parseDateValue(epsDateValue);
+
+  if (!runDate || !epsDate) {
+    return false;
+  }
+
+  const runDay = new Date(runDate.getFullYear(), runDate.getMonth(), runDate.getDate());
+  const epsDay = new Date(epsDate.getFullYear(), epsDate.getMonth(), epsDate.getDate());
+
+  if (runDay.getTime() > epsDay.getTime()) {
+    return true;
+  }
+
+  if (runDay.getTime() < epsDay.getTime()) {
+    return false;
+  }
+
+  const releaseCode = releaseInfo && typeof releaseInfo.code === 'number' ? releaseInfo.code : 0;
+
+  if (releaseCode === 1 || releaseCode === 2) {
+    return true;
+  }
+
+  const runHours = runDate.getHours();
+  if (releaseCode === 3 && !isNaN(runHours)) {
+    if (runHours >= 16) {
+      return true;
+    }
+  }
+
+  if (!releaseCode && releaseInfo && typeof releaseInfo.label === 'string') {
+    if (/before/.test(releaseInfo.label) || /during/.test(releaseInfo.label)) {
+      return true;
+    }
+    if (/after/.test(releaseInfo.label) && !isNaN(runHours) && runHours >= 16) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 
 /**
  * Calculate profit factor from observations
@@ -331,8 +456,11 @@ function EW_extractTradeData(sheet, strategy) {
       skippedRows++;
       return;
     }
-    
+
     try {
+      const releaseRaw = hdrMap.releaseTimeCol ? row[hdrMap.releaseTimeCol - 1] : '';
+      const releaseInfo = SR_normalizeReleaseTime(releaseRaw);
+
       let trade = {
         // Basic info
         strategy: strategy,
@@ -369,10 +497,12 @@ function EW_extractTradeData(sheet, strategy) {
         ret5D: parseFloat(row[hdrMap.ret5Col - 1]) || 0,
         ret20D: parseFloat(row[hdrMap.ret20Col - 1]) || 0,
         gapPct: parseFloat(row[hdrMap.gapPctCol - 1]) || 0,
-        
+
         // Dates
         nextEPSDate: row[hdrMap.nextEPSDateCol - 1],
-        releaseTime: parseFloat(row[hdrMap.releaseTimeCol - 1]) || 0,
+        releaseTime: releaseInfo.code,
+        releaseTimeLabel: releaseInfo.label,
+        releaseTimeRaw: releaseInfo.raw,
         hitDate: row[hdrMap.hitDateCol - 1],
         firstHitDate: row[hdrMap.firstHitDateCol - 1],
         
@@ -427,6 +557,12 @@ function EW_extractTradeData(sheet, strategy) {
         sheetName: sheet.getName(),
         rowNum: idx + 2
       };
+
+      trade.includesPostEarnings = SR_calculateIncludesPostEarnings(
+        trade.runDate,
+        trade.nextEPSDate,
+        releaseInfo
+      );
       
       // Calculate derived fields
       // Check for hits - Strike_Hit contains decimal percentage values or null when not hit
@@ -2633,7 +2769,8 @@ function EW_prepareMachineLearningData(trades) {
       strategy: trade.strategy,
       daysToExpiry: trade.expDate ? Math.floor((new Date(trade.expDate) - new Date(trade.runDate)) / (1000 * 60 * 60 * 24)) : -1,
       daysToEarnings: trade.nextEPSDate ? Math.floor((new Date(trade.nextEPSDate) - new Date(trade.runDate)) / (1000 * 60 * 60 * 24)) : -1,
-      
+      includesPostEarnings: trade.includesPostEarnings ? 1 : 0,
+
       // Indicator values at entry (first values)
       rsi_entry: trade.indicators.rsi[0] || null,
       sma20_entry: trade.indicators.sma20[0] || null,
@@ -2707,7 +2844,7 @@ function EW_prepareMachineLearningData(trades) {
   return {
     data: mlData,
     features: [
-      'strategy', 'daysToExpiry', 'daysToEarnings',
+      'strategy', 'daysToExpiry', 'daysToEarnings', 'includesPostEarnings',
       'rsi_entry', 'sma20_entry', 'sma50_entry', 'ema9_entry', 'ema21_entry',
       'vwap_entry', 'rvol_entry', 'atr_entry', 'priceVsSMA20_entry', 'priceVsVWAP_entry'
     ],

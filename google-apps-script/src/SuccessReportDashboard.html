@@ -2288,7 +2288,7 @@
 
             if (trades.length > 0) {
                 datasets['All Trades (Raw)'] = {
-                    columns: ['Strategy', 'Ticker', 'Run Date', 'Strike Hit', 'Peak Profit %', 'Max Drawdown %', 'Days to Hit', 'Days Before Earnings'],
+                    columns: ['Strategy', 'Ticker', 'Run Date', 'Strike Hit', 'Peak Profit %', 'Max Drawdown %', 'Days to Hit', 'Days Before Earnings', 'Post-Earnings Data'],
                     rows: trades.map(trade => [
                         trade.strategy || '-',
                         trade.ticker || '-',
@@ -2297,14 +2297,15 @@
                         formatNumber((trade.peakProfit || 0) * 100, 2) + '%',
                         formatNumber((trade.maxDrawdown || 0) * 100, 2) + '%',
                         trade.daysToHit !== null && trade.daysToHit !== undefined ? formatNumber(trade.daysToHit, 1) : '—',
-                        trade.daysBeforeEarnings !== null && trade.daysBeforeEarnings !== undefined ? formatNumber(trade.daysBeforeEarnings, 0) : '—'
+                        trade.daysBeforeEarnings !== null && trade.daysBeforeEarnings !== undefined ? formatNumber(trade.daysBeforeEarnings, 0) : '—',
+                        trade.includesPostEarnings ? 'Yes' : 'No'
                     ])
                 };
             }
 
             if (filtersApplied && Array.isArray(filteredTrades) && filteredTrades.length > 0) {
                 datasets['Filtered Trades (Overview Filters)'] = {
-                    columns: ['Strategy', 'Ticker', 'Run Date', 'Strike Hit', 'Peak Profit %', 'Max Drawdown %', 'Days to Hit', 'Days Before Earnings'],
+                    columns: ['Strategy', 'Ticker', 'Run Date', 'Strike Hit', 'Peak Profit %', 'Max Drawdown %', 'Days to Hit', 'Days Before Earnings', 'Post-Earnings Data'],
                     rows: filteredTrades.map(trade => [
                         trade.strategy || '-',
                         trade.ticker || '-',
@@ -2313,7 +2314,8 @@
                         formatNumber((trade.peakProfit || 0) * 100, 2) + '%',
                         formatNumber((trade.maxDrawdown || 0) * 100, 2) + '%',
                         trade.daysToHit !== null && trade.daysToHit !== undefined ? formatNumber(trade.daysToHit, 1) : '—',
-                        trade.daysBeforeEarnings !== null && trade.daysBeforeEarnings !== undefined ? formatNumber(trade.daysBeforeEarnings, 0) : '—'
+                        trade.daysBeforeEarnings !== null && trade.daysBeforeEarnings !== undefined ? formatNumber(trade.daysBeforeEarnings, 0) : '—',
+                        trade.includesPostEarnings ? 'Yes' : 'No'
                     ])
                 };
             }

@@ -279,11 +279,52 @@ class DataLoader:
             df['Is_Pre_Earnings'] = df['Days_To_Earnings'] >= 0
 
         # Release time flags
-        if 'releaseTime' in df.columns:
+        release_lower = pd.Series('', index=df.index)
+        has_release_time = 'releaseTime' in df.columns
+        if has_release_time:
             # Convert to string first if needed
             df['releaseTime'] = df['releaseTime'].astype(str)
-            df['Is_Before_Open'] = df['releaseTime'].str.contains('beforeOpen', case=False, na=False)
-            df['Is_After_Close'] = df['releaseTime'].str.contains('afterClose', case=False, na=False)
+            release_lower = df['releaseTime'].str.lower().str.strip()
+            release_lower = release_lower.replace({'nan': '', 'none': ''})
+
+            before_open_mask = release_lower.str.contains('beforeopen', na=False) | release_lower.isin(['1'])
+            after_close_mask = release_lower.str.contains('afterclose', na=False) | release_lower.isin(['3'])
+            during_market_mask = release_lower.str.contains('during', na=False) | release_lower.isin(['2'])
+
+            df['Is_Before_Open'] = before_open_mask
+            df['Is_After_Close'] = after_close_mask
+            df['Is_During_Market'] = during_market_mask
+        else:
+            before_open_mask = pd.Series(False, index=df.index)
+            after_close_mask = pd.Series(False, index=df.index)
+            during_market_mask = pd.Series(False, index=df.index)
+
+        # Determine if the trade data includes post-earnings movement
+        df['Includes_Post_Earnings'] = False
+        if 'Run Date' in df.columns and 'nextEPSDate' in df.columns:
+            run_dates = df['Run Date']
+            eps_dates = df['nextEPSDate']
+
+            valid_dates = run_dates.notna() & eps_dates.notna()
+            run_norm = run_dates.dt.normalize()
+            eps_norm = eps_dates.dt.normalize()
+
+            includes_post = pd.Series(False, index=df.index)
+
+            # Any run date after the earnings date is post-earnings
+            includes_post.loc[valid_dates & (run_norm > eps_norm)] = True
+
+            # Same-day handling depends on release timing
+            same_day = valid_dates & (run_norm == eps_norm)
+            if has_release_time:
+                before_or_during = before_open_mask | during_market_mask
+                includes_post.loc[same_day & before_or_during] = True
+
+                # For after-close releases, treat late-day runs (>= 4pm) as post-earnings
+                run_hours = run_dates.dt.hour
+                includes_post.loc[same_day & after_close_mask & (run_hours >= 16)] = True
+
+            df['Includes_Post_Earnings'] = includes_post
 
         return df
 
