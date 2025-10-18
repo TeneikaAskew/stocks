@@ -923,6 +923,7 @@ function EW_headerMap(headerRow) {
   const epsImpactCol    = find(['epsImpact','eps impact','EPS Impact']);
   const avgEPSMoveCol   = find(['avgEPSMove','avg eps move','Avg EPS Move']);
   const avgVolumeCol    = find(['avgVolume','avg volume','Avg Volume']);
+  const includesPostEarningsCol = find(['Includes_Post_Earnings','includes_post_earnings','Includes Post Earnings']);
   
   // Covered Call specific
   const cushionCol      = find(['cushion','Cushion']);
@@ -972,6 +973,7 @@ function EW_headerMap(headerRow) {
     companyCol, lastTradeCol, bidCol, askCol, openInterestCol, volumeCol,
     nextEPSDateCol, releaseTimeCol, lastEPSTimeCol, confirmDateCol, optionDateCol,
     scoreCol, epsImpactCol, avgEPSMoveCol, avgVolumeCol,
+    includesPostEarningsCol,
     // Covered Call specific
     cushionCol, upTargetCol, callAwayCol, downTargetCol, callAwayReturnCol,
     ewRatingCol, exDivDateCol, payoutCol,
@@ -1287,14 +1289,65 @@ function EW_setGFArrayFormulas(sheet, hdrMap) {
     `LET(
        ticker, INDEX(${tRange}, i),
        expDate, INDEX($${EW_columnToLetter(hdrMap.expDateCol)}2:$${EW_columnToLetter(hdrMap.expDateCol)}, i),
-       IF(OR(ticker="", expDate=""), "", 
-         IF(ISNUMBER(expDate), 
-           MAX(expDate - TODAY()), 
+       IF(OR(ticker="", expDate=""), "",
+         IF(ISNUMBER(expDate),
+           MAX(expDate - TODAY()),
            IFERROR(MAX(DATEVALUE(expDate) - TODAY()), 0)
          )
        )
      )`
   );
+
+  // Includes post-earnings flag
+  if (hdrMap.includesPostEarningsCol && hdrMap.runDateCol && hdrMap.nextEPSDateCol) {
+    const runColLetter = EW_columnToLetter(hdrMap.runDateCol);
+    const epsColLetter = EW_columnToLetter(hdrMap.nextEPSDateCol);
+    const releaseColLetter = hdrMap.releaseTimeCol ? EW_columnToLetter(hdrMap.releaseTimeCol) : null;
+
+    setHeaderArrayMultiCol(
+      hdrMap.includesPostEarningsCol, 'Includes_Post_Earnings',
+      `LET(
+         runVal, INDEX($${runColLetter}2:$${runColLetter}, i),
+         epsVal, INDEX($${epsColLetter}2:$${epsColLetter}, i),
+         releaseVal, ${releaseColLetter ? `INDEX($${releaseColLetter}2:$${releaseColLetter}, i)` : `""`},
+         runNum, IF(runVal="", "", IF(ISNUMBER(runVal), runVal, IFERROR(DATEVALUE(runVal), ""))),
+         epsNum, IF(epsVal="", "", IF(ISNUMBER(epsVal), epsVal, IFERROR(DATEVALUE(epsVal), ""))),
+         releaseTxtRaw, LOWER(TRIM(TO_TEXT(releaseVal))),
+         releaseTxt, SUBSTITUTE(releaseTxtRaw, " ", ""),
+         releaseCode,
+           IF(releaseTxt="",
+             0,
+             IF(OR(LEFT(releaseTxt, 1)="1", REGEXMATCH(releaseTxt, "before"), releaseTxt="bmo"),
+               1,
+               IF(OR(LEFT(releaseTxt, 1)="3", REGEXMATCH(releaseTxt, "after"), REGEXMATCH(releaseTxt, "post"), releaseTxt="pm", releaseTxt="pmc", releaseTxt="amc"),
+                 3,
+                 IF(OR(LEFT(releaseTxt, 1)="2", REGEXMATCH(releaseTxt, "during"), REGEXMATCH(releaseTxt, "market")),
+                   2,
+                   IFERROR(VALUE(releaseTxt), 0)
+                 )
+               )
+             )
+           ),
+         runDay, IF(runNum="", "", INT(runNum)),
+         epsDay, IF(epsNum="", "", INT(epsNum)),
+         runTime, IF(OR(runNum="", runDay=""), 0, runNum - runDay),
+         sameDay, AND(runDay<>"", epsDay<>"", runDay=epsDay),
+         afterDay, AND(runDay<>"", epsDay<>"", runDay>epsDay),
+         includes,
+           IF(afterDay,
+             TRUE,
+             IF(sameDay,
+               IF(OR(releaseCode=1, releaseCode=2),
+                 TRUE,
+                 IF(AND(releaseCode=3, runTime>=TIME(16,0,0)), TRUE, FALSE)
+               ),
+               FALSE
+             )
+           ),
+         IF(OR(runDay="", epsDay=""), FALSE, includes)
+       )`
+    );
+  }
 
   // Strike_Hit is now populated by scripts (not a formula column)
   // See EW_backfillHistoricalTracking() which processes all positions daily at 5 PM

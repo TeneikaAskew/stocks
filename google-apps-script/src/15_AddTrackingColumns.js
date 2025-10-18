@@ -37,12 +37,12 @@ function EW_addTrackingColumns(sheetName) {
     'Day3_Check',           // Price on day 3
     'Day4_Check',           // Price on day 4
     'Day5_Check',           // Price on day 5
-    
+
     // Result columns
     'Exp_Result',           // Result at expiration
     'Success_Score',        // Success score calculation
     'Risk_Reward',          // Risk/reward ratio
-    
+
     // Historical tracking
     'Historical_High',      // Highest price since entry
     'Historical_Low',       // Lowest price since entry
@@ -73,10 +73,11 @@ function EW_addTrackingColumns(sheetName) {
     'Hit_ATR',              // ATR values array for days 0-5
     'Hit_PriceVsSMA20',     // Price vs SMA20 array for days 0-5
     'Hit_PriceVsVWAP',      // Price vs VWAP array for days 0-5
-    
+
     // Additional tracking columns
     'Days_To_Exp',          // Days until expiration
-    
+    'Includes_Post_Earnings', // Whether the observation window includes post-earnings data
+
     // GoogleFinance columns (if not already present)
     'GF_Price',             // Current price from GoogleFinance
     'GF_ChangePct',         // Change percentage
@@ -248,7 +249,7 @@ function EW_checkMissingColumns(sheetName) {
     'Entry_VWAP', 'Entry_RVOL', 'Entry_ATR', 'Entry_PriceVsSMA20', 'Entry_PriceVsVWAP',
     'Hit_RSI', 'Hit_SMA20', 'Hit_SMA50', 'Hit_EMA9', 'Hit_EMA21',
     'Hit_VWAP', 'Hit_RVOL', 'Hit_ATR', 'Hit_PriceVsSMA20', 'Hit_PriceVsVWAP',
-    'Days_To_Exp',
+    'Days_To_Exp', 'Includes_Post_Earnings',
     'GF_Price', 'GF_ChangePct', 'GF_High', 'GF_Low', 'GF_High52', 'GF_Low52',
     'GF_Volume', 'GF_AvgVol10', 'GF_MktCap', 'GF_PE', 'GF_Beta', 'GF_Name',
     'HV_30D', 'RVOL_10', 'Ret_5D', 'Ret_20D', 'GapPct'
