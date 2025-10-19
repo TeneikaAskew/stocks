@@ -107,11 +107,58 @@ class MarketEventsTracker:
             print("Warning: FRED_API_KEY not found in environment variables")
             return pd.DataFrame()
 
-        # Default date range: 2024-01-01 to 2026-12-31
+        # Default date range: 2024-01-01 to 2026-12-31. When we already have
+        # FRED sourced data cached locally, resume from the day after the most
+        # recent release we have recorded so we avoid re-downloading thousands
+        # of historical rows on every workflow run.
+        default_start = '2024-01-01'
+        default_end = '2026-12-31'
+
         if not start_date:
-            start_date = '2024-01-01'
+            start_date = default_start
+            if self.events_file.exists():
+                try:
+                    existing_events = pd.read_json(
+                        self.events_file, orient='records', dtype={'date': 'string'}
+                    )
+                    fred_events = existing_events[existing_events['source'] == 'FRED']
+                    if not fred_events.empty:
+                        most_recent = pd.to_datetime(fred_events['date'], errors='coerce').max()
+                        if pd.notna(most_recent):
+                            resume_date = (most_recent + timedelta(days=1)).date().isoformat()
+                            start_date = resume_date
+                            print(
+                                "Resuming FRED releases fetch from existing data",
+                                f"starting {start_date}"
+                            )
+                except ValueError as err:
+                    print(
+                        "Warning: Unable to inspect cached market events for FRED resume logic:",
+                        err,
+                    )
+
         if not end_date:
-            end_date = '2026-12-31'
+            end_date = default_end
+
+        # Ensure the end date still covers the (potentially new) start date.
+        try:
+            if pd.to_datetime(end_date) < pd.to_datetime(start_date):
+                end_date = start_date
+        except Exception:
+            # Let the validation below surface the parsing error.
+            pass
+
+        try:
+            start_ts = pd.to_datetime(start_date)
+            end_ts = pd.to_datetime(end_date)
+            if start_ts > end_ts:
+                print(
+                    f"Skipping FRED fetch because start date {start_date} is after end date {end_date}."
+                )
+                return pd.DataFrame()
+        except Exception as err:
+            print(f"Warning: Invalid FRED date range {start_date} to {end_date}: {err}")
+            return pd.DataFrame()
 
         url = 'https://api.stlouisfed.org/fred/releases/dates'
         params = {
