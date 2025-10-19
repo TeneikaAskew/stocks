@@ -120,35 +120,59 @@ class MarketEventsTracker:
             'realtime_start': start_date,
             'realtime_end': end_date,
             # Values above 1000 trigger a 400 response; stay within the
-            # documented maximum and add paging later if needed.
-            'limit': 1000
+            # documented maximum and rely on paging for large result sets.
+            'limit': 1000,
+            'offset': 0
         }
 
         try:
             print(f"Fetching FRED releases from {start_date} to {end_date}...")
-            response = requests.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-
-            if 'release_dates' not in data:
-                print("Warning: No release_dates in FRED API response")
-                return pd.DataFrame()
 
             events = []
-            for release in data['release_dates']:
-                # Auto-classify event type based on release name
-                event_type, expected_impact = self._classify_fred_event(release['release_name'])
+            total_expected = None
 
-                events.append({
-                    'date': release['date'],
-                    'event_type': event_type,
-                    'event': release['release_name'],
-                    'expected_impact': expected_impact,
-                    'actual': None,
-                    'consensus': None,
-                    'notes': None,
-                    'source': 'FRED'
-                })
+            while True:
+                response = requests.get(url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                if 'release_dates' not in data:
+                    print("Warning: No release_dates in FRED API response")
+                    break
+
+                if total_expected is None:
+                    total_expected = data.get('count', len(data['release_dates']))
+
+                for release in data['release_dates']:
+                    # Auto-classify event type based on release name
+                    event_type, expected_impact = self._classify_fred_event(release['release_name'])
+
+                    events.append({
+                        'date': release['date'],
+                        'event_type': event_type,
+                        'event': release['release_name'],
+                        'expected_impact': expected_impact,
+                        'actual': None,
+                        'consensus': None,
+                        'notes': None,
+                        'source': 'FRED'
+                    })
+
+                # Stop if we've retrieved everything the API says exists.
+                if total_expected is not None and len(events) >= total_expected:
+                    break
+
+                # When the API returns fewer items than requested, we've
+                # reached the end of the dataset even if count is missing.
+                if len(data['release_dates']) < params['limit']:
+                    break
+
+                params['offset'] += params['limit']
+
+            if total_expected is not None and len(events) < total_expected:
+                print(
+                    f"Warning: Expected {total_expected} release dates from FRED API but only received {len(events)}."
+                )
 
             print(f"Fetched {len(events)} events from FRED API")
             return pd.DataFrame(events)
