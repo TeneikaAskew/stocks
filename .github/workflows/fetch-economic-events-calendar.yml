@@ -55,7 +55,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pandas numpy yfinance requests beautifulsoup4 pyarrow fredapi
+        pip install pandas numpy yfinance requests beautifulsoup4 pyarrow fredapi pandas-market-calendars
 
     - name: Create data directories
       run: |
@@ -268,6 +268,20 @@ jobs:
       run: |
         # Commit the changes
         git commit -m "Auto-update: Economic events calendar $(date +'%Y-%m-%d %H:%M:%S')"
+
+        # Ensure we're rebased onto the latest main before attempting to push.
+        # This avoids an immediate rejection when another workflow already
+        # updated the branch.
+        if ! git pull --rebase origin main; then
+          echo "⚠️ Rebase conflict detected before push, attempting to resolve by keeping generated data"
+          git checkout --ours data/
+          git add data/
+          if ! git rebase --continue; then
+            echo "✗ Unable to automatically resolve rebase conflict"
+            git rebase --abort
+            exit 1
+          fi
+        fi
 
         # Pull-rebase-push with retry logic to handle concurrent workflow pushes
         MAX_RETRIES=5
