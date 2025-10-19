@@ -1771,6 +1771,16 @@
   },
   {
     "date":"2019-10-04",
+    "event_type":"FED_CHAIR_SPEECH",
+    "event":"Discussion--Vice Chair for Supervision Randal K. Quarles (4:00 p.m.)",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":"Moderating panel entitled &quot;The Importance of Price Stability and Low Inflation in Today&#39;s Economy&quot; | At Fed Listens: Perspectives on Maximum Employment and Price Stability, Federal Reserve Board, Washington, D.C. | Live: http:\/\/www.federalreserve.gov\/",
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2019-10-04",
     "event_type":"FED_SPEECH",
     "event":"Discussion--Governor Lael Brainard (2:10 p.m.)",
     "expected_impact":"Medium",
@@ -1787,16 +1797,6 @@
     "actual":null,
     "consensus":null,
     "notes":"Opening Remarks | At Fed Listens: Perspectives on Maximum Employment and Price Stability, Federal Reserve Board, Washington, D.C. | Live: http:\/\/www.federalreserve.gov\/",
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2019-10-04",
-    "event_type":"FED_CHAIR_SPEECH",
-    "event":"Discussion--Vice Chair for Supervision Randal K. Quarles (4:00 p.m.)",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":"Moderating panel entitled &quot;The Importance of Price Stability and Low Inflation in Today&#39;s Economy&quot; | At Fed Listens: Perspectives on Maximum Employment and Price Stability, Federal Reserve Board, Washington, D.C. | Live: http:\/\/www.federalreserve.gov\/",
     "source":"Federal Reserve"
   },
   {
@@ -3361,16 +3361,6 @@
   },
   {
     "date":"2021-10-13",
-    "event_type":"FOMC",
-    "event":"FOMC Minutes (2:00 p.m.)",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":"&lt;p&gt;Meeting of September 21-22, 2021&lt;\/p&gt;",
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2021-10-13",
     "event_type":"FED_SPEECH",
     "event":"Speech -- Governor Lael Brainard (4:30 p.m.)",
     "expected_impact":"Medium",
@@ -3387,6 +3377,16 @@
     "actual":null,
     "consensus":null,
     "notes":"Monetary Policy Making and the Economic Outlook | At the Dykhouse Scholar Program Speakers Series in Money, Banking, and Regulation, South Dakota State University, Brookings, S.D.",
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2021-10-13",
+    "event_type":"FOMC",
+    "event":"FOMC Minutes (2:00 p.m.)",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":"&lt;p&gt;Meeting of September 21-22, 2021&lt;\/p&gt;",
     "source":"Federal Reserve"
   },
   {
@@ -3961,16 +3961,6 @@
   },
   {
     "date":"2022-08-17",
-    "event_type":"FOMC",
-    "event":"FOMC Minutes (2:00 p.m.)",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":"&lt;p&gt;Meeting of July 26-27&lt;\/p&gt;",
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2022-08-17",
     "event_type":"FED_SPEECH",
     "event":"Speech -- Governor Michelle W. Bowman (9:30 a.m.)",
     "expected_impact":"Medium",
@@ -3987,6 +3977,16 @@
     "actual":null,
     "consensus":null,
     "notes":"COVID-19 and the Role of Women in the U.S. Economy | At the Arkansas Women&#8217;s Commission Meeting, Russellville, Arkansas | Live: https:\/\/www.youtube.com\/channel\/UCGY7pg-74MkcBVM1dcW8GcQ",
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2022-08-17",
+    "event_type":"FOMC",
+    "event":"FOMC Minutes (2:00 p.m.)",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":"&lt;p&gt;Meeting of July 26-27&lt;\/p&gt;",
     "source":"Federal Reserve"
   },
   {
@@ -4182,16 +4182,6 @@
   {
     "date":"2022-10-20",
     "event_type":"FED_SPEECH",
-    "event":"Speech -- Governor Philip N. Jefferson (1:30 p.m.)",
-    "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":"Opening Remarks | At Exploring Careers in Economics &#8211; Fall 2022 (virtual) | Live: https:\/\/www.federalreserve.gov\/",
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2022-10-20",
-    "event_type":"FED_SPEECH",
     "event":"Discussion -- Governor Lisa D. Cook (1:45 p.m.)",
     "expected_impact":"Medium",
     "actual":null,
@@ -4202,11 +4192,11 @@
   {
     "date":"2022-10-20",
     "event_type":"FED_SPEECH",
-    "event":"Discussion -- Governor Lisa D. Cook (12:30 p.m.)",
+    "event":"Speech -- Governor Philip N. Jefferson (1:30 p.m.)",
     "expected_impact":"Medium",
     "actual":null,
     "consensus":null,
-    "notes":"Brief Introductory Remarks | At The View from Spartanburg, South Carolina: A Panel Discussion and Listening Session with Local Community and Business Leaders, Spartanburg, S.C. | Live: https:\/\/vimeo.com\/event\/2525852",
+    "notes":"Opening Remarks | At Exploring Careers in Economics &#8211; Fall 2022 (virtual) | Live: https:\/\/www.federalreserve.gov\/",
     "source":"Federal Reserve"
   },
   {
@@ -4217,6 +4207,16 @@
     "actual":null,
     "consensus":null,
     "notes":"Welcoming Remarks (via pre-recorded video) | At the 2022 Federal Reserve Community Development Research Seminar Series: Toward an Inclusive Recovery (virtual) | Live: https:\/\/fedcommunities.org\/event\/education-pandemic-consequences-short-long-term\/",
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2022-10-20",
+    "event_type":"FED_SPEECH",
+    "event":"Discussion -- Governor Lisa D. Cook (12:30 p.m.)",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"Brief Introductory Remarks | At The View from Spartanburg, South Carolina: A Panel Discussion and Listening Session with Local Community and Business Leaders, Spartanburg, S.C. | Live: https:\/\/vimeo.com\/event\/2525852",
     "source":"Federal Reserve"
   },
   {
@@ -4662,6 +4662,16 @@
   {
     "date":"2025-02-07",
     "event_type":"FED_SPEECH",
+    "event":"Speech -- Governor Michelle W. Bowman (9:25 a.m.)",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"Bank Regulation | At the 2025 Wisconsin Bankers Association Bank Executives Conference",
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-02-07",
+    "event_type":"FED_SPEECH",
     "event":"Speech -- Governor Adriana D. Kugler (12:00 p.m.)",
     "expected_impact":"Medium",
     "actual":null,
@@ -4678,16 +4688,6 @@
     "consensus":null,
     "notes":null,
     "source":"BLS"
-  },
-  {
-    "date":"2025-02-07",
-    "event_type":"FED_SPEECH",
-    "event":"Speech -- Governor Michelle W. Bowman (9:25 a.m.)",
-    "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":"Bank Regulation | At the 2025 Wisconsin Bankers Association Bank Executives Conference",
-    "source":"Federal Reserve"
   },
   {
     "date":"2025-02-11",
@@ -5041,16 +5041,6 @@
   },
   {
     "date":"2025-04-04",
-    "event_type":"FED_CHAIR_SPEECH",
-    "event":"Speech - Chair Jerome H. Powell (11:25 a.m.)",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":"Economic Outlook | At the Society for Advancing Business Editing and Writing (SABEW) Annual Conference, Arlington, Virginia | Live: https:\/\/vimeo.com\/event\/5037150",
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-04-04",
     "event_type":"NFP",
     "event":"Non-Farm Payrolls",
     "expected_impact":"High",
@@ -5061,12 +5051,12 @@
   },
   {
     "date":"2025-04-04",
-    "event_type":"FED_SPEECH",
-    "event":"Speech - Governor Michael S. Barr (12:00 p.m.)",
-    "expected_impact":"Medium",
+    "event_type":"FED_CHAIR_SPEECH",
+    "event":"Speech - Chair Jerome H. Powell (11:25 a.m.)",
+    "expected_impact":"High",
     "actual":null,
     "consensus":null,
-    "notes":"Artificial Intelligence and Banking | At the Federal Reserve Bank of San Francisco, San Francisco State University, and University of California Santa Cruz 2025 Fintech Conference, San Francisco, California | Live: https:\/\/vimeo.com\/event\/4911428\/f44df95389",
+    "notes":"Economic Outlook | At the Society for Advancing Business Editing and Writing (SABEW) Annual Conference, Arlington, Virginia | Live: https:\/\/vimeo.com\/event\/5037150",
     "source":"Federal Reserve"
   },
   {
@@ -5077,6 +5067,16 @@
     "actual":null,
     "consensus":null,
     "notes":"Payments | At the 2025 New York Fed Innovation Conference, New York, New York",
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-04-04",
+    "event_type":"FED_SPEECH",
+    "event":"Speech - Governor Michael S. Barr (12:00 p.m.)",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"Artificial Intelligence and Banking | At the Federal Reserve Bank of San Francisco, San Francisco State University, and University of California Santa Cruz 2025 Fintech Conference, San Francisco, California | Live: https:\/\/vimeo.com\/event\/4911428\/f44df95389",
     "source":"Federal Reserve"
   },
   {
@@ -5812,6 +5812,16 @@
   {
     "date":"2025-07-03",
     "event_type":"OTHER",
+    "event":"U.S. hourly wages",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
     "event":"U.S. trade deficit",
     "expected_impact":"Low",
     "actual":null,
@@ -5842,16 +5852,6 @@
   {
     "date":"2025-07-03",
     "event_type":"OTHER",
-    "event":"Initial jobless claims",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-03",
-    "event_type":"OTHER",
     "event":"Hourly wages year over year",
     "expected_impact":"Low",
     "actual":null,
@@ -5862,7 +5862,7 @@
   {
     "date":"2025-07-03",
     "event_type":"OTHER",
-    "event":"U.S. hourly wages",
+    "event":"Initial jobless claims",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -5878,16 +5878,6 @@
     "consensus":null,
     "notes":null,
     "source":"BLS"
-  },
-  {
-    "date":"2025-07-03",
-    "event_type":"OTHER",
-    "event":"S&P final U.S. services PMI",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
   },
   {
     "date":"2025-07-03",
@@ -5927,6 +5917,16 @@
     "actual":null,
     "consensus":null,
     "notes":"https:\/\/unusualwhales.com\/market-holidays",
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-03",
+    "event_type":"OTHER",
+    "event":"S&P final U.S. services PMI",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
     "source":"UnusualWhales"
   },
   {
@@ -5991,6 +5991,16 @@
   },
   {
     "date":"2025-07-10",
+    "event_type":"OTHER",
+    "event":"Initial jobless claims",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-10",
     "event_type":"FED_SPEECH",
     "event":"Speech - Governor Christopher J. Waller (1:15 p.m.)",
     "expected_impact":"Medium",
@@ -6002,7 +6012,7 @@
   {
     "date":"2025-07-10",
     "event_type":"OTHER",
-    "event":"Initial jobless claims",
+    "event":"St. Louis Fed President Alberto Musalem speech",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -6013,16 +6023,6 @@
     "date":"2025-07-10",
     "event_type":"OTHER",
     "event":"San Francisco Fed President Mary Daly speech",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-10",
-    "event_type":"OTHER",
-    "event":"St. Louis Fed President Alberto Musalem speech",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -6072,6 +6072,16 @@
   {
     "date":"2025-07-15",
     "event_type":"OTHER",
+    "event":"Boston Fed President Susan Collins speech",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"OTHER",
     "event":"Industrial production",
     "expected_impact":"Low",
     "actual":null,
@@ -6102,6 +6112,16 @@
   {
     "date":"2025-07-15",
     "event_type":"OTHER",
+    "event":"Treasury Auction - 6-Week Bills - 70 Billion offering, CUSIP: 912797PQ4",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"OTHER",
     "event":"Empire State manufacturing survey",
     "expected_impact":"Low",
     "actual":null,
@@ -6112,47 +6132,17 @@
   {
     "date":"2025-07-15",
     "event_type":"CPI",
-    "event":"Core CPI",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-15",
-    "event_type":"FED_CHAIR_SPEECH",
-    "event":"Speech - Vice Chair for Supervision Michelle W. Bowman (9:15 a.m.)",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":"Welcoming Remarks | At the Federal Reserve Board&#39;s Second Annual Financial Inclusion Conference (via pre-recorded video) | Live: https:\/\/www.federalreserve.gov\/",
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-07-15",
-    "event_type":"OTHER",
-    "event":"Boston Fed President Susan Collins speech",
-    "expected_impact":"Low",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-15",
-    "event_type":"CPI",
-    "event":"CPI year over year",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-15",
-    "event_type":"CPI",
     "event":"Core CPI year over year",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"CPI",
+    "event":"Core CPI",
     "expected_impact":"High",
     "actual":null,
     "consensus":null,
@@ -6181,9 +6171,19 @@
   },
   {
     "date":"2025-07-15",
-    "event_type":"OTHER",
-    "event":"Treasury Auction - 6-Week Bills - 70 Billion offering, CUSIP: 912797PQ4",
-    "expected_impact":"Low",
+    "event_type":"FED_CHAIR_SPEECH",
+    "event":"Speech - Vice Chair for Supervision Michelle W. Bowman (9:15 a.m.)",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":"Welcoming Remarks | At the Federal Reserve Board&#39;s Second Annual Financial Inclusion Conference (via pre-recorded video) | Live: https:\/\/www.federalreserve.gov\/",
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-07-15",
+    "event_type":"CPI",
+    "event":"CPI year over year",
+    "expected_impact":"High",
     "actual":null,
     "consensus":null,
     "notes":null,
@@ -6201,16 +6201,6 @@
   },
   {
     "date":"2025-07-16",
-    "event_type":"FED_SPEECH",
-    "event":"Speech - Governor Michael S. Barr (10:00 a.m.)",
-    "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":"Financial Regulation | At Conversation with Governor Barr, Washington, D.C. | Live: https:\/\/www.youtube.com\/user\/BrookingsInstitution",
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-07-16",
     "event_type":"OTHER",
     "event":"Producer price index",
     "expected_impact":"Low",
@@ -6218,6 +6208,16 @@
     "consensus":null,
     "notes":null,
     "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-16",
+    "event_type":"FED_SPEECH",
+    "event":"Speech - Governor Michael S. Barr (10:00 a.m.)",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":"Financial Regulation | At Conversation with Governor Barr, Washington, D.C. | Live: https:\/\/www.youtube.com\/user\/BrookingsInstitution",
+    "source":"Federal Reserve"
   },
   {
     "date":"2025-07-16",
@@ -6242,7 +6242,7 @@
   {
     "date":"2025-07-16",
     "event_type":"OTHER",
-    "event":"PPI year over year",
+    "event":"Core PPI year over year",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -6252,7 +6252,17 @@
   {
     "date":"2025-07-16",
     "event_type":"OTHER",
-    "event":"Core PPI year over year",
+    "event":"PPI year over year",
+    "expected_impact":"Low",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"OTHER",
+    "event":"Import price index minus fuel",
     "expected_impact":"Low",
     "actual":null,
     "consensus":null,
@@ -6264,16 +6274,6 @@
     "event_type":"RETAIL_SALES",
     "event":"Retail sales minus autos",
     "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
-  },
-  {
-    "date":"2025-07-17",
-    "event_type":"OTHER",
-    "event":"Home builder confidence index",
-    "expected_impact":"Low",
     "actual":null,
     "consensus":null,
     "notes":null,
@@ -6301,19 +6301,19 @@
   },
   {
     "date":"2025-07-17",
-    "event_type":"OTHER",
-    "event":"Import price index minus fuel",
-    "expected_impact":"Low",
+    "event_type":"FED_SPEECH",
+    "event":"Speech - Governor Christopher J. Waller (6:30 p.m.)",
+    "expected_impact":"Medium",
     "actual":null,
     "consensus":null,
-    "notes":null,
-    "source":"UnusualWhales"
+    "notes":"Economic Outlook | At the Money Marketeers Speech, New York, New York",
+    "source":"Federal Reserve"
   },
   {
     "date":"2025-07-17",
-    "event_type":"RETAIL_SALES",
-    "event":"U.S. retail sales",
-    "expected_impact":"Medium",
+    "event_type":"OTHER",
+    "event":"Home builder confidence index",
+    "expected_impact":"Low",
     "actual":null,
     "consensus":null,
     "notes":null,
@@ -6341,16 +6341,6 @@
   },
   {
     "date":"2025-07-17",
-    "event_type":"FED_SPEECH",
-    "event":"Speech - Governor Christopher J. Waller (6:30 p.m.)",
-    "expected_impact":"Medium",
-    "actual":null,
-    "consensus":null,
-    "notes":"Economic Outlook | At the Money Marketeers Speech, New York, New York",
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-07-17",
     "event_type":"OTHER",
     "event":"Business inventories",
     "expected_impact":"Low",
@@ -6368,6 +6358,16 @@
     "consensus":null,
     "notes":"A View of the Housing Market and U.S. Economic Outlook | At the Housing Partnership Network Symposium, Washington, D.C. | Live: https:\/\/vimeo.com\/event\/5243711\/7de78cd951",
     "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-07-17",
+    "event_type":"RETAIL_SALES",
+    "event":"U.S. retail sales",
+    "expected_impact":"Medium",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"UnusualWhales"
   },
   {
     "date":"2025-07-18",
@@ -6922,16 +6922,6 @@
   {
     "date":"2025-09-17",
     "event_type":"FOMC",
-    "event":"FOMC Meeting & Decision",
-    "expected_impact":"Very High",
-    "actual":null,
-    "consensus":null,
-    "notes":null,
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-09-17",
-    "event_type":"FOMC",
     "event":"FOMC Meeting (2:00 p.m.)",
     "expected_impact":"Very High",
     "actual":null,
@@ -6943,6 +6933,16 @@
     "date":"2025-09-17",
     "event_type":"FOMC",
     "event":"FOMC Press Conference (2:30 p.m.)",
+    "expected_impact":"Very High",
+    "actual":null,
+    "consensus":null,
+    "notes":null,
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-09-17",
+    "event_type":"FOMC",
+    "event":"FOMC Meeting & Decision",
     "expected_impact":"Very High",
     "actual":null,
     "consensus":null,
@@ -7151,26 +7151,6 @@
   },
   {
     "date":"2025-10-09",
-    "event_type":"FED_CHAIR_SPEECH",
-    "event":"Speech - Vice Chair for Supervision Michelle W. Bowman (8:35 a.m.)",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":"Welcoming Remarks | At the Community Bank Conference, Washington, D.C.   | Live: https:\/\/www.youtube.com\/federalreserve",
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-10-09",
-    "event_type":"FED_CHAIR_SPEECH",
-    "event":"Discussion - Vice Chair for Supervision Michelle W. Bowman (8:45 a.m.)",
-    "expected_impact":"High",
-    "actual":null,
-    "consensus":null,
-    "notes":"Future of Community Banking: Challenges and Opportunities | At the Community Bank Conference, Washington, D.C. | Live: https:\/\/www.youtube.com\/federalreserve",
-    "source":"Federal Reserve"
-  },
-  {
-    "date":"2025-10-09",
     "event_type":"FED_SPEECH",
     "event":"Speech - Governor Michael S. Barr (12:45 p.m.)",
     "expected_impact":"Medium",
@@ -7187,6 +7167,26 @@
     "actual":null,
     "consensus":null,
     "notes":"Welcoming Remarks | At the Community Bank Conference, Washington, D.C.  (via pre-recorded video) | Live: https:\/\/www.youtube.com\/federalreserve",
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-10-09",
+    "event_type":"FED_CHAIR_SPEECH",
+    "event":"Speech - Vice Chair for Supervision Michelle W. Bowman (8:35 a.m.)",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":"Welcoming Remarks | At the Community Bank Conference, Washington, D.C.   | Live: https:\/\/www.youtube.com\/federalreserve",
+    "source":"Federal Reserve"
+  },
+  {
+    "date":"2025-10-09",
+    "event_type":"FED_CHAIR_SPEECH",
+    "event":"Discussion - Vice Chair for Supervision Michelle W. Bowman (8:45 a.m.)",
+    "expected_impact":"High",
+    "actual":null,
+    "consensus":null,
+    "notes":"Future of Community Banking: Challenges and Opportunities | At the Community Bank Conference, Washington, D.C. | Live: https:\/\/www.youtube.com\/federalreserve",
     "source":"Federal Reserve"
   },
   {
