@@ -119,7 +119,9 @@ class MarketEventsTracker:
             'file_type': 'json',
             'realtime_start': start_date,
             'realtime_end': end_date,
-            'limit': 10000  # Get all events in range
+            # Values above 1000 trigger a 400 response; stay within the
+            # documented maximum and add paging later if needed.
+            'limit': 1000
         }
 
         try:
@@ -151,6 +153,10 @@ class MarketEventsTracker:
             print(f"Fetched {len(events)} events from FRED API")
             return pd.DataFrame(events)
 
+        except requests.exceptions.HTTPError as e:
+            error_message = e.response.text if e.response is not None else str(e)
+            print(f"Error fetching from FRED API: {e}. Response: {error_message}")
+            return pd.DataFrame()
         except requests.exceptions.RequestException as e:
             print(f"Error fetching from FRED API: {e}")
             return pd.DataFrame()
@@ -322,7 +328,13 @@ class MarketEventsTracker:
 
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
-            data = response.json()
+
+            # Some calendar responses include a UTF-8 BOM prefix.  requests'
+            # ``json()`` helper cannot decode it, so decode the raw payload
+            # with ``utf-8-sig`` and load it manually to avoid the workflow
+            # failure we observed.
+            raw_text = response.content.decode('utf-8-sig')
+            data = json.loads(raw_text)
 
             if not data:
                 print("Warning: No data in Federal Reserve calendar response")
