@@ -55,10 +55,16 @@ jobs:
             echo "This is re-run attempt ${{ github.run_attempt }}, fetching original run date..."
 
             # Fetch the original run's created_at timestamp using GitHub API
-            ORIGINAL_DATE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            ORIGINAL_DATE=$(curl -s -H "Authorization: token ${{ github.token }}" \
               "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
               | jq -r '.created_at' \
               | cut -d'T' -f1)
+
+            # Validate the date was retrieved successfully
+            if [ -z "$ORIGINAL_DATE" ] || [ "$ORIGINAL_DATE" = "null" ]; then
+              echo "⚠️  Failed to fetch original run date, falling back to current date"
+              ORIGINAL_DATE=$(TZ=America/New_York date +'%Y-%m-%d')
+            fi
 
             echo "Original run date: $ORIGINAL_DATE"
             echo "EFFECTIVE_DATE=$ORIGINAL_DATE" >> $GITHUB_OUTPUT
