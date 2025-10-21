@@ -365,7 +365,7 @@ def update_summary_log(df, output_path, date_str):
     print(f"✓ Updated summary log: {summary_file}")
 
 
-def fetch_daily_snapshot(tickers, output_dir='data/options/earnings', skip_existing=False, ticker_expirations=None, ticker_strikes=None):
+def fetch_daily_snapshot(tickers, output_dir='data/options/earnings', skip_existing=False, ticker_expirations=None, ticker_strikes=None, target_date=None):
     """
     Fetch end-of-day options snapshot for earnings strategy tickers.
 
@@ -377,6 +377,9 @@ def fetch_daily_snapshot(tickers, output_dir='data/options/earnings', skip_exist
                            If None or ticker not in dict, fetches all available expirations
         ticker_strikes: Dict mapping ticker to list of (expiration, strike) tuples
                        If provided, only fetches specific strikes for each expiration
+        target_date: Optional target date (YYYY-MM-DD string) for snapshot.
+                    If provided, uses this date instead of current date.
+                    Useful for re-running failed workflows.
 
     Returns:
         DataFrame with options data or None if failed
@@ -385,7 +388,15 @@ def fetch_daily_snapshot(tickers, output_dir='data/options/earnings', skip_exist
         print("❌ No tickers provided")
         return None
 
-    now = datetime.now()
+    if target_date:
+        # Parse the target date and use current time-of-day
+        from datetime import datetime as dt
+        target_dt = dt.strptime(target_date, '%Y-%m-%d')
+        current_time = datetime.now().time()
+        now = dt.combine(target_dt.date(), current_time)
+    else:
+        now = datetime.now()
+
     date_str = now.strftime('%Y%m%d')
 
     # Check for existing data and filter if requested
@@ -680,6 +691,12 @@ Best run at 4:15 PM ET daily via cron:
         help='Skip tickers that already have data for today (avoids re-fetching)'
     )
 
+    parser.add_argument(
+        '--date',
+        type=str,
+        help='Target date for snapshot (YYYY-MM-DD). If not provided, uses current date. Useful for re-runs.'
+    )
+
     args = parser.parse_args()
 
     # Get tickers and expiration/strike mappings
@@ -713,7 +730,8 @@ Best run at 4:15 PM ET daily via cron:
     # Fetch snapshot
     result = fetch_daily_snapshot(tickers, args.output_dir, skip_existing=args.skip_existing,
                                    ticker_expirations=ticker_expirations,
-                                   ticker_strikes=ticker_strikes)
+                                   ticker_strikes=ticker_strikes,
+                                   target_date=args.date)
 
     sys.exit(0 if result is not None else 1)
 
