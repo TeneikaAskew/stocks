@@ -284,7 +284,7 @@ jobs:
         fi
 
         # Pull-rebase-push with retry logic to handle concurrent workflow pushes
-        MAX_RETRIES=5
+        MAX_RETRIES=8
         RETRY_COUNT=0
 
         while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
@@ -296,23 +296,44 @@ jobs:
             exit 0
           fi
 
-          # Push failed, pull with rebase and retry
+          # Push failed, try to sync with remote
           echo "Push failed, pulling latest changes with rebase..."
-          git pull --rebase origin main
 
-          # Check if rebase had conflicts
-          if [ $? -ne 0 ]; then
+          # Attempt rebase
+          if git pull --rebase origin main; then
+            echo "✓ Rebase succeeded, will retry push"
+          else
+            # Rebase had conflicts
             echo "⚠️ Rebase conflict detected, attempting to resolve..."
+
             # For data files, prefer our version (the newer data)
             git checkout --ours data/
             git add data/
-            git rebase --continue
+
+            # Try to continue rebase
+            if git rebase --continue; then
+              echo "✓ Conflict resolution succeeded"
+            else
+              # Rebase continue failed, abort and try merge strategy
+              echo "✗ Rebase resolution failed, aborting rebase..."
+              git rebase --abort
+
+              # Fallback: use merge with ours strategy
+              echo "Falling back to merge strategy..."
+              if git pull --no-rebase origin main -X ours; then
+                echo "✓ Merge succeeded"
+              else
+                echo "✗ Merge also failed"
+              fi
+            fi
           fi
 
           RETRY_COUNT=$((RETRY_COUNT + 1))
 
-          # Wait briefly before retry (exponential backoff)
-          WAIT_TIME=$((RETRY_COUNT * 2))
+          # Exponential backoff with jitter to avoid thundering herd
+          BASE_WAIT=$((2 ** RETRY_COUNT))
+          JITTER=$((RANDOM % 3))
+          WAIT_TIME=$((BASE_WAIT + JITTER))
           echo "Waiting ${WAIT_TIME}s before retry..."
           sleep $WAIT_TIME
         done
