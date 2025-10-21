@@ -65,10 +65,25 @@ jobs:
 
     - name: Set date environment variables
       run: |
+        # Priority: 1) manual input, 2) original run date for re-runs, 3) current date
         if [ -n "${{ github.event.inputs.target_date }}" ]; then
+          echo "Using manually provided target date: ${{ github.event.inputs.target_date }}"
           echo "TARGET_DATE=${{ github.event.inputs.target_date }}" >> $GITHUB_ENV
+        elif [ "${{ github.run_attempt }}" -gt 1 ]; then
+          # For re-runs, use the original run's date
+          echo "This is re-run attempt ${{ github.run_attempt }}, fetching original run date..."
+
+          ORIGINAL_DATE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            | jq -r '.created_at' \
+            | cut -d'T' -f1)
+
+          echo "Original run date: $ORIGINAL_DATE"
+          echo "TARGET_DATE=$ORIGINAL_DATE" >> $GITHUB_ENV
         else
-          echo "TARGET_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+          CURRENT_DATE=$(date +'%Y-%m-%d')
+          echo "First run, using current date: $CURRENT_DATE"
+          echo "TARGET_DATE=$CURRENT_DATE" >> $GITHUB_ENV
         fi
 
         if [ -n "${{ github.event.inputs.date_range_start }}" ]; then

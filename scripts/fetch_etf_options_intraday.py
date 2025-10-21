@@ -158,12 +158,15 @@ def get_market_session(current_time):
         return 'CLOSE'
 
 
-def fetch_intraday_snapshot(output_dir='data/options/etfs'):
+def fetch_intraday_snapshot(output_dir='data/options/etfs', target_date=None):
     """
     Fetch and save intraday options snapshot for ETFs.
 
     Args:
         output_dir: Directory to save snapshot files
+        target_date: Optional target date (YYYY-MM-DD string) for snapshot.
+                    If provided, uses this date instead of current date.
+                    Useful for re-running failed workflows.
 
     Returns:
         DataFrame with options data or None if failed
@@ -171,11 +174,26 @@ def fetch_intraday_snapshot(output_dir='data/options/etfs'):
     try:
         import pytz
         et = pytz.timezone('America/New_York')
-        now = datetime.now(et)
+
+        if target_date:
+            # Parse the target date and use current time-of-day
+            from datetime import datetime as dt
+            target_dt = dt.strptime(target_date, '%Y-%m-%d')
+            current_time = datetime.now(et).time()
+            now = et.localize(dt.combine(target_dt.date(), current_time))
+        else:
+            now = datetime.now(et)
     except ImportError:
         from datetime import timezone, timedelta
         et_offset = timedelta(hours=-5)
-        now = datetime.now() + et_offset
+
+        if target_date:
+            from datetime import datetime as dt
+            target_dt = dt.strptime(target_date, '%Y-%m-%d')
+            current_time = datetime.now().time()
+            now = dt.combine(target_dt.date(), current_time) + et_offset
+        else:
+            now = datetime.now() + et_offset
 
     print(f"\n{'='*80}")
     print(f"ETF Options Intraday Snapshot")
@@ -536,6 +554,12 @@ For multi-day earnings strategies, use fetch_earnings_options_daily.py instead.
         help='Output directory for snapshots (default: data/options/etfs)'
     )
 
+    parser.add_argument(
+        '--date',
+        type=str,
+        help='Target date for snapshot (YYYY-MM-DD). If not provided, uses current date. Useful for re-runs.'
+    )
+
     args = parser.parse_args()
 
     # Analysis mode
@@ -552,7 +576,7 @@ For multi-day earnings strategies, use fetch_earnings_options_daily.py instead.
         sys.exit(0 if result else 1)
 
     # Capture mode - always run when called
-    result = fetch_intraday_snapshot(args.output_dir)
+    result = fetch_intraday_snapshot(args.output_dir, target_date=args.date)
     sys.exit(0 if result is not None else 1)
 
 
