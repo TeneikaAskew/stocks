@@ -65,10 +65,33 @@ jobs:
     - name: Determine date to use
       id: date
       run: |
+        # Priority: 1) manual input, 2) original run date for re-runs, 3) current date
         if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.date }}" ]; then
+          # Manual input takes precedence
+          echo "Using manually provided date: ${{ github.event.inputs.date }}"
           echo "DATE=${{ github.event.inputs.date }}" >> $GITHUB_OUTPUT
+        elif [ "${{ github.run_attempt }}" -gt 1 ]; then
+          # For re-runs, use the original run's date
+          echo "This is re-run attempt ${{ github.run_attempt }}, fetching original run date..."
+
+          ORIGINAL_DATE=$(curl -s -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            | jq -r '.created_at' \
+            | cut -d'T' -f1)
+
+          # Validate the date was retrieved successfully
+          if [ -z "$ORIGINAL_DATE" ] || [ "$ORIGINAL_DATE" = "null" ]; then
+            echo "⚠️  Failed to fetch original run date, falling back to current date"
+            ORIGINAL_DATE=$(date +'%Y-%m-%d')
+          fi
+
+          echo "Original run date: $ORIGINAL_DATE"
+          echo "DATE=$ORIGINAL_DATE" >> $GITHUB_OUTPUT
         else
-          echo "DATE=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          # First run, use current date
+          CURRENT_DATE=$(date +'%Y-%m-%d')
+          echo "First run, using current date: $CURRENT_DATE"
+          echo "DATE=$CURRENT_DATE" >> $GITHUB_OUTPUT
         fi
     
     - name: Fetch market data
@@ -100,7 +123,7 @@ jobs:
           git commit -m "$COMMIT_MSG"
 
           # Pull-rebase-push with retry logic to handle concurrent workflow pushes
-          MAX_RETRIES=5
+          MAX_RETRIES=8
           RETRY_COUNT=0
 
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
@@ -112,23 +135,44 @@ jobs:
               exit 0
             fi
 
-            # Push failed, pull with rebase and retry
+            # Push failed, try to sync with remote
             echo "Push failed, pulling latest changes with rebase..."
-            git pull --rebase origin main
 
-            # Check if rebase had conflicts
-            if [ $? -ne 0 ]; then
+            # Attempt rebase
+            if git pull --rebase origin main; then
+              echo "✓ Rebase succeeded, will retry push"
+            else
+              # Rebase had conflicts
               echo "⚠️ Rebase conflict detected, attempting to resolve..."
+
               # For market data, prefer our version (the newer data)
               git checkout --ours data/
               git add data/
-              git rebase --continue
+
+              # Try to continue rebase
+              if git rebase --continue; then
+                echo "✓ Conflict resolution succeeded"
+              else
+                # Rebase continue failed, abort and try merge strategy
+                echo "✗ Rebase resolution failed, aborting rebase..."
+                git rebase --abort
+
+                # Fallback: use merge with ours strategy
+                echo "Falling back to merge strategy..."
+                if git pull --no-rebase origin main -X ours; then
+                  echo "✓ Merge succeeded"
+                else
+                  echo "✗ Merge also failed"
+                fi
+              fi
             fi
 
             RETRY_COUNT=$((RETRY_COUNT + 1))
 
-            # Wait briefly before retry (exponential backoff)
-            WAIT_TIME=$((RETRY_COUNT * 2))
+            # Exponential backoff with jitter to avoid thundering herd
+            BASE_WAIT=$((2 ** RETRY_COUNT))
+            JITTER=$((RANDOM % 3))
+            WAIT_TIME=$((BASE_WAIT + JITTER))
             echo "Waiting ${WAIT_TIME}s before retry..."
             sleep $WAIT_TIME
           done
