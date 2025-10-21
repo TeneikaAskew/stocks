@@ -47,13 +47,36 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      - name: Determine effective run date
+        id: run_date
+        run: |
+          # For re-runs, use the original run's date; otherwise use current date
+          if [ "${{ github.run_attempt }}" -gt 1 ]; then
+            echo "This is re-run attempt ${{ github.run_attempt }}, fetching original run date..."
+
+            # Fetch the original run's created_at timestamp using GitHub API
+            ORIGINAL_DATE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              | jq -r '.created_at' \
+              | cut -d'T' -f1)
+
+            echo "Original run date: $ORIGINAL_DATE"
+            echo "EFFECTIVE_DATE=$ORIGINAL_DATE" >> $GITHUB_OUTPUT
+          else
+            CURRENT_DATE=$(TZ=America/New_York date +'%Y-%m-%d')
+            echo "First run, using current date: $CURRENT_DATE"
+            echo "EFFECTIVE_DATE=$CURRENT_DATE" >> $GITHUB_OUTPUT
+          fi
+        env:
+          TZ: America/New_York
+
       - name: Create data directories
         run: |
           mkdir -p data/options/etfs
 
       - name: Fetch ETF options data
         run: |
-          python scripts/fetch_etf_options_intraday.py
+          python scripts/fetch_etf_options_intraday.py --date "${{ steps.run_date.outputs.EFFECTIVE_DATE }}"
         env:
           TZ: America/New_York
 
