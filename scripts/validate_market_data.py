@@ -4,19 +4,19 @@ Validate Market Data Completeness
 
 Checks that all required market data has been fetched and is complete:
 1. ETF daily market data (IWM, SPY, QQQ, SPX)
-2. ETF minute-level data
-3. ETF options data
+2. ETF minute-level data (390 minutes per trading day)
+3. ETF options data (multiple snapshots + aggregated files)
 
 Runs daily at 9pm EDT to verify data collection was successful.
 """
 
 import sys
 import json
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, time as dt_time
 from pathlib import Path
 import pandas as pd
 import pytz
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 
 # Define tickers to validate
@@ -27,6 +27,14 @@ REQUIRED_DAILY_COLUMNS = ['Open', 'High', 'Low', 'Close', 'Volume']
 
 # Required columns for options data
 REQUIRED_OPTIONS_COLUMNS = ['symbol', 'strike', 'expiration', 'optionType', 'lastPrice']
+
+# Market hours (ET)
+MARKET_OPEN = dt_time(9, 30)
+MARKET_CLOSE = dt_time(16, 0)
+EXPECTED_MINUTE_BARS = 390  # 6.5 hours * 60 minutes
+
+# Minimum expected options snapshots per day
+MIN_OPTIONS_SNAPSHOTS = 5
 
 
 class ValidationResult:
@@ -217,9 +225,40 @@ def validate_daily_market_data(ticker: str, result: ValidationResult) -> bool:
     return True
 
 
+def find_time_gaps(timestamps: pd.DatetimeIndex, expected_minutes: int = 390) -> List[Tuple[datetime, datetime]]:
+    """
+    Find gaps in minute-level data.
+
+    Args:
+        timestamps: DatetimeIndex of minute bars
+        expected_minutes: Expected number of minutes (default 390)
+
+    Returns:
+        List of (gap_start, gap_end) tuples
+    """
+    gaps = []
+
+    if len(timestamps) == 0:
+        return gaps
+
+    # Sort timestamps
+    timestamps = timestamps.sort_values()
+
+    # Check for gaps larger than 1 minute
+    for i in range(1, len(timestamps)):
+        time_diff = (timestamps[i] - timestamps[i-1]).total_seconds() / 60
+
+        # If gap is more than 1 minute, record it
+        if time_diff > 1.5:  # Allow some tolerance
+            gaps.append((timestamps[i-1], timestamps[i]))
+
+    return gaps
+
+
 def validate_minute_data(ticker: str, result: ValidationResult) -> bool:
     """
     Validate minute-level market data for a ticker.
+    Checks that all 390 minutes are present with no gaps.
 
     Args:
         ticker: Ticker symbol (lowercase)
@@ -235,8 +274,8 @@ def validate_minute_data(ticker: str, result: ValidationResult) -> bool:
     ticker_dir = Path("data") / ticker / "minute"
 
     if not ticker_dir.exists():
-        result.add_warning(f"{ticker.upper()}: Minute data directory not found")
-        return True  # Not critical, just a warning
+        result.add_error(f"{ticker.upper()}: Minute data directory not found: {ticker_dir}")
+        return False
 
     # Check for today's minute data
     expected_date = get_expected_date()
@@ -248,23 +287,99 @@ def validate_minute_data(ticker: str, result: ValidationResult) -> bool:
             result.add_info(f"{ticker.upper()}: No minute data expected for {expected_date} (weekend)")
             return True
 
-        result.add_warning(f"{ticker.upper()}: Minute data not found for {expected_date}")
-        return True  # Warning, not error
+        result.add_error(f"{ticker.upper()}: Minute data not found for {expected_date}: {minute_file}")
+        return False
 
-    # Try to read the file
+    # Read the minute data file
     try:
         df = pd.read_parquet(minute_file)
-        print(f"✓ Minute data file exists with {len(df)} records")
-        result.add_info(f"{ticker.upper()}: Minute data available for {expected_date} ({len(df)} bars)")
+        print(f"✓ Minute data file exists: {minute_file}")
+        print(f"  Total bars: {len(df)}")
         result.pass_check()
 
-        # Basic validation
-        if len(df) < 100:  # Expect at least 100 minute bars for a full trading day
-            result.add_warning(
-                f"{ticker.upper()}: Minute data seems incomplete ({len(df)} bars, expected ~390 for full day)"
+        # Check number of bars
+        if len(df) < EXPECTED_MINUTE_BARS:
+            missing_bars = EXPECTED_MINUTE_BARS - len(df)
+            result.add_error(
+                f"{ticker.upper()}: Incomplete minute data. "
+                f"Expected {EXPECTED_MINUTE_BARS} bars, found {len(df)} ({missing_bars} missing)"
             )
+            return False
+        elif len(df) > EXPECTED_MINUTE_BARS:
+            extra_bars = len(df) - EXPECTED_MINUTE_BARS
+            result.add_warning(
+                f"{ticker.upper()}: More minute bars than expected. "
+                f"Expected {EXPECTED_MINUTE_BARS}, found {len(df)} ({extra_bars} extra)"
+            )
+        else:
+            print(f"✓ Correct number of minute bars: {EXPECTED_MINUTE_BARS}")
+            result.pass_check()
+
+        # Check for required columns
+        missing_columns = [col for col in REQUIRED_DAILY_COLUMNS if col not in df.columns]
+        if missing_columns:
+            result.add_error(f"{ticker.upper()}: Minute data missing columns: {missing_columns}")
+            return False
+
+        print(f"✓ All required columns present")
+        result.pass_check()
+
+        # Check for gaps in timestamps
+        gaps = find_time_gaps(df.index, EXPECTED_MINUTE_BARS)
+
+        if gaps:
+            gap_count = len(gaps)
+            result.add_error(f"{ticker.upper()}: Found {gap_count} time gap(s) in minute data:")
+            for gap_start, gap_end in gaps[:5]:  # Show first 5 gaps
+                gap_minutes = (gap_end - gap_start).total_seconds() / 60
+                result.add_error(
+                    f"  Gap: {gap_start.strftime('%H:%M')} to {gap_end.strftime('%H:%M')} "
+                    f"({gap_minutes:.0f} minutes)"
+                )
+            if gap_count > 5:
+                result.add_error(f"  ... and {gap_count - 5} more gaps")
+            return False
+        else:
+            print(f"✓ No gaps in minute data (continuous timestamps)")
+            result.pass_check()
+
+        # Validate time range covers market hours
+        eastern = pytz.timezone('US/Eastern')
+        df_et = df.copy()
+        df_et.index = df_et.index.tz_convert('US/Eastern')
+
+        first_time = df_et.index.min().time()
+        last_time = df_et.index.max().time()
+
+        print(f"  Time range: {first_time.strftime('%H:%M')} - {last_time.strftime('%H:%M')} ET")
+
+        # Check if data starts at market open (9:30 AM)
+        if first_time != MARKET_OPEN:
+            result.add_warning(
+                f"{ticker.upper()}: First bar at {first_time.strftime('%H:%M')} ET, "
+                f"expected {MARKET_OPEN.strftime('%H:%M')} ET"
+            )
+
+        # Check if data ends at or near market close (4:00 PM)
+        # Last bar should be at 3:59 PM (since bars are for the minute starting at that time)
+        expected_last = dt_time(15, 59)
+        if last_time != expected_last:
+            result.add_warning(
+                f"{ticker.upper()}: Last bar at {last_time.strftime('%H:%M')} ET, "
+                f"expected {expected_last.strftime('%H:%M')} ET"
+            )
+
+        # Check for null values
+        null_counts = df[REQUIRED_DAILY_COLUMNS].isnull().sum()
+        if null_counts.any():
+            null_cols = null_counts[null_counts > 0].to_dict()
+            result.add_warning(f"{ticker.upper()}: Minute data has null values: {null_cols}")
+
+        result.add_info(f"{ticker.upper()}: Minute data complete with {len(df)} bars, no gaps")
+
     except Exception as e:
-        result.add_warning(f"{ticker.upper()}: Could not read minute data: {e}")
+        result.add_error(f"{ticker.upper()}: Failed to validate minute data: {e}")
+        return False
 
     return True
 
@@ -272,6 +387,7 @@ def validate_minute_data(ticker: str, result: ValidationResult) -> bool:
 def validate_options_data(ticker: str, result: ValidationResult) -> bool:
     """
     Validate ETF options data for a ticker.
+    Checks for minimum number of snapshots and aggregated files.
 
     Args:
         ticker: Ticker symbol (uppercase for options files)
@@ -293,42 +409,55 @@ def validate_options_data(ticker: str, result: ValidationResult) -> bool:
     # Look for recent options files for this ticker
     expected_date = get_expected_date()
 
+    # Check if it's a weekend
+    if expected_date.weekday() >= 5:
+        result.add_info(f"{ticker}: No options data expected for {expected_date} (weekend)")
+        return True
+
     # Options are fetched intraday, so we look for any file from today
     date_pattern = expected_date.strftime('%Y%m%d')
-    options_files = list(options_dir.glob(f"{ticker}_{date_pattern}_*.parquet"))
+    ticker_files = list(options_dir.glob(f"{ticker}_{date_pattern}_*.parquet"))
+    aggregated_files = list(options_dir.glob(f"etf_options_{date_pattern}_*.parquet"))
 
-    if not options_files:
-        # Check if it's a weekend
-        if expected_date.weekday() >= 5:
-            result.add_info(f"{ticker}: No options data expected for {expected_date} (weekend)")
-            return True
+    print(f"  Ticker-specific files: {len(ticker_files)}")
+    print(f"  Aggregated files: {len(aggregated_files)}")
 
-        # Check for files from previous trading day
-        prev_date = expected_date - timedelta(days=1)
-        prev_pattern = prev_date.strftime('%Y%m%d')
-        prev_files = list(options_dir.glob(f"{ticker}_{prev_pattern}_*.parquet"))
-
-        if prev_files:
-            result.add_warning(
-                f"{ticker}: No options data for {expected_date}, "
-                f"but found {len(prev_files)} files from {prev_date}"
-            )
-            return True
-
-        result.add_error(f"{ticker}: No options data found for {expected_date}")
+    # Validate ticker-specific snapshots
+    if not ticker_files:
+        result.add_error(f"{ticker}: No options snapshots found for {expected_date}")
         return False
 
-    print(f"✓ Found {len(options_files)} options snapshots for {expected_date}")
-    result.add_info(f"{ticker}: {len(options_files)} options snapshots available")
+    if len(ticker_files) < MIN_OPTIONS_SNAPSHOTS:
+        result.add_error(
+            f"{ticker}: Insufficient options snapshots. "
+            f"Found {len(ticker_files)}, minimum required: {MIN_OPTIONS_SNAPSHOTS}"
+        )
+        return False
+
+    print(f"✓ Found {len(ticker_files)} options snapshots (minimum {MIN_OPTIONS_SNAPSHOTS} required)")
     result.pass_check()
 
-    # Validate the most recent file
-    latest_file = sorted(options_files)[-1]
-    print(f"  Checking latest file: {latest_file.name}")
+    # Validate aggregated files exist
+    if not aggregated_files:
+        result.add_error(f"{ticker}: No aggregated options files found for {expected_date}")
+        return False
+
+    if len(aggregated_files) < MIN_OPTIONS_SNAPSHOTS:
+        result.add_warning(
+            f"{ticker}: Fewer aggregated files ({len(aggregated_files)}) than expected "
+            f"(minimum {MIN_OPTIONS_SNAPSHOTS})"
+        )
+    else:
+        print(f"✓ Found {len(aggregated_files)} aggregated options files")
+        result.pass_check()
+
+    # Validate the most recent ticker-specific file
+    latest_ticker_file = sorted(ticker_files)[-1]
+    print(f"  Validating latest ticker file: {latest_ticker_file.name}")
 
     try:
-        df = pd.read_parquet(latest_file)
-        print(f"✓ Successfully read {len(df)} option contracts")
+        df = pd.read_parquet(latest_ticker_file)
+        print(f"  ✓ Successfully read {len(df)} option contracts")
         result.pass_check()
 
         # Check for required columns
@@ -337,22 +466,23 @@ def validate_options_data(ticker: str, result: ValidationResult) -> bool:
             result.add_error(f"{ticker}: Options file missing columns: {missing_columns}")
             return False
 
-        print(f"✓ All required columns present")
+        print(f"  ✓ All required columns present")
         result.pass_check()
 
         # Check data distribution
         calls = len(df[df['optionType'] == 'calls'])
         puts = len(df[df['optionType'] == 'puts'])
-        print(f"✓ Contract breakdown: {calls} calls, {puts} puts")
+        print(f"  ✓ Contract breakdown: {calls} calls, {puts} puts")
 
         if calls == 0 or puts == 0:
-            result.add_warning(f"{ticker}: Imbalanced options data (calls: {calls}, puts: {puts})")
+            result.add_error(f"{ticker}: Missing option type (calls: {calls}, puts: {puts})")
+            return False
         else:
             result.pass_check()
 
         # Check for expirations
         expirations = df['expiration'].nunique()
-        print(f"✓ {expirations} unique expiration dates")
+        print(f"  ✓ {expirations} unique expiration dates")
 
         if expirations < 3:
             result.add_warning(f"{ticker}: Limited expiration dates ({expirations})")
@@ -362,6 +492,33 @@ def validate_options_data(ticker: str, result: ValidationResult) -> bool:
     except Exception as e:
         result.add_error(f"{ticker}: Failed to validate options data: {e}")
         return False
+
+    # Validate the most recent aggregated file
+    latest_agg_file = sorted(aggregated_files)[-1]
+    print(f"  Validating latest aggregated file: {latest_agg_file.name}")
+
+    try:
+        agg_df = pd.read_parquet(latest_agg_file)
+        print(f"  ✓ Aggregated file contains {len(agg_df)} total contracts")
+
+        # Check that our ticker is in the aggregated file
+        if 'symbol' in agg_df.columns:
+            tickers_in_file = agg_df['symbol'].unique()
+            if ticker not in tickers_in_file and f"^{ticker}" not in tickers_in_file:
+                result.add_error(
+                    f"{ticker}: Not found in aggregated file. "
+                    f"Found tickers: {list(tickers_in_file)}"
+                )
+                return False
+            print(f"  ✓ Ticker {ticker} found in aggregated file")
+            result.pass_check()
+
+    except Exception as e:
+        result.add_warning(f"{ticker}: Could not fully validate aggregated file: {e}")
+
+    result.add_info(
+        f"{ticker}: {len(ticker_files)} snapshots + {len(aggregated_files)} aggregated files available"
+    )
 
     return True
 
@@ -384,6 +541,9 @@ def main():
     result = ValidationResult()
 
     # Validate daily market data for each ticker
+    print("\n" + "="*80)
+    print("DAILY MARKET DATA VALIDATION")
+    print("="*80)
     for ticker in TICKERS:
         success = validate_daily_market_data(ticker, result)
         if not success:
@@ -392,10 +552,20 @@ def main():
             print(f"✓ {ticker.upper()} daily data validation passed")
 
     # Validate minute data for each ticker
+    print("\n" + "="*80)
+    print("MINUTE DATA VALIDATION")
+    print("="*80)
     for ticker in TICKERS:
-        validate_minute_data(ticker, result)
+        success = validate_minute_data(ticker, result)
+        if not success:
+            print(f"✗ {ticker.upper()} minute data validation failed")
+        else:
+            print(f"✓ {ticker.upper()} minute data validation passed")
 
-    # Validate options data for each ticker (use uppercase for options)
+    # Validate options data for each ticker
+    print("\n" + "="*80)
+    print("OPTIONS DATA VALIDATION")
+    print("="*80)
     for ticker in TICKERS:
         # Options files use uppercase ticker names, except SPX
         options_ticker = 'SPX' if ticker == 'spx' else ticker.upper()

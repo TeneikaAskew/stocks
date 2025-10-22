@@ -1,6 +1,6 @@
 {
   "success": true,
-  "checks_passed": 44,
+  "checks_passed": 64,
   "checks_failed": 0,
   "errors": [],
   "warnings": [
@@ -14,14 +14,14 @@
     "SPY: Daily data file exists",
     "QQQ: Daily data file exists",
     "SPX: Daily data file exists",
-    "IWM: Minute data available for 2025-10-21 (390 bars)",
-    "SPY: Minute data available for 2025-10-21 (390 bars)",
-    "QQQ: Minute data available for 2025-10-21 (390 bars)",
-    "SPX: Minute data available for 2025-10-21 (390 bars)",
-    "IWM: 12 options snapshots available",
-    "SPY: 12 options snapshots available",
-    "QQQ: 12 options snapshots available",
-    "SPX: 12 options snapshots available"
+    "IWM: Minute data complete with 390 bars, no gaps",
+    "SPY: Minute data complete with 390 bars, no gaps",
+    "QQQ: Minute data complete with 390 bars, no gaps",
+    "SPX: Minute data complete with 390 bars, no gaps",
+    "IWM: 12 snapshots + 12 aggregated files available",
+    "SPY: 12 snapshots + 12 aggregated files available",
+    "QQQ: 12 snapshots + 12 aggregated files available",
+    "SPX: 12 snapshots + 12 aggregated files available"
   ],
-  "timestamp": "2025-10-21T23:50:48.968625"
+  "timestamp": "2025-10-22T00:22:36.430337"
 }
