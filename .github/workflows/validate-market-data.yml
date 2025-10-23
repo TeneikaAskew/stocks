@@ -1,0 +1,133 @@
+name: Validate Market Data
+
+on:
+  schedule:
+    # Run at 9:00 PM EDT (1:00 AM UTC next day) every weekday
+    - cron: '0 1 * * 2-6'  # Tue-Sat in UTC = Mon-Fri in EDT
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: write  # Required for git operations
+  issues: write    # Required for creating issues on failure
+  pull-requests: write  # Required for creating PRs on failure
+  actions: read    # Required for reading workflow run details
+
+jobs:
+  validate-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install pandas pyarrow pytz
+
+      - name: Run market data validation
+        id: validate
+        run: |
+          python scripts/validate_market_data.py
+        env:
+          TZ: America/New_York
+        continue-on-error: true
+
+      - name: Check validation results
+        id: check_results
+        run: |
+          # Read validation results
+          if [ -f data/market_data_validation.json ]; then
+            cat data/market_data_validation.json
+
+            # Check if validation passed
+            SUCCESS=$(python -c "import json; data=json.load(open('data/market_data_validation.json')); print(data.get('success', False))")
+
+            echo "VALIDATION_SUCCESS=$SUCCESS" >> $GITHUB_OUTPUT
+
+            if [ "$SUCCESS" = "True" ]; then
+              echo "✓ Market data validation passed"
+              exit 0
+            else
+              echo "✗ Market data validation failed"
+              exit 1
+            fi
+          else
+            echo "✗ Validation summary file not found"
+            exit 1
+          fi
+
+      - name: Commit validation results
+        if: always()
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # Add validation summary file
+          git add data/market_data_validation.json
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            TIMESTAMP=$(date +'%Y-%m-%d %H:%M:%S %Z')
+            git commit -m "Update market data validation - $TIMESTAMP"
+
+            # Push with retry logic
+            MAX_RETRIES=4
+            RETRY_COUNT=0
+
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              echo "Push attempt $((RETRY_COUNT + 1)) of $MAX_RETRIES..."
+
+              if git push -u origin ${{ github.ref_name }}; then
+                echo "✓ Successfully pushed changes"
+                exit 0
+              fi
+
+              # Push failed, retry with exponential backoff
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                WAIT_TIME=$((2 ** RETRY_COUNT))
+                echo "Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+              fi
+            done
+
+            echo "✗ Failed to push after $MAX_RETRIES attempts"
+            exit 1
+          fi
+        env:
+          TZ: America/New_York
+
+  # Handle workflow failures by creating/updating issues and PRs
+  handle-failure:
+    needs: validate-data
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read  # Required to read workflow run details and logs
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Market Data Validation"
+      failure_title: "❌ Market Data Validation Failed"
+      issue_labels: "workflow-failure,data-validation,automated"
+      workflow_file: "validate-market-data.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: true
