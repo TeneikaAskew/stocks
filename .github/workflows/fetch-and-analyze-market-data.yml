@@ -1,4 +1,4 @@
-name: Analyze Market Data
+name: Fetch and Analyze Market Data
 
 on:
   schedule:
@@ -288,10 +288,10 @@ jobs:
     secrets:
       PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
     with:
-      workflow_name: "Market Data Analysis"
-      failure_title: "❌ Market Analysis Failed"
+      workflow_name: "Market Data Fetch and Analysis"
+      failure_title: "❌ Market Data Fetch and Analysis Failed"
       issue_labels: "workflow-failure,market-analysis,automated"
-      workflow_file: "analyze-market-data.yml"
+      workflow_file: "fetch-and-analyze-market-data.yml"
       run_id: ${{ github.run_id }}
       run_number: ${{ github.run_number }}
       run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
