@@ -38,6 +38,7 @@ import glob
 from py_vollib.black_scholes import black_scholes as bs
 from py_vollib.black_scholes.greeks import analytical as greeks
 import warnings
+import time as time_module
 warnings.filterwarnings('ignore')  # Suppress vollib warnings
 
 # Fix encoding for Windows
@@ -46,6 +47,41 @@ if sys.platform == 'win32':
 
 # ETF tickers for scalping
 ETF_TICKERS = ['IWM', 'SPY', 'QQQ', '^SPX']  # Use ^SPX for S&P 500 index options
+
+
+def retry_with_backoff(func, max_retries=4, initial_delay=2, backoff_factor=2, *args, **kwargs):
+    """
+    Retry a function with exponential backoff.
+
+    Args:
+        func: Function to retry
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds
+        backoff_factor: Multiplier for delay on each retry
+        *args, **kwargs: Arguments to pass to func
+
+    Returns:
+        Result from successful function call
+
+    Raises:
+        Last exception if all retries fail
+    """
+    last_exception = None
+
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                delay = initial_delay * (backoff_factor ** attempt)
+                print(f"  ⚠ Attempt {attempt + 1}/{max_retries} failed: {str(e)[:100]}")
+                print(f"  Retrying in {delay}s...")
+                time_module.sleep(delay)
+            else:
+                print(f"  ✗ All {max_retries} attempts failed")
+
+    raise last_exception
 
 
 def calculate_greeks(row, underlying_price, risk_free_rate=0.05):
@@ -122,12 +158,15 @@ def get_market_session(current_time):
         return 'CLOSE'
 
 
-def fetch_intraday_snapshot(output_dir='data/options/etfs'):
+def fetch_intraday_snapshot(output_dir='data/options/etfs', target_date=None):
     """
     Fetch and save intraday options snapshot for ETFs.
 
     Args:
         output_dir: Directory to save snapshot files
+        target_date: Optional target date (YYYY-MM-DD string) for snapshot.
+                    If provided, uses this date instead of current date.
+                    Useful for re-running failed workflows.
 
     Returns:
         DataFrame with options data or None if failed
@@ -135,11 +174,26 @@ def fetch_intraday_snapshot(output_dir='data/options/etfs'):
     try:
         import pytz
         et = pytz.timezone('America/New_York')
-        now = datetime.now(et)
+
+        if target_date:
+            # Parse the target date and use current time-of-day
+            from datetime import datetime as dt
+            target_dt = dt.strptime(target_date, '%Y-%m-%d')
+            current_time = datetime.now(et).time()
+            now = et.localize(dt.combine(target_dt.date(), current_time))
+        else:
+            now = datetime.now(et)
     except ImportError:
         from datetime import timezone, timedelta
         et_offset = timedelta(hours=-5)
-        now = datetime.now() + et_offset
+
+        if target_date:
+            from datetime import datetime as dt
+            target_dt = dt.strptime(target_date, '%Y-%m-%d')
+            current_time = datetime.now().time()
+            now = dt.combine(target_dt.date(), current_time) + et_offset
+        else:
+            now = datetime.now() + et_offset
 
     print(f"\n{'='*80}")
     print(f"ETF Options Intraday Snapshot")
@@ -150,10 +204,20 @@ def fetch_intraday_snapshot(output_dir='data/options/etfs'):
 
     # Fetch options for all ETFs
     print(f"\nFetching options data...")
-    ticker = Ticker(ETF_TICKERS)
+
+    def fetch_options_chain():
+        """Fetch options chain with error handling."""
+        ticker = Ticker(ETF_TICKERS)
+        options_df = ticker.option_chain
+
+        if options_df.empty or not isinstance(options_df, pd.DataFrame):
+            raise ValueError("No options data returned from API")
+
+        return options_df
 
     try:
-        options_df = ticker.option_chain
+        # Retry the options chain fetch with exponential backoff
+        options_df = retry_with_backoff(fetch_options_chain, max_retries=4, initial_delay=2)
 
         if options_df.empty or not isinstance(options_df, pd.DataFrame):
             print("❌ No options data returned")
@@ -174,17 +238,27 @@ def fetch_intraday_snapshot(output_dir='data/options/etfs'):
         print(f"\nFetching underlying prices...")
         underlying_prices = {}
         for ticker_symbol in df['symbol'].unique():
-            try:
-                # Get current price
+            def fetch_underlying_price():
+                """Fetch underlying price for a single ticker."""
                 t = Ticker(ticker_symbol)
                 price_data = t.price
                 if isinstance(price_data, dict) and ticker_symbol in price_data:
                     underlying_price = price_data[ticker_symbol].get('regularMarketPrice', None)
                     if underlying_price:
-                        underlying_prices[ticker_symbol] = float(underlying_price)
-                        print(f"  ✓ {ticker_symbol}: ${underlying_price:.2f}")
+                        return float(underlying_price)
+                raise ValueError(f"Could not extract price for {ticker_symbol}")
+
+            try:
+                # Retry the price fetch with exponential backoff
+                underlying_price = retry_with_backoff(
+                    fetch_underlying_price,
+                    max_retries=3,
+                    initial_delay=1
+                )
+                underlying_prices[ticker_symbol] = underlying_price
+                print(f"  ✓ {ticker_symbol}: ${underlying_price:.2f}")
             except Exception as e:
-                print(f"  ⚠ {ticker_symbol}: Could not fetch price - {e}")
+                print(f"  ⚠ {ticker_symbol}: Could not fetch price after retries - {str(e)[:100]}")
 
         # Add underlying price column
         df['underlying_price'] = df['symbol'].map(underlying_prices)
@@ -480,6 +554,12 @@ For multi-day earnings strategies, use fetch_earnings_options_daily.py instead.
         help='Output directory for snapshots (default: data/options/etfs)'
     )
 
+    parser.add_argument(
+        '--date',
+        type=str,
+        help='Target date for snapshot (YYYY-MM-DD). If not provided, uses current date. Useful for re-runs.'
+    )
+
     args = parser.parse_args()
 
     # Analysis mode
@@ -496,7 +576,7 @@ For multi-day earnings strategies, use fetch_earnings_options_daily.py instead.
         sys.exit(0 if result else 1)
 
     # Capture mode - always run when called
-    result = fetch_intraday_snapshot(args.output_dir)
+    result = fetch_intraday_snapshot(args.output_dir, target_date=args.date)
     sys.exit(0 if result is not None else 1)
 
 
