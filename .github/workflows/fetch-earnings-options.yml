@@ -63,9 +63,38 @@ jobs:
         python -m pip install --upgrade pip
         pip install yahooquery pandas pyarrow py_vollib numpy
 
+    - name: Determine effective run date
+      id: run_date
+      run: |
+        # For re-runs, use the original run's date; otherwise use current date
+        if [ "${{ github.run_attempt }}" -gt 1 ]; then
+          echo "This is re-run attempt ${{ github.run_attempt }}, fetching original run date..."
+
+          # Fetch the original run's created_at timestamp using GitHub API
+          ORIGINAL_DATE=$(curl -s -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            | jq -r '.created_at' \
+            | cut -d'T' -f1)
+
+          # Validate the date was retrieved successfully
+          if [ -z "$ORIGINAL_DATE" ] || [ "$ORIGINAL_DATE" = "null" ]; then
+            echo "⚠️  Failed to fetch original run date, falling back to current date"
+            ORIGINAL_DATE=$(TZ=America/New_York date +'%Y-%m-%d')
+          fi
+
+          echo "Original run date: $ORIGINAL_DATE"
+          echo "EFFECTIVE_DATE=$ORIGINAL_DATE" >> $GITHUB_OUTPUT
+        else
+          CURRENT_DATE=$(TZ=America/New_York date +'%Y-%m-%d')
+          echo "First run, using current date: $CURRENT_DATE"
+          echo "EFFECTIVE_DATE=$CURRENT_DATE" >> $GITHUB_OUTPUT
+        fi
+      env:
+        TZ: America/New_York
+
     - name: Fetch earnings options data
       run: |
-        ARGS=""
+        ARGS="--date ${{ steps.run_date.outputs.EFFECTIVE_DATE }}"
 
         # Add specific tickers if provided
         if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tickers }}" ]; then
@@ -120,7 +149,7 @@ jobs:
         git commit -m "update: Earnings options data - $COMMIT_DATE $COMMIT_TIME ($SNAPSHOT)"
 
         # Pull-rebase-push with retry logic to handle concurrent workflow pushes
-        MAX_RETRIES=5
+        MAX_RETRIES=8
         RETRY_COUNT=0
 
         while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
@@ -132,23 +161,44 @@ jobs:
             exit 0
           fi
 
-          # Push failed, pull with rebase and retry
+          # Push failed, try to sync with remote
           echo "Push failed, pulling latest changes with rebase..."
-          git pull --rebase origin main
 
-          # Check if rebase had conflicts
-          if [ $? -ne 0 ]; then
+          # Attempt rebase
+          if git pull --rebase origin main; then
+            echo "✓ Rebase succeeded, will retry push"
+          else
+            # Rebase had conflicts
             echo "⚠️ Rebase conflict detected, attempting to resolve..."
+
             # For options data, prefer our version (the newer data)
             git checkout --ours data/options/earnings/
             git add data/options/earnings/
-            git rebase --continue
+
+            # Try to continue rebase
+            if git rebase --continue; then
+              echo "✓ Conflict resolution succeeded"
+            else
+              # Rebase continue failed, abort and try merge strategy
+              echo "✗ Rebase resolution failed, aborting rebase..."
+              git rebase --abort
+
+              # Fallback: use merge with ours strategy
+              echo "Falling back to merge strategy..."
+              if git pull --no-rebase origin main -X ours; then
+                echo "✓ Merge succeeded"
+              else
+                echo "✗ Merge also failed"
+              fi
+            fi
           fi
 
           RETRY_COUNT=$((RETRY_COUNT + 1))
 
-          # Wait briefly before retry (exponential backoff)
-          WAIT_TIME=$((RETRY_COUNT * 2))
+          # Exponential backoff with jitter to avoid thundering herd
+          BASE_WAIT=$((2 ** RETRY_COUNT))
+          JITTER=$((RANDOM % 3))
+          WAIT_TIME=$((BASE_WAIT + JITTER))
           echo "Waiting ${WAIT_TIME}s before retry..."
           sleep $WAIT_TIME
         done
