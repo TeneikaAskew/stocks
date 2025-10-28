@@ -5,9 +5,9 @@
   "errors": [],
   "warnings": [
     "IWM: Could not validate summary file: Expecting ',' delimiter: line 30 column 3 (char 981)",
-    "SPY: Summary file date mismatch. Summary: 2025-09-26, Data: 2025-10-24",
-    "QQQ: Summary file date mismatch. Summary: 2025-09-26, Data: 2025-10-24",
-    "SPX: Summary file date mismatch. Summary: 2025-09-26, Data: 2025-10-24"
+    "SPY: Summary file date mismatch. Summary: 2025-09-26, Data: 2025-10-27",
+    "QQQ: Summary file date mismatch. Summary: 2025-09-26, Data: 2025-10-27",
+    "SPX: Summary file date mismatch. Summary: 2025-09-26, Data: 2025-10-27"
   ],
   "info": [
     "IWM: Daily data file exists",
@@ -23,5 +23,5 @@
     "QQQ: 9 snapshots + 9 aggregated files available",
     "SPX: 9 snapshots + 9 aggregated files available"
   ],
-  "timestamp": "2025-10-24T22:22:06.559105"
+  "timestamp": "2025-10-27T22:25:26.773233"
 }
