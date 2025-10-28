@@ -107,11 +107,58 @@ class MarketEventsTracker:
             print("Warning: FRED_API_KEY not found in environment variables")
             return pd.DataFrame()
 
-        # Default date range: 2024-01-01 to 2026-12-31
+        # Default date range: 2024-01-01 to 2026-12-31. When we already have
+        # FRED sourced data cached locally, resume from the day after the most
+        # recent release we have recorded so we avoid re-downloading thousands
+        # of historical rows on every workflow run.
+        default_start = '2024-01-01'
+        default_end = '2026-12-31'
+
         if not start_date:
-            start_date = '2024-01-01'
+            start_date = default_start
+            if self.events_file.exists():
+                try:
+                    existing_events = pd.read_json(
+                        self.events_file, orient='records', dtype={'date': 'string'}
+                    )
+                    fred_events = existing_events[existing_events['source'] == 'FRED']
+                    if not fred_events.empty:
+                        most_recent = pd.to_datetime(fred_events['date'], errors='coerce').max()
+                        if pd.notna(most_recent):
+                            resume_date = (most_recent + timedelta(days=1)).date().isoformat()
+                            start_date = resume_date
+                            print(
+                                "Resuming FRED releases fetch from existing data",
+                                f"starting {start_date}"
+                            )
+                except ValueError as err:
+                    print(
+                        "Warning: Unable to inspect cached market events for FRED resume logic:",
+                        err,
+                    )
+
         if not end_date:
-            end_date = '2026-12-31'
+            end_date = default_end
+
+        # Ensure the end date still covers the (potentially new) start date.
+        try:
+            if pd.to_datetime(end_date) < pd.to_datetime(start_date):
+                end_date = start_date
+        except Exception:
+            # Let the validation below surface the parsing error.
+            pass
+
+        try:
+            start_ts = pd.to_datetime(start_date)
+            end_ts = pd.to_datetime(end_date)
+            if start_ts > end_ts:
+                print(
+                    f"Skipping FRED fetch because start date {start_date} is after end date {end_date}."
+                )
+                return pd.DataFrame()
+        except Exception as err:
+            print(f"Warning: Invalid FRED date range {start_date} to {end_date}: {err}")
+            return pd.DataFrame()
 
         url = 'https://api.stlouisfed.org/fred/releases/dates'
         params = {
@@ -119,38 +166,68 @@ class MarketEventsTracker:
             'file_type': 'json',
             'realtime_start': start_date,
             'realtime_end': end_date,
-            'limit': 10000  # Get all events in range
+            # Values above 1000 trigger a 400 response; stay within the
+            # documented maximum and rely on paging for large result sets.
+            'limit': 1000,
+            'offset': 0
         }
 
         try:
             print(f"Fetching FRED releases from {start_date} to {end_date}...")
-            response = requests.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            data = response.json()
-
-            if 'release_dates' not in data:
-                print("Warning: No release_dates in FRED API response")
-                return pd.DataFrame()
 
             events = []
-            for release in data['release_dates']:
-                # Auto-classify event type based on release name
-                event_type, expected_impact = self._classify_fred_event(release['release_name'])
+            total_expected = None
 
-                events.append({
-                    'date': release['date'],
-                    'event_type': event_type,
-                    'event': release['release_name'],
-                    'expected_impact': expected_impact,
-                    'actual': None,
-                    'consensus': None,
-                    'notes': None,
-                    'source': 'FRED'
-                })
+            while True:
+                response = requests.get(url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                if 'release_dates' not in data:
+                    print("Warning: No release_dates in FRED API response")
+                    break
+
+                if total_expected is None:
+                    total_expected = data.get('count', len(data['release_dates']))
+
+                for release in data['release_dates']:
+                    # Auto-classify event type based on release name
+                    event_type, expected_impact = self._classify_fred_event(release['release_name'])
+
+                    events.append({
+                        'date': release['date'],
+                        'event_type': event_type,
+                        'event': release['release_name'],
+                        'expected_impact': expected_impact,
+                        'actual': None,
+                        'consensus': None,
+                        'notes': None,
+                        'source': 'FRED'
+                    })
+
+                # Stop if we've retrieved everything the API says exists.
+                if total_expected is not None and len(events) >= total_expected:
+                    break
+
+                # When the API returns fewer items than requested, we've
+                # reached the end of the dataset even if count is missing.
+                if len(data['release_dates']) < params['limit']:
+                    break
+
+                params['offset'] += params['limit']
+
+            if total_expected is not None and len(events) < total_expected:
+                print(
+                    f"Warning: Expected {total_expected} release dates from FRED API but only received {len(events)}."
+                )
 
             print(f"Fetched {len(events)} events from FRED API")
             return pd.DataFrame(events)
 
+        except requests.exceptions.HTTPError as e:
+            error_message = e.response.text if e.response is not None else str(e)
+            print(f"Error fetching from FRED API: {e}. Response: {error_message}")
+            return pd.DataFrame()
         except requests.exceptions.RequestException as e:
             print(f"Error fetching from FRED API: {e}")
             return pd.DataFrame()
@@ -322,7 +399,13 @@ class MarketEventsTracker:
 
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
-            data = response.json()
+
+            # Some calendar responses include a UTF-8 BOM prefix.  requests'
+            # ``json()`` helper cannot decode it, so decode the raw payload
+            # with ``utf-8-sig`` and load it manually to avoid the workflow
+            # failure we observed.
+            raw_text = response.content.decode('utf-8-sig')
+            data = json.loads(raw_text)
 
             if not data:
                 print("Warning: No data in Federal Reserve calendar response")
