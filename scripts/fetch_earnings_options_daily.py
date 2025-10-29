@@ -66,13 +66,14 @@ STRATEGY_FILES = [
 ]
 
 
-def load_active_tickers(data_dir='google-apps-script/data'):
+def load_active_tickers(data_dir='google-apps-script/data', target_date=None):
     """
     Load active tickers and their expiration dates from strategy CSV files.
     Only loads tickers where Run Date = today's date.
 
     Args:
         data_dir: Directory containing strategy CSV files
+        target_date: Target date string (YYYY-MM-DD) to filter by. If None, uses current date.
 
     Returns:
         tuple: (list of unique tickers,
@@ -83,7 +84,13 @@ def load_active_tickers(data_dir='google-apps-script/data'):
     tickers = set()
     ticker_expirations = {}  # ticker -> list of expiration dates
     ticker_strikes = {}  # ticker -> list of (expiration, strike) tuples
-    today = datetime.now().date()
+
+    # Use target_date if provided, otherwise use current date
+    if target_date:
+        from datetime import datetime as dt
+        today = dt.strptime(target_date, '%Y-%m-%d').date()
+    else:
+        today = datetime.now().date()
 
     print(f"\n{'='*80}")
     print(f"Loading Active Tickers from Strategy Files")
@@ -708,7 +715,7 @@ Best run at 4:15 PM ET daily via cron:
         print(f"Using provided tickers: {', '.join(tickers)}")
         print(f"⚠️  Manual ticker mode: Will fetch ALL available expirations and strikes (no filtering)")
     else:
-        tickers, ticker_expirations, ticker_strikes = load_active_tickers(args.data_dir)
+        tickers, ticker_expirations, ticker_strikes = load_active_tickers(args.data_dir, target_date=args.date)
 
         if not tickers:
             print("\n❌ No tickers found in strategy files")
