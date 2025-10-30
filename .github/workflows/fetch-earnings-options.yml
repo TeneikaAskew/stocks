@@ -16,6 +16,11 @@ on:
     - cron: '30 21 * * 1-5'
   workflow_dispatch:  # Allow manual triggering
     inputs:
+      date:
+        description: 'Override run date (YYYY-MM-DD)'
+        required: false
+        default: ''
+        type: string
       tickers:
         description: 'Specific tickers (space-separated, leave empty for CSV auto-load)'
         required: false
@@ -66,6 +71,18 @@ jobs:
     - name: Determine effective run date
       id: run_date
       run: |
+        # Manual overrides take precedence when provided
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.date }}" ]; then
+          if date -d "${{ github.event.inputs.date }}" '+%Y-%m-%d' >/dev/null 2>&1; then
+            echo "Manual run with provided date: ${{ github.event.inputs.date }}"
+            echo "EFFECTIVE_DATE=${{ github.event.inputs.date }}" >> $GITHUB_OUTPUT
+            exit 0
+          else
+            echo "❌ Provided date '${{ github.event.inputs.date }}' is invalid. Expected format YYYY-MM-DD."
+            exit 1
+          fi
+        fi
+
         # For re-runs, use the original run's date; otherwise use current date
         if [ "${{ github.run_attempt }}" -gt 1 ]; then
           echo "This is re-run attempt ${{ github.run_attempt }}, fetching original run date..."

@@ -715,6 +715,7 @@ Best run at 4:15 PM ET daily via cron:
             print(f"   Checked directory: {args.data_dir}")
             print(f"\nProvide tickers manually:")
             print(f"  python fetch_earnings_options_daily.py AAPL MSFT MDB")
+
             sys.exit(1)
 
         # Apply limit if specified
