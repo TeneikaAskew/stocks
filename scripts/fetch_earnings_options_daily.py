@@ -692,6 +692,12 @@ Best run at 4:15 PM ET daily via cron:
     )
 
     parser.add_argument(
+        '--allow-empty',
+        action='store_true',
+        help='Exit successfully when no tickers are found in strategy files'
+    )
+
+    parser.add_argument(
         '--date',
         type=str,
         help='Target date for snapshot (YYYY-MM-DD). If not provided, uses current date. Useful for re-runs.'
@@ -715,6 +721,11 @@ Best run at 4:15 PM ET daily via cron:
             print(f"   Checked directory: {args.data_dir}")
             print(f"\nProvide tickers manually:")
             print(f"  python fetch_earnings_options_daily.py AAPL MSFT MDB")
+
+            if args.allow_empty:
+                print("\nNo tickers found and --allow-empty provided; exiting without error.")
+                sys.exit(0)
+
             sys.exit(1)
 
         # Apply limit if specified
