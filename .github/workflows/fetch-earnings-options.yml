@@ -94,7 +94,7 @@ jobs:
 
     - name: Fetch earnings options data
       run: |
-        ARGS="--date ${{ steps.run_date.outputs.EFFECTIVE_DATE }}"
+        ARGS="--date ${{ steps.run_date.outputs.EFFECTIVE_DATE }} --allow-empty"
 
         # Add specific tickers if provided
         if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tickers }}" ]; then
