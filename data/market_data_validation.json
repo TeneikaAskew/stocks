@@ -1,27 +1,27 @@
 {
-  "success": false,
-  "checks_passed": 8,
-  "checks_failed": 12,
-  "errors": [
-    "IWM: Data is outdated. Latest: 2025-10-30, Expected: 2025-10-31 (1 calendar days behind)",
-    "SPY: Data is outdated. Latest: 2025-10-30, Expected: 2025-10-31 (1 calendar days behind)",
-    "QQQ: Data is outdated. Latest: 2025-10-30, Expected: 2025-10-31 (1 calendar days behind)",
-    "SPX: Data is outdated. Latest: 2025-10-30, Expected: 2025-10-31 (1 calendar days behind)",
-    "IWM: Minute data not found for 2025-10-31: data/iwm/minute/iwm_minute_20251031.parquet",
-    "SPY: Minute data not found for 2025-10-31: data/spy/minute/spy_minute_20251031.parquet",
-    "QQQ: Minute data not found for 2025-10-31: data/qqq/minute/qqq_minute_20251031.parquet",
-    "SPX: Minute data not found for 2025-10-31: data/spx/minute/spx_minute_20251031.parquet",
-    "IWM: Insufficient options snapshots. Found 2, minimum required: 5",
-    "SPY: Insufficient options snapshots. Found 2, minimum required: 5",
-    "QQQ: Insufficient options snapshots. Found 2, minimum required: 5",
-    "SPX: Insufficient options snapshots. Found 2, minimum required: 5"
+  "success": true,
+  "checks_passed": 64,
+  "checks_failed": 0,
+  "errors": [],
+  "warnings": [
+    "IWM: Could not validate summary file: Expecting ',' delimiter: line 30 column 3 (char 981)",
+    "SPY: Summary file date mismatch. Summary: 2025-09-26, Data: 2025-11-03",
+    "QQQ: Summary file date mismatch. Summary: 2025-09-26, Data: 2025-11-03",
+    "SPX: Summary file date mismatch. Summary: 2025-09-26, Data: 2025-11-03"
   ],
-  "warnings": [],
   "info": [
     "IWM: Daily data file exists",
     "SPY: Daily data file exists",
     "QQQ: Daily data file exists",
-    "SPX: Daily data file exists"
+    "SPX: Daily data file exists",
+    "IWM: Minute data complete with 390 bars, no gaps",
+    "SPY: Minute data complete with 390 bars, no gaps",
+    "QQQ: Minute data complete with 390 bars, no gaps",
+    "SPX: Minute data complete with 390 bars, no gaps",
+    "IWM: 9 snapshots + 9 aggregated files available",
+    "SPY: 9 snapshots + 9 aggregated files available",
+    "QQQ: 9 snapshots + 9 aggregated files available",
+    "SPX: 9 snapshots + 9 aggregated files available"
   ],
-  "timestamp": "2025-10-31T22:29:52.307259"
+  "timestamp": "2025-11-03T21:28:15.658705"
 }
