@@ -54,7 +54,7 @@ function EW_updateOptionsPremiums() {
     EW_setupOptionsPremiumSheet(outputSheet);
   }
 
-  // Read positions from source sheet
+  // Read positions from source sheet (newest first - from bottom)
   const positions = EW_readOptionsPositions(sourceSheet, strategyType);
 
   if (positions.length === 0) {
@@ -62,20 +62,34 @@ function EW_updateOptionsPremiums() {
     return;
   }
 
-  EW_trace('OPTIONS_PREMIUM', `Processing ${positions.length} positions`, true);
+  EW_trace('OPTIONS_PREMIUM', `Found ${positions.length} positions to check`, true);
+
+  // Filter out positions already in output sheet (avoid duplicates)
+  const existingPositions = EW_getExistingPositions(outputSheet);
+  const newPositions = positions.filter(pos => {
+    const key = `${pos.ticker}_${pos.strike}_${Utilities.formatDate(pos.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd')}`;
+    return !existingPositions.has(key);
+  });
+
+  if (newPositions.length === 0) {
+    EW_trace('OPTIONS_PREMIUM', 'All positions already processed today - skipping', true);
+    return;
+  }
+
+  EW_trace('OPTIONS_PREMIUM', `Processing ${newPositions.length} new positions (${positions.length - newPositions.length} already exist)`, true);
 
   let processed = 0;
   let errors = [];
 
   // Fetch all premiums in one batch call (much more efficient!)
-  const premiumDataMap = EW_fetchOptionPremiumsBatch(positions);
+  const premiumDataMap = EW_fetchOptionPremiumsBatch(newPositions);
 
   // Fetch underlying stock OHLC data for strike hit detection
-  const stockDataMap = EW_fetchStockOHLCBatch(positions);
+  const stockDataMap = EW_fetchStockOHLCBatch(newPositions);
 
-  // Process each position with fetched data
-  for (let i = 0; i < positions.length; i++) {
-    const position = positions[i];
+  // Process each NEW position with fetched data
+  for (let i = 0; i < newPositions.length; i++) {
+    const position = newPositions[i];
     const optionSymbol = EW_buildOptionSymbol(
       position.ticker,
       position.expDate,
@@ -207,10 +221,60 @@ function EW_setupOptionsPremiumSheet(sheet) {
 }
 
 /**
- * Read positions from source sheet
+ * Get existing positions from output sheet (to avoid duplicates)
+ * @param {Sheet} sheet - Output sheet
+ * @returns {Set} Set of position keys (ticker_strike_expDate)
+ */
+function EW_getExistingPositions(sheet) {
+  const existingPositions = new Set();
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return existingPositions;
+
+  try {
+    // Get today's date string
+    const today = new Date();
+    const todayStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+    // Read Date, Ticker, Strike, ExpDate columns (cols 1, 2, 3, 5)
+    const data = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
+
+    for (const row of data) {
+      const dateStr = row[0] instanceof Date ?
+        Utilities.formatDate(row[0], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
+        String(row[0]);
+
+      // Only check today's entries
+      if (dateStr === todayStr) {
+        const ticker = String(row[1]);
+        const strike = parseFloat(row[2]);
+        const expDate = row[4] instanceof Date ?
+          Utilities.formatDate(row[4], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
+          String(row[4]);
+
+        if (ticker && !isNaN(strike) && expDate) {
+          const key = `${ticker}_${strike}_${expDate}`;
+          existingPositions.add(key);
+        }
+      }
+    }
+
+    if (existingPositions.size > 0) {
+      EW_trace('OPTIONS_PREMIUM', `Found ${existingPositions.size} positions already processed today`, false);
+    }
+
+  } catch (error) {
+    EW_trace('OPTIONS_PREMIUM', `Error reading existing positions: ${error.message}`, false);
+  }
+
+  return existingPositions;
+}
+
+/**
+ * Read positions from source sheet (newest first - from bottom up)
  * @param {Sheet} sheet - Source sheet
  * @param {string} strategyType - Strategy type (BULLISH, BEARISH, NEUTRAL)
- * @returns {Array} Array of position objects
+ * @returns {Array} Array of position objects (newest first)
  */
 function EW_readOptionsPositions(sheet, strategyType) {
   const lastRow = sheet.getLastRow();
@@ -225,8 +289,12 @@ function EW_readOptionsPositions(sheet, strategyType) {
     if (header === 'ticker') hdrMap.ticker = i;
     if (header === 'strike') hdrMap.strike = i;
     if (header === 'expdate' || header === 'expiration') hdrMap.expDate = i;
-    if (header === 'rundate' || header === 'entrydate') hdrMap.runDate = i;
-    if (header === 'entry_premium' || header === 'entrypremium') hdrMap.entryPremium = i;
+    if (header === 'rundate' || header === 'entrydate' || header === 'scandate') hdrMap.runDate = i;
+    if (header === 'entry_premium' || header === 'entrypremium' || header === 'bid' || header === 'ask') {
+      // Use bid or ask as entry premium if available
+      if (header === 'bid' && hdrMap.entryPremium === undefined) hdrMap.entryPremium = i;
+      if (header === 'entry_premium' || header === 'entrypremium') hdrMap.entryPremium = i;
+    }
   }
 
   // Validate required columns
@@ -240,17 +308,26 @@ function EW_readOptionsPositions(sheet, strategyType) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  for (let i = 0; i < data.length; i++) {
+  // Process rows in REVERSE order (bottom to top = newest first)
+  for (let i = data.length - 1; i >= 0; i--) {
     const row = data[i];
 
     const ticker = row[hdrMap.ticker];
     const strike = parseFloat(row[hdrMap.strike]);
     const expDate = new Date(row[hdrMap.expDate]);
+    const runDate = hdrMap.runDate !== undefined ? new Date(row[hdrMap.runDate]) : null;
     const entryPremium = hdrMap.entryPremium !== undefined ? parseFloat(row[hdrMap.entryPremium]) : null;
 
     // Skip if missing data or expired
     if (!ticker || isNaN(strike) || !expDate) continue;
     if (expDate < today) continue;
+
+    // Optional: Filter to only today's entries if runDate is available
+    if (runDate) {
+      runDate.setHours(0, 0, 0, 0);
+      // Uncomment to only process today's scans:
+      // if (runDate.getTime() !== today.getTime()) continue;
+    }
 
     // Determine option type based on strategy
     let optionType = 'C'; // Default to Call
