@@ -61,25 +61,32 @@ function EW_updateOptionsPremiums() {
   let processed = 0;
   let errors = [];
 
-  // Process each position
+  // Fetch all premiums in one batch call (much more efficient!)
+  const premiumDataMap = EW_fetchOptionPremiumsBatch(positions);
+
+  // Process each position with fetched data
   for (let i = 0; i < positions.length; i++) {
     const position = positions[i];
+    const optionSymbol = EW_buildOptionSymbol(
+      position.ticker,
+      position.expDate,
+      position.optionType,
+      position.strike
+    );
 
     try {
-      EW_trace('OPTIONS_PREMIUM', `Processing ${i + 1}/${positions.length}: ${position.ticker} $${position.strike} ${position.optionType}`, false);
-
-      const premiumData = EW_fetchOptionPremium(position);
+      const premiumData = premiumDataMap[optionSymbol];
 
       if (premiumData && premiumData.price !== null) {
         EW_writeOptionPremiumRow(outputSheet, position, premiumData);
         processed++;
-        EW_trace('OPTIONS_PREMIUM', `  ✓ ${position.ticker}: Premium $${premiumData.price.toFixed(2)}, Day Range $${premiumData.dayLow.toFixed(2)}-$${premiumData.dayHigh.toFixed(2)}`, false);
+        EW_trace('OPTIONS_PREMIUM', `  ✓ ${position.ticker} $${position.strike}: Premium $${premiumData.price.toFixed(2)}, Day Range $${premiumData.dayLow.toFixed(2)}-$${premiumData.dayHigh.toFixed(2)}`, false);
       } else {
-        EW_trace('OPTIONS_PREMIUM', `  ⚠ ${position.ticker}: No premium data available`, false);
+        EW_trace('OPTIONS_PREMIUM', `  ⚠ ${position.ticker} $${position.strike}: No premium data available`, false);
       }
 
     } catch (error) {
-      const errorMsg = `${position.ticker}: ${error.message}`;
+      const errorMsg = `${position.ticker} $${position.strike}: ${error.message}`;
       errors.push(errorMsg);
       EW_trace('OPTIONS_PREMIUM', `  ✗ Error: ${errorMsg}`, true);
     }
@@ -129,6 +136,9 @@ function EW_setupOptionsPremiumSheet(sheet) {
     'Entry_Premium',
     'PnL',
     'PnL_Percent',
+    'Max_Profit',
+    'Max_Loss',
+    'Was_Profitable',
     'Days_To_Exp'
   ];
 
@@ -156,7 +166,10 @@ function EW_setupOptionsPremiumSheet(sheet) {
   sheet.setColumnWidth(15, 110); // Entry_Premium
   sheet.setColumnWidth(16, 90);  // PnL
   sheet.setColumnWidth(17, 100); // PnL_Percent
-  sheet.setColumnWidth(18, 90);  // Days_To_Exp
+  sheet.setColumnWidth(18, 100); // Max_Profit
+  sheet.setColumnWidth(19, 100); // Max_Loss
+  sheet.setColumnWidth(20, 110); // Was_Profitable
+  sheet.setColumnWidth(21, 90);  // Days_To_Exp
 
   // Freeze header row
   sheet.setFrozenRows(1);
@@ -254,22 +267,28 @@ function EW_buildOptionSymbol(ticker, expDate, optionType, strike) {
 }
 
 /**
- * Fetch actual option premium from Yahoo Finance
- * @param {Object} position - Position with ticker, strike, expDate, optionType
- * @returns {Object} Premium data
+ * Fetch option premiums for multiple positions in ONE batch API call
+ * Much more efficient than individual calls!
+ *
+ * @param {Array} positions - Array of positions
+ * @returns {Object} Map of optionSymbol -> premium data
  */
-function EW_fetchOptionPremium(position) {
-  // Build option symbol
-  const optionSymbol = EW_buildOptionSymbol(
-    position.ticker,
-    position.expDate,
-    position.optionType,
-    position.strike
+function EW_fetchOptionPremiumsBatch(positions) {
+  const premiumDataMap = {};
+
+  if (positions.length === 0) return premiumDataMap;
+
+  // Build all option symbols
+  const symbols = positions.map(pos =>
+    EW_buildOptionSymbol(pos.ticker, pos.expDate, pos.optionType, pos.strike)
   );
 
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${optionSymbol}`;
+  // Batch API call - all symbols in one request!
+  const symbolsStr = symbols.join(',');
+  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbolsStr}`;
 
-  EW_trace('OPTIONS_PREMIUM', `Fetching ${optionSymbol}: ${url}`, false);
+  EW_trace('OPTIONS_PREMIUM', `Fetching ${symbols.length} option premiums in batch`, true);
+  EW_trace('OPTIONS_PREMIUM', `Symbols: ${symbols.slice(0, 5).join(', ')}${symbols.length > 5 ? '...' : ''}`, false);
 
   try {
     const response = UrlFetchApp.fetch(url, {
@@ -282,39 +301,64 @@ function EW_fetchOptionPremium(position) {
     const responseCode = response.getResponseCode();
 
     if (responseCode !== 200) {
-      EW_trace('OPTIONS_PREMIUM', `HTTP ${responseCode} for ${optionSymbol}`, false);
-      return null;
+      EW_trace('OPTIONS_PREMIUM', `Batch fetch failed: HTTP ${responseCode}`, true);
+      return premiumDataMap;
     }
 
     const data = JSON.parse(response.getContentText());
 
-    if (!data.quoteResponse || !data.quoteResponse.result || data.quoteResponse.result.length === 0) {
-      EW_trace('OPTIONS_PREMIUM', `No data for ${optionSymbol}`, false);
-      return null;
+    if (!data.quoteResponse || !data.quoteResponse.result) {
+      EW_trace('OPTIONS_PREMIUM', `Batch fetch returned no results`, true);
+      return premiumDataMap;
     }
 
-    const quote = data.quoteResponse.result[0];
+    // Process each result
+    const results = data.quoteResponse.result;
+    EW_trace('OPTIONS_PREMIUM', `Received ${results.length} of ${symbols.length} results`, false);
 
-    // Extract premium data
-    return {
-      symbol: optionSymbol,
-      price: quote.regularMarketPrice || null,
-      dayHigh: quote.regularMarketDayHigh || null,
-      dayLow: quote.regularMarketDayLow || null,
-      dayOpen: quote.regularMarketOpen || null,
-      bid: quote.bid || null,
-      ask: quote.ask || null,
-      volume: quote.regularMarketVolume || 0,
-      openInterest: quote.openInterest || 0,
-      underlyingSymbol: quote.underlyingSymbol || position.ticker,
-      strike: quote.strike || position.strike,
-      expireDate: quote.expireDate ? new Date(quote.expireDate * 1000) : position.expDate
-    };
+    for (const quote of results) {
+      const symbol = quote.symbol;
+
+      // Extract premium data
+      premiumDataMap[symbol] = {
+        symbol: symbol,
+        price: quote.regularMarketPrice || null,
+        dayHigh: quote.regularMarketDayHigh || null,
+        dayLow: quote.regularMarketDayLow || null,
+        dayOpen: quote.regularMarketOpen || null,
+        bid: quote.bid || null,
+        ask: quote.ask || null,
+        volume: quote.regularMarketVolume || 0,
+        openInterest: quote.openInterest || 0,
+        underlyingSymbol: quote.underlyingSymbol || '',
+        strike: quote.strike || null,
+        expireDate: quote.expireDate ? new Date(quote.expireDate * 1000) : null
+      };
+    }
 
   } catch (error) {
-    EW_trace('OPTIONS_PREMIUM', `Error fetching ${optionSymbol}: ${error.message}`, true);
-    return null;
+    EW_trace('OPTIONS_PREMIUM', `Batch fetch error: ${error.message}`, true);
   }
+
+  return premiumDataMap;
+}
+
+/**
+ * Fetch single option premium (used for testing)
+ * For production, use batch fetch instead
+ * @param {Object} position - Position with ticker, strike, expDate, optionType
+ * @returns {Object} Premium data
+ */
+function EW_fetchOptionPremium(position) {
+  // Use batch fetch with single position
+  const premiumDataMap = EW_fetchOptionPremiumsBatch([position]);
+  const optionSymbol = EW_buildOptionSymbol(
+    position.ticker,
+    position.expDate,
+    position.optionType,
+    position.strike
+  );
+  return premiumDataMap[optionSymbol] || null;
 }
 
 /**
@@ -332,12 +376,32 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData) {
   const spread = (premiumData.ask && premiumData.bid) ?
     (premiumData.ask - premiumData.bid) : null;
 
-  // Calculate P/L if entry premium is known
+  // Calculate P/L and profitability analysis
   let pnl = null;
   let pnlPercent = null;
+  let maxProfit = null;  // Best possible exit using Day_High
+  let maxLoss = null;    // Worst case using Day_Low
+  let wouldHaveBeenProfitable = null;  // Was there profit opportunity today?
+
   if (position.entryPremium && premiumData.price) {
+    // Current P/L (closing premium vs entry)
     pnl = (premiumData.price - position.entryPremium) * 100; // * 100 for contract
     pnlPercent = (pnl / (position.entryPremium * 100)) * 100;
+
+    // Best possible P/L if sold at day's high
+    if (premiumData.dayHigh) {
+      maxProfit = (premiumData.dayHigh - position.entryPremium) * 100;
+    }
+
+    // Worst case P/L if sold at day's low
+    if (premiumData.dayLow) {
+      maxLoss = (premiumData.dayLow - position.entryPremium) * 100;
+    }
+
+    // Check if there was profit opportunity at any point today
+    if (premiumData.dayHigh) {
+      wouldHaveBeenProfitable = premiumData.dayHigh > position.entryPremium ? 'YES' : 'NO';
+    }
   }
 
   // Calculate days to expiration
@@ -361,6 +425,9 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData) {
     position.entryPremium || '',
     pnl !== null ? pnl : '',
     pnlPercent !== null ? pnlPercent : '',
+    maxProfit !== null ? maxProfit : '',
+    maxLoss !== null ? maxLoss : '',
+    wouldHaveBeenProfitable || '',
     daysToExp
   ];
 
@@ -374,6 +441,7 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData) {
   sheet.getRange(lastRow + 1, 12, 1, 1).setNumberFormat('$#,##0.00'); // Spread
   sheet.getRange(lastRow + 1, 16, 1, 1).setNumberFormat('$#,##0.00'); // PnL
   sheet.getRange(lastRow + 1, 17, 1, 1).setNumberFormat('0.00%'); // PnL %
+  sheet.getRange(lastRow + 1, 18, 1, 2).setNumberFormat('$#,##0.00'); // Max_Profit, Max_Loss
 
   // Conditional formatting for P/L
   if (pnl !== null) {
@@ -382,6 +450,22 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData) {
     } else if (pnl < 0) {
       sheet.getRange(lastRow + 1, 16, 1, 2).setBackground('#F4CCCC'); // Light red
     }
+  }
+
+  // Conditional formatting for Max_Profit
+  if (maxProfit !== null) {
+    if (maxProfit > 0) {
+      sheet.getRange(lastRow + 1, 18, 1, 1).setBackground('#D9EAD3'); // Light green
+    } else if (maxProfit < 0) {
+      sheet.getRange(lastRow + 1, 18, 1, 1).setBackground('#F4CCCC'); // Light red
+    }
+  }
+
+  // Conditional formatting for Was_Profitable
+  if (wouldHaveBeenProfitable === 'YES') {
+    sheet.getRange(lastRow + 1, 20, 1, 1).setBackground('#D9EAD3').setFontWeight('bold');
+  } else if (wouldHaveBeenProfitable === 'NO') {
+    sheet.getRange(lastRow + 1, 20, 1, 1).setBackground('#F4CCCC').setFontWeight('bold');
   }
 }
 
