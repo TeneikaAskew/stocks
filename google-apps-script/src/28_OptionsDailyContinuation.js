@@ -5,12 +5,98 @@
  * - Daily OHLC data for options premiums
  * - Strike_Hit array tracking
  * - Max_Favorable and Min_Unfavorable arrays
- * - Day0-Day5 closing premium checks
- * - Technical indicators at strike hit
+ * - Day0-Day13 closing premium checks
  * - Expiration results when positions expire
  *
  * Similar to 09_HistoricalBackfill.js but for OPTIONS data
+ * Data is also stored in Google Drive in the "options" folder
  */
+
+/**
+ * Get or create Options folder in Drive
+ * @returns {string} Folder ID
+ */
+function EW_getOptionsDataFolderId() {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  let folderId = scriptProperties.getProperty('OPTIONS_DATA_FOLDER_ID');
+
+  if (!folderId) {
+    // Create the options folder if it doesn't exist
+    EW_trace('OPTIONS_DRIVE', 'OPTIONS_DATA_FOLDER_ID not found. Creating options folder...', true);
+
+    try {
+      // Try to find existing options folder first
+      const folders = DriveApp.getFoldersByName('options');
+      if (folders.hasNext()) {
+        const folder = folders.next();
+        folderId = folder.getId();
+        EW_trace('OPTIONS_DRIVE', `Found existing options folder: ${folderId}`, true);
+      } else {
+        // Create new options folder
+        const folder = DriveApp.createFolder('options');
+        folderId = folder.getId();
+        EW_trace('OPTIONS_DRIVE', `Created new options folder: ${folderId}`, true);
+      }
+
+      // Save to script properties for future use
+      scriptProperties.setProperty('OPTIONS_DATA_FOLDER_ID', folderId);
+      EW_trace('OPTIONS_DRIVE', 'Saved OPTIONS_DATA_FOLDER_ID to script properties', true);
+
+    } catch (error) {
+      EW_trace('OPTIONS_DRIVE', `Error creating options folder: ${error.message}`, true);
+      throw new Error(`Failed to create options folder: ${error.message}`);
+    }
+  }
+
+  return folderId;
+}
+
+/**
+ * Save options tracking data to Drive
+ * @param {string} sheetName - Name of the sheet (e.g., "Long Calls Options")
+ * @param {Array} data - Array of position objects with tracking data
+ */
+function EW_saveOptionsDataToDrive(sheetName, data) {
+  if (!data || data.length === 0) return;
+
+  try {
+    const folderId = EW_getOptionsDataFolderId();
+    const folder = DriveApp.getFolderById(folderId);
+
+    // Create filename with date
+    const today = new Date();
+    const dateStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const sanitizedName = sheetName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const fileName = `${sanitizedName}_${dateStr}.json`;
+
+    // Check if file exists
+    const existingFiles = folder.getFilesByName(fileName);
+
+    // Prepare data
+    const exportData = {
+      sheetName: sheetName,
+      date: dateStr,
+      timestamp: EW_formatDateTime(today),
+      positions: data
+    };
+
+    const jsonContent = JSON.stringify(exportData, null, 2);
+
+    if (existingFiles.hasNext()) {
+      // Update existing file
+      const file = existingFiles.next();
+      file.setContent(jsonContent);
+      EW_trace('OPTIONS_DRIVE', `Updated existing file: ${fileName}`, false);
+    } else {
+      // Create new file
+      folder.createFile(fileName, jsonContent, MimeType.PLAIN_TEXT);
+      EW_trace('OPTIONS_DRIVE', `Created new file: ${fileName}`, false);
+    }
+
+  } catch (error) {
+    EW_trace('OPTIONS_DRIVE', `Error saving to Drive: ${error.message}`, true);
+  }
+}
 
 /**
  * Main daily continuation function
@@ -33,19 +119,26 @@ function EW_updateOptionsDailyContinuation() {
 
   let totalUpdated = 0;
   let errors = [];
+  const allSheetData = {};  // Store data for Drive export
 
   for (const sheet of optionSheets) {
     try {
-      const updated = EW_updateOptionsSheetContinuation(sheet);
-      if (updated > 0) {
-        totalUpdated += updated;
-        EW_trace('OPTIONS_CONTINUATION', `Updated ${updated} positions in ${sheet.getName()}`, true);
+      const result = EW_updateOptionsSheetContinuation(sheet);
+      if (result.updated > 0) {
+        totalUpdated += result.updated;
+        allSheetData[sheet.getName()] = result.positions;
+        EW_trace('OPTIONS_CONTINUATION', `Updated ${result.updated} positions in ${sheet.getName()}`, true);
       }
     } catch (e) {
       const errorMsg = `${sheet.getName()}: ${e.message}`;
       errors.push(errorMsg);
       EW_trace('OPTIONS_CONTINUATION', `Error updating ${sheet.getName()}: ${e.message}`, true);
     }
+  }
+
+  // Save data to Drive for each sheet
+  for (const sheetName in allSheetData) {
+    EW_saveOptionsDataToDrive(sheetName, allSheetData[sheetName]);
   }
 
   const elapsed = Math.round((new Date() - startTime) / 1000);
@@ -62,11 +155,11 @@ function EW_updateOptionsDailyContinuation() {
 /**
  * Update a single options sheet with daily continuation data
  * @param {Sheet} sheet - The options tracking sheet
- * @returns {number} Number of positions updated
+ * @returns {Object} Object with updated count and position data
  */
 function EW_updateOptionsSheetContinuation(sheet) {
   const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return 0;
+  if (lastRow < 2) return { updated: 0, positions: [] };
 
   // Get header map
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
@@ -75,7 +168,7 @@ function EW_updateOptionsSheetContinuation(sheet) {
   // Validate required columns
   if (!hdrMap.dateCol || !hdrMap.tickerCol || !hdrMap.strikeCol || !hdrMap.typeCol || !hdrMap.expDateCol) {
     EW_trace('OPTIONS_CONTINUATION', `${sheet.getName()}: Missing required columns`, true);
-    return 0;
+    return { updated: 0, positions: [] };
   }
 
   const today = new Date();
@@ -102,8 +195,11 @@ function EW_updateOptionsSheetContinuation(sheet) {
     // Calculate days since entry
     const daysSinceEntry = Math.floor((today - entryDate) / (1000 * 60 * 60 * 24));
 
-    // Only update positions within first 5 days (Day0-Day5)
-    if (daysSinceEntry < 0 || daysSinceEntry > 5) continue;
+    // Skip if expired (expiration date has passed)
+    if (expDate <= today) continue;
+
+    // Only update positions within first 14 days (Day0-Day13)
+    if (daysSinceEntry < 0 || daysSinceEntry > 13) continue;
 
     const ticker = String(row[hdrMap.tickerCol - 1]);
     const strike = parseFloat(row[hdrMap.strikeCol - 1]);
@@ -127,7 +223,7 @@ function EW_updateOptionsSheetContinuation(sheet) {
 
   if (positionsToUpdate.length === 0) {
     EW_trace('OPTIONS_CONTINUATION', `${sheet.getName()}: No active positions to update`, false);
-    return 0;
+    return { updated: 0, positions: [] };
   }
 
   EW_trace('OPTIONS_CONTINUATION', `${sheet.getName()}: Updating ${positionsToUpdate.length} active positions`, true);
@@ -137,6 +233,8 @@ function EW_updateOptionsSheetContinuation(sheet) {
 
   // Batch fetch all underlying stock OHLC data
   const stockDataMap = EW_fetchStockOHLCBatch(positionsToUpdate);
+
+  const processedPositions = [];  // Store positions with full data for Drive export
 
   // Process each position
   for (const position of positionsToUpdate) {
@@ -168,6 +266,25 @@ function EW_updateOptionsSheetContinuation(sheet) {
 
       if (updated) {
         updatedCount++;
+        // Store position data for Drive export
+        processedPositions.push({
+          ticker: position.ticker,
+          strike: position.strike,
+          optionType: position.optionType,
+          expDate: Utilities.formatDate(position.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+          entryDate: Utilities.formatDate(position.entryDate, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+          daysSinceEntry: position.daysSinceEntry,
+          entryPremium: position.entryPremium,
+          currentPremium: premiumData.price,
+          dayOpen: premiumData.dayOpen,
+          dayHigh: premiumData.dayHigh,
+          dayLow: premiumData.dayLow,
+          volume: premiumData.volume,
+          openInterest: premiumData.openInterest,
+          stockPrice: stockData ? stockData.price : null,
+          stockHigh: stockData ? stockData.dayHigh : null,
+          stockLow: stockData ? stockData.dayLow : null
+        });
         EW_trace('OPTIONS_CONTINUATION', `  ✓ ${position.ticker} $${position.strike} Day ${position.daysSinceEntry}: Premium $${premiumData.price.toFixed(2)}`, false);
       }
 
@@ -180,7 +297,7 @@ function EW_updateOptionsSheetContinuation(sheet) {
     SpreadsheetApp.flush();
   }
 
-  return updatedCount;
+  return { updated: updatedCount, positions: processedPositions };
 }
 
 /**
@@ -198,17 +315,25 @@ function EW_updateOptionsDailyData(sheet, hdrMap, position, premiumData, stockDa
   const row = position.rowNum;
   const dayIndex = position.daysSinceEntry;
 
-  // 1. Update Day0-Day5 Check columns with closing premium
+  // 1. Update Day0-Day13 Check columns with closing premium
   const dayCheckCols = [
     hdrMap.day0CheckCol,
     hdrMap.day1CheckCol,
     hdrMap.day2CheckCol,
     hdrMap.day3CheckCol,
     hdrMap.day4CheckCol,
-    hdrMap.day5CheckCol
+    hdrMap.day5CheckCol,
+    hdrMap.day6CheckCol,
+    hdrMap.day7CheckCol,
+    hdrMap.day8CheckCol,
+    hdrMap.day9CheckCol,
+    hdrMap.day10CheckCol,
+    hdrMap.day11CheckCol,
+    hdrMap.day12CheckCol,
+    hdrMap.day13CheckCol
   ];
 
-  if (dayIndex >= 0 && dayIndex <= 5 && dayCheckCols[dayIndex]) {
+  if (dayIndex >= 0 && dayIndex <= 13 && dayCheckCols[dayIndex]) {
     const existingValue = position.existingRow[dayCheckCols[dayIndex] - 1];
     if (!existingValue || existingValue === '') {
       // Store closing premium (regularMarketPrice is the closing price)
@@ -360,6 +485,14 @@ function EW_buildOptionsHeaderMap(headers) {
     if (header === 'Day3_Check') map.day3CheckCol = i + 1;
     if (header === 'Day4_Check') map.day4CheckCol = i + 1;
     if (header === 'Day5_Check') map.day5CheckCol = i + 1;
+    if (header === 'Day6_Check') map.day6CheckCol = i + 1;
+    if (header === 'Day7_Check') map.day7CheckCol = i + 1;
+    if (header === 'Day8_Check') map.day8CheckCol = i + 1;
+    if (header === 'Day9_Check') map.day9CheckCol = i + 1;
+    if (header === 'Day10_Check') map.day10CheckCol = i + 1;
+    if (header === 'Day11_Check') map.day11CheckCol = i + 1;
+    if (header === 'Day12_Check') map.day12CheckCol = i + 1;
+    if (header === 'Day13_Check') map.day13CheckCol = i + 1;
 
     // Expiration
     if (header === 'Exp_Result') map.expResultCol = i + 1;
