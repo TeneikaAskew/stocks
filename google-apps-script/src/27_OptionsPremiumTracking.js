@@ -39,8 +39,14 @@ function EW_updateOptionsPremiums() {
     return;
   }
 
+  // Detect strategy type for proper strike hit logic
+  const strategyName = sourceSheet.getName();
+  const strategyType = EW_detectStrategyType(strategyName);
+
+  EW_trace('OPTIONS_PREMIUM', `Strategy: ${strategyName}, Type: ${strategyType}`, true);
+
   // Get or create output sheet
-  const outputSheetName = 'Long Calls Options';
+  const outputSheetName = `${strategyName} Options`;
   let outputSheet = ss.getSheetByName(outputSheetName);
 
   if (!outputSheet) {
@@ -49,7 +55,7 @@ function EW_updateOptionsPremiums() {
   }
 
   // Read positions from source sheet
-  const positions = EW_readOptionsPositions(sourceSheet);
+  const positions = EW_readOptionsPositions(sourceSheet, strategyType);
 
   if (positions.length === 0) {
     EW_trace('OPTIONS_PREMIUM', 'No positions to process', true);
@@ -64,6 +70,9 @@ function EW_updateOptionsPremiums() {
   // Fetch all premiums in one batch call (much more efficient!)
   const premiumDataMap = EW_fetchOptionPremiumsBatch(positions);
 
+  // Fetch underlying stock OHLC data for strike hit detection
+  const stockDataMap = EW_fetchStockOHLCBatch(positions);
+
   // Process each position with fetched data
   for (let i = 0; i < positions.length; i++) {
     const position = positions[i];
@@ -76,11 +85,26 @@ function EW_updateOptionsPremiums() {
 
     try {
       const premiumData = premiumDataMap[optionSymbol];
+      const stockData = stockDataMap[position.ticker];
 
       if (premiumData && premiumData.price !== null) {
-        EW_writeOptionPremiumRow(outputSheet, position, premiumData);
+        // Check if strike was hit based on strategy type
+        let strikeHit = false;
+        if (stockData) {
+          if (strategyType === 'BULLISH') {
+            // Bullish: check if stock's dayHigh >= strike
+            strikeHit = stockData.dayHigh >= position.strike;
+          } else if (strategyType === 'BEARISH') {
+            // Bearish: check if stock's dayLow <= strike
+            strikeHit = stockData.dayLow <= position.strike;
+          }
+        }
+
+        EW_writeOptionPremiumRow(outputSheet, position, premiumData, stockData, strikeHit, strategyType);
         processed++;
-        EW_trace('OPTIONS_PREMIUM', `  ✓ ${position.ticker} $${position.strike}: Premium $${premiumData.price.toFixed(2)}, Day Range $${premiumData.dayLow.toFixed(2)}-$${premiumData.dayHigh.toFixed(2)}`, false);
+
+        const hitStr = strikeHit ? '✓ STRIKE HIT' : '✗ No hit';
+        EW_trace('OPTIONS_PREMIUM', `  ✓ ${position.ticker} $${position.strike}: Premium $${premiumData.price.toFixed(2)}, Stock ${stockData ? `$${stockData.price.toFixed(2)}` : 'N/A'}, ${hitStr}`, false);
       } else {
         EW_trace('OPTIONS_PREMIUM', `  ⚠ ${position.ticker} $${position.strike}: No premium data available`, false);
       }
@@ -124,10 +148,14 @@ function EW_setupOptionsPremiumSheet(sheet) {
     'Strike',
     'Type',
     'ExpDate',
+    'Stock_Price',
+    'Stock_High',
+    'Stock_Low',
+    'Strike_Hit',
     'Premium',
-    'Day_High',
-    'Day_Low',
-    'Day_Open',
+    'Premium_High',
+    'Premium_Low',
+    'Premium_Open',
     'Bid',
     'Ask',
     'Spread',
@@ -178,9 +206,10 @@ function EW_setupOptionsPremiumSheet(sheet) {
 /**
  * Read positions from source sheet
  * @param {Sheet} sheet - Source sheet
+ * @param {string} strategyType - Strategy type (BULLISH, BEARISH, NEUTRAL)
  * @returns {Array} Array of position objects
  */
-function EW_readOptionsPositions(sheet) {
+function EW_readOptionsPositions(sheet, strategyType) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
 
@@ -220,13 +249,20 @@ function EW_readOptionsPositions(sheet) {
     if (!ticker || isNaN(strike) || !expDate) continue;
     if (expDate < today) continue;
 
+    // Determine option type based on strategy
+    let optionType = 'C'; // Default to Call
+    if (strategyType === 'BEARISH') {
+      optionType = 'P'; // Put for bearish strategies
+    }
+
     positions.push({
       ticker: ticker,
       strike: strike,
       expDate: expDate,
-      optionType: 'C', // Long Calls sheet
+      optionType: optionType,
       entryPremium: entryPremium,
-      rowNum: i + 2
+      rowNum: i + 2,
+      strategyType: strategyType
     });
   }
 
@@ -366,8 +402,11 @@ function EW_fetchOptionPremium(position) {
  * @param {Sheet} sheet - Output sheet
  * @param {Object} position - Position info
  * @param {Object} premiumData - Premium data from API
+ * @param {Object} stockData - Stock OHLC data
+ * @param {boolean} strikeHit - Whether strike was hit today
+ * @param {string} strategyType - Strategy type (BULLISH/BEARISH/NEUTRAL)
  */
-function EW_writeOptionPremiumRow(sheet, position, premiumData) {
+function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strikeHit, strategyType) {
   const today = new Date();
   const dateStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   const expDateStr = Utilities.formatDate(position.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
@@ -413,6 +452,10 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData) {
     position.strike,
     position.optionType,
     expDateStr,
+    stockData ? stockData.price || '' : '',
+    stockData ? stockData.dayHigh || '' : '',
+    stockData ? stockData.dayLow || '' : '',
+    strikeHit ? 'YES' : 'NO',
     premiumData.price || '',
     premiumData.dayHigh || '',
     premiumData.dayLow || '',
@@ -437,35 +480,44 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData) {
   outputRange.setValues([row]);
 
   // Format numbers
-  sheet.getRange(lastRow + 1, 6, 1, 6).setNumberFormat('$#,##0.00'); // Premium, High, Low, Open, Bid, Ask
-  sheet.getRange(lastRow + 1, 12, 1, 1).setNumberFormat('$#,##0.00'); // Spread
-  sheet.getRange(lastRow + 1, 16, 1, 1).setNumberFormat('$#,##0.00'); // PnL
-  sheet.getRange(lastRow + 1, 17, 1, 1).setNumberFormat('0.00%'); // PnL %
-  sheet.getRange(lastRow + 1, 18, 1, 2).setNumberFormat('$#,##0.00'); // Max_Profit, Max_Loss
+  sheet.getRange(lastRow + 1, 6, 1, 3).setNumberFormat('$#,##0.00'); // Stock Price, High, Low
+  sheet.getRange(lastRow + 1, 10, 1, 4).setNumberFormat('$#,##0.00'); // Premium, High, Low, Open
+  sheet.getRange(lastRow + 1, 14, 1, 2).setNumberFormat('$#,##0.00'); // Bid, Ask
+  sheet.getRange(lastRow + 1, 16, 1, 1).setNumberFormat('$#,##0.00'); // Spread
+  sheet.getRange(lastRow + 1, 20, 1, 1).setNumberFormat('$#,##0.00'); // PnL
+  sheet.getRange(lastRow + 1, 21, 1, 1).setNumberFormat('0.00%'); // PnL %
+  sheet.getRange(lastRow + 1, 22, 1, 2).setNumberFormat('$#,##0.00'); // Max_Profit, Max_Loss
+
+  // Conditional formatting for Strike_Hit
+  if (strikeHit) {
+    sheet.getRange(lastRow + 1, 9, 1, 1).setBackground('#D9EAD3').setFontWeight('bold'); // Green
+  } else {
+    sheet.getRange(lastRow + 1, 9, 1, 1).setBackground('#F4CCCC'); // Red
+  }
 
   // Conditional formatting for P/L
   if (pnl !== null) {
     if (pnl > 0) {
-      sheet.getRange(lastRow + 1, 16, 1, 2).setBackground('#D9EAD3'); // Light green
+      sheet.getRange(lastRow + 1, 20, 1, 2).setBackground('#D9EAD3'); // Light green
     } else if (pnl < 0) {
-      sheet.getRange(lastRow + 1, 16, 1, 2).setBackground('#F4CCCC'); // Light red
+      sheet.getRange(lastRow + 1, 20, 1, 2).setBackground('#F4CCCC'); // Light red
     }
   }
 
   // Conditional formatting for Max_Profit
   if (maxProfit !== null) {
     if (maxProfit > 0) {
-      sheet.getRange(lastRow + 1, 18, 1, 1).setBackground('#D9EAD3'); // Light green
+      sheet.getRange(lastRow + 1, 22, 1, 1).setBackground('#D9EAD3'); // Light green
     } else if (maxProfit < 0) {
-      sheet.getRange(lastRow + 1, 18, 1, 1).setBackground('#F4CCCC'); // Light red
+      sheet.getRange(lastRow + 1, 22, 1, 1).setBackground('#F4CCCC'); // Light red
     }
   }
 
   // Conditional formatting for Was_Profitable
   if (wouldHaveBeenProfitable === 'YES') {
-    sheet.getRange(lastRow + 1, 20, 1, 1).setBackground('#D9EAD3').setFontWeight('bold');
+    sheet.getRange(lastRow + 1, 24, 1, 1).setBackground('#D9EAD3').setFontWeight('bold');
   } else if (wouldHaveBeenProfitable === 'NO') {
-    sheet.getRange(lastRow + 1, 20, 1, 1).setBackground('#F4CCCC').setFontWeight('bold');
+    sheet.getRange(lastRow + 1, 24, 1, 1).setBackground('#F4CCCC').setFontWeight('bold');
   }
 }
 
