@@ -152,21 +152,24 @@ function EW_setupOptionsPremiumSheet(sheet) {
     'Stock_High',
     'Stock_Low',
     'Strike_Hit',
-    'Premium',
+    'Entry_Premium',
+    'Premium_Open',
     'Premium_High',
     'Premium_Low',
-    'Premium_Open',
+    'Premium_Current',
     'Bid',
     'Ask',
     'Spread',
     'Volume',
     'Open_Interest',
-    'Entry_Premium',
-    'PnL',
-    'PnL_Percent',
-    'Max_Profit',
-    'Max_Loss',
-    'Was_Profitable',
+    'PnL_At_Open',
+    'PnL_At_Open_Pct',
+    'PnL_At_High',
+    'PnL_At_High_Pct',
+    'PnL_At_Low',
+    'PnL_At_Low_Pct',
+    'PnL_Current',
+    'PnL_Current_Pct',
     'Days_To_Exp'
   ];
 
@@ -415,31 +418,41 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
   const spread = (premiumData.ask && premiumData.bid) ?
     (premiumData.ask - premiumData.bid) : null;
 
-  // Calculate P/L and profitability analysis
-  let pnl = null;
-  let pnlPercent = null;
-  let maxProfit = null;  // Best possible exit using Day_High
-  let maxLoss = null;    // Worst case using Day_Low
-  let wouldHaveBeenProfitable = null;  // Was there profit opportunity today?
+  // Calculate P/L at different times of day
+  let pnlAtOpen = null;
+  let pnlAtOpenPct = null;
+  let pnlAtHigh = null;
+  let pnlAtHighPct = null;
+  let pnlAtLow = null;
+  let pnlAtLowPct = null;
+  let pnlCurrent = null;
+  let pnlCurrentPct = null;
 
-  if (position.entryPremium && premiumData.price) {
-    // Current P/L (closing premium vs entry)
-    pnl = (premiumData.price - position.entryPremium) * 100; // * 100 for contract
-    pnlPercent = (pnl / (position.entryPremium * 100)) * 100;
+  if (position.entryPremium) {
+    const entryCost = position.entryPremium * 100; // Cost per contract
 
-    // Best possible P/L if sold at day's high
-    if (premiumData.dayHigh) {
-      maxProfit = (premiumData.dayHigh - position.entryPremium) * 100;
+    // P/L at Open (would you have profited if you sold at open?)
+    if (premiumData.dayOpen) {
+      pnlAtOpen = (premiumData.dayOpen - position.entryPremium) * 100;
+      pnlAtOpenPct = (pnlAtOpen / entryCost) * 100;
     }
 
-    // Worst case P/L if sold at day's low
+    // P/L at High (best possible profit)
+    if (premiumData.dayHigh) {
+      pnlAtHigh = (premiumData.dayHigh - position.entryPremium) * 100;
+      pnlAtHighPct = (pnlAtHigh / entryCost) * 100;
+    }
+
+    // P/L at Low (worst case)
     if (premiumData.dayLow) {
-      maxLoss = (premiumData.dayLow - position.entryPremium) * 100;
+      pnlAtLow = (premiumData.dayLow - position.entryPremium) * 100;
+      pnlAtLowPct = (pnlAtLow / entryCost) * 100;
     }
 
-    // Check if there was profit opportunity at any point today
-    if (premiumData.dayHigh) {
-      wouldHaveBeenProfitable = premiumData.dayHigh > position.entryPremium ? 'YES' : 'NO';
+    // Current P/L (closing premium vs entry)
+    if (premiumData.price) {
+      pnlCurrent = (premiumData.price - position.entryPremium) * 100;
+      pnlCurrentPct = (pnlCurrent / entryCost) * 100;
     }
   }
 
@@ -456,21 +469,24 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
     stockData ? stockData.dayHigh || '' : '',
     stockData ? stockData.dayLow || '' : '',
     strikeHit ? 'YES' : 'NO',
-    premiumData.price || '',
+    position.entryPremium || '',
+    premiumData.dayOpen || '',
     premiumData.dayHigh || '',
     premiumData.dayLow || '',
-    premiumData.dayOpen || '',
+    premiumData.price || '',
     premiumData.bid || '',
     premiumData.ask || '',
     spread !== null ? spread : '',
     premiumData.volume || 0,
     premiumData.openInterest || 0,
-    position.entryPremium || '',
-    pnl !== null ? pnl : '',
-    pnlPercent !== null ? pnlPercent : '',
-    maxProfit !== null ? maxProfit : '',
-    maxLoss !== null ? maxLoss : '',
-    wouldHaveBeenProfitable || '',
+    pnlAtOpen !== null ? pnlAtOpen : '',
+    pnlAtOpenPct !== null ? pnlAtOpenPct : '',
+    pnlAtHigh !== null ? pnlAtHigh : '',
+    pnlAtHighPct !== null ? pnlAtHighPct : '',
+    pnlAtLow !== null ? pnlAtLow : '',
+    pnlAtLowPct !== null ? pnlAtLowPct : '',
+    pnlCurrent !== null ? pnlCurrent : '',
+    pnlCurrentPct !== null ? pnlCurrentPct : '',
     daysToExp
   ];
 
@@ -481,12 +497,17 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
 
   // Format numbers
   sheet.getRange(lastRow + 1, 6, 1, 3).setNumberFormat('$#,##0.00'); // Stock Price, High, Low
-  sheet.getRange(lastRow + 1, 10, 1, 4).setNumberFormat('$#,##0.00'); // Premium, High, Low, Open
-  sheet.getRange(lastRow + 1, 14, 1, 2).setNumberFormat('$#,##0.00'); // Bid, Ask
-  sheet.getRange(lastRow + 1, 16, 1, 1).setNumberFormat('$#,##0.00'); // Spread
-  sheet.getRange(lastRow + 1, 20, 1, 1).setNumberFormat('$#,##0.00'); // PnL
-  sheet.getRange(lastRow + 1, 21, 1, 1).setNumberFormat('0.00%'); // PnL %
-  sheet.getRange(lastRow + 1, 22, 1, 2).setNumberFormat('$#,##0.00'); // Max_Profit, Max_Loss
+  sheet.getRange(lastRow + 1, 10, 1, 5).setNumberFormat('$#,##0.00'); // Entry, Open, High, Low, Current
+  sheet.getRange(lastRow + 1, 15, 1, 2).setNumberFormat('$#,##0.00'); // Bid, Ask
+  sheet.getRange(lastRow + 1, 17, 1, 1).setNumberFormat('$#,##0.00'); // Spread
+  sheet.getRange(lastRow + 1, 20, 1, 1).setNumberFormat('$#,##0.00'); // PnL_At_Open
+  sheet.getRange(lastRow + 1, 21, 1, 1).setNumberFormat('0.00%'); // PnL_At_Open_Pct
+  sheet.getRange(lastRow + 1, 22, 1, 1).setNumberFormat('$#,##0.00'); // PnL_At_High
+  sheet.getRange(lastRow + 1, 23, 1, 1).setNumberFormat('0.00%'); // PnL_At_High_Pct
+  sheet.getRange(lastRow + 1, 24, 1, 1).setNumberFormat('$#,##0.00'); // PnL_At_Low
+  sheet.getRange(lastRow + 1, 25, 1, 1).setNumberFormat('0.00%'); // PnL_At_Low_Pct
+  sheet.getRange(lastRow + 1, 26, 1, 1).setNumberFormat('$#,##0.00'); // PnL_Current
+  sheet.getRange(lastRow + 1, 27, 1, 1).setNumberFormat('0.00%'); // PnL_Current_Pct
 
   // Conditional formatting for Strike_Hit
   if (strikeHit) {
@@ -495,29 +516,47 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
     sheet.getRange(lastRow + 1, 9, 1, 1).setBackground('#F4CCCC'); // Red
   }
 
-  // Conditional formatting for P/L
-  if (pnl !== null) {
-    if (pnl > 0) {
+  // Conditional formatting for PnL_At_Open
+  if (pnlAtOpen !== null) {
+    if (pnlAtOpen > 0) {
       sheet.getRange(lastRow + 1, 20, 1, 2).setBackground('#D9EAD3'); // Light green
-    } else if (pnl < 0) {
+    } else if (pnlAtOpen < 0) {
       sheet.getRange(lastRow + 1, 20, 1, 2).setBackground('#F4CCCC'); // Light red
     }
   }
 
-  // Conditional formatting for Max_Profit
-  if (maxProfit !== null) {
-    if (maxProfit > 0) {
-      sheet.getRange(lastRow + 1, 22, 1, 1).setBackground('#D9EAD3'); // Light green
-    } else if (maxProfit < 0) {
-      sheet.getRange(lastRow + 1, 22, 1, 1).setBackground('#F4CCCC'); // Light red
+  // Conditional formatting for PnL_At_High
+  if (pnlAtHigh !== null) {
+    if (pnlAtHigh > 0) {
+      sheet.getRange(lastRow + 1, 22, 1, 2).setBackground('#D9EAD3'); // Light green
+      sheet.getRange(lastRow + 1, 22, 1, 2).setFontWeight('bold'); // Bold for best case
+    } else if (pnlAtHigh < 0) {
+      sheet.getRange(lastRow + 1, 22, 1, 2).setBackground('#F4CCCC'); // Light red
     }
   }
 
-  // Conditional formatting for Was_Profitable
-  if (wouldHaveBeenProfitable === 'YES') {
-    sheet.getRange(lastRow + 1, 24, 1, 1).setBackground('#D9EAD3').setFontWeight('bold');
-  } else if (wouldHaveBeenProfitable === 'NO') {
-    sheet.getRange(lastRow + 1, 24, 1, 1).setBackground('#F4CCCC').setFontWeight('bold');
+  // Conditional formatting for PnL_At_Low
+  if (pnlAtLow !== null) {
+    if (pnlAtLow > 0) {
+      sheet.getRange(lastRow + 1, 24, 1, 2).setBackground('#D9EAD3'); // Light green
+    } else if (pnlAtLow < 0) {
+      sheet.getRange(lastRow + 1, 24, 1, 2).setBackground('#F4CCCC'); // Light red
+      sheet.getRange(lastRow + 1, 24, 1, 2).setFontWeight('bold'); // Bold for worst case
+    }
+  }
+
+  // Conditional formatting for PnL_Current (most important - main result)
+  if (pnlCurrent !== null) {
+    if (pnlCurrent > 0) {
+      sheet.getRange(lastRow + 1, 26, 1, 2).setBackground('#B7E1CD'); // Darker green
+      sheet.getRange(lastRow + 1, 26, 1, 2).setFontWeight('bold');
+    } else if (pnlCurrent < 0) {
+      sheet.getRange(lastRow + 1, 26, 1, 2).setBackground('#EA9999'); // Darker red
+      sheet.getRange(lastRow + 1, 26, 1, 2).setFontWeight('bold');
+    } else {
+      sheet.getRange(lastRow + 1, 26, 1, 2).setBackground('#FFE599'); // Yellow for breakeven
+      sheet.getRange(lastRow + 1, 26, 1, 2).setFontWeight('bold');
+    }
   }
 }
 
