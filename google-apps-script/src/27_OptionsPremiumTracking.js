@@ -157,15 +157,40 @@ function EW_updateOptionsPremiums() {
  */
 function EW_setupOptionsPremiumSheet(sheet) {
   const headers = [
+    // Basic Info
     'Date',
     'Ticker',
     'Strike',
     'Type',
     'ExpDate',
+
+    // Stock Movement
     'Stock_Price',
     'Stock_High',
     'Stock_Low',
+
+    // Strike Hit Tracking
     'Strike_Hit',
+    'Hit_Date',
+    'Max_Favorable',
+    'Min_Unfavorable',
+
+    // Daily Check Values (premium at close each day)
+    'Day0_Check',
+    'Day1_Check',
+    'Day2_Check',
+    'Day3_Check',
+    'Day4_Check',
+    'Day5_Check',
+
+    // Expiration Results
+    'Exp_Result',
+    'Risk_Reward',
+
+    // Options OHLC and Volume
+    'OHLC_Volume',
+
+    // Entry Premium and Current Data
     'Entry_Premium',
     'Premium_Open',
     'Premium_High',
@@ -176,6 +201,8 @@ function EW_setupOptionsPremiumSheet(sheet) {
     'Spread',
     'Volume',
     'Open_Interest',
+
+    // P/L Analysis
     'PnL_At_Open',
     'PnL_At_Open_Pct',
     'PnL_At_High',
@@ -184,6 +211,7 @@ function EW_setupOptionsPremiumSheet(sheet) {
     'PnL_At_Low_Pct',
     'PnL_Current',
     'PnL_Current_Pct',
+
     'Days_To_Exp'
   ];
 
@@ -193,28 +221,53 @@ function EW_setupOptionsPremiumSheet(sheet) {
   headerRange.setBackground('#4A86E8');
   headerRange.setFontColor('white');
 
-  // Set column widths
-  sheet.setColumnWidth(1, 100);  // Date
-  sheet.setColumnWidth(2, 80);   // Ticker
-  sheet.setColumnWidth(3, 70);   // Strike
-  sheet.setColumnWidth(4, 60);   // Type
-  sheet.setColumnWidth(5, 100);  // ExpDate
-  sheet.setColumnWidth(6, 90);   // Premium
-  sheet.setColumnWidth(7, 90);   // Day_High
-  sheet.setColumnWidth(8, 90);   // Day_Low
-  sheet.setColumnWidth(9, 90);   // Day_Open
-  sheet.setColumnWidth(10, 80);  // Bid
-  sheet.setColumnWidth(11, 80);  // Ask
-  sheet.setColumnWidth(12, 80);  // Spread
-  sheet.setColumnWidth(13, 80);  // Volume
-  sheet.setColumnWidth(14, 100); // Open_Interest
-  sheet.setColumnWidth(15, 110); // Entry_Premium
-  sheet.setColumnWidth(16, 90);  // PnL
-  sheet.setColumnWidth(17, 100); // PnL_Percent
-  sheet.setColumnWidth(18, 100); // Max_Profit
-  sheet.setColumnWidth(19, 100); // Max_Loss
-  sheet.setColumnWidth(20, 110); // Was_Profitable
-  sheet.setColumnWidth(21, 90);  // Days_To_Exp
+  // Set column widths for better readability
+  const widths = [
+    100,  // Date
+    80,   // Ticker
+    70,   // Strike
+    60,   // Type
+    100,  // ExpDate
+    90,   // Stock_Price
+    90,   // Stock_High
+    90,   // Stock_Low
+    120,  // Strike_Hit (array)
+    80,   // Hit_Date
+    120,  // Max_Favorable (array)
+    120,  // Min_Unfavorable (array)
+    90,   // Day0_Check
+    90,   // Day1_Check
+    90,   // Day2_Check
+    90,   // Day3_Check
+    90,   // Day4_Check
+    90,   // Day5_Check
+    90,   // Exp_Result
+    90,   // Risk_Reward
+    200,  // OHLC_Volume (JSON)
+    90,   // Entry_Premium
+    90,   // Premium_Open
+    90,   // Premium_High
+    90,   // Premium_Low
+    90,   // Premium_Current
+    80,   // Bid
+    80,   // Ask
+    80,   // Spread
+    80,   // Volume
+    100,  // Open_Interest
+    100,  // PnL_At_Open
+    100,  // PnL_At_Open_Pct
+    100,  // PnL_At_High
+    100,  // PnL_At_High_Pct
+    100,  // PnL_At_Low
+    100,  // PnL_At_Low_Pct
+    100,  // PnL_Current
+    100,  // PnL_Current_Pct
+    90    // Days_To_Exp
+  ];
+
+  for (let i = 0; i < widths.length; i++) {
+    sheet.setColumnWidth(i + 1, widths[i]);
+  }
 
   // Freeze header row
   sheet.setFrozenRows(1);
@@ -536,6 +589,43 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
   // Calculate days to expiration
   const daysToExp = Math.ceil((position.expDate - today) / (1000 * 60 * 60 * 24));
 
+  // Initialize Strike_Hit array with Day 0 profit/loss percentage
+  let strikeHitArray = [];
+  if (position.entryPremium && pnlCurrentPct !== null) {
+    strikeHitArray.push(pnlCurrentPct.toFixed(6));
+  } else {
+    strikeHitArray.push('0.000000');
+  }
+
+  // Initialize Max_Favorable array with Day 0 best profit
+  let maxFavorableArray = [];
+  if (position.entryPremium && pnlAtHighPct !== null) {
+    maxFavorableArray.push(Math.max(pnlAtHighPct, 0).toFixed(6));
+  } else {
+    maxFavorableArray.push('0.000000');
+  }
+
+  // Initialize Min_Unfavorable array with Day 0 worst loss
+  let minUnfavorableArray = [];
+  if (position.entryPremium && pnlAtLowPct !== null) {
+    minUnfavorableArray.push(Math.min(pnlAtLowPct, 0).toFixed(6));
+  } else {
+    minUnfavorableArray.push('0.000000');
+  }
+
+  // Initialize OHLC_Volume array with Day 0 data
+  let ohlcVolumeArray = [{
+    o: premiumData.dayOpen ? parseFloat(premiumData.dayOpen).toFixed(2) : null,
+    h: premiumData.dayHigh ? parseFloat(premiumData.dayHigh).toFixed(2) : null,
+    l: premiumData.dayLow ? parseFloat(premiumData.dayLow).toFixed(2) : null,
+    c: premiumData.price ? parseFloat(premiumData.price).toFixed(2) : null,
+    v: premiumData.volume || 0,
+    src: 'YAHOO'
+  }];
+
+  // Hit_Date: 0 if profitable on entry day, otherwise empty
+  const hitDate = (pnlCurrent !== null && pnlCurrent > 0) ? 0 : '';
+
   const row = [
     dateStr,
     position.ticker,
@@ -545,26 +635,38 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
     stockData ? stockData.price || '' : '',
     stockData ? stockData.dayHigh || '' : '',
     stockData ? stockData.dayLow || '' : '',
-    strikeHit ? 'YES' : 'NO',
-    position.entryPremium || '',
-    premiumData.dayOpen || '',
-    premiumData.dayHigh || '',
-    premiumData.dayLow || '',
-    premiumData.price || '',
-    premiumData.bid || '',
-    premiumData.ask || '',
-    spread !== null ? spread : '',
-    premiumData.volume || 0,
-    premiumData.openInterest || 0,
-    pnlAtOpen !== null ? pnlAtOpen : '',
-    pnlAtOpenPct !== null ? pnlAtOpenPct : '',
-    pnlAtHigh !== null ? pnlAtHigh : '',
-    pnlAtHighPct !== null ? pnlAtHighPct : '',
-    pnlAtLow !== null ? pnlAtLow : '',
-    pnlAtLowPct !== null ? pnlAtLowPct : '',
-    pnlCurrent !== null ? pnlCurrent : '',
-    pnlCurrentPct !== null ? pnlCurrentPct : '',
-    daysToExp
+    JSON.stringify(strikeHitArray),           // Strike_Hit array
+    hitDate,                                   // Hit_Date
+    JSON.stringify(maxFavorableArray),        // Max_Favorable array
+    JSON.stringify(minUnfavorableArray),      // Min_Unfavorable array
+    premiumData.price || '',                  // Day0_Check (closing premium)
+    '',                                        // Day1_Check (empty)
+    '',                                        // Day2_Check (empty)
+    '',                                        // Day3_Check (empty)
+    '',                                        // Day4_Check (empty)
+    '',                                        // Day5_Check (empty)
+    '',                                        // Exp_Result (empty initially)
+    '',                                        // Risk_Reward (empty initially)
+    JSON.stringify(ohlcVolumeArray),          // OHLC_Volume array
+    position.entryPremium || '',              // Entry_Premium
+    premiumData.dayOpen || '',                // Premium_Open
+    premiumData.dayHigh || '',                // Premium_High
+    premiumData.dayLow || '',                 // Premium_Low
+    premiumData.price || '',                  // Premium_Current
+    premiumData.bid || '',                    // Bid
+    premiumData.ask || '',                    // Ask
+    spread !== null ? spread : '',            // Spread
+    premiumData.volume || 0,                  // Volume
+    premiumData.openInterest || 0,            // Open_Interest
+    pnlAtOpen !== null ? pnlAtOpen : '',      // PnL_At_Open
+    pnlAtOpenPct !== null ? pnlAtOpenPct : '',// PnL_At_Open_Pct
+    pnlAtHigh !== null ? pnlAtHigh : '',      // PnL_At_High
+    pnlAtHighPct !== null ? pnlAtHighPct : '',// PnL_At_High_Pct
+    pnlAtLow !== null ? pnlAtLow : '',        // PnL_At_Low
+    pnlAtLowPct !== null ? pnlAtLowPct : '',  // PnL_At_Low_Pct
+    pnlCurrent !== null ? pnlCurrent : '',    // PnL_Current
+    pnlCurrentPct !== null ? pnlCurrentPct : '',// PnL_Current_Pct
+    daysToExp                                  // Days_To_Exp
   ];
 
   // Append row
@@ -573,66 +675,65 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
   outputRange.setValues([row]);
 
   // Format numbers
-  sheet.getRange(lastRow + 1, 6, 1, 3).setNumberFormat('$#,##0.00'); // Stock Price, High, Low
-  sheet.getRange(lastRow + 1, 10, 1, 5).setNumberFormat('$#,##0.00'); // Entry, Open, High, Low, Current
-  sheet.getRange(lastRow + 1, 15, 1, 2).setNumberFormat('$#,##0.00'); // Bid, Ask
-  sheet.getRange(lastRow + 1, 17, 1, 1).setNumberFormat('$#,##0.00'); // Spread
-  sheet.getRange(lastRow + 1, 20, 1, 1).setNumberFormat('$#,##0.00'); // PnL_At_Open
-  sheet.getRange(lastRow + 1, 21, 1, 1).setNumberFormat('0.00%'); // PnL_At_Open_Pct
-  sheet.getRange(lastRow + 1, 22, 1, 1).setNumberFormat('$#,##0.00'); // PnL_At_High
-  sheet.getRange(lastRow + 1, 23, 1, 1).setNumberFormat('0.00%'); // PnL_At_High_Pct
-  sheet.getRange(lastRow + 1, 24, 1, 1).setNumberFormat('$#,##0.00'); // PnL_At_Low
-  sheet.getRange(lastRow + 1, 25, 1, 1).setNumberFormat('0.00%'); // PnL_At_Low_Pct
-  sheet.getRange(lastRow + 1, 26, 1, 1).setNumberFormat('$#,##0.00'); // PnL_Current
-  sheet.getRange(lastRow + 1, 27, 1, 1).setNumberFormat('0.00%'); // PnL_Current_Pct
+  sheet.getRange(lastRow + 1, 6, 1, 3).setNumberFormat('$#,##0.00');    // Stock Price, High, Low (cols 6-8)
+  sheet.getRange(lastRow + 1, 13, 1, 6).setNumberFormat('$#,##0.00');   // Day0-5 Check (cols 13-18)
+  sheet.getRange(lastRow + 1, 22, 1, 5).setNumberFormat('$#,##0.00');   // Entry, Open, High, Low, Current (cols 22-26)
+  sheet.getRange(lastRow + 1, 27, 1, 2).setNumberFormat('$#,##0.00');   // Bid, Ask (cols 27-28)
+  sheet.getRange(lastRow + 1, 29, 1, 1).setNumberFormat('$#,##0.00');   // Spread (col 29)
+  sheet.getRange(lastRow + 1, 32, 1, 1).setNumberFormat('$#,##0.00');   // PnL_At_Open (col 32)
+  sheet.getRange(lastRow + 1, 33, 1, 1).setNumberFormat('0.00%');       // PnL_At_Open_Pct (col 33)
+  sheet.getRange(lastRow + 1, 34, 1, 1).setNumberFormat('$#,##0.00');   // PnL_At_High (col 34)
+  sheet.getRange(lastRow + 1, 35, 1, 1).setNumberFormat('0.00%');       // PnL_At_High_Pct (col 35)
+  sheet.getRange(lastRow + 1, 36, 1, 1).setNumberFormat('$#,##0.00');   // PnL_At_Low (col 36)
+  sheet.getRange(lastRow + 1, 37, 1, 1).setNumberFormat('0.00%');       // PnL_At_Low_Pct (col 37)
+  sheet.getRange(lastRow + 1, 38, 1, 1).setNumberFormat('$#,##0.00');   // PnL_Current (col 38)
+  sheet.getRange(lastRow + 1, 39, 1, 1).setNumberFormat('0.00%');       // PnL_Current_Pct (col 39)
 
-  // Conditional formatting for Strike_Hit
-  if (strikeHit) {
-    sheet.getRange(lastRow + 1, 9, 1, 1).setBackground('#D9EAD3').setFontWeight('bold'); // Green
-  } else {
-    sheet.getRange(lastRow + 1, 9, 1, 1).setBackground('#F4CCCC'); // Red
+  // Conditional formatting for Hit_Date (col 10)
+  if (hitDate !== '') {
+    sheet.getRange(lastRow + 1, 10, 1, 1).setBackground('#D9EAD3').setFontWeight('bold'); // Green if hit
   }
 
-  // Conditional formatting for PnL_At_Open
+  // Conditional formatting for PnL_At_Open (cols 32-33)
   if (pnlAtOpen !== null) {
     if (pnlAtOpen > 0) {
-      sheet.getRange(lastRow + 1, 20, 1, 2).setBackground('#D9EAD3'); // Light green
+      sheet.getRange(lastRow + 1, 32, 1, 2).setBackground('#D9EAD3'); // Light green
     } else if (pnlAtOpen < 0) {
-      sheet.getRange(lastRow + 1, 20, 1, 2).setBackground('#F4CCCC'); // Light red
+      sheet.getRange(lastRow + 1, 32, 1, 2).setBackground('#F4CCCC'); // Light red
     }
   }
 
-  // Conditional formatting for PnL_At_High
+  // Conditional formatting for PnL_At_High (cols 34-35)
   if (pnlAtHigh !== null) {
     if (pnlAtHigh > 0) {
-      sheet.getRange(lastRow + 1, 22, 1, 2).setBackground('#D9EAD3'); // Light green
-      sheet.getRange(lastRow + 1, 22, 1, 2).setFontWeight('bold'); // Bold for best case
+      sheet.getRange(lastRow + 1, 34, 1, 2).setBackground('#D9EAD3'); // Light green
+      sheet.getRange(lastRow + 1, 34, 1, 2).setFontWeight('bold'); // Bold for best case
     } else if (pnlAtHigh < 0) {
-      sheet.getRange(lastRow + 1, 22, 1, 2).setBackground('#F4CCCC'); // Light red
+      sheet.getRange(lastRow + 1, 34, 1, 2).setBackground('#F4CCCC'); // Light red
     }
   }
 
-  // Conditional formatting for PnL_At_Low
+  // Conditional formatting for PnL_At_Low (cols 36-37)
   if (pnlAtLow !== null) {
     if (pnlAtLow > 0) {
-      sheet.getRange(lastRow + 1, 24, 1, 2).setBackground('#D9EAD3'); // Light green
+      sheet.getRange(lastRow + 1, 36, 1, 2).setBackground('#D9EAD3'); // Light green
     } else if (pnlAtLow < 0) {
-      sheet.getRange(lastRow + 1, 24, 1, 2).setBackground('#F4CCCC'); // Light red
-      sheet.getRange(lastRow + 1, 24, 1, 2).setFontWeight('bold'); // Bold for worst case
+      sheet.getRange(lastRow + 1, 36, 1, 2).setBackground('#F4CCCC'); // Light red
+      sheet.getRange(lastRow + 1, 36, 1, 2).setFontWeight('bold'); // Bold for worst case
     }
   }
 
-  // Conditional formatting for PnL_Current (most important - main result)
+  // Conditional formatting for PnL_Current (cols 38-39) - most important
   if (pnlCurrent !== null) {
     if (pnlCurrent > 0) {
-      sheet.getRange(lastRow + 1, 26, 1, 2).setBackground('#B7E1CD'); // Darker green
-      sheet.getRange(lastRow + 1, 26, 1, 2).setFontWeight('bold');
+      sheet.getRange(lastRow + 1, 38, 1, 2).setBackground('#B7E1CD'); // Darker green
+      sheet.getRange(lastRow + 1, 38, 1, 2).setFontWeight('bold');
     } else if (pnlCurrent < 0) {
-      sheet.getRange(lastRow + 1, 26, 1, 2).setBackground('#EA9999'); // Darker red
-      sheet.getRange(lastRow + 1, 26, 1, 2).setFontWeight('bold');
+      sheet.getRange(lastRow + 1, 38, 1, 2).setBackground('#EA9999'); // Darker red
+      sheet.getRange(lastRow + 1, 38, 1, 2).setFontWeight('bold');
     } else {
-      sheet.getRange(lastRow + 1, 26, 1, 2).setBackground('#FFE599'); // Yellow for breakeven
-      sheet.getRange(lastRow + 1, 26, 1, 2).setFontWeight('bold');
+      sheet.getRange(lastRow + 1, 38, 1, 2).setBackground('#FFE599'); // Yellow for breakeven
+      sheet.getRange(lastRow + 1, 38, 1, 2).setFontWeight('bold');
     }
   }
 }
