@@ -182,6 +182,14 @@ function EW_setupOptionsPremiumSheet(sheet) {
     'Day3_Check',
     'Day4_Check',
     'Day5_Check',
+    'Day6_Check',
+    'Day7_Check',
+    'Day8_Check',
+    'Day9_Check',
+    'Day10_Check',
+    'Day11_Check',
+    'Day12_Check',
+    'Day13_Check',
 
     // Expiration Results
     'Exp_Result',
@@ -241,6 +249,14 @@ function EW_setupOptionsPremiumSheet(sheet) {
     90,   // Day3_Check
     90,   // Day4_Check
     90,   // Day5_Check
+    90,   // Day6_Check
+    90,   // Day7_Check
+    90,   // Day8_Check
+    90,   // Day9_Check
+    90,   // Day10_Check
+    90,   // Day11_Check
+    90,   // Day12_Check
+    90,   // Day13_Check
     90,   // Exp_Result
     90,   // Risk_Reward
     200,  // OHLC_Volume (JSON)
@@ -645,6 +661,14 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
     '',                                        // Day3_Check (empty)
     '',                                        // Day4_Check (empty)
     '',                                        // Day5_Check (empty)
+    '',                                        // Day6_Check (empty)
+    '',                                        // Day7_Check (empty)
+    '',                                        // Day8_Check (empty)
+    '',                                        // Day9_Check (empty)
+    '',                                        // Day10_Check (empty)
+    '',                                        // Day11_Check (empty)
+    '',                                        // Day12_Check (empty)
+    '',                                        // Day13_Check (empty)
     '',                                        // Exp_Result (empty initially)
     '',                                        // Risk_Reward (empty initially)
     JSON.stringify(ohlcVolumeArray),          // OHLC_Volume array
@@ -676,64 +700,64 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
 
   // Format numbers
   sheet.getRange(lastRow + 1, 6, 1, 3).setNumberFormat('$#,##0.00');    // Stock Price, High, Low (cols 6-8)
-  sheet.getRange(lastRow + 1, 13, 1, 6).setNumberFormat('$#,##0.00');   // Day0-5 Check (cols 13-18)
-  sheet.getRange(lastRow + 1, 22, 1, 5).setNumberFormat('$#,##0.00');   // Entry, Open, High, Low, Current (cols 22-26)
-  sheet.getRange(lastRow + 1, 27, 1, 2).setNumberFormat('$#,##0.00');   // Bid, Ask (cols 27-28)
-  sheet.getRange(lastRow + 1, 29, 1, 1).setNumberFormat('$#,##0.00');   // Spread (col 29)
-  sheet.getRange(lastRow + 1, 32, 1, 1).setNumberFormat('$#,##0.00');   // PnL_At_Open (col 32)
-  sheet.getRange(lastRow + 1, 33, 1, 1).setNumberFormat('0.00%');       // PnL_At_Open_Pct (col 33)
-  sheet.getRange(lastRow + 1, 34, 1, 1).setNumberFormat('$#,##0.00');   // PnL_At_High (col 34)
-  sheet.getRange(lastRow + 1, 35, 1, 1).setNumberFormat('0.00%');       // PnL_At_High_Pct (col 35)
-  sheet.getRange(lastRow + 1, 36, 1, 1).setNumberFormat('$#,##0.00');   // PnL_At_Low (col 36)
-  sheet.getRange(lastRow + 1, 37, 1, 1).setNumberFormat('0.00%');       // PnL_At_Low_Pct (col 37)
-  sheet.getRange(lastRow + 1, 38, 1, 1).setNumberFormat('$#,##0.00');   // PnL_Current (col 38)
-  sheet.getRange(lastRow + 1, 39, 1, 1).setNumberFormat('0.00%');       // PnL_Current_Pct (col 39)
+  sheet.getRange(lastRow + 1, 13, 1, 14).setNumberFormat('$#,##0.00');  // Day0-13 Check (cols 13-26)
+  sheet.getRange(lastRow + 1, 30, 1, 5).setNumberFormat('$#,##0.00');   // Entry, Open, High, Low, Current (cols 30-34)
+  sheet.getRange(lastRow + 1, 35, 1, 2).setNumberFormat('$#,##0.00');   // Bid, Ask (cols 35-36)
+  sheet.getRange(lastRow + 1, 37, 1, 1).setNumberFormat('$#,##0.00');   // Spread (col 37)
+  sheet.getRange(lastRow + 1, 40, 1, 1).setNumberFormat('$#,##0.00');   // PnL_At_Open (col 40)
+  sheet.getRange(lastRow + 1, 41, 1, 1).setNumberFormat('0.00%');       // PnL_At_Open_Pct (col 41)
+  sheet.getRange(lastRow + 1, 42, 1, 1).setNumberFormat('$#,##0.00');   // PnL_At_High (col 42)
+  sheet.getRange(lastRow + 1, 43, 1, 1).setNumberFormat('0.00%');       // PnL_At_High_Pct (col 43)
+  sheet.getRange(lastRow + 1, 44, 1, 1).setNumberFormat('$#,##0.00');   // PnL_At_Low (col 44)
+  sheet.getRange(lastRow + 1, 45, 1, 1).setNumberFormat('0.00%');       // PnL_At_Low_Pct (col 45)
+  sheet.getRange(lastRow + 1, 46, 1, 1).setNumberFormat('$#,##0.00');   // PnL_Current (col 46)
+  sheet.getRange(lastRow + 1, 47, 1, 1).setNumberFormat('0.00%');       // PnL_Current_Pct (col 47)
 
   // Conditional formatting for Hit_Date (col 10)
   if (hitDate !== '') {
     sheet.getRange(lastRow + 1, 10, 1, 1).setBackground('#D9EAD3').setFontWeight('bold'); // Green if hit
   }
 
-  // Conditional formatting for PnL_At_Open (cols 32-33)
+  // Conditional formatting for PnL_At_Open (cols 40-41)
   if (pnlAtOpen !== null) {
     if (pnlAtOpen > 0) {
-      sheet.getRange(lastRow + 1, 32, 1, 2).setBackground('#D9EAD3'); // Light green
+      sheet.getRange(lastRow + 1, 40, 1, 2).setBackground('#D9EAD3'); // Light green
     } else if (pnlAtOpen < 0) {
-      sheet.getRange(lastRow + 1, 32, 1, 2).setBackground('#F4CCCC'); // Light red
+      sheet.getRange(lastRow + 1, 40, 1, 2).setBackground('#F4CCCC'); // Light red
     }
   }
 
-  // Conditional formatting for PnL_At_High (cols 34-35)
+  // Conditional formatting for PnL_At_High (cols 42-43)
   if (pnlAtHigh !== null) {
     if (pnlAtHigh > 0) {
-      sheet.getRange(lastRow + 1, 34, 1, 2).setBackground('#D9EAD3'); // Light green
-      sheet.getRange(lastRow + 1, 34, 1, 2).setFontWeight('bold'); // Bold for best case
+      sheet.getRange(lastRow + 1, 42, 1, 2).setBackground('#D9EAD3'); // Light green
+      sheet.getRange(lastRow + 1, 42, 1, 2).setFontWeight('bold'); // Bold for best case
     } else if (pnlAtHigh < 0) {
-      sheet.getRange(lastRow + 1, 34, 1, 2).setBackground('#F4CCCC'); // Light red
+      sheet.getRange(lastRow + 1, 42, 1, 2).setBackground('#F4CCCC'); // Light red
     }
   }
 
-  // Conditional formatting for PnL_At_Low (cols 36-37)
+  // Conditional formatting for PnL_At_Low (cols 44-45)
   if (pnlAtLow !== null) {
     if (pnlAtLow > 0) {
-      sheet.getRange(lastRow + 1, 36, 1, 2).setBackground('#D9EAD3'); // Light green
+      sheet.getRange(lastRow + 1, 44, 1, 2).setBackground('#D9EAD3'); // Light green
     } else if (pnlAtLow < 0) {
-      sheet.getRange(lastRow + 1, 36, 1, 2).setBackground('#F4CCCC'); // Light red
-      sheet.getRange(lastRow + 1, 36, 1, 2).setFontWeight('bold'); // Bold for worst case
+      sheet.getRange(lastRow + 1, 44, 1, 2).setBackground('#F4CCCC'); // Light red
+      sheet.getRange(lastRow + 1, 44, 1, 2).setFontWeight('bold'); // Bold for worst case
     }
   }
 
-  // Conditional formatting for PnL_Current (cols 38-39) - most important
+  // Conditional formatting for PnL_Current (cols 46-47) - most important
   if (pnlCurrent !== null) {
     if (pnlCurrent > 0) {
-      sheet.getRange(lastRow + 1, 38, 1, 2).setBackground('#B7E1CD'); // Darker green
-      sheet.getRange(lastRow + 1, 38, 1, 2).setFontWeight('bold');
+      sheet.getRange(lastRow + 1, 46, 1, 2).setBackground('#B7E1CD'); // Darker green
+      sheet.getRange(lastRow + 1, 46, 1, 2).setFontWeight('bold');
     } else if (pnlCurrent < 0) {
-      sheet.getRange(lastRow + 1, 38, 1, 2).setBackground('#EA9999'); // Darker red
-      sheet.getRange(lastRow + 1, 38, 1, 2).setFontWeight('bold');
+      sheet.getRange(lastRow + 1, 46, 1, 2).setBackground('#EA9999'); // Darker red
+      sheet.getRange(lastRow + 1, 46, 1, 2).setFontWeight('bold');
     } else {
-      sheet.getRange(lastRow + 1, 38, 1, 2).setBackground('#FFE599'); // Yellow for breakeven
-      sheet.getRange(lastRow + 1, 38, 1, 2).setFontWeight('bold');
+      sheet.getRange(lastRow + 1, 46, 1, 2).setBackground('#FFE599'); // Yellow for breakeven
+      sheet.getRange(lastRow + 1, 46, 1, 2).setFontWeight('bold');
     }
   }
 }
