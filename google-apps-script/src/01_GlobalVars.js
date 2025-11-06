@@ -27,6 +27,20 @@ const EW = {
       pass: EW.PROPS.getProperty('EW_PASS') || '',
       loginUrl: 'https://www.earningswhispers.com/login'
     };
+  },
+
+  // Alpha Vantage API Configuration
+  ALPHA_VANTAGE: {
+    BASE_URL: 'https://www.alphavantage.co/query',
+    get API_KEY() {
+      return EW.PROPS.getProperty('ALPHA_VANTAGE_API_KEY') || '';
+    },
+    RATE_LIMITS: {
+      REQUESTS_PER_DAY: 25,      // Free tier daily limit
+      REQUESTS_PER_MINUTE: 5     // Free tier rate limit
+    },
+    DEFAULT_INTERVAL: '1min',
+    OUTPUT_SIZE: 'full'           // Get full day data (not just latest 100 points)
   }
 };
 
