@@ -476,28 +476,63 @@ function EW_getYahooQuoteSession(forceRefresh = false) {
     }
   }
 
-  const response = UrlFetchApp.fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {
+  const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+
+  // Step 1: hit fc.yahoo.com to obtain the auth cookies (B=, A1=, etc.)
+  const cookieResponse = UrlFetchApp.fetch('https://fc.yahoo.com', {
     muteHttpExceptions: true,
     followRedirects: false,
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      'User-Agent': userAgent
     }
   });
 
-  if (response.getResponseCode() !== 200) {
-    throw new Error(`Failed to obtain Yahoo Finance crumb: HTTP ${response.getResponseCode()}`);
+  const cookieHeaders = cookieResponse.getAllHeaders();
+  let initialCookie = EW_extractYahooCookie(cookieHeaders['Set-Cookie'] || cookieHeaders['set-cookie']);
+
+  if (!initialCookie) {
+    throw new Error(`Failed to obtain Yahoo Finance cookie: HTTP ${cookieResponse.getResponseCode()}`);
   }
 
-  const crumb = response.getContentText().trim();
-  const headers = response.getAllHeaders();
-  const setCookie = headers['Set-Cookie'] || headers['set-cookie'];
-  const cookie = EW_extractYahooCookie(setCookie);
+  // Step 2: request a crumb using the cookies we just received. Retry across query1/query2 endpoints.
+  const crumbEndpoints = [
+    'https://query1.finance.yahoo.com/v1/test/getcrumb',
+    'https://query2.finance.yahoo.com/v1/test/getcrumb'
+  ];
 
-  if (!crumb || !cookie) {
-    throw new Error('Yahoo Finance crumb or cookie missing from response');
+  let crumb = '';
+  let lastStatus = null;
+
+  for (let i = 0; i < crumbEndpoints.length && !crumb; i++) {
+    const endpoint = crumbEndpoints[i];
+    const response = UrlFetchApp.fetch(endpoint, {
+      muteHttpExceptions: true,
+      followRedirects: false,
+      headers: {
+        'User-Agent': userAgent,
+        'Cookie': initialCookie
+      }
+    });
+
+    lastStatus = response.getResponseCode();
+
+    if (lastStatus === 200) {
+      const responseCrumb = response.getContentText().trim();
+      if (responseCrumb) {
+        crumb = responseCrumb;
+        const crumbCookie = EW_extractYahooCookie(response.getAllHeaders()['Set-Cookie'] || response.getAllHeaders()['set-cookie']);
+        if (crumbCookie) {
+          initialCookie = [initialCookie, crumbCookie].filter(Boolean).join('; ');
+        }
+      }
+    }
   }
 
-  const session = { crumb: crumb, cookie: cookie };
+  if (!crumb) {
+    throw new Error(`Failed to obtain Yahoo Finance crumb: HTTP ${lastStatus}`);
+  }
+
+  const session = { crumb: crumb, cookie: initialCookie };
 
   if (cache) {
     try {
