@@ -292,31 +292,41 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
  * @returns {boolean} True if backfill needed
  */
 function EW_needsOptionsPremiumBackfill(outputSheet, positionKey, position) {
-  // For now, assume we need to backfill if position exists but has empty day columns
-  // In production, check if Day0-Day13 columns are populated
+  // Check if position exists but has empty day columns
+  // Returns true if Day0_Check is empty or position not found
 
   const lastRow = outputSheet.getLastRow();
   if (lastRow < 2) return true;
 
   try {
-    const data = outputSheet.getRange(2, 1, lastRow - 1, outputSheet.getLastColumn()).getValues();
+    // Get headers and map them dynamically
+    const headers = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    const hdrMap = EW_headerMap(headers);
 
-    // Find the row for this position
+    // Validate required columns exist
+    if (!hdrMap.tickerCol || !hdrMap.strikeCol || !hdrMap.expDateCol || !hdrMap.day0CheckCol) {
+      EW_trace('OPTIONS_BACKFILL', 'Missing required columns in output sheet', true);
+      return true;
+    }
+
+    // Get all data
+    const data = outputSheet.getRange(2, 1, lastRow - 1, outputSheet.getLastColumn()).getValues();
     const expDateStr = Utilities.formatDate(position.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
     for (const row of data) {
-      const ticker = String(row[1]); // Column B (Ticker)
-      const strike = parseFloat(row[2]); // Column C (Strike)
-      const rowExpDateStr = row[4] instanceof Date ?
-        Utilities.formatDate(row[4], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
-        String(row[4]);
+      const ticker = String(row[hdrMap.tickerCol - 1]);
+      const strike = parseFloat(row[hdrMap.strikeCol - 1]);
+      const rowExpDateStr = row[hdrMap.expDateCol - 1] instanceof Date ?
+        Utilities.formatDate(row[hdrMap.expDateCol - 1], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
+        String(row[hdrMap.expDateCol - 1]);
 
       if (ticker === position.ticker &&
           Math.abs(strike - position.strike) < 0.01 &&
           rowExpDateStr === expDateStr) {
 
-        // Check if Day0 Check (column 13, index 12) is empty
-        if (!row[12] || row[12] === '') {
+        // Check if Day0_Check column is empty
+        const day0Value = row[hdrMap.day0CheckCol - 1];
+        if (!day0Value || day0Value === '') {
           return true; // Needs backfill
         }
 
@@ -572,15 +582,27 @@ function EW_findOptionsPremiumRow(outputSheet, position) {
   if (lastRow < 2) return null;
 
   try {
-    const data = outputSheet.getRange(2, 1, lastRow - 1, 6).getValues();
+    // Get headers and map them dynamically
+    const headers = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    const hdrMap = EW_headerMap(headers);
+
+    // Validate required columns exist
+    if (!hdrMap.tickerCol || !hdrMap.strikeCol || !hdrMap.expDateCol) {
+      EW_trace('OPTIONS_BACKFILL', 'Missing required columns in output sheet (ticker, strike, expDate)', true);
+      return null;
+    }
+
+    // Get only the columns we need for matching
+    const numCols = Math.max(hdrMap.tickerCol, hdrMap.strikeCol, hdrMap.expDateCol);
+    const data = outputSheet.getRange(2, 1, lastRow - 1, numCols).getValues();
     const expDateStr = Utilities.formatDate(position.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
     for (let i = 0; i < data.length; i++) {
-      const ticker = String(data[i][2]);  // Ticker is now column 3 (index 2) after adding Run_Date
-      const strike = parseFloat(data[i][3]); // Strike is now column 4 (index 3)
-      const rowExpDateStr = data[i][5] instanceof Date ?  // ExpDate is now column 6 (index 5)
-        Utilities.formatDate(data[i][5], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
-        String(data[i][5]);
+      const ticker = String(data[i][hdrMap.tickerCol - 1]);
+      const strike = parseFloat(data[i][hdrMap.strikeCol - 1]);
+      const rowExpDateStr = data[i][hdrMap.expDateCol - 1] instanceof Date ?
+        Utilities.formatDate(data[i][hdrMap.expDateCol - 1], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
+        String(data[i][hdrMap.expDateCol - 1]);
 
       if (ticker === position.ticker &&
           Math.abs(strike - position.strike) < 0.01 &&
