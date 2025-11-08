@@ -234,15 +234,6 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
       const entryDate = new Date(position.runDate);
       entryDate.setHours(0, 0, 0, 0);
 
-      // Skip positions entered today - no full daily bar available yet
-      // Exception: Allow on weekends since markets are closed anyway
-      const isWeekend = today.getDay() === 0 || today.getDay() === 6;
-      if (entryDate.getTime() === today.getTime() && !isWeekend) {
-        EW_trace('OPTIONS_BACKFILL', `  ⏭ ${position.ticker} $${position.strike}: Entered today, will backfill tomorrow`, false);
-        processedCount++;
-        continue;
-      }
-
       // Determine end date (earlier of today or expiration)
       let endDate = new Date(today);
       if (position.expDate < today) {
@@ -333,13 +324,22 @@ function EW_needsOptionsPremiumBackfill(outputSheet, positionKey, position) {
           Math.abs(strike - position.strike) < 0.01 &&
           rowExpDateStr === expDateStr) {
 
-        // Check if Day0_Check column is empty
-        const day0Value = row[hdrMap.day0CheckCol - 1];
-        if (!day0Value || day0Value === '') {
-          return true; // Needs backfill
+        // Position exists - check if it needs updating
+        // Always update if not expired yet (to get new daily data)
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        if (position.expDate >= today) {
+          return true; // Not expired yet - update with latest data
         }
 
-        return false; // Already backfilled
+        // Expired - check if Day0_Check has data
+        const day0Value = row[hdrMap.day0CheckCol - 1];
+        if (!day0Value || day0Value === '') {
+          return true; // Missing data - needs backfill
+        }
+
+        return false; // Expired and has data - skip
       }
     }
 
