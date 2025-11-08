@@ -72,7 +72,7 @@ function EW_formatDateTime(date) {
  */
 function EW_toEDT(date) {
   if (!date || !(date instanceof Date)) return '';
-  
+
   // Create formatter for Eastern Time
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
@@ -90,9 +90,35 @@ function EW_toEDT(date) {
   parts.forEach(part => {
     values[part.type] = part.value;
   });
-  
+
   // Format as YYYY-MM-DD HH:MM:SS EDT
   return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second} ET`;
+}
+
+/**
+ * Convert a date to a Unix timestamp representing a specific Eastern Time-of-day
+ * @param {Date} date - The base date
+ * @param {number} hour - Hour in Eastern Time (0-23)
+ * @param {number} minute - Minute in Eastern Time (0-59)
+ * @param {number} second - Second in Eastern Time (0-59)
+ * @returns {number} Unix timestamp (seconds)
+ */
+function EW_getEasternUnixTimestamp(date, hour = 0, minute = 0, second = 0) {
+  if (!date) return null;
+
+  try {
+    const tz = 'America/New_York';
+    const baseDate = new Date(date);
+    const dayString = Utilities.formatDate(baseDate, tz, 'yyyy-MM-dd');
+    const pad = value => String(Math.max(0, value)).padStart(2, '0');
+    const dateTimeString = `${dayString} ${pad(hour)}:${pad(minute)}:${pad(second)}`;
+    const easternDate = Utilities.parseDate(dateTimeString, tz, 'yyyy-MM-dd HH:mm:ss');
+    return Math.floor(easternDate.getTime() / 1000);
+  } catch (error) {
+    // Fallback to the provided date in case parsing fails
+    const fallback = new Date(date);
+    return Math.floor(fallback.getTime() / 1000);
+  }
 }
 
 // ======= LOGGING AND DEBUGGING =======
@@ -826,6 +852,35 @@ function EW_appendStrikeHit(currentValue, newValue) {
   const array = EW_parseStrikeHitArray(currentValue);
   array.push(newValue);
   return JSON.stringify(array);
+}
+
+/**
+ * Ensure an array has entries up to a given index, filling blanks with a default value
+ * @param {Array|*} array - Existing array (or serialized array value)
+ * @param {number} index - Index that must exist after filling
+ * @param {any|Function} filler - Value or factory used to populate missing slots
+ * @param {number} minLength - Optional minimum length to enforce after filling
+ * @returns {Array} New array with missing entries populated
+ */
+function EW_fillArrayToIndex(array, index, filler, minLength) {
+  const baseArray = Array.isArray(array) ? array.slice() : [];
+  const fillerFn = (typeof filler === 'function') ? filler : () => filler;
+  const targetIndex = Math.max(0, index || 0);
+  const targetLength = Math.max(targetIndex + 1, minLength || 0);
+
+  // Ensure array is large enough
+  while (baseArray.length < targetLength) {
+    baseArray.push(undefined);
+  }
+
+  // Fill any undefined/blank entries up to the index (and minimum length)
+  for (let i = 0; i < targetLength; i++) {
+    if (baseArray[i] === undefined || baseArray[i] === null || baseArray[i] === '') {
+      baseArray[i] = fillerFn(i);
+    }
+  }
+
+  return baseArray;
 }
 
 /**
