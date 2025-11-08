@@ -301,6 +301,13 @@ function EW_setupOptionsPremiumSheet(sheet) {
     sheet.setColumnWidth(i + 1, widths[i]);
   }
 
+  // Format date columns (Date, Run_Date, ExpDate)
+  // Date is column 1, Run_Date is column 2, ExpDate is column 6
+  const dateColumns = [1, 2, 6];
+  dateColumns.forEach(col => {
+    sheet.getRange(2, col, sheet.getMaxRows() - 1, 1).setNumberFormat('yyyy-mm-dd');
+  });
+
   // Freeze header row
   sheet.setFrozenRows(1);
 }

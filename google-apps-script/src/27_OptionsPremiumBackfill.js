@@ -234,6 +234,15 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
       const entryDate = new Date(position.runDate);
       entryDate.setHours(0, 0, 0, 0);
 
+      // Skip positions entered today - no full daily bar available yet
+      // Exception: Allow on weekends since markets are closed anyway
+      const isWeekend = today.getDay() === 0 || today.getDay() === 6;
+      if (entryDate.getTime() === today.getTime() && !isWeekend) {
+        EW_trace('OPTIONS_BACKFILL', `  ⏭ ${position.ticker} $${position.strike}: Entered today, will backfill tomorrow`, false);
+        processedCount++;
+        continue;
+      }
+
       // Determine end date (earlier of today or expiration)
       let endDate = new Date(today);
       if (position.expDate < today) {
