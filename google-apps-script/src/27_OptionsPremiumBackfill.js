@@ -234,8 +234,10 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
       const entryDate = new Date(position.runDate);
       entryDate.setHours(0, 0, 0, 0);
 
-      // Skip backfill for positions entered today - no full daily bar available yet
-      if (entryDate.getTime() === today.getTime()) {
+      // Skip backfill for positions entered today (but only on weekdays)
+      // On weekends, we can backfill since there's no market data for today anyway
+      const isWeekend = today.getDay() === 0 || today.getDay() === 6;
+      if (entryDate.getTime() === today.getTime() && !isWeekend) {
         EW_trace('OPTIONS_BACKFILL', `${position.ticker} ${position.strike}${position.optionType}: Skipping - entered today, no historical data yet`, false);
         processedCount++;
         continue;
