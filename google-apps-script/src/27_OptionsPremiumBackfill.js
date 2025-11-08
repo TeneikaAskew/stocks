@@ -234,6 +234,13 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
       const entryDate = new Date(position.runDate);
       entryDate.setHours(0, 0, 0, 0);
 
+      // Skip backfill for positions entered today - no full daily bar available yet
+      if (entryDate.getTime() === today.getTime()) {
+        EW_trace('OPTIONS_BACKFILL', `${position.ticker} ${position.strike}${position.optionType}: Skipping - entered today, no historical data yet`, false);
+        processedCount++;
+        continue;
+      }
+
       // Determine end date (earlier of today or expiration)
       let endDate = new Date(today);
       if (position.expDate < today) {
@@ -509,8 +516,14 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   const runDateStr = Utilities.formatDate(position.runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
   // Build Yahoo Finance API URL for historical premium data
-  const period1 = Math.floor(position.runDate.getTime() / 1000);
-  const period2 = Math.floor(position.expDate.getTime() / 1000);
+  // Use the same date range logic as the actual fetch (runDate to earlier of today/expiration)
+  let apiEndDate = new Date(today);
+  if (position.expDate < today) {
+    apiEndDate = new Date(position.expDate);
+  }
+
+  const period1 = Math.floor(entryDate.getTime() / 1000);
+  const period2 = Math.floor(apiEndDate.getTime() / 1000);
   const apiUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history`;
 
   // Build row
