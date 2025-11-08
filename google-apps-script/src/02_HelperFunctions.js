@@ -829,6 +829,35 @@ function EW_appendStrikeHit(currentValue, newValue) {
 }
 
 /**
+ * Ensure an array has entries up to a given index, filling blanks with a default value
+ * @param {Array|*} array - Existing array (or serialized array value)
+ * @param {number} index - Index that must exist after filling
+ * @param {any|Function} filler - Value or factory used to populate missing slots
+ * @param {number} minLength - Optional minimum length to enforce after filling
+ * @returns {Array} New array with missing entries populated
+ */
+function EW_fillArrayToIndex(array, index, filler, minLength) {
+  const baseArray = Array.isArray(array) ? array.slice() : [];
+  const fillerFn = (typeof filler === 'function') ? filler : () => filler;
+  const targetIndex = Math.max(0, index || 0);
+  const targetLength = Math.max(targetIndex + 1, minLength || 0);
+
+  // Ensure array is large enough
+  while (baseArray.length < targetLength) {
+    baseArray.push(undefined);
+  }
+
+  // Fill any undefined/blank entries up to the index (and minimum length)
+  for (let i = 0; i < targetLength; i++) {
+    if (baseArray[i] === undefined || baseArray[i] === null || baseArray[i] === '') {
+      baseArray[i] = fillerFn(i);
+    }
+  }
+
+  return baseArray;
+}
+
+/**
  * Get Strike_Hit value for specific day
  * @param {string|Array} strikeHitValue - Strike_Hit cell value
  * @param {number} dayIndex - Day index (0-based)
