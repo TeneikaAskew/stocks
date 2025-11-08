@@ -20,7 +20,17 @@
  * - regularMarketOpen: Opening premium
  * - strike, expireDate, underlyingSymbol
  *
+ * IMPORTANT - Day Index Logic:
+ * - Uses runDate from source sheet to determine which DayN_Check to populate
+ * - If position added Monday (runDate = Monday) but script runs Tuesday:
+ *   - Entry Date column = Monday (the original runDate)
+ *   - Day0_Check = blank (script didn't run on Day 0)
+ *   - Day1_Check = Tuesday's premium (today's data goes to Day 1)
+ * - This allows the script to handle missed trigger runs correctly
+ * - Positions older than 13 days are skipped (outside tracking window)
+ *
  * Run once daily at 5 PM to capture day's high/low/close premium data.
+ * File 28 (OptionsDailyContinuation.js) handles updating existing positions.
  */
 
 /**
@@ -301,35 +311,25 @@ function EW_getExistingPositions(sheet) {
   if (lastRow < 2) return existingPositions;
 
   try {
-    // Get today's date string
-    const today = new Date();
-    const todayStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-
-    // Read Date, Ticker, Strike, ExpDate columns (cols 1, 2, 3, 5)
+    // Read Ticker, Strike, ExpDate columns (cols 2, 3, 5)
+    // Check ALL positions, not just today's entries
     const data = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
 
     for (const row of data) {
-      const dateStr = row[0] instanceof Date ?
-        Utilities.formatDate(row[0], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
-        String(row[0]);
+      const ticker = String(row[1]);
+      const strike = parseFloat(row[2]);
+      const expDate = row[4] instanceof Date ?
+        Utilities.formatDate(row[4], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
+        String(row[4]);
 
-      // Only check today's entries
-      if (dateStr === todayStr) {
-        const ticker = String(row[1]);
-        const strike = parseFloat(row[2]);
-        const expDate = row[4] instanceof Date ?
-          Utilities.formatDate(row[4], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
-          String(row[4]);
-
-        if (ticker && !isNaN(strike) && expDate) {
-          const key = `${ticker}_${strike}_${expDate}`;
-          existingPositions.add(key);
-        }
+      if (ticker && !isNaN(strike) && expDate) {
+        const key = `${ticker}_${strike}_${expDate}`;
+        existingPositions.add(key);
       }
     }
 
     if (existingPositions.size > 0) {
-      EW_trace('OPTIONS_PREMIUM', `Found ${existingPositions.size} positions already processed today`, false);
+      EW_trace('OPTIONS_PREMIUM', `Found ${existingPositions.size} existing positions in tracking sheet`, false);
     }
 
   } catch (error) {
@@ -408,6 +408,7 @@ function EW_readOptionsPositions(sheet, strategyType) {
       ticker: ticker,
       strike: strike,
       expDate: expDate,
+      runDate: runDate || today,  // Use runDate from sheet, fallback to today
       optionType: optionType,
       entryPremium: entryPremium,
       rowNum: i + 2,
@@ -548,17 +549,38 @@ function EW_fetchOptionPremium(position) {
 
 /**
  * Write premium data to output sheet
+ * Uses runDate from position to determine which DayN_Check column to populate
+ *
  * @param {Sheet} sheet - Output sheet
- * @param {Object} position - Position info
+ * @param {Object} position - Position info (must include runDate)
  * @param {Object} premiumData - Premium data from API
  * @param {Object} stockData - Stock OHLC data
  * @param {boolean} strikeHit - Whether strike was hit today
  * @param {string} strategyType - Strategy type (BULLISH/BEARISH/NEUTRAL)
+ *
+ * Example: If position.runDate = Monday and today = Tuesday:
+ * - Entry Date = Monday (position.runDate)
+ * - Day0_Check = blank
+ * - Day1_Check = today's premium
  */
 function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strikeHit, strategyType) {
   const today = new Date();
-  const dateStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  today.setHours(0, 0, 0, 0);
+
+  // Use runDate from position (entry date) instead of today
+  const entryDate = new Date(position.runDate);
+  entryDate.setHours(0, 0, 0, 0);
+  const dateStr = Utilities.formatDate(entryDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   const expDateStr = Utilities.formatDate(position.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+  // Calculate which day index this is (0-13)
+  const daysSinceEntry = Math.floor((today - entryDate) / (1000 * 60 * 60 * 24));
+
+  // Skip if beyond our tracking window
+  if (daysSinceEntry < 0 || daysSinceEntry > 13) {
+    EW_trace('OPTIONS_PREMIUM', `Skipping ${position.ticker} - ${daysSinceEntry} days since entry (outside 0-13 range)`, false);
+    return;
+  }
 
   // Calculate spread
   const spread = (premiumData.ask && premiumData.bid) ?
@@ -639,11 +661,15 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
     src: 'YAHOO'
   }];
 
-  // Hit_Date: 0 if profitable on entry day, otherwise empty
-  const hitDate = (pnlCurrent !== null && pnlCurrent > 0) ? 0 : '';
+  // Hit_Date: day number if profitable, otherwise empty
+  const hitDate = (pnlCurrent !== null && pnlCurrent > 0) ? daysSinceEntry : '';
+
+  // Create array for all 14 day columns - only populate the correct day index
+  const dayCheckValues = Array(14).fill('');
+  dayCheckValues[daysSinceEntry] = premiumData.price || '';
 
   const row = [
-    dateStr,
+    dateStr,                                  // Entry date (runDate, not today!)
     position.ticker,
     position.strike,
     position.optionType,
@@ -652,23 +678,10 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
     stockData ? stockData.dayHigh || '' : '',
     stockData ? stockData.dayLow || '' : '',
     JSON.stringify(strikeHitArray),           // Strike_Hit array
-    hitDate,                                   // Hit_Date
+    hitDate,                                   // Hit_Date (day number if profitable)
     JSON.stringify(maxFavorableArray),        // Max_Favorable array
     JSON.stringify(minUnfavorableArray),      // Min_Unfavorable array
-    premiumData.price || '',                  // Day0_Check (closing premium)
-    '',                                        // Day1_Check (empty)
-    '',                                        // Day2_Check (empty)
-    '',                                        // Day3_Check (empty)
-    '',                                        // Day4_Check (empty)
-    '',                                        // Day5_Check (empty)
-    '',                                        // Day6_Check (empty)
-    '',                                        // Day7_Check (empty)
-    '',                                        // Day8_Check (empty)
-    '',                                        // Day9_Check (empty)
-    '',                                        // Day10_Check (empty)
-    '',                                        // Day11_Check (empty)
-    '',                                        // Day12_Check (empty)
-    '',                                        // Day13_Check (empty)
+    ...dayCheckValues,                         // Day0-13 Check columns (only correct day populated)
     '',                                        // Exp_Result (empty initially)
     '',                                        // Risk_Reward (empty initially)
     JSON.stringify(ohlcVolumeArray),          // OHLC_Volume array
