@@ -96,6 +96,14 @@ function EW_parseMenuStructure() {
       ]
     },
     {
+      name: '📈 Options Backfill',
+      items: [
+        { label: 'Backfill Options Premium History', function: 'EW_backfillOptionsPremiumHistory', description: 'Fill historical premium data for all option positions' },
+        { label: 'Backfill Selected Options', function: 'EW_backfillOptionsPremiumsSelected', description: 'Fill premium history for selected option rows' },
+        { label: 'Check Options Backfill Status', function: 'EW_checkOptionsPremiumBackfillStatus', description: 'View options backfill progress' }
+      ]
+    },
+    {
       name: '⚙️ Setup & Config',
       items: [
         { label: 'Set Script Properties', function: 'EW_setScriptProperties', description: 'Configure API keys and folder IDs' },
