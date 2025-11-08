@@ -234,15 +234,6 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
       const entryDate = new Date(position.runDate);
       entryDate.setHours(0, 0, 0, 0);
 
-      // Skip backfill for positions entered today (but only on weekdays)
-      // On weekends, we can backfill since there's no market data for today anyway
-      const isWeekend = today.getDay() === 0 || today.getDay() === 6;
-      if (entryDate.getTime() === today.getTime() && !isWeekend) {
-        EW_trace('OPTIONS_BACKFILL', `${position.ticker} ${position.strike}${position.optionType}: Skipping - entered today, no historical data yet`, false);
-        processedCount++;
-        continue;
-      }
-
       // Determine end date (earlier of today or expiration)
       let endDate = new Date(today);
       if (position.expDate < today) {
@@ -404,15 +395,25 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   let stockHighToday = '';
   let stockLowToday = '';
 
-  // Populate arrays for each day since entry
-  for (let dayOffset = 0; dayOffset < MAX_TRACKING_DAYS; dayOffset++) {
+  // Populate arrays for each trading day since entry (skip weekends)
+  let tradingDayIndex = 0;
+  let calendarDayOffset = 0;
+
+  while (tradingDayIndex < MAX_TRACKING_DAYS) {
     const targetDate = new Date(entryDate);
-    targetDate.setDate(entryDate.getDate() + dayOffset);
+    targetDate.setDate(entryDate.getDate() + calendarDayOffset);
     targetDate.setHours(0, 0, 0, 0);
+    calendarDayOffset++;
 
     // Stop if we're past today or expiration
     if (targetDate > today || targetDate > position.expDate) {
       break;
+    }
+
+    // Skip weekends
+    const dayOfWeek = targetDate.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      continue;
     }
 
     const key = Utilities.formatDate(targetDate, tz, 'yyyy-MM-dd');
@@ -420,10 +421,10 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     const stockData = stockMap[key];
 
     if (dayData && dayData.close !== null && dayData.close !== undefined) {
-      dayCheckValues[dayOffset] = dayData.close;
+      dayCheckValues[tradingDayIndex] = dayData.close;
 
       // Build OHLC entry
-      ohlcVolumeArray[dayOffset] = {
+      ohlcVolumeArray[tradingDayIndex] = {
         o: dayData.open !== null ? parseFloat(dayData.open).toFixed(2) : null,
         h: dayData.high !== null ? parseFloat(dayData.high).toFixed(2) : null,
         l: dayData.low !== null ? parseFloat(dayData.low).toFixed(2) : null,
@@ -437,25 +438,25 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
         const entryCost = entryPremium * 100;
         const pnl = (dayData.close - entryPremium) * 100;
         const pnlPct = pnl / entryCost;
-        strikeHitArray[dayOffset] = pnlPct.toFixed(6);
+        strikeHitArray[tradingDayIndex] = pnlPct.toFixed(6);
 
         // Check for first profitable day
         if (hitDate === '' && pnlPct > 0) {
-          hitDate = dayOffset;
+          hitDate = tradingDayIndex;
         }
 
         // Max favorable (highest premium during the day)
         if (dayData.high !== null) {
           const maxPnl = (dayData.high - entryPremium) * 100;
           const maxPct = maxPnl / entryCost;
-          maxFavorableArray[dayOffset] = Math.max(maxPct, 0).toFixed(6);
+          maxFavorableArray[tradingDayIndex] = Math.max(maxPct, 0).toFixed(6);
         }
 
         // Min unfavorable (lowest premium during the day)
         if (dayData.low !== null) {
           const minPnl = (dayData.low - entryPremium) * 100;
           const minPct = minPnl / entryCost;
-          minUnfavorableArray[dayOffset] = Math.min(minPct, 0).toFixed(6);
+          minUnfavorableArray[tradingDayIndex] = Math.min(minPct, 0).toFixed(6);
         }
       }
     }
@@ -466,6 +467,8 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
       stockHighToday = stockData.high || '';
       stockLowToday = stockData.low || '';
     }
+
+    tradingDayIndex++;
   }
 
   // Default any uninitialized OHLC entries
