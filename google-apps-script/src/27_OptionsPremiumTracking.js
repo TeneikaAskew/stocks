@@ -658,6 +658,135 @@ function EW_fetchOptionPremiumsBatch(positions) {
 }
 
 /**
+ * Fetch historical daily premiums for an option symbol using Yahoo Finance chart API
+ * Ensures the request uses the daily interval with 9:30 AM / 4:30 PM Eastern bounds
+ * @param {string} optionSymbol - Yahoo option symbol (e.g., ROKU251107C00060000)
+ * @param {Date} startDate - Inclusive start date
+ * @param {Date} endDate - Inclusive end date
+ * @returns {Array<Object>} Array of OHLC data ordered by day
+ */
+function EW_fetchOptionPremiumHistory(optionSymbol, startDate, endDate) {
+  const history = [];
+
+  if (!optionSymbol || !startDate || !endDate) {
+    return history;
+  }
+
+  let session = null;
+
+  try {
+    session = EW_getYahooQuoteSession();
+  } catch (error) {
+    EW_trace('OPTIONS_PREMIUM', `Failed to initialize Yahoo session for history: ${error.message}`, true);
+    return history;
+  }
+
+  const easternStart = new Date(startDate);
+  easternStart.setHours(9, 30, 0, 0); // 9:30 AM ET
+
+  const easternEnd = new Date(endDate);
+  easternEnd.setHours(16, 30, 0, 0); // 4:30 PM ET
+
+  let period1 = Math.floor(easternStart.getTime() / 1000);
+  let period2 = Math.floor(easternEnd.getTime() / 1000);
+
+  // Ensure the window is valid (always at least one hour)
+  if (period2 <= period1) {
+    easternEnd.setDate(easternEnd.getDate() + 1);
+    easternEnd.setHours(16, 30, 0, 0);
+    period2 = Math.floor(easternEnd.getTime() / 1000);
+  }
+
+  const crumbParam = session && session.crumb ? `&crumb=${encodeURIComponent(session.crumb)}` : '';
+  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history${crumbParam}`;
+
+  EW_trace('OPTIONS_PREMIUM', `Fetching daily premium history for ${optionSymbol}`, false);
+
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Cookie': session.cookie
+      }
+    });
+
+    const responseCode = response.getResponseCode();
+
+    if (responseCode === 401 || responseCode === 403) {
+      session = EW_getYahooQuoteSession(true);
+      const retryCrumb = session && session.crumb ? `&crumb=${encodeURIComponent(session.crumb)}` : '';
+      const retryUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history${retryCrumb}`;
+      const retryResponse = UrlFetchApp.fetch(retryUrl, {
+        muteHttpExceptions: true,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Cookie': session.cookie
+        }
+      });
+      return EW_parsePremiumHistoryResponse(optionSymbol, retryResponse);
+    }
+
+    if (responseCode !== 200) {
+      EW_trace('OPTIONS_PREMIUM', `History fetch failed for ${optionSymbol}: HTTP ${responseCode}`, true);
+      return history;
+    }
+
+    return EW_parsePremiumHistoryResponse(optionSymbol, response);
+
+  } catch (error) {
+    EW_trace('OPTIONS_PREMIUM', `History fetch error for ${optionSymbol}: ${error.message}`, true);
+    return history;
+  }
+}
+
+function EW_parsePremiumHistoryResponse(optionSymbol, response) {
+  const history = [];
+
+  try {
+    const data = JSON.parse(response.getContentText());
+
+    if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
+      return history;
+    }
+
+    const result = data.chart.result[0];
+    const timestamps = result.timestamp || [];
+    const quote = result.indicators && result.indicators.quote ? result.indicators.quote[0] : null;
+
+    if (!quote || timestamps.length === 0) {
+      return history;
+    }
+
+    for (let i = 0; i < timestamps.length; i++) {
+      const close = quote.close ? quote.close[i] : null;
+      const high = quote.high ? quote.high[i] : null;
+      const low = quote.low ? quote.low[i] : null;
+      const open = quote.open ? quote.open[i] : null;
+      const volume = quote.volume ? quote.volume[i] : 0;
+
+      if (close === null && high === null && low === null && open === null) {
+        continue;
+      }
+
+      history.push({
+        date: new Date(timestamps[i] * 1000),
+        open: open,
+        high: high,
+        low: low,
+        close: close,
+        volume: volume || 0
+      });
+    }
+
+  } catch (error) {
+    EW_trace('OPTIONS_PREMIUM', `Failed to parse history for ${optionSymbol}: ${error.message}`, true);
+  }
+
+  return history;
+}
+
+/**
  * Fetch single option premium (used for testing)
  * For production, use batch fetch instead
  * @param {Object} position - Position with ticker, strike, expDate, optionType
@@ -710,6 +839,35 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
     return;
   }
 
+  const MAX_TRACKING_DAYS = 14;
+  const optionSymbol = EW_buildOptionSymbol(
+    position.ticker,
+    position.expDate,
+    position.optionType,
+    position.strike
+  );
+
+  // Prepare arrays with default placeholders
+  const strikeHitArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
+  const maxFavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
+  const minUnfavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
+  const ohlcVolumeArray = Array(MAX_TRACKING_DAYS).fill(null);
+  const dayCheckValues = Array(MAX_TRACKING_DAYS).fill('');
+
+  // Fetch historical premiums for backfilling earlier days
+  let premiumHistoryMap = {};
+  const historyCutoff = new Date(entryDate);
+  historyCutoff.setDate(historyCutoff.getDate() + Math.min(daysSinceEntry, MAX_TRACKING_DAYS - 1));
+
+  if (daysSinceEntry > 0) {
+    const history = EW_fetchOptionPremiumHistory(optionSymbol, entryDate, historyCutoff);
+    const tz = Session.getScriptTimeZone();
+    for (const item of history) {
+      const key = Utilities.formatDate(new Date(item.date), tz, 'yyyy-MM-dd');
+      premiumHistoryMap[key] = item;
+    }
+  }
+
   // Calculate spread
   const spread = (premiumData.ask && premiumData.bid) ?
     (premiumData.ask - premiumData.bid) : null;
@@ -755,46 +913,82 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
   // Calculate days to expiration
   const daysToExp = Math.ceil((position.expDate - today) / (1000 * 60 * 60 * 24));
 
-  // Initialize Strike_Hit array with Day 0 profit/loss percentage
-  let strikeHitArray = [];
-  if (position.entryPremium && pnlCurrentPct !== null) {
-    strikeHitArray.push(pnlCurrentPct.toFixed(6));
-  } else {
-    strikeHitArray.push('0.000000');
+  const tz = Session.getScriptTimeZone();
+  const lastDayIndex = Math.min(daysSinceEntry, MAX_TRACKING_DAYS - 1);
+
+  for (let dayOffset = 0; dayOffset <= lastDayIndex; dayOffset++) {
+    const targetDate = new Date(entryDate);
+    targetDate.setDate(entryDate.getDate() + dayOffset);
+    targetDate.setHours(0, 0, 0, 0);
+    const key = Utilities.formatDate(targetDate, tz, 'yyyy-MM-dd');
+
+    let dayData = null;
+
+    if (dayOffset === daysSinceEntry) {
+      dayData = {
+        open: premiumData.dayOpen || null,
+        high: premiumData.dayHigh || null,
+        low: premiumData.dayLow || null,
+        close: premiumData.price || null,
+        volume: premiumData.volume || 0
+      };
+    } else if (premiumHistoryMap[key]) {
+      dayData = premiumHistoryMap[key];
+    }
+
+    if (dayData && dayData.close !== null && dayData.close !== undefined) {
+      dayCheckValues[dayOffset] = dayData.close;
+    }
+
+    const ohlcEntry = {
+      o: dayData && dayData.open !== null && dayData.open !== undefined ? parseFloat(dayData.open).toFixed(2) : null,
+      h: dayData && dayData.high !== null && dayData.high !== undefined ? parseFloat(dayData.high).toFixed(2) : null,
+      l: dayData && dayData.low !== null && dayData.low !== undefined ? parseFloat(dayData.low).toFixed(2) : null,
+      c: dayData && dayData.close !== null && dayData.close !== undefined ? parseFloat(dayData.close).toFixed(2) : null,
+      v: dayData ? (dayData.volume || 0) : 0,
+      src: 'YAHOO'
+    };
+
+    ohlcVolumeArray[dayOffset] = ohlcEntry;
+
+    if (position.entryPremium && dayData && dayData.close !== null && dayData.close !== undefined) {
+      const entryCost = position.entryPremium * 100;
+      const pnl = (dayData.close - position.entryPremium) * 100;
+      const pnlPct = pnl / entryCost;
+      strikeHitArray[dayOffset] = pnlPct.toFixed(6);
+
+      if (dayData.high !== null && dayData.high !== undefined) {
+        const maxPnl = (dayData.high - position.entryPremium) * 100;
+        const maxPct = maxPnl / entryCost;
+        maxFavorableArray[dayOffset] = Math.max(maxPct, 0).toFixed(6);
+      }
+
+      if (dayData.low !== null && dayData.low !== undefined) {
+        const minPnl = (dayData.low - position.entryPremium) * 100;
+        const minPct = minPnl / entryCost;
+        minUnfavorableArray[dayOffset] = Math.min(minPct, 0).toFixed(6);
+      }
+    }
   }
 
-  // Initialize Max_Favorable array with Day 0 best profit
-  let maxFavorableArray = [];
-  if (position.entryPremium && pnlAtHighPct !== null) {
-    maxFavorableArray.push(Math.max(pnlAtHighPct, 0).toFixed(6));
-  } else {
-    maxFavorableArray.push('0.000000');
+  // Default any uninitialized OHLC entries up to tracking window
+  for (let i = 0; i < MAX_TRACKING_DAYS; i++) {
+    if (!ohlcVolumeArray[i]) {
+      ohlcVolumeArray[i] = { o: null, h: null, l: null, c: null, v: 0, src: 'YAHOO' };
+    }
   }
 
-  // Initialize Min_Unfavorable array with Day 0 worst loss
-  let minUnfavorableArray = [];
-  if (position.entryPremium && pnlAtLowPct !== null) {
-    minUnfavorableArray.push(Math.min(pnlAtLowPct, 0).toFixed(6));
-  } else {
-    minUnfavorableArray.push('0.000000');
+  // Determine first profitable day for Hit_Date
+  let hitDate = '';
+  if (position.entryPremium) {
+    for (let i = 0; i <= lastDayIndex; i++) {
+      const value = strikeHitArray[i];
+      if (value !== '0.000000' && value !== '' && !isNaN(parseFloat(value)) && parseFloat(value) > 0) {
+        hitDate = i;
+        break;
+      }
+    }
   }
-
-  // Initialize OHLC_Volume array with Day 0 data
-  let ohlcVolumeArray = [{
-    o: premiumData.dayOpen ? parseFloat(premiumData.dayOpen).toFixed(2) : null,
-    h: premiumData.dayHigh ? parseFloat(premiumData.dayHigh).toFixed(2) : null,
-    l: premiumData.dayLow ? parseFloat(premiumData.dayLow).toFixed(2) : null,
-    c: premiumData.price ? parseFloat(premiumData.price).toFixed(2) : null,
-    v: premiumData.volume || 0,
-    src: 'YAHOO'
-  }];
-
-  // Hit_Date: day number if profitable, otherwise empty
-  const hitDate = (pnlCurrent !== null && pnlCurrent > 0) ? daysSinceEntry : '';
-
-  // Create array for all 14 day columns - only populate the correct day index
-  const dayCheckValues = Array(14).fill('');
-  dayCheckValues[daysSinceEntry] = premiumData.price || '';
 
   const row = [
     dateStr,                                  // Entry date (runDate, not today!)
