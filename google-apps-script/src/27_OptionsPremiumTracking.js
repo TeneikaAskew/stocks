@@ -169,6 +169,7 @@ function EW_setupOptionsPremiumSheet(sheet) {
   const headers = [
     // Basic Info
     'Date',
+    'Run_Date',
     'Ticker',
     'Strike',
     'Type',
@@ -230,7 +231,10 @@ function EW_setupOptionsPremiumSheet(sheet) {
     'PnL_Current',
     'PnL_Current_Pct',
 
-    'Days_To_Exp'
+    'Days_To_Exp',
+
+    // API Metadata
+    'API_URL'
   ];
 
   const headerRange = sheet.getRange(1, 1, 1, headers.length);
@@ -242,6 +246,7 @@ function EW_setupOptionsPremiumSheet(sheet) {
   // Set column widths for better readability
   const widths = [
     100,  // Date
+    100,  // Run_Date
     80,   // Ticker
     70,   // Strike
     60,   // Type
@@ -288,7 +293,8 @@ function EW_setupOptionsPremiumSheet(sheet) {
     100,  // PnL_At_Low_Pct
     100,  // PnL_Current
     100,  // PnL_Current_Pct
-    90    // Days_To_Exp
+    90,   // Days_To_Exp
+    400   // API_URL
   ];
 
   for (let i = 0; i < widths.length; i++) {
