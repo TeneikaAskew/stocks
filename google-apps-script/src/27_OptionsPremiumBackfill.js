@@ -585,9 +585,62 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   const existingRowNum = EW_findOptionsPremiumRow(outputSheet, position);
 
   if (existingRowNum) {
-    // Update existing row
-    const outputRange = outputSheet.getRange(existingRowNum, 1, 1, row.length);
-    outputRange.setValues([row]);
+    // Update existing row - merge arrays with existing data
+    const headers = outputSheet.getRange(1, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+    const hdrMap = EW_headerMap(headers);
+    const existingData = outputSheet.getRange(existingRowNum, 1, 1, outputSheet.getLastColumn()).getValues()[0];
+
+    // Merge arrays (Strike_Hit, Max_Favorable, Min_Unfavorable, OHLC_Volume)
+    const existingStrikeHit = existingData[hdrMap.strikeHitCol - 1];
+    const existingMaxFav = existingData[hdrMap.maxFavorableCol - 1];
+    const existingMinUnfav = existingData[hdrMap.minUnfavorableCol - 1];
+    const existingOHLC = existingData[hdrMap.ohlcVolumeCol - 1];
+
+    const mergedStrikeHit = EW_mergeArrays(existingStrikeHit, strikeHitArray);
+    const mergedMaxFav = EW_mergeArrays(existingMaxFav, maxFavorableArray);
+    const mergedMinUnfav = EW_mergeArrays(existingMinUnfav, minUnfavorableArray);
+    const mergedOHLC = EW_mergeArrays(existingOHLC, ohlcVolumeArray);
+
+    // Update Strike_Hit, Max_Favorable, Min_Unfavorable, OHLC_Volume with merged arrays
+    outputSheet.getRange(existingRowNum, hdrMap.strikeHitCol).setValue(JSON.stringify(mergedStrikeHit));
+    outputSheet.getRange(existingRowNum, hdrMap.maxFavorableCol).setValue(JSON.stringify(mergedMaxFav));
+    outputSheet.getRange(existingRowNum, hdrMap.minUnfavorableCol).setValue(JSON.stringify(mergedMinUnfav));
+    outputSheet.getRange(existingRowNum, hdrMap.ohlcVolumeCol).setValue(JSON.stringify(mergedOHLC));
+
+    // Update Day0-Day13 Check values (only update if new value exists)
+    for (let i = 0; i < dayCheckValues.length; i++) {
+      const dayCol = hdrMap[`day${i}CheckCol`];
+      if (dayCol && dayCheckValues[i]) {
+        outputSheet.getRange(existingRowNum, dayCol).setValue(dayCheckValues[i]);
+      }
+    }
+
+    // Update current premium data (always overwrite with latest)
+    if (hdrMap.stockPriceCol) outputSheet.getRange(existingRowNum, hdrMap.stockPriceCol).setValue(stockPriceToday);
+    if (hdrMap.stockHighCol) outputSheet.getRange(existingRowNum, hdrMap.stockHighCol).setValue(stockHighToday);
+    if (hdrMap.stockLowCol) outputSheet.getRange(existingRowNum, hdrMap.stockLowCol).setValue(stockLowToday);
+    if (hdrMap.daysToExpCol) outputSheet.getRange(existingRowNum, hdrMap.daysToExpCol).setValue(daysToExp);
+    if (hdrMap.pnlCurrentCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentCol).setValue(pnlCurrent);
+    if (hdrMap.pnlCurrentPctCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentPctCol).setValue(pnlCurrentPct);
+
+    // Update Hit_Date if we have one and existing is empty
+    if (hitDate && hdrMap.hitDateCol) {
+      const existingHitDate = existingData[hdrMap.hitDateCol - 1];
+      if (!existingHitDate || existingHitDate === '') {
+        outputSheet.getRange(existingRowNum, hdrMap.hitDateCol).setValue(hitDate);
+      }
+    }
+
+    // Update Risk_Reward
+    if (riskReward && hdrMap.riskRewardCol) {
+      outputSheet.getRange(existingRowNum, hdrMap.riskRewardCol).setValue(riskReward);
+    }
+
+    // Update Exp_Result if expired
+    if (expResult && hdrMap.expResultCol) {
+      outputSheet.getRange(existingRowNum, hdrMap.expResultCol).setValue(expResult);
+    }
+
     EW_formatOptionsPremiumRow(outputSheet, existingRowNum);
   } else {
     // Append new row
