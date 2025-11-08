@@ -459,6 +459,104 @@ function EW_buildOptionSymbol(ticker, expDate, optionType, strike) {
  * @param {Array} positions - Array of positions
  * @returns {Object} Map of optionSymbol -> premium data
  */
+function EW_getYahooQuoteSession(forceRefresh = false) {
+  const cache = (typeof CacheService !== 'undefined') ? CacheService.getScriptCache() : null;
+  const cacheKey = 'EW_YAHOO_QUOTE_SESSION';
+
+  if (!forceRefresh && cache) {
+    const cachedSession = cache.get(cacheKey);
+    if (cachedSession) {
+      try {
+        const parsed = JSON.parse(cachedSession);
+        if (parsed && parsed.crumb && parsed.cookie) {
+          return parsed;
+        }
+      } catch (error) {
+        // Ignore parse errors and refresh session
+      }
+    }
+  }
+
+  const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+
+  // Step 1: hit fc.yahoo.com to obtain the auth cookies (B=, A1=, etc.)
+  const cookieResponse = UrlFetchApp.fetch('https://fc.yahoo.com', {
+    muteHttpExceptions: true,
+    followRedirects: false,
+    headers: {
+      'User-Agent': userAgent
+    }
+  });
+
+  const cookieHeaders = cookieResponse.getAllHeaders();
+  let initialCookie = EW_extractYahooCookie(cookieHeaders['Set-Cookie'] || cookieHeaders['set-cookie']);
+
+  if (!initialCookie) {
+    throw new Error(`Failed to obtain Yahoo Finance cookie: HTTP ${cookieResponse.getResponseCode()}`);
+  }
+
+  // Step 2: request a crumb using the cookies we just received. Retry across query1/query2 endpoints.
+  const crumbEndpoints = [
+    'https://query1.finance.yahoo.com/v1/test/getcrumb',
+    'https://query2.finance.yahoo.com/v1/test/getcrumb'
+  ];
+
+  let crumb = '';
+  let lastStatus = null;
+
+  for (let i = 0; i < crumbEndpoints.length && !crumb; i++) {
+    const endpoint = crumbEndpoints[i];
+    const response = UrlFetchApp.fetch(endpoint, {
+      muteHttpExceptions: true,
+      followRedirects: false,
+      headers: {
+        'User-Agent': userAgent,
+        'Cookie': initialCookie
+      }
+    });
+
+    lastStatus = response.getResponseCode();
+
+    if (lastStatus === 200) {
+      const responseCrumb = response.getContentText().trim();
+      if (responseCrumb) {
+        crumb = responseCrumb;
+        const crumbCookie = EW_extractYahooCookie(response.getAllHeaders()['Set-Cookie'] || response.getAllHeaders()['set-cookie']);
+        if (crumbCookie) {
+          initialCookie = [initialCookie, crumbCookie].filter(Boolean).join('; ');
+        }
+      }
+    }
+  }
+
+  if (!crumb) {
+    throw new Error(`Failed to obtain Yahoo Finance crumb: HTTP ${lastStatus}`);
+  }
+
+  const session = { crumb: crumb, cookie: initialCookie };
+
+  if (cache) {
+    try {
+      cache.put(cacheKey, JSON.stringify(session), 60 * 55); // Cache for ~55 minutes
+    } catch (error) {
+      // Ignore cache write errors
+    }
+  }
+
+  return session;
+}
+
+function EW_extractYahooCookie(setCookieHeader) {
+  if (!setCookieHeader) return '';
+
+  const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+  const parsed = cookies
+    .map(cookie => (cookie || '').split(';')[0])
+    .filter(Boolean);
+
+  return parsed.join('; ');
+}
+
 function EW_fetchOptionPremiumsBatch(positions) {
   const premiumDataMap = {};
 
@@ -471,20 +569,50 @@ function EW_fetchOptionPremiumsBatch(positions) {
 
   // Batch API call - all symbols in one request!
   const symbolsStr = symbols.join(',');
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbolsStr}`;
+  let session = null;
+
+  try {
+    session = EW_getYahooQuoteSession();
+  } catch (error) {
+    EW_trace('OPTIONS_PREMIUM', `Failed to initialize Yahoo session: ${error.message}`, true);
+    return premiumDataMap;
+  }
+
+  const buildUrl = crumb => `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbolsStr}&crumb=${encodeURIComponent(crumb)}`;
+  let url = buildUrl(session.crumb);
 
   EW_trace('OPTIONS_PREMIUM', `Fetching ${symbols.length} option premiums in batch`, true);
   EW_trace('OPTIONS_PREMIUM', `Symbols: ${symbols.slice(0, 5).join(', ')}${symbols.length > 5 ? '...' : ''}`, false);
 
   try {
-    const response = UrlFetchApp.fetch(url, {
+    let response = UrlFetchApp.fetch(url, {
       muteHttpExceptions: true,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Cookie': session.cookie
       }
     });
 
-    const responseCode = response.getResponseCode();
+    let responseCode = response.getResponseCode();
+
+    if (responseCode === 401 || responseCode === 403) {
+      // Refresh crumb/cookie and retry once
+      try {
+        session = EW_getYahooQuoteSession(true);
+        url = buildUrl(session.crumb);
+        response = UrlFetchApp.fetch(url, {
+          muteHttpExceptions: true,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Cookie': session.cookie
+          }
+        });
+        responseCode = response.getResponseCode();
+      } catch (retryError) {
+        EW_trace('OPTIONS_PREMIUM', `Yahoo session refresh failed: ${retryError.message}`, true);
+        return premiumDataMap;
+      }
+    }
 
     if (responseCode !== 200) {
       EW_trace('OPTIONS_PREMIUM', `Batch fetch failed: HTTP ${responseCode}`, true);
@@ -602,25 +730,25 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
     // P/L at Open (would you have profited if you sold at open?)
     if (premiumData.dayOpen) {
       pnlAtOpen = (premiumData.dayOpen - position.entryPremium) * 100;
-      pnlAtOpenPct = (pnlAtOpen / entryCost) * 100;
+      pnlAtOpenPct = pnlAtOpen / entryCost;
     }
 
     // P/L at High (best possible profit)
     if (premiumData.dayHigh) {
       pnlAtHigh = (premiumData.dayHigh - position.entryPremium) * 100;
-      pnlAtHighPct = (pnlAtHigh / entryCost) * 100;
+      pnlAtHighPct = pnlAtHigh / entryCost;
     }
 
     // P/L at Low (worst case)
     if (premiumData.dayLow) {
       pnlAtLow = (premiumData.dayLow - position.entryPremium) * 100;
-      pnlAtLowPct = (pnlAtLow / entryCost) * 100;
+      pnlAtLowPct = pnlAtLow / entryCost;
     }
 
     // Current P/L (closing premium vs entry)
     if (premiumData.price) {
       pnlCurrent = (premiumData.price - position.entryPremium) * 100;
-      pnlCurrentPct = (pnlCurrent / entryCost) * 100;
+      pnlCurrentPct = pnlCurrent / entryCost;
     }
   }
 
@@ -696,13 +824,13 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
     premiumData.volume || 0,                  // Volume
     premiumData.openInterest || 0,            // Open_Interest
     pnlAtOpen !== null ? pnlAtOpen : '',      // PnL_At_Open
-    pnlAtOpenPct !== null ? pnlAtOpenPct : '',// PnL_At_Open_Pct
+    pnlAtOpenPct !== null ? Number(pnlAtOpenPct.toFixed(6)) : '',// PnL_At_Open_Pct
     pnlAtHigh !== null ? pnlAtHigh : '',      // PnL_At_High
-    pnlAtHighPct !== null ? pnlAtHighPct : '',// PnL_At_High_Pct
+    pnlAtHighPct !== null ? Number(pnlAtHighPct.toFixed(6)) : '',// PnL_At_High_Pct
     pnlAtLow !== null ? pnlAtLow : '',        // PnL_At_Low
-    pnlAtLowPct !== null ? pnlAtLowPct : '',  // PnL_At_Low_Pct
+    pnlAtLowPct !== null ? Number(pnlAtLowPct.toFixed(6)) : '',  // PnL_At_Low_Pct
     pnlCurrent !== null ? pnlCurrent : '',    // PnL_Current
-    pnlCurrentPct !== null ? pnlCurrentPct : '',// PnL_Current_Pct
+    pnlCurrentPct !== null ? Number(pnlCurrentPct.toFixed(6)) : '',// PnL_Current_Pct
     daysToExp                                  // Days_To_Exp
   ];
 
@@ -865,62 +993,248 @@ function EW_updateOptionsPremiumsSelected() {
 /**
  * Test option symbol building and premium fetch
  */
-function EW_testOptionPremiumFetch() {
+function EW_testOptionPremiumFetch(sheetName) {
   const ss = SpreadsheetApp.getActive();
-  const sheet = ss.getActiveSheet();
-  const selection = sheet.getActiveRange();
-  const row = selection.getRow();
+  const targetSheetName = sheetName || 'Long Calls';
+  const sheet = ss.getSheetByName(targetSheetName);
 
-  if (sheet.getName() !== 'Long Calls' || row === 1) {
-    SpreadsheetApp.getUi().alert('Please select a data row in the Long Calls sheet');
-    return;
+  if (!sheet) {
+    Logger.log(`ERROR: Sheet "${targetSheetName}" not found`);
+    return [];
+  }
+
+  // Check if UI is available (fails in headless/testing contexts)
+  let ui = null;
+  try {
+    ui = SpreadsheetApp.getUi();
+  } catch (error) {
+    Logger.log('Running without UI');
   }
 
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = {};
+
+  Logger.log('Headers found:');
+  for (let i = 0; i < headers.length; i++) {
+    Logger.log(`Column ${i}: "${headers[i]}"`);
+  }
 
   for (let i = 0; i < headers.length; i++) {
     const header = String(headers[i]).toLowerCase().trim().replace(/\s+/g, '');
     if (header === 'ticker') hdrMap.ticker = i;
     if (header === 'strike') hdrMap.strike = i;
     if (header === 'expdate' || header === 'expiration') hdrMap.expDate = i;
+    if (header === 'rundate') hdrMap.runDate = i;
   }
 
-  const data = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+  Logger.log('\nMapped columns:');
+  Logger.log(`ticker: ${hdrMap.ticker}`);
+  Logger.log(`strike: ${hdrMap.strike}`);
+  Logger.log(`expDate: ${hdrMap.expDate}`);
+  Logger.log(`runDate: ${hdrMap.runDate}`);
 
-  const ticker = data[hdrMap.ticker];
-  const strike = parseFloat(data[hdrMap.strike]);
-  const expDate = new Date(data[hdrMap.expDate]);
-
-  const position = {
-    ticker: ticker,
-    strike: strike,
-    expDate: expDate,
-    optionType: 'C'
-  };
-
-  const optionSymbol = EW_buildOptionSymbol(ticker, expDate, 'C', strike);
-  Logger.log(`Option Symbol: ${optionSymbol}`);
-
-  const premiumData = EW_fetchOptionPremium(position);
-
-  if (!premiumData) {
-    SpreadsheetApp.getUi().alert('No data returned - check logs');
-    return;
+  if (hdrMap.runDate === undefined) {
+    Logger.log('ERROR: Could not find Run Date column');
+    Logger.log('Looking for header that becomes "rundate" when lowercased and spaces removed');
+    return [];
   }
 
-  Logger.log(`Premium: $${premiumData.price}`);
-  Logger.log(`Day Range: $${premiumData.dayLow} - $${premiumData.dayHigh}`);
-  Logger.log(`Bid/Ask: $${premiumData.bid} / $${premiumData.ask}`);
+  const rowsToProcess = [];
+  let useLastDate = false;
 
-  const msg = `${ticker} $${strike} Call (${Utilities.formatDate(expDate, Session.getScriptTimeZone(), 'MMM dd yyyy')})\n\n` +
-    `Option Symbol: ${optionSymbol}\n\n` +
-    `Premium: $${premiumData.price.toFixed(2)}\n` +
-    `Day High: $${premiumData.dayHigh.toFixed(2)}\n` +
-    `Day Low: $${premiumData.dayLow.toFixed(2)}\n` +
-    `Bid/Ask: $${premiumData.bid.toFixed(2)} / $${premiumData.ask.toFixed(2)}\n` +
-    `Volume: ${premiumData.volume}\n` +
-    `Open Interest: ${premiumData.openInterest}`;
+  if (ui) {
+    try {
+      const selection = ss.getSelection();
+      const activeRange = selection ? selection.getActiveRange() : null;
 
-  SpreadsheetApp.getUi().alert('Premium Data', msg, SpreadsheetApp.getUi().ButtonSet.OK);
+      if (activeRange && activeRange.getSheet().getName() === sheet.getName()) {
+        const row = activeRange.getRow();
+        if (row > 1 && activeRange.getA1Notation() !== 'A1') {
+          rowsToProcess.push(row);
+        } else {
+          useLastDate = true;
+        }
+      } else {
+        useLastDate = true;
+      }
+    } catch (error) {
+      useLastDate = true;
+    }
+  } else {
+    useLastDate = true;
+  }
+
+  if (useLastDate) {
+    const lastRow = sheet.getLastRow();
+    if (lastRow <= 1) {
+      Logger.log('No data rows found');
+      return [];
+    }
+
+    const allData = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+
+    Logger.log('\nFirst 5 Run Date values:');
+    for (let i = 0; i < Math.min(5, allData.length); i++) {
+      const runDate = allData[i][hdrMap.runDate];
+      Logger.log(`Row ${i + 2}: ${runDate} (type: ${typeof runDate})`);
+    }
+
+    let latestDate = null;
+    let dateCount = 0;
+
+    for (let i = 0; i < allData.length; i++) {
+      const runDate = allData[i][hdrMap.runDate];
+      if (runDate) {
+        const dateValue = runDate instanceof Date ? runDate : new Date(runDate);
+        if (!isNaN(dateValue.getTime())) {
+          dateCount++;
+          if (!latestDate || dateValue > latestDate) {
+            latestDate = dateValue;
+          }
+        } else {
+          Logger.log(`Row ${i + 2}: Invalid date value: ${runDate}`);
+        }
+      }
+    }
+
+    Logger.log(`\nFound ${dateCount} valid dates`);
+
+    if (!latestDate) {
+      Logger.log('No valid dates found in Run Date column');
+      return [];
+    }
+
+    Logger.log(`Latest date: ${Utilities.formatDate(latestDate, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss')}`);
+
+    for (let i = 0; i < allData.length; i++) {
+      const runDate = allData[i][hdrMap.runDate];
+      if (runDate) {
+        const dateValue = runDate instanceof Date ? runDate : new Date(runDate);
+        if (!isNaN(dateValue.getTime()) && dateValue.getTime() === latestDate.getTime()) {
+          rowsToProcess.push(i + 2);
+        }
+      }
+    }
+
+    Logger.log(`Processing ${rowsToProcess.length} rows from ${Utilities.formatDate(latestDate, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss')}`);
+  }
+
+  if (rowsToProcess.length === 0) {
+    Logger.log('No rows selected for processing');
+    return [];
+  }
+
+  let yahooSession = null;
+  try {
+    yahooSession = EW_getYahooQuoteSession();
+  } catch (error) {
+    Logger.log(`WARNING: Unable to retrieve Yahoo session for debugging: ${error.message}`);
+  }
+
+  const results = [];
+
+  for (const row of rowsToProcess) {
+    const data = sheet.getRange(row, 1, 1, sheet.getLastColumn()).getValues()[0];
+
+    const ticker = data[hdrMap.ticker];
+    const strike = parseFloat(data[hdrMap.strike]);
+    const expDate = new Date(data[hdrMap.expDate]);
+
+    if (!ticker || isNaN(strike) || isNaN(expDate.getTime())) {
+      Logger.log(`Row ${row}: Invalid data (Ticker: ${ticker}, Strike: ${strike}, ExpDate: ${data[hdrMap.expDate]})`);
+      continue;
+    }
+
+    const position = {
+      ticker: ticker,
+      strike: strike,
+      expDate: expDate,
+      optionType: 'C'
+    };
+
+    const optionSymbol = EW_buildOptionSymbol(ticker, expDate, 'C', strike);
+    Logger.log(`Row ${row}: Option Symbol: ${optionSymbol}`);
+
+    if (yahooSession) {
+      Logger.log('\n=== API CALL DEBUG ===');
+      Logger.log(`URL: https://query1.finance.yahoo.com/v7/finance/quote`);
+      Logger.log(`Params: ${JSON.stringify({ symbols: optionSymbol, crumb: yahooSession.crumb })}`);
+      Logger.log(`Full URL: https://query1.finance.yahoo.com/v7/finance/quote?symbols=${optionSymbol}&crumb=${yahooSession.crumb}`);
+      Logger.log(`Headers: ${JSON.stringify({ 'User-Agent': 'Mozilla/5.0...', Cookie: yahooSession.cookie })}`);
+      Logger.log('======================\n');
+    }
+
+    const premiumData = EW_fetchOptionPremium(position);
+
+    if (!premiumData) {
+      Logger.log(`No data returned for ${ticker} ${strike} Call`);
+      continue;
+    }
+
+    const result = {
+      row: row,
+      ticker: ticker,
+      strike: strike,
+      expDate: expDate,
+      optionSymbol: optionSymbol,
+      premium: premiumData.price,
+      dayHigh: premiumData.dayHigh,
+      dayLow: premiumData.dayLow,
+      bid: premiumData.bid,
+      ask: premiumData.ask,
+      volume: premiumData.volume,
+      openInterest: premiumData.openInterest
+    };
+
+    results.push(result);
+
+    Logger.log(`${ticker} Premium: $${premiumData.price}`);
+    Logger.log(`Day Range: $${premiumData.dayLow} - $${premiumData.dayHigh}`);
+    Logger.log(`Bid/Ask: $${premiumData.bid} / $${premiumData.ask}`);
+  }
+
+  if (results.length === 0) {
+    Logger.log('No data could be fetched');
+    return [];
+  }
+
+  Logger.log('\n========== OPTION PREMIUM RESULTS ==========');
+  for (const result of results) {
+    Logger.log(`\n${result.ticker} $${result.strike} Call (${result.optionSymbol})`);
+    Logger.log(`  Premium: $${result.premium.toFixed(2)}`);
+    Logger.log(`  Day Range: $${result.dayLow.toFixed(2)} - $${result.dayHigh.toFixed(2)}`);
+    Logger.log(`  Bid/Ask: $${result.bid.toFixed(2)} / $${result.ask.toFixed(2)}`);
+    Logger.log(`  Volume: ${result.volume}, OI: ${result.openInterest}`);
+  }
+  Logger.log('============================================\n');
+
+  if (ui) {
+    if (results.length === 1) {
+      const result = results[0];
+      const msg = `${result.ticker} $${result.strike} Call (${Utilities.formatDate(result.expDate, Session.getScriptTimeZone(), 'MMM dd yyyy')})\n\n` +
+        `Option Symbol: ${result.optionSymbol}\n\n` +
+        `Premium: $${result.premium.toFixed(2)}\n` +
+        `Day High: $${result.dayHigh.toFixed(2)}\n` +
+        `Day Low: $${result.dayLow.toFixed(2)}\n` +
+        `Bid/Ask: $${result.bid.toFixed(2)} / $${result.ask.toFixed(2)}\n` +
+        `Volume: ${result.volume}\n` +
+        `Open Interest: ${result.openInterest}`;
+
+      ui.alert('Premium Data', msg, ui.ButtonSet.OK);
+    } else {
+      let msg = `Fetched ${results.length} option premiums:\n\n`;
+
+      for (const result of results) {
+        const expDateStr = Utilities.formatDate(result.expDate, Session.getScriptTimeZone(), 'MM/dd');
+        msg += `${result.ticker} $${result.strike} (${expDateStr}): $${result.premium.toFixed(2)} `;
+        msg += `[${result.dayLow.toFixed(2)}-${result.dayHigh.toFixed(2)}]\n`;
+      }
+
+      msg += '\nCheck logs for detailed data (View > Logs).';
+
+      ui.alert('Premium Data Summary', msg, ui.ButtonSet.OK);
+    }
+  }
+
+  return results;
 }
