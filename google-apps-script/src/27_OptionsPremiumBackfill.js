@@ -494,9 +494,19 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   // Calculate days to expiration
   const daysToExp = Math.ceil((position.expDate - today) / (1000 * 60 * 60 * 24));
 
+  // Build option symbol for API URL
+  const optionSymbol = EW_buildOptionSymbol(position.ticker, position.expDate, position.optionType, position.strike);
+  const runDateStr = Utilities.formatDate(position.runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+  // Build Yahoo Finance API URL for historical premium data
+  const period1 = Math.floor(position.runDate.getTime() / 1000);
+  const period2 = Math.floor(position.expDate.getTime() / 1000);
+  const apiUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history`;
+
   // Build row
   const row = [
     dateStr,                                  // Date (entry date)
+    runDateStr,                               // Run_Date (from source sheet)
     position.ticker,                          // Ticker
     position.strike,                          // Strike
     position.optionType,                      // Type
@@ -530,7 +540,8 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     '',                                        // PnL_At_Low_Pct
     pnlCurrent,                                // PnL_Current
     pnlCurrentPct,                             // PnL_Current_Pct
-    daysToExp                                  // Days_To_Exp
+    daysToExp,                                 // Days_To_Exp
+    apiUrl                                     // API_URL
   ];
 
   // Check if position already exists in output sheet
@@ -561,15 +572,15 @@ function EW_findOptionsPremiumRow(outputSheet, position) {
   if (lastRow < 2) return null;
 
   try {
-    const data = outputSheet.getRange(2, 1, lastRow - 1, 5).getValues();
+    const data = outputSheet.getRange(2, 1, lastRow - 1, 6).getValues();
     const expDateStr = Utilities.formatDate(position.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
     for (let i = 0; i < data.length; i++) {
-      const ticker = String(data[i][1]);
-      const strike = parseFloat(data[i][2]);
-      const rowExpDateStr = data[i][4] instanceof Date ?
-        Utilities.formatDate(data[i][4], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
-        String(data[i][4]);
+      const ticker = String(data[i][2]);  // Ticker is now column 3 (index 2) after adding Run_Date
+      const strike = parseFloat(data[i][3]); // Strike is now column 4 (index 3)
+      const rowExpDateStr = data[i][5] instanceof Date ?  // ExpDate is now column 6 (index 5)
+        Utilities.formatDate(data[i][5], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
+        String(data[i][5]);
 
       if (ticker === position.ticker &&
           Math.abs(strike - position.strike) < 0.01 &&
