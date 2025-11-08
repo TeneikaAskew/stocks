@@ -122,6 +122,13 @@ function onOpen() {
       .addItem('Reset Continuation States', 'EW_resetContinuation')
     )
     
+    // Options Backfill submenu
+    .addSubMenu(ui.createMenu('📈 Options Backfill')
+      .addItem('Backfill Options Premium History', 'EW_backfillOptionsPremiumHistory')
+      .addItem('Backfill Selected Options', 'EW_backfillOptionsPremiumsSelected')
+      .addItem('Check Options Backfill Status', 'EW_checkOptionsPremiumBackfillStatus')
+    )
+
     // Utilities submenu
     .addSubMenu(ui.createMenu('🔧 Utilities')
       .addSubMenu(ui.createMenu('Formatting')
@@ -149,7 +156,7 @@ function onOpen() {
       .addSeparator()
       .addItem('📱 Update Menu Sheet', 'EW_updateMenuSheet')
     )
-    
+
     .addToUi();
 
   // Auto-create success report on first run
