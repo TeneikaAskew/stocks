@@ -700,6 +700,20 @@ function EW_fetchOptionPremiumHistory(optionSymbol, startDate, endDate) {
 
     const responseCode = response.getResponseCode();
 
+    if (responseCode === 401 || responseCode === 403) {
+      session = EW_getYahooQuoteSession(true);
+      const retryCrumb = session && session.crumb ? `&crumb=${encodeURIComponent(session.crumb)}` : '';
+      const retryUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history${retryCrumb}`;
+      const retryResponse = UrlFetchApp.fetch(retryUrl, {
+        muteHttpExceptions: true,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Cookie': session.cookie
+        }
+      });
+      return EW_parsePremiumHistoryResponse(optionSymbol, retryResponse);
+    }
+
     if (responseCode !== 200) {
       EW_trace('OPTIONS_PREMIUM', `History fetch failed for ${optionSymbol}: HTTP ${responseCode}`, true);
       return history;
