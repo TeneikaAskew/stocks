@@ -357,8 +357,15 @@ function EW_updateOptionsDailyData(sheet, hdrMap, position, premiumData, stockDa
       src: 'YAHOO'
     };
 
-    // Merge with existing array
-    const updatedArray = [...existingArray];
+    // Merge with existing array and backfill gaps
+    const updatedArray = EW_fillArrayToIndex(existingArray, dayIndex, () => ({
+      o: null,
+      h: null,
+      l: null,
+      c: null,
+      v: 0,
+      src: 'YAHOO'
+    }), 14);
     updatedArray[dayIndex] = newOHLCEntry;
 
     sheet.getRange(row, hdrMap.ohlcVolumeCol).setValue(JSON.stringify(updatedArray));
@@ -375,7 +382,7 @@ function EW_updateOptionsDailyData(sheet, hdrMap, position, premiumData, stockDa
     const pnlPct = (pnl / (position.entryPremium * 100)) * 100;
 
     // Store percentage gain/loss
-    const updatedArray = [...existingArray];
+    const updatedArray = EW_fillArrayToIndex(existingArray, dayIndex, '0.000000', 14);
     updatedArray[dayIndex] = pnlPct.toFixed(6);
 
     sheet.getRange(row, hdrMap.strikeHitCol).setValue(JSON.stringify(updatedArray));
@@ -391,7 +398,7 @@ function EW_updateOptionsDailyData(sheet, hdrMap, position, premiumData, stockDa
     const maxPnl = (premiumData.dayHigh - position.entryPremium) * 100;
     const maxPnlPct = (maxPnl / (position.entryPremium * 100)) * 100;
 
-    const updatedArray = [...existingArray];
+    const updatedArray = EW_fillArrayToIndex(existingArray, dayIndex, '0.000000', 14);
     updatedArray[dayIndex] = Math.max(maxPnlPct, 0).toFixed(6);
 
     sheet.getRange(row, hdrMap.maxFavorableCol).setValue(JSON.stringify(updatedArray));
@@ -407,7 +414,7 @@ function EW_updateOptionsDailyData(sheet, hdrMap, position, premiumData, stockDa
     const minPnl = (premiumData.dayLow - position.entryPremium) * 100;
     const minPnlPct = (minPnl / (position.entryPremium * 100)) * 100;
 
-    const updatedArray = [...existingArray];
+    const updatedArray = EW_fillArrayToIndex(existingArray, dayIndex, '0.000000', 14);
     updatedArray[dayIndex] = Math.min(minPnlPct, 0).toFixed(6);
 
     sheet.getRange(row, hdrMap.minUnfavorableCol).setValue(JSON.stringify(updatedArray));
