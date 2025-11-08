@@ -317,16 +317,26 @@ function EW_getExistingPositions(sheet) {
   if (lastRow < 2) return existingPositions;
 
   try {
-    // Read Ticker, Strike, ExpDate columns (cols 2, 3, 5)
-    // Check ALL positions, not just today's entries
-    const data = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
+    // Get headers and map them dynamically
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const hdrMap = EW_headerMap(headers);
+
+    // Validate required columns exist
+    if (!hdrMap.tickerCol || !hdrMap.strikeCol || !hdrMap.expDateCol) {
+      EW_trace('OPTIONS_PREMIUM', 'Missing required columns in sheet (ticker, strike, expDate)', true);
+      return existingPositions;
+    }
+
+    // Get only the columns we need
+    const numCols = Math.max(hdrMap.tickerCol, hdrMap.strikeCol, hdrMap.expDateCol);
+    const data = sheet.getRange(2, 1, lastRow - 1, numCols).getValues();
 
     for (const row of data) {
-      const ticker = String(row[1]);
-      const strike = parseFloat(row[2]);
-      const expDate = row[4] instanceof Date ?
-        Utilities.formatDate(row[4], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
-        String(row[4]);
+      const ticker = String(row[hdrMap.tickerCol - 1]);
+      const strike = parseFloat(row[hdrMap.strikeCol - 1]);
+      const expDate = row[hdrMap.expDateCol - 1] instanceof Date ?
+        Utilities.formatDate(row[hdrMap.expDateCol - 1], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
+        String(row[hdrMap.expDateCol - 1]);
 
       if (ticker && !isNaN(strike) && expDate) {
         const key = `${ticker}_${strike}_${expDate}`;
