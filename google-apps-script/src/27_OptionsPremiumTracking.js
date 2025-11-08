@@ -672,33 +672,21 @@ function EW_fetchOptionPremiumHistory(optionSymbol, startDate, endDate) {
     return history;
   }
 
-  let session = null;
+  const period1 = EW_getEasternUnixTimestamp(startDate, 9, 30, 0);
+  let period2 = EW_getEasternUnixTimestamp(endDate, 16, 30, 0);
 
-  try {
-    session = EW_getYahooQuoteSession();
-  } catch (error) {
-    EW_trace('OPTIONS_PREMIUM', `Failed to initialize Yahoo session for history: ${error.message}`, true);
+  if (period1 === null || period2 === null) {
     return history;
   }
 
-  const easternStart = new Date(startDate);
-  easternStart.setHours(9, 30, 0, 0); // 9:30 AM ET
-
-  const easternEnd = new Date(endDate);
-  easternEnd.setHours(16, 30, 0, 0); // 4:30 PM ET
-
-  let period1 = Math.floor(easternStart.getTime() / 1000);
-  let period2 = Math.floor(easternEnd.getTime() / 1000);
-
-  // Ensure the window is valid (always at least one hour)
+  // Ensure period2 is after period1; if not, extend to the following day at 4:30 PM ET
   if (period2 <= period1) {
-    easternEnd.setDate(easternEnd.getDate() + 1);
-    easternEnd.setHours(16, 30, 0, 0);
-    period2 = Math.floor(easternEnd.getTime() / 1000);
+    const adjustedEnd = new Date(endDate);
+    adjustedEnd.setDate(adjustedEnd.getDate() + 1);
+    period2 = EW_getEasternUnixTimestamp(adjustedEnd, 16, 30, 0);
   }
 
-  const crumbParam = session && session.crumb ? `&crumb=${encodeURIComponent(session.crumb)}` : '';
-  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history${crumbParam}`;
+  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history`;
 
   EW_trace('OPTIONS_PREMIUM', `Fetching daily premium history for ${optionSymbol}`, false);
 
@@ -706,8 +694,7 @@ function EW_fetchOptionPremiumHistory(optionSymbol, startDate, endDate) {
     const response = UrlFetchApp.fetch(url, {
       muteHttpExceptions: true,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Cookie': session.cookie
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
 
@@ -753,21 +740,54 @@ function EW_parsePremiumHistoryResponse(optionSymbol, response) {
     const result = data.chart.result[0];
     const timestamps = result.timestamp || [];
     const quote = result.indicators && result.indicators.quote ? result.indicators.quote[0] : null;
+    const adjCloseContainer = result.indicators && result.indicators.adjclose ? result.indicators.adjclose[0] : null;
+    const adjCloseArray = adjCloseContainer && adjCloseContainer.adjclose ? adjCloseContainer.adjclose : [];
 
     if (!quote || timestamps.length === 0) {
       return history;
     }
 
-    for (let i = 0; i < timestamps.length; i++) {
-      const close = quote.close ? quote.close[i] : null;
-      const high = quote.high ? quote.high[i] : null;
-      const low = quote.low ? quote.low[i] : null;
-      const open = quote.open ? quote.open[i] : null;
-      const volume = quote.volume ? quote.volume[i] : 0;
+    const sanitizeNumber = value => {
+      if (value === null || value === undefined || value === '') return null;
+      const num = Number(value);
+      return isNaN(num) ? null : num;
+    };
 
-      if (close === null && high === null && low === null && open === null) {
-        continue;
+    const getArrayValue = (arr, index) => {
+      if (!arr || !Array.isArray(arr) || index >= arr.length) return null;
+      return sanitizeNumber(arr[index]);
+    };
+
+    let lastClose = null;
+    let lastOpen = null;
+    let lastHigh = null;
+    let lastLow = null;
+
+    for (let i = 0; i < timestamps.length; i++) {
+      const rawClose = getArrayValue(quote.close, i);
+      const adjClose = getArrayValue(adjCloseArray, i);
+      let close = rawClose !== null ? rawClose : (adjClose !== null ? adjClose : lastClose);
+
+      if (close === null) {
+        continue; // Cannot record a candle without a close value
       }
+
+      let open = getArrayValue(quote.open, i);
+      if (open === null) {
+        open = lastOpen !== null ? lastOpen : close;
+      }
+
+      let high = getArrayValue(quote.high, i);
+      if (high === null) {
+        high = Math.max(open, close, lastHigh !== null ? lastHigh : close);
+      }
+
+      let low = getArrayValue(quote.low, i);
+      if (low === null) {
+        low = Math.min(open, close, lastLow !== null ? lastLow : close);
+      }
+
+      const volume = getArrayValue(quote.volume, i);
 
       history.push({
         date: new Date(timestamps[i] * 1000),
@@ -775,8 +795,13 @@ function EW_parsePremiumHistoryResponse(optionSymbol, response) {
         high: high,
         low: low,
         close: close,
-        volume: volume || 0
+        volume: volume !== null ? volume : 0
       });
+
+      lastClose = close;
+      lastOpen = open;
+      lastHigh = high;
+      lastLow = low;
     }
 
   } catch (error) {
