@@ -95,6 +95,26 @@ function EW_setupTriggersIfMissing() {
       console.log(`Skipped existing trigger: ${backfillFunction}`);
     }
 
+    // Check and setup daily options backfill trigger (5:30 PM)
+    // Runs 30 minutes after stock backfill to avoid conflicts
+    const optionsBackfillFunction = 'EW_backfillOptionsPremiumHistory';
+    if (!EW_triggerExists(optionsBackfillFunction)) {
+      ScriptApp.newTrigger(optionsBackfillFunction)
+        .timeBased()
+        .everyDays(1)
+        .atHour(17) // 5 PM
+        .nearMinute(30) // 5:30 PM
+        .inTimezone('America/New_York')
+        .create();
+      setupCount++;
+      messages.push(`✅ Created: Daily options backfill (5:30 PM ET)`);
+      console.log(`Created trigger: ${optionsBackfillFunction}`);
+    } else {
+      skippedCount++;
+      messages.push(`⏭️ Exists: Daily options backfill (5:30 PM ET)`);
+      console.log(`Skipped existing trigger: ${optionsBackfillFunction}`);
+    }
+
     // Check and setup daily formatting trigger (8 PM)
     const formattingFunction = 'EW_applyDailyFormatting';
     if (!EW_triggerExists(formattingFunction)) {
@@ -112,7 +132,7 @@ function EW_setupTriggersIfMissing() {
       messages.push(`⏭️ Exists: Daily formatting (8 PM ET)`);
       console.log(`Skipped existing trigger: ${formattingFunction}`);
     }
-    
+
     // Empty row removal is now handled by EW_cleanupEmptyRows() before each data fetch
     // No separate trigger needed
     
