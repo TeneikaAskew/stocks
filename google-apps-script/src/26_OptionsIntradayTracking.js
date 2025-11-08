@@ -255,7 +255,7 @@ function EW_fetchOptionsIntradayData(position) {
     // Calculate P/L from open
     const pnlFromOpen = intrinsicValue - openIntrinsicValue;
     const percentChange = openIntrinsicValue > 0 ?
-      (pnlFromOpen / openIntrinsicValue) * 100 : 0;
+      (pnlFromOpen / openIntrinsicValue) : 0;
 
     // Determine market session
     const barTime = bar.date;
@@ -327,7 +327,7 @@ function EW_writeIntradayBars(sheet, position, intradayData) {
       bar.intrinsicValue.toFixed(2),
       bar.pnlFromOpen.toFixed(2),
       cumulativePnL.toFixed(2),
-      bar.percentChange.toFixed(2),
+      Number(bar.percentChange.toFixed(6)),
       bar.volume,
       bar.session
     ]);
