@@ -224,9 +224,6 @@ function EW_setupOptionsPremiumSheet(sheet) {
 
   const headerRange = sheet.getRange(1, 1, 1, headers.length);
   headerRange.setValues([headers]);
-  headerRange.setFontWeight('bold');
-  headerRange.setBackground('#4A86E8');
-  headerRange.setFontColor('white');
 
   // Set column widths for better readability
   const widths = [
