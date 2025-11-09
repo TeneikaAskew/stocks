@@ -244,15 +244,11 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
       const premiumHistory = EW_fetchOptionPremiumHistory(optionSymbol, entryDate, endDate);
 
       if (premiumHistory && premiumHistory.length > 0) {
-        // Fetch stock OHLC data for strike hit detection
-        const stockData = EW_fetchStockOHLCForDateRange(position.ticker, entryDate, endDate);
-
         // Update or create tracking row
         EW_updateOptionsPremiumBackfillRow(
           outputSheet,
           position,
           premiumHistory,
-          stockData,
           strategyType
         );
 
@@ -356,10 +352,9 @@ function EW_needsOptionsPremiumBackfill(outputSheet, positionKey, position) {
  * @param {Sheet} outputSheet - Output sheet
  * @param {Object} position - Position info
  * @param {Array} premiumHistory - Array of historical OHLC premium data
- * @param {Array} stockHistory - Array of historical stock OHLC data
  * @param {string} strategyType - Strategy type
  */
-function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistory, stockHistory, strategyType) {
+function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistory, strategyType) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -379,20 +374,12 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   const ohlcVolumeArray = Array(MAX_TRACKING_DAYS).fill(null);
   const dayCheckValues = Array(MAX_TRACKING_DAYS).fill('');
 
-  // Build maps for easy lookup
+  // Build map for easy lookup
   const premiumMap = {};
-  const stockMap = {};
 
   for (const item of premiumHistory) {
     const key = Utilities.formatDate(new Date(item.date), tz, 'yyyy-MM-dd');
     premiumMap[key] = item;
-  }
-
-  if (stockHistory) {
-    for (const item of stockHistory) {
-      const key = Utilities.formatDate(new Date(item.date), tz, 'yyyy-MM-dd');
-      stockMap[key] = item;
-    }
   }
 
   // Get entry premium (first day's close)
@@ -400,9 +387,6 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   const entryPremium = premiumMap[entryKey] ? premiumMap[entryKey].close : position.entryPremium;
 
   let hitDate = '';
-  let stockPriceToday = '';
-  let stockHighToday = '';
-  let stockLowToday = '';
 
   // Populate arrays for each trading day since entry (skip weekends)
   let tradingDayIndex = 0;
@@ -427,7 +411,6 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
 
     const key = Utilities.formatDate(targetDate, tz, 'yyyy-MM-dd');
     const dayData = premiumMap[key];
-    const stockData = stockMap[key];
 
     if (dayData && dayData.close !== null && dayData.close !== undefined) {
       dayCheckValues[tradingDayIndex] = dayData.close;
@@ -470,13 +453,6 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
       }
     }
 
-    // Store today's stock data
-    if (targetDate.getTime() === today.getTime() && stockData) {
-      stockPriceToday = stockData.close || '';
-      stockHighToday = stockData.high || '';
-      stockLowToday = stockData.low || '';
-    }
-
     tradingDayIndex++;
   }
 
@@ -512,14 +488,22 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   const latestKey = Utilities.formatDate(today < position.expDate ? today : position.expDate, tz, 'yyyy-MM-dd');
   const latestData = premiumMap[latestKey] || {};
 
-  // Calculate current P/L
-  let pnlCurrent = '';
-  let pnlCurrentPct = '';
+  // Calculate current P/L (high and low)
+  let pnlCurrentHigh = '';
+  let pnlCurrentHighPct = '';
+  let pnlCurrentLow = '';
+  let pnlCurrentLowPct = '';
 
-  if (entryPremium && latestData.close) {
+  if (entryPremium && latestData.high && latestData.low) {
     const entryCost = entryPremium * 100;
-    pnlCurrent = (latestData.close - entryPremium) * 100;
-    pnlCurrentPct = Number((pnlCurrent / entryCost).toFixed(6));
+
+    // High P/L (best case based on latest day's high)
+    pnlCurrentHigh = (latestData.high - entryPremium) * 100;
+    pnlCurrentHighPct = Number((pnlCurrentHigh / entryCost).toFixed(6));
+
+    // Low P/L (worst case based on latest day's low)
+    pnlCurrentLow = (latestData.low - entryPremium) * 100;
+    pnlCurrentLowPct = Number((pnlCurrentLow / entryCost).toFixed(6));
   }
 
   // Calculate days to expiration
@@ -548,9 +532,6 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     position.strike,                          // Strike
     position.optionType,                      // Type
     expDateStr,                               // ExpDate
-    stockPriceToday,                          // Stock_Price
-    stockHighToday,                           // Stock_High
-    stockLowToday,                            // Stock_Low
     JSON.stringify(strikeHitArray),           // Strike_Hit array
     hitDate,                                   // Hit_Date
     JSON.stringify(maxFavorableArray),        // Max_Favorable array
@@ -559,24 +540,14 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     expResult,                                 // Exp_Result
     riskReward,                                // Risk_Reward
     JSON.stringify(ohlcVolumeArray),          // OHLC_Volume array
-    entryPremium || '',                       // Entry_Premium
-    latestData.open || '',                    // Premium_Open
-    latestData.high || '',                    // Premium_High
-    latestData.low || '',                     // Premium_Low
-    latestData.close || '',                   // Premium_Current
     latestData.bid || '',                     // Bid
     latestData.ask || '',                     // Ask
     (latestData.ask && latestData.bid) ? (latestData.ask - latestData.bid) : '', // Spread
     latestData.volume || 0,                   // Volume
-    latestData.openInterest || 0,             // Open_Interest
-    '',                                        // PnL_At_Open
-    '',                                        // PnL_At_Open_Pct
-    '',                                        // PnL_At_High
-    '',                                        // PnL_At_High_Pct
-    '',                                        // PnL_At_Low
-    '',                                        // PnL_At_Low_Pct
-    pnlCurrent,                                // PnL_Current
-    pnlCurrentPct,                             // PnL_Current_Pct
+    pnlCurrentHigh,                            // PnL_Current_High
+    pnlCurrentHighPct,                         // PnL_Current_High_Pct
+    pnlCurrentLow,                             // PnL_Current_Low
+    pnlCurrentLowPct,                          // PnL_Current_Low_Pct
     daysToExp,                                 // Days_To_Exp
     apiUrl                                     // API_URL
   ];
@@ -616,12 +587,11 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     }
 
     // Update current premium data (always overwrite with latest)
-    if (hdrMap.stockPriceCol) outputSheet.getRange(existingRowNum, hdrMap.stockPriceCol).setValue(stockPriceToday);
-    if (hdrMap.stockHighCol) outputSheet.getRange(existingRowNum, hdrMap.stockHighCol).setValue(stockHighToday);
-    if (hdrMap.stockLowCol) outputSheet.getRange(existingRowNum, hdrMap.stockLowCol).setValue(stockLowToday);
     if (hdrMap.daysToExpCol) outputSheet.getRange(existingRowNum, hdrMap.daysToExpCol).setValue(daysToExp);
-    if (hdrMap.pnlCurrentCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentCol).setValue(pnlCurrent);
-    if (hdrMap.pnlCurrentPctCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentPctCol).setValue(pnlCurrentPct);
+    if (hdrMap.pnlCurrentHighCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentHighCol).setValue(pnlCurrentHigh);
+    if (hdrMap.pnlCurrentHighPctCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentHighPctCol).setValue(pnlCurrentHighPct);
+    if (hdrMap.pnlCurrentLowCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentLowCol).setValue(pnlCurrentLow);
+    if (hdrMap.pnlCurrentLowPctCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentLowPctCol).setValue(pnlCurrentLowPct);
 
     // Update Hit_Date if we have one and existing is empty
     if (hitDate && hdrMap.hitDateCol) {
@@ -869,15 +839,11 @@ function EW_backfillOptionsPremiumsSelected() {
       const premiumHistory = EW_fetchOptionPremiumHistory(optionSymbol, entryDateNorm, endDate);
 
       if (premiumHistory && premiumHistory.length > 0) {
-        // Fetch stock history
-        const stockHistory = EW_fetchStockOHLCForDateRange(ticker, entryDateNorm, endDate);
-
         // Update row
         EW_updateOptionsPremiumBackfillRow(
           outputSheet,
           position,
           premiumHistory,
-          stockHistory,
           strategyType
         );
 
