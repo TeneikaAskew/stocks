@@ -716,20 +716,16 @@ function EW_fetchOptionPremiumHistory(optionSymbol, startDate, endDate) {
     return { history: history, apiUrl: '' };
   }
 
-  // Adjust start date forward to next Monday if it's a weekend
+  // Adjust start date forward to next trading day if it's a weekend
   const adjustedStart = new Date(startDate);
-  if (adjustedStart.getDay() === 0) { // Sunday
-    adjustedStart.setDate(adjustedStart.getDate() + 1); // Move forward to Monday
-  } else if (adjustedStart.getDay() === 6) { // Saturday
-    adjustedStart.setDate(adjustedStart.getDate() + 2); // Move forward to Monday
+  while (adjustedStart.getDay() === 0 || adjustedStart.getDay() === 6) {
+    adjustedStart.setDate(adjustedStart.getDate() + 1);
   }
 
-  // Adjust end date to previous Friday if it's a weekend
+  // Adjust end date backward to previous trading day if it's a weekend
   let adjustedEnd = new Date(endDate);
-  if (adjustedEnd.getDay() === 0) { // Sunday
-    adjustedEnd.setDate(adjustedEnd.getDate() - 2); // Go back to Friday
-  } else if (adjustedEnd.getDay() === 6) { // Saturday
-    adjustedEnd.setDate(adjustedEnd.getDate() - 1); // Go back to Friday
+  while (adjustedEnd.getDay() === 0 || adjustedEnd.getDay() === 6) {
+    adjustedEnd.setDate(adjustedEnd.getDate() - 1);
   }
 
   const period1 = EW_getEasternUnixTimestamp(adjustedStart, 9, 30, 0);
@@ -956,10 +952,8 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
   const historyCutoff = new Date(entryDate);
   historyCutoff.setDate(historyCutoff.getDate() + Math.min(daysSinceEntry, MAX_TRACKING_DAYS - 1));
 
-  // Adjust historyCutoff to previous Friday if it's a weekend
-  if (historyCutoff.getDay() === 0) { // Sunday
-    historyCutoff.setDate(historyCutoff.getDate() - 2);
-  } else if (historyCutoff.getDay() === 6) { // Saturday
+  // Adjust historyCutoff backward to previous trading day if it's a weekend
+  while (historyCutoff.getDay() === 0 || historyCutoff.getDay() === 6) {
     historyCutoff.setDate(historyCutoff.getDate() - 1);
   }
 
@@ -1024,15 +1018,24 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
   const tz = Session.getScriptTimeZone();
   const lastDayIndex = Math.min(daysSinceEntry, MAX_TRACKING_DAYS - 1);
 
-  for (let dayOffset = 0; dayOffset <= lastDayIndex; dayOffset++) {
-    const targetDate = new Date(entryDate);
-    targetDate.setDate(entryDate.getDate() + dayOffset);
-    targetDate.setHours(0, 0, 0, 0);
-    const key = Utilities.formatDate(targetDate, tz, 'yyyy-MM-dd');
+  // Iterate through TRADING DAYS only (skip weekends)
+  let targetDate = new Date(entryDate);
+  targetDate.setHours(0, 0, 0, 0);
+  let tradingDayIndex = 0;
 
+  while (tradingDayIndex <= lastDayIndex) {
+    // Skip weekends - move to next day without processing
+    if (targetDate.getDay() === 0 || targetDate.getDay() === 6) {
+      targetDate.setDate(targetDate.getDate() + 1);
+      continue;
+    }
+
+    const key = Utilities.formatDate(targetDate, tz, 'yyyy-MM-dd');
     let dayData = null;
 
-    if (dayOffset === daysSinceEntry) {
+    // Check if this is today (use current premium data)
+    const isToday = (targetDate.getTime() === today.getTime());
+    if (isToday) {
       dayData = {
         open: premiumData.dayOpen || null,
         high: premiumData.dayHigh || null,
@@ -1045,7 +1048,7 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
     }
 
     if (dayData && dayData.close !== null && dayData.close !== undefined) {
-      dayCheckValues[dayOffset] = dayData.close;
+      dayCheckValues[tradingDayIndex] = dayData.close;
     }
 
     const ohlcEntry = {
@@ -1057,26 +1060,30 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
       src: 'YAHOO'
     };
 
-    ohlcVolumeArray[dayOffset] = ohlcEntry;
+    ohlcVolumeArray[tradingDayIndex] = ohlcEntry;
 
     if (position.entryPremium && dayData && dayData.close !== null && dayData.close !== undefined) {
       const entryCost = position.entryPremium * 100;
       const pnl = (dayData.close - position.entryPremium) * 100;
       const pnlPct = pnl / entryCost;
-      strikeHitArray[dayOffset] = pnlPct.toFixed(6);
+      strikeHitArray[tradingDayIndex] = pnlPct.toFixed(6);
 
       if (dayData.high !== null && dayData.high !== undefined) {
         const maxPnl = (dayData.high - position.entryPremium) * 100;
         const maxPct = maxPnl / entryCost;
-        maxFavorableArray[dayOffset] = Math.max(maxPct, 0).toFixed(6);
+        maxFavorableArray[tradingDayIndex] = Math.max(maxPct, 0).toFixed(6);
       }
 
       if (dayData.low !== null && dayData.low !== undefined) {
         const minPnl = (dayData.low - position.entryPremium) * 100;
         const minPct = minPnl / entryCost;
-        minUnfavorableArray[dayOffset] = Math.min(minPct, 0).toFixed(6);
+        minUnfavorableArray[tradingDayIndex] = Math.min(minPct, 0).toFixed(6);
       }
     }
+
+    // Move to next calendar day and increment trading day counter
+    tradingDayIndex++;
+    targetDate.setDate(targetDate.getDate() + 1);
   }
 
   // Default any uninitialized OHLC entries up to tracking window
