@@ -676,12 +676,54 @@ function EW_findOptionsPremiumRow(outputSheet, position) {
  * @param {number} rowNum - Row number to format
  */
 function EW_formatOptionsPremiumRow(sheet, rowNum) {
-  // Format numbers
-  sheet.getRange(rowNum, 6, 1, 3).setNumberFormat('$#,##0.00');    // Stock Price, High, Low
-  sheet.getRange(rowNum, 13, 1, 14).setNumberFormat('$#,##0.00');  // Day0-13 Check
-  sheet.getRange(rowNum, 30, 1, 5).setNumberFormat('$#,##0.00');   // Entry, Open, High, Low, Current
-  sheet.getRange(rowNum, 35, 1, 3).setNumberFormat('$#,##0.00');   // Bid, Ask, Spread
-  sheet.getRange(rowNum, 47, 1, 1).setNumberFormat('0.00%');       // PnL_Current_Pct
+  // Format row data to match column types
+  // Date columns (Date, Run_Date, ExpDate) - columns 1, 2, 6
+  sheet.getRange(rowNum, 1).setNumberFormat('yyyy-mm-dd');
+  sheet.getRange(rowNum, 2).setNumberFormat('yyyy-mm-dd');
+  sheet.getRange(rowNum, 6).setNumberFormat('yyyy-mm-dd');
+
+  // Text columns (Ticker, Type) - columns 3, 5
+  sheet.getRange(rowNum, 3).setNumberFormat('@');
+  sheet.getRange(rowNum, 5).setNumberFormat('@');
+
+  // Number (Strike) - column 4
+  sheet.getRange(rowNum, 4).setNumberFormat('0.00');
+
+  // JSON arrays (Strike_Hit, Max_Favorable, Min_Unfavorable, OHLC_Volume) - columns 7, 9, 10, 27
+  sheet.getRange(rowNum, 7).setNumberFormat('@');
+  sheet.getRange(rowNum, 9).setNumberFormat('@');
+  sheet.getRange(rowNum, 10).setNumberFormat('@');
+  sheet.getRange(rowNum, 27).setNumberFormat('@');
+
+  // Hit_Date - column 8
+  sheet.getRange(rowNum, 8).setNumberFormat('0');
+
+  // Day Check columns (Day0-Day13) - columns 11-24
+  sheet.getRange(rowNum, 11, 1, 14).setNumberFormat('0.00');
+
+  // Result columns (Exp_Result, Risk_Reward) - columns 25, 26
+  sheet.getRange(rowNum, 25).setNumberFormat('@');
+  sheet.getRange(rowNum, 26).setNumberFormat('0.00');
+
+  // Premium data (Bid, Ask, Spread) - columns 28, 29, 30
+  sheet.getRange(rowNum, 28, 1, 3).setNumberFormat('0.00');
+
+  // Volume - column 31
+  sheet.getRange(rowNum, 31).setNumberFormat('0');
+
+  // P/L dollar amounts - columns 32, 34
+  sheet.getRange(rowNum, 32).setNumberFormat('0.00');
+  sheet.getRange(rowNum, 34).setNumberFormat('0.00');
+
+  // P/L percentages - columns 33, 35
+  sheet.getRange(rowNum, 33).setNumberFormat('0.00%');
+  sheet.getRange(rowNum, 35).setNumberFormat('0.00%');
+
+  // Days to expiration - column 36
+  sheet.getRange(rowNum, 36).setNumberFormat('0');
+
+  // API URL - column 37
+  sheet.getRange(rowNum, 37).setNumberFormat('@');
 }
 
 /**
