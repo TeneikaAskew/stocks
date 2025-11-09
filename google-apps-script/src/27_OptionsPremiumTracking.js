@@ -175,11 +175,6 @@ function EW_setupOptionsPremiumSheet(sheet) {
     'Type',
     'ExpDate',
 
-    // Stock Movement
-    'Stock_Price',
-    'Stock_High',
-    'Stock_Low',
-
     // Strike Hit Tracking
     'Strike_Hit',
     'Hit_Date',
@@ -209,27 +204,17 @@ function EW_setupOptionsPremiumSheet(sheet) {
     // Options OHLC and Volume
     'OHLC_Volume',
 
-    // Entry Premium and Current Data
-    'Entry_Premium',
-    'Premium_Open',
-    'Premium_High',
-    'Premium_Low',
-    'Premium_Current',
+    // Real-time Current Data
     'Bid',
     'Ask',
     'Spread',
     'Volume',
-    'Open_Interest',
 
-    // P/L Analysis
-    'PnL_At_Open',
-    'PnL_At_Open_Pct',
-    'PnL_At_High',
-    'PnL_At_High_Pct',
-    'PnL_At_Low',
-    'PnL_At_Low_Pct',
-    'PnL_Current',
-    'PnL_Current_Pct',
+    // P/L Analysis (based on latest day's high/low)
+    'PnL_Current_High',
+    'PnL_Current_High_Pct',
+    'PnL_Current_Low',
+    'PnL_Current_Low_Pct',
 
     'Days_To_Exp',
 
@@ -251,9 +236,6 @@ function EW_setupOptionsPremiumSheet(sheet) {
     70,   // Strike
     60,   // Type
     100,  // ExpDate
-    90,   // Stock_Price
-    90,   // Stock_High
-    90,   // Stock_Low
     120,  // Strike_Hit (array)
     80,   // Hit_Date
     120,  // Max_Favorable (array)
@@ -275,24 +257,14 @@ function EW_setupOptionsPremiumSheet(sheet) {
     90,   // Exp_Result
     90,   // Risk_Reward
     200,  // OHLC_Volume (JSON)
-    90,   // Entry_Premium
-    90,   // Premium_Open
-    90,   // Premium_High
-    90,   // Premium_Low
-    90,   // Premium_Current
     80,   // Bid
     80,   // Ask
     80,   // Spread
     80,   // Volume
-    100,  // Open_Interest
-    100,  // PnL_At_Open
-    100,  // PnL_At_Open_Pct
-    100,  // PnL_At_High
-    100,  // PnL_At_High_Pct
-    100,  // PnL_At_Low
-    100,  // PnL_At_Low_Pct
-    100,  // PnL_Current
-    100,  // PnL_Current_Pct
+    100,  // PnL_Current_High
+    100,  // PnL_Current_High_Pct
+    100,  // PnL_Current_Low
+    100,  // PnL_Current_Low_Pct
     90,   // Days_To_Exp
     400   // API_URL
   ];
