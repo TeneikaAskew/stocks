@@ -716,12 +716,12 @@ function EW_fetchOptionPremiumHistory(optionSymbol, startDate, endDate) {
     return { history: history, apiUrl: '' };
   }
 
-  // Adjust start date to previous Friday if it's a weekend
+  // Adjust start date forward to next Monday if it's a weekend
   const adjustedStart = new Date(startDate);
   if (adjustedStart.getDay() === 0) { // Sunday
-    adjustedStart.setDate(adjustedStart.getDate() - 2); // Go back to Friday
+    adjustedStart.setDate(adjustedStart.getDate() + 1); // Move forward to Monday
   } else if (adjustedStart.getDay() === 6) { // Saturday
-    adjustedStart.setDate(adjustedStart.getDate() - 1); // Go back to Friday
+    adjustedStart.setDate(adjustedStart.getDate() + 2); // Move forward to Monday
   }
 
   // Adjust end date to previous Friday if it's a weekend
