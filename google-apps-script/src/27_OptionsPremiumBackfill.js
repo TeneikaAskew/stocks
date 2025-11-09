@@ -386,9 +386,13 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     premiumMap[key] = item;
   }
 
+  EW_trace('OPTIONS_BACKFILL', `Premium history for ${position.ticker}: ${premiumHistory.length} days, keys: ${Object.keys(premiumMap).join(', ')}`, false);
+
   // Get entry premium (first day's close)
   const entryKey = Utilities.formatDate(entryDate, tz, 'yyyy-MM-dd');
   const entryPremium = premiumMap[entryKey] ? premiumMap[entryKey].close : position.entryPremium;
+
+  EW_trace('OPTIONS_BACKFILL', `Looking for entry key: ${entryKey}, found: ${premiumMap[entryKey] ? 'yes' : 'no'}, entryPremium: ${entryPremium}`, false);
 
   let hitDate = '';
 

@@ -787,8 +787,11 @@ function EW_parsePremiumHistoryResponse(optionSymbol, response) {
     const adjCloseArray = adjCloseContainer && adjCloseContainer.adjclose ? adjCloseContainer.adjclose : [];
 
     if (!quote || timestamps.length === 0) {
+      EW_trace('OPTIONS_PREMIUM', `No timestamps or quote data for ${optionSymbol}`, false);
       return history;
     }
+
+    EW_trace('OPTIONS_PREMIUM', `Parsing ${timestamps.length} data points for ${optionSymbol}`, false);
 
     const sanitizeNumber = value => {
       if (value === null || value === undefined || value === '') return null;
