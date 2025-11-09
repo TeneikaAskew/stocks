@@ -703,35 +703,58 @@ function EW_fetchOptionPremiumsBatch(positions) {
 /**
  * Fetch historical daily premiums for an option symbol using Yahoo Finance chart API
  * Ensures the request uses the daily interval with 9:30 AM / 4:30 PM Eastern bounds
+ * IMPORTANT: Skips weekends since market is closed
  * @param {string} optionSymbol - Yahoo option symbol (e.g., ROKU251107C00060000)
  * @param {Date} startDate - Inclusive start date
  * @param {Date} endDate - Inclusive end date
- * @returns {Array<Object>} Array of OHLC data ordered by day
+ * @returns {Object} Object with history array and API URL string
  */
 function EW_fetchOptionPremiumHistory(optionSymbol, startDate, endDate) {
   const history = [];
 
   if (!optionSymbol || !startDate || !endDate) {
-    return history;
+    return { history: history, apiUrl: '' };
   }
 
-  const period1 = EW_getEasternUnixTimestamp(startDate, 9, 30, 0);
-  let period2 = EW_getEasternUnixTimestamp(endDate, 16, 30, 0);
+  // Adjust start date to previous Friday if it's a weekend
+  const adjustedStart = new Date(startDate);
+  if (adjustedStart.getDay() === 0) { // Sunday
+    adjustedStart.setDate(adjustedStart.getDate() - 2); // Go back to Friday
+  } else if (adjustedStart.getDay() === 6) { // Saturday
+    adjustedStart.setDate(adjustedStart.getDate() - 1); // Go back to Friday
+  }
+
+  // Adjust end date to previous Friday if it's a weekend
+  let adjustedEnd = new Date(endDate);
+  if (adjustedEnd.getDay() === 0) { // Sunday
+    adjustedEnd.setDate(adjustedEnd.getDate() - 2); // Go back to Friday
+  } else if (adjustedEnd.getDay() === 6) { // Saturday
+    adjustedEnd.setDate(adjustedEnd.getDate() - 1); // Go back to Friday
+  }
+
+  const period1 = EW_getEasternUnixTimestamp(adjustedStart, 9, 30, 0);
+  let period2 = EW_getEasternUnixTimestamp(adjustedEnd, 16, 30, 0);
 
   if (period1 === null || period2 === null) {
-    return history;
+    return { history: history, apiUrl: '' };
   }
 
-  // Ensure period2 is after period1; if not, extend to the following day at 4:30 PM ET
+  // Ensure period2 is after period1; if not, extend to the next trading day at 4:30 PM ET
   if (period2 <= period1) {
-    const adjustedEnd = new Date(endDate);
+    adjustedEnd = new Date(adjustedEnd);
     adjustedEnd.setDate(adjustedEnd.getDate() + 1);
+    // Skip to next Monday if we land on weekend
+    if (adjustedEnd.getDay() === 0) { // Sunday
+      adjustedEnd.setDate(adjustedEnd.getDate() + 1); // Monday
+    } else if (adjustedEnd.getDay() === 6) { // Saturday
+      adjustedEnd.setDate(adjustedEnd.getDate() + 2); // Monday
+    }
     period2 = EW_getEasternUnixTimestamp(adjustedEnd, 16, 30, 0);
   }
 
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history`;
 
-  EW_trace('OPTIONS_PREMIUM', `Fetching daily premium history for ${optionSymbol}`, false);
+  EW_trace('OPTIONS_PREMIUM', `Fetching daily premium history for ${optionSymbol} from ${Utilities.formatDate(adjustedStart, Session.getScriptTimeZone(), 'yyyy-MM-dd')} to ${Utilities.formatDate(adjustedEnd, Session.getScriptTimeZone(), 'yyyy-MM-dd')}`, false);
 
   try {
     const response = UrlFetchApp.fetch(url, {
@@ -754,19 +777,21 @@ function EW_fetchOptionPremiumHistory(optionSymbol, startDate, endDate) {
           'Cookie': session.cookie
         }
       });
-      return EW_parsePremiumHistoryResponse(optionSymbol, retryResponse);
+      const parsedHistory = EW_parsePremiumHistoryResponse(optionSymbol, retryResponse);
+      return { history: parsedHistory, apiUrl: retryUrl };
     }
 
     if (responseCode !== 200) {
       EW_trace('OPTIONS_PREMIUM', `History fetch failed for ${optionSymbol}: HTTP ${responseCode}`, true);
-      return history;
+      return { history: history, apiUrl: url };
     }
 
-    return EW_parsePremiumHistoryResponse(optionSymbol, response);
+    const parsedHistory = EW_parsePremiumHistoryResponse(optionSymbol, response);
+    return { history: parsedHistory, apiUrl: url };
 
   } catch (error) {
     EW_trace('OPTIONS_PREMIUM', `History fetch error for ${optionSymbol}: ${error.message}`, true);
-    return history;
+    return { history: history, apiUrl: url };
   }
 }
 
@@ -927,16 +952,28 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
 
   // Fetch historical premiums for backfilling earlier days
   let premiumHistoryMap = {};
+  let apiUrl = '';
   const historyCutoff = new Date(entryDate);
   historyCutoff.setDate(historyCutoff.getDate() + Math.min(daysSinceEntry, MAX_TRACKING_DAYS - 1));
 
+  // Adjust historyCutoff to previous Friday if it's a weekend
+  if (historyCutoff.getDay() === 0) { // Sunday
+    historyCutoff.setDate(historyCutoff.getDate() - 2);
+  } else if (historyCutoff.getDay() === 6) { // Saturday
+    historyCutoff.setDate(historyCutoff.getDate() - 1);
+  }
+
   if (daysSinceEntry > 0) {
-    const history = EW_fetchOptionPremiumHistory(optionSymbol, entryDate, historyCutoff);
+    const historyResult = EW_fetchOptionPremiumHistory(optionSymbol, entryDate, historyCutoff);
+    const history = historyResult.history || [];
+    apiUrl = historyResult.apiUrl || '';
     const tz = Session.getScriptTimeZone();
     for (const item of history) {
       const key = Utilities.formatDate(new Date(item.date), tz, 'yyyy-MM-dd');
       premiumHistoryMap[key] = item;
     }
+
+    EW_trace('OPTIONS_PREMIUM', `Fetched ${history.length} historical data points for ${optionSymbol}`, false);
   }
 
   // Calculate spread
@@ -1061,42 +1098,36 @@ function EW_writeOptionPremiumRow(sheet, position, premiumData, stockData, strik
     }
   }
 
+  // Format today's date for the Date column
+  const todayStr = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
   const row = [
-    dateStr,                                  // Entry date (runDate, not today!)
+    todayStr,                                  // Date (today's date - when script runs)
+    dateStr,                                   // Run_Date (entry date from position.runDate)
     position.ticker,
     position.strike,
     position.optionType,
     expDateStr,
-    stockData ? stockData.price || '' : '',
-    stockData ? stockData.dayHigh || '' : '',
-    stockData ? stockData.dayLow || '' : '',
-    JSON.stringify(strikeHitArray),           // Strike_Hit array
-    hitDate,                                   // Hit_Date (day number if profitable)
+    JSON.stringify(strikeHitArray),           // Bid_Hit_Pct/Strike_Hit array
+    hitDate,                                   // First_Hit_Date/Hit_Date (day number if profitable)
+    '',                                        // Bid_Hit_Days (placeholder)
+    '',                                        // Ask_Hit_Days (placeholder)
     JSON.stringify(maxFavorableArray),        // Max_Favorable array
     JSON.stringify(minUnfavorableArray),      // Min_Unfavorable array
-    ...dayCheckValues,                         // Day0-13 Check columns (only correct day populated)
+    ...dayCheckValues,                         // Day0-13 Check columns
     '',                                        // Exp_Result (empty initially)
     '',                                        // Risk_Reward (empty initially)
     JSON.stringify(ohlcVolumeArray),          // OHLC_Volume array
-    position.entryPremium || '',              // Entry_Premium
-    premiumData.dayOpen || '',                // Premium_Open
-    premiumData.dayHigh || '',                // Premium_High
-    premiumData.dayLow || '',                 // Premium_Low
-    premiumData.price || '',                  // Premium_Current
     premiumData.bid || '',                    // Bid
     premiumData.ask || '',                    // Ask
     spread !== null ? spread : '',            // Spread
     premiumData.volume || 0,                  // Volume
-    premiumData.openInterest || 0,            // Open_Interest
-    pnlAtOpen !== null ? pnlAtOpen : '',      // PnL_At_Open
-    pnlAtOpenPct !== null ? Number(pnlAtOpenPct.toFixed(6)) : '',// PnL_At_Open_Pct
-    pnlAtHigh !== null ? pnlAtHigh : '',      // PnL_At_High
-    pnlAtHighPct !== null ? Number(pnlAtHighPct.toFixed(6)) : '',// PnL_At_High_Pct
-    pnlAtLow !== null ? pnlAtLow : '',        // PnL_At_Low
-    pnlAtLowPct !== null ? Number(pnlAtLowPct.toFixed(6)) : '',  // PnL_At_Low_Pct
-    pnlCurrent !== null ? pnlCurrent : '',    // PnL_Current
-    pnlCurrentPct !== null ? Number(pnlCurrentPct.toFixed(6)) : '',// PnL_Current_Pct
-    daysToExp                                  // Days_To_Exp
+    pnlAtHigh !== null ? pnlAtHigh : '',      // PnL_High
+    pnlAtHighPct !== null ? Number(pnlAtHighPct.toFixed(6)) : '',// PnL_High_Pct
+    pnlAtLow !== null ? pnlAtLow : '',        // PnL_Low
+    pnlAtLowPct !== null ? Number(pnlAtLowPct.toFixed(6)) : '',  // PnL_Low_Pct
+    daysToExp,                                 // Days_To_Exp
+    apiUrl                                     // API_URL
   ];
 
   // Append row
