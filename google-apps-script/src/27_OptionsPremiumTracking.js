@@ -270,12 +270,63 @@ function EW_setupOptionsPremiumSheet(sheet) {
     sheet.setColumnWidth(i + 1, widths[i]);
   }
 
-  // Format date columns (Date, Run_Date, ExpDate)
-  // Date is column 1, Run_Date is column 2, ExpDate is column 6
+  // Format columns with proper data types to prevent auto-detection issues
+  const maxRows = sheet.getMaxRows() - 1; // Exclude header row
+
+  // Date columns (Date, Run_Date, ExpDate) - columns 1, 2, 6
   const dateColumns = [1, 2, 6];
   dateColumns.forEach(col => {
-    sheet.getRange(2, col, sheet.getMaxRows() - 1, 1).setNumberFormat('yyyy-mm-dd');
+    sheet.getRange(2, col, maxRows, 1).setNumberFormat('yyyy-mm-dd');
   });
+
+  // Text columns (Ticker, Type) - columns 3, 5
+  const textColumns = [3, 5];
+  textColumns.forEach(col => {
+    sheet.getRange(2, col, maxRows, 1).setNumberFormat('@'); // @ = text format
+  });
+
+  // Number columns (Strike) - column 4
+  sheet.getRange(2, 4, maxRows, 1).setNumberFormat('0.00');
+
+  // JSON array columns (Strike_Hit, Max_Favorable, Min_Unfavorable, OHLC_Volume) - columns 7, 9, 10, 23
+  const jsonColumns = [7, 9, 10, 23];
+  jsonColumns.forEach(col => {
+    sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
+  });
+
+  // Number/date columns (Hit_Date) - column 8
+  sheet.getRange(2, 8, maxRows, 1).setNumberFormat('0');
+
+  // Day Check columns (Day0-Day13) - columns 11-24
+  for (let col = 11; col <= 24; col++) {
+    sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
+  }
+
+  // Result columns (Exp_Result, Risk_Reward) - columns 25, 26
+  sheet.getRange(2, 25, maxRows, 1).setNumberFormat('@');
+  sheet.getRange(2, 26, maxRows, 1).setNumberFormat('0.00');
+
+  // Premium data columns (Bid, Ask, Spread) - columns 28, 29, 30
+  for (let col = 28; col <= 30; col++) {
+    sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
+  }
+
+  // Volume - column 31
+  sheet.getRange(2, 31, maxRows, 1).setNumberFormat('0');
+
+  // P/L dollar amounts (PnL_Current_High, PnL_Current_Low) - columns 32, 34
+  sheet.getRange(2, 32, maxRows, 1).setNumberFormat('0.00');
+  sheet.getRange(2, 34, maxRows, 1).setNumberFormat('0.00');
+
+  // P/L percentages (PnL_Current_High_Pct, PnL_Current_Low_Pct) - columns 33, 35
+  sheet.getRange(2, 33, maxRows, 1).setNumberFormat('0.00%');
+  sheet.getRange(2, 35, maxRows, 1).setNumberFormat('0.00%');
+
+  // Days to expiration - column 36
+  sheet.getRange(2, 36, maxRows, 1).setNumberFormat('0');
+
+  // API URL - column 37
+  sheet.getRange(2, 37, maxRows, 1).setNumberFormat('@');
 
   // Freeze header row
   sheet.setFrozenRows(1);
