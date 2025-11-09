@@ -361,8 +361,12 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   const entryDate = new Date(position.runDate);
   entryDate.setHours(0, 0, 0, 0);
 
-  const dateStr = Utilities.formatDate(entryDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-  const expDateStr = Utilities.formatDate(position.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const expDate = new Date(position.expDate);
+  expDate.setHours(0, 0, 0, 0);
+
+  const runDate = new Date(position.runDate);
+  runDate.setHours(0, 0, 0, 0);
+
   const tz = Session.getScriptTimeZone();
 
   const MAX_TRACKING_DAYS = 14;
@@ -511,7 +515,6 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
 
   // Build option symbol for API URL
   const optionSymbol = EW_buildOptionSymbol(position.ticker, position.expDate, position.optionType, position.strike);
-  const runDateStr = Utilities.formatDate(position.runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
   // Build Yahoo Finance API URL for historical premium data
   // Use the same date range logic as the actual fetch (runDate to earlier of today/expiration)
@@ -524,14 +527,14 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   const period2 = Math.floor(apiEndDate.getTime() / 1000);
   const apiUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history`;
 
-  // Build row
+  // Build row - use Date objects for date columns so they display correctly
   const row = [
-    dateStr,                                  // Date (entry date)
-    runDateStr,                               // Run_Date (from source sheet)
+    entryDate,                                // Date (entry date) - Date object
+    runDate,                                  // Run_Date (from source sheet) - Date object
     position.ticker,                          // Ticker
     position.strike,                          // Strike
     position.optionType,                      // Type
-    expDateStr,                               // ExpDate
+    expDate,                                  // ExpDate - Date object
     JSON.stringify(strikeHitArray),           // Strike_Hit array
     hitDate,                                   // Hit_Date
     JSON.stringify(maxFavorableArray),        // Max_Favorable array
