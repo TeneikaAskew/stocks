@@ -686,10 +686,11 @@ function EW_findOptionsPremiumRow(outputSheet, position) {
       return null;
     }
 
-    // Get only the columns we need for matching
-    const numCols = Math.max(hdrMap.tickerCol, hdrMap.strikeCol, hdrMap.expDateCol);
+    // Get only the columns we need for matching (including runDate)
+    const numCols = Math.max(hdrMap.tickerCol, hdrMap.strikeCol, hdrMap.expDateCol, hdrMap.runDateCol || 0);
     const data = outputSheet.getRange(2, 1, lastRow - 1, numCols).getValues();
     const expDateStr = Utilities.formatDate(position.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const posRunDateStr = Utilities.formatDate(position.runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
     for (let i = 0; i < data.length; i++) {
       const ticker = String(data[i][hdrMap.tickerCol - 1]);
@@ -698,9 +699,16 @@ function EW_findOptionsPremiumRow(outputSheet, position) {
         Utilities.formatDate(data[i][hdrMap.expDateCol - 1], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
         String(data[i][hdrMap.expDateCol - 1]);
 
+      // Also check runDate to match the exact position
+      const rowRunDate = hdrMap.runDateCol ? data[i][hdrMap.runDateCol - 1] : null;
+      const rowRunDateStr = rowRunDate instanceof Date ?
+        Utilities.formatDate(rowRunDate, Session.getScriptTimeZone(), 'yyyy-MM-dd') :
+        (rowRunDate ? String(rowRunDate) : '');
+
       if (ticker === position.ticker &&
           Math.abs(strike - position.strike) < 0.01 &&
-          rowExpDateStr === expDateStr) {
+          rowExpDateStr === expDateStr &&
+          rowRunDateStr === posRunDateStr) {
         return i + 2; // Row number (data starts at row 2)
       }
     }
