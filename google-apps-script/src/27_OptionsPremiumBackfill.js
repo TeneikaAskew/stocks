@@ -1,6 +1,9 @@
 /**
- * Options Premium Historical Backfill
+ * Options Premium Historical Backfill - STANDALONE VERSION
  * Mirrors 09_HistoricalBackfill.js pattern but for OPTIONS premium data
+ *
+ * This file is SELF-CONTAINED with all necessary dependencies migrated from 27_OptionsPremiumTracking.js
+ * to make the backfill script independent and not rely on the premium tracking functions.
  *
  * Uses ACTUAL Yahoo Finance premium data (NOT intrinsic values)
  * Follows exact same pattern as stock backfill:
@@ -162,7 +165,9 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
 
   // Filter to positions that need backfilling
   const positionsToBackfill = positions.filter(pos => {
-    const key = `${pos.ticker}_${pos.strike}_${Utilities.formatDate(pos.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd')}`;
+    // Include runDate in key so each scan date gets its own tracking row
+    const runDateStr = Utilities.formatDate(pos.runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const key = `${pos.ticker}_${pos.strike}_${Utilities.formatDate(pos.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd')}_${runDateStr}`;
     const exists = existingPositions.has(key);
 
     if (!exists) {
@@ -241,6 +246,7 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
       }
 
       // Fetch historical premium data
+      // Weekend adjustment happens inside EW_fetchOptionPremiumHistory
       const premiumHistory = EW_fetchOptionPremiumHistory(optionSymbol, entryDate, endDate);
 
       if (premiumHistory && premiumHistory.length > 0) {
@@ -308,6 +314,7 @@ function EW_needsOptionsPremiumBackfill(outputSheet, positionKey, position) {
     // Get all data
     const data = outputSheet.getRange(2, 1, lastRow - 1, outputSheet.getLastColumn()).getValues();
     const expDateStr = Utilities.formatDate(position.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const posRunDateStr = Utilities.formatDate(position.runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
     for (const row of data) {
       const ticker = String(row[hdrMap.tickerCol - 1]);
@@ -316,9 +323,16 @@ function EW_needsOptionsPremiumBackfill(outputSheet, positionKey, position) {
         Utilities.formatDate(row[hdrMap.expDateCol - 1], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
         String(row[hdrMap.expDateCol - 1]);
 
+      // Also check runDate to match the exact position
+      const rowRunDate = hdrMap.runDateCol ? row[hdrMap.runDateCol - 1] : null;
+      const rowRunDateStr = rowRunDate instanceof Date ?
+        Utilities.formatDate(rowRunDate, Session.getScriptTimeZone(), 'yyyy-MM-dd') :
+        (rowRunDate ? String(rowRunDate) : '');
+
       if (ticker === position.ticker &&
           Math.abs(strike - position.strike) < 0.01 &&
-          rowExpDateStr === expDateStr) {
+          rowExpDateStr === expDateStr &&
+          rowRunDateStr === posRunDateStr) {
 
         // Position exists - check if it needs updating
         // Always update if not expired yet (to get new daily data)
@@ -400,25 +414,43 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   let tradingDayIndex = 0;
   let calendarDayOffset = 0;
 
+  // EW_trace('OPTIONS_BACKFILL', `Starting day iteration for ${position.ticker}:`, false);
+  // EW_trace('OPTIONS_BACKFILL', `  entryDate: ${Utilities.formatDate(entryDate, tz, 'yyyy-MM-dd')} (${entryDate.getTime()})`, false);
+  // EW_trace('OPTIONS_BACKFILL', `  today: ${Utilities.formatDate(today, tz, 'yyyy-MM-dd')} (${today.getTime()})`, false);
+  // EW_trace('OPTIONS_BACKFILL', `  expDate: ${Utilities.formatDate(position.expDate, tz, 'yyyy-MM-dd')} (${position.expDate.getTime()})`, false);
+
   while (tradingDayIndex < MAX_TRACKING_DAYS) {
     const targetDate = new Date(entryDate);
     targetDate.setDate(entryDate.getDate() + calendarDayOffset);
     targetDate.setHours(0, 0, 0, 0);
     calendarDayOffset++;
 
+    // Log first 5 iterations
+    // if (calendarDayOffset <= 5) {
+    //   EW_trace('OPTIONS_BACKFILL', `  Iteration ${calendarDayOffset}: targetDate=${Utilities.formatDate(targetDate, tz, 'yyyy-MM-dd')}, dow=${targetDate.getDay()}, tradingDay=${tradingDayIndex}`, false);
+    // }
+
     // Stop if we're past today or expiration
     if (targetDate > today || targetDate > position.expDate) {
+      // EW_trace('OPTIONS_BACKFILL', `  BREAK: targetDate ${Utilities.formatDate(targetDate, tz, 'yyyy-MM-dd')} > today ${Utilities.formatDate(today, tz, 'yyyy-MM-dd')} OR > expDate ${Utilities.formatDate(position.expDate, tz, 'yyyy-MM-dd')}`, false);
       break;
     }
 
     // Skip weekends
     const dayOfWeek = targetDate.getDay();
     if (dayOfWeek === 0 || dayOfWeek === 6) {
+      // if (calendarDayOffset <= 5) {
+      //   EW_trace('OPTIONS_BACKFILL', `  SKIP WEEKEND: ${Utilities.formatDate(targetDate, tz, 'yyyy-MM-dd')}`, false);
+      // }
       continue;
     }
 
     const key = Utilities.formatDate(targetDate, tz, 'yyyy-MM-dd');
     const dayData = premiumMap[key];
+
+    // if (calendarDayOffset <= 5) {
+    //   EW_trace('OPTIONS_BACKFILL', `  Looking for key: ${key}, found: ${dayData ? 'YES' : 'NO'}, tradingDayIndex=${tradingDayIndex}`, false);
+    // }
 
     if (dayData && dayData.close !== null && dayData.close !== undefined) {
       dayCheckValues[tradingDayIndex] = dayData.close;
@@ -533,8 +565,8 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
 
   // Build row - use Date objects for date columns so they display correctly
   const row = [
-    entryDate,                                // Date (entry date) - Date object
-    runDate,                                  // Run_Date (from source sheet) - Date object
+    today,                                    // Date (today - when script runs) - Date object
+    runDate,                                  // Run_Date (entry date from source sheet) - Date object
     position.ticker,                          // Ticker
     position.strike,                          // Strike
     position.optionType,                      // Type
@@ -950,4 +982,668 @@ function EW_checkOptionsPremiumBackfillStatus() {
 
   Logger.log(msg);
   return msg;
+}
+
+// ========================================
+// MIGRATED DEPENDENCIES FROM 27_OptionsPremiumTracking.js
+// These functions are needed by the backfill script to work independently
+// ========================================
+
+/**
+ * Read positions from source sheet (FOR BACKFILL - includes expired positions)
+ * Migrated from 27_OptionsPremiumTracking.js with modification to include expired positions
+ * @param {Sheet} sheet - Source sheet
+ * @param {string} strategyType - Strategy type (BULLISH, BEARISH, NEUTRAL)
+ * @returns {Array} Array of position objects (newest first)
+ */
+function EW_readOptionsPositions(sheet, strategyType) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = {};
+
+  // Build header map
+  for (let i = 0; i < headers.length; i++) {
+    const header = String(headers[i]).toLowerCase().trim().replace(/\s+/g, '');
+    if (header === 'ticker') hdrMap.ticker = i;
+    if (header === 'strike') hdrMap.strike = i;
+    if (header === 'expdate' || header === 'expiration') hdrMap.expDate = i;
+    if (header === 'rundate' || header === 'entrydate' || header === 'scandate') hdrMap.runDate = i;
+    if (header === 'entry_premium' || header === 'entrypremium' || header === 'bid' || header === 'ask') {
+      // Use bid or ask as entry premium if available
+      if (header === 'bid' && hdrMap.entryPremium === undefined) hdrMap.entryPremium = i;
+      if (header === 'entry_premium' || header === 'entrypremium') hdrMap.entryPremium = i;
+    }
+  }
+
+  // Validate required columns
+  if (hdrMap.ticker === undefined || hdrMap.strike === undefined || hdrMap.expDate === undefined) {
+    EW_trace('OPTIONS_BACKFILL', 'Missing required columns (ticker, strike, expDate)', true);
+    return [];
+  }
+
+  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  const positions = [];
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // Process rows in REVERSE order (bottom to top = newest first)
+  for (let i = data.length - 1; i >= 0; i--) {
+    const row = data[i];
+
+    const ticker = row[hdrMap.ticker];
+    const strike = parseFloat(row[hdrMap.strike]);
+    const expDate = new Date(row[hdrMap.expDate]);
+    const runDate = hdrMap.runDate !== undefined ? new Date(row[hdrMap.runDate]) : null;
+    const entryPremium = hdrMap.entryPremium !== undefined ? parseFloat(row[hdrMap.entryPremium]) : null;
+
+    // Skip if missing data
+    if (!ticker || isNaN(strike) || !expDate) continue;
+
+    // FOR BACKFILL: Include expired positions (unlike the tracking version)
+    // if (expDate < today) continue;  // <-- COMMENTED OUT FOR BACKFILL
+
+    // Filter out weekend runDates - skip positions from Saturday/Sunday scans
+    if (runDate) {
+      runDate.setHours(0, 0, 0, 0);
+      const dayOfWeek = runDate.getDay();
+      // const runDateStr = Utilities.formatDate(runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd (EEE)');
+
+      if (dayOfWeek === 0 || dayOfWeek === 6) {
+        // Skip weekend entries - they cause API errors
+        // EW_trace('OPTIONS_BACKFILL', `FILTERED OUT weekend runDate: ${ticker} ${runDateStr}`, false);
+        continue;
+      }
+
+      // EW_trace('OPTIONS_BACKFILL', `ACCEPTED runDate: ${ticker} ${runDateStr}`, false);
+
+      // Uncomment to only process today's scans:
+      // if (runDate.getTime() !== today.getTime()) continue;
+    }
+
+    // Determine option type based on strategy
+    let optionType = 'C'; // Default to Call
+    if (strategyType === 'BEARISH') {
+      optionType = 'P'; // Put for bearish strategies
+    }
+
+    positions.push({
+      ticker: ticker,
+      strike: strike,
+      expDate: expDate,
+      runDate: runDate || today,  // Use runDate from sheet, fallback to today
+      optionType: optionType,
+      entryPremium: entryPremium,
+      rowNum: i + 2,
+      strategyType: strategyType
+    });
+  }
+
+  return positions;
+}
+
+/**
+ * Get existing positions from output sheet (to avoid duplicates)
+ * Migrated from 27_OptionsPremiumTracking.js
+ * @param {Sheet} sheet - Output sheet
+ * @returns {Set} Set of position keys (ticker_strike_expDate_runDate)
+ */
+function EW_getExistingPositions(sheet) {
+  const existingPositions = new Set();
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return existingPositions;
+
+  try {
+    // Get headers and map them dynamically
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const hdrMap = EW_headerMap(headers);
+
+    // Validate required columns exist
+    if (!hdrMap.tickerCol || !hdrMap.strikeCol || !hdrMap.expDateCol) {
+      EW_trace('OPTIONS_BACKFILL', 'Missing required columns in sheet (ticker, strike, expDate)', true);
+      return existingPositions;
+    }
+
+    // Get only the columns we need (including Run_Date)
+    const numCols = Math.max(hdrMap.tickerCol, hdrMap.strikeCol, hdrMap.expDateCol, hdrMap.runDateCol || 0);
+    const data = sheet.getRange(2, 1, lastRow - 1, numCols).getValues();
+
+    for (const row of data) {
+      const ticker = String(row[hdrMap.tickerCol - 1]);
+      const strike = parseFloat(row[hdrMap.strikeCol - 1]);
+      const expDate = row[hdrMap.expDateCol - 1] instanceof Date ?
+        Utilities.formatDate(row[hdrMap.expDateCol - 1], Session.getScriptTimeZone(), 'yyyy-MM-dd') :
+        String(row[hdrMap.expDateCol - 1]);
+
+      // Include runDate in key to distinguish positions scanned on different dates
+      const runDate = hdrMap.runDateCol ? row[hdrMap.runDateCol - 1] : null;
+      const runDateStr = runDate instanceof Date ?
+        Utilities.formatDate(runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd') :
+        (runDate ? String(runDate) : '');
+
+      if (ticker && !isNaN(strike) && expDate) {
+        const key = `${ticker}_${strike}_${expDate}_${runDateStr}`;
+        existingPositions.add(key);
+      }
+    }
+
+    if (existingPositions.size > 0) {
+      EW_trace('OPTIONS_BACKFILL', `Found ${existingPositions.size} existing positions in tracking sheet`, false);
+    }
+
+  } catch (error) {
+    EW_trace('OPTIONS_BACKFILL', `Error reading existing positions: ${error.message}`, false);
+  }
+
+  return existingPositions;
+}
+
+/**
+ * Setup output sheet with premium tracking columns
+ * Migrated from 27_OptionsPremiumTracking.js
+ * @param {Sheet} sheet - The output sheet
+ */
+function EW_setupOptionsPremiumSheet(sheet) {
+  const headers = [
+    // Basic Info
+    'Date',
+    'Run_Date',
+    'Ticker',
+    'Strike',
+    'Type',
+    'ExpDate',
+
+    // Strike Hit Tracking
+    'Strike_Hit',
+    'Hit_Date',
+    'Max_Favorable',
+    'Min_Unfavorable',
+
+    // Daily Check Values (premium at close each day)
+    'Day0_Check',
+    'Day1_Check',
+    'Day2_Check',
+    'Day3_Check',
+    'Day4_Check',
+    'Day5_Check',
+    'Day6_Check',
+    'Day7_Check',
+    'Day8_Check',
+    'Day9_Check',
+    'Day10_Check',
+    'Day11_Check',
+    'Day12_Check',
+    'Day13_Check',
+
+    // Expiration Results
+    'Exp_Result',
+    'Risk_Reward',
+
+    // Options OHLC and Volume
+    'OHLC_Volume',
+
+    // Real-time Current Data
+    'Bid',
+    'Ask',
+    'Spread',
+    'Volume',
+
+    // P/L Analysis (based on latest day's high/low)
+    'PnL_Current_High',
+    'PnL_Current_High_Pct',
+    'PnL_Current_Low',
+    'PnL_Current_Low_Pct',
+
+    'Days_To_Exp',
+
+    // API Metadata
+    'API_URL'
+  ];
+
+  const headerRange = sheet.getRange(1, 1, 1, headers.length);
+  headerRange.setValues([headers]);
+
+  // Set column widths for better readability
+  const widths = [
+    100,  // Date
+    100,  // Run_Date
+    80,   // Ticker
+    70,   // Strike
+    60,   // Type
+    100,  // ExpDate
+    120,  // Strike_Hit (array)
+    80,   // Hit_Date
+    120,  // Max_Favorable (array)
+    120,  // Min_Unfavorable (array)
+    90,   // Day0_Check
+    90,   // Day1_Check
+    90,   // Day2_Check
+    90,   // Day3_Check
+    90,   // Day4_Check
+    90,   // Day5_Check
+    90,   // Day6_Check
+    90,   // Day7_Check
+    90,   // Day8_Check
+    90,   // Day9_Check
+    90,   // Day10_Check
+    90,   // Day11_Check
+    90,   // Day12_Check
+    90,   // Day13_Check
+    90,   // Exp_Result
+    90,   // Risk_Reward
+    200,  // OHLC_Volume (JSON)
+    80,   // Bid
+    80,   // Ask
+    80,   // Spread
+    80,   // Volume
+    100,  // PnL_Current_High
+    100,  // PnL_Current_High_Pct
+    100,  // PnL_Current_Low
+    100,  // PnL_Current_Low_Pct
+    90,   // Days_To_Exp
+    400   // API_URL
+  ];
+
+  for (let i = 0; i < widths.length; i++) {
+    sheet.setColumnWidth(i + 1, widths[i]);
+  }
+
+  // Format columns with proper data types
+  const maxRows = sheet.getMaxRows() - 1;
+
+  // Date columns (Date, Run_Date, ExpDate)
+  const dateColumns = [1, 2, 6];
+  dateColumns.forEach(col => {
+    sheet.getRange(2, col, maxRows, 1).setNumberFormat('yyyy-mm-dd');
+  });
+
+  // Text columns (Ticker, Type)
+  const textColumns = [3, 5];
+  textColumns.forEach(col => {
+    sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
+  });
+
+  // Number columns (Strike)
+  sheet.getRange(2, 4, maxRows, 1).setNumberFormat('0.00');
+
+  // JSON array columns (Strike_Hit, Max_Favorable, Min_Unfavorable, OHLC_Volume)
+  const jsonColumns = [7, 9, 10, 27];
+  jsonColumns.forEach(col => {
+    sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
+  });
+
+  // Hit_Date
+  sheet.getRange(2, 8, maxRows, 1).setNumberFormat('0');
+
+  // Day Check columns (Day0-Day13)
+  for (let col = 11; col <= 24; col++) {
+    sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
+  }
+
+  // Result columns
+  sheet.getRange(2, 25, maxRows, 1).setNumberFormat('@');
+  sheet.getRange(2, 26, maxRows, 1).setNumberFormat('0.00');
+
+  // Premium data columns
+  for (let col = 28; col <= 30; col++) {
+    sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
+  }
+
+  // Volume
+  sheet.getRange(2, 31, maxRows, 1).setNumberFormat('0');
+
+  // P/L dollar amounts
+  sheet.getRange(2, 32, maxRows, 1).setNumberFormat('0.00');
+  sheet.getRange(2, 34, maxRows, 1).setNumberFormat('0.00');
+
+  // P/L percentages
+  sheet.getRange(2, 33, maxRows, 1).setNumberFormat('0.00%');
+  sheet.getRange(2, 35, maxRows, 1).setNumberFormat('0.00%');
+
+  // Days to expiration
+  sheet.getRange(2, 36, maxRows, 1).setNumberFormat('0');
+
+  // API URL
+  sheet.getRange(2, 37, maxRows, 1).setNumberFormat('@');
+
+  // Freeze header row
+  sheet.setFrozenRows(1);
+}
+
+/**
+ * Build Yahoo Finance option symbol
+ * Migrated from 27_OptionsPremiumTracking.js
+ * Format: TICKER + YYMMDD + C/P + 8-digit strike
+ * Example: ROKU251107C00060000 (ROKU Nov 7 2025 $60 Call)
+ *
+ * @param {string} ticker - Underlying ticker
+ * @param {Date} expDate - Expiration date
+ * @param {string} optionType - 'C' for call, 'P' for put
+ * @param {number} strike - Strike price
+ * @returns {string} Yahoo option symbol
+ */
+function EW_buildOptionSymbol(ticker, expDate, optionType, strike) {
+  // Year (2 digits)
+  const year = String(expDate.getFullYear()).slice(-2);
+
+  // Month (2 digits, padded)
+  const month = String(expDate.getMonth() + 1).padStart(2, '0');
+
+  // Day (2 digits, padded)
+  const day = String(expDate.getDate()).padStart(2, '0');
+
+  // Strike price (8 digits: 5 before decimal, 3 after)
+  const strikePadded = String(Math.round(strike * 1000)).padStart(8, '0');
+
+  // Combine
+  const symbol = `${ticker}${year}${month}${day}${optionType}${strikePadded}`;
+
+  return symbol;
+}
+
+/**
+ * Fetch historical daily premiums for an option symbol using Yahoo Finance chart API
+ * Migrated from 27_OptionsPremiumTracking.js
+ * @param {string} optionSymbol - Yahoo option symbol
+ * @param {Date} startDate - Inclusive start date
+ * @param {Date} endDate - Inclusive end date
+ * @returns {Array<Object>} Array of OHLC data ordered by day
+ */
+function EW_fetchOptionPremiumHistory(optionSymbol, startDate, endDate) {
+  const history = [];
+
+  if (!optionSymbol || !startDate || !endDate) {
+    return history;
+  }
+
+  // Adjust start date forward to next trading day (Monday) if it's a weekend
+  const adjustedStart = new Date(startDate);
+  while (adjustedStart.getDay() === 0 || adjustedStart.getDay() === 6) {
+    adjustedStart.setDate(adjustedStart.getDate() + 1);
+  }
+
+  // Adjust end date backward to previous trading day (Friday) if it's a weekend
+  let adjustedEnd = new Date(endDate);
+  while (adjustedEnd.getDay() === 0 || adjustedEnd.getDay() === 6) {
+    adjustedEnd.setDate(adjustedEnd.getDate() - 1);
+  }
+
+  const period1 = EW_getEasternUnixTimestamp(adjustedStart, 9, 30, 0);
+  let period2 = EW_getEasternUnixTimestamp(adjustedEnd, 16, 30, 0);
+
+  // Debug: log the adjusted dates
+  const tz = Session.getScriptTimeZone();
+  EW_trace('OPTIONS_BACKFILL', `  After weekend adjustment: ${Utilities.formatDate(adjustedStart, tz, 'yyyy-MM-dd')} to ${Utilities.formatDate(adjustedEnd, tz, 'yyyy-MM-dd')}`, false);
+  EW_trace('OPTIONS_BACKFILL', `  adjustedEnd day of week: ${adjustedEnd.getDay()} (0=Sun, 6=Sat)`, false);
+
+  if (period1 === null || period2 === null) {
+    return history;
+  }
+
+  // Ensure period2 is after period1; if not, extend to the next trading day at 4:30 PM ET
+  if (period2 <= period1) {
+    adjustedEnd = new Date(adjustedEnd);
+    adjustedEnd.setDate(adjustedEnd.getDate() + 1);
+    // Skip weekends using while loop
+    while (adjustedEnd.getDay() === 0 || adjustedEnd.getDay() === 6) {
+      adjustedEnd.setDate(adjustedEnd.getDate() + 1);
+    }
+    period2 = EW_getEasternUnixTimestamp(adjustedEnd, 16, 30, 0);
+  }
+
+  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history`;
+
+  // Log detailed date information
+  const startDateStr = Utilities.formatDate(adjustedStart, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const endDateStr = Utilities.formatDate(adjustedEnd, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  EW_trace('OPTIONS_BACKFILL', `Fetching ${optionSymbol} from ${startDateStr} to ${endDateStr}`, false);
+  EW_trace('OPTIONS_BACKFILL', `  Original dates: ${Utilities.formatDate(startDate, Session.getScriptTimeZone(), 'yyyy-MM-dd')} to ${Utilities.formatDate(endDate, Session.getScriptTimeZone(), 'yyyy-MM-dd')}`, false);
+  EW_trace('OPTIONS_BACKFILL', `  Unix timestamps: period1=${period1}, period2=${period2}`, false);
+  EW_trace('OPTIONS_BACKFILL', `  API URL: ${url}`, false);
+
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+
+    const responseCode = response.getResponseCode();
+    EW_trace('OPTIONS_BACKFILL', `  Response code: ${responseCode}`, false);
+
+    if (responseCode === 401 || responseCode === 403) {
+      // Retry with session
+      const session = EW_getYahooQuoteSession(true);
+      const retryCrumb = session && session.crumb ? `&crumb=${encodeURIComponent(session.crumb)}` : '';
+      const retryUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history${retryCrumb}`;
+      const retryResponse = UrlFetchApp.fetch(retryUrl, {
+        muteHttpExceptions: true,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Cookie': session.cookie
+        }
+      });
+      return EW_parsePremiumHistoryResponse(optionSymbol, retryResponse);
+    }
+
+    if (responseCode !== 200) {
+      const responseText = response.getContentText().substring(0, 500); // First 500 chars
+      EW_trace('OPTIONS_BACKFILL', `History fetch failed for ${optionSymbol}: HTTP ${responseCode}`, true);
+      EW_trace('OPTIONS_BACKFILL', `  Response body: ${responseText}`, false);
+      return history;
+    }
+
+    return EW_parsePremiumHistoryResponse(optionSymbol, response);
+
+  } catch (error) {
+    EW_trace('OPTIONS_BACKFILL', `History fetch error for ${optionSymbol}: ${error.message}`, true);
+    return history;
+  }
+}
+
+/**
+ * Parse premium history response from Yahoo Finance
+ * Migrated from 27_OptionsPremiumTracking.js
+ */
+function EW_parsePremiumHistoryResponse(optionSymbol, response) {
+  const history = [];
+
+  try {
+    const data = JSON.parse(response.getContentText());
+
+    if (!data.chart || !data.chart.result || data.chart.result.length === 0) {
+      return history;
+    }
+
+    const result = data.chart.result[0];
+    const timestamps = result.timestamp || [];
+    const quote = result.indicators && result.indicators.quote ? result.indicators.quote[0] : null;
+    const adjCloseContainer = result.indicators && result.indicators.adjclose ? result.indicators.adjclose[0] : null;
+    const adjCloseArray = adjCloseContainer && adjCloseContainer.adjclose ? adjCloseContainer.adjclose : [];
+
+    if (!quote || timestamps.length === 0) {
+      EW_trace('OPTIONS_BACKFILL', `No timestamps or quote data for ${optionSymbol}`, false);
+      return history;
+    }
+
+    EW_trace('OPTIONS_BACKFILL', `Parsing ${timestamps.length} data points for ${optionSymbol}`, false);
+
+    // Log the dates we received from Yahoo
+    const tz = Session.getScriptTimeZone();
+    for (let i = 0; i < Math.min(timestamps.length, 5); i++) {
+      const date = new Date(timestamps[i] * 1000);
+      EW_trace('OPTIONS_BACKFILL', `  Yahoo data point ${i}: ${Utilities.formatDate(date, tz, 'yyyy-MM-dd HH:mm:ss')}`, false);
+    }
+
+    const sanitizeNumber = value => {
+      if (value === null || value === undefined || value === '') return null;
+      const num = Number(value);
+      return isNaN(num) ? null : num;
+    };
+
+    const getArrayValue = (arr, index) => {
+      if (!arr || !Array.isArray(arr) || index >= arr.length) return null;
+      return sanitizeNumber(arr[index]);
+    };
+
+    let lastClose = null;
+    let lastOpen = null;
+    let lastHigh = null;
+    let lastLow = null;
+
+    for (let i = 0; i < timestamps.length; i++) {
+      const rawClose = getArrayValue(quote.close, i);
+      const adjClose = getArrayValue(adjCloseArray, i);
+      let close = rawClose !== null ? rawClose : (adjClose !== null ? adjClose : lastClose);
+
+      if (close === null) {
+        continue;
+      }
+
+      let open = getArrayValue(quote.open, i);
+      if (open === null) {
+        open = lastOpen !== null ? lastOpen : close;
+      }
+
+      let high = getArrayValue(quote.high, i);
+      if (high === null) {
+        high = Math.max(open, close, lastHigh !== null ? lastHigh : close);
+      }
+
+      let low = getArrayValue(quote.low, i);
+      if (low === null) {
+        low = Math.min(open, close, lastLow !== null ? lastLow : close);
+      }
+
+      const volume = getArrayValue(quote.volume, i);
+
+      history.push({
+        date: new Date(timestamps[i] * 1000),
+        open: open,
+        high: high,
+        low: low,
+        close: close,
+        volume: volume !== null ? volume : 0
+      });
+
+      lastClose = close;
+      lastOpen = open;
+      lastHigh = high;
+      lastLow = low;
+    }
+
+  } catch (error) {
+    EW_trace('OPTIONS_BACKFILL', `Failed to parse history for ${optionSymbol}: ${error.message}`, true);
+  }
+
+  return history;
+}
+
+/**
+ * Get Yahoo Finance quote session (cookies + crumb)
+ * Migrated from 27_OptionsPremiumTracking.js
+ */
+function EW_getYahooQuoteSession(forceRefresh = false) {
+  const cache = (typeof CacheService !== 'undefined') ? CacheService.getScriptCache() : null;
+  const cacheKey = 'EW_YAHOO_QUOTE_SESSION';
+
+  if (!forceRefresh && cache) {
+    const cachedSession = cache.get(cacheKey);
+    if (cachedSession) {
+      try {
+        const parsed = JSON.parse(cachedSession);
+        if (parsed && parsed.crumb && parsed.cookie) {
+          return parsed;
+        }
+      } catch (error) {
+        // Ignore parse errors and refresh session
+      }
+    }
+  }
+
+  const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+
+  // Step 1: Get cookies
+  const cookieResponse = UrlFetchApp.fetch('https://fc.yahoo.com', {
+    muteHttpExceptions: true,
+    followRedirects: false,
+    headers: {
+      'User-Agent': userAgent
+    }
+  });
+
+  const cookieHeaders = cookieResponse.getAllHeaders();
+  let initialCookie = EW_extractYahooCookie(cookieHeaders['Set-Cookie'] || cookieHeaders['set-cookie']);
+
+  if (!initialCookie) {
+    throw new Error(`Failed to obtain Yahoo Finance cookie: HTTP ${cookieResponse.getResponseCode()}`);
+  }
+
+  // Step 2: Get crumb
+  const crumbEndpoints = [
+    'https://query1.finance.yahoo.com/v1/test/getcrumb',
+    'https://query2.finance.yahoo.com/v1/test/getcrumb'
+  ];
+
+  let crumb = '';
+  let lastStatus = null;
+
+  for (let i = 0; i < crumbEndpoints.length && !crumb; i++) {
+    const endpoint = crumbEndpoints[i];
+    const response = UrlFetchApp.fetch(endpoint, {
+      muteHttpExceptions: true,
+      followRedirects: false,
+      headers: {
+        'User-Agent': userAgent,
+        'Cookie': initialCookie
+      }
+    });
+
+    lastStatus = response.getResponseCode();
+
+    if (lastStatus === 200) {
+      const responseCrumb = response.getContentText().trim();
+      if (responseCrumb) {
+        crumb = responseCrumb;
+        const crumbCookie = EW_extractYahooCookie(response.getAllHeaders()['Set-Cookie'] || response.getAllHeaders()['set-cookie']);
+        if (crumbCookie) {
+          initialCookie = [initialCookie, crumbCookie].filter(Boolean).join('; ');
+        }
+      }
+    }
+  }
+
+  if (!crumb) {
+    throw new Error(`Failed to obtain Yahoo Finance crumb: HTTP ${lastStatus}`);
+  }
+
+  const session = { crumb: crumb, cookie: initialCookie };
+
+  if (cache) {
+    try {
+      cache.put(cacheKey, JSON.stringify(session), 60 * 55);
+    } catch (error) {
+      // Ignore cache write errors
+    }
+  }
+
+  return session;
+}
+
+/**
+ * Extract Yahoo cookies from Set-Cookie header
+ * Migrated from 27_OptionsPremiumTracking.js
+ */
+function EW_extractYahooCookie(setCookieHeader) {
+  if (!setCookieHeader) return '';
+
+  const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+  const parsed = cookies
+    .map(cookie => (cookie || '').split(';')[0])
+    .filter(Boolean);
+
+  return parsed.join('; ');
 }
