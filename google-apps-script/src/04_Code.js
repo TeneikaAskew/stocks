@@ -838,7 +838,7 @@ function EW_headerMap(headerRow) {
 
   // Common aliases for upstream data
   const tickerCol   = find(['ticker','symbol','sym','underlying','root']);
-  const runDateCol  = find(['Run Date','run date','rundate','dateadded','RunDate','RUNDATE']);
+  const runDateCol  = find(['Run_Date','Run Date','run_date','run date','rundate','dateadded','RunDate','RUNDATE']);
   // (add more if needed: expiration/strike/etc for dedupe later)
 
   // GF/derived columns we ourselves add — locate by exact labels or normalized
