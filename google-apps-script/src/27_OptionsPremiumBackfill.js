@@ -524,37 +524,23 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     }
   }
 
-  // Get latest premium data for current columns
-  const latestKey = Utilities.formatDate(today < position.expDate ? today : position.expDate, tz, 'yyyy-MM-dd');
-  const latestData = premiumMap[latestKey] || {};
-
   // Calculate current P/L (high and low)
-  // Use bid/ask from source sheet if available, otherwise fall back to historical OHLC
+  // Only use bid/ask from source sheet - no fallback to historical OHLC
   let pnlCurrentHigh = '';
   let pnlCurrentHighPct = '';
   let pnlCurrentLow = '';
   let pnlCurrentLowPct = '';
 
-  if (entryPremium) {
+  if (entryPremium && position.ask && position.bid) {
     const entryCost = entryPremium * 100;
 
-    // Prefer bid/ask from source sheet (most current market data)
-    if (position.ask && position.bid) {
-      // High P/L uses ask (what you could sell for)
-      pnlCurrentHigh = (position.ask - entryPremium) * 100;
-      pnlCurrentHighPct = Number((pnlCurrentHigh / entryCost).toFixed(6));
+    // High P/L uses ask (what you could sell for)
+    pnlCurrentHigh = (position.ask - entryPremium) * 100;
+    pnlCurrentHighPct = Number((pnlCurrentHigh / entryCost).toFixed(6));
 
-      // Low P/L uses bid (worst case exit price)
-      pnlCurrentLow = (position.bid - entryPremium) * 100;
-      pnlCurrentLowPct = Number((pnlCurrentLow / entryCost).toFixed(6));
-    } else if (latestData.high && latestData.low) {
-      // Fallback to historical OHLC data if bid/ask not available
-      pnlCurrentHigh = (latestData.high - entryPremium) * 100;
-      pnlCurrentHighPct = Number((pnlCurrentHigh / entryCost).toFixed(6));
-
-      pnlCurrentLow = (latestData.low - entryPremium) * 100;
-      pnlCurrentLowPct = Number((pnlCurrentLow / entryCost).toFixed(6));
-    }
+    // Low P/L uses bid (worst case exit price)
+    pnlCurrentLow = (position.bid - entryPremium) * 100;
+    pnlCurrentLowPct = Number((pnlCurrentLow / entryCost).toFixed(6));
   }
 
   // Calculate days to expiration
