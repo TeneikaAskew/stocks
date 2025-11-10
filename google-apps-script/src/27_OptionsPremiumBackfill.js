@@ -571,8 +571,10 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     position.strike,                          // Strike
     position.optionType,                      // Type
     expDate,                                  // ExpDate - Date object
-    JSON.stringify(strikeHitArray),           // Strike_Hit array
-    hitDate,                                   // Hit_Date
+    JSON.stringify(strikeHitArray),           // Bid_Hit_Pct array
+    hitDate,                                   // First_Hit_Date
+    '',                                        // Bid_Hit_Days (placeholder)
+    '',                                        // Ask_Hit_Days (placeholder)
     JSON.stringify(maxFavorableArray),        // Max_Favorable array
     JSON.stringify(minUnfavorableArray),      // Min_Unfavorable array
     ...dayCheckValues,                         // Day0-Day13 Check columns
@@ -583,10 +585,10 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     latestData.ask || '',                     // Ask
     (latestData.ask && latestData.bid) ? (latestData.ask - latestData.bid) : '', // Spread
     latestData.volume || 0,                   // Volume
-    pnlCurrentHigh,                            // PnL_Current_High
-    pnlCurrentHighPct,                         // PnL_Current_High_Pct
-    pnlCurrentLow,                             // PnL_Current_Low
-    pnlCurrentLowPct,                          // PnL_Current_Low_Pct
+    pnlCurrentHigh,                            // PnL_High
+    pnlCurrentHighPct,                         // PnL_High_Pct
+    pnlCurrentLow,                             // PnL_Low
+    pnlCurrentLowPct,                          // PnL_Low_Pct
     daysToExp,                                 // Days_To_Exp
     apiUrl                                     // API_URL
   ];
@@ -1156,8 +1158,10 @@ function EW_setupOptionsPremiumSheet(sheet) {
     'ExpDate',
 
     // Strike Hit Tracking
-    'Strike_Hit',
-    'Hit_Date',
+    'Bid_Hit_Pct',
+    'First_Hit_Date',
+    'Bid_Hit_Days',
+    'Ask_Hit_Days',
     'Max_Favorable',
     'Min_Unfavorable',
 
@@ -1191,10 +1195,10 @@ function EW_setupOptionsPremiumSheet(sheet) {
     'Volume',
 
     // P/L Analysis (based on latest day's high/low)
-    'PnL_Current_High',
-    'PnL_Current_High_Pct',
-    'PnL_Current_Low',
-    'PnL_Current_Low_Pct',
+    'PnL_High',
+    'PnL_High_Pct',
+    'PnL_Low',
+    'PnL_Low_Pct',
 
     'Days_To_Exp',
 
@@ -1213,8 +1217,10 @@ function EW_setupOptionsPremiumSheet(sheet) {
     70,   // Strike
     60,   // Type
     100,  // ExpDate
-    120,  // Strike_Hit (array)
-    80,   // Hit_Date
+    120,  // Bid_Hit_Pct (array)
+    80,   // First_Hit_Date
+    120,  // Bid_Hit_Days (array)
+    120,  // Ask_Hit_Days (array)
     120,  // Max_Favorable (array)
     120,  // Min_Unfavorable (array)
     90,   // Day0_Check
@@ -1238,10 +1244,10 @@ function EW_setupOptionsPremiumSheet(sheet) {
     80,   // Ask
     80,   // Spread
     80,   // Volume
-    100,  // PnL_Current_High
-    100,  // PnL_Current_High_Pct
-    100,  // PnL_Current_Low
-    100,  // PnL_Current_Low_Pct
+    100,  // PnL_High
+    100,  // PnL_High_Pct
+    100,  // PnL_Low
+    100,  // PnL_Low_Pct
     90,   // Days_To_Exp
     400   // API_URL
   ];
@@ -1250,63 +1256,93 @@ function EW_setupOptionsPremiumSheet(sheet) {
     sheet.setColumnWidth(i + 1, widths[i]);
   }
 
-  // Format columns with proper data types
+  // Format columns with proper data types - use header positions instead of hardcoded indexes
   const maxRows = sheet.getMaxRows() - 1;
 
-  // Date columns (Date, Run_Date, ExpDate)
-  const dateColumns = [1, 2, 6];
-  dateColumns.forEach(col => {
-    sheet.getRange(2, col, maxRows, 1).setNumberFormat('yyyy-mm-dd');
+  // Get column indexes from headers
+  const dateCol = headers.indexOf('Date') + 1;
+  const runDateCol = headers.indexOf('Run_Date') + 1;
+  const tickerCol = headers.indexOf('Ticker') + 1;
+  const strikeCol = headers.indexOf('Strike') + 1;
+  const typeCol = headers.indexOf('Type') + 1;
+  const expDateCol = headers.indexOf('ExpDate') + 1;
+  const bidHitPctCol = headers.indexOf('Bid_Hit_Pct') + 1;
+  const firstHitDateCol = headers.indexOf('First_Hit_Date') + 1;
+  const bidHitDaysCol = headers.indexOf('Bid_Hit_Days') + 1;
+  const askHitDaysCol = headers.indexOf('Ask_Hit_Days') + 1;
+  const maxFavCol = headers.indexOf('Max_Favorable') + 1;
+  const minUnfavCol = headers.indexOf('Min_Unfavorable') + 1;
+  const day0Col = headers.indexOf('Day0_Check') + 1;
+  const day13Col = headers.indexOf('Day13_Check') + 1;
+  const expResultCol = headers.indexOf('Exp_Result') + 1;
+  const riskRewardCol = headers.indexOf('Risk_Reward') + 1;
+  const ohlcCol = headers.indexOf('OHLC_Volume') + 1;
+  const bidCol = headers.indexOf('Bid') + 1;
+  const askCol = headers.indexOf('Ask') + 1;
+  const spreadCol = headers.indexOf('Spread') + 1;
+  const volumeCol = headers.indexOf('Volume') + 1;
+  const pnlHighCol = headers.indexOf('PnL_High') + 1;
+  const pnlHighPctCol = headers.indexOf('PnL_High_Pct') + 1;
+  const pnlLowCol = headers.indexOf('PnL_Low') + 1;
+  const pnlLowPctCol = headers.indexOf('PnL_Low_Pct') + 1;
+  const daysToExpCol = headers.indexOf('Days_To_Exp') + 1;
+  const apiUrlCol = headers.indexOf('API_URL') + 1;
+
+  // Date columns
+  [dateCol, runDateCol, expDateCol].forEach(col => {
+    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('yyyy-mm-dd');
   });
 
-  // Text columns (Ticker, Type)
-  const textColumns = [3, 5];
-  textColumns.forEach(col => {
-    sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
+  // Text columns
+  [tickerCol, typeCol].forEach(col => {
+    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
   });
 
-  // Number columns (Strike)
-  sheet.getRange(2, 4, maxRows, 1).setNumberFormat('0.00');
+  // Number columns
+  if (strikeCol > 0) sheet.getRange(2, strikeCol, maxRows, 1).setNumberFormat('0.00');
 
-  // JSON array columns (Strike_Hit, Max_Favorable, Min_Unfavorable, OHLC_Volume)
-  const jsonColumns = [7, 9, 10, 27];
-  jsonColumns.forEach(col => {
-    sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
+  // JSON array columns
+  [bidHitPctCol, bidHitDaysCol, askHitDaysCol, maxFavCol, minUnfavCol, ohlcCol].forEach(col => {
+    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
   });
 
-  // Hit_Date
-  sheet.getRange(2, 8, maxRows, 1).setNumberFormat('0');
+  // First_Hit_Date
+  if (firstHitDateCol > 0) sheet.getRange(2, firstHitDateCol, maxRows, 1).setNumberFormat('0');
 
   // Day Check columns (Day0-Day13)
-  for (let col = 11; col <= 24; col++) {
-    sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
+  if (day0Col > 0 && day13Col > 0) {
+    for (let col = day0Col; col <= day13Col; col++) {
+      sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
+    }
   }
 
   // Result columns
-  sheet.getRange(2, 25, maxRows, 1).setNumberFormat('@');
-  sheet.getRange(2, 26, maxRows, 1).setNumberFormat('0.00');
+  if (expResultCol > 0) sheet.getRange(2, expResultCol, maxRows, 1).setNumberFormat('@');
+  if (riskRewardCol > 0) sheet.getRange(2, riskRewardCol, maxRows, 1).setNumberFormat('0.00');
 
   // Premium data columns
-  for (let col = 28; col <= 30; col++) {
-    sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
-  }
+  [bidCol, askCol, spreadCol].forEach(col => {
+    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
+  });
 
   // Volume
-  sheet.getRange(2, 31, maxRows, 1).setNumberFormat('0');
+  if (volumeCol > 0) sheet.getRange(2, volumeCol, maxRows, 1).setNumberFormat('0');
 
   // P/L dollar amounts
-  sheet.getRange(2, 32, maxRows, 1).setNumberFormat('0.00');
-  sheet.getRange(2, 34, maxRows, 1).setNumberFormat('0.00');
+  [pnlHighCol, pnlLowCol].forEach(col => {
+    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
+  });
 
   // P/L percentages
-  sheet.getRange(2, 33, maxRows, 1).setNumberFormat('0.00%');
-  sheet.getRange(2, 35, maxRows, 1).setNumberFormat('0.00%');
+  [pnlHighPctCol, pnlLowPctCol].forEach(col => {
+    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00%');
+  });
 
   // Days to expiration
-  sheet.getRange(2, 36, maxRows, 1).setNumberFormat('0');
+  if (daysToExpCol > 0) sheet.getRange(2, daysToExpCol, maxRows, 1).setNumberFormat('0');
 
   // API URL
-  sheet.getRange(2, 37, maxRows, 1).setNumberFormat('@');
+  if (apiUrlCol > 0) sheet.getRange(2, apiUrlCol, maxRows, 1).setNumberFormat('@');
 
   // Freeze header row
   sheet.setFrozenRows(1);
