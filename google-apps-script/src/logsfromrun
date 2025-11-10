@@ -1,4 +1,166 @@
- Summary
+ Function Call Trace for EW_backfillOptionsPremiumHistory
+When you run EW_backfillOptionsPremiumHistory(), here's the complete execution flow with all functions that get called:
+Main Entry Point
+📍 27_OptionsPremiumBackfill.js:17
+EW_backfillOptionsPremiumHistory()
+Level 1: Core Orchestration Functions
+EW_getBackfillState('OPTIONS_BACKFILL_STATE')
+📍 14_ExecutionContinuation.js
+Retrieves saved execution state from previous runs
+Checks if continuation is needed
+EW_trace()
+📍 02_HelperFunctions.js
+Logs execution progress and debugging info
+EW_backfillStrategyOptionsPremium() (called for each strategy)
+📍 27_OptionsPremiumBackfill.js:130
+Main function for processing each strategy sheet
+EW_saveBackfillState()
+📍 14_ExecutionContinuation.js
+Saves execution state when approaching time limit
+EW_scheduleBackfillContinuation()
+📍 14_ExecutionContinuation.js
+Schedules a trigger to continue execution
+EW_clearBackfillState('OPTIONS_BACKFILL_STATE')
+📍 14_ExecutionContinuation.js
+Clears saved state after completion
+EW_safeAlert()
+📍 02_HelperFunctions.js
+Shows completion alert to user
+EW_isSpreadsheetEnvironment()
+📍 02_HelperFunctions.js
+Checks if running in UI context
+Level 2: Strategy Processing Functions
+Called by EW_backfillStrategyOptionsPremium():
+EW_setupOptionsPremiumSheet(outputSheet)
+📍 27_OptionsPremiumTracking.js:168
+Creates output sheet with proper headers and formatting
+EW_detectStrategyType(strategyName)
+📍 28_StrategyDetection.js:6
+Returns 'BULLISH', 'BEARISH', or 'NEUTRAL'
+EW_readOptionsPositions(sourceSheet, strategyType)
+📍 27_OptionsPremiumTracking.js:391
+Reads all positions from source sheet
+Determines option type (Call/Put) based on strategy
+EW_getExistingPositions(outputSheet)
+📍 27_OptionsPremiumTracking.js:340
+Returns Set of existing positions to avoid duplicates
+Calls EW_headerMap() to map column headers
+EW_needsOptionsPremiumBackfill(outputSheet, positionKey, position)
+📍 27_OptionsPremiumBackfill.js:290
+Checks if position needs updating
+Calls EW_headerMap()
+Level 3: Position Processing Functions
+For each position to backfill:
+EW_buildOptionSymbol(ticker, expDate, optionType, strike)
+📍 27_OptionsPremiumTracking.js:476
+Builds Yahoo Finance option symbol (e.g., ROKU251107C00060000)
+EW_fetchOptionPremiumHistory(optionSymbol, startDate, endDate)
+📍 27_OptionsPremiumTracking.js:711
+Fetches historical OHLC premium data from Yahoo Finance
+Calls:
+EW_getEasternUnixTimestamp() - 📍 02_HelperFunctions.js:106
+EW_getYahooQuoteSession() - 📍 27_OptionsPremiumTracking.js:505 (on auth failure)
+EW_parsePremiumHistoryResponse() - 📍 27_OptionsPremiumTracking.js:773
+EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistory, strategyType)
+📍 27_OptionsPremiumBackfill.js:357
+Updates or creates row with historical data
+Calls:
+EW_buildOptionSymbol() (again for API URL)
+EW_findOptionsPremiumRow() - 📍 27_OptionsPremiumBackfill.js:637
+EW_headerMap() - 📍 04_Code.js:816
+EW_mergeArrays() - 📍 13_ArrayBuilders.js:329 (if updating existing)
+EW_formatOptionsPremiumRow() - 📍 27_OptionsPremiumBackfill.js:682
+Level 4: Helper Functions
+Supporting functions called throughout:
+EW_headerMap(headers)
+📍 04_Code.js:816
+Maps header names to column indices
+Used extensively for dynamic column lookups
+EW_getEasternUnixTimestamp(date, hour, minute, second)
+📍 02_HelperFunctions.js:106
+Converts dates to Eastern Time Unix timestamps for Yahoo API
+EW_parsePremiumHistoryResponse(optionSymbol, response)
+📍 27_OptionsPremiumTracking.js:773
+Parses Yahoo Finance chart API response
+Handles missing/null values intelligently
+EW_mergeArrays(existingArray, newArray)
+📍 13_ArrayBuilders.js:329
+Merges old and new array data
+Preserves existing values, fills in new ones
+EW_getYahooQuoteSession(forceRefresh)
+📍 27_OptionsPremiumTracking.js:505
+Gets Yahoo Finance authentication cookies and crumb
+Calls EW_extractYahooCookie() - 📍 27_OptionsPremiumTracking.js:592
+Uses CacheService for session caching
+EW_findOptionsPremiumRow(outputSheet, position)
+📍 27_OptionsPremiumBackfill.js:637
+Finds existing row for a position (ticker + strike + expDate match)
+EW_formatOptionsPremiumRow(sheet, rowNum)
+📍 27_OptionsPremiumBackfill.js:682
+Applies number formatting to all columns
+Execution Flow Diagram
+EW_backfillOptionsPremiumHistory()
+│
+├─► EW_getBackfillState() ──────────────► [Check for saved state]
+│
+├─► FOR EACH strategy sheet:
+│   │
+│   ├─► EW_backfillStrategyOptionsPremium()
+│   │   │
+│   │   ├─► EW_detectStrategyType()
+│   │   ├─► EW_setupOptionsPremiumSheet() ──► [Create/verify output sheet]
+│   │   ├─► EW_readOptionsPositions() ──────► [Get positions from source]
+│   │   ├─► EW_getExistingPositions() ──────► [Avoid duplicates]
+│   │   │   └─► EW_headerMap()
+│   │   │
+│   │   ├─► FOR EACH position:
+│   │   │   │
+│   │   │   ├─► EW_buildOptionSymbol() ────► [ROKU251107C00060000]
+│   │   │   │
+│   │   │   ├─► EW_fetchOptionPremiumHistory()
+│   │   │   │   ├─► EW_getEasternUnixTimestamp()
+│   │   │   │   ├─► UrlFetchApp.fetch() ──► [Yahoo Finance API]
+│   │   │   │   ├─► EW_getYahooQuoteSession() [if auth fails]
+│   │   │   │   │   └─► EW_extractYahooCookie()
+│   │   │   │   └─► EW_parsePremiumHistoryResponse()
+│   │   │   │
+│   │   │   └─► EW_updateOptionsPremiumBackfillRow()
+│   │   │       ├─► EW_findOptionsPremiumRow()
+│   │   │       │   └─► EW_headerMap()
+│   │   │       ├─► EW_mergeArrays() [if row exists]
+│   │   │       └─► EW_formatOptionsPremiumRow()
+│   │   │
+│   │   └─► [Check time limit, save state if needed]
+│   │       ├─► EW_saveBackfillState()
+│   │       └─► EW_scheduleBackfillContinuation()
+│   │
+│   └─► EW_clearBackfillState() [position state]
+│
+├─► EW_clearBackfillState() ────────────► [Clear main state]
+└─► EW_safeAlert() ──────────────────────► [Show completion message]
+Key Data Flow
+Input: Strategy sheets (Long Calls, Bull Spreads, etc.)
+Processing: For each position → fetch premium history → calculate P/L arrays
+Output: "Strategy Options" sheets with:
+Day0-Day13 premium values
+Strike_Hit, Max_Favorable, Min_Unfavorable arrays (JSON)
+OHLC_Volume array (JSON)
+P/L calculations
+Risk/Reward ratios
+External Dependencies
+Yahoo Finance APIs:
+Chart API: query2.finance.yahoo.com/v8/finance/chart/{symbol}
+Quote API: query1.finance.yahoo.com/v7/finance/quote
+Requires authentication (cookies + crumb)
+Google Apps Script Services:
+SpreadsheetApp
+UrlFetchApp
+PropertiesService (for state persistence)
+CacheService (for session caching)
+Utilities (for date formatting)
+This trace shows approximately 25-30 distinct functions are called during execution, organized across 7 different source files. The system is designed with clear separation of concerns and robust continuation support for handling long-running backfill operations.
+
+Summary
 
   I've successfully created a comprehensive success report system that analyzes your trading data to provide deep insights. Here's     
    what was built:
