@@ -99,7 +99,8 @@
       "Bash(else echo \".env NOT FOUND - You need to create it!\")",
       "Bash(curl:*)",
       "Bash(start index.html)",
-      "Bash(start http://localhost:8000)"
+      "Bash(start http://localhost:8000)",
+      "Bash(git show:*)"
     ],
     "deny": []
   }
