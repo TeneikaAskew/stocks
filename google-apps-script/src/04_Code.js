@@ -919,6 +919,7 @@ function EW_headerMap(headerRow) {
   const lastTradeCol    = find(['lastTrade','last trade','Last Trade']);
   const bidCol          = find(['bid','Bid']);
   const askCol          = find(['ask','Ask']);
+  const spreadCol       = find(['spread','Spread']);
   const openInterestCol = find(['openInterest','open interest','Open Interest']);
   const volumeCol       = find(['volume','Volume']);
   const nextEPSDateCol  = find(['earningsDate','earnings date','Earnings Date','nextEPSDate','next eps date','Next EPS Date']);
@@ -976,7 +977,7 @@ function EW_headerMap(headerRow) {
     hitRSICol, hitSMA20Col, hitSMA50Col, hitEMA9Col, hitEMA21Col,
     hitVWAPCol, hitRVOLCol, hitATRCol, hitPriceVsSMA20Col, hitPriceVsVWAPCol,
     // API columns
-    companyCol, lastTradeCol, bidCol, askCol, openInterestCol, volumeCol,
+    companyCol, lastTradeCol, bidCol, askCol, spreadCol, openInterestCol, volumeCol,
     nextEPSDateCol, releaseTimeCol, lastEPSTimeCol, confirmDateCol, optionDateCol,
     scoreCol, epsImpactCol, avgEPSMoveCol, avgVolumeCol,
     // Covered Call specific
