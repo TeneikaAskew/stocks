@@ -1068,15 +1068,15 @@ function EW_readOptionsPositions(sheet, strategyType) {
     if (runDate) {
       runDate.setHours(0, 0, 0, 0);
       const dayOfWeek = runDate.getDay();
-      // const runDateStr = Utilities.formatDate(runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd (EEE)');
+      const runDateStr = Utilities.formatDate(runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd (EEE)');
 
       if (dayOfWeek === 0 || dayOfWeek === 6) {
         // Skip weekend entries - they cause API errors
-        // EW_trace('OPTIONS_BACKFILL', `FILTERED OUT weekend runDate: ${ticker} ${runDateStr}`, false);
+        EW_trace('OPTIONS_BACKFILL', `FILTERED OUT weekend runDate: ${ticker} ${runDateStr}`, false);
         continue;
       }
 
-      // EW_trace('OPTIONS_BACKFILL', `ACCEPTED runDate: ${ticker} ${runDateStr}`, false);
+      EW_trace('OPTIONS_BACKFILL', `ACCEPTED runDate: ${ticker} ${runDateStr} (day ${dayOfWeek})`, false);
 
       // Uncomment to only process today's scans:
       // if (runDate.getTime() !== today.getTime()) continue;
