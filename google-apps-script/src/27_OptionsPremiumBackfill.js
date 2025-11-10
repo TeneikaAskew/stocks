@@ -529,21 +529,32 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   const latestData = premiumMap[latestKey] || {};
 
   // Calculate current P/L (high and low)
+  // Use bid/ask from source sheet if available, otherwise fall back to historical OHLC
   let pnlCurrentHigh = '';
   let pnlCurrentHighPct = '';
   let pnlCurrentLow = '';
   let pnlCurrentLowPct = '';
 
-  if (entryPremium && latestData.high && latestData.low) {
+  if (entryPremium) {
     const entryCost = entryPremium * 100;
 
-    // High P/L (best case based on latest day's high)
-    pnlCurrentHigh = (latestData.high - entryPremium) * 100;
-    pnlCurrentHighPct = Number((pnlCurrentHigh / entryCost).toFixed(6));
+    // Prefer bid/ask from source sheet (most current market data)
+    if (position.ask && position.bid) {
+      // High P/L uses ask (what you could sell for)
+      pnlCurrentHigh = (position.ask - entryPremium) * 100;
+      pnlCurrentHighPct = Number((pnlCurrentHigh / entryCost).toFixed(6));
 
-    // Low P/L (worst case based on latest day's low)
-    pnlCurrentLow = (latestData.low - entryPremium) * 100;
-    pnlCurrentLowPct = Number((pnlCurrentLow / entryCost).toFixed(6));
+      // Low P/L uses bid (worst case exit price)
+      pnlCurrentLow = (position.bid - entryPremium) * 100;
+      pnlCurrentLowPct = Number((pnlCurrentLow / entryCost).toFixed(6));
+    } else if (latestData.high && latestData.low) {
+      // Fallback to historical OHLC data if bid/ask not available
+      pnlCurrentHigh = (latestData.high - entryPremium) * 100;
+      pnlCurrentHighPct = Number((pnlCurrentHigh / entryCost).toFixed(6));
+
+      pnlCurrentLow = (latestData.low - entryPremium) * 100;
+      pnlCurrentLowPct = Number((pnlCurrentLow / entryCost).toFixed(6));
+    }
   }
 
   // Calculate days to expiration
@@ -581,10 +592,10 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     expResult,                                 // Exp_Result
     riskReward,                                // Risk_Reward
     JSON.stringify(ohlcVolumeArray),          // OHLC_Volume array
-    latestData.bid || '',                     // Bid
-    latestData.ask || '',                     // Ask
-    (latestData.ask && latestData.bid) ? (latestData.ask - latestData.bid) : '', // Spread
-    latestData.volume || 0,                   // Volume
+    position.bid || '',                       // Bid (from source sheet)
+    position.ask || '',                       // Ask (from source sheet)
+    (position.ask && position.bid) ? (position.ask - position.bid) : '', // Spread
+    position.volume || 0,                     // Volume (from source sheet)
     pnlCurrentHigh,                            // PnL_High
     pnlCurrentHighPct,                         // PnL_High_Pct
     pnlCurrentLow,                             // PnL_Low
@@ -628,6 +639,12 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     }
 
     // Update current premium data (always overwrite with latest)
+    if (hdrMap.bidCol) outputSheet.getRange(existingRowNum, hdrMap.bidCol).setValue(position.bid || '');
+    if (hdrMap.askCol) outputSheet.getRange(existingRowNum, hdrMap.askCol).setValue(position.ask || '');
+    if (hdrMap.spreadCol && position.bid && position.ask) {
+      outputSheet.getRange(existingRowNum, hdrMap.spreadCol).setValue(position.ask - position.bid);
+    }
+    if (hdrMap.volumeCol) outputSheet.getRange(existingRowNum, hdrMap.volumeCol).setValue(position.volume || 0);
     if (hdrMap.daysToExpCol) outputSheet.getRange(existingRowNum, hdrMap.daysToExpCol).setValue(daysToExp);
     if (hdrMap.pnlCurrentHighCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentHighCol).setValue(pnlCurrentHigh);
     if (hdrMap.pnlCurrentHighPctCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentHighPctCol).setValue(pnlCurrentHighPct);
@@ -1012,10 +1029,14 @@ function EW_readOptionsPositions(sheet, strategyType) {
     if (header === 'strike') hdrMap.strike = i;
     if (header === 'expdate' || header === 'expiration') hdrMap.expDate = i;
     if (header === 'rundate' || header === 'entrydate' || header === 'scandate') hdrMap.runDate = i;
-    if (header === 'entry_premium' || header === 'entrypremium' || header === 'bid' || header === 'ask') {
-      // Use bid or ask as entry premium if available
-      if (header === 'bid' && hdrMap.entryPremium === undefined) hdrMap.entryPremium = i;
-      if (header === 'entry_premium' || header === 'entrypremium') hdrMap.entryPremium = i;
+    if (header === 'bid') hdrMap.bid = i;
+    if (header === 'ask') hdrMap.ask = i;
+    if (header === 'volume') hdrMap.volume = i;
+    if (header === 'entry_premium' || header === 'entrypremium') {
+      hdrMap.entryPremium = i;
+    } else if (header === 'bid' && hdrMap.entryPremium === undefined) {
+      // Fallback: use bid as entry premium if no explicit entry_premium column
+      hdrMap.entryPremium = i;
     }
   }
 
@@ -1039,6 +1060,9 @@ function EW_readOptionsPositions(sheet, strategyType) {
     const expDate = new Date(row[hdrMap.expDate]);
     const runDate = hdrMap.runDate !== undefined ? new Date(row[hdrMap.runDate]) : null;
     const entryPremium = hdrMap.entryPremium !== undefined ? parseFloat(row[hdrMap.entryPremium]) : null;
+    const bid = hdrMap.bid !== undefined ? parseFloat(row[hdrMap.bid]) : null;
+    const ask = hdrMap.ask !== undefined ? parseFloat(row[hdrMap.ask]) : null;
+    const volume = hdrMap.volume !== undefined ? parseFloat(row[hdrMap.volume]) : null;
 
     // Skip if missing data
     if (!ticker || isNaN(strike) || !expDate) continue;
@@ -1077,6 +1101,9 @@ function EW_readOptionsPositions(sheet, strategyType) {
       runDate: runDate || today,  // Use runDate from sheet, fallback to today
       optionType: optionType,
       entryPremium: entryPremium,
+      bid: bid,
+      ask: ask,
+      volume: volume,
       rowNum: i + 2,
       strategyType: strategyType
     });
