@@ -167,18 +167,20 @@ def fetch_minute_data_for_date(ticker, date):
                 # Try to map columns if they're different case or format
                 column_mapping = {}
                 for col in df.columns:
-                    col_lower = str(col).lower()
-                    if 'open' in col_lower:
+                    col_lower = str(col).lower().strip()
+                    normalized = col_lower.replace(' ', '_')
+
+                    if normalized == 'open':
                         column_mapping[col] = 'Open'
-                    elif 'high' in col_lower:
+                    elif normalized == 'high':
                         column_mapping[col] = 'High'
-                    elif 'low' in col_lower:
+                    elif normalized == 'low':
                         column_mapping[col] = 'Low'
-                    elif 'close' in col_lower:
+                    elif normalized in ('close', 'adj_close', 'adjclose'):
                         column_mapping[col] = 'Close'
-                    elif 'volume' in col_lower:
+                    elif normalized == 'volume':
                         column_mapping[col] = 'Volume'
-                
+
                 if column_mapping:
                     df = df.rename(columns=column_mapping)
             
@@ -498,28 +500,33 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None, target_date=None, histori
                     # Use level 1 which contains the price types (Open, High, Low, etc.)
                     minute_df.columns = minute_df.columns.get_level_values(1)
                 
-                # Standardize column names
-                column_mapping = {}
-                for col in minute_df.columns:
-                    col_lower = str(col).lower()
-                    if 'open' in col_lower:
-                        column_mapping[col] = 'Open'
-                    elif 'high' in col_lower:
-                        column_mapping[col] = 'High'
-                    elif 'low' in col_lower:
-                        column_mapping[col] = 'Low'
-                    elif 'close' in col_lower:
-                        column_mapping[col] = 'Close'
-                    elif 'volume' in col_lower:
-                        column_mapping[col] = 'Volume'
-                
-                if column_mapping:
-                    minute_df = minute_df.rename(columns=column_mapping)
-                
+                # Validate loaded data has required columns
+                required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                if not all(col in minute_df.columns for col in required_columns):
+                    # Standardize column names only if we are missing required ones
+                    column_mapping = {}
+                    for col in minute_df.columns:
+                        col_lower = str(col).lower().strip()
+                        normalized = col_lower.replace(' ', '_')
+
+                        if normalized == 'open':
+                            column_mapping[col] = 'Open'
+                        elif normalized == 'high':
+                            column_mapping[col] = 'High'
+                        elif normalized == 'low':
+                            column_mapping[col] = 'Low'
+                        elif normalized in ('close', 'adj_close', 'adjclose'):
+                            column_mapping[col] = 'Close'
+                        elif normalized == 'volume':
+                            column_mapping[col] = 'Volume'
+
+                    if column_mapping:
+                        minute_df = minute_df.rename(columns=column_mapping)
+
                 # Validate loaded data has required columns
                 required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
                 missing_columns = [col for col in required_columns if col not in minute_df.columns]
-                
+
                 if missing_columns:
                     print(f"  WARNING: Loaded file missing columns: {missing_columns}")
                     print(f"  Available columns: {list(minute_df.columns)}")
@@ -540,8 +547,28 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None, target_date=None, histori
                 if not minute_df.empty:
                     # Validate that we have the required columns
                     required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                    if not all(col in minute_df.columns for col in required_columns):
+                        column_mapping = {}
+                        for col in minute_df.columns:
+                            col_lower = str(col).lower().strip()
+                            normalized = col_lower.replace(' ', '_')
+
+                            if normalized == 'open':
+                                column_mapping[col] = 'Open'
+                            elif normalized == 'high':
+                                column_mapping[col] = 'High'
+                            elif normalized == 'low':
+                                column_mapping[col] = 'Low'
+                            elif normalized in ('close', 'adj_close', 'adjclose'):
+                                column_mapping[col] = 'Close'
+                            elif normalized == 'volume':
+                                column_mapping[col] = 'Volume'
+
+                        if column_mapping:
+                            minute_df = minute_df.rename(columns=column_mapping)
+
                     missing_columns = [col for col in required_columns if col not in minute_df.columns]
-                    
+
                     if missing_columns:
                         print(f"  ERROR: Missing required columns: {missing_columns}")
                         print(f"  Available columns: {list(minute_df.columns)}")
