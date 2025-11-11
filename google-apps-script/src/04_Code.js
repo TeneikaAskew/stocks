@@ -78,8 +78,11 @@ function onOpen() {
         .addSeparator()
         .addItem('Fix Strike_Hit Values', 'EW_fixStrikeHitValues')
         .addSeparator()
-        .addItem('Fix Options Premium P/L', 'EW_fixOptionsPremiumPnL')
-        .addItem('Fix Options Premium Arrays', 'EW_fixOptionsPremiumArrays')
+        .addItem('Fix Options Premium P/L (All Sheets)', 'EW_fixOptionsPremiumPnL')
+        .addItem('Fix Options Premium P/L (Current Sheet)', 'EW_fixOptionsPremiumPnLCurrentSheet')
+        .addSeparator()
+        .addItem('Fix Options Premium Arrays (All Sheets)', 'EW_fixOptionsPremiumArrays')
+        .addItem('Fix Options Premium Arrays (Current Sheet)', 'EW_fixOptionsPremiumArraysCurrentSheet')
       )
     )
     

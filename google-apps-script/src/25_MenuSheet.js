@@ -117,8 +117,10 @@ function EW_parseMenuStructure() {
     {
       name: '🔧 Calculations & Data Fixes',
       items: [
-        { label: 'Fix Options Premium P/L', function: 'EW_fixOptionsPremiumPnL', description: 'Recalculate PnL_High and PnL_Low from historical OHLC data' },
-        { label: 'Fix Options Premium Arrays', function: 'EW_fixOptionsPremiumArrays', description: 'Recalculate Bid_Hit_Pct, Day check values, and First_Hit_Date from OHLC data (uses HIGH for profit tracking)' }
+        { label: 'Fix Options Premium P/L (All Sheets)', function: 'EW_fixOptionsPremiumPnL', description: 'Recalculate PnL_High and PnL_Low from historical OHLC data for all Options Premium sheets' },
+        { label: 'Fix Options Premium P/L (Current Sheet)', function: 'EW_fixOptionsPremiumPnLCurrentSheet', description: 'Recalculate PnL_High and PnL_Low from historical OHLC data for the active sheet only' },
+        { label: 'Fix Options Premium Arrays (All Sheets)', function: 'EW_fixOptionsPremiumArrays', description: 'Recalculate Bid_Hit_Pct, Day check values, and First_Hit_Date from OHLC data for all Options Premium sheets (uses HIGH for profit tracking)' },
+        { label: 'Fix Options Premium Arrays (Current Sheet)', function: 'EW_fixOptionsPremiumArraysCurrentSheet', description: 'Recalculate Bid_Hit_Pct, Day check values, and First_Hit_Date from OHLC data for the active sheet only (uses HIGH for profit tracking)' }
       ]
     },
     {

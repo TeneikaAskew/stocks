@@ -1906,6 +1906,47 @@ function EW_fixOptionsPremiumPnL() {
 }
 
 /**
+ * Fix Options Premium P/L for the current sheet only
+ * Recalculates PnL_High and PnL_Low from historical OHLC data
+ */
+function EW_fixOptionsPremiumPnLCurrentSheet() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const sheetName = sheet.getName();
+
+  // Check if this is an Options Premium sheet
+  if (!sheetName.endsWith(' Options')) {
+    const msg = `Current sheet "${sheetName}" is not an Options Premium sheet.\n\nPlease select one of:\n- Long Calls Options\n- Bull Spreads Options\n- Bear Spreads Options\n- Strangles Options\n- Covered Calls Options`;
+    EW_trace('OPTIONS_PNL_FIX', msg, true);
+    if (EW_isSpreadsheetEnvironment()) {
+      EW_safeAlert('Invalid Sheet', msg);
+    }
+    return msg;
+  }
+
+  // Extract strategy name (e.g., "Long Calls Options" -> "Long Calls")
+  const strategyName = sheetName.replace(' Options', '');
+
+  try {
+    const fixed = EW_fixSheetPnL(sheet, strategyName);
+    const msg = `Fixed PnL columns for ${fixed} positions in ${sheetName}`;
+
+    EW_trace('OPTIONS_PNL_FIX', msg, true);
+    if (EW_isSpreadsheetEnvironment()) {
+      EW_safeAlert('P/L Fix Complete', msg);
+    }
+
+    return msg;
+  } catch (error) {
+    const errorMsg = `Error fixing ${sheetName}: ${error.message}`;
+    EW_trace('OPTIONS_PNL_FIX', errorMsg, true);
+    if (EW_isSpreadsheetEnvironment()) {
+      EW_safeAlert('Fix Error', errorMsg);
+    }
+    throw error;
+  }
+}
+
+/**
  * Fix PnL columns for a single sheet
  * @param {Sheet} sheet - Options tracking sheet
  * @param {string} strategyName - Strategy name for logging
@@ -2168,4 +2209,46 @@ function EW_fixSheetArrays(sheet, strategyName) {
   }
 
   return fixedCount;
+}
+
+/**
+ * Fix Options Premium arrays for the current sheet only
+ * Recalculates Bid_Hit_Pct, Max_Favorable, Min_Unfavorable, and First_Hit_Date
+ * from OHLC data (uses HIGH for profit tracking)
+ */
+function EW_fixOptionsPremiumArraysCurrentSheet() {
+  const sheet = SpreadsheetApp.getActiveSheet();
+  const sheetName = sheet.getName();
+
+  // Check if this is an Options Premium sheet
+  if (!sheetName.endsWith(' Options')) {
+    const msg = `Current sheet "${sheetName}" is not an Options Premium sheet.\n\nPlease select one of:\n- Long Calls Options\n- Bull Spreads Options\n- Bear Spreads Options\n- Strangles Options\n- Covered Calls Options`;
+    EW_trace('OPTIONS_ARRAY_FIX', msg, true);
+    if (EW_isSpreadsheetEnvironment()) {
+      EW_safeAlert('Invalid Sheet', msg);
+    }
+    return msg;
+  }
+
+  // Extract strategy name (e.g., "Long Calls Options" -> "Long Calls")
+  const strategyName = sheetName.replace(' Options', '');
+
+  try {
+    const fixed = EW_fixSheetArrays(sheet, strategyName);
+    const msg = `Fixed arrays for ${fixed} positions in ${sheetName}`;
+
+    EW_trace('OPTIONS_ARRAY_FIX', msg, true);
+    if (EW_isSpreadsheetEnvironment()) {
+      EW_safeAlert('Array Fix Complete', msg);
+    }
+
+    return msg;
+  } catch (error) {
+    const errorMsg = `Error fixing ${sheetName}: ${error.message}`;
+    EW_trace('OPTIONS_ARRAY_FIX', errorMsg, true);
+    if (EW_isSpreadsheetEnvironment()) {
+      EW_safeAlert('Fix Error', errorMsg);
+    }
+    throw error;
+  }
 }
