@@ -71,21 +71,24 @@ function EW_applyDailyFormatting() {
 function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
-  
+
   const strategyUpper = strategyName.toUpperCase();
   const isBullish = strategyUpper.includes('LONG CALL') || strategyUpper.includes('BULL');
   const isBearish = strategyUpper.includes('LONG PUT') || strategyUpper.includes('BEAR');
-  
+
+  // Check if this is an Options Premium sheet (has Bid column)
+  const isOptionsPremiumSheet = hdrMap.bidCol !== null && hdrMap.bidCol !== undefined;
+
   // Define colors
   const GREEN = '#d4edda';  // Light green for hits
   const RED = '#f8d7da';    // Light red for misses
   const GRAY = '#e2e3e5';   // Light gray for no data
-  
+
   // Text colors
   const TEXT_DARK_GREEN = '#155724';  // Dark green text for hits
   const TEXT_DARK_RED = '#721c24';    // Dark red text for misses
   const TEXT_GRAY = '#6c757d';        // Gray text for no data
-  
+
   // Format each Day Check column
   const dayCheckCols = [
     hdrMap.day0CheckCol,
@@ -95,27 +98,37 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
     hdrMap.day4CheckCol,
     hdrMap.day5CheckCol
   ];
-  
+
   dayCheckCols.forEach((col, dayIndex) => {
     if (!col) return;
-    
+
     // Get the range for this column (excluding header)
     const range = sheet.getRange(2, col, lastRow - 1, 1);
     const values = range.getValues();
     const backgrounds = [];
     const fontWeights = [];
     const fontColors = [];
-    
-    // Get strike prices for comparison
-    const strikeCol = hdrMap.strikeCol || hdrMap.longStrikeCol;
-    if (!strikeCol) return;
-    
-    const strikes = sheet.getRange(2, strikeCol, lastRow - 1, 1).getValues();
-    
+
+    // For Options Premium sheets, compare to Bid price
+    // For regular sheets, compare to Strike price
+    let comparisonCol;
+    let comparisonValues;
+
+    if (isOptionsPremiumSheet && hdrMap.bidCol) {
+      // Options Premium: compare premium to bid (profit when premium > bid)
+      comparisonCol = hdrMap.bidCol;
+      comparisonValues = sheet.getRange(2, comparisonCol, lastRow - 1, 1).getValues();
+    } else {
+      // Regular sheets: compare price to strike
+      comparisonCol = hdrMap.strikeCol || hdrMap.longStrikeCol;
+      if (!comparisonCol) return;
+      comparisonValues = sheet.getRange(2, comparisonCol, lastRow - 1, 1).getValues();
+    }
+
     values.forEach((row, rowIndex) => {
       const value = row[0];
-      const strike = parseFloat(strikes[rowIndex][0]);
-      
+      const comparisonValue = parseFloat(comparisonValues[rowIndex][0]);
+
       if (!value || value === '' || value === null) {
         // No data - gray background
         backgrounds.push([GRAY]);
@@ -123,45 +136,47 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
         fontColors.push([TEXT_GRAY]);
       } else {
         const price = parseFloat(value);
-        
-        if (isNaN(price) || isNaN(strike)) {
+
+        if (isNaN(price) || isNaN(comparisonValue)) {
           // Invalid data
           backgrounds.push([GRAY]);
           fontWeights.push(['normal']);
           fontColors.push([TEXT_GRAY]);
         } else {
-          // Compare price to strike
           let isHit = false;
-          
-          if (isBullish) {
+
+          if (isOptionsPremiumSheet) {
+            // Options Premium: GREEN if premium > bid (profit), RED if premium <= bid (loss/no profit)
+            // Since premium tracking: premium increases = profit (always use HIGH)
+            isHit = price > comparisonValue;
+          } else if (isBullish) {
             // Bullish: green if price >= strike, red if price < strike
-            isHit = price >= strike;
+            isHit = price >= comparisonValue;
           } else if (isBearish) {
             // Bearish: green if price <= strike, red if price > strike
-            isHit = price <= strike;
+            isHit = price <= comparisonValue;
           } else {
             // Neutral strategy - no specific formatting
             backgrounds.push([null]);
             fontWeights.push(['normal']);
             fontColors.push([null]);
+            return;
           }
-          
-          // Only apply hit/miss formatting for bullish/bearish strategies
-          if (isBullish || isBearish) {
-            if (isHit) {
-              backgrounds.push([GREEN]);
-              fontWeights.push(['bold']);
-              fontColors.push([TEXT_DARK_GREEN]);
-            } else {
-              backgrounds.push([RED]);
-              fontWeights.push(['normal']);
-              fontColors.push([TEXT_DARK_RED]);
-            }
+
+          // Apply hit/miss formatting
+          if (isHit) {
+            backgrounds.push([GREEN]);
+            fontWeights.push(['bold']);
+            fontColors.push([TEXT_DARK_GREEN]);
+          } else {
+            backgrounds.push([RED]);
+            fontWeights.push(['normal']);
+            fontColors.push([TEXT_DARK_RED]);
           }
         }
       }
     });
-    
+
     // Apply formatting in batch
     if (backgrounds.length > 0) {
       range.setBackgrounds(backgrounds);

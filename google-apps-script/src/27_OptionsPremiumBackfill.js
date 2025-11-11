@@ -14,10 +14,27 @@
  */
 
 /**
- * Main function to backfill options premium history for all strategy sheets
+ * Main function to backfill options premium history for all strategy sheets (INCLUDES EXPIRED)
+ * Use this for initial backfill to get historical data
  * Mirrors EW_backfillHistoricalTracking() from 09_HistoricalBackfill.js
  */
 function EW_backfillOptionsPremiumHistory() {
+  return EW_backfillOptionsPremiumHistoryInternal(true); // includeExpired = true
+}
+
+/**
+ * Daily update function - only processes non-expired options
+ * Use this for regular daily updates
+ */
+function EW_updateDailyOptionsPremiumHistory() {
+  return EW_backfillOptionsPremiumHistoryInternal(false); // includeExpired = false
+}
+
+/**
+ * Internal function to backfill options premium history
+ * @param {boolean} includeExpired - Whether to include expired options
+ */
+function EW_backfillOptionsPremiumHistoryInternal(includeExpired) {
   const MAX_RUNTIME_MS = 25 * 60 * 1000; // 25 minutes
   const startTime = new Date();
 
@@ -66,7 +83,7 @@ function EW_backfillOptionsPremiumHistory() {
     }
 
     try {
-      const backfilled = EW_backfillStrategyOptionsPremium(ss, strategyName, startTime, MAX_RUNTIME_MS);
+      const backfilled = EW_backfillStrategyOptionsPremium(ss, strategyName, startTime, MAX_RUNTIME_MS, includeExpired);
 
       // Check if continuation is needed (-1 indicates time limit reached)
       if (backfilled === -1) {
@@ -128,9 +145,10 @@ function EW_backfillOptionsPremiumHistory() {
  * @param {string} strategyName - Name of the strategy/sheet
  * @param {Date} startTime - Function start time for timeout checking
  * @param {number} maxRuntimeMs - Maximum runtime in milliseconds
+ * @param {boolean} includeExpired - Whether to include expired options
  * @returns {number} Number of positions processed, or -1 if continuation needed
  */
-function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, maxRuntimeMs = null) {
+function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, maxRuntimeMs = null, includeExpired = true) {
   const sourceSheet = ss.getSheetByName(strategyName);
   if (!sourceSheet || sourceSheet.getLastRow() < 2) {
     return 0;
@@ -149,11 +167,8 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
     EW_setupOptionsPremiumSheet(outputSheet);
   }
 
-  // Detect strategy type
-  const strategyType = EW_detectStrategyType(strategyName);
-
   // Read positions from source sheet
-  const positions = EW_readOptionsPositions(sourceSheet, strategyType);
+  const positions = EW_readOptionsPositions(sourceSheet, strategyName, includeExpired);
 
   if (positions.length === 0) {
     EW_trace('OPTIONS_BACKFILL', `${strategyName}: No positions to process`, false);
@@ -163,7 +178,8 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
   // Get existing positions in output sheet to avoid duplicates
   const existingPositions = EW_getExistingPositions(outputSheet);
 
-  // Filter to positions that need backfilling
+  // For this backfill script, we only process NEW positions (not in tracking sheet yet)
+  // This is different from daily tracking which updates existing positions
   const positionsToBackfill = positions.filter(pos => {
     // Include runDate in key so each scan date gets its own tracking row
     const runDateStr = Utilities.formatDate(pos.runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
@@ -233,21 +249,51 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
         position.strike
       );
 
-      // Calculate date range for backfill
+      // Adjust entry date to market hours (9:30 AM - 4:00 PM ET)
+      // This uses the same EW_adjustToMarketHours function from 09_HistoricalBackfill.js
+      const marketEntryDate = EW_adjustToMarketHours(position.runDate);
+
+      const tz = Session.getScriptTimeZone();
+      EW_trace('OPTIONS_BACKFILL', `[${position.ticker}] Original entry date: ${Utilities.formatDate(position.runDate, tz, 'yyyy-MM-dd HH:mm:ss')}, Adjusted to market hours: ${Utilities.formatDate(marketEntryDate, tz, 'yyyy-MM-dd HH:mm:ss')}`, false);
+
+      // Calculate end date: use expiration or today (whichever is earlier)
+      // This mirrors the logic in 09_HistoricalBackfill.js to fetch full date range
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      const entryDate = new Date(position.runDate);
-      entryDate.setHours(0, 0, 0, 0);
 
-      // Determine end date (earlier of today or expiration)
-      let endDate = new Date(today);
-      if (position.expDate < today) {
+      let endDate;
+      if (position.expDate && position.expDate < today) {
+        // Option has expired, use expiration date
         endDate = new Date(position.expDate);
+        endDate.setHours(16, 0, 0, 0); // Market close on expiration
+      } else {
+        // Option is still active or expiration is in future, use today
+        endDate = new Date(today);
+        endDate.setHours(16, 0, 0, 0); // Market close
       }
 
-      // Fetch historical premium data
-      // Weekend adjustment happens inside EW_fetchOptionPremiumHistory
-      const premiumHistory = EW_fetchOptionPremiumHistory(optionSymbol, entryDate, endDate);
+      // Cap end date at today's market close if needed
+      const todayMarketClose = new Date();
+      const currentHour = todayMarketClose.getHours();
+      if (currentHour < 9 || (currentHour === 9 && todayMarketClose.getMinutes() < 30)) {
+        // Before market open, use yesterday's close
+        todayMarketClose.setDate(todayMarketClose.getDate() - 1);
+        todayMarketClose.setHours(16, 0, 0, 0);
+      } else if (currentHour >= 16) {
+        // After market close, use today's close
+        todayMarketClose.setHours(16, 0, 0, 0);
+      }
+
+      if (endDate > todayMarketClose) {
+        endDate = todayMarketClose;
+      }
+
+      // DIAGNOSTIC: Log the dates being used for API call
+      EW_trace('OPTIONS_BACKFILL', `[${position.ticker}] API call: from ${Utilities.formatDate(marketEntryDate, tz, 'yyyy-MM-dd HH:mm:ss')} to ${Utilities.formatDate(endDate, tz, 'yyyy-MM-dd HH:mm:ss')}`, false);
+
+      // Fetch historical premium data for the full date range
+      // Yahoo API will automatically skip weekends and return only trading days
+      const premiumHistory = EW_fetchOptionPremiumHistory(optionSymbol, marketEntryDate, endDate);
 
       if (premiumHistory && premiumHistory.length > 0) {
         // Update or create tracking row
@@ -255,7 +301,7 @@ function EW_backfillStrategyOptionsPremium(ss, strategyName, startTime = null, m
           outputSheet,
           position,
           premiumHistory,
-          strategyType
+          strategyName
         );
 
         processedCount++;
@@ -363,25 +409,34 @@ function EW_needsOptionsPremiumBackfill(outputSheet, positionKey, position) {
 
 /**
  * Update or create option premium tracking row with backfilled historical data
+ *
+ * IMPORTANT: Premium tracking logic
+ * - This tracks OPTION PREMIUM prices (not underlying stock prices)
+ * - Profit occurs when premium INCREASES (sell at higher premium than entry)
+ * - Loss occurs when premium DECREASES (premium falls below entry)
+ * - Therefore: ALWAYS use HIGH for best profit, LOW for worst loss
+ * - Strategy (Call/Put/Bull/Bear) only determines which option to fetch, not tracking logic
+ *
  * @param {Sheet} outputSheet - Output sheet
  * @param {Object} position - Position info
  * @param {Array} premiumHistory - Array of historical OHLC premium data
  * @param {string} strategyType - Strategy type
  */
 function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistory, strategyType) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const entryDate = new Date(position.runDate);
-  entryDate.setHours(0, 0, 0, 0);
-
-  const expDate = new Date(position.expDate);
-  expDate.setHours(0, 0, 0, 0);
-
-  const runDate = new Date(position.runDate);
-  runDate.setHours(0, 0, 0, 0);
-
   const tz = Session.getScriptTimeZone();
+
+  // Use dates directly from position (already normalized when read from sheet)
+  const entryDate = position.runDate;  // Already normalized to midnight
+  const expDate = position.expDate;    // Already normalized
+  const runDate = position.runDate;    // Already normalized
+
+  // Get today's date normalized to midnight
+  const todayRaw = new Date();
+  const today = new Date(todayRaw.getFullYear(), todayRaw.getMonth(), todayRaw.getDate(), 0, 0, 0, 0);
+
+  // DIAGNOSTIC: Log what we're using
+  EW_trace('OPTIONS_BACKFILL', `[${position.ticker}] Using runDate: ${Utilities.formatDate(runDate, tz, 'yyyy-MM-dd')}`, false);
+  EW_trace('OPTIONS_BACKFILL', `[${position.ticker}] Strategy: ${strategyType}`, false);
 
   const MAX_TRACKING_DAYS = 14;
 
@@ -389,6 +444,8 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   const strikeHitArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
   const maxFavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
   const minUnfavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
+  const bidHitDaysArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
+  const askHitDaysArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
   const ohlcVolumeArray = Array(MAX_TRACKING_DAYS).fill(null);
   const dayCheckValues = Array(MAX_TRACKING_DAYS).fill('');
 
@@ -401,12 +458,7 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   }
 
   EW_trace('OPTIONS_BACKFILL', `Premium history for ${position.ticker}: ${premiumHistory.length} days, keys: ${Object.keys(premiumMap).join(', ')}`, false);
-
-  // Get entry premium (first day's close)
-  const entryKey = Utilities.formatDate(entryDate, tz, 'yyyy-MM-dd');
-  const entryPremium = premiumMap[entryKey] ? premiumMap[entryKey].close : position.entryPremium;
-
-  EW_trace('OPTIONS_BACKFILL', `Looking for entry key: ${entryKey}, found: ${premiumMap[entryKey] ? 'yes' : 'no'}, entryPremium: ${entryPremium}`, false);
+  EW_trace('OPTIONS_BACKFILL', `Using entry price from position.bid: ${position.bid}`, false);
 
   let hitDate = '';
 
@@ -453,43 +505,57 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     // }
 
     if (dayData && dayData.close !== null && dayData.close !== undefined) {
-      dayCheckValues[tradingDayIndex] = dayData.close;
+      // Premium tracking: ALWAYS use HIGH for best profit opportunity
+      // Premium increases = profit, regardless of Call/Put strategy
+      dayCheckValues[tradingDayIndex] = dayData.high;
 
-      // Build OHLC entry
+      // Build OHLC entry - match format from 09_HistoricalBackfill.js
       ohlcVolumeArray[tradingDayIndex] = {
-        o: dayData.open !== null ? parseFloat(dayData.open).toFixed(2) : null,
-        h: dayData.high !== null ? parseFloat(dayData.high).toFixed(2) : null,
-        l: dayData.low !== null ? parseFloat(dayData.low).toFixed(2) : null,
-        c: parseFloat(dayData.close).toFixed(2),
-        v: dayData.volume || 0,
+        o: dayData.open ? parseFloat(dayData.open).toFixed(2) : null,
+        h: dayData.high ? parseFloat(dayData.high).toFixed(2) : null,
+        l: dayData.low ? parseFloat(dayData.low).toFixed(2) : null,
+        c: dayData.close ? parseFloat(dayData.close).toFixed(2) : null,
+        v: dayData.volume !== null && dayData.volume !== undefined ? dayData.volume : null,
         src: 'YAHOO'
       };
 
-      // Calculate P/L arrays if we have entry premium
-      if (entryPremium) {
-        const entryCost = entryPremium * 100;
-        const pnl = (dayData.close - entryPremium) * 100;
-        const pnlPct = pnl / entryCost;
-        strikeHitArray[tradingDayIndex] = pnlPct.toFixed(6);
+      // Calculate P/L arrays if we have entry price
+      if (position.bid) {
+        const entryCost = position.bid * 100;
 
-        // Check for first profitable day
-        if (hitDate === '' && pnlPct > 0) {
-          hitDate = tradingDayIndex;
+        // Premium tracking: ALWAYS use HIGH for best profit opportunity
+        // Premium increases = profit, regardless of Call/Put strategy
+        const exitPrice = dayData.high;
+
+        // Bid_Hit_Pct: Daily profit/loss percentage
+        if (exitPrice !== null) {
+          const pnl = (exitPrice - position.bid) * 100;
+          const pnlPct = pnl / entryCost;
+          strikeHitArray[tradingDayIndex] = pnlPct.toFixed(6);
+
+          // Check for first profitable day
+          if (hitDate === '' && pnlPct > 0) {
+            hitDate = tradingDayIndex;
+          }
         }
 
         // Max favorable (highest premium during the day)
         if (dayData.high !== null) {
-          const maxPnl = (dayData.high - entryPremium) * 100;
+          const maxPnl = (dayData.high - position.bid) * 100;
           const maxPct = maxPnl / entryCost;
           maxFavorableArray[tradingDayIndex] = Math.max(maxPct, 0).toFixed(6);
         }
 
         // Min unfavorable (lowest premium during the day)
         if (dayData.low !== null) {
-          const minPnl = (dayData.low - entryPremium) * 100;
+          const minPnl = (dayData.low - position.bid) * 100;
           const minPct = minPnl / entryCost;
           minUnfavorableArray[tradingDayIndex] = Math.min(minPct, 0).toFixed(6);
         }
+
+        // TODO: Bid_Hit_Days and Ask_Hit_Days logic removed because position.bid is the entry price
+        // If these arrays need to track something else (e.g., current bid/ask from source sheet),
+        // the logic needs to be redesigned with different target values
       }
     }
 
@@ -499,7 +565,7 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   // Default any uninitialized OHLC entries
   for (let i = 0; i < MAX_TRACKING_DAYS; i++) {
     if (!ohlcVolumeArray[i]) {
-      ohlcVolumeArray[i] = { o: null, h: null, l: null, c: null, v: 0, src: 'YAHOO' };
+      ohlcVolumeArray[i] = { o: null, h: null, l: null, c: null, v: null, src: 'YAHOO' };
     }
   }
 
@@ -511,7 +577,7 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     const expKey = Utilities.formatDate(position.expDate, tz, 'yyyy-MM-dd');
     const expData = premiumMap[expKey];
 
-    if (expData && entryPremium) {
+    if (expData && position.bid) {
       expResult = expData.close;
 
       // Calculate risk/reward from arrays
@@ -524,54 +590,84 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     }
   }
 
-  // Calculate current P/L (high and low)
-  // Only use bid/ask from source sheet - no fallback to historical OHLC
+  // Calculate P/L (high and low) based on historical OHLC data
+  // PnL_High = best possible profit from historical highs
+  // PnL_Low = worst possible loss from historical lows
   let pnlCurrentHigh = '';
   let pnlCurrentHighPct = '';
   let pnlCurrentLow = '';
   let pnlCurrentLowPct = '';
 
-  if (entryPremium && position.ask && position.bid) {
-    const entryCost = entryPremium * 100;
+  if (position.bid) {
+    const entryCost = position.bid * 100;
 
-    // High P/L uses ask (what you could sell for)
-    pnlCurrentHigh = (position.ask - entryPremium) * 100;
-    pnlCurrentHighPct = Number((pnlCurrentHigh / entryCost).toFixed(6));
+    // Find the highest and lowest premium across all days
+    let historicalHigh = null;
+    let historicalLow = null;
 
-    // Low P/L uses bid (worst case exit price)
-    pnlCurrentLow = (position.bid - entryPremium) * 100;
-    pnlCurrentLowPct = Number((pnlCurrentLow / entryCost).toFixed(6));
+    for (const ohlc of ohlcVolumeArray) {
+      if (ohlc && ohlc.h !== null) {
+        const high = parseFloat(ohlc.h);
+        if (historicalHigh === null || high > historicalHigh) {
+          historicalHigh = high;
+        }
+      }
+      if (ohlc && ohlc.l !== null) {
+        const low = parseFloat(ohlc.l);
+        if (historicalLow === null || low < historicalLow) {
+          historicalLow = low;
+        }
+      }
+    }
+
+    // Calculate P/L based on historical extremes
+    if (historicalHigh !== null) {
+      pnlCurrentHigh = (historicalHigh - position.bid) * 100;
+      pnlCurrentHighPct = Number((pnlCurrentHigh / entryCost).toFixed(6));
+    }
+
+    if (historicalLow !== null) {
+      pnlCurrentLow = (historicalLow - position.bid) * 100;
+      pnlCurrentLowPct = Number((pnlCurrentLow / entryCost).toFixed(6));
+    }
   }
 
   // Calculate days to expiration
-  const daysToExp = Math.ceil((position.expDate - today) / (1000 * 60 * 60 * 24));
+  const daysToExp = Math.ceil((expDate - today) / (1000 * 60 * 60 * 24));
 
   // Build option symbol for API URL
-  const optionSymbol = EW_buildOptionSymbol(position.ticker, position.expDate, position.optionType, position.strike);
+  const optionSymbol = EW_buildOptionSymbol(position.ticker, expDate, position.optionType, position.strike);
 
   // Build Yahoo Finance API URL for historical premium data
   // Use the same date range logic as the actual fetch (runDate to earlier of today/expiration)
-  let apiEndDate = new Date(today);
-  if (position.expDate < today) {
-    apiEndDate = new Date(position.expDate);
+  let apiEndDate = today;
+  if (expDate < today) {
+    apiEndDate = expDate;
   }
 
   const period1 = Math.floor(entryDate.getTime() / 1000);
   const period2 = Math.floor(apiEndDate.getTime() / 1000);
   const apiUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${optionSymbol}?period1=${period1}&period2=${period2}&interval=1d&events=history`;
 
-  // Build row - use Date objects for date columns so they display correctly
+  // DIAGNOSTIC: Log what's about to be written
+  const runDateStr = Utilities.formatDate(runDate, tz, 'yyyy-MM-dd');
+  EW_trace('OPTIONS_BACKFILL', `[${position.ticker}] WRITING TO SHEET: runDate=${runDateStr}`, false);
+
+  // Build row - use formatted date strings to avoid timezone issues
+  const todayStr = Utilities.formatDate(today, tz, 'yyyy-MM-dd');
+  const expDateStr = Utilities.formatDate(expDate, tz, 'yyyy-MM-dd');
+
   const row = [
-    today,                                    // Date (today - when script runs) - Date object
-    runDate,                                  // Run_Date (entry date from source sheet) - Date object
+    todayStr,                                 // Date (today - when script runs) - String
+    runDateStr,                               // Run_Date (entry date from source sheet) - String
     position.ticker,                          // Ticker
     position.strike,                          // Strike
     position.optionType,                      // Type
-    expDate,                                  // ExpDate - Date object
+    expDateStr,                               // ExpDate - String
     JSON.stringify(strikeHitArray),           // Bid_Hit_Pct array
     hitDate,                                   // First_Hit_Date
-    '',                                        // Bid_Hit_Days (placeholder)
-    '',                                        // Ask_Hit_Days (placeholder)
+    JSON.stringify(bidHitDaysArray),          // Bid_Hit_Days array
+    JSON.stringify(askHitDaysArray),          // Ask_Hit_Days array
     JSON.stringify(maxFavorableArray),        // Max_Favorable array
     JSON.stringify(minUnfavorableArray),      // Min_Unfavorable array
     ...dayCheckValues,                         // Day0-Day13 Check columns
@@ -630,7 +726,11 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     if (hdrMap.spreadCol && position.bid && position.ask) {
       outputSheet.getRange(existingRowNum, hdrMap.spreadCol).setValue(position.ask - position.bid);
     }
-    if (hdrMap.volumeCol) outputSheet.getRange(existingRowNum, hdrMap.volumeCol).setValue(position.volume || 0);
+    if (hdrMap.volumeCol) {
+      const volumeRange = outputSheet.getRange(existingRowNum, hdrMap.volumeCol);
+      volumeRange.setNumberFormat('0');
+      volumeRange.setValue(position.volume || 0);
+    }
     if (hdrMap.daysToExpCol) outputSheet.getRange(existingRowNum, hdrMap.daysToExpCol).setValue(daysToExp);
     if (hdrMap.pnlCurrentHighCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentHighCol).setValue(pnlCurrentHigh);
     if (hdrMap.pnlCurrentHighPctCol) outputSheet.getRange(existingRowNum, hdrMap.pnlCurrentHighPctCol).setValue(pnlCurrentHighPct);
@@ -692,6 +792,9 @@ function EW_findOptionsPremiumRow(outputSheet, position) {
     const expDateStr = Utilities.formatDate(position.expDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
     const posRunDateStr = Utilities.formatDate(position.runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
+    EW_trace('OPTIONS_BACKFILL', `Finding row for ${position.ticker}: runDateCol=${hdrMap.runDateCol}, posRunDate=${posRunDateStr}`, false);
+
+    let matchCount = 0;
     for (let i = 0; i < data.length; i++) {
       const ticker = String(data[i][hdrMap.tickerCol - 1]);
       const strike = parseFloat(data[i][hdrMap.strikeCol - 1]);
@@ -705,13 +808,22 @@ function EW_findOptionsPremiumRow(outputSheet, position) {
         Utilities.formatDate(rowRunDate, Session.getScriptTimeZone(), 'yyyy-MM-dd') :
         (rowRunDate ? String(rowRunDate) : '');
 
+      // Log potential partial matches for this ticker
+      if (ticker === position.ticker && Math.abs(strike - position.strike) < 0.01) {
+        EW_trace('OPTIONS_BACKFILL', `  Checking row ${i+2}: ticker=${ticker}, strike=${strike}, rowRunDate=${rowRunDateStr}, rowExp=${rowExpDateStr}, posExp=${expDateStr}`, false);
+        matchCount++;
+      }
+
       if (ticker === position.ticker &&
           Math.abs(strike - position.strike) < 0.01 &&
           rowExpDateStr === expDateStr &&
           rowRunDateStr === posRunDateStr) {
+        EW_trace('OPTIONS_BACKFILL', `  MATCH FOUND at row ${i+2}: rowRunDate=${rowRunDateStr}`, false);
         return i + 2; // Row number (data starts at row 2)
       }
     }
+
+    EW_trace('OPTIONS_BACKFILL', `  NO MATCH found for ${position.ticker} (checked ${matchCount} rows with matching ticker/strike)`, false);
   } catch (error) {
     EW_trace('OPTIONS_BACKFILL', `Error finding row: ${error.message}`, false);
   }
@@ -720,59 +832,69 @@ function EW_findOptionsPremiumRow(outputSheet, position) {
 }
 
 /**
- * Apply formatting to option premium row
+ * Apply formatting to option premium row using dynamic header mapping
  * @param {Sheet} sheet - Output sheet
  * @param {number} rowNum - Row number to format
  */
 function EW_formatOptionsPremiumRow(sheet, rowNum) {
-  // Format row data to match column types
-  // Date columns (Date, Run_Date, ExpDate) - columns 1, 2, 6
-  sheet.getRange(rowNum, 1).setNumberFormat('yyyy-mm-dd');
-  sheet.getRange(rowNum, 2).setNumberFormat('yyyy-mm-dd');
-  sheet.getRange(rowNum, 6).setNumberFormat('yyyy-mm-dd');
+  // Get headers and create column map dynamically
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
 
-  // Text columns (Ticker, Type) - columns 3, 5
-  sheet.getRange(rowNum, 3).setNumberFormat('@');
-  sheet.getRange(rowNum, 5).setNumberFormat('@');
+  // Date columns
+  if (hdrMap.dateCol) sheet.getRange(rowNum, hdrMap.dateCol).setNumberFormat('yyyy-mm-dd');
+  if (hdrMap.runDateCol) sheet.getRange(rowNum, hdrMap.runDateCol).setNumberFormat('yyyy-mm-dd');
+  if (hdrMap.expDateCol) sheet.getRange(rowNum, hdrMap.expDateCol).setNumberFormat('yyyy-mm-dd');
 
-  // Number (Strike) - column 4
-  sheet.getRange(rowNum, 4).setNumberFormat('0.00');
+  // Text columns
+  if (hdrMap.tickerCol) sheet.getRange(rowNum, hdrMap.tickerCol).setNumberFormat('@');
+  if (hdrMap.typeCol) sheet.getRange(rowNum, hdrMap.typeCol).setNumberFormat('@');
 
-  // JSON arrays (Strike_Hit, Max_Favorable, Min_Unfavorable, OHLC_Volume) - columns 7, 9, 10, 27
-  sheet.getRange(rowNum, 7).setNumberFormat('@');
-  sheet.getRange(rowNum, 9).setNumberFormat('@');
-  sheet.getRange(rowNum, 10).setNumberFormat('@');
-  sheet.getRange(rowNum, 27).setNumberFormat('@');
+  // Number (Strike)
+  if (hdrMap.strikeCol) sheet.getRange(rowNum, hdrMap.strikeCol).setNumberFormat('0.00');
 
-  // Hit_Date - column 8
-  sheet.getRange(rowNum, 8).setNumberFormat('0');
+  // JSON arrays
+  if (hdrMap.bidHitPctCol) sheet.getRange(rowNum, hdrMap.bidHitPctCol).setNumberFormat('@');
+  if (hdrMap.bidHitDaysCol) sheet.getRange(rowNum, hdrMap.bidHitDaysCol).setNumberFormat('@');
+  if (hdrMap.askHitDaysCol) sheet.getRange(rowNum, hdrMap.askHitDaysCol).setNumberFormat('@');
+  if (hdrMap.maxFavorableCol) sheet.getRange(rowNum, hdrMap.maxFavorableCol).setNumberFormat('@');
+  if (hdrMap.minUnfavorableCol) sheet.getRange(rowNum, hdrMap.minUnfavorableCol).setNumberFormat('@');
+  if (hdrMap.ohlcVolumeCol) sheet.getRange(rowNum, hdrMap.ohlcVolumeCol).setNumberFormat('@');
 
-  // Day Check columns (Day0-Day13) - columns 11-24
-  sheet.getRange(rowNum, 11, 1, 14).setNumberFormat('0.00');
+  // Hit_Date
+  if (hdrMap.firstHitDateCol) sheet.getRange(rowNum, hdrMap.firstHitDateCol).setNumberFormat('0');
 
-  // Result columns (Exp_Result, Risk_Reward) - columns 25, 26
-  sheet.getRange(rowNum, 25).setNumberFormat('@');
-  sheet.getRange(rowNum, 26).setNumberFormat('0.00');
+  // Day Check columns (Day0-Day13)
+  if (hdrMap.day0CheckCol && hdrMap.day13CheckCol) {
+    const numDayCols = hdrMap.day13CheckCol - hdrMap.day0CheckCol + 1;
+    sheet.getRange(rowNum, hdrMap.day0CheckCol, 1, numDayCols).setNumberFormat('0.00');
+  }
 
-  // Premium data (Bid, Ask, Spread) - columns 28, 29, 30
-  sheet.getRange(rowNum, 28, 1, 3).setNumberFormat('0.00');
+  // Result columns
+  if (hdrMap.expResultCol) sheet.getRange(rowNum, hdrMap.expResultCol).setNumberFormat('@');
+  if (hdrMap.riskRewardCol) sheet.getRange(rowNum, hdrMap.riskRewardCol).setNumberFormat('0.00');
 
-  // Volume - column 31
-  sheet.getRange(rowNum, 31).setNumberFormat('0');
+  // Premium data (Bid, Ask, Spread)
+  if (hdrMap.bidCol) sheet.getRange(rowNum, hdrMap.bidCol).setNumberFormat('0.00');
+  if (hdrMap.askCol) sheet.getRange(rowNum, hdrMap.askCol).setNumberFormat('0.00');
+  if (hdrMap.spreadCol) sheet.getRange(rowNum, hdrMap.spreadCol).setNumberFormat('0.00');
 
-  // P/L dollar amounts - columns 32, 34
-  sheet.getRange(rowNum, 32).setNumberFormat('0.00');
-  sheet.getRange(rowNum, 34).setNumberFormat('0.00');
+  // Volume
+  if (hdrMap.volumeCol) sheet.getRange(rowNum, hdrMap.volumeCol).setNumberFormat('0');
 
-  // P/L percentages - columns 33, 35
-  sheet.getRange(rowNum, 33).setNumberFormat('0.00%');
-  sheet.getRange(rowNum, 35).setNumberFormat('0.00%');
+  // P/L dollar amounts
+  if (hdrMap.pnlHighCol) sheet.getRange(rowNum, hdrMap.pnlHighCol).setNumberFormat('0.00');
+  if (hdrMap.pnlLowCol) sheet.getRange(rowNum, hdrMap.pnlLowCol).setNumberFormat('0.00');
 
-  // Days to expiration - column 36
-  sheet.getRange(rowNum, 36).setNumberFormat('0');
+  // P/L percentages
+  if (hdrMap.pnlHighPctCol) sheet.getRange(rowNum, hdrMap.pnlHighPctCol).setNumberFormat('0.00%');
+  if (hdrMap.pnlLowPctCol) sheet.getRange(rowNum, hdrMap.pnlLowPctCol).setNumberFormat('0.00%');
 
-  // API URL - column 37
-  sheet.getRange(rowNum, 37).setNumberFormat('@');
+  // Days to expiration
+  if (hdrMap.daysToExpCol) sheet.getRange(rowNum, hdrMap.daysToExpCol).setNumberFormat('0');
+
+  // API URL
+  if (hdrMap.apiUrlCol) sheet.getRange(rowNum, hdrMap.apiUrlCol).setNumberFormat('@');
 }
 
 /**
@@ -864,8 +986,12 @@ function EW_backfillOptionsPremiumsSelected() {
     EW_setupOptionsPremiumSheet(outputSheet);
   }
 
-  // Detect strategy type
-  const strategyType = EW_detectStrategyType(strategyName);
+  // Determine option type based on strategy: Calls for bullish, Puts for bearish
+  const strategyUpper = strategyName.toUpperCase();
+  const isSpread = strategyUpper.includes('SPREAD');
+  const usesPuts = (strategyUpper.includes('LONG PUT') || strategyUpper.includes('LONG PUTS'))
+                   || (strategyUpper.includes('BEAR') && !isSpread)
+                   || strategyUpper.includes('COVERED');
 
   // Read headers
   const headers = sourceSheet.getRange(1, 1, 1, sourceSheet.getLastColumn()).getValues()[0];
@@ -901,11 +1027,8 @@ function EW_backfillOptionsPremiumsSelected() {
 
     if (!ticker || isNaN(strike) || !expDate) continue;
 
-    // Determine option type
-    let optionType = 'C';
-    if (strategyType === 'BEARISH') {
-      optionType = 'P';
-    }
+    // Determine option type: C for calls (bullish), P for puts (bearish)
+    let optionType = usesPuts ? 'P' : 'C';
 
     const position = {
       ticker: ticker,
@@ -914,7 +1037,7 @@ function EW_backfillOptionsPremiumsSelected() {
       runDate: runDate,
       optionType: optionType,
       entryPremium: entryPremium,
-      strategyType: strategyType
+      strategyType: strategyName
     };
 
     try {
@@ -938,7 +1061,7 @@ function EW_backfillOptionsPremiumsSelected() {
           outputSheet,
           position,
           premiumHistory,
-          strategyType
+          strategyName
         );
 
         processed++;
@@ -1009,9 +1132,23 @@ function EW_checkOptionsPremiumBackfillStatus() {
  * @param {string} strategyType - Strategy type (BULLISH, BEARISH, NEUTRAL)
  * @returns {Array} Array of position objects (newest first)
  */
-function EW_readOptionsPositions(sheet, strategyType) {
+/**
+ * Read options positions from a strategy sheet
+ * @param {Sheet} sheet - Source strategy sheet
+ * @param {string} strategyName - Strategy name (e.g., "Long Calls", "Bear Spreads")
+ * @param {boolean} includeExpired - Whether to include expired options (default: true for backfill)
+ * @returns {Array} Array of position objects
+ */
+function EW_readOptionsPositions(sheet, strategyName, includeExpired = true) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
+
+  // Determine option type based on strategy: Calls for bullish, Puts for bearish
+  const strategyUpper = strategyName.toUpperCase();
+  const isSpread = strategyUpper.includes('SPREAD');
+  const usesPuts = (strategyUpper.includes('LONG PUT') || strategyUpper.includes('LONG PUTS'))
+                   || (strategyUpper.includes('BEAR') && !isSpread)
+                   || strategyUpper.includes('COVERED');
 
   const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const hdrMap = {};
@@ -1051,8 +1188,27 @@ function EW_readOptionsPositions(sheet, strategyType) {
 
     const ticker = row[hdrMap.ticker];
     const strike = parseFloat(row[hdrMap.strike]);
-    const expDate = new Date(row[hdrMap.expDate]);
-    const runDate = hdrMap.runDate !== undefined ? new Date(row[hdrMap.runDate]) : null;
+
+    // Normalize expDate to date-only (strip time)
+    const rawExpDate = row[hdrMap.expDate];
+    const tempExpDate = new Date(rawExpDate);
+    const expDate = new Date(tempExpDate.getFullYear(), tempExpDate.getMonth(), tempExpDate.getDate(), 0, 0, 0, 0);
+
+    // Read and normalize runDate - handle both Date objects and date strings
+    const rawRunDate = hdrMap.runDate !== undefined ? row[hdrMap.runDate] : null;
+    let runDate = null;
+    if (rawRunDate) {
+      // Create a new Date and normalize to midnight using year/month/date constructor
+      // This avoids timezone issues with setHours
+      const tempDate = new Date(rawRunDate);
+      runDate = new Date(tempDate.getFullYear(), tempDate.getMonth(), tempDate.getDate(), 0, 0, 0, 0);
+    }
+
+    if (runDate && i === data.length - 1) {  // Log only first position (newest)
+      EW_trace('OPTIONS_BACKFILL', `[${ticker}] RAW runDate from sheet: ${rawRunDate} (type: ${typeof rawRunDate})`, false);
+      EW_trace('OPTIONS_BACKFILL', `[${ticker}] runDate AFTER normalization: ${Utilities.formatDate(runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd')}`, false);
+    }
+
     const entryPremium = hdrMap.entryPremium !== undefined ? parseFloat(row[hdrMap.entryPremium]) : null;
     const bid = hdrMap.bid !== undefined ? parseFloat(row[hdrMap.bid]) : null;
     const ask = hdrMap.ask !== undefined ? parseFloat(row[hdrMap.ask]) : null;
@@ -1061,47 +1217,70 @@ function EW_readOptionsPositions(sheet, strategyType) {
     // Skip if missing data
     if (!ticker || isNaN(strike) || !expDate) continue;
 
-    // FOR BACKFILL: Include expired positions (unlike the tracking version)
-    // if (expDate < today) continue;  // <-- COMMENTED OUT FOR BACKFILL
+    // Check expiration based on mode
+    if (!includeExpired && expDate < today) {
+      // Daily mode: Skip expired options
+      continue;
+    }
+    // Backfill mode: Include expired positions for historical data
 
     // Filter out weekend runDates - skip positions from Saturday/Sunday scans
     if (runDate) {
-      runDate.setHours(0, 0, 0, 0);
       const dayOfWeek = runDate.getDay();
-      const runDateStr = Utilities.formatDate(runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd (EEE)');
+      // const runDateStr = Utilities.formatDate(runDate, Session.getScriptTimeZone(), 'yyyy-MM-dd (EEE)');
 
       if (dayOfWeek === 0 || dayOfWeek === 6) {
         // Skip weekend entries - they cause API errors
-        EW_trace('OPTIONS_BACKFILL', `FILTERED OUT weekend runDate: ${ticker} ${runDateStr}`, false);
+        // EW_trace('OPTIONS_BACKFILL', `FILTERED OUT weekend runDate: ${ticker} ${runDateStr}`, false);
         continue;
       }
 
-      EW_trace('OPTIONS_BACKFILL', `ACCEPTED runDate: ${ticker} ${runDateStr} (day ${dayOfWeek})`, false);
+      // Skip today's positions unless it's after 4:30 PM EDT (market close + settlement time)
+      if (runDate.getTime() === today.getTime()) {
+        const now = new Date();
+        const edtOffset = -4 * 60; // EDT is UTC-4
+        const currentHourEDT = now.getUTCHours() + (edtOffset / 60);
+        const currentMinuteEDT = now.getUTCMinutes();
+        const currentTimeEDT = currentHourEDT + (currentMinuteEDT / 60);
+
+        // Market closes at 4:00 PM, data available after 4:30 PM EDT
+        const marketDataAvailableTime = 16.5; // 4:30 PM in decimal hours
+
+        if (currentTimeEDT < marketDataAvailableTime) {
+          // Skip today's positions - market data not yet available
+          continue;
+        }
+      }
+
+      // EW_trace('OPTIONS_BACKFILL', `ACCEPTED runDate: ${ticker} ${runDateStr} (day ${dayOfWeek})`, false);
 
       // Uncomment to only process today's scans:
       // if (runDate.getTime() !== today.getTime()) continue;
     }
 
-    // Determine option type based on strategy
-    let optionType = 'C'; // Default to Call
-    if (strategyType === 'BEARISH') {
-      optionType = 'P'; // Put for bearish strategies
-    }
+    // Determine option type: C for calls (bullish), P for puts (bearish)
+    let optionType = usesPuts ? 'P' : 'C';
+
+    const finalRunDate = runDate || today;
+
+    // EW_trace('OPTIONS_BACKFILL', `Adding position: ${ticker} runDate=${finalRunDate ? Utilities.formatDate(finalRunDate, Session.getScriptTimeZone(), 'yyyy-MM-dd') : 'NULL'} (from sheet: ${runDate ? 'YES' : 'NO, using today'})`, false);
 
     positions.push({
       ticker: ticker,
       strike: strike,
       expDate: expDate,
-      runDate: runDate || today,  // Use runDate from sheet, fallback to today
+      runDate: finalRunDate,  // Use runDate from sheet, fallback to today
       optionType: optionType,
       entryPremium: entryPremium,
       bid: bid,
       ask: ask,
       volume: volume,
       rowNum: i + 2,
-      strategyType: strategyType
+      strategyType: strategyName
     });
   }
+
+  EW_trace('OPTIONS_BACKFILL', `Total positions read: ${positions.length}`, false);
 
   return positions;
 }
@@ -1277,93 +1456,67 @@ function EW_setupOptionsPremiumSheet(sheet) {
     sheet.setColumnWidth(i + 1, widths[i]);
   }
 
-  // Format columns with proper data types - use header positions instead of hardcoded indexes
+  // Format columns with proper data types - use header map for consistency
   const maxRows = sheet.getMaxRows() - 1;
 
-  // Get column indexes from headers
-  const dateCol = headers.indexOf('Date') + 1;
-  const runDateCol = headers.indexOf('Run_Date') + 1;
-  const tickerCol = headers.indexOf('Ticker') + 1;
-  const strikeCol = headers.indexOf('Strike') + 1;
-  const typeCol = headers.indexOf('Type') + 1;
-  const expDateCol = headers.indexOf('ExpDate') + 1;
-  const bidHitPctCol = headers.indexOf('Bid_Hit_Pct') + 1;
-  const firstHitDateCol = headers.indexOf('First_Hit_Date') + 1;
-  const bidHitDaysCol = headers.indexOf('Bid_Hit_Days') + 1;
-  const askHitDaysCol = headers.indexOf('Ask_Hit_Days') + 1;
-  const maxFavCol = headers.indexOf('Max_Favorable') + 1;
-  const minUnfavCol = headers.indexOf('Min_Unfavorable') + 1;
-  const day0Col = headers.indexOf('Day0_Check') + 1;
-  const day13Col = headers.indexOf('Day13_Check') + 1;
-  const expResultCol = headers.indexOf('Exp_Result') + 1;
-  const riskRewardCol = headers.indexOf('Risk_Reward') + 1;
-  const ohlcCol = headers.indexOf('OHLC_Volume') + 1;
-  const bidCol = headers.indexOf('Bid') + 1;
-  const askCol = headers.indexOf('Ask') + 1;
-  const spreadCol = headers.indexOf('Spread') + 1;
-  const volumeCol = headers.indexOf('Volume') + 1;
-  const pnlHighCol = headers.indexOf('PnL_High') + 1;
-  const pnlHighPctCol = headers.indexOf('PnL_High_Pct') + 1;
-  const pnlLowCol = headers.indexOf('PnL_Low') + 1;
-  const pnlLowPctCol = headers.indexOf('PnL_Low_Pct') + 1;
-  const daysToExpCol = headers.indexOf('Days_To_Exp') + 1;
-  const apiUrlCol = headers.indexOf('API_URL') + 1;
+  // Get column indexes using EW_headerMap
+  const hdrMap = EW_headerMap(headers);
 
   // Date columns
-  [dateCol, runDateCol, expDateCol].forEach(col => {
-    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('yyyy-mm-dd');
+  [hdrMap.dateCol, hdrMap.runDateCol, hdrMap.expDateCol].forEach(col => {
+    if (col) sheet.getRange(2, col, maxRows, 1).setNumberFormat('yyyy-mm-dd');
   });
 
   // Text columns
-  [tickerCol, typeCol].forEach(col => {
-    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
+  [hdrMap.tickerCol, hdrMap.typeCol].forEach(col => {
+    if (col) sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
   });
 
   // Number columns
-  if (strikeCol > 0) sheet.getRange(2, strikeCol, maxRows, 1).setNumberFormat('0.00');
+  if (hdrMap.strikeCol) sheet.getRange(2, hdrMap.strikeCol, maxRows, 1).setNumberFormat('0.00');
 
   // JSON array columns
-  [bidHitPctCol, bidHitDaysCol, askHitDaysCol, maxFavCol, minUnfavCol, ohlcCol].forEach(col => {
-    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
+  [hdrMap.bidHitPctCol, hdrMap.bidHitDaysCol, hdrMap.askHitDaysCol, hdrMap.maxFavorableCol, hdrMap.minUnfavorableCol, hdrMap.ohlcVolumeCol].forEach(col => {
+    if (col) sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
   });
 
   // First_Hit_Date
-  if (firstHitDateCol > 0) sheet.getRange(2, firstHitDateCol, maxRows, 1).setNumberFormat('0');
+  if (hdrMap.firstHitDateCol) sheet.getRange(2, hdrMap.firstHitDateCol, maxRows, 1).setNumberFormat('0');
 
   // Day Check columns (Day0-Day13)
-  if (day0Col > 0 && day13Col > 0) {
-    for (let col = day0Col; col <= day13Col; col++) {
+  if (hdrMap.day0CheckCol && hdrMap.day13CheckCol) {
+    for (let col = hdrMap.day0CheckCol; col <= hdrMap.day13CheckCol; col++) {
       sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
     }
   }
 
   // Result columns
-  if (expResultCol > 0) sheet.getRange(2, expResultCol, maxRows, 1).setNumberFormat('@');
-  if (riskRewardCol > 0) sheet.getRange(2, riskRewardCol, maxRows, 1).setNumberFormat('0.00');
+  if (hdrMap.expResultCol) sheet.getRange(2, hdrMap.expResultCol, maxRows, 1).setNumberFormat('@');
+  if (hdrMap.riskRewardCol) sheet.getRange(2, hdrMap.riskRewardCol, maxRows, 1).setNumberFormat('0.00');
 
   // Premium data columns
-  [bidCol, askCol, spreadCol].forEach(col => {
-    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
+  [hdrMap.bidCol, hdrMap.askCol, hdrMap.spreadCol].forEach(col => {
+    if (col) sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
   });
 
   // Volume
-  if (volumeCol > 0) sheet.getRange(2, volumeCol, maxRows, 1).setNumberFormat('0');
+  if (hdrMap.volumeCol) sheet.getRange(2, hdrMap.volumeCol, maxRows, 1).setNumberFormat('0');
 
   // P/L dollar amounts
-  [pnlHighCol, pnlLowCol].forEach(col => {
-    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
+  [hdrMap.pnlHighCol, hdrMap.pnlLowCol].forEach(col => {
+    if (col) sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00');
   });
 
   // P/L percentages
-  [pnlHighPctCol, pnlLowPctCol].forEach(col => {
-    if (col > 0) sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00%');
+  [hdrMap.pnlHighPctCol, hdrMap.pnlLowPctCol].forEach(col => {
+    if (col) sheet.getRange(2, col, maxRows, 1).setNumberFormat('0.00%');
   });
 
   // Days to expiration
-  if (daysToExpCol > 0) sheet.getRange(2, daysToExpCol, maxRows, 1).setNumberFormat('0');
+  if (hdrMap.daysToExpCol) sheet.getRange(2, hdrMap.daysToExpCol, maxRows, 1).setNumberFormat('0');
 
   // API URL
-  if (apiUrlCol > 0) sheet.getRange(2, apiUrlCol, maxRows, 1).setNumberFormat('@');
+  if (hdrMap.apiUrlCol) sheet.getRange(2, hdrMap.apiUrlCol, maxRows, 1).setNumberFormat('@');
 
   // Freeze header row
   sheet.setFrozenRows(1);
@@ -1703,4 +1856,281 @@ function EW_extractYahooCookie(setCookieHeader) {
     .filter(Boolean);
 
   return parsed.join('; ');
+}
+
+// ========================================
+// DATA FIX FUNCTIONS
+// ========================================
+
+/**
+ * Fix PnL_High and PnL_Low columns to use historical OHLC highs/lows instead of current bid/ask
+ * This function recalculates P/L based on the OHLC_Volume array data
+ */
+function EW_fixOptionsPremiumPnL() {
+  const ss = SpreadsheetApp.getActive();
+  const optionStrategies = ['Long Calls', 'Bull Spreads', 'Bear Spreads', 'Strangles', 'Covered Calls'];
+
+  let totalFixed = 0;
+  const errors = [];
+
+  for (const strategyName of optionStrategies) {
+    const outputSheetName = `${strategyName} Options`;
+    const outputSheet = ss.getSheetByName(outputSheetName);
+
+    if (!outputSheet || outputSheet.getLastRow() < 2) {
+      continue;
+    }
+
+    try {
+      const fixed = EW_fixSheetPnL(outputSheet, strategyName);
+      totalFixed += fixed;
+      EW_trace('OPTIONS_PNL_FIX', `Fixed ${fixed} rows in ${strategyName}`);
+    } catch (error) {
+      const errorMsg = `${strategyName}: ${error.message}`;
+      errors.push(errorMsg);
+      EW_trace('OPTIONS_PNL_FIX', errorMsg, true);
+    }
+  }
+
+  SpreadsheetApp.flush();
+
+  const msg = `Fixed PnL columns for ${totalFixed} positions across ${optionStrategies.length} strategies.` +
+    (errors.length > 0 ? `\n\nErrors:\n${errors.join('\n')}` : '');
+
+  EW_trace('OPTIONS_PNL_FIX', msg, true);
+  if (EW_isSpreadsheetEnvironment()) {
+    EW_safeAlert('P/L Fix Complete', msg);
+  }
+
+  return msg;
+}
+
+/**
+ * Fix PnL columns for a single sheet
+ * @param {Sheet} sheet - Options tracking sheet
+ * @param {string} strategyName - Strategy name for logging
+ * @returns {number} Number of rows fixed
+ */
+function EW_fixSheetPnL(sheet, strategyName) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
+
+  // Validate required columns
+  if (!hdrMap.ohlcVolumeCol || !hdrMap.pnlHighCol || !hdrMap.pnlLowCol) {
+    EW_trace('OPTIONS_PNL_FIX', `${strategyName}: Missing required columns`, true);
+    return 0;
+  }
+
+  const lastRow = sheet.getLastRow();
+  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+
+  let fixedCount = 0;
+
+  for (let i = 0; i < data.length; i++) {
+    const rowNum = i + 2;
+    const row = data[i];
+
+    // Get entry price from Bid column
+    const entryPrice = hdrMap.bidCol ? parseFloat(row[hdrMap.bidCol - 1]) : null;
+    if (!entryPrice) continue;
+
+    // Get OHLC_Volume array
+    const ohlcVolumeJson = row[hdrMap.ohlcVolumeCol - 1];
+    if (!ohlcVolumeJson) continue;
+
+    let ohlcVolumeArray;
+    try {
+      ohlcVolumeArray = JSON.parse(ohlcVolumeJson);
+    } catch (error) {
+      continue;
+    }
+
+    // Find historical high and low
+    let historicalHigh = null;
+    let historicalLow = null;
+
+    for (const ohlc of ohlcVolumeArray) {
+      if (ohlc && ohlc.h !== null) {
+        const high = parseFloat(ohlc.h);
+        if (historicalHigh === null || high > historicalHigh) {
+          historicalHigh = high;
+        }
+      }
+      if (ohlc && ohlc.l !== null) {
+        const low = parseFloat(ohlc.l);
+        if (historicalLow === null || low < historicalLow) {
+          historicalLow = low;
+        }
+      }
+    }
+
+    // Calculate new P/L values
+    const entryCost = entryPrice * 100;
+    let pnlHigh = '';
+    let pnlHighPct = '';
+    let pnlLow = '';
+    let pnlLowPct = '';
+
+    if (historicalHigh !== null) {
+      pnlHigh = (historicalHigh - entryPrice) * 100;
+      pnlHighPct = Number((pnlHigh / entryCost).toFixed(6));
+    }
+
+    if (historicalLow !== null) {
+      pnlLow = (historicalLow - entryPrice) * 100;
+      pnlLowPct = Number((pnlLow / entryCost).toFixed(6));
+    }
+
+    // Update the cells
+    if (pnlHigh !== '') {
+      sheet.getRange(rowNum, hdrMap.pnlHighCol).setValue(pnlHigh);
+      if (hdrMap.pnlHighPctCol) {
+        sheet.getRange(rowNum, hdrMap.pnlHighPctCol).setValue(pnlHighPct);
+      }
+    }
+
+    if (pnlLow !== '') {
+      sheet.getRange(rowNum, hdrMap.pnlLowCol).setValue(pnlLow);
+      if (hdrMap.pnlLowPctCol) {
+        sheet.getRange(rowNum, hdrMap.pnlLowPctCol).setValue(pnlLowPct);
+      }
+    }
+
+    fixedCount++;
+  }
+
+  return fixedCount;
+}
+
+/**
+ * Fix Bid_Hit_Pct, Day check values, and First_Hit_Date using strategy-specific high/low logic
+ * This recalculates arrays from existing OHLC_Volume data
+ */
+function EW_fixOptionsPremiumArrays() {
+  const ss = SpreadsheetApp.getActive();
+  const optionStrategies = ['Long Calls', 'Bull Spreads', 'Bear Spreads', 'Strangles', 'Covered Calls'];
+
+  let totalFixed = 0;
+  const errors = [];
+
+  for (const strategyName of optionStrategies) {
+    const outputSheetName = `${strategyName} Options`;
+    const outputSheet = ss.getSheetByName(outputSheetName);
+
+    if (!outputSheet || outputSheet.getLastRow() < 2) {
+      continue;
+    }
+
+    try {
+      const fixed = EW_fixSheetArrays(outputSheet, strategyName);
+      totalFixed += fixed;
+      EW_trace('OPTIONS_ARRAY_FIX', `Fixed ${fixed} rows in ${strategyName}`, false);
+    } catch (error) {
+      const errorMsg = `${strategyName}: ${error.message}`;
+      errors.push(errorMsg);
+      EW_trace('OPTIONS_ARRAY_FIX', errorMsg, true);
+    }
+  }
+
+  SpreadsheetApp.flush();
+
+  const msg = `Fixed arrays for ${totalFixed} positions across ${optionStrategies.length} strategies.` +
+    (errors.length > 0 ? `\n\nErrors:\n${errors.join('\n')}` : '');
+
+  EW_trace('OPTIONS_ARRAY_FIX', msg, true);
+  if (EW_isSpreadsheetEnvironment()) {
+    EW_safeAlert('Array Fix Complete', msg);
+  }
+
+  return msg;
+}
+
+/**
+ * Fix arrays for a single sheet
+ */
+function EW_fixSheetArrays(sheet, strategyName) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hdrMap = EW_headerMap(headers);
+
+  // Validate required columns
+  if (!hdrMap.ohlcVolumeCol || !hdrMap.bidHitPctCol || !hdrMap.bidCol) {
+    EW_trace('OPTIONS_ARRAY_FIX', `${strategyName}: Missing required columns`, true);
+    return 0;
+  }
+
+  const lastRow = sheet.getLastRow();
+  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+
+  let fixedCount = 0;
+
+  for (let i = 0; i < data.length; i++) {
+    const rowNum = i + 2;
+    const row = data[i];
+
+    // Get entry price from Bid column
+    const entryPrice = hdrMap.bidCol ? parseFloat(row[hdrMap.bidCol - 1]) : null;
+    if (!entryPrice) continue;
+
+    // Get OHLC_Volume array
+    const ohlcVolumeJson = row[hdrMap.ohlcVolumeCol - 1];
+    if (!ohlcVolumeJson) continue;
+
+    let ohlcVolumeArray;
+    try {
+      ohlcVolumeArray = JSON.parse(ohlcVolumeJson);
+    } catch (error) {
+      continue;
+    }
+
+    const entryCost = entryPrice * 100;
+    const MAX_TRACKING_DAYS = 14;
+    const bidHitPctArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
+    let firstHitDate = '';
+
+    // Recalculate arrays using strategy-specific logic
+    for (let dayIndex = 0; dayIndex < ohlcVolumeArray.length && dayIndex < MAX_TRACKING_DAYS; dayIndex++) {
+      const ohlc = ohlcVolumeArray[dayIndex];
+      if (!ohlc) continue;
+
+      // Premium tracking: ALWAYS use HIGH for best profit opportunity
+      // Premium increases = profit, regardless of Call/Put strategy
+      const exitPrice = ohlc.h !== null ? parseFloat(ohlc.h) : null;
+
+      if (exitPrice !== null) {
+        const pnl = (exitPrice - entryPrice) * 100;
+        const pnlPct = pnl / entryCost;
+        bidHitPctArray[dayIndex] = pnlPct.toFixed(6);
+
+        // Check for first profitable day
+        if (firstHitDate === '' && pnlPct > 0) {
+          firstHitDate = dayIndex;
+        }
+
+        // Update Day check columns (Day0_Check through Day13_Check)
+        const dayCheckCol = dayIndex === 0 ? hdrMap.day0CheckCol :
+                            dayIndex === 1 ? hdrMap.day1CheckCol :
+                            dayIndex === 2 ? hdrMap.day2CheckCol :
+                            dayIndex === 3 ? hdrMap.day3CheckCol :
+                            dayIndex === 4 ? hdrMap.day4CheckCol :
+                            dayIndex === 5 ? hdrMap.day5CheckCol :
+                            dayIndex === 13 ? hdrMap.day13CheckCol : null;
+
+        if (dayCheckCol) {
+          sheet.getRange(rowNum, dayCheckCol).setValue(exitPrice);
+        }
+      }
+    }
+
+    // Update Bid_Hit_Pct array
+    sheet.getRange(rowNum, hdrMap.bidHitPctCol).setValue(JSON.stringify(bidHitPctArray));
+
+    // Update First_Hit_Date
+    if (hdrMap.hitDateCol) {
+      sheet.getRange(rowNum, hdrMap.hitDateCol).setValue(firstHitDate);
+    }
+
+    fixedCount++;
+  }
+
+  return fixedCount;
 }
