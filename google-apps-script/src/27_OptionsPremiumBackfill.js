@@ -444,7 +444,6 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   const strikeHitArray = Array(MAX_TRACKING_DAYS).fill('0.000000');  // Bid_Hit_Pct
   const maxFavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
   const minUnfavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
-  const bidHitDaysArray = Array(MAX_TRACKING_DAYS).fill('0.000000');  // Deprecated: duplicate of Bid_Hit_Pct, kept for compatibility
   const askHitDaysArray = Array(MAX_TRACKING_DAYS).fill('0.000000');  // Ask_Hit_Days: % profit when high > ask
   const ohlcVolumeArray = Array(MAX_TRACKING_DAYS).fill(null);
   const dayCheckValues = Array(MAX_TRACKING_DAYS).fill('');
@@ -546,8 +545,6 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
           const askPct = askPnl / askCost;
           askHitDaysArray[tradingDayIndex] = askPct.toFixed(6);
         }
-
-        // Note: Bid_Hit_Days removed - it was duplicate of Bid_Hit_Pct
 
         // Max favorable (highest premium during the day)
         // Force to 0 if negative (no favorable move = 0%)
@@ -674,7 +671,6 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
     expDateStr,                               // ExpDate - String
     JSON.stringify(strikeHitArray),           // Bid_Hit_Pct array
     hitDate,                                   // First_Hit_Date
-    JSON.stringify(bidHitDaysArray),          // Bid_Hit_Days array
     JSON.stringify(askHitDaysArray),          // Ask_Hit_Days array
     JSON.stringify(maxFavorableArray),        // Max_Favorable array
     JSON.stringify(minUnfavorableArray),      // Min_Unfavorable array
@@ -863,7 +859,6 @@ function EW_formatOptionsPremiumRow(sheet, rowNum) {
 
   // JSON arrays
   if (hdrMap.bidHitPctCol) sheet.getRange(rowNum, hdrMap.bidHitPctCol).setNumberFormat('@');
-  if (hdrMap.bidHitDaysCol) sheet.getRange(rowNum, hdrMap.bidHitDaysCol).setNumberFormat('@');
   if (hdrMap.askHitDaysCol) sheet.getRange(rowNum, hdrMap.askHitDaysCol).setNumberFormat('@');
   if (hdrMap.maxFavorableCol) sheet.getRange(rowNum, hdrMap.maxFavorableCol).setNumberFormat('@');
   if (hdrMap.minUnfavorableCol) sheet.getRange(rowNum, hdrMap.minUnfavorableCol).setNumberFormat('@');
@@ -1368,7 +1363,6 @@ function EW_setupOptionsPremiumSheet(sheet) {
     // Strike Hit Tracking
     'Bid_Hit_Pct',
     'First_Hit_Date',
-    'Bid_Hit_Days',
     'Ask_Hit_Days',
     'Max_Favorable',
     'Min_Unfavorable',
@@ -1427,7 +1421,6 @@ function EW_setupOptionsPremiumSheet(sheet) {
     100,  // ExpDate
     120,  // Bid_Hit_Pct (array)
     80,   // First_Hit_Date
-    120,  // Bid_Hit_Days (array)
     120,  // Ask_Hit_Days (array)
     120,  // Max_Favorable (array)
     120,  // Min_Unfavorable (array)
@@ -1484,7 +1477,7 @@ function EW_setupOptionsPremiumSheet(sheet) {
   if (hdrMap.strikeCol) sheet.getRange(2, hdrMap.strikeCol, maxRows, 1).setNumberFormat('0.00');
 
   // JSON array columns
-  [hdrMap.bidHitPctCol, hdrMap.bidHitDaysCol, hdrMap.askHitDaysCol, hdrMap.maxFavorableCol, hdrMap.minUnfavorableCol, hdrMap.ohlcVolumeCol].forEach(col => {
+  [hdrMap.bidHitPctCol, hdrMap.askHitDaysCol, hdrMap.maxFavorableCol, hdrMap.minUnfavorableCol, hdrMap.ohlcVolumeCol].forEach(col => {
     if (col) sheet.getRange(2, col, maxRows, 1).setNumberFormat('@');
   });
 
