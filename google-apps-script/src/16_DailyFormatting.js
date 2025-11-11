@@ -40,7 +40,10 @@ function EW_applyDailyFormatting() {
 
       // Check if sheet has Day Check columns to format
       if (hdrMap.day0CheckCol || hdrMap.day1CheckCol || hdrMap.day2CheckCol ||
-          hdrMap.day3CheckCol || hdrMap.day4CheckCol || hdrMap.day5CheckCol) {
+          hdrMap.day3CheckCol || hdrMap.day4CheckCol || hdrMap.day5CheckCol ||
+          hdrMap.day6CheckCol || hdrMap.day7CheckCol || hdrMap.day8CheckCol ||
+          hdrMap.day9CheckCol || hdrMap.day10CheckCol || hdrMap.day11CheckCol ||
+          hdrMap.day12CheckCol || hdrMap.day13CheckCol) {
 
         EW_formatDayCheckColumns(sheet, hdrMap, sheetName);
         formattedCount++;
@@ -98,14 +101,22 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
   const TEXT_DARK_RED = '#721c24';    // Dark red text for misses
   const TEXT_GRAY = '#6c757d';        // Gray text for no data
 
-  // Format each Day Check column
+  // Format each Day Check column (Day0-Day13)
   const dayCheckCols = [
     hdrMap.day0CheckCol,
     hdrMap.day1CheckCol,
     hdrMap.day2CheckCol,
     hdrMap.day3CheckCol,
     hdrMap.day4CheckCol,
-    hdrMap.day5CheckCol
+    hdrMap.day5CheckCol,
+    hdrMap.day6CheckCol,
+    hdrMap.day7CheckCol,
+    hdrMap.day8CheckCol,
+    hdrMap.day9CheckCol,
+    hdrMap.day10CheckCol,
+    hdrMap.day11CheckCol,
+    hdrMap.day12CheckCol,
+    hdrMap.day13CheckCol
   ];
 
   dayCheckCols.forEach((col, dayIndex) => {
@@ -262,7 +273,7 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
     const values = range.getValues();
     const backgrounds = [];
     const fontColors = [];
-    
+
     values.forEach(row => {
       const value = row[0];
       if (value && value !== '') {
@@ -273,14 +284,89 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
         fontColors.push([null]);
       }
     });
-    
+
     // Apply formatting
     if (backgrounds.length > 0) {
       range.setBackgrounds(backgrounds);
       range.setFontColors(fontColors);
     }
   }
-  
+
+  // Format Bid_Hit_Pct column if it exists (Options Premium sheets)
+  if (hdrMap.bidHitPctCol) {
+    const range = sheet.getRange(2, hdrMap.bidHitPctCol, lastRow - 1, 1);
+    const values = range.getValues();
+    const backgrounds = [];
+    const fontWeights = [];
+    const fontColors = [];
+
+    values.forEach(row => {
+      const value = row[0];
+
+      if (!value || value === '') {
+        backgrounds.push([null]);
+        fontWeights.push(['normal']);
+        fontColors.push([null]);
+      } else if (typeof value === 'string' && value.startsWith('[')) {
+        // Array format - check if any values show profit (> 0)
+        try {
+          const arr = JSON.parse(value);
+          const hasProfit = arr.some(v => v !== null && v !== 'null' && parseFloat(v) > 0);
+
+          if (hasProfit) {
+            backgrounds.push([GREEN]);
+            fontWeights.push(['bold']);
+            fontColors.push([TEXT_DARK_GREEN]);
+          } else {
+            backgrounds.push([GRAY]);
+            fontWeights.push(['normal']);
+            fontColors.push([TEXT_GRAY]);
+          }
+        } catch (e) {
+          backgrounds.push([null]);
+          fontWeights.push(['normal']);
+          fontColors.push([null]);
+        }
+      } else {
+        backgrounds.push([null]);
+        fontWeights.push(['normal']);
+        fontColors.push([null]);
+      }
+    });
+
+    // Apply formatting
+    if (backgrounds.length > 0) {
+      range.setBackgrounds(backgrounds);
+      range.setFontWeights(fontWeights);
+      range.setFontColors(fontColors);
+    }
+  }
+
+  // Format First_Hit_Date column if it exists (Options Premium sheets)
+  if (hdrMap.firstHitDateCol) {
+    const range = sheet.getRange(2, hdrMap.firstHitDateCol, lastRow - 1, 1);
+    const values = range.getValues();
+    const backgrounds = [];
+    const fontColors = [];
+
+    values.forEach(row => {
+      const value = row[0];
+      if (value && value !== '') {
+        backgrounds.push([GREEN]);
+        fontColors.push([TEXT_DARK_GREEN]);
+      } else {
+        backgrounds.push([null]);
+        fontColors.push([null]);
+      }
+    });
+
+    // Apply formatting
+    if (backgrounds.length > 0) {
+      range.setBackgrounds(backgrounds);
+      range.setFontColors(fontColors);
+    }
+  }
+
   // Format Exp_Result column if it exists
   if (hdrMap.expResultCol) {
     const range = sheet.getRange(2, hdrMap.expResultCol, lastRow - 1, 1);
