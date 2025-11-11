@@ -539,18 +539,18 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
           }
         }
 
-        // Max favorable (highest premium during the day)
+        // Max favorable (highest premium during the day - actual value, not forced to 0)
         if (dayData.high !== null) {
           const maxPnl = (dayData.high - position.bid) * 100;
           const maxPct = maxPnl / entryCost;
-          maxFavorableArray[tradingDayIndex] = Math.max(maxPct, 0).toFixed(6);
+          maxFavorableArray[tradingDayIndex] = maxPct.toFixed(6);
         }
 
-        // Min unfavorable (lowest premium during the day)
+        // Min unfavorable (lowest premium during the day - actual value, not forced to 0)
         if (dayData.low !== null) {
           const minPnl = (dayData.low - position.bid) * 100;
           const minPct = minPnl / entryCost;
-          minUnfavorableArray[tradingDayIndex] = Math.min(minPct, 0).toFixed(6);
+          minUnfavorableArray[tradingDayIndex] = minPct.toFixed(6);
         }
 
         // TODO: Bid_Hit_Days and Ask_Hit_Days logic removed because position.bid is the entry price
@@ -2085,6 +2085,8 @@ function EW_fixSheetArrays(sheet, strategyName) {
     const entryCost = entryPrice * 100;
     const MAX_TRACKING_DAYS = 14;
     const bidHitPctArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
+    const maxFavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
+    const minUnfavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
     let firstHitDate = '';
 
     // Recalculate arrays using strategy-specific logic
@@ -2113,20 +2115,53 @@ function EW_fixSheetArrays(sheet, strategyName) {
                             dayIndex === 3 ? hdrMap.day3CheckCol :
                             dayIndex === 4 ? hdrMap.day4CheckCol :
                             dayIndex === 5 ? hdrMap.day5CheckCol :
+                            dayIndex === 6 ? hdrMap.day6CheckCol :
+                            dayIndex === 7 ? hdrMap.day7CheckCol :
+                            dayIndex === 8 ? hdrMap.day8CheckCol :
+                            dayIndex === 9 ? hdrMap.day9CheckCol :
+                            dayIndex === 10 ? hdrMap.day10CheckCol :
+                            dayIndex === 11 ? hdrMap.day11CheckCol :
+                            dayIndex === 12 ? hdrMap.day12CheckCol :
                             dayIndex === 13 ? hdrMap.day13CheckCol : null;
 
         if (dayCheckCol) {
           sheet.getRange(rowNum, dayCheckCol).setValue(exitPrice);
         }
       }
+
+      // Max favorable (highest premium during the day - actual value, not forced to 0)
+      const high = ohlc.h !== null ? parseFloat(ohlc.h) : null;
+      if (high !== null) {
+        const maxPnl = (high - entryPrice) * 100;
+        const maxPct = maxPnl / entryCost;
+        maxFavorableArray[dayIndex] = maxPct.toFixed(6);
+      }
+
+      // Min unfavorable (lowest premium during the day - actual value, not forced to 0)
+      const low = ohlc.l !== null ? parseFloat(ohlc.l) : null;
+      if (low !== null) {
+        const minPnl = (low - entryPrice) * 100;
+        const minPct = minPnl / entryCost;
+        minUnfavorableArray[dayIndex] = minPct.toFixed(6);
+      }
     }
 
     // Update Bid_Hit_Pct array
     sheet.getRange(rowNum, hdrMap.bidHitPctCol).setValue(JSON.stringify(bidHitPctArray));
 
-    // Update First_Hit_Date
-    if (hdrMap.hitDateCol) {
-      sheet.getRange(rowNum, hdrMap.hitDateCol).setValue(firstHitDate);
+    // Update Max_Favorable array
+    if (hdrMap.maxFavorableCol) {
+      sheet.getRange(rowNum, hdrMap.maxFavorableCol).setValue(JSON.stringify(maxFavorableArray));
+    }
+
+    // Update Min_Unfavorable array
+    if (hdrMap.minUnfavorableCol) {
+      sheet.getRange(rowNum, hdrMap.minUnfavorableCol).setValue(JSON.stringify(minUnfavorableArray));
+    }
+
+    // Update First_Hit_Date (FIXED: was using hitDateCol instead of firstHitDateCol)
+    if (hdrMap.firstHitDateCol) {
+      sheet.getRange(rowNum, hdrMap.firstHitDateCol).setValue(firstHitDate);
     }
 
     fixedCount++;
