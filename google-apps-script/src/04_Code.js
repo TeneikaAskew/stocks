@@ -980,7 +980,6 @@ function EW_headerMap(headerRow) {
   const dateCol         = find(['Date']);
   const typeCol         = find(['Type']);
   const bidHitPctCol    = find(['Bid_Hit_Pct']);
-  const bidHitDaysCol   = find(['Bid_Hit_Days']);
   const askHitDaysCol   = find(['Ask_Hit_Days']);
   const pnlHighCol      = find(['PnL_High']);
   const pnlHighPctCol   = find(['PnL_High_Pct']);
@@ -1017,7 +1016,7 @@ function EW_headerMap(headerRow) {
     entryRSICol, entryEMA9Col, entryEMA21Col, entrySMA20Col, entrySMA50Col,
     entryVWAPCol, entryRVOLCol, entryATRCol, entryPriceVsSMA20Col, entryPriceVsVWAPCol,
     // Options Premium Backfill specific
-    dateCol, typeCol, bidHitPctCol, bidHitDaysCol, askHitDaysCol,
+    dateCol, typeCol, bidHitPctCol, askHitDaysCol,
     pnlHighCol, pnlHighPctCol, pnlLowCol, pnlLowPctCol, apiUrlCol,
     width: headerRow.length
   };
