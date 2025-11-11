@@ -876,6 +876,13 @@ function EW_headerMap(headerRow) {
   const day3CheckCol    = find(['Day3_Check']);
   const day4CheckCol    = find(['Day4_Check']);
   const day5CheckCol    = find(['Day5_Check']);
+  const day6CheckCol    = find(['Day6_Check']);
+  const day7CheckCol    = find(['Day7_Check']);
+  const day8CheckCol    = find(['Day8_Check']);
+  const day9CheckCol    = find(['Day9_Check']);
+  const day10CheckCol   = find(['Day10_Check']);
+  const day11CheckCol   = find(['Day11_Check']);
+  const day12CheckCol   = find(['Day12_Check']);
   const day13CheckCol   = find(['Day13_Check']);
   const expResultCol    = find(['Exp_Result']);
   const successScoreCol = find(['Success_Score']);
@@ -986,7 +993,9 @@ function EW_headerMap(headerRow) {
     volCol, avgVol10Col, mcapCol, peCol, betaCol,
     hv30Col, rvol10Col, ret5Col, ret20Col, gapPctCol,
     daysToExpCol, strikeHitCol, hitDateCol, maxFavorableCol, minUnfavorableCol,
-    day0CheckCol, day1CheckCol, day2CheckCol, day3CheckCol, day4CheckCol, day5CheckCol, day13CheckCol, expResultCol,
+    day0CheckCol, day1CheckCol, day2CheckCol, day3CheckCol, day4CheckCol, day5CheckCol,
+    day6CheckCol, day7CheckCol, day8CheckCol, day9CheckCol, day10CheckCol, day11CheckCol, day12CheckCol, day13CheckCol,
+    expResultCol,
     successScoreCol, riskRewardCol,
     historicalHighCol, historicalLowCol, everHitStrikeCol, firstHitDateCol,
     lastUpdateCol, totalHitDaysCol, ohlcVolumeCol,
