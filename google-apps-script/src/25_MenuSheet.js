@@ -98,7 +98,8 @@ function EW_parseMenuStructure() {
     {
       name: '📈 Options Backfill',
       items: [
-        { label: 'Backfill Options Premium History', function: 'EW_backfillOptionsPremiumHistory', description: 'Fill historical premium data for all option positions' },
+        { label: 'Backfill Options Premium History', function: 'EW_backfillOptionsPremiumHistory', description: 'Fill historical premium data for all option positions (includes expired)' },
+        { label: 'Update Daily Options Premium', function: 'EW_updateDailyOptionsPremiumHistory', description: 'Daily update for active options only (skips expired)' },
         { label: 'Backfill Selected Options', function: 'EW_backfillOptionsPremiumsSelected', description: 'Fill premium history for selected option rows' },
         { label: 'Check Options Backfill Status', function: 'EW_checkOptionsPremiumBackfillStatus', description: 'View options backfill progress' }
       ]
@@ -111,6 +112,13 @@ function EW_parseMenuStructure() {
         { label: 'Setup Triggers', function: 'EW_setupTriggers', description: 'Configure automated triggers' },
         { label: 'Delete All Triggers', function: 'EW_deleteTriggers', description: 'Remove all automated triggers' },
         { label: 'List Triggers', function: 'EW_listTriggers', description: 'View configured triggers' }
+      ]
+    },
+    {
+      name: '🔧 Calculations & Data Fixes',
+      items: [
+        { label: 'Fix Options Premium P/L', function: 'EW_fixOptionsPremiumPnL', description: 'Recalculate PnL_High and PnL_Low from historical OHLC data' },
+        { label: 'Fix Options Premium Arrays', function: 'EW_fixOptionsPremiumArrays', description: 'Recalculate Bid_Hit_Pct, Day check values, and First_Hit_Date from OHLC data (uses HIGH for profit tracking)' }
       ]
     },
     {

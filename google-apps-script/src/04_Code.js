@@ -77,6 +77,9 @@ function onOpen() {
         .addItem('Fix Hit_Date (Selected)', 'EW_fixHitDatesForSelected')
         .addSeparator()
         .addItem('Fix Strike_Hit Values', 'EW_fixStrikeHitValues')
+        .addSeparator()
+        .addItem('Fix Options Premium P/L', 'EW_fixOptionsPremiumPnL')
+        .addItem('Fix Options Premium Arrays', 'EW_fixOptionsPremiumArrays')
       )
     )
     
@@ -873,6 +876,7 @@ function EW_headerMap(headerRow) {
   const day3CheckCol    = find(['Day3_Check']);
   const day4CheckCol    = find(['Day4_Check']);
   const day5CheckCol    = find(['Day5_Check']);
+  const day13CheckCol   = find(['Day13_Check']);
   const expResultCol    = find(['Exp_Result']);
   const successScoreCol = find(['Success_Score']);
   // Removed profitPotentialCol - duplicates Max_Favorable
@@ -962,6 +966,18 @@ function EW_headerMap(headerRow) {
   const entryPriceVsSMA20Col = find(['Entry_PriceVsSMA20']);
   const entryPriceVsVWAPCol = find(['Entry_PriceVsVWAP']);
 
+  // Options Premium Backfill specific columns
+  const dateCol         = find(['Date']);
+  const typeCol         = find(['Type']);
+  const bidHitPctCol    = find(['Bid_Hit_Pct']);
+  const bidHitDaysCol   = find(['Bid_Hit_Days']);
+  const askHitDaysCol   = find(['Ask_Hit_Days']);
+  const pnlHighCol      = find(['PnL_High']);
+  const pnlHighPctCol   = find(['PnL_High_Pct']);
+  const pnlLowCol       = find(['PnL_Low']);
+  const pnlLowPctCol    = find(['PnL_Low_Pct']);
+  const apiUrlCol       = find(['API_URL']);
+
   return {
     byName, byNorm,
     runDateCol, tickerCol, strategyCol, strikeCol, expDateCol,
@@ -970,7 +986,7 @@ function EW_headerMap(headerRow) {
     volCol, avgVol10Col, mcapCol, peCol, betaCol,
     hv30Col, rvol10Col, ret5Col, ret20Col, gapPctCol,
     daysToExpCol, strikeHitCol, hitDateCol, maxFavorableCol, minUnfavorableCol,
-    day0CheckCol, day1CheckCol, day2CheckCol, day3CheckCol, day4CheckCol, day5CheckCol, expResultCol,
+    day0CheckCol, day1CheckCol, day2CheckCol, day3CheckCol, day4CheckCol, day5CheckCol, day13CheckCol, expResultCol,
     successScoreCol, riskRewardCol,
     historicalHighCol, historicalLowCol, everHitStrikeCol, firstHitDateCol,
     lastUpdateCol, totalHitDaysCol, ohlcVolumeCol,
@@ -988,6 +1004,9 @@ function EW_headerMap(headerRow) {
     // Entry indicators
     entryRSICol, entryEMA9Col, entryEMA21Col, entrySMA20Col, entrySMA50Col,
     entryVWAPCol, entryRVOLCol, entryATRCol, entryPriceVsSMA20Col, entryPriceVsVWAPCol,
+    // Options Premium Backfill specific
+    dateCol, typeCol, bidHitPctCol, bidHitDaysCol, askHitDaysCol,
+    pnlHighCol, pnlHighPctCol, pnlLowCol, pnlLowPctCol, apiUrlCol,
     width: headerRow.length
   };
 }
