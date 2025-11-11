@@ -12,36 +12,45 @@ function EW_applyDailyFormatting() {
   const startTime = new Date();
   EW_trace('FORMATTING', 'Starting daily formatting for all sheets', true);
   console.log(`FORMATTING: Daily formatting started at ${startTime.toISOString()}`);
-  
+
   const ss = SpreadsheetApp.getActive();
   const strategies = Object.keys(EW.STRATEGY_ENDPOINTS);
   let formattedCount = 0;
   let errors = [];
-  
-  for (const strategy of strategies) {
+
+  // Build list of all sheets to format (strategy sheets + options premium sheets)
+  const sheetsToFormat = [...strategies];
+
+  // Add Options Premium sheets (e.g., "Long Calls Options", "Bull Spreads Options")
+  const optionStrategies = ['Long Calls', 'Bull Spreads', 'Bear Spreads', 'Strangles', 'Covered Calls'];
+  optionStrategies.forEach(strategyName => {
+    sheetsToFormat.push(`${strategyName} Options`);
+  });
+
+  for (const sheetName of sheetsToFormat) {
     try {
-      const sheet = ss.getSheetByName(strategy);
+      const sheet = ss.getSheetByName(sheetName);
       if (!sheet || sheet.getLastRow() < 2) {
         continue;
       }
-      
+
       // Get header map
       const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
       const hdrMap = EW_headerMap(headers);
-      
+
       // Check if sheet has Day Check columns to format
-      if (hdrMap.day0CheckCol || hdrMap.day1CheckCol || hdrMap.day2CheckCol || 
+      if (hdrMap.day0CheckCol || hdrMap.day1CheckCol || hdrMap.day2CheckCol ||
           hdrMap.day3CheckCol || hdrMap.day4CheckCol || hdrMap.day5CheckCol) {
-        
-        EW_formatDayCheckColumns(sheet, hdrMap, strategy);
+
+        EW_formatDayCheckColumns(sheet, hdrMap, sheetName);
         formattedCount++;
-        EW_trace('FORMATTING', `Applied formatting to ${strategy}`);
-        console.log(`FORMATTING: Formatted ${strategy} sheet`);
+        EW_trace('FORMATTING', `Applied formatting to ${sheetName}`);
+        console.log(`FORMATTING: Formatted ${sheetName} sheet`);
       }
     } catch (e) {
-      errors.push(`${strategy}: ${e.message}`);
-      EW_trace('FORMATTING', `Error formatting ${strategy}: ${e.message}`, true);
-      console.error(`FORMATTING ERROR: ${strategy} - ${e.message}`);
+      errors.push(`${sheetName}: ${e.message}`);
+      EW_trace('FORMATTING', `Error formatting ${sheetName}: ${e.message}`, true);
+      console.error(`FORMATTING ERROR: ${sheetName} - ${e.message}`);
     }
   }
   
