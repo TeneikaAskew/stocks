@@ -1,8 +1,14 @@
 /**
- * Detect strategy type from sheet name
- * @param {string} strategyName - Sheet name (e.g., 'Long Calls', 'Long Puts', 'Bull Spreads')
- * @returns {string} 'BULLISH', 'BEARISH', or 'NEUTRAL'
+ * DEPRECATED: This file is no longer used.
+ * Strategy detection is now done inline in 27_OptionsPremiumBackfill.js
+ * using the same logic as 09_HistoricalBackfill.js
+ *
+ * Commenting out to avoid confusion.
  */
+
+/*
+// DEPRECATED - DO NOT USE
+// Strategy detection is now done inline in backfill functions
 function EW_detectStrategyType(strategyName) {
   const strategyUpper = strategyName.toUpperCase();
 
@@ -30,12 +36,11 @@ function EW_detectStrategyType(strategyName) {
   // Default to bullish if unknown
   return 'BULLISH';
 }
+*/
 
-/**
- * Fetch underlying stock OHLC data for multiple tickers in one batch call
- * @param {Array} positions - Array of positions
- * @returns {Object} Map of ticker -> stock OHLC data
- */
+/*
+// DEPRECATED - NEVER USED
+// Batch fetching is not currently used anywhere in the codebase
 function EW_fetchStockOHLCBatch(positions) {
   const stockDataMap = {};
 
@@ -95,3 +100,4 @@ function EW_fetchStockOHLCBatch(positions) {
 
   return stockDataMap;
 }
+*/
