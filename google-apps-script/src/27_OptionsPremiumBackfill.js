@@ -441,11 +441,11 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
   const MAX_TRACKING_DAYS = 14;
 
   // Prepare arrays
-  const strikeHitArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
+  const strikeHitArray = Array(MAX_TRACKING_DAYS).fill('0.000000');  // Bid_Hit_Pct
   const maxFavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
   const minUnfavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
-  const bidHitDaysArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
-  const askHitDaysArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
+  const bidHitDaysArray = Array(MAX_TRACKING_DAYS).fill('0.000000');  // Deprecated: duplicate of Bid_Hit_Pct, kept for compatibility
+  const askHitDaysArray = Array(MAX_TRACKING_DAYS).fill('0.000000');  // Ask_Hit_Days: % profit when high > ask
   const ohlcVolumeArray = Array(MAX_TRACKING_DAYS).fill(null);
   const dayCheckValues = Array(MAX_TRACKING_DAYS).fill('');
 
@@ -527,7 +527,7 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
         // Premium increases = profit, regardless of Call/Put strategy
         const exitPrice = dayData.high;
 
-        // Bid_Hit_Pct: Daily profit/loss percentage
+        // Bid_Hit_Pct: Daily profit/loss percentage (high vs bid)
         if (exitPrice !== null) {
           const pnl = (exitPrice - position.bid) * 100;
           const pnlPct = pnl / entryCost;
@@ -538,6 +538,16 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
             hitDate = tradingDayIndex;
           }
         }
+
+        // Ask_Hit_Days: % profit when high > ask (using ask as threshold)
+        if (position.ask && dayData.high !== null) {
+          const askCost = position.ask * 100;
+          const askPnl = (dayData.high - position.ask) * 100;
+          const askPct = askPnl / askCost;
+          askHitDaysArray[tradingDayIndex] = askPct.toFixed(6);
+        }
+
+        // Note: Bid_Hit_Days removed - it was duplicate of Bid_Hit_Pct
 
         // Max favorable (highest premium during the day)
         // Force to 0 if negative (no favorable move = 0%)
@@ -554,10 +564,6 @@ function EW_updateOptionsPremiumBackfillRow(outputSheet, position, premiumHistor
           const minPct = minPnl / entryCost;
           minUnfavorableArray[tradingDayIndex] = Math.min(minPct, 0).toFixed(6);
         }
-
-        // TODO: Bid_Hit_Days and Ask_Hit_Days logic removed because position.bid is the entry price
-        // If these arrays need to track something else (e.g., current bid/ask from source sheet),
-        // the logic needs to be redesigned with different target values
       }
     }
 
@@ -2128,9 +2134,13 @@ function EW_fixSheetArrays(sheet, strategyName) {
     const entryCost = entryPrice * 100;
     const MAX_TRACKING_DAYS = 14;
     const bidHitPctArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
+    const askHitDaysArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
     const maxFavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
     const minUnfavorableArray = Array(MAX_TRACKING_DAYS).fill('0.000000');
     let firstHitDate = '';
+
+    // Get Ask price for Ask_Hit_Days calculation
+    const askPrice = hdrMap.askCol ? parseFloat(row[hdrMap.askCol - 1]) : null;
 
     // Recalculate arrays using strategy-specific logic
     for (let dayIndex = 0; dayIndex < ohlcVolumeArray.length && dayIndex < MAX_TRACKING_DAYS; dayIndex++) {
@@ -2179,6 +2189,14 @@ function EW_fixSheetArrays(sheet, strategyName) {
         const maxPnl = (high - entryPrice) * 100;
         const maxPct = maxPnl / entryCost;
         maxFavorableArray[dayIndex] = Math.max(maxPct, 0).toFixed(6);
+
+        // Ask_Hit_Days: % profit when high > ask
+        if (askPrice) {
+          const askCost = askPrice * 100;
+          const askPnl = (high - askPrice) * 100;
+          const askPct = askPnl / askCost;
+          askHitDaysArray[dayIndex] = askPct.toFixed(6);
+        }
       }
 
       // Min unfavorable (lowest premium during the day)
@@ -2193,6 +2211,11 @@ function EW_fixSheetArrays(sheet, strategyName) {
 
     // Update Bid_Hit_Pct array
     sheet.getRange(rowNum, hdrMap.bidHitPctCol).setValue(JSON.stringify(bidHitPctArray));
+
+    // Update Ask_Hit_Days array
+    if (hdrMap.askHitDaysCol) {
+      sheet.getRange(rowNum, hdrMap.askHitDaysCol).setValue(JSON.stringify(askHitDaysArray));
+    }
 
     // Update Max_Favorable array
     if (hdrMap.maxFavorableCol) {
