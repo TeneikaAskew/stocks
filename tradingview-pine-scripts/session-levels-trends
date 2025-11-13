@@ -391,6 +391,19 @@ var float pmLow = na
 var float todayOpen = na
 var bool gapFilled = false
 
+// Track previous values to detect changes
+var float prev_pdh = na
+var float prev_pdl = na
+var float prev_pdc = na
+var float prev_pwh = na
+var float prev_pwl = na
+var float prev_pwc = na
+var float prev_pmoh = na
+var float prev_pmol = na
+var float prev_pmoc = na
+var float prev_pmHigh = na
+var float prev_pmLow = na
+
 // Persistent variables for labels
 var label lblPMOH = na
 var label lblPMOL = na
@@ -409,90 +422,125 @@ var label lblPmML = na
 var label lblPmM50 = na
 var label lblGapFilled = na
 
-// Line drawing function - SIMPLIFIED
-drawLine(line existingLine, float yValue, color lineColor, string labelText, string lineStyle = line.style_solid) =>
-    result = existingLine
-    if na(existingLine)
-        result := line.new(bar_index, yValue, bar_index, yValue,
-                          extend=extend.right, color=lineColor, width=2, style=lineStyle)
-    else
-        line.set_y1(result, yValue)
-        line.set_y2(result, yValue)
-        line.set_x2(result, bar_index)
-        line.set_color(result, lineColor)
-    result
+// Helper function to delete line if it exists
+deleteLine(line l) =>
+    if not na(l)
+        line.delete(l)
+    na
 
-// Draw Previous Day levels
+// Helper function to delete label if it exists
+deleteLabel(label l) =>
+    if not na(l)
+        label.delete(l)
+    na
+
+// Draw Previous Day levels - only recreate if values changed
 if showPD
-    lPDH := drawLine(lPDH, pdh, colPD, "PDH")
-    lPDL := drawLine(lPDL, pdl, colPD_f, "PDL")
-    lPDC := drawLine(lPDC, pdc, colPC, "PDC")
+    pdChanged = pdh != prev_pdh or pdl != prev_pdl or pdc != prev_pdc
 
-    // Draw 50% midpoint level for Previous Day
-    if show50Pct
-        pd50 = (pdh + pdl) / 2
-        lPD50 := drawLine(lPD50, pd50, color.new(colPD_input, 60), "PD 50%", line.style_dashed)
+    if pdChanged or na(lPDH)
+        // Delete old lines and labels
+        lPDH := deleteLine(lPDH)
+        lPDL := deleteLine(lPDL)
+        lPDC := deleteLine(lPDC)
+        lPD50 := deleteLine(lPD50)
+        lblPDH := deleteLabel(lblPDH)
+        lblPDL := deleteLabel(lblPDL)
+        lblPDC := deleteLabel(lblPDC)
+        lblPD50 := deleteLabel(lblPD50)
 
-    if barstate.islast
-        label.delete(lblPDH)
-        label.delete(lblPDL)
-        label.delete(lblPDC)
-        label.delete(lblPD50)
-        lblPDH := label.new(bar_index + 10, pdh, "PDH", style=label.style_label_left, color=colPD, textcolor=color.white, size=size.tiny)
-        lblPDL := label.new(bar_index + 10, pdl, "PDL", style=label.style_label_left, color=colPD_f, textcolor=color.white, size=size.tiny)
-        lblPDC := label.new(bar_index + 10, pdc, "PDC", style=label.style_label_left, color=colPC, textcolor=color.white, size=size.tiny)
+        // Create new lines
+        lPDH := line.new(bar_index, pdh, bar_index, pdh, extend=extend.right, color=colPD, width=2, style=line.style_solid)
+        lPDL := line.new(bar_index, pdl, bar_index, pdl, extend=extend.right, color=colPD_f, width=2, style=line.style_solid)
+        lPDC := line.new(bar_index, pdc, bar_index, pdc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
 
+        // Create labels
+        lblPDH := label.new(bar_index, pdh, "PDH", style=label.style_label_left, color=colPD, textcolor=color.white, size=size.tiny)
+        lblPDL := label.new(bar_index, pdl, "PDL", style=label.style_label_left, color=colPD_f, textcolor=color.white, size=size.tiny)
+        lblPDC := label.new(bar_index, pdc, "PDC", style=label.style_label_left, color=colPC, textcolor=color.white, size=size.tiny)
+
+        // Draw 50% midpoint level
         if show50Pct
             pd50 = (pdh + pdl) / 2
-            lblPD50 := label.new(bar_index + 10, pd50, "PD 50%", style=label.style_label_left, color=color.new(colPD_input, 60), textcolor=color.white, size=size.tiny)
+            lPD50 := line.new(bar_index, pd50, bar_index, pd50, extend=extend.right, color=color.new(colPD_input, 60), width=2, style=line.style_dashed)
+            lblPD50 := label.new(bar_index, pd50, "PD 50%", style=label.style_label_left, color=color.new(colPD_input, 60), textcolor=color.white, size=size.tiny)
 
-// Draw Previous Month levels
+        // Update tracked values
+        prev_pdh := pdh
+        prev_pdl := pdl
+        prev_pdc := pdc
+
+// Draw Previous Month levels - only recreate if values changed
 if showPMO
-    lPMOH := drawLine(lPMOH, pmoh, colPMO, "PMOH")
-    lPMOL := drawLine(lPMOL, pmol, colPMO_f, "PMOL")
-    lPMOC := drawLine(lPMOC, pmoc, colPC, "PMOC")
+    pmoChanged = pmoh != prev_pmoh or pmol != prev_pmol or pmoc != prev_pmoc
 
-    // Draw 50% midpoint level for Previous Month
-    if show50Pct
-        pmo50 = (pmoh + pmol) / 2
-        lPMO50 := drawLine(lPMO50, pmo50, color.new(colPMO_input, 60), "PMO 50%", line.style_dashed)
+    if pmoChanged or na(lPMOH)
+        // Delete old lines and labels
+        lPMOH := deleteLine(lPMOH)
+        lPMOL := deleteLine(lPMOL)
+        lPMOC := deleteLine(lPMOC)
+        lPMO50 := deleteLine(lPMO50)
+        lblPMOH := deleteLabel(lblPMOH)
+        lblPMOL := deleteLabel(lblPMOL)
+        lblPMOC := deleteLabel(lblPMOC)
+        lblPMO50 := deleteLabel(lblPMO50)
 
-    if barstate.islast
-        label.delete(lblPMOH)
-        label.delete(lblPMOL)
-        label.delete(lblPMOC)
-        label.delete(lblPMO50)
-        lblPMOH := label.new(bar_index + 10, pmoh, "PMOH", style=label.style_label_left, color=colPMO, textcolor=color.white, size=size.tiny)
-        lblPMOL := label.new(bar_index + 10, pmol, "PMOL", style=label.style_label_left, color=colPMO_f, textcolor=color.white, size=size.tiny)
-        lblPMOC := label.new(bar_index + 10, pmoc, "PMOC", style=label.style_label_left, color=colPC, textcolor=color.white, size=size.tiny)
+        // Create new lines
+        lPMOH := line.new(bar_index, pmoh, bar_index, pmoh, extend=extend.right, color=colPMO, width=2, style=line.style_solid)
+        lPMOL := line.new(bar_index, pmol, bar_index, pmol, extend=extend.right, color=colPMO_f, width=2, style=line.style_solid)
+        lPMOC := line.new(bar_index, pmoc, bar_index, pmoc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
 
+        // Create labels
+        lblPMOH := label.new(bar_index, pmoh, "PMOH", style=label.style_label_left, color=colPMO, textcolor=color.white, size=size.tiny)
+        lblPMOL := label.new(bar_index, pmol, "PMOL", style=label.style_label_left, color=colPMO_f, textcolor=color.white, size=size.tiny)
+        lblPMOC := label.new(bar_index, pmoc, "PMOC", style=label.style_label_left, color=colPC, textcolor=color.white, size=size.tiny)
+
+        // Draw 50% midpoint level
         if show50Pct
             pmo50 = (pmoh + pmol) / 2
-            lblPMO50 := label.new(bar_index + 10, pmo50, "PMO 50%", style=label.style_label_left, color=color.new(colPMO_input, 60), textcolor=color.white, size=size.tiny)
+            lPMO50 := line.new(bar_index, pmo50, bar_index, pmo50, extend=extend.right, color=color.new(colPMO_input, 60), width=2, style=line.style_dashed)
+            lblPMO50 := label.new(bar_index, pmo50, "PMO 50%", style=label.style_label_left, color=color.new(colPMO_input, 60), textcolor=color.white, size=size.tiny)
 
-// Draw Previous Week levels
+        // Update tracked values
+        prev_pmoh := pmoh
+        prev_pmol := pmol
+        prev_pmoc := pmoc
+
+// Draw Previous Week levels - only recreate if values changed
 if showPW
-    lPWH := drawLine(lPWH, pwh, colPW, "PWH")
-    lPWL := drawLine(lPWL, pwl, colPW_f, "PWL")
-    lPWC := drawLine(lPWC, pwc, colPC, "PWC")
+    pwChanged = pwh != prev_pwh or pwl != prev_pwl or pwc != prev_pwc
 
-    // Draw 50% midpoint level for Previous Week
-    if show50Pct
-        pw50 = (pwh + pwl) / 2
-        lPW50 := drawLine(lPW50, pw50, color.new(colPW_input, 60), "PW 50%", line.style_dashed)
+    if pwChanged or na(lPWH)
+        // Delete old lines and labels
+        lPWH := deleteLine(lPWH)
+        lPWL := deleteLine(lPWL)
+        lPWC := deleteLine(lPWC)
+        lPW50 := deleteLine(lPW50)
+        lblPWH := deleteLabel(lblPWH)
+        lblPWL := deleteLabel(lblPWL)
+        lblPWC := deleteLabel(lblPWC)
+        lblPW50 := deleteLabel(lblPW50)
 
-    if barstate.islast
-        label.delete(lblPWH)
-        label.delete(lblPWL)
-        label.delete(lblPWC)
-        label.delete(lblPW50)
-        lblPWH := label.new(bar_index + 10, pwh, "PWH", style=label.style_label_left, color=colPW, textcolor=color.white, size=size.tiny)
-        lblPWL := label.new(bar_index + 10, pwl, "PWL", style=label.style_label_left, color=colPW_f, textcolor=color.white, size=size.tiny)
-        lblPWC := label.new(bar_index + 10, pwc, "PWC", style=label.style_label_left, color=colPC, textcolor=color.white, size=size.tiny)
+        // Create new lines
+        lPWH := line.new(bar_index, pwh, bar_index, pwh, extend=extend.right, color=colPW, width=2, style=line.style_solid)
+        lPWL := line.new(bar_index, pwl, bar_index, pwl, extend=extend.right, color=colPW_f, width=2, style=line.style_solid)
+        lPWC := line.new(bar_index, pwc, bar_index, pwc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
 
+        // Create labels
+        lblPWH := label.new(bar_index, pwh, "PWH", style=label.style_label_left, color=colPW, textcolor=color.white, size=size.tiny)
+        lblPWL := label.new(bar_index, pwl, "PWL", style=label.style_label_left, color=colPW_f, textcolor=color.white, size=size.tiny)
+        lblPWC := label.new(bar_index, pwc, "PWC", style=label.style_label_left, color=colPC, textcolor=color.white, size=size.tiny)
+
+        // Draw 50% midpoint level
         if show50Pct
             pw50 = (pwh + pwl) / 2
-            lblPW50 := label.new(bar_index + 10, pw50, "PW 50%", style=label.style_label_left, color=color.new(colPW_input, 60), textcolor=color.white, size=size.tiny)
+            lPW50 := line.new(bar_index, pw50, bar_index, pw50, extend=extend.right, color=color.new(colPW_input, 60), width=2, style=line.style_dashed)
+            lblPW50 := label.new(bar_index, pw50, "PW 50%", style=label.style_label_left, color=color.new(colPW_input, 60), textcolor=color.white, size=size.tiny)
+
+        // Update tracked values
+        prev_pwh := pwh
+        prev_pwl := pwl
+        prev_pwc := pwc
 
 // Pre-Market High/Low tracking
 if newDay
@@ -503,25 +551,36 @@ if showPmM and isPremkt and not na(pmH)
     pmHigh := na(pmHigh) ? pmH : math.max(pmHigh, pmH)
     pmLow := na(pmLow) ? pmL : math.min(pmLow, pmL)
 
-if showPmM and not na(pmHigh)
-    lPmMH := drawLine(lPmMH, pmHigh, colPmM, "PmMH")
-    if barstate.islast
-        label.delete(lblPmMH)
-        lblPmMH := label.new(bar_index + 10, pmHigh, "PmMH", style=label.style_label_left, color=colPmM, textcolor=color.white, size=size.tiny)
+// Draw Pre-Market levels - only recreate if values changed
+if showPmM and not na(pmHigh) and not na(pmLow)
+    pmmChanged = pmHigh != prev_pmHigh or pmLow != prev_pmLow
 
-if showPmM and not na(pmLow)
-    lPmML := drawLine(lPmML, pmLow, colPmM_f, "PmML")
-    if barstate.islast
-        label.delete(lblPmML)
-        lblPmML := label.new(bar_index + 10, pmLow, "PmML", style=label.style_label_left, color=colPmM_f, textcolor=color.white, size=size.tiny)
+    if pmmChanged or na(lPmMH)
+        // Delete old lines and labels
+        lPmMH := deleteLine(lPmMH)
+        lPmML := deleteLine(lPmML)
+        lPmM50 := deleteLine(lPmM50)
+        lblPmMH := deleteLabel(lblPmMH)
+        lblPmML := deleteLabel(lblPmML)
+        lblPmM50 := deleteLabel(lblPmM50)
 
-// Draw 50% midpoint level for Pre-Market
-if showPmM and show50Pct and not na(pmHigh) and not na(pmLow)
-    pmm50 = (pmHigh + pmLow) / 2
-    lPmM50 := drawLine(lPmM50, pmm50, color.new(colPmM_input, 60), "PmM 50%", line.style_dashed)
-    if barstate.islast
-        label.delete(lblPmM50)
-        lblPmM50 := label.new(bar_index + 10, pmm50, "PmM 50%", style=label.style_label_left, color=color.new(colPmM_input, 60), textcolor=color.white, size=size.tiny)
+        // Create new lines
+        lPmMH := line.new(bar_index, pmHigh, bar_index, pmHigh, extend=extend.right, color=colPmM, width=2, style=line.style_solid)
+        lPmML := line.new(bar_index, pmLow, bar_index, pmLow, extend=extend.right, color=colPmM_f, width=2, style=line.style_solid)
+
+        // Create labels
+        lblPmMH := label.new(bar_index, pmHigh, "PmMH", style=label.style_label_left, color=colPmM, textcolor=color.white, size=size.tiny)
+        lblPmML := label.new(bar_index, pmLow, "PmML", style=label.style_label_left, color=colPmM_f, textcolor=color.white, size=size.tiny)
+
+        // Draw 50% midpoint level
+        if show50Pct
+            pmm50 = (pmHigh + pmLow) / 2
+            lPmM50 := line.new(bar_index, pmm50, bar_index, pmm50, extend=extend.right, color=color.new(colPmM_input, 60), width=2, style=line.style_dashed)
+            lblPmM50 := label.new(bar_index, pmm50, "PmM 50%", style=label.style_label_left, color=color.new(colPmM_input, 60), textcolor=color.white, size=size.tiny)
+
+        // Update tracked values
+        prev_pmHigh := pmHigh
+        prev_pmLow := pmLow
 
 // Gap Zone tracking
 if newDay
