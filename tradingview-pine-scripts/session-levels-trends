@@ -451,15 +451,15 @@ if showPD and not na(pdh) and not na(pdl) and not na(pdc)
         lPDC := deleteLine(lPDC)
         lPD50 := deleteLine(lPD50)
 
-        // Create new lines (once) - start from current bar, extend right
-        lPDH := line.new(bar_index, pdh, bar_index + 1, pdh, extend=extend.right, color=colPD, width=2, style=line.style_solid)
-        lPDL := line.new(bar_index, pdl, bar_index + 1, pdl, extend=extend.right, color=colPD_f, width=2, style=line.style_solid)
-        lPDC := line.new(bar_index, pdc, bar_index + 1, pdc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
+        // Create new lines (once) - extend both directions to cover entire chart
+        lPDH := line.new(bar_index, pdh, bar_index + 1, pdh, extend=extend.both, color=colPD, width=2, style=line.style_solid)
+        lPDL := line.new(bar_index, pdl, bar_index + 1, pdl, extend=extend.both, color=colPD_f, width=2, style=line.style_solid)
+        lPDC := line.new(bar_index, pdc, bar_index + 1, pdc, extend=extend.both, color=colPC, width=2, style=line.style_solid)
 
         // Draw 50% midpoint level
         if show50Pct
             pd50 = (pdh + pdl) / 2
-            lPD50 := line.new(bar_index, pd50, bar_index + 1, pd50, extend=extend.right, color=color.new(colPD_input, 60), width=1, style=line.style_dashed)
+            lPD50 := line.new(bar_index, pd50, bar_index + 1, pd50, extend=extend.both, color=color.new(colPD_input, 60), width=1, style=line.style_dashed)
 
         // Update tracked values
         prev_pdh := pdh
@@ -492,15 +492,15 @@ if showPMO and not na(pmoh) and not na(pmol) and not na(pmoc)
         lPMOC := deleteLine(lPMOC)
         lPMO50 := deleteLine(lPMO50)
 
-        // Create new lines (once) - start from current bar, extend right
-        lPMOH := line.new(bar_index, pmoh, bar_index + 1, pmoh, extend=extend.right, color=colPMO, width=2, style=line.style_solid)
-        lPMOL := line.new(bar_index, pmol, bar_index + 1, pmol, extend=extend.right, color=colPMO_f, width=2, style=line.style_solid)
-        lPMOC := line.new(bar_index, pmoc, bar_index + 1, pmoc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
+        // Create new lines (once) - extend both directions to cover entire chart
+        lPMOH := line.new(bar_index, pmoh, bar_index + 1, pmoh, extend=extend.both, color=colPMO, width=2, style=line.style_solid)
+        lPMOL := line.new(bar_index, pmol, bar_index + 1, pmol, extend=extend.both, color=colPMO_f, width=2, style=line.style_solid)
+        lPMOC := line.new(bar_index, pmoc, bar_index + 1, pmoc, extend=extend.both, color=colPC, width=2, style=line.style_solid)
 
         // Draw 50% midpoint level
         if show50Pct
             pmo50 = (pmoh + pmol) / 2
-            lPMO50 := line.new(bar_index, pmo50, bar_index + 1, pmo50, extend=extend.right, color=color.new(colPMO_input, 60), width=1, style=line.style_dashed)
+            lPMO50 := line.new(bar_index, pmo50, bar_index + 1, pmo50, extend=extend.both, color=color.new(colPMO_input, 60), width=1, style=line.style_dashed)
 
         // Update tracked values
         prev_pmoh := pmoh
@@ -533,15 +533,15 @@ if showPW and not na(pwh) and not na(pwl) and not na(pwc)
         lPWC := deleteLine(lPWC)
         lPW50 := deleteLine(lPW50)
 
-        // Create new lines (once) - start from current bar, extend right
-        lPWH := line.new(bar_index, pwh, bar_index + 1, pwh, extend=extend.right, color=colPW, width=2, style=line.style_solid)
-        lPWL := line.new(bar_index, pwl, bar_index + 1, pwl, extend=extend.right, color=colPW_f, width=2, style=line.style_solid)
-        lPWC := line.new(bar_index, pwc, bar_index + 1, pwc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
+        // Create new lines (once) - extend both directions to cover entire chart
+        lPWH := line.new(bar_index, pwh, bar_index + 1, pwh, extend=extend.both, color=colPW, width=2, style=line.style_solid)
+        lPWL := line.new(bar_index, pwl, bar_index + 1, pwl, extend=extend.both, color=colPW_f, width=2, style=line.style_solid)
+        lPWC := line.new(bar_index, pwc, bar_index + 1, pwc, extend=extend.both, color=colPC, width=2, style=line.style_solid)
 
         // Draw 50% midpoint level
         if show50Pct
             pw50 = (pwh + pwl) / 2
-            lPW50 := line.new(bar_index, pw50, bar_index + 1, pw50, extend=extend.right, color=color.new(colPW_input, 60), width=1, style=line.style_dashed)
+            lPW50 := line.new(bar_index, pw50, bar_index + 1, pw50, extend=extend.both, color=color.new(colPW_input, 60), width=1, style=line.style_dashed)
 
         // Update tracked values
         prev_pwh := pwh
@@ -582,14 +582,14 @@ if showPmM and not na(pmHigh) and not na(pmLow)
         lPmML := deleteLine(lPmML)
         lPmM50 := deleteLine(lPmM50)
 
-        // Create new lines (once) - start from current bar, extend right
-        lPmMH := line.new(bar_index, pmHigh, bar_index + 1, pmHigh, extend=extend.right, color=colPmM, width=2, style=line.style_solid)
-        lPmML := line.new(bar_index, pmLow, bar_index + 1, pmLow, extend=extend.right, color=colPmM_f, width=2, style=line.style_solid)
+        // Create new lines (once) - extend both directions to cover entire chart
+        lPmMH := line.new(bar_index, pmHigh, bar_index + 1, pmHigh, extend=extend.both, color=colPmM, width=2, style=line.style_solid)
+        lPmML := line.new(bar_index, pmLow, bar_index + 1, pmLow, extend=extend.both, color=colPmM_f, width=2, style=line.style_solid)
 
         // Draw 50% midpoint level
         if show50Pct
             pmm50 = (pmHigh + pmLow) / 2
-            lPmM50 := line.new(bar_index, pmm50, bar_index + 1, pmm50, extend=extend.right, color=color.new(colPmM_input, 60), width=1, style=line.style_dashed)
+            lPmM50 := line.new(bar_index, pmm50, bar_index + 1, pmm50, extend=extend.both, color=color.new(colPmM_input, 60), width=1, style=line.style_dashed)
 
         // Update tracked values
         prev_pmHigh := pmHigh
@@ -656,7 +656,7 @@ if showPsych
         for i = -psychWin to psychWin
             psychLevel = baseLevel + i * psychStep
             newLine = line.new(bar_index, psychLevel, bar_index + 1, psychLevel,
-                             extend=extend.right, color=colPsych, width=1, style=line.style_dotted)
+                             extend=extend.both, color=colPsych, width=1, style=line.style_dotted)
             array.push(psychLines, newLine)
 
         // Update tracked value
@@ -731,19 +731,19 @@ if showORB and orbType == "Time Period" and isRegular and not na(minutesSinceOpe
 
 // Draw ORB lines and box - only create once
 if showORB and orbComplete and not na(orbHigh) and not na(orbLow)
-    // Draw ORB High line (create once) - start from orbEndBar, extend right
+    // Draw ORB High line (create once) - extend both directions to cover entire chart
     if na(lORBH)
         lORBH := line.new(orbEndBar, orbHigh, orbEndBar + 1, orbHigh,
-                         extend=extend.right, color=colORB, width=2, style=line.style_solid)
+                         extend=extend.both, color=colORB, width=2, style=line.style_solid)
 
     // Update color based on breakout status
     if not na(lORBH)
         line.set_color(lORBH, orbBrokenUp ? colORBUp : colORB)
 
-    // Draw ORB Low line (create once) - start from orbEndBar, extend right
+    // Draw ORB Low line (create once) - extend both directions to cover entire chart
     if na(lORBL)
         lORBL := line.new(orbEndBar, orbLow, orbEndBar + 1, orbLow,
-                         extend=extend.right, color=colORB_f, width=2, style=line.style_solid)
+                         extend=extend.both, color=colORB_f, width=2, style=line.style_solid)
 
     // Update color based on breakdown status
     if not na(lORBL)
