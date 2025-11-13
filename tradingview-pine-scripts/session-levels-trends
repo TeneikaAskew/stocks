@@ -5,9 +5,10 @@ indicator("Session Levels + ORB + Supertrend", overlay=true,
 // ═══════════════════════════════════════════════════════════════════
 // SESSION LEVELS INPUTS
 // ═══════════════════════════════════════════════════════════════════
+showPMO   = input.bool(true,  "Prev MONTH (PMOH/PMOL/PMOC)", group="Session Levels")
 showPW    = input.bool(true,  "Prev WEEK (PWH/PWL/PWC)", group="Session Levels")
 showPD    = input.bool(true,  "Prev DAY (PDH/PDL/PDC)", group="Session Levels")
-showPM    = input.bool(true,  "Pre-Market High/Low (today)", group="Session Levels")
+showPrM   = input.bool(true,  "Pre-Market High/Low (today)", group="Session Levels")
 show50Pct = input.bool(true,  "Show 50% Midpoint Levels", group="Session Levels")
 showGaps  = input.bool(true,  "Gap Zone (yesterday close ↔ today open)", group="Session Levels")
 showPsych = input.bool(true,  "Psychological Levels (near price)", group="Session Levels")
@@ -22,14 +23,16 @@ regularSession = input.session("0930-1600", "Regular Session", group="Session Le
 // ═══════════════════════════════════════════════════════════════════
 // SESSION LEVELS - COLOR INPUTS
 // ═══════════════════════════════════════════════════════════════════
+colPMO_input   = input.color(color.blue,    "Prev Month High/Low Color", group="Session Colors")
+colPMO_opacity = input.int(20, "Prev Month Low Opacity", minval=0, maxval=100, group="Session Colors")
 colPW_input    = input.color(color.orange,  "Prev Week High/Low Color", group="Session Colors")
 colPW_opacity  = input.int(20, "Prev Week Low Opacity", minval=0, maxval=100, group="Session Colors")
 colPD_input    = input.color(color.teal,    "Prev Day High/Low Color", group="Session Colors")
 colPD_opacity  = input.int(20, "Prev Day Low Opacity", minval=0, maxval=100, group="Session Colors")
 colPC_input    = input.color(color.gray,    "Prev Close Color", group="Session Colors")
 colPC_opacity  = input.int(40, "Prev Close Opacity", minval=0, maxval=100, group="Session Colors")
-colPM_input    = input.color(color.purple,  "Pre-Market High/Low Color", group="Session Colors")
-colPM_opacity  = input.int(20, "Pre-Market Low Opacity", minval=0, maxval=100, group="Session Colors")
+colPrM_input   = input.color(color.purple,  "Pre-Market High/Low Color", group="Session Colors")
+colPrM_opacity = input.int(20, "Pre-Market Low Opacity", minval=0, maxval=100, group="Session Colors")
 colGapUn_input = input.color(color.yellow,  "Unfilled Gap Color", group="Session Colors")
 colGapUn_opacity = input.int(75, "Unfilled Gap Opacity", minval=0, maxval=100, group="Session Colors")
 colGapOk_input = input.color(color.white,   "Filled Gap Color", group="Session Colors")
@@ -38,13 +41,15 @@ colPsych_input = input.color(color.silver,  "Psychological Levels Color", group=
 colPsych_opacity = input.int(60, "Psychological Levels Opacity", minval=0, maxval=100, group="Session Colors")
 
 // Create colors with user-defined opacity
+colPMO   = color.new(colPMO_input,  0)
+colPMO_f = color.new(colPMO_input, colPMO_opacity)
 colPW    = color.new(colPW_input,  0)
 colPW_f  = color.new(colPW_input, colPW_opacity)
 colPD    = color.new(colPD_input,  0)
 colPD_f  = color.new(colPD_input, colPD_opacity)
 colPC    = color.new(colPC_input, colPC_opacity)
-colPM    = color.new(colPM_input,  0)
-colPM_f  = color.new(colPM_input, colPM_opacity)
+colPrM   = color.new(colPrM_input,  0)
+colPrM_f = color.new(colPrM_input, colPrM_opacity)
 colGapUn = color.new(colGapUn_input, colGapUn_opacity)
 colGapOk = color.new(colGapOk_input, colGapOk_opacity)
 colPsych = color.new(colPsych_input, colPsych_opacity)
@@ -348,7 +353,7 @@ isRegular  = not na(time(timeframe.period, regularSession))
 wasRegular = not na(time(timeframe.period, regularSession)[1])
 firstBarRegular = isRegular and not wasRegular
 
-// Previous Day/Week levels with SESSION filter option
+// Previous Day/Week/Month levels with SESSION filter option
 string tickerSrc = useRTHOnly ? ticker.new(syminfo.prefix, syminfo.ticker, session.regular) : syminfo.tickerid
 pdh = request.security(tickerSrc, "D", high,  barmerge.gaps_off, barmerge.lookahead_off)[1]
 pdl = request.security(tickerSrc, "D", low,   barmerge.gaps_off, barmerge.lookahead_off)[1]
@@ -356,23 +361,30 @@ pdc = request.security(tickerSrc, "D", close, barmerge.gaps_off, barmerge.lookah
 pwh = request.security(tickerSrc, "W", high,  barmerge.gaps_off, barmerge.lookahead_off)[1]
 pwl = request.security(tickerSrc, "W", low,   barmerge.gaps_off, barmerge.lookahead_off)[1]
 pwc = request.security(tickerSrc, "W", close, barmerge.gaps_off, barmerge.lookahead_off)[1]
+pmoh = request.security(tickerSrc, "M", high,  barmerge.gaps_off, barmerge.lookahead_off)[1]
+pmol = request.security(tickerSrc, "M", low,   barmerge.gaps_off, barmerge.lookahead_off)[1]
+pmoc = request.security(tickerSrc, "M", close, barmerge.gaps_off, barmerge.lookahead_off)[1]
 
 // Get pre-market data using security() - works even if chart is RTH only
 string tickerETH = ticker.new(syminfo.prefix, syminfo.ticker, session.extended)
 [pmH, pmL] = request.security(tickerETH, timeframe.period, [high, low], barmerge.gaps_off, barmerge.lookahead_off)
 
 // Persistent variables for lines
-var line lPDH = na
-var line lPDL = na
-var line lPDC = na
-var line lPD50 = na
+var line lPMOH = na
+var line lPMOL = na
+var line lPMOC = na
+var line lPMO50 = na
 var line lPWH = na
 var line lPWL = na
 var line lPWC = na
 var line lPW50 = na
-var line lPMH = na
-var line lPML = na
-var line lPM50 = na
+var line lPDH = na
+var line lPDL = na
+var line lPDC = na
+var line lPD50 = na
+var line lPrMH = na
+var line lPrML = na
+var line lPrM50 = na
 var box gapBox = na
 var float pmHigh = na
 var float pmLow = na
@@ -380,17 +392,21 @@ var float todayOpen = na
 var bool gapFilled = false
 
 // Persistent variables for labels
-var label lblPDH = na
-var label lblPDL = na
-var label lblPDC = na
-var label lblPD50 = na
+var label lblPMOH = na
+var label lblPMOL = na
+var label lblPMOC = na
+var label lblPMO50 = na
 var label lblPWH = na
 var label lblPWL = na
 var label lblPWC = na
 var label lblPW50 = na
-var label lblPMH = na
-var label lblPML = na
-var label lblPM50 = na
+var label lblPDH = na
+var label lblPDL = na
+var label lblPDC = na
+var label lblPD50 = na
+var label lblPrMH = na
+var label lblPrML = na
+var label lblPrM50 = na
 var label lblGapFilled = na
 
 // Line drawing function - SIMPLIFIED
@@ -430,6 +446,30 @@ if showPD
             pd50 = (pdh + pdl) / 2
             lblPD50 := label.new(bar_index + 10, pd50, "PD 50%", style=label.style_label_left, color=color.new(colPD_input, 60), textcolor=color.white, size=size.tiny)
 
+// Draw Previous Month levels
+if showPMO
+    lPMOH := drawLine(lPMOH, pmoh, colPMO, "PMOH")
+    lPMOL := drawLine(lPMOL, pmol, colPMO_f, "PMOL")
+    lPMOC := drawLine(lPMOC, pmoc, colPC, "PMOC")
+
+    // Draw 50% midpoint level for Previous Month
+    if show50Pct
+        pmo50 = (pmoh + pmol) / 2
+        lPMO50 := drawLine(lPMO50, pmo50, color.new(colPMO_input, 60), "PMO 50%", line.style_dashed)
+
+    if barstate.islast
+        label.delete(lblPMOH)
+        label.delete(lblPMOL)
+        label.delete(lblPMOC)
+        label.delete(lblPMO50)
+        lblPMOH := label.new(bar_index + 10, pmoh, "PMOH", style=label.style_label_left, color=colPMO, textcolor=color.white, size=size.tiny)
+        lblPMOL := label.new(bar_index + 10, pmol, "PMOL", style=label.style_label_left, color=colPMO_f, textcolor=color.white, size=size.tiny)
+        lblPMOC := label.new(bar_index + 10, pmoc, "PMOC", style=label.style_label_left, color=colPC, textcolor=color.white, size=size.tiny)
+
+        if show50Pct
+            pmo50 = (pmoh + pmol) / 2
+            lblPMO50 := label.new(bar_index + 10, pmo50, "PMO 50%", style=label.style_label_left, color=color.new(colPMO_input, 60), textcolor=color.white, size=size.tiny)
+
 // Draw Previous Week levels
 if showPW
     lPWH := drawLine(lPWH, pwh, colPW, "PWH")
@@ -459,29 +499,29 @@ if newDay
     pmHigh := na
     pmLow := na
 
-if showPM and isPremkt and not na(pmH)
+if showPrM and isPremkt and not na(pmH)
     pmHigh := na(pmHigh) ? pmH : math.max(pmHigh, pmH)
     pmLow := na(pmLow) ? pmL : math.min(pmLow, pmL)
 
-if showPM and not na(pmHigh)
-    lPMH := drawLine(lPMH, pmHigh, colPM, "PMH")
+if showPrM and not na(pmHigh)
+    lPrMH := drawLine(lPrMH, pmHigh, colPrM, "PrMH")
     if barstate.islast
-        label.delete(lblPMH)
-        lblPMH := label.new(bar_index + 10, pmHigh, "PMH", style=label.style_label_left, color=colPM, textcolor=color.white, size=size.tiny)
+        label.delete(lblPrMH)
+        lblPrMH := label.new(bar_index + 10, pmHigh, "PrMH", style=label.style_label_left, color=colPrM, textcolor=color.white, size=size.tiny)
 
-if showPM and not na(pmLow)
-    lPML := drawLine(lPML, pmLow, colPM_f, "PML")
+if showPrM and not na(pmLow)
+    lPrML := drawLine(lPrML, pmLow, colPrM_f, "PrML")
     if barstate.islast
-        label.delete(lblPML)
-        lblPML := label.new(bar_index + 10, pmLow, "PML", style=label.style_label_left, color=colPM_f, textcolor=color.white, size=size.tiny)
+        label.delete(lblPrML)
+        lblPrML := label.new(bar_index + 10, pmLow, "PrML", style=label.style_label_left, color=colPrM_f, textcolor=color.white, size=size.tiny)
 
 // Draw 50% midpoint level for Pre-Market
-if showPM and show50Pct and not na(pmHigh) and not na(pmLow)
-    pm50 = (pmHigh + pmLow) / 2
-    lPM50 := drawLine(lPM50, pm50, color.new(colPM_input, 60), "PM 50%", line.style_dashed)
+if showPrM and show50Pct and not na(pmHigh) and not na(pmLow)
+    prm50 = (pmHigh + pmLow) / 2
+    lPrM50 := drawLine(lPrM50, prm50, color.new(colPrM_input, 60), "PrM 50%", line.style_dashed)
     if barstate.islast
-        label.delete(lblPM50)
-        lblPM50 := label.new(bar_index + 10, pm50, "PM 50%", style=label.style_label_left, color=color.new(colPM_input, 60), textcolor=color.white, size=size.tiny)
+        label.delete(lblPrM50)
+        lblPrM50 := label.new(bar_index + 10, prm50, "PrM 50%", style=label.style_label_left, color=color.new(colPrM_input, 60), textcolor=color.white, size=size.tiny)
 
 // Gap Zone tracking
 if newDay
