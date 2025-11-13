@@ -150,7 +150,7 @@ colSTDownFill = color.new(colSTDown_input, colSTDownFill_opacity)
 //     result = existingLine
 //     if na(existingLine)
 //         result := line.new(bar_index, yValue, bar_index, yValue, 
-//                           extend=extend.right, color=lineColor, width=2, style=line.style_dashed)
+//                           extend=extend.right, color=lineColor, width=1, style=line.style_dashed)
 //     else
 //         line.set_y1(result, yValue)
 //         line.set_y2(result, yValue)
@@ -435,7 +435,7 @@ deleteLabel(label l) =>
     label(na)
 
 // Draw Previous Day levels - only recreate if values changed
-if showPD
+if showPD and not na(pdh) and not na(pdl) and not na(pdc)
     pdChanged = pdh != prev_pdh or pdl != prev_pdl or pdc != prev_pdc
 
     if pdChanged or na(lPDH)
@@ -445,15 +445,15 @@ if showPD
         lPDC := deleteLine(lPDC)
         lPD50 := deleteLine(lPD50)
 
-        // Create new lines (once)
-        lPDH := line.new(bar_index, pdh, bar_index, pdh, extend=extend.right, color=colPD, width=2, style=line.style_solid)
-        lPDL := line.new(bar_index, pdl, bar_index, pdl, extend=extend.right, color=colPD_f, width=2, style=line.style_solid)
-        lPDC := line.new(bar_index, pdc, bar_index, pdc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
+        // Create new lines (once) - start from current bar, extend right
+        lPDH := line.new(bar_index, pdh, bar_index + 1, pdh, extend=extend.right, color=colPD, width=2, style=line.style_solid)
+        lPDL := line.new(bar_index, pdl, bar_index + 1, pdl, extend=extend.right, color=colPD_f, width=2, style=line.style_solid)
+        lPDC := line.new(bar_index, pdc, bar_index + 1, pdc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
 
         // Draw 50% midpoint level
         if show50Pct
             pd50 = (pdh + pdl) / 2
-            lPD50 := line.new(bar_index, pd50, bar_index, pd50, extend=extend.right, color=color.new(colPD_input, 60), width=2, style=line.style_dashed)
+            lPD50 := line.new(bar_index, pd50, bar_index + 1, pd50, extend=extend.right, color=color.new(colPD_input, 60), width=1, style=line.style_dashed)
 
         // Update tracked values
         prev_pdh := pdh
@@ -476,7 +476,7 @@ if showPD
             lblPD50 := label.new(bar_index + 10, pd50, "PD 50%", style=label.style_label_left, color=color.new(colPD_input, 60), textcolor=color.white, size=size.tiny)
 
 // Draw Previous Month levels - only recreate if values changed
-if showPMO
+if showPMO and not na(pmoh) and not na(pmol) and not na(pmoc)
     pmoChanged = pmoh != prev_pmoh or pmol != prev_pmol or pmoc != prev_pmoc
 
     if pmoChanged or na(lPMOH)
@@ -486,15 +486,15 @@ if showPMO
         lPMOC := deleteLine(lPMOC)
         lPMO50 := deleteLine(lPMO50)
 
-        // Create new lines (once)
-        lPMOH := line.new(bar_index, pmoh, bar_index, pmoh, extend=extend.right, color=colPMO, width=2, style=line.style_solid)
-        lPMOL := line.new(bar_index, pmol, bar_index, pmol, extend=extend.right, color=colPMO_f, width=2, style=line.style_solid)
-        lPMOC := line.new(bar_index, pmoc, bar_index, pmoc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
+        // Create new lines (once) - start from current bar, extend right
+        lPMOH := line.new(bar_index, pmoh, bar_index + 1, pmoh, extend=extend.right, color=colPMO, width=2, style=line.style_solid)
+        lPMOL := line.new(bar_index, pmol, bar_index + 1, pmol, extend=extend.right, color=colPMO_f, width=2, style=line.style_solid)
+        lPMOC := line.new(bar_index, pmoc, bar_index + 1, pmoc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
 
         // Draw 50% midpoint level
         if show50Pct
             pmo50 = (pmoh + pmol) / 2
-            lPMO50 := line.new(bar_index, pmo50, bar_index, pmo50, extend=extend.right, color=color.new(colPMO_input, 60), width=2, style=line.style_dashed)
+            lPMO50 := line.new(bar_index, pmo50, bar_index + 1, pmo50, extend=extend.right, color=color.new(colPMO_input, 60), width=1, style=line.style_dashed)
 
         // Update tracked values
         prev_pmoh := pmoh
@@ -517,7 +517,7 @@ if showPMO
             lblPMO50 := label.new(bar_index + 10, pmo50, "PMO 50%", style=label.style_label_left, color=color.new(colPMO_input, 60), textcolor=color.white, size=size.tiny)
 
 // Draw Previous Week levels - only recreate if values changed
-if showPW
+if showPW and not na(pwh) and not na(pwl) and not na(pwc)
     pwChanged = pwh != prev_pwh or pwl != prev_pwl or pwc != prev_pwc
 
     if pwChanged or na(lPWH)
@@ -527,15 +527,15 @@ if showPW
         lPWC := deleteLine(lPWC)
         lPW50 := deleteLine(lPW50)
 
-        // Create new lines (once)
-        lPWH := line.new(bar_index, pwh, bar_index, pwh, extend=extend.right, color=colPW, width=2, style=line.style_solid)
-        lPWL := line.new(bar_index, pwl, bar_index, pwl, extend=extend.right, color=colPW_f, width=2, style=line.style_solid)
-        lPWC := line.new(bar_index, pwc, bar_index, pwc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
+        // Create new lines (once) - start from current bar, extend right
+        lPWH := line.new(bar_index, pwh, bar_index + 1, pwh, extend=extend.right, color=colPW, width=2, style=line.style_solid)
+        lPWL := line.new(bar_index, pwl, bar_index + 1, pwl, extend=extend.right, color=colPW_f, width=2, style=line.style_solid)
+        lPWC := line.new(bar_index, pwc, bar_index + 1, pwc, extend=extend.right, color=colPC, width=2, style=line.style_solid)
 
         // Draw 50% midpoint level
         if show50Pct
             pw50 = (pwh + pwl) / 2
-            lPW50 := line.new(bar_index, pw50, bar_index, pw50, extend=extend.right, color=color.new(colPW_input, 60), width=2, style=line.style_dashed)
+            lPW50 := line.new(bar_index, pw50, bar_index + 1, pw50, extend=extend.right, color=color.new(colPW_input, 60), width=1, style=line.style_dashed)
 
         // Update tracked values
         prev_pwh := pwh
@@ -576,14 +576,14 @@ if showPmM and not na(pmHigh) and not na(pmLow)
         lPmML := deleteLine(lPmML)
         lPmM50 := deleteLine(lPmM50)
 
-        // Create new lines (once)
-        lPmMH := line.new(bar_index, pmHigh, bar_index, pmHigh, extend=extend.right, color=colPmM, width=2, style=line.style_solid)
-        lPmML := line.new(bar_index, pmLow, bar_index, pmLow, extend=extend.right, color=colPmM_f, width=2, style=line.style_solid)
+        // Create new lines (once) - start from current bar, extend right
+        lPmMH := line.new(bar_index, pmHigh, bar_index + 1, pmHigh, extend=extend.right, color=colPmM, width=2, style=line.style_solid)
+        lPmML := line.new(bar_index, pmLow, bar_index + 1, pmLow, extend=extend.right, color=colPmM_f, width=2, style=line.style_solid)
 
         // Draw 50% midpoint level
         if show50Pct
             pmm50 = (pmHigh + pmLow) / 2
-            lPmM50 := line.new(bar_index, pmm50, bar_index, pmm50, extend=extend.right, color=color.new(colPmM_input, 60), width=2, style=line.style_dashed)
+            lPmM50 := line.new(bar_index, pmm50, bar_index + 1, pmm50, extend=extend.right, color=color.new(colPmM_input, 60), width=1, style=line.style_dashed)
 
         // Update tracked values
         prev_pmHigh := pmHigh
@@ -632,13 +632,15 @@ if showGaps and not na(gapBox) and not gapFilled
                      style=label.style_label_left, color=colGapOk,
                      textcolor=color.black, size=size.tiny)
 
-// Psychological levels (round numbers)
-if showPsych
-    baseLevel = math.round(close / psychStep) * psychStep
-    for i = -psychWin to psychWin
-        psychLevel = baseLevel + i * psychStep
-        line.new(bar_index - 1, psychLevel, bar_index, psychLevel, 
-                 extend=extend.right, color=colPsych, width=1, style=line.style_dotted)
+// Psychological levels (round numbers) - DISABLED TO PRESERVE LINE QUOTA
+// This section was creating too many lines and hitting max_lines_count limit
+// TODO: Reimplement using efficient pattern (create once, update only on changes)
+// if showPsych
+//     baseLevel = math.round(close / psychStep) * psychStep
+//     for i = -psychWin to psychWin
+//         psychLevel = baseLevel + i * psychStep
+//         line.new(bar_index - 1, psychLevel, bar_index, psychLevel,
+//                  extend=extend.right, color=colPsych, width=1, style=line.style_dotted)
 
 // ═══════════════════════════════════════════════════════════════════
 // ORB CALCULATIONS
@@ -707,22 +709,24 @@ if showORB and orbType == "Time Period" and isRegular and not na(minutesSinceOpe
     else if not orbComplete and not na(orbHigh) and not na(orbLow)
         orbComplete := true
 
-// Draw ORB lines and box
+// Draw ORB lines and box - only create once
 if showORB and orbComplete and not na(orbHigh) and not na(orbLow)
-    // Draw ORB High line
+    // Draw ORB High line (create once) - start from orbEndBar, extend right
     if na(lORBH)
-        lORBH := line.new(orbEndBar, orbHigh, bar_index, orbHigh,
+        lORBH := line.new(orbEndBar, orbHigh, orbEndBar + 1, orbHigh,
                          extend=extend.right, color=colORB, width=2, style=line.style_solid)
-    else
-        line.set_x2(lORBH, bar_index)
+
+    // Update color based on breakout status
+    if not na(lORBH)
         line.set_color(lORBH, orbBrokenUp ? colORBUp : colORB)
-    
-    // Draw ORB Low line
+
+    // Draw ORB Low line (create once) - start from orbEndBar, extend right
     if na(lORBL)
-        lORBL := line.new(orbEndBar, orbLow, bar_index, orbLow,
+        lORBL := line.new(orbEndBar, orbLow, orbEndBar + 1, orbLow,
                          extend=extend.right, color=colORB_f, width=2, style=line.style_solid)
-    else
-        line.set_x2(lORBL, bar_index)
+
+    // Update color based on breakdown status
+    if not na(lORBL)
         line.set_color(lORBL, orbBrokenDown ? colORBDown : colORB_f)
     
     // Draw ORB box (shaded area)
