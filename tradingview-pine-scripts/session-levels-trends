@@ -8,7 +8,7 @@ indicator("Session Levels + ORB + Supertrend", overlay=true,
 showPMO   = input.bool(true,  "Prev MONTH (PMOH/PMOL/PMOC)", group="Session Levels")
 showPW    = input.bool(true,  "Prev WEEK (PWH/PWL/PWC)", group="Session Levels")
 showPD    = input.bool(true,  "Prev DAY (PDH/PDL/PDC)", group="Session Levels")
-showPrM   = input.bool(true,  "Pre-Market High/Low (today)", group="Session Levels")
+showPmM   = input.bool(true,  "Pre-Market High/Low (today)", group="Session Levels")
 show50Pct = input.bool(true,  "Show 50% Midpoint Levels", group="Session Levels")
 showGaps  = input.bool(true,  "Gap Zone (yesterday close ↔ today open)", group="Session Levels")
 showPsych = input.bool(true,  "Psychological Levels (near price)", group="Session Levels")
@@ -31,8 +31,8 @@ colPD_input    = input.color(color.teal,    "Prev Day High/Low Color", group="Se
 colPD_opacity  = input.int(20, "Prev Day Low Opacity", minval=0, maxval=100, group="Session Colors")
 colPC_input    = input.color(color.gray,    "Prev Close Color", group="Session Colors")
 colPC_opacity  = input.int(40, "Prev Close Opacity", minval=0, maxval=100, group="Session Colors")
-colPrM_input   = input.color(color.purple,  "Pre-Market High/Low Color", group="Session Colors")
-colPrM_opacity = input.int(20, "Pre-Market Low Opacity", minval=0, maxval=100, group="Session Colors")
+colPmM_input   = input.color(color.purple,  "Pre-Market High/Low Color", group="Session Colors")
+colPmM_opacity = input.int(20, "Pre-Market Low Opacity", minval=0, maxval=100, group="Session Colors")
 colGapUn_input = input.color(color.yellow,  "Unfilled Gap Color", group="Session Colors")
 colGapUn_opacity = input.int(75, "Unfilled Gap Opacity", minval=0, maxval=100, group="Session Colors")
 colGapOk_input = input.color(color.white,   "Filled Gap Color", group="Session Colors")
@@ -48,8 +48,8 @@ colPW_f  = color.new(colPW_input, colPW_opacity)
 colPD    = color.new(colPD_input,  0)
 colPD_f  = color.new(colPD_input, colPD_opacity)
 colPC    = color.new(colPC_input, colPC_opacity)
-colPrM   = color.new(colPrM_input,  0)
-colPrM_f = color.new(colPrM_input, colPrM_opacity)
+colPmM   = color.new(colPmM_input,  0)
+colPmM_f = color.new(colPmM_input, colPmM_opacity)
 colGapUn = color.new(colGapUn_input, colGapUn_opacity)
 colGapOk = color.new(colGapOk_input, colGapOk_opacity)
 colPsych = color.new(colPsych_input, colPsych_opacity)
@@ -382,9 +382,9 @@ var line lPDH = na
 var line lPDL = na
 var line lPDC = na
 var line lPD50 = na
-var line lPrMH = na
-var line lPrML = na
-var line lPrM50 = na
+var line lPmMH = na
+var line lPmML = na
+var line lPmM50 = na
 var box gapBox = na
 var float pmHigh = na
 var float pmLow = na
@@ -404,9 +404,9 @@ var label lblPDH = na
 var label lblPDL = na
 var label lblPDC = na
 var label lblPD50 = na
-var label lblPrMH = na
-var label lblPrML = na
-var label lblPrM50 = na
+var label lblPmMH = na
+var label lblPmML = na
+var label lblPmM50 = na
 var label lblGapFilled = na
 
 // Line drawing function - SIMPLIFIED
@@ -499,29 +499,29 @@ if newDay
     pmHigh := na
     pmLow := na
 
-if showPrM and isPremkt and not na(pmH)
+if showPmM and isPremkt and not na(pmH)
     pmHigh := na(pmHigh) ? pmH : math.max(pmHigh, pmH)
     pmLow := na(pmLow) ? pmL : math.min(pmLow, pmL)
 
-if showPrM and not na(pmHigh)
-    lPrMH := drawLine(lPrMH, pmHigh, colPrM, "PrMH")
+if showPmM and not na(pmHigh)
+    lPmMH := drawLine(lPmMH, pmHigh, colPmM, "PmMH")
     if barstate.islast
-        label.delete(lblPrMH)
-        lblPrMH := label.new(bar_index + 10, pmHigh, "PrMH", style=label.style_label_left, color=colPrM, textcolor=color.white, size=size.tiny)
+        label.delete(lblPmMH)
+        lblPmMH := label.new(bar_index + 10, pmHigh, "PmMH", style=label.style_label_left, color=colPmM, textcolor=color.white, size=size.tiny)
 
-if showPrM and not na(pmLow)
-    lPrML := drawLine(lPrML, pmLow, colPrM_f, "PrML")
+if showPmM and not na(pmLow)
+    lPmML := drawLine(lPmML, pmLow, colPmM_f, "PmML")
     if barstate.islast
-        label.delete(lblPrML)
-        lblPrML := label.new(bar_index + 10, pmLow, "PrML", style=label.style_label_left, color=colPrM_f, textcolor=color.white, size=size.tiny)
+        label.delete(lblPmML)
+        lblPmML := label.new(bar_index + 10, pmLow, "PmML", style=label.style_label_left, color=colPmM_f, textcolor=color.white, size=size.tiny)
 
 // Draw 50% midpoint level for Pre-Market
-if showPrM and show50Pct and not na(pmHigh) and not na(pmLow)
-    prm50 = (pmHigh + pmLow) / 2
-    lPrM50 := drawLine(lPrM50, prm50, color.new(colPrM_input, 60), "PrM 50%", line.style_dashed)
+if showPmM and show50Pct and not na(pmHigh) and not na(pmLow)
+    pmm50 = (pmHigh + pmLow) / 2
+    lPmM50 := drawLine(lPmM50, pmm50, color.new(colPmM_input, 60), "PmM 50%", line.style_dashed)
     if barstate.islast
-        label.delete(lblPrM50)
-        lblPrM50 := label.new(bar_index + 10, prm50, "PrM 50%", style=label.style_label_left, color=color.new(colPrM_input, 60), textcolor=color.white, size=size.tiny)
+        label.delete(lblPmM50)
+        lblPmM50 := label.new(bar_index + 10, pmm50, "PmM 50%", style=label.style_label_left, color=color.new(colPmM_input, 60), textcolor=color.white, size=size.tiny)
 
 // Gap Zone tracking
 if newDay
