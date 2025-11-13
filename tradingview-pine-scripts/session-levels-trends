@@ -426,13 +426,13 @@ var label lblGapFilled = na
 deleteLine(line l) =>
     if not na(l)
         line.delete(l)
-    na
+    line(na)
 
 // Helper function to delete label if it exists
 deleteLabel(label l) =>
     if not na(l)
         label.delete(l)
-    na
+    label(na)
 
 // Draw Previous Day levels - only recreate if values changed
 if showPD
