@@ -386,6 +386,9 @@ var line lPmMH = na
 var line lPmML = na
 var line lPmM50 = na
 var box gapBox = na
+
+// Persistent variables for psychological level lines (array to hold multiple lines)
+var array<line> psychLines = array.new<line>()
 var float pmHigh = na
 var float pmLow = na
 var float todayOpen = na
@@ -403,6 +406,9 @@ var float prev_pmol = na
 var float prev_pmoc = na
 var float prev_pmHigh = na
 var float prev_pmLow = na
+
+// Track previous psychological base level to detect changes
+var float prev_psychBase = na
 
 // Persistent variables for labels
 var label lblPMOH = na
@@ -632,15 +638,29 @@ if showGaps and not na(gapBox) and not gapFilled
                      style=label.style_label_left, color=colGapOk,
                      textcolor=color.black, size=size.tiny)
 
-// Psychological levels (round numbers) - DISABLED TO PRESERVE LINE QUOTA
-// This section was creating too many lines and hitting max_lines_count limit
-// TODO: Reimplement using efficient pattern (create once, update only on changes)
-// if showPsych
-//     baseLevel = math.round(close / psychStep) * psychStep
-//     for i = -psychWin to psychWin
-//         psychLevel = baseLevel + i * psychStep
-//         line.new(bar_index - 1, psychLevel, bar_index, psychLevel,
-//                  extend=extend.right, color=colPsych, width=1, style=line.style_dotted)
+// Psychological levels (round numbers) - OPTIMIZED
+// Only recreate lines when price moves to a new psychological zone
+if showPsych
+    baseLevel = math.round(close / psychStep) * psychStep
+    psychChanged = baseLevel != prev_psychBase
+
+    // Only recreate lines when the base level changes (price moved to new zone)
+    if psychChanged or na(prev_psychBase)
+        // Delete all existing psychological lines
+        if array.size(psychLines) > 0
+            for i = 0 to array.size(psychLines) - 1
+                line.delete(array.get(psychLines, i))
+            array.clear(psychLines)
+
+        // Create new psychological level lines
+        for i = -psychWin to psychWin
+            psychLevel = baseLevel + i * psychStep
+            newLine = line.new(bar_index, psychLevel, bar_index + 1, psychLevel,
+                             extend=extend.right, color=colPsych, width=1, style=line.style_dotted)
+            array.push(psychLines, newLine)
+
+        // Update tracked value
+        prev_psychBase := baseLevel
 
 // ═══════════════════════════════════════════════════════════════════
 // ORB CALCULATIONS
