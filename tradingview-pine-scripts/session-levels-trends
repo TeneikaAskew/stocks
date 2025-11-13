@@ -394,11 +394,11 @@ var label lblPM50 = na
 var label lblGapFilled = na
 
 // Line drawing function - SIMPLIFIED
-drawLine(line existingLine, float yValue, color lineColor, string labelText) =>
+drawLine(line existingLine, float yValue, color lineColor, string labelText, string lineStyle = line.style_solid) =>
     result = existingLine
     if na(existingLine)
         result := line.new(bar_index, yValue, bar_index, yValue,
-                          extend=extend.right, color=lineColor, width=2, style=line.style_solid)
+                          extend=extend.right, color=lineColor, width=2, style=lineStyle)
     else
         line.set_y1(result, yValue)
         line.set_y2(result, yValue)
@@ -415,7 +415,7 @@ if showPD
     // Draw 50% midpoint level for Previous Day
     if show50Pct
         pd50 = (pdh + pdl) / 2
-        lPD50 := drawLine(lPD50, pd50, color.new(colPD_input, 60), "PD 50%")
+        lPD50 := drawLine(lPD50, pd50, color.new(colPD_input, 60), "PD 50%", line.style_dashed)
 
     if barstate.islast
         label.delete(lblPDH)
@@ -439,7 +439,7 @@ if showPW
     // Draw 50% midpoint level for Previous Week
     if show50Pct
         pw50 = (pwh + pwl) / 2
-        lPW50 := drawLine(lPW50, pw50, color.new(colPW_input, 60), "PW 50%")
+        lPW50 := drawLine(lPW50, pw50, color.new(colPW_input, 60), "PW 50%", line.style_dashed)
 
     if barstate.islast
         label.delete(lblPWH)
@@ -478,7 +478,7 @@ if showPM and not na(pmLow)
 // Draw 50% midpoint level for Pre-Market
 if showPM and show50Pct and not na(pmHigh) and not na(pmLow)
     pm50 = (pmHigh + pmLow) / 2
-    lPM50 := drawLine(lPM50, pm50, color.new(colPM_input, 60), "PM 50%")
+    lPM50 := drawLine(lPM50, pm50, color.new(colPM_input, 60), "PM 50%", line.style_dashed)
     if barstate.islast
         label.delete(lblPM50)
         lblPM50 := label.new(bar_index + 10, pm50, "PM 50%", style=label.style_label_left, color=color.new(colPM_input, 60), textcolor=color.white, size=size.tiny)
