@@ -14,9 +14,9 @@ class DataLoader {
     }
 
     /**
-     * Fetch available dates for a ticker
+     * Fetch available months for a ticker (returns YYYYMM format)
      */
-    async fetchAvailableDates(ticker) {
+    async fetchAvailableMonths(ticker) {
         if (this.availableDates.has(ticker)) {
             return this.availableDates.get(ticker);
         }
@@ -32,19 +32,42 @@ class DataLoader {
             }
 
             const data = await response.json();
-            const dates = CONFIG.USE_LOCAL_API ? data.dates : data;
+            const months = CONFIG.USE_LOCAL_API ? data.dates : data;
 
-            this.availableDates.set(ticker, dates);
-            return dates;
+            this.availableDates.set(ticker, months);
+            return months;
         } catch (error) {
-            console.error('Error fetching available dates:', error);
-            Utils.notify('Error loading available dates', 'error');
+            console.error('Error fetching available months:', error);
+            Utils.notify('Error loading available months', 'error');
             return [];
         }
     }
 
     /**
-     * Fetch OHLCV data for a specific ticker and date
+     * Generate list of trading days from a month (YYYYMM)
+     */
+    getTradingDaysInMonth(month) {
+        const year = parseInt(month.substring(0, 4));
+        const monthNum = parseInt(month.substring(4, 6));
+
+        const days = [];
+        const date = new Date(year, monthNum - 1, 1);
+        const lastDay = new Date(year, monthNum, 0).getDate();
+
+        for (let day = 1; day <= lastDay; day++) {
+            const d = new Date(year, monthNum - 1, day);
+            // Only include weekdays (Mon-Fri)
+            if (d.getDay() !== 0 && d.getDay() !== 6) {
+                const dayStr = String(day).padStart(2, '0');
+                days.push(`${month}${dayStr}`); // YYYYMMDD
+            }
+        }
+
+        return days;
+    }
+
+    /**
+     * Fetch OHLCV data for a specific ticker and date (YYYYMMDD format)
      */
     async fetchData(ticker, date, timeframe = 1) {
         const cacheKey = `${ticker}_${date}_${timeframe}`;
@@ -55,10 +78,13 @@ class DataLoader {
         }
 
         try {
+            // Extract month from date (YYYYMMDD -> YYYYMM)
+            const month = date.substring(0, 6);
+
             Utils.notify(`Loading ${ticker} data for ${date}...`, 'info');
 
             const url = CONFIG.USE_LOCAL_API
-                ? `${this.getApiUrl()}/data/${ticker}/${date}?timeframe=${timeframe}`
+                ? `${this.getApiUrl()}/data/${ticker}/${month}?date=${date}&timeframe=${timeframe}`
                 : `${this.getApiUrl()}/${ticker.toLowerCase()}/${date}_${timeframe}min.json`;
 
             const response = await fetch(url);
