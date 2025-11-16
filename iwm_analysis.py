@@ -20,45 +20,158 @@ class IWMAnalyzer:
         self.df = None
         self.signals_df = None
         
-    def combine_csv_files(self, folder_path: str, output_path: str) -> pd.DataFrame:
-        """Combine all CSV files from stock_prices folder into one DataFrame"""
-        print("Combining CSV files...")
-        
-        # Get all CSV files
+    def load_parquet_data(self, symbol: str = 'IWM', interval: str = '1min',
+                          market_hours_only: bool = False) -> pd.DataFrame:
+        """Load data from AlphaVantage parquet files
+
+        Args:
+            symbol: Stock ticker (default: IWM)
+            interval: Time interval (default: 1min)
+            market_hours_only: If True, filter to 9:30 AM - 4:00 PM only
+                             If False, include extended hours (4:00 AM - 8:00 PM)
+                             Default is False to match CSV behavior
+        """
+        from pathlib import Path
+
+        print(f"Loading AlphaVantage parquet data for {symbol}...")
+
+        # Check for parquet file
+        parquet_file = Path(f'data/{symbol.lower()}/intraday/{symbol.lower()}_av_{interval}_combined.parquet')
+
+        if not parquet_file.exists():
+            print(f"Parquet file not found: {parquet_file}")
+            return None
+
+        # Load parquet
+        df = pd.read_parquet(parquet_file)
+        print(f"Loaded {len(df):,} rows from parquet")
+
+        # Transform to expected format
+        df = df.reset_index()  # timestamp index -> column
+        df = df.rename(columns={'timestamp': 'Time', 'Close': 'Last'})
+
+        # Ensure Time is datetime
+        df['Time'] = pd.to_datetime(df['Time'])
+
+        # Filter to regular market hours if requested
+        if market_hours_only:
+            print("  Filtering to regular market hours (9:30 AM - 4:00 PM)...")
+            original_len = len(df)
+
+            df['Hour'] = df['Time'].dt.hour
+            df['Minute'] = df['Time'].dt.minute
+
+            # Regular market hours: 9:30 AM - 4:00 PM
+            regular_hours = (
+                ((df['Hour'] == 9) & (df['Minute'] >= 30)) |
+                ((df['Hour'] >= 10) & (df['Hour'] < 16)) |
+                ((df['Hour'] == 16) & (df['Minute'] == 0))
+            )
+
+            df = df[regular_hours]
+            df = df.drop(['Hour', 'Minute'], axis=1)
+            print(f"  Filtered: {original_len:,} -> {len(df):,} rows")
+        else:
+            print("  Including extended hours (4:00 AM - 8:00 PM)")
+
+        # Sort by time
+        df = df.sort_values('Time')
+
+        # Calculate Change and %Chg columns
+        df['Change'] = df['Last'].diff().fillna(0)
+        df['%Chg'] = df['Last'].pct_change() * 100
+        df['%Chg'] = df['%Chg'].apply(lambda x: f'{x:.2f}%' if pd.notna(x) else '0.00%')
+
+        # Set first row values
+        if len(df) > 0:
+            df.iloc[0, df.columns.get_loc('Change')] = 0.0
+            df.iloc[0, df.columns.get_loc('%Chg')] = '0.00%'
+
+        # Select columns in expected order
+        columns = ['Time', 'Open', 'High', 'Low', 'Last', 'Change', '%Chg', 'Volume']
+        df = df[columns]
+
+        # Remove duplicates
+        df = df.drop_duplicates(subset=['Time'], keep='first')
+        df = df.reset_index(drop=True)
+
+        print(f"Parquet data loaded: {len(df):,} rows")
+        print(f"Date range: {df['Time'].min()} to {df['Time'].max()}")
+
+        return df
+
+    def combine_csv_files(self, folder_path: str, output_path: str,
+                         include_parquet: bool = True, symbol: str = 'IWM',
+                         interval: str = '1min') -> pd.DataFrame:
+        """Combine all CSV files from stock_prices folder, optionally including parquet data
+
+        Args:
+            folder_path: Path to CSV files
+            output_path: Path to save combined data
+            include_parquet: If True, also load and merge parquet data (default: True)
+            symbol: Symbol for parquet data (default: IWM)
+            interval: Interval for parquet data (default: 1min)
+        """
+
+        # Load CSV files
+        print("Loading CSV files...")
         csv_files = glob.glob(os.path.join(folder_path, "*.csv"))
-        print(f"Found {len(csv_files)} CSV files")
-        
-        # Read and combine all files
+
         dfs = []
-        for file in csv_files:
-            # Read CSV and filter out non-data rows
-            df_temp = pd.read_csv(file)
-            # Remove rows where 'Time' column contains "Downloaded from"
-            df_temp = df_temp[~df_temp['Time'].str.contains("Downloaded from", na=False)]
-            dfs.append(df_temp)
-            print(f"Read {file}: {len(df_temp)} rows")
-        
+
+        if len(csv_files) > 0:
+            print(f"Found {len(csv_files)} CSV files")
+            for file in csv_files:
+                # Read CSV and filter out non-data rows
+                df_temp = pd.read_csv(file)
+                # Remove rows where 'Time' column contains "Downloaded from"
+                df_temp = df_temp[~df_temp['Time'].str.contains("Downloaded from", na=False)]
+                dfs.append(df_temp)
+                print(f"  Read {file}: {len(df_temp)} rows")
+        else:
+            print(f"No CSV files found in {folder_path}")
+
+        # Load parquet data if requested
+        if include_parquet:
+            print("\nLoading parquet data...")
+            df_parquet = self.load_parquet_data(symbol, interval)
+            if df_parquet is not None:
+                dfs.append(df_parquet)
+                print(f"  Added parquet data: {len(df_parquet)} rows")
+            else:
+                print("  No parquet data found")
+
+        # Check if we have any data
+        if len(dfs) == 0:
+            raise FileNotFoundError(f"No data found: no CSV files in {folder_path} and no parquet data")
+
         # Combine all dataframes
+        print(f"\nCombining {len(dfs)} data sources...")
         df_combined = pd.concat(dfs, ignore_index=True)
-        
+
         # Convert Time column to datetime
         df_combined['Time'] = pd.to_datetime(df_combined['Time'])
-        
+
         # Sort by time (ascending)
         df_combined = df_combined.sort_values('Time')
-        
-        # Remove duplicates based on Time
+
+        # Remove duplicates based on Time (keep first occurrence)
+        original_len = len(df_combined)
         df_combined = df_combined.drop_duplicates(subset=['Time'], keep='first')
-        
+        duplicates_removed = original_len - len(df_combined)
+
+        if duplicates_removed > 0:
+            print(f"Removed {duplicates_removed:,} duplicate timestamps")
+
         # Reset index
         df_combined = df_combined.reset_index(drop=True)
-        
+
         # Save combined file
         df_combined.to_csv(output_path, index=False)
-        print(f"Combined data saved to {output_path}")
-        print(f"Total rows: {len(df_combined)}")
+        print(f"\nCombined data saved to {output_path}")
+        print(f"Total rows: {len(df_combined):,}")
         print(f"Date range: {df_combined['Time'].min()} to {df_combined['Time'].max()}")
-        
+
         self.df = df_combined
         return df_combined
     
@@ -591,7 +704,7 @@ class IWMAnalyzer:
             if valid_count == 0:
                 print(f"    ⚠️  WARNING: {indicator} has no valid values!")
             else:
-                print(f"    ✓ {indicator}: {valid_count} valid values")
+                print(f"    OK {indicator}: {valid_count} valid values")
 
         # Validate historical levels
         level_indicators = ['Prev_Day_High', 'Prev_Week_High', 'Prev_Month_High', 'Prev_Year_High']
@@ -1063,7 +1176,7 @@ class IWMAnalyzer:
         enhanced_file = output_file.replace('.csv', '_with_indicators.csv')
         print("\nSaving enhanced data with indicators...")
         df.to_csv(enhanced_file, index=False)
-        print(f"✓ Enhanced data saved to: {enhanced_file}")
+        print(f"SUCCESS: Enhanced data saved to: {enhanced_file}")
         
         # Step 3: Generate technical indicator-based signals
         print("\n" + "="*60)
@@ -1074,7 +1187,7 @@ class IWMAnalyzer:
         # Save signals
         print("\nSaving trading signals...")
         signals_df.to_csv(signals_file, index=False)
-        print(f"✓ Trading signals saved to: {signals_file}")
+        print(f"SUCCESS: Trading signals saved to: {signals_file}")
         
         # Print summary statistics
         print("\n" + "="*60)
@@ -1127,7 +1240,7 @@ def main():
     df, signals_df = analyzer.run_analysis(input_folder, output_file, signals_file, months_limit)
     
     print("\n" + "="*60)
-    print("✓ ANALYSIS COMPLETE!")
+    print("SUCCESS: ANALYSIS COMPLETE!")
     print("="*60)
     print("\nOutput files:")
     print(f"  1. Combined data: {output_file}")
