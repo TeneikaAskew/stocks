@@ -73,8 +73,8 @@ const CONFIG = {
     DATE_FORMAT: 'YYYY-MM-DD',
     DATETIME_FORMAT: 'YYYY-MM-DD HH:mm:ss',
 
-    // Available tickers
-    TICKERS: ['IWM', 'SPY', 'QQQ'],
+    // Available tickers (only include tickers with data deployed)
+    TICKERS: ['IWM'], // SPY and QQQ can be added once their data is fetched and deployed
 
     // Timeframes (in minutes)
     TIMEFRAMES: {
