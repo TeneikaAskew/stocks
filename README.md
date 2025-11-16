@@ -86,7 +86,10 @@ python3 trade_analysis_pipeline.py -months 2
 
 ### Input Data
 - `data/stock_prices/` - Historical IWM price data (CSV files)
+- `data/iwm/intraday/` - AlphaVantage Parquet data (up to 5 years of 1-minute bars)
 - `data/trade_examples/trade_tracker.csv` - Your trade entries
+
+**Note**: The pipeline automatically loads and merges both CSV and Parquet data sources. No conversion needed!
 
 ### Output Files
 - `data/historical_iwm_*_with_indicators.csv` - Data with calculated indicators
@@ -116,6 +119,34 @@ python3 scripts/fetch_market_data.py
 # Fetch specific tickers
 python3 scripts/fetch_market_data.py --tickers IWM SPY
 ```
+
+### 1b. Fetch Historical Intraday Data (`fetch_alphavantage_intraday.py`)
+**Fetch up to 5 years of 1-minute historical data from AlphaVantage:**
+- **Overcomes Yahoo Finance 7-day limit**
+- **Supports**: Any ticker symbol
+- **Features**:
+  - Fetches historical 1-minute bars (up to 5 years)
+  - Stores data in efficient Parquet format
+  - Automatically integrated with `iwm_analysis.py`
+  - Month-by-month fetching with progress tracking
+  - API rate limit handling (5 calls/minute)
+  - **Auto-combines all monthly files** at end of every fetch
+
+```bash
+# Fetch 5 years of IWM data
+python3 scripts/fetch_alphavantage_intraday.py --symbol IWM --years 5
+
+# Fetch specific date range
+python3 scripts/fetch_alphavantage_intraday.py --symbol IWM \
+  --start-date 2020-01-01 --end-date 2025-11-16
+
+# Fetch SPY data
+python3 scripts/fetch_alphavantage_intraday.py --symbol SPY --years 2
+```
+
+**Output**: `data/{symbol}/intraday/{symbol}_av_1min_combined.parquet`
+
+**Note**: The IWM analysis pipeline automatically loads and merges this data with CSV files. No conversion needed!
 
 ### 2. Analyze Market Data (`analyze_market_data.py`)
 Basic market data analysis:
