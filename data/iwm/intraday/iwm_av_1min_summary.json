@@ -1,12 +1,14 @@
 {
   "symbol": "IWM",
   "interval": "1min",
-  "start_date": "2020-01-02 04:00:00",
-  "end_date": "2020-10-30 19:59:00",
-  "total_bars": 135688,
-  "total_months": 10,
-  "latest_close": 143.9636,
-  "latest_volume": 500,
-  "last_update": "2025-11-16T09:39:47.152530",
+  "start_date": "2019-01-02 04:00:00",
+  "end_date": "2025-11-14 20:00:00",
+  "total_bars": 1284305,
+  "total_months": 83,
+  "monthly_files_combined": 83,
+  "duplicates_removed": 0,
+  "latest_close": 237.48,
+  "latest_volume": 727335,
+  "last_update": "2025-11-16T15:29:17.255652",
   "file": "data\\iwm\\intraday\\iwm_av_1min_combined.parquet"
 }
