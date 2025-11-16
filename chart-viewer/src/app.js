@@ -11,6 +11,11 @@ class App {
         this.currentDate = null;
         this.currentTimeframe = 1;
 
+        // Interactive drawing mode
+        this.drawingMode = null; // 'entry', 'tp', 'sl', null
+        this.drawingStep = 0; // Current step in drawing sequence
+        this.tempTradeData = {}; // Temporary storage for trade being drawn
+
         this.initializeUI();
         this.attachEventListeners();
         this.loadInitialData();
@@ -51,7 +56,7 @@ class App {
 
         // Mark entry button
         document.getElementById('markEntryBtn').addEventListener('click', () => {
-            this.openTradeModal('entry');
+            this.startDrawingMode('entry');
         });
 
         // Mark exit button
@@ -79,10 +84,31 @@ class App {
         // Chart click event
         window.addEventListener('chartClick', (e) => {
             console.log('Chart clicked:', e.detail);
+            this.handleChartClickInDrawingMode(e.detail);
         });
 
         // Modal events
         this.setupModalEvents();
+
+        // ESC key to cancel or skip drawing steps
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && this.drawingMode) {
+                if (this.drawingStep === 0) {
+                    // Cancel entirely
+                    this.cancelDrawingMode();
+                    Utils.notify('Drawing mode cancelled', 'info');
+                } else if (this.drawingStep >= 1 && this.drawingStep <= 3) {
+                    // Skip to stop loss
+                    this.drawingStep = 4;
+                    const btn = document.getElementById('markEntryBtn');
+                    btn.textContent = '📍 Click chart for Stop Loss';
+                    Utils.notify('Skipped to Stop Loss. Click to mark SL (or ESC to finish)', 'info');
+                } else if (this.drawingStep === 4) {
+                    // Skip SL and complete
+                    this.completeDrawingMode();
+                }
+            }
+        });
     }
 
     /**
@@ -463,11 +489,26 @@ class App {
                         </div>
                     ` : ''}
                 </div>
-                <div class="trade-pnl ${pnlClass}">
-                    P&L: ${pnlText}
+                <div class="trade-card-footer">
+                    <div class="trade-pnl ${pnlClass}">
+                        P&L: ${pnlText}
+                    </div>
+                    <button class="btn-delete" onclick="app.handleDeleteTrade('${trade.id}')" title="Delete trade">
+                        ✕
+                    </button>
                 </div>
             </div>
         `;
+    }
+
+    /**
+     * Handle trade deletion
+     */
+    handleDeleteTrade(tradeId) {
+        const success = this.tradeMarker.deleteTrade(tradeId);
+        if (success) {
+            this.refreshTradesList();
+        }
     }
 
     /**
@@ -492,6 +533,168 @@ class App {
                 `<p class="insight-item">${insight}</p>`
             ).join('');
         }
+    }
+
+    /**
+     * Start interactive drawing mode
+     */
+    startDrawingMode(mode) {
+        this.drawingMode = mode;
+        this.drawingStep = 0;
+        this.tempTradeData = {
+            ticker: this.currentTicker,
+            takeProfits: [],
+        };
+
+        // Update UI to show drawing mode is active
+        const btn = document.getElementById('markEntryBtn');
+        btn.classList.add('active-drawing');
+        btn.textContent = '📍 Click chart for Entry';
+
+        Utils.notify('Click on the chart to mark entry price', 'info');
+    }
+
+    /**
+     * Cancel drawing mode
+     */
+    cancelDrawingMode() {
+        this.drawingMode = null;
+        this.drawingStep = 0;
+        this.tempTradeData = {};
+
+        // Reset UI
+        const btn = document.getElementById('markEntryBtn');
+        btn.classList.remove('active-drawing');
+        btn.textContent = '📍 Mark Entry';
+
+        // Clear temporary lines from chart
+        this.chartManager.clearTempLines();
+    }
+
+    /**
+     * Handle chart clicks when in drawing mode
+     */
+    handleChartClickInDrawingMode(clickData) {
+        if (!this.drawingMode) {
+            return; // Not in drawing mode
+        }
+
+        const { time, price } = clickData;
+        console.log('[Drawing Mode] Chart clicked at step', this.drawingStep, '- Price:', price, 'Time:', time);
+
+        switch (this.drawingStep) {
+            case 0: // Entry price
+                console.log('[Drawing Mode] Marking entry at price:', price);
+                this.tempTradeData.entryPrice = price;
+                this.tempTradeData.entryTime = time;
+
+                // Ask for option type
+                this.promptOptionType();
+                break;
+
+            case 1: // TP1
+            case 2: // TP2
+            case 3: // TP3
+                const tpIndex = this.drawingStep - 1;
+                this.tempTradeData.takeProfits.push({
+                    price: price,
+                    size: tpIndex === 0 ? 0.5 : tpIndex === 1 ? 0.3 : 0.2, // Default sizes
+                });
+
+                // Draw temporary TP line
+                this.chartManager.addTempPriceLine(price, '#22c55e', `TP${tpIndex + 1}`);
+
+                if (this.drawingStep === 3) {
+                    // After TP3, ask for stop loss
+                    const btn = document.getElementById('markEntryBtn');
+                    btn.textContent = '📍 Click chart for Stop Loss';
+                    Utils.notify('Click to mark Stop Loss (or press ESC to skip)', 'info');
+                } else {
+                    // Ask for next TP
+                    const btn = document.getElementById('markEntryBtn');
+                    btn.textContent = `📍 Click chart for TP${this.drawingStep}`;
+                    Utils.notify(`Click to mark Take Profit ${this.drawingStep} (or press ESC to skip to SL)`, 'info');
+                }
+
+                this.drawingStep++;
+                break;
+
+            case 4: // Stop Loss
+                this.tempTradeData.stopLoss = { price: price };
+
+                // Draw temporary SL line
+                this.chartManager.addTempPriceLine(price, '#ef4444', 'SL');
+
+                // Complete the trade entry
+                this.completeDrawingMode();
+                break;
+        }
+    }
+
+    /**
+     * Prompt for option type (CALL or PUT)
+     */
+    promptOptionType() {
+        console.log('[Drawing Mode] Showing option type modal...');
+        console.log('[Drawing Mode] Entry price:', this.tempTradeData.entryPrice);
+
+        // Show the option type modal
+        const modal = document.getElementById('optionTypeModal');
+        modal.style.display = 'flex';
+
+        // Setup button handlers
+        const handleSelection = (optionType) => {
+            console.log('[Drawing Mode] User selected:', optionType);
+            this.tempTradeData.optionType = optionType;
+
+            // Hide modal
+            modal.style.display = 'none';
+
+            // Draw entry line
+            const color = optionType === 'CALL' ? '#22c55e' : '#ef4444';
+            this.chartManager.addTempPriceLine(this.tempTradeData.entryPrice, color, 'Entry');
+
+            // Move to TP step
+            this.drawingStep = 1;
+            const btn = document.getElementById('markEntryBtn');
+            btn.textContent = '📍 Click chart for TP1';
+            Utils.notify(`${optionType} trade - Click to mark Take Profit 1 (or press ESC to skip)`, 'info');
+
+            // Remove event listeners
+            document.getElementById('selectCallBtn').removeEventListener('click', callHandler);
+            document.getElementById('selectPutBtn').removeEventListener('click', putHandler);
+        };
+
+        const callHandler = () => handleSelection('CALL');
+        const putHandler = () => handleSelection('PUT');
+
+        document.getElementById('selectCallBtn').addEventListener('click', callHandler);
+        document.getElementById('selectPutBtn').addEventListener('click', putHandler);
+    }
+
+    /**
+     * Complete drawing mode and create the trade
+     */
+    completeDrawingMode() {
+        // Add the trade
+        const trade = this.tradeMarker.addEntry({
+            ticker: this.tempTradeData.ticker,
+            optionType: this.tempTradeData.optionType,
+            price: this.tempTradeData.entryPrice,
+            time: this.tempTradeData.entryTime,
+            takeProfits: this.tempTradeData.takeProfits,
+            stopLoss: this.tempTradeData.stopLoss,
+            notes: '',
+            tags: [],
+        });
+
+        if (trade) {
+            Utils.notify('Trade entry marked successfully!', 'success');
+            this.refreshTradesList();
+        }
+
+        // Exit drawing mode
+        this.cancelDrawingMode();
     }
 
     /**
