@@ -22,8 +22,14 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Alpha Vantage API configuration
-ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY', '7E8X3MQLLSW5HPWF')
+# Alpha Vantage API configuration - Multiple keys for failover
+ALPHA_VANTAGE_API_KEYS = [
+    os.getenv('ALPHA_VANTAGE_API_KEY', 'VNMXDQ9LBOJ5X2I6'),  # Primary key
+    '7E8X3MQLLSW5HPWF',   # Backup key 1
+    'VFIN9SZWRAI1SCGW'    # Backup key 2
+]
+current_key_index = 0
+ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEYS[current_key_index]
 BASE_URL = 'https://www.alphavantage.co/query'
 
 # Rate limiting: Alpha Vantage free tier allows 5 API calls/minute, 500/day
@@ -61,6 +67,19 @@ def get_trading_days(start_date, end_date, skip_weekends=True):
         current += timedelta(days=1)
 
     return days
+
+
+def switch_api_key():
+    """Switch to the next available API key."""
+    global current_key_index, ALPHA_VANTAGE_API_KEY
+
+    current_key_index = (current_key_index + 1) % len(ALPHA_VANTAGE_API_KEYS)
+    ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEYS[current_key_index]
+
+    print(f"\n  Switching to backup API key #{current_key_index + 1}")
+    print(f"  New key: {ALPHA_VANTAGE_API_KEY[:4]}...{ALPHA_VANTAGE_API_KEY[-4:]}")
+
+    return ALPHA_VANTAGE_API_KEY
 
 
 def fetch_options_chain(symbol, date):
@@ -112,7 +131,41 @@ def fetch_options_chain(symbol, date):
         if 'Information' in data:
             print(f"  API Information: {data['Information']}")
             print(f"  Full Response: {json.dumps(data, indent=2)}")
-            return None
+
+            # Try switching to backup key if available
+            if current_key_index < len(ALPHA_VANTAGE_API_KEYS) - 1:
+                new_key = switch_api_key()
+                # Retry with new key
+                params['apikey'] = new_key
+                print(f"  Retrying with backup key...")
+                time.sleep(2)  # Brief pause before retry
+
+                try:
+                    response = requests.get(BASE_URL, params=params, timeout=30)
+                    response.raise_for_status()
+                    data = response.json()
+
+                    # Check if the retry worked
+                    if 'Information' not in data and 'Error Message' not in data:
+                        if data.get('endpoint') == 'Historical Options' and data.get('message') == 'success':
+                            print(f"  ✓ Successfully switched to backup key!")
+                            # Continue with processing below
+                        else:
+                            return None
+                    else:
+                        return None
+                except Exception as e:
+                    print(f"  Retry with backup key failed: {e}")
+                    return None
+            else:
+                print(f"\n{'='*60}")
+                print(f"❌ ALL API KEYS EXHAUSTED")
+                print(f"{'='*60}")
+                print(f"All {len(ALPHA_VANTAGE_API_KEYS)} API keys have hit their daily rate limits.")
+                print(f"Please wait 24 hours before trying again.")
+                print(f"Script will now exit.")
+                print(f"{'='*60}\n")
+                sys.exit(1)  # Exit the entire script
 
         # Check response status
         if data.get('endpoint') != 'Historical Options':
@@ -351,6 +404,86 @@ def analyze_options_data(df, symbol):
     return analysis
 
 
+def show_parquet_data(symbol, rows=100):
+    """
+    Load and display options parquet data for a given symbol.
+
+    Args:
+        symbol: Stock ticker symbol
+        rows: Number of rows to display (default: 100)
+    """
+    data_dir = Path('data') / symbol.lower() / 'options'
+    combined_file = data_dir / f"{symbol.lower()}_av_options_combined.parquet"
+    summary_file = data_dir / f"{symbol.lower()}_av_options_summary.json"
+
+    if not combined_file.exists():
+        print(f"\nERROR: Combined file not found: {combined_file}")
+        print(f"Please fetch data first using:")
+        print(f"  python scripts/fetch_alphavantage_options.py --symbol {symbol} --days 30")
+        sys.exit(1)
+
+    print(f"\n{'='*60}")
+    print(f"Loading: {combined_file}")
+    print(f"{'='*60}\n")
+
+    # Load data
+    df = pd.read_parquet(combined_file)
+
+    # Show summary if available
+    if summary_file.exists():
+        with open(summary_file, 'r') as f:
+            summary = json.load(f)
+        print("Summary:")
+        print(f"  Symbol: {summary.get('symbol', 'N/A')}")
+        print(f"  Date Range: {summary.get('start_date', 'N/A')} to {summary.get('end_date', 'N/A')}")
+        print(f"  Total Contracts: {summary.get('total_contracts', 'N/A'):,}")
+        print(f"  Total Days: {summary.get('total_days', 'N/A')}")
+        print(f"  Unique Expirations: {summary.get('unique_expirations', 'N/A')}")
+        print(f"  Unique Strikes: {summary.get('unique_strikes', 'N/A')}")
+        print(f"  Calls: {summary.get('calls_count', 'N/A'):,}")
+        print(f"  Puts: {summary.get('puts_count', 'N/A'):,}")
+        print(f"  Last Update: {summary.get('last_update', 'N/A')}")
+        print()
+
+    # Show dataframe info
+    print(f"DataFrame Info:")
+    print(f"  Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+    print(f"  Columns: {', '.join(df.columns.tolist())}")
+    print(f"  Memory: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
+    print()
+
+    # Show first N rows
+    display_rows = min(rows, len(df))
+    print(f"First {display_rows} rows:")
+    print(f"{'-'*60}")
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
+    pd.set_option('display.max_colwidth', 20)
+    print(df.head(display_rows))
+    print(f"{'-'*60}\n")
+
+    # Show last 5 rows for context
+    print(f"Last 5 rows:")
+    print(f"{'-'*60}")
+    print(df.tail(5))
+    print(f"{'-'*60}\n")
+
+    # Show some basic stats by type
+    if 'type' in df.columns:
+        print("Distribution by Option Type:")
+        print(f"{'-'*60}")
+        print(df['type'].value_counts())
+        print()
+
+    # Show snapshot dates if available
+    if 'snapshot_date' in df.columns:
+        unique_dates = df['snapshot_date'].nunique()
+        print(f"Unique Snapshot Dates: {unique_dates}")
+        if unique_dates <= 10:
+            print(f"Dates: {sorted(df['snapshot_date'].dt.date.unique())}")
+        print()
+
+
 def main():
     """Main function to fetch Alpha Vantage options chain data."""
     parser = argparse.ArgumentParser(
@@ -366,6 +499,10 @@ Examples:
 
   # Fetch single day
   python fetch_alphavantage_options.py --symbol IWM --date 2025-11-14
+
+  # Show existing data
+  python fetch_alphavantage_options.py --symbol IWM --show
+  python fetch_alphavantage_options.py --symbol IWM --show --rows 200
 
 Note: Free tier is limited to 5 calls/minute and 500 calls/day.
       One call per trading day is required.
@@ -384,8 +521,17 @@ Note: Free tier is limited to 5 calls/minute and 500 calls/day.
                        help='Fetch single date only (YYYY-MM-DD format)')
     parser.add_argument('--analyze', action='store_true',
                        help='Show analysis of fetched data')
+    parser.add_argument('--show', action='store_true',
+                       help='Display existing parquet data instead of fetching')
+    parser.add_argument('--rows', type=int, default=100,
+                       help='Number of rows to display when using --show (default: 100)')
 
     args = parser.parse_args()
+
+    # If --show flag is set, display data and exit
+    if args.show:
+        show_parquet_data(args.symbol, args.rows)
+        return
 
     # Validate API key
     if not ALPHA_VANTAGE_API_KEY or ALPHA_VANTAGE_API_KEY == 'your_alpha_vantage_api_key_here':

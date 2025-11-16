@@ -21,6 +21,10 @@ python scripts/fetch_alphavantage_intraday.py --symbol IWM --month 2025-11
 
 # Fetch 5-minute bars for last 2 years
 python scripts/fetch_alphavantage_intraday.py --symbol SPY --years 2 --interval 5min
+
+# Show existing data (no API calls)
+python scripts/fetch_alphavantage_intraday.py --symbol IWM --show
+python scripts/fetch_alphavantage_intraday.py --symbol IWM --show --rows 200
 ```
 
 ### Options Chain Data
@@ -34,6 +38,10 @@ python scripts/fetch_alphavantage_options.py --symbol IWM --date 2025-11-14 --an
 
 # Fetch specific date range
 python scripts/fetch_alphavantage_options.py --symbol SPY --start-date 2025-01-01 --end-date 2025-01-31
+
+# Show existing data (no API calls)
+python scripts/fetch_alphavantage_options.py --symbol IWM --show
+python scripts/fetch_alphavantage_options.py --symbol IWM --show --rows 200
 ```
 
 ## Output Locations
