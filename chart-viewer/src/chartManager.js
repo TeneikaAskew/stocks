@@ -10,8 +10,14 @@ class ChartManager {
         this.currentData = null;
         this.currentTicker = null;
         this.currentDate = null;
+        this.volumeVisible = false; // Default to hidden
+        this.rthOnly = true; // Default to regular trading hours only
+        this.tempPriceLines = []; // Temporary price lines for drawing mode
+        this.tradePriceLines = []; // Price lines for trades (TP/SL)
 
         this.initializeChart();
+        this.setupVolumeToggle();
+        this.setupRTHToggle();
     }
 
     /**
@@ -23,11 +29,25 @@ class ChartManager {
             return;
         }
 
-        // Create chart
+        // Create chart with Eastern Time localization
         this.chart = LightweightCharts.createChart(this.container, {
             ...CONFIG.CHART,
             width: this.container.clientWidth,
             height: this.container.clientHeight,
+            localization: {
+                timeFormatter: (timestamp) => {
+                    // Convert Unix timestamp to Eastern Time
+                    const date = new Date(timestamp * 1000);
+                    const etTime = date.toLocaleString('en-US', {
+                        timeZone: 'America/New_York',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false
+                    });
+                    // Return just HH:MM
+                    return etTime;
+                },
+            },
         });
 
         // Create candlestick series
@@ -70,20 +90,92 @@ class ChartManager {
             return;
         }
 
+        // Store original data
         this.currentData = data;
         this.currentTicker = ticker;
         this.currentDate = date;
 
-        // Set candlestick data
-        this.candlestickSeries.setData(data.candlestick);
+        // Apply RTH filter if enabled
+        const filteredData = this.rthOnly ? this.filterRTH(data) : data;
 
-        // Set volume data
-        this.volumeSeries.setData(data.volume);
+        // Set candlestick data
+        this.candlestickSeries.setData(filteredData.candlestick);
+
+        // Set volume data only if volume is visible
+        if (this.volumeVisible) {
+            this.volumeSeries.setData(filteredData.volume);
+        } else {
+            this.volumeSeries.setData([]);
+        }
 
         // Fit content
         this.chart.timeScale().fitContent();
 
-        Utils.notify(`Chart loaded with ${data.candlestick.length} candles`, 'success');
+        const totalCandles = data.candlestick.length;
+        const displayedCandles = filteredData.candlestick.length;
+        const message = this.rthOnly
+            ? `Chart loaded with ${displayedCandles} candles (RTH only, ${totalCandles - displayedCandles} filtered)`
+            : `Chart loaded with ${totalCandles} candles`;
+
+        Utils.notify(message, 'success');
+    }
+
+    /**
+     * Filter data to regular trading hours (9:30 AM - 4:00 PM ET)
+     */
+    filterRTH(data) {
+        const filterByTime = (items) => {
+            // Debug: log first few items to understand timestamp format
+            if (items.length > 0) {
+                console.log('[RTH Filter] Analyzing timestamps...');
+                for (let i = 0; i < Math.min(3, items.length); i++) {
+                    const date = new Date(items[i].time * 1000);
+
+                    // Try interpreting as if it's already in ET (not UTC)
+                    const etHours = date.getUTCHours();
+                    const etMinutes = date.getUTCMinutes();
+
+                    console.log(`  Timestamp ${items[i].time}:`);
+                    console.log(`    - If interpreted as ET: ${etHours}:${String(etMinutes).padStart(2, '0')}`);
+                    console.log(`    - UTC ISO: ${date.toISOString()}`);
+                    console.log(`    - Your local: ${date.toLocaleString()}`);
+                }
+            }
+
+            return items.filter(item => {
+                const date = new Date(item.time * 1000);
+
+                // The timestamps appear to be stored as if they're in ET timezone
+                // but marked as UTC. So we read them as UTC hours/minutes which
+                // actually represent ET hours/minutes.
+                const etHours = date.getUTCHours();
+                const etMinutes = date.getUTCMinutes();
+                const etTimeInMinutes = etHours * 60 + etMinutes;
+
+                // RTH is 9:30 AM - 4:00 PM ET
+                const rthStart = 9 * 60 + 30;  // 9:30 AM = 570 minutes
+                const rthEnd = 16 * 60;         // 4:00 PM = 960 minutes
+
+                const isRTH = etTimeInMinutes >= rthStart && etTimeInMinutes < rthEnd;
+
+                // Debug log for first item
+                if (item === items[0]) {
+                    console.log(`[RTH Filter] First candle: ${etHours}:${String(etMinutes).padStart(2, '0')} ET -> ${isRTH ? 'KEEP (RTH)' : 'FILTER (not RTH)'}`);
+                    console.log(`[RTH Filter] RTH range: 9:30 AM - 4:00 PM ET (${rthStart} - ${rthEnd} minutes)`);
+                }
+
+                return isRTH;
+            });
+        };
+
+        const filtered = {
+            candlestick: filterByTime(data.candlestick),
+            volume: filterByTime(data.volume)
+        };
+
+        console.log(`[RTH Filter] Filtered ${data.candlestick.length} -> ${filtered.candlestick.length} candles`);
+
+        return filtered;
     }
 
     /**
@@ -112,17 +204,31 @@ class ChartManager {
      * Handle chart click events
      */
     handleChartClick(param) {
-        if (!param.time) {
+        if (!param.time || !param.point) {
             return;
         }
 
         const data = param.seriesData.get(this.candlestickSeries);
 
         if (data) {
+            // Convert the Y coordinate to a price using the price scale
+            // This gives us the exact price at the crosshair position
+            let clickedPrice;
+
+            try {
+                // Use coordinateToPrice to get the price at the Y coordinate
+                clickedPrice = this.candlestickSeries.coordinateToPrice(param.point.y);
+            } catch (e) {
+                console.warn('Could not convert coordinate to price, using close:', e);
+                clickedPrice = data.close;
+            }
+
+            console.log('[Chart Click] Y coordinate:', param.point.y, '-> Price:', clickedPrice);
+
             // Store click data for trade marking
             this.lastClickData = {
                 time: param.time,
-                price: data.close,
+                price: clickedPrice || data.close,
                 candle: data,
             };
 
@@ -137,6 +243,12 @@ class ChartManager {
      * Add markers to the chart
      */
     addMarkers(trades) {
+        // Clear all existing trade price lines
+        this.tradePriceLines.forEach(line => {
+            this.candlestickSeries.removePriceLine(line);
+        });
+        this.tradePriceLines = [];
+
         if (!trades || trades.length === 0) {
             this.candlestickSeries.setMarkers([]);
             return;
@@ -152,7 +264,7 @@ class ChartManager {
                 color: trade.optionType === 'CALL'
                     ? CONFIG.MARKER_COLORS.CALL_ENTRY
                     : CONFIG.MARKER_COLORS.PUT_ENTRY,
-                shape: 'arrowUp',
+                shape: trade.optionType === 'CALL' ? 'arrowUp' : 'arrowDown',
                 text: `${trade.optionType} @ ${Utils.formatCurrency(trade.entryPrice)}`,
             });
 
@@ -203,6 +315,9 @@ class ChartManager {
             title: title,
         });
 
+        // Store in tradePriceLines array so we can remove them later
+        this.tradePriceLines.push(priceLine);
+
         return priceLine;
     }
 
@@ -248,5 +363,107 @@ class ChartManager {
             this.chart.remove();
             this.chart = null;
         }
+    }
+
+    /**
+     * Setup volume toggle listener
+     */
+    setupVolumeToggle() {
+        const volumeToggle = document.getElementById('volumeToggle');
+        if (volumeToggle) {
+            volumeToggle.addEventListener('change', (e) => {
+                this.toggleVolume(e.target.checked);
+            });
+        }
+    }
+
+    /**
+     * Setup RTH toggle listener
+     */
+    setupRTHToggle() {
+        const rthToggle = document.getElementById('rthToggle');
+        if (rthToggle) {
+            rthToggle.addEventListener('change', (e) => {
+                this.toggleRTH(e.target.checked);
+            });
+        }
+    }
+
+    /**
+     * Toggle volume visibility
+     */
+    toggleVolume(visible) {
+        this.volumeVisible = visible;
+
+        if (this.volumeSeries && this.chart) {
+            if (visible) {
+                // Show volume by setting the data
+                if (this.currentData && this.currentData.volume) {
+                    const filteredData = this.rthOnly ? this.filterRTH(this.currentData) : this.currentData;
+                    this.volumeSeries.setData(filteredData.volume);
+                }
+            } else {
+                // Hide volume by clearing the data
+                this.volumeSeries.setData([]);
+            }
+        }
+    }
+
+    /**
+     * Toggle RTH (Regular Trading Hours) filter
+     */
+    toggleRTH(enabled) {
+        this.rthOnly = enabled;
+
+        // Reload the chart with the filter applied/removed
+        if (this.currentData) {
+            const filteredData = enabled ? this.filterRTH(this.currentData) : this.currentData;
+
+            // Update candlestick data
+            this.candlestickSeries.setData(filteredData.candlestick);
+
+            // Update volume data if visible
+            if (this.volumeVisible) {
+                this.volumeSeries.setData(filteredData.volume);
+            }
+
+            // Fit content
+            this.chart.timeScale().fitContent();
+
+            const totalCandles = this.currentData.candlestick.length;
+            const displayedCandles = filteredData.candlestick.length;
+            const message = enabled
+                ? `RTH filter enabled: showing ${displayedCandles} of ${totalCandles} candles`
+                : `RTH filter disabled: showing all ${totalCandles} candles`;
+
+            Utils.notify(message, 'info');
+        }
+    }
+
+    /**
+     * Add temporary price line (for drawing mode)
+     */
+    addTempPriceLine(price, color, title) {
+        const priceLine = this.candlestickSeries.createPriceLine({
+            price: price,
+            color: color,
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: title,
+        });
+
+        this.tempPriceLines.push(priceLine);
+        return priceLine;
+    }
+
+    /**
+     * Clear all temporary price lines
+     */
+    clearTempLines() {
+        this.tempPriceLines.forEach(line => {
+            this.candlestickSeries.removePriceLine(line);
+        });
+        this.tempPriceLines = [];
     }
 }
