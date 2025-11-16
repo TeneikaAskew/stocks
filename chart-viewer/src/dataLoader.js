@@ -112,11 +112,20 @@ class DataLoader {
             }
 
             const data = await response.json();
-            console.log('[DataLoader] Received data points:', data.length);
 
-            // Transform data for TradingView Lightweight Charts
-            let chartData = this.transformData(data);
-            console.log('[DataLoader] Transformed candles:', chartData.candlestick.length);
+            // Check if data is already in the correct format (GitHub Pages)
+            let chartData;
+            if (data.candlestick && data.volume) {
+                // GitHub Pages format - data is already transformed
+                console.log('[DataLoader] Data already in correct format (GitHub Pages)');
+                console.log('[DataLoader] Candlestick data points:', data.candlestick.length);
+                chartData = data;
+            } else {
+                // API format - needs transformation
+                console.log('[DataLoader] Received data points:', data.length);
+                chartData = this.transformData(data);
+                console.log('[DataLoader] Transformed candles:', chartData.candlestick.length);
+            }
 
             // Aggregate to requested timeframe if needed (GitHub Pages mode)
             if (!CONFIG.USE_LOCAL_API && timeframe > 1) {
