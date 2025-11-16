@@ -2,7 +2,7 @@
 
 const CONFIG = {
     // Data source - switch between local API and GitHub Pages
-    USE_LOCAL_API: true, // Set to false for GitHub Pages (uses pre-converted JSON)
+    USE_LOCAL_API: false, // Set to false for GitHub Pages (uses pre-converted JSON)
 
     // API endpoints
     LOCAL_API_URL: 'http://localhost:5000/api',
