@@ -100,7 +100,11 @@
       "Bash(curl:*)",
       "Bash(start index.html)",
       "Bash(start http://localhost:8000)",
-      "Bash(git show:*)"
+      "Bash(git show:*)",
+      "Bash(nul)",
+      "Bash(if [ -f .gitignore ])",
+      "Bash(then echo \".gitignore exists\")",
+      "Bash(else echo \"No .gitignore found\")"
     ],
     "deny": []
   }
