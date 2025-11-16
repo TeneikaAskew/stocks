@@ -100,7 +100,8 @@
       "Bash(curl:*)",
       "Bash(start index.html)",
       "Bash(start http://localhost:8000)",
-      "Bash(git show:*)"
+      "Bash(git show:*)",
+      "Bash(git fetch:*)"
     ],
     "deny": []
   }
