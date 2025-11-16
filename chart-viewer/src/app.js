@@ -130,23 +130,30 @@ class App {
      * Load available dates for current ticker
      */
     async loadAvailableDates() {
-        const months = await this.dataLoader.fetchAvailableMonths(this.currentTicker);
+        const dates = await this.dataLoader.fetchAvailableMonths(this.currentTicker);
 
-        if (months.length === 0) {
+        if (dates.length === 0) {
             Utils.notify('No data available for this ticker', 'warning');
             return;
         }
 
-        // Get most recent month
-        const latestMonth = months[months.length - 1];
+        // Check if we have YYYYMMDD dates (GitHub Pages) or YYYYMM months (Local API)
+        const firstItem = dates[0];
+        const isIndividualDates = firstItem && firstItem.length === 8; // YYYYMMDD format
 
-        // Generate trading days for recent months (last 3 months)
-        const recentMonths = months.slice(-3);
-        const allDays = [];
+        let allDays = [];
 
-        for (const month of recentMonths) {
-            const days = this.dataLoader.getTradingDaysInMonth(month);
-            allDays.push(...days);
+        if (isIndividualDates) {
+            // GitHub Pages mode - dates.json already has individual trading days
+            // Use the last 60 days (about 3 months of trading days)
+            allDays = dates.slice(-60);
+        } else {
+            // Local API mode - generate trading days from months
+            const recentMonths = dates.slice(-3);
+            for (const month of recentMonths) {
+                const days = this.dataLoader.getTradingDaysInMonth(month);
+                allDays.push(...days);
+            }
         }
 
         if (allDays.length === 0) {
@@ -154,14 +161,14 @@ class App {
             return;
         }
 
-        // Populate date selector
+        // Populate date selector (in reverse order - most recent first)
         const select = document.getElementById('dateSelect');
-        select.innerHTML = allDays.map(date =>
+        select.innerHTML = allDays.reverse().map(date =>
             `<option value="${date}">${this.formatDateDisplay(date)}</option>`
         ).join('');
 
-        // Select most recent date
-        this.currentDate = allDays[allDays.length - 1];
+        // Select most recent date (now first in list after reverse)
+        this.currentDate = allDays[0];
         select.value = this.currentDate;
 
         // Load chart data
