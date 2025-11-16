@@ -69,6 +69,13 @@ class App {
             this.tradeMarker.exportToCSV();
         });
 
+        // Refresh button
+        document.getElementById('refreshBtn').addEventListener('click', () => {
+            // Clear cache and hard reload
+            this.dataLoader.clearCache();
+            window.location.reload(true);
+        });
+
         // Chart click event
         window.addEventListener('chartClick', (e) => {
             console.log('Chart clicked:', e.detail);
@@ -122,6 +129,9 @@ class App {
      * Load initial data
      */
     async loadInitialData() {
+        console.log('[App] loadInitialData called');
+        console.log('[App] Current ticker:', this.currentTicker);
+        console.log('[App] Config TICKERS:', CONFIG.TICKERS);
         Utils.notify('Loading data...', 'info');
         await this.loadAvailableDates();
     }
@@ -130,8 +140,10 @@ class App {
      * Load available dates for current ticker
      */
     async loadAvailableDates() {
+        console.log('[App] loadAvailableDates called');
         const dates = await this.dataLoader.fetchAvailableMonths(this.currentTicker);
 
+        console.log('[App] Received dates:', dates.length);
         if (dates.length === 0) {
             Utils.notify('No data available for this ticker', 'warning');
             return;
@@ -139,7 +151,9 @@ class App {
 
         // Check if we have YYYYMMDD dates (GitHub Pages) or YYYYMM months (Local API)
         const firstItem = dates[0];
+        console.log('[App] First item:', firstItem, 'length:', firstItem?.length);
         const isIndividualDates = firstItem && firstItem.length === 8; // YYYYMMDD format
+        console.log('[App] Is individual dates:', isIndividualDates);
 
         let allDays = [];
 
@@ -147,14 +161,19 @@ class App {
             // GitHub Pages mode - dates.json already has individual trading days
             // Use the last 60 days (about 3 months of trading days)
             allDays = dates.slice(-60);
+            console.log('[App] GitHub Pages mode - using last 60 days');
         } else {
             // Local API mode - generate trading days from months
             const recentMonths = dates.slice(-3);
+            console.log('[App] Local API mode - generating days from months:', recentMonths);
             for (const month of recentMonths) {
                 const days = this.dataLoader.getTradingDaysInMonth(month);
                 allDays.push(...days);
             }
         }
+
+        console.log('[App] All days count:', allDays.length);
+        console.log('[App] First 5 days:', allDays.slice(0, 5));
 
         if (allDays.length === 0) {
             Utils.notify('No trading days found', 'warning');
@@ -170,6 +189,7 @@ class App {
         // Select most recent date (now first in list after reverse)
         this.currentDate = allDays[0];
         select.value = this.currentDate;
+        console.log('[App] Selected date:', this.currentDate);
 
         // Load chart data
         await this.loadChartData();
@@ -507,5 +527,13 @@ class App {
 
 // Initialize app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('='.repeat(60));
+    console.log('Trading Chart Viewer - Initializing');
+    console.log('='.repeat(60));
+    console.log('Config:', {
+        USE_LOCAL_API: CONFIG.USE_LOCAL_API,
+        TICKERS: CONFIG.TICKERS,
+        GITHUB_DATA_URL: CONFIG.GITHUB_DATA_URL,
+    });
     window.app = new App();
 });

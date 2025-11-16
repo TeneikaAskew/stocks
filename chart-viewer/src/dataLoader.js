@@ -17,7 +17,10 @@ class DataLoader {
      * Fetch available months for a ticker (returns YYYYMM format)
      */
     async fetchAvailableMonths(ticker) {
+        console.log('[DataLoader] fetchAvailableMonths:', ticker);
+
         if (this.availableDates.has(ticker)) {
+            console.log('[DataLoader] Returning cached dates');
             return this.availableDates.get(ticker);
         }
 
@@ -25,6 +28,9 @@ class DataLoader {
             const url = CONFIG.USE_LOCAL_API
                 ? `${this.getApiUrl()}/dates/${ticker}`
                 : `${this.getApiUrl()}/${ticker.toLowerCase()}/dates.json`;
+
+            console.log('[DataLoader] Fetching from URL:', url);
+            console.log('[DataLoader] USE_LOCAL_API:', CONFIG.USE_LOCAL_API);
 
             const response = await fetch(url);
             if (!response.ok) {
@@ -34,10 +40,14 @@ class DataLoader {
             const data = await response.json();
             const months = CONFIG.USE_LOCAL_API ? data.dates : data;
 
+            console.log('[DataLoader] Received dates count:', months.length);
+            console.log('[DataLoader] First 5 dates:', months.slice(0, 5));
+            console.log('[DataLoader] Last 5 dates:', months.slice(-5));
+
             this.availableDates.set(ticker, months);
             return months;
         } catch (error) {
-            console.error('Error fetching available months:', error);
+            console.error('[DataLoader] Error fetching available months:', error);
             Utils.notify('Error loading available months', 'error');
             return [];
         }
@@ -70,16 +80,22 @@ class DataLoader {
      * Fetch OHLCV data for a specific ticker and date (YYYYMMDD format)
      */
     async fetchData(ticker, date, timeframe = 1) {
+        console.log('[DataLoader] fetchData called:', { ticker, date, timeframe });
+        console.log('[DataLoader] Date length:', date ? date.length : 'null');
+        console.log('[DataLoader] Date value:', date);
+
         const cacheKey = `${ticker}_${date}_${timeframe}`;
 
         // Check cache first
         if (this.cache.has(cacheKey)) {
+            console.log('[DataLoader] Returning cached data');
             return this.cache.get(cacheKey);
         }
 
         try {
             // Extract month from date (YYYYMMDD -> YYYYMM)
             const month = date.substring(0, 6);
+            console.log('[DataLoader] Extracted month:', month);
 
             Utils.notify(`Loading ${ticker} data for ${date}...`, 'info');
 
@@ -87,15 +103,20 @@ class DataLoader {
                 ? `${this.getApiUrl()}/data/${ticker}/${month}?date=${date}&timeframe=${timeframe}`
                 : `${this.getApiUrl()}/${ticker.toLowerCase()}/${date}_${timeframe}min.json`;
 
+            console.log('[DataLoader] Fetching data from URL:', url);
+
             const response = await fetch(url);
             if (!response.ok) {
+                console.error('[DataLoader] HTTP error:', response.status, response.statusText);
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
             const data = await response.json();
+            console.log('[DataLoader] Received data points:', data.length);
 
             // Transform data for TradingView Lightweight Charts
             const chartData = this.transformData(data);
+            console.log('[DataLoader] Transformed candles:', chartData.candlestick.length);
 
             // Cache the data
             this.cache.set(cacheKey, chartData);
@@ -104,7 +125,7 @@ class DataLoader {
 
             return chartData;
         } catch (error) {
-            console.error('Error fetching data:', error);
+            console.error('[DataLoader] Error fetching data:', error);
             Utils.notify(`Error loading data: ${error.message}`, 'error');
             return null;
         }
