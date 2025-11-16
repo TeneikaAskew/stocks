@@ -197,68 +197,374 @@ class IWMAnalyzer:
         # Calculate Stochastic of RSI
         rsi_min = rsi.rolling(window=period).min()
         rsi_max = rsi.rolling(window=period).max()
-        
+
         # Handle division by zero
         rsi_range = rsi_max - rsi_min
-        
+
         # Debug: Count how many times range is zero
         zero_range_count = (rsi_range == 0).sum()
         if zero_range_count > 0:
             print(f"        Warning: RSI range is zero in {zero_range_count} periods (RSI constant)")
-        
+
         # Calculate StochRSI, will be NaN where range is 0
         # Avoid division by zero warning
         with np.errstate(divide='ignore', invalid='ignore'):
             stoch_rsi = 100 * (rsi - rsi_min) / rsi_range
             stoch_rsi = pd.Series(stoch_rsi, index=rsi.index)
-        
+
         # Apply Wilder's smoothing for %K
         stoch_rsi_k = self.wilder_moving_average(stoch_rsi, k_period)
-        
+
         # Apply Wilder's smoothing for %D
         stoch_rsi_d = self.wilder_moving_average(stoch_rsi_k, d_period)
-        
+
         return stoch_rsi_k, stoch_rsi_d
-    
+
+    def calculate_historical_levels(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate previous period levels (day, week, month, year) and their midpoints"""
+        df = df.copy()
+
+        # Ensure Time column is datetime
+        if 'Time' not in df.columns:
+            df['Time'] = df.index
+
+        # Add date components for grouping
+        df['Date'] = pd.to_datetime(df['Time']).dt.date
+        df['Week'] = pd.to_datetime(df['Time']).dt.to_period('W')
+        df['Month'] = pd.to_datetime(df['Time']).dt.to_period('M')
+        df['Year'] = pd.to_datetime(df['Time']).dt.to_period('Y')
+
+        # Initialize columns
+        level_columns = []
+
+        # Previous Day Levels
+        print("    - Calculating previous day levels...")
+        daily_groups = df.groupby('Date').agg({
+            'High': 'max',
+            'Low': 'min',
+            'Open': 'first',
+            'Last': 'last'
+        })
+
+        # Shift to get previous day values
+        df['Prev_Day_High'] = df['Date'].map(daily_groups['High'].shift(1))
+        df['Prev_Day_Low'] = df['Date'].map(daily_groups['Low'].shift(1))
+        df['Prev_Day_Open'] = df['Date'].map(daily_groups['Open'].shift(1))
+        df['Prev_Day_Close'] = df['Date'].map(daily_groups['Last'].shift(1))
+
+        # Calculate midpoints (50% levels)
+        df['Prev_Day_HL_Mid'] = (df['Prev_Day_High'] + df['Prev_Day_Low']) / 2
+        df['Prev_Day_OC_Mid'] = (df['Prev_Day_Open'] + df['Prev_Day_Close']) / 2
+
+        level_columns.extend(['Prev_Day_High', 'Prev_Day_Low', 'Prev_Day_Open', 'Prev_Day_Close',
+                             'Prev_Day_HL_Mid', 'Prev_Day_OC_Mid'])
+
+        # Previous Week Levels
+        print("    - Calculating previous week levels...")
+        weekly_groups = df.groupby('Week').agg({
+            'High': 'max',
+            'Low': 'min',
+            'Open': 'first',
+            'Last': 'last'
+        })
+
+        df['Prev_Week_High'] = df['Week'].map(weekly_groups['High'].shift(1))
+        df['Prev_Week_Low'] = df['Week'].map(weekly_groups['Low'].shift(1))
+        df['Prev_Week_Open'] = df['Week'].map(weekly_groups['Open'].shift(1))
+        df['Prev_Week_Close'] = df['Week'].map(weekly_groups['Last'].shift(1))
+
+        df['Prev_Week_HL_Mid'] = (df['Prev_Week_High'] + df['Prev_Week_Low']) / 2
+        df['Prev_Week_OC_Mid'] = (df['Prev_Week_Open'] + df['Prev_Week_Close']) / 2
+
+        level_columns.extend(['Prev_Week_High', 'Prev_Week_Low', 'Prev_Week_Open', 'Prev_Week_Close',
+                             'Prev_Week_HL_Mid', 'Prev_Week_OC_Mid'])
+
+        # Previous Month Levels
+        print("    - Calculating previous month levels...")
+        monthly_groups = df.groupby('Month').agg({
+            'High': 'max',
+            'Low': 'min',
+            'Open': 'first',
+            'Last': 'last'
+        })
+
+        df['Prev_Month_High'] = df['Month'].map(monthly_groups['High'].shift(1))
+        df['Prev_Month_Low'] = df['Month'].map(monthly_groups['Low'].shift(1))
+        df['Prev_Month_Open'] = df['Month'].map(monthly_groups['Open'].shift(1))
+        df['Prev_Month_Close'] = df['Month'].map(monthly_groups['Last'].shift(1))
+
+        df['Prev_Month_HL_Mid'] = (df['Prev_Month_High'] + df['Prev_Month_Low']) / 2
+        df['Prev_Month_OC_Mid'] = (df['Prev_Month_Open'] + df['Prev_Month_Close']) / 2
+
+        level_columns.extend(['Prev_Month_High', 'Prev_Month_Low', 'Prev_Month_Open', 'Prev_Month_Close',
+                             'Prev_Month_HL_Mid', 'Prev_Month_OC_Mid'])
+
+        # Previous Year Levels
+        print("    - Calculating previous year levels...")
+        yearly_groups = df.groupby('Year').agg({
+            'High': 'max',
+            'Low': 'min',
+            'Open': 'first',
+            'Last': 'last'
+        })
+
+        df['Prev_Year_High'] = df['Year'].map(yearly_groups['High'].shift(1))
+        df['Prev_Year_Low'] = df['Year'].map(yearly_groups['Low'].shift(1))
+        df['Prev_Year_Open'] = df['Year'].map(yearly_groups['Open'].shift(1))
+        df['Prev_Year_Close'] = df['Year'].map(yearly_groups['Last'].shift(1))
+
+        df['Prev_Year_HL_Mid'] = (df['Prev_Year_High'] + df['Prev_Year_Low']) / 2
+        df['Prev_Year_OC_Mid'] = (df['Prev_Year_Open'] + df['Prev_Year_Close']) / 2
+
+        level_columns.extend(['Prev_Year_High', 'Prev_Year_Low', 'Prev_Year_Open', 'Prev_Year_Close',
+                             'Prev_Year_HL_Mid', 'Prev_Year_OC_Mid'])
+
+        # Calculate price position relative to levels (as percentage)
+        print("    - Calculating price position relative to levels...")
+        current_price = df['Last']
+
+        for level_col in level_columns:
+            if level_col in df.columns:
+                pct_col = f'{level_col}_Pct'
+                df[pct_col] = ((current_price - df[level_col]) / df[level_col] * 100)
+
+        # Calculate if price is at/near key levels (within 0.1% tolerance)
+        tolerance = 0.1  # 0.1% threshold
+
+        for level_col in level_columns:
+            if level_col in df.columns:
+                at_level_col = f'At_{level_col}'
+                df[at_level_col] = (abs(df[f'{level_col}_Pct']) <= tolerance).astype(int)
+
+        # Calculate breakout/breakdown flags
+        print("    - Calculating breakout/breakdown indicators...")
+
+        # Day breakouts
+        df['Broke_Prev_Day_High'] = (df['Last'] > df['Prev_Day_High']).astype(int)
+        df['Broke_Prev_Day_Low'] = (df['Last'] < df['Prev_Day_Low']).astype(int)
+
+        # Week breakouts
+        df['Broke_Prev_Week_High'] = (df['Last'] > df['Prev_Week_High']).astype(int)
+        df['Broke_Prev_Week_Low'] = (df['Last'] < df['Prev_Week_Low']).astype(int)
+
+        # Month breakouts
+        df['Broke_Prev_Month_High'] = (df['Last'] > df['Prev_Month_High']).astype(int)
+        df['Broke_Prev_Month_Low'] = (df['Last'] < df['Prev_Month_Low']).astype(int)
+
+        # Year breakouts
+        df['Broke_Prev_Year_High'] = (df['Last'] > df['Prev_Year_High']).astype(int)
+        df['Broke_Prev_Year_Low'] = (df['Last'] < df['Prev_Year_Low']).astype(int)
+
+        # Remove temporary grouping columns
+        df = df.drop(['Date', 'Week', 'Month', 'Year'], axis=1)
+
+        return df
+
+    def calculate_order_blocks_and_orb(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate Order Blocks and Opening Range Breakout (ORB) levels"""
+        df = df.copy()
+
+        # Ensure Time column exists
+        if 'Time' not in df.columns:
+            df['Time'] = df.index
+
+        # Convert to datetime and extract time components
+        df['DateTime'] = pd.to_datetime(df['Time'])
+        df['Date'] = df['DateTime'].dt.date
+        df['TimeOnly'] = df['DateTime'].dt.time
+
+        # Market open time (9:30 AM)
+        market_open = time(9, 30)
+
+        # Initialize ORB columns
+        print("    - Calculating 5-minute ORB...")
+        df = self._calculate_orb(df, market_open, minutes=5, label='5m')
+
+        print("    - Calculating 15-minute ORB...")
+        df = self._calculate_orb(df, market_open, minutes=15, label='15m')
+
+        print("    - Calculating 30-minute ORB...")
+        df = self._calculate_orb(df, market_open, minutes=30, label='30m')
+
+        # Calculate Order Blocks
+        print("    - Calculating Order Blocks...")
+        df = self._calculate_order_blocks(df)
+
+        # Clean up temporary columns
+        df = df.drop(['DateTime', 'Date', 'TimeOnly'], axis=1, errors='ignore')
+
+        return df
+
+    def _calculate_orb(self, df: pd.DataFrame, market_open: time, minutes: int, label: str) -> pd.DataFrame:
+        """Calculate Opening Range Breakout for specified time period"""
+        from datetime import datetime, timedelta
+
+        # Calculate the ORB end time
+        orb_end_time = (datetime.combine(datetime.today(), market_open) +
+                       timedelta(minutes=minutes)).time()
+
+        # Group by date
+        for date in df['Date'].unique():
+            date_mask = df['Date'] == date
+
+            # Get data within ORB period
+            orb_mask = date_mask & (df['TimeOnly'] >= market_open) & (df['TimeOnly'] <= orb_end_time)
+            orb_data = df[orb_mask]
+
+            if len(orb_data) > 0:
+                orb_high = orb_data['High'].max()
+                orb_low = orb_data['Low'].min()
+                orb_range = orb_high - orb_low
+                orb_mid = (orb_high + orb_low) / 2
+
+                # Assign ORB levels to all rows of this date
+                df.loc[date_mask, f'ORB_{label}_High'] = orb_high
+                df.loc[date_mask, f'ORB_{label}_Low'] = orb_low
+                df.loc[date_mask, f'ORB_{label}_Mid'] = orb_mid
+                df.loc[date_mask, f'ORB_{label}_Range'] = orb_range
+
+                # Calculate price position relative to ORB
+                current_price = df.loc[date_mask, 'Last']
+                df.loc[date_mask, f'ORB_{label}_High_Pct'] = ((current_price - orb_high) / orb_high * 100)
+                df.loc[date_mask, f'ORB_{label}_Low_Pct'] = ((current_price - orb_low) / orb_low * 100)
+                df.loc[date_mask, f'ORB_{label}_Mid_Pct'] = ((current_price - orb_mid) / orb_mid * 100)
+
+                # Trend indicators (only for periods after ORB is established)
+                post_orb_mask = date_mask & (df['TimeOnly'] > orb_end_time)
+
+                # Breakout above ORB high
+                df.loc[post_orb_mask, f'ORB_{label}_Broke_High'] = (
+                    df.loc[post_orb_mask, 'Last'] > orb_high
+                ).astype(int)
+
+                # Breakdown below ORB low
+                df.loc[post_orb_mask, f'ORB_{label}_Broke_Low'] = (
+                    df.loc[post_orb_mask, 'Last'] < orb_low
+                ).astype(int)
+
+                # Within ORB range (sideways/neutral)
+                df.loc[post_orb_mask, f'ORB_{label}_Within_Range'] = (
+                    (df.loc[post_orb_mask, 'Last'] >= orb_low) &
+                    (df.loc[post_orb_mask, 'Last'] <= orb_high)
+                ).astype(int)
+
+                # Trend direction: 1 = bullish (above), -1 = bearish (below), 0 = neutral (within)
+                df.loc[post_orb_mask, f'ORB_{label}_Trend'] = 0
+                df.loc[post_orb_mask & (df['Last'] > orb_high), f'ORB_{label}_Trend'] = 1
+                df.loc[post_orb_mask & (df['Last'] < orb_low), f'ORB_{label}_Trend'] = -1
+
+                # Distance from ORB range (0 if within range)
+                df.loc[post_orb_mask, f'ORB_{label}_Distance'] = 0.0
+                above_mask = post_orb_mask & (df['Last'] > orb_high)
+                below_mask = post_orb_mask & (df['Last'] < orb_low)
+                df.loc[above_mask, f'ORB_{label}_Distance'] = df.loc[above_mask, 'Last'] - orb_high
+                df.loc[below_mask, f'ORB_{label}_Distance'] = df.loc[below_mask, 'Last'] - orb_low
+
+        return df
+
+    def _calculate_order_blocks(self, df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
+        """
+        Calculate Order Blocks - consolidation zones that may act as support/resistance.
+        An order block is identified by:
+        1. A zone of price consolidation (low volatility)
+        2. Followed by a significant move (breakout)
+        """
+        # Calculate rolling volatility (using ATR if available, otherwise range)
+        if 'ATR14_W' in df.columns:
+            volatility = df['ATR14_W']
+        else:
+            volatility = df['High'] - df['Low']
+
+        # Rolling average volatility
+        avg_volatility = volatility.rolling(window=lookback, min_periods=1).mean()
+
+        # Low volatility threshold (30% of average volatility)
+        low_vol_threshold = avg_volatility * 0.3
+
+        # Identify consolidation zones (low volatility)
+        df['Order_Block_Zone'] = (volatility < low_vol_threshold).astype(int)
+
+        # Calculate price range during consolidation
+        # For each consolidation zone, track the high and low
+        df['Order_Block_High'] = np.nan
+        df['Order_Block_Low'] = np.nan
+        df['Order_Block_Mid'] = np.nan
+
+        # Simple order block detection: rolling 3-bar consolidation
+        for i in range(2, len(df)):
+            if df.iloc[i-2:i+1]['Order_Block_Zone'].sum() >= 2:  # At least 2 of 3 bars are consolidating
+                block_high = df.iloc[i-2:i+1]['High'].max()
+                block_low = df.iloc[i-2:i+1]['Low'].min()
+                block_mid = (block_high + block_low) / 2
+
+                df.iloc[i, df.columns.get_loc('Order_Block_High')] = block_high
+                df.iloc[i, df.columns.get_loc('Order_Block_Low')] = block_low
+                df.iloc[i, df.columns.get_loc('Order_Block_Mid')] = block_mid
+
+        # Forward fill order blocks for next N bars (they remain relevant)
+        df['Order_Block_High'] = df['Order_Block_High'].fillna(method='ffill', limit=20)
+        df['Order_Block_Low'] = df['Order_Block_Low'].fillna(method='ffill', limit=20)
+        df['Order_Block_Mid'] = df['Order_Block_Mid'].fillna(method='ffill', limit=20)
+
+        # Price position relative to order block
+        df['Order_Block_Position'] = 0  # 0 = within, 1 = above, -1 = below
+        df.loc[df['Last'] > df['Order_Block_High'], 'Order_Block_Position'] = 1
+        df.loc[df['Last'] < df['Order_Block_Low'], 'Order_Block_Position'] = -1
+
+        # Distance from order block
+        df['Order_Block_Distance'] = 0.0
+        above_ob = df['Last'] > df['Order_Block_High']
+        below_ob = df['Last'] < df['Order_Block_Low']
+        df.loc[above_ob, 'Order_Block_Distance'] = df.loc[above_ob, 'Last'] - df.loc[above_ob, 'Order_Block_High']
+        df.loc[below_ob, 'Order_Block_Distance'] = df.loc[below_ob, 'Last'] - df.loc[below_ob, 'Order_Block_Low']
+
+        # Test of order block (price touching the zone)
+        tolerance = 0.001  # 0.1% tolerance
+        at_ob_high = abs((df['Last'] - df['Order_Block_High']) / df['Order_Block_High']) <= tolerance
+        at_ob_low = abs((df['Last'] - df['Order_Block_Low']) / df['Order_Block_Low']) <= tolerance
+        df['Order_Block_Test'] = (at_ob_high | at_ob_low).astype(int)
+
+        return df
+
     def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add all technical indicators to the dataframe"""
         print("\nCalculating technical indicators...")
         print("-" * 50)
-        
+
         # ATR with Wilder
-        print("1/9 - Calculating ATR (Average True Range)...")
+        print("1/11 - Calculating ATR (Average True Range)...")
         df['ATR14_W'] = self.calculate_atr(df, 14)
-        
+
         # RSI with Wilder
-        print("2/9 - Calculating RSI (Relative Strength Index)...")
+        print("2/11 - Calculating RSI (Relative Strength Index)...")
         df['RSI14_W'] = self.calculate_rsi(df['Last'], 14)
-        
+
         # EMAs with SMA seeding
-        print("3/9 - Calculating EMAs (Exponential Moving Averages)...")
+        print("3/11 - Calculating EMAs (Exponential Moving Averages)...")
         print("    - EMA 9...")
         df['EMA9'] = self.calculate_ema(df['Last'], 9)
         print("    - EMA 20...")
         df['EMA20'] = self.calculate_ema(df['Last'], 20)
         print("    - EMA 50...")
         df['EMA50'] = self.calculate_ema(df['Last'], 50)
-        
+
         # VWAP
-        print("4/9 - Calculating VWAP (Volume Weighted Average Price)...")
+        print("4/11 - Calculating VWAP (Volume Weighted Average Price)...")
         df['VWAP'] = self.calculate_vwap(df)
-        
+
         # RVOL
-        print("5/9 - Calculating RVOL (Relative Volume)...")
+        print("5/11 - Calculating RVOL (Relative Volume)...")
         print("    - RVOL 20-period...")
         df['RVOL20'] = self.calculate_rvol(df, 20)
         print("    - RVOL minute of day...")
         df['RVOL_MOD'], df['RVOL_MOD_EXCL'] = self.calculate_rvol_minute_of_day(df, exclude_current=True)
-        
+
         # OBV
-        print("6/9 - Calculating OBV (On-Balance Volume)...")
+        print("6/11 - Calculating OBV (On-Balance Volume)...")
         df['OBV'] = self.calculate_obv(df)
-        
+
         # Stochastic RSI
-        print("7/9 - Calculating Stochastic RSI...")
+        print("7/11 - Calculating Stochastic RSI...")
         # Debug RSI values first
         rsi_stats = df['RSI14_W'].describe()
         print(f"    - RSI stats: min={rsi_stats['min']:.2f}, max={rsi_stats['max']:.2f}, mean={rsi_stats['50%']:.2f}")
@@ -267,10 +573,18 @@ class IWMAnalyzer:
         df['StochRSI_K'], df['StochRSI_D'] = self.calculate_stoch_rsi(df['RSI14_W'])
         print(f"    - StochRSI K: {df['StochRSI_K'].count()} valid values, mean={df['StochRSI_K'].mean():.2f}")
         print(f"    - StochRSI D: {df['StochRSI_D'].count()} valid values, mean={df['StochRSI_D'].mean():.2f}")
-        
-        print("8/9 - Validating indicators...")
+
+        # Historical levels
+        print("8/11 - Calculating Historical Levels (Day, Week, Month, Year)...")
+        df = self.calculate_historical_levels(df)
+
+        # Order Blocks and ORB
+        print("9/11 - Calculating Order Blocks and ORB (5m, 15m, 30m)...")
+        df = self.calculate_order_blocks_and_orb(df)
+
+        print("10/11 - Validating indicators...")
         # Validate all indicators were calculated
-        indicators = ['ATR14_W', 'RSI14_W', 'EMA9', 'EMA20', 'EMA50', 'VWAP', 
+        indicators = ['ATR14_W', 'RSI14_W', 'EMA9', 'EMA20', 'EMA50', 'VWAP',
                      'RVOL20', 'RVOL_MOD', 'RVOL_MOD_EXCL', 'OBV', 'StochRSI_K', 'StochRSI_D']
         for indicator in indicators:
             valid_count = df[indicator].count()
@@ -278,8 +592,24 @@ class IWMAnalyzer:
                 print(f"    ⚠️  WARNING: {indicator} has no valid values!")
             else:
                 print(f"    ✓ {indicator}: {valid_count} valid values")
-        
-        print("9/9 - Technical indicators calculated successfully!")
+
+        # Validate historical levels
+        level_indicators = ['Prev_Day_High', 'Prev_Week_High', 'Prev_Month_High', 'Prev_Year_High']
+        print(f"\n    Historical Levels:")
+        for level in level_indicators:
+            if level in df.columns:
+                valid_count = df[level].count()
+                print(f"    {level}: {valid_count} valid values")
+
+        # Validate ORB and Order Blocks
+        orb_indicators = ['ORB_5m_High', 'ORB_15m_High', 'ORB_30m_High', 'Order_Block_High']
+        print(f"\n    ORB & Order Blocks:")
+        for orb in orb_indicators:
+            if orb in df.columns:
+                valid_count = df[orb].count()
+                print(f"    {orb}: {valid_count} valid values")
+
+        print("11/11 - Technical indicators, levels, and ORB calculated successfully!")
         print("-" * 50)
         return df
     
@@ -388,6 +718,75 @@ class IWMAnalyzer:
                             'entry_stochrsi_k': current.get('StochRSI_K', np.nan),
                             'entry_atr': current.get('ATR14_W', np.nan),
                             'entry_obv': current.get('OBV', np.nan),
+
+                            # Historical Levels at Entry
+                            'entry_prev_day_high': current.get('Prev_Day_High', np.nan),
+                            'entry_prev_day_low': current.get('Prev_Day_Low', np.nan),
+                            'entry_prev_day_hl_mid': current.get('Prev_Day_HL_Mid', np.nan),
+                            'entry_prev_week_high': current.get('Prev_Week_High', np.nan),
+                            'entry_prev_week_low': current.get('Prev_Week_Low', np.nan),
+                            'entry_prev_week_hl_mid': current.get('Prev_Week_HL_Mid', np.nan),
+                            'entry_prev_month_high': current.get('Prev_Month_High', np.nan),
+                            'entry_prev_month_low': current.get('Prev_Month_Low', np.nan),
+                            'entry_prev_month_hl_mid': current.get('Prev_Month_HL_Mid', np.nan),
+
+                            # Price position relative to levels
+                            'entry_vs_prev_day_high_pct': current.get('Prev_Day_High_Pct', np.nan),
+                            'entry_vs_prev_day_low_pct': current.get('Prev_Day_Low_Pct', np.nan),
+                            'entry_vs_prev_week_high_pct': current.get('Prev_Week_High_Pct', np.nan),
+                            'entry_vs_prev_week_low_pct': current.get('Prev_Week_Low_Pct', np.nan),
+                            'entry_vs_prev_month_high_pct': current.get('Prev_Month_High_Pct', np.nan),
+                            'entry_vs_prev_month_low_pct': current.get('Prev_Month_Low_Pct', np.nan),
+
+                            # Breakout flags
+                            'entry_broke_prev_day_high': current.get('Broke_Prev_Day_High', 0),
+                            'entry_broke_prev_day_low': current.get('Broke_Prev_Day_Low', 0),
+                            'entry_broke_prev_week_high': current.get('Broke_Prev_Week_High', 0),
+                            'entry_broke_prev_week_low': current.get('Broke_Prev_Week_Low', 0),
+                            'entry_broke_prev_month_high': current.get('Broke_Prev_Month_High', 0),
+                            'entry_broke_prev_month_low': current.get('Broke_Prev_Month_Low', 0),
+
+                            # At level flags (within 0.1% of key levels)
+                            'entry_at_prev_day_high': current.get('At_Prev_Day_High', 0),
+                            'entry_at_prev_day_low': current.get('At_Prev_Day_Low', 0),
+                            'entry_at_prev_day_hl_mid': current.get('At_Prev_Day_HL_Mid', 0),
+                            'entry_at_prev_week_high': current.get('At_Prev_Week_High', 0),
+                            'entry_at_prev_week_low': current.get('At_Prev_Week_Low', 0),
+                            'entry_at_prev_week_hl_mid': current.get('At_Prev_Week_HL_Mid', 0),
+
+                            # ORB (Opening Range Breakout) data
+                            'entry_orb_5m_high': current.get('ORB_5m_High', np.nan),
+                            'entry_orb_5m_low': current.get('ORB_5m_Low', np.nan),
+                            'entry_orb_5m_mid': current.get('ORB_5m_Mid', np.nan),
+                            'entry_orb_5m_trend': current.get('ORB_5m_Trend', 0),
+                            'entry_orb_5m_broke_high': current.get('ORB_5m_Broke_High', 0),
+                            'entry_orb_5m_broke_low': current.get('ORB_5m_Broke_Low', 0),
+                            'entry_orb_5m_within_range': current.get('ORB_5m_Within_Range', 0),
+
+                            'entry_orb_15m_high': current.get('ORB_15m_High', np.nan),
+                            'entry_orb_15m_low': current.get('ORB_15m_Low', np.nan),
+                            'entry_orb_15m_mid': current.get('ORB_15m_Mid', np.nan),
+                            'entry_orb_15m_trend': current.get('ORB_15m_Trend', 0),
+                            'entry_orb_15m_broke_high': current.get('ORB_15m_Broke_High', 0),
+                            'entry_orb_15m_broke_low': current.get('ORB_15m_Broke_Low', 0),
+                            'entry_orb_15m_within_range': current.get('ORB_15m_Within_Range', 0),
+
+                            'entry_orb_30m_high': current.get('ORB_30m_High', np.nan),
+                            'entry_orb_30m_low': current.get('ORB_30m_Low', np.nan),
+                            'entry_orb_30m_mid': current.get('ORB_30m_Mid', np.nan),
+                            'entry_orb_30m_trend': current.get('ORB_30m_Trend', 0),
+                            'entry_orb_30m_broke_high': current.get('ORB_30m_Broke_High', 0),
+                            'entry_orb_30m_broke_low': current.get('ORB_30m_Broke_Low', 0),
+                            'entry_orb_30m_within_range': current.get('ORB_30m_Within_Range', 0),
+
+                            # Order Block data
+                            'entry_order_block_high': current.get('Order_Block_High', np.nan),
+                            'entry_order_block_low': current.get('Order_Block_Low', np.nan),
+                            'entry_order_block_mid': current.get('Order_Block_Mid', np.nan),
+                            'entry_order_block_position': current.get('Order_Block_Position', 0),
+                            'entry_order_block_test': current.get('Order_Block_Test', 0),
+                            'entry_order_block_distance': current.get('Order_Block_Distance', 0.0),
+
                             'exit_time': df.iloc[idx + exit_idx]['Time'],
                             'exit_price': max_price if signal == 'call' else min_price,
                             'exit_rsi': df.iloc[idx + exit_idx]['RSI14_W'],
