@@ -291,46 +291,101 @@ def fetch_historical_intraday(symbol, years=5, interval='1min', start_date=None,
         else:
             time.sleep(DELAY_BETWEEN_CALLS)
 
-    # Combine all data
-    if all_data:
-        combined_df = pd.concat(all_data, ignore_index=False)
-        combined_df = combined_df.sort_index()
+    # ALWAYS combine ALL monthly files (not just the ones fetched in this run)
+    # This ensures the combined file is always complete and up-to-date
+    print(f"\n{'='*60}")
+    print("Combining ALL monthly parquet files...")
+    print(f"{'='*60}\n")
 
-        # Save combined data
-        combined_file = data_dir / f"{symbol.lower()}_av_{interval}_combined.parquet"
-        combined_df.to_parquet(combined_file, compression='snappy', index=True)
+    # Find all monthly parquet files
+    import glob as glob_module
+    pattern = str(data_dir / f"{symbol.lower()}_av_{interval}_*.parquet")
+    all_monthly_files = glob_module.glob(pattern)
+    # Exclude the combined file itself
+    all_monthly_files = [f for f in all_monthly_files if 'combined' not in f]
+    all_monthly_files = sorted(all_monthly_files)
 
-        # Create summary
-        summary = {
-            'symbol': symbol,
-            'interval': interval,
-            'start_date': str(combined_df.index.min()),
-            'end_date': str(combined_df.index.max()),
-            'total_bars': len(combined_df),
-            'total_months': len(months),
-            'latest_close': float(combined_df['Close'].iloc[-1]),
-            'latest_volume': int(combined_df['Volume'].iloc[-1]),
-            'last_update': datetime.now().isoformat(),
-            'file': str(combined_file)
-        }
-
-        summary_file = data_dir / f"{symbol.lower()}_av_{interval}_summary.json"
-        with open(summary_file, 'w') as f:
-            json.dump(summary, f, indent=2)
-
-        print(f"\n{'='*60}")
-        print(f"Summary:")
-        print(f"  Total bars: {summary['total_bars']:,}")
-        print(f"  Date range: {summary['start_date']} to {summary['end_date']}")
-        print(f"  Latest close: ${summary['latest_close']:.2f}")
-        print(f"  Combined file: {combined_file}")
-        print(f"  Summary file: {summary_file}")
-        print(f"{'='*60}\n")
-
-        return combined_df
-    else:
-        print("\nNo data was fetched.")
+    if not all_monthly_files:
+        print("No monthly files found to combine.")
         return None
+
+    # Load ALL monthly files
+    all_monthly_data = []
+    for i, file_path in enumerate(all_monthly_files, 1):
+        file_name = Path(file_path).name
+        try:
+            df = pd.read_parquet(file_path)
+            all_monthly_data.append(df)
+            if i % 10 == 0:
+                print(f"  Loaded {i}/{len(all_monthly_files)} monthly files...")
+        except Exception as e:
+            print(f"  Warning: Could not load {file_name}: {e}")
+            continue
+
+    if not all_monthly_data:
+        print("ERROR: No data could be loaded from monthly files!")
+        return None
+
+    print(f"  Loaded {len(all_monthly_data)}/{len(all_monthly_files)} monthly files")
+
+    # Combine all monthly data
+    combined_df = pd.concat(all_monthly_data, ignore_index=False)
+    combined_df = combined_df.sort_index()
+
+    # Remove duplicates (keep first occurrence)
+    original_len = len(combined_df)
+    combined_df = combined_df[~combined_df.index.duplicated(keep='first')]
+    duplicates_removed = original_len - len(combined_df)
+
+    if duplicates_removed > 0:
+        print(f"  Removed {duplicates_removed:,} duplicate timestamps")
+
+    # Save combined data (overwrites previous combined file)
+    combined_file = data_dir / f"{symbol.lower()}_av_{interval}_combined.parquet"
+    combined_df.to_parquet(combined_file, compression='snappy', index=True)
+
+    # Count unique months
+    combined_df_temp = combined_df.reset_index()
+    combined_df_temp['month'] = pd.to_datetime(combined_df_temp['timestamp']).dt.to_period('M')
+    unique_months = combined_df_temp['month'].nunique()
+
+    # Create summary
+    summary = {
+        'symbol': symbol,
+        'interval': interval,
+        'start_date': str(combined_df.index.min()),
+        'end_date': str(combined_df.index.max()),
+        'total_bars': len(combined_df),
+        'total_months': unique_months,
+        'monthly_files_combined': len(all_monthly_files),
+        'duplicates_removed': duplicates_removed,
+        'latest_close': float(combined_df['Close'].iloc[-1]),
+        'latest_volume': int(combined_df['Volume'].iloc[-1]),
+        'last_update': datetime.now().isoformat(),
+        'file': str(combined_file)
+    }
+
+    summary_file = data_dir / f"{symbol.lower()}_av_{interval}_summary.json"
+    with open(summary_file, 'w') as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"\n{'='*60}")
+    print("COMBINED FILE SUMMARY")
+    print(f"{'='*60}")
+    print(f"Symbol: {symbol}")
+    print(f"Interval: {interval}")
+    print(f"Monthly files combined: {len(all_monthly_files)}")
+    print(f"Unique months: {unique_months}")
+    print(f"Total bars: {len(combined_df):,}")
+    print(f"Duplicates removed: {duplicates_removed:,}")
+    print(f"Date range: {summary['start_date']} to {summary['end_date']}")
+    print(f"Latest close: ${summary['latest_close']:.2f}")
+    print(f"\nFiles created/updated:")
+    print(f"  {combined_file}")
+    print(f"  {summary_file}")
+    print(f"{'='*60}\n")
+
+    return combined_df
 
 
 def show_parquet_data(symbol, interval='1min', rows=100):
