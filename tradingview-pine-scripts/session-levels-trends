@@ -1,0 +1,857 @@
+//@version=6
+indicator("Session Levels + ORB + Supertrend", overlay=true,
+     max_lines_count=140, max_boxes_count=60, max_labels_count=140)
+
+// ═══════════════════════════════════════════════════════════════════
+// SESSION LEVELS INPUTS
+// ═══════════════════════════════════════════════════════════════════
+showPMO   = input.bool(true,  "Prev MONTH (PMOH/PMOL/PMOC)", group="Session Levels")
+showPW    = input.bool(true,  "Prev WEEK (PWH/PWL/PWC)", group="Session Levels")
+showPD    = input.bool(true,  "Prev DAY (PDH/PDL/PDC)", group="Session Levels")
+showPmM   = input.bool(true,  "Pre-Market High/Low (today)", group="Session Levels")
+show50Pct = input.bool(true,  "Show 50% Midpoint Levels", group="Session Levels")
+showGaps  = input.bool(true,  "Gap Zone (yesterday close ↔ today open)", group="Session Levels")
+showPsych = input.bool(true,  "Psychological Levels (near price)", group="Session Levels")
+psychStep = input.float(1.0,  "Psych Step ($)", step=0.1, minval=0.01, group="Session Levels")
+psychWin  = input.int(6,      "Psych Lines Each Side", minval=1, maxval=50, group="Session Levels")
+useRTHOnly = input.bool(true, "Use RTH ONLY for PD/PW (uncheck for 24hr)", group="Session Levels")
+
+// Sessions (exchange timezone - adjust as needed)
+premktSession  = input.session("0400-0930", "Pre-Market Session", group="Session Levels")
+regularSession = input.session("0930-1600", "Regular Session", group="Session Levels")
+
+// ═══════════════════════════════════════════════════════════════════
+// SESSION LEVELS - COLOR INPUTS
+// ═══════════════════════════════════════════════════════════════════
+colPMO_input   = input.color(color.blue,    "Prev Month High/Low Color", group="Session Colors")
+colPMO_opacity = input.int(20, "Prev Month Low Opacity", minval=0, maxval=100, group="Session Colors")
+colPW_input    = input.color(color.orange,  "Prev Week High/Low Color", group="Session Colors")
+colPW_opacity  = input.int(20, "Prev Week Low Opacity", minval=0, maxval=100, group="Session Colors")
+colPD_input    = input.color(color.teal,    "Prev Day High/Low Color", group="Session Colors")
+colPD_opacity  = input.int(20, "Prev Day Low Opacity", minval=0, maxval=100, group="Session Colors")
+colPC_input    = input.color(color.gray,    "Prev Close Color", group="Session Colors")
+colPC_opacity  = input.int(40, "Prev Close Opacity", minval=0, maxval=100, group="Session Colors")
+colPmM_input   = input.color(color.purple,  "Pre-Market High/Low Color", group="Session Colors")
+colPmM_opacity = input.int(20, "Pre-Market Low Opacity", minval=0, maxval=100, group="Session Colors")
+colGapUn_input = input.color(color.yellow,  "Unfilled Gap Color", group="Session Colors")
+colGapUn_opacity = input.int(75, "Unfilled Gap Opacity", minval=0, maxval=100, group="Session Colors")
+colGapOk_input = input.color(color.white,   "Filled Gap Color", group="Session Colors")
+colGapOk_opacity = input.int(80, "Filled Gap Opacity", minval=0, maxval=100, group="Session Colors")
+colPsych_input = input.color(color.silver,  "Psychological Levels Color", group="Session Colors")
+colPsych_opacity = input.int(60, "Psychological Levels Opacity", minval=0, maxval=100, group="Session Colors")
+
+// Create colors with user-defined opacity
+colPMO   = color.new(colPMO_input,  0)
+colPMO_f = color.new(colPMO_input, colPMO_opacity)
+colPW    = color.new(colPW_input,  0)
+colPW_f  = color.new(colPW_input, colPW_opacity)
+colPD    = color.new(colPD_input,  0)
+colPD_f  = color.new(colPD_input, colPD_opacity)
+colPC    = color.new(colPC_input, colPC_opacity)
+colPmM   = color.new(colPmM_input,  0)
+colPmM_f = color.new(colPmM_input, colPmM_opacity)
+colGapUn = color.new(colGapUn_input, colGapUn_opacity)
+colGapOk = color.new(colGapOk_input, colGapOk_opacity)
+colPsych = color.new(colPsych_input, colPsych_opacity)
+
+// ═══════════════════════════════════════════════════════════════════
+// ORB INPUTS
+// ═══════════════════════════════════════════════════════════════════
+showORB       = input.bool(true,  "Show Opening Range Breakout (ORB)", group="ORB")
+orbType       = input.string("First Bar Only", "ORB Type", 
+                  options=["First Bar Only", "Time Period"], group="ORB")
+orbMinutes    = input.int(30,     "ORB Duration (minutes)", minval=1, maxval=120, group="ORB")
+showORBBreaks = input.bool(true,  "Show ORB Breakout Signals", group="ORB")
+
+// ═══════════════════════════════════════════════════════════════════
+// ORB - COLOR INPUTS
+// ═══════════════════════════════════════════════════════════════════
+colORB_input     = input.color(color.yellow,   "ORB Lines Color", group="ORB Colors")
+colORB_opacity   = input.int(20, "ORB Low Line Opacity", minval=0, maxval=100, group="ORB Colors")
+colORBBox_input  = input.color(color.yellow,   "ORB Box Color", group="ORB Colors")
+colORBBox_opacity = input.int(90, "ORB Box Opacity", minval=0, maxval=100, group="ORB Colors")
+colORBUp_input   = input.color(color.lime,     "ORB Breakout Up Color", group="ORB Colors")
+colORBDown_input = input.color(color.red,   "ORB Breakdown Color", group="ORB Colors")
+
+// Create ORB colors with user-defined opacity
+colORB     = color.new(colORB_input,   0)
+colORB_f   = color.new(colORB_input,  colORB_opacity)
+colORBBox  = color.new(colORBBox_input,  colORBBox_opacity)
+colORBUp   = color.new(colORBUp_input,   0)
+colORBDown = color.new(colORBDown_input, 0)
+
+// ═══════════════════════════════════════════════════════════════════
+// SUPERTREND INPUTS
+// ═══════════════════════════════════════════════════════════════════
+Periods = input.int(10, "ATR Period", group="Supertrend")
+stSrc = input(hl2, "Source", group="Supertrend")
+Multiplier = input.float(3.0, "ATR Multiplier", step=0.1, group="Supertrend")
+changeATR = input.bool(true, "Change ATR Calculation Method?", group="Supertrend")
+showsignals = input.bool(true, "Show Buy/Sell Signals?", group="Supertrend")
+highlighting = input.bool(true, "Highlighter On/Off?", group="Supertrend")
+
+// ═══════════════════════════════════════════════════════════════════
+// SUPERTREND - COLOR INPUTS
+// ═══════════════════════════════════════════════════════════════════
+colSTUp_input   = input.color(color.green, "Up Trend Color", group="Supertrend Colors")
+colSTDown_input = input.color(color.red,   "Down Trend Color", group="Supertrend Colors")
+colSTUpFill_opacity   = input.int(90, "Up Trend Fill Opacity", minval=0, maxval=100, group="Supertrend Colors")
+colSTDownFill_opacity = input.int(90, "Down Trend Fill Opacity", minval=0, maxval=100, group="Supertrend Colors")
+
+// Create Supertrend colors
+colSTUp   = color.new(colSTUp_input,   0)
+colSTDown = color.new(colSTDown_input, 0)
+colSTUpFill   = color.new(colSTUp_input,   colSTUpFill_opacity)
+colSTDownFill = color.new(colSTDown_input, colSTDownFill_opacity)
+
+// // ═══════════════════════════════════════════════════════════════════
+// // SESSION LEVELS - CALCULATIONS
+// // ═══════════════════════════════════════════════════════════════════
+
+// // Day change detector (must be explicit bool)
+// newDay = ta.change(time("D")) != 0
+
+// // Session flags
+// isPremkt   = not na(time(timeframe.period, premktSession))
+// isRegular  = not na(time(timeframe.period, regularSession))
+// wasRegular = not na(time(timeframe.period, regularSession)[1])
+// firstBarRegular = isRegular and not wasRegular
+
+// // Previous Day/Week levels with SESSION filter option
+// string tickerSrc = useRTHOnly ? ticker.new(syminfo.prefix, syminfo.ticker, session.regular) : syminfo.tickerid
+// pdh = request.security(tickerSrc, "D", high,  barmerge.gaps_off, barmerge.lookahead_off)[1]
+// pdl = request.security(tickerSrc, "D", low,   barmerge.gaps_off, barmerge.lookahead_off)[1]
+// pdc = request.security(tickerSrc, "D", close, barmerge.gaps_off, barmerge.lookahead_off)[1]
+// pwh = request.security(tickerSrc, "W", high,  barmerge.gaps_off, barmerge.lookahead_off)[1]
+// pwl = request.security(tickerSrc, "W", low,   barmerge.gaps_off, barmerge.lookahead_off)[1]
+// pwc = request.security(tickerSrc, "W", close, barmerge.gaps_off, barmerge.lookahead_off)[1]
+
+// // Get pre-market data using security() - works even if chart is RTH only
+// string tickerETH = ticker.new(syminfo.prefix, syminfo.ticker, session.extended)
+// [pmH, pmL] = request.security(tickerETH, timeframe.period, [high, low], barmerge.gaps_off, barmerge.lookahead_off)
+
+// // Persistent variables
+// var line lPDH = na
+// var line lPDL = na
+// var line lPDC = na
+// var line lPWH = na
+// var line lPWL = na
+// var line lPWC = na
+// var line lPMH = na
+// var line lPML = na
+// var box gapBox = na
+// var float pmHigh = na
+// var float pmLow = na
+// var float todayOpen = na
+// var bool gapFilled = false
+
+// // Line drawing function
+// drawLine(line existingLine, float yValue, color lineColor, string labelText) =>
+//     result = existingLine
+//     if na(existingLine)
+//         result := line.new(bar_index, yValue, bar_index, yValue, 
+//                           extend=extend.right, color=lineColor, width=1, style=line.style_dashed)
+//     else
+//         line.set_y1(result, yValue)
+//         line.set_y2(result, yValue)
+//         line.set_x2(result, bar_index)
+//         line.set_color(result, lineColor)
+    
+//     if barstate.islast
+//         label.new(bar_index + 10, yValue, labelText, 
+//                  style=label.style_label_left, color=lineColor, 
+//                  textcolor=color.white, size=size.tiny)
+//     result
+
+// // Draw Previous Day levels 
+// if showPD
+//     lPDH := drawLine(lPDH, pdh, colPD, "PDH")
+//     lPDL := drawLine(lPDL, pdl, colPD_f, "PDL")
+//     lPDC := drawLine(lPDC, pdc, colPC, "PDC")
+
+// // Draw Previous Week levels
+// if showPW
+//     lPWH := drawLine(lPWH, pwh, colPW, "PWH")
+//     lPWL := drawLine(lPWL, pwl, colPW_f, "PWL")
+//     lPWC := drawLine(lPWC, pwc, colPC, "PWC")
+
+// // Pre-Market High/Low tracking
+// if newDay
+//     pmHigh := na
+//     pmLow := na
+
+// if showPM and isPremkt and not na(pmH)
+//     pmHigh := na(pmHigh) ? pmH : math.max(pmHigh, pmH)
+//     pmLow := na(pmLow) ? pmL : math.min(pmLow, pmL)
+
+// if showPM and not na(pmHigh)
+//     lPMH := drawLine(lPMH, pmHigh, colPM, "PMH")
+
+// if showPM and not na(pmLow)
+//     lPML := drawLine(lPML, pmLow, colPM_f, "PML")
+
+// // Gap Zone tracking
+// if newDay
+//     todayOpen := na
+//     gapFilled := false
+//     if not na(gapBox)
+//         box.delete(gapBox)
+//         gapBox := na
+
+// if showGaps and firstBarRegular and not na(pdc)
+//     todayOpen := open
+//     if todayOpen != pdc
+//         float gapTop = math.max(todayOpen, pdc)
+//         float gapBot = math.min(todayOpen, pdc)
+//         gapBox := box.new(bar_index, gapTop, bar_index, gapBot,
+//                          bgcolor=colGapUn, border_color=na)
+
+// if showGaps and not na(gapBox) and not gapFilled
+//     box.set_right(gapBox, bar_index)
+//     float gapTop = box.get_top(gapBox)
+//     float gapBot = box.get_bottom(gapBox)
+    
+//     if low <= gapBot and high >= gapTop
+//         gapFilled := true
+//         box.set_bgcolor(gapBox, colGapOk)
+//         if barstate.islast
+//             label.new(bar_index + 10, (gapTop + gapBot)/2, "Gap Filled",
+//                      style=label.style_label_left, color=colGapOk,
+//                      textcolor=color.black, size=size.tiny)
+
+// // Psychological levels (round numbers)
+// if showPsych
+//     baseLevel = math.round(close / psychStep) * psychStep
+//     for i = -psychWin to psychWin
+//         psychLevel = baseLevel + i * psychStep
+//         line.new(bar_index - 1, psychLevel, bar_index, psychLevel, 
+//                  extend=extend.right, color=colPsych, width=1, style=line.style_dotted)
+// // ═══════════════════════════════════════════════════════════════════
+// // ORB CALCULATIONS
+// // ═══════════════════════════════════════════════════════════════════
+
+// // Persistent variables for ORB
+// var line lORBH = na
+// var line lORBL = na
+// var box orbBox = na
+// var float orbHigh = na
+// var float orbLow = na
+// var int orbStartBar = na
+// var int orbEndBar = na
+// var bool orbComplete = false
+// var bool orbBrokenUp = false
+// var bool orbBrokenDown = false
+
+// // Calculate minutes since regular session open (for time period mode)
+// var int regularOpenTime = na
+// if firstBarRegular
+//     regularOpenTime := time
+
+// int minutesSinceOpen = na
+// if not na(regularOpenTime) and isRegular
+//     minutesSinceOpen := int((time - regularOpenTime) / 60000)
+
+// // Reset ORB on new day
+// if newDay
+//     orbHigh := na
+//     orbLow := na
+//     orbStartBar := na
+//     orbEndBar := na
+//     orbComplete := false
+//     orbBrokenUp := false
+//     orbBrokenDown := false
+//     regularOpenTime := na
+//     if not na(lORBH)
+//         line.delete(lORBH)
+//         lORBH := na
+//     if not na(lORBL)
+//         line.delete(lORBL)
+//         lORBL := na
+//     if not na(orbBox)
+//         box.delete(orbBox)
+//         orbBox := na
+
+// // Track ORB - FIRST BAR ONLY MODE
+// if showORB and orbType == "First Bar Only" and firstBarRegular
+//     orbHigh := high
+//     orbLow := low
+//     orbStartBar := bar_index
+//     orbEndBar := bar_index
+//     orbComplete := true
+
+// // Track ORB - TIME PERIOD MODE
+// if showORB and orbType == "Time Period" and isRegular and not na(minutesSinceOpen)
+//     if minutesSinceOpen <= orbMinutes
+//         if na(orbStartBar)
+//             orbStartBar := bar_index
+        
+//         orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
+//         orbLow := na(orbLow) ? low : math.min(orbLow, low)
+//         orbEndBar := bar_index
+//     else if not orbComplete and not na(orbHigh) and not na(orbLow)
+//         orbComplete := true
+
+// // Draw ORB lines and box
+// if showORB and orbComplete and not na(orbHigh) and not na(orbLow)
+//     // Draw ORB High line
+//     if na(lORBH)
+//         lORBH := line.new(orbEndBar, orbHigh, bar_index, orbHigh,
+//                          extend=extend.right, color=colORB, width=2, style=line.style_solid)
+//     else
+//         line.set_x2(lORBH, bar_index)
+//         line.set_color(lORBH, orbBrokenUp ? colORBUp : colORB)
+    
+//     // Draw ORB Low line
+//     if na(lORBL)
+//         lORBL := line.new(orbEndBar, orbLow, bar_index, orbLow,
+//                          extend=extend.right, color=colORB_f, width=2, style=line.style_solid)
+//     else
+//         line.set_x2(lORBL, bar_index)
+//         line.set_color(lORBL, orbBrokenDown ? colORBDown : colORB_f)
+    
+//     // Draw ORB box (shaded area)
+//     if na(orbBox)
+//         orbBox := box.new(left=orbStartBar, right=orbEndBar,
+//                          top=orbHigh, bottom=orbLow,
+//                          bgcolor=colORBBox, border_color=colORB, border_width=1)
+    
+//     // Add labels on last bar
+//     if barstate.islast
+//         label.new(bar_index + 10, orbHigh, "ORB High",
+//                  style=label.style_label_left, color=colORB,
+//                  textcolor=color.black, size=size.tiny)
+//         label.new(bar_index + 10, orbLow, "ORB Low",
+//                  style=label.style_label_left, color=colORB_f,
+//                  textcolor=color.black, size=size.tiny)
+
+// // Detect ORB breakouts
+// if showORB and showORBBreaks and orbComplete and not na(orbHigh) and not na(orbLow)
+//     // Breakout above ORB High
+//     if not orbBrokenUp and close > orbHigh
+//         orbBrokenUp := true
+//         label.new(bar_index, low, "ORB ↑",
+//                  style=label.style_label_up, color=colORBUp,
+//                  textcolor=color.black, size=size.small, yloc=yloc.belowbar)
+    
+//     // Breakdown below ORB Low
+//     if not orbBrokenDown and close < orbLow
+//         orbBrokenDown := true
+//         label.new(bar_index, high, "ORB ↓",
+//                  style=label.style_label_down, color=colORBDown,
+//                  textcolor=color.black, size=size.small, yloc=yloc.abovebar)
+
+// ═══════════════════════════════════════════════════════════════════
+// SESSION LEVELS - CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════
+
+// Day change detector (must be explicit bool)
+newDay = ta.change(time("D")) != 0
+
+// Session flags
+isPremkt   = not na(time(timeframe.period, premktSession))
+isRegular  = not na(time(timeframe.period, regularSession))
+wasRegular = not na(time(timeframe.period, regularSession)[1])
+firstBarRegular = isRegular and not wasRegular
+
+// Previous Day/Week/Month levels with SESSION filter option
+string tickerSrc = useRTHOnly ? ticker.new(syminfo.prefix, syminfo.ticker, session.regular) : syminfo.tickerid
+pdh = request.security(tickerSrc, "D", high,  barmerge.gaps_off, barmerge.lookahead_off)[1]
+pdl = request.security(tickerSrc, "D", low,   barmerge.gaps_off, barmerge.lookahead_off)[1]
+pdc = request.security(tickerSrc, "D", close, barmerge.gaps_off, barmerge.lookahead_off)[1]
+pwh = request.security(tickerSrc, "W", high,  barmerge.gaps_off, barmerge.lookahead_off)[1]
+pwl = request.security(tickerSrc, "W", low,   barmerge.gaps_off, barmerge.lookahead_off)[1]
+pwc = request.security(tickerSrc, "W", close, barmerge.gaps_off, barmerge.lookahead_off)[1]
+pmoh = request.security(tickerSrc, "M", high,  barmerge.gaps_off, barmerge.lookahead_off)[1]
+pmol = request.security(tickerSrc, "M", low,   barmerge.gaps_off, barmerge.lookahead_off)[1]
+pmoc = request.security(tickerSrc, "M", close, barmerge.gaps_off, barmerge.lookahead_off)[1]
+
+// Get pre-market data using security() - works even if chart is RTH only
+string tickerETH = ticker.new(syminfo.prefix, syminfo.ticker, session.extended)
+[pmH, pmL] = request.security(tickerETH, timeframe.period, [high, low], barmerge.gaps_off, barmerge.lookahead_off)
+
+// Persistent variables for lines
+var line lPMOH = na
+var line lPMOL = na
+var line lPMOC = na
+var line lPMO50 = na
+var line lPWH = na
+var line lPWL = na
+var line lPWC = na
+var line lPW50 = na
+var line lPDH = na
+var line lPDL = na
+var line lPDC = na
+var line lPD50 = na
+var line lPmMH = na
+var line lPmML = na
+var line lPmM50 = na
+var box gapBox = na
+
+// Persistent variables for psychological level lines (array to hold multiple lines)
+var array<line> psychLines = array.new<line>()
+var float pmHigh = na
+var float pmLow = na
+var float todayOpen = na
+var bool gapFilled = false
+
+// Track previous values to detect changes
+var float prev_pdh = na
+var float prev_pdl = na
+var float prev_pdc = na
+var float prev_pwh = na
+var float prev_pwl = na
+var float prev_pwc = na
+var float prev_pmoh = na
+var float prev_pmol = na
+var float prev_pmoc = na
+var float prev_pmHigh = na
+var float prev_pmLow = na
+
+// Track previous psychological base level to detect changes
+var float prev_psychBase = na
+
+// Persistent variables for labels
+var label lblPMOH = na
+var label lblPMOL = na
+var label lblPMOC = na
+var label lblPMO50 = na
+var label lblPWH = na
+var label lblPWL = na
+var label lblPWC = na
+var label lblPW50 = na
+var label lblPDH = na
+var label lblPDL = na
+var label lblPDC = na
+var label lblPD50 = na
+var label lblPmMH = na
+var label lblPmML = na
+var label lblPmM50 = na
+var label lblGapFilled = na
+
+// Helper function to delete line if it exists
+deleteLine(line l) =>
+    if not na(l)
+        line.delete(l)
+    line(na)
+
+// Helper function to delete label if it exists
+deleteLabel(label l) =>
+    if not na(l)
+        label.delete(l)
+    label(na)
+
+// Draw Previous Day levels - only recreate if values changed
+if showPD and not na(pdh) and not na(pdl) and not na(pdc)
+    pdChanged = pdh != prev_pdh or pdl != prev_pdl or pdc != prev_pdc
+
+    if pdChanged or na(lPDH)
+        // Delete old lines
+        lPDH := deleteLine(lPDH)
+        lPDL := deleteLine(lPDL)
+        lPDC := deleteLine(lPDC)
+        lPD50 := deleteLine(lPD50)
+
+        // Create new lines (once) - extend both directions to cover entire chart
+        lPDH := line.new(bar_index, pdh, bar_index + 1, pdh, extend=extend.both, color=colPD, width=2, style=line.style_solid)
+        lPDL := line.new(bar_index, pdl, bar_index + 1, pdl, extend=extend.both, color=colPD_f, width=2, style=line.style_solid)
+        lPDC := line.new(bar_index, pdc, bar_index + 1, pdc, extend=extend.both, color=colPC, width=2, style=line.style_solid)
+
+        // Draw 50% midpoint level
+        if show50Pct
+            pd50 = (pdh + pdl) / 2
+            lPD50 := line.new(bar_index, pd50, bar_index + 1, pd50, extend=extend.both, color=color.new(colPD_input, 60), width=1, style=line.style_dashed)
+
+        // Update tracked values
+        prev_pdh := pdh
+        prev_pdl := pdl
+        prev_pdc := pdc
+
+    // Update labels on last bar (so they stay on the right edge)
+    if barstate.islast
+        lblPDH := deleteLabel(lblPDH)
+        lblPDL := deleteLabel(lblPDL)
+        lblPDC := deleteLabel(lblPDC)
+        lblPD50 := deleteLabel(lblPD50)
+
+        lblPDH := label.new(bar_index + 10, pdh, "PDH", style=label.style_label_left, color=colPD, textcolor=color.white, size=size.tiny)
+        lblPDL := label.new(bar_index + 10, pdl, "PDL", style=label.style_label_left, color=colPD_f, textcolor=color.white, size=size.tiny)
+        lblPDC := label.new(bar_index + 10, pdc, "PDC", style=label.style_label_left, color=colPC, textcolor=color.white, size=size.tiny)
+
+        if show50Pct
+            pd50 = (pdh + pdl) / 2
+            lblPD50 := label.new(bar_index + 10, pd50, "PD 50%", style=label.style_label_left, color=color.new(colPD_input, 60), textcolor=color.white, size=size.tiny)
+
+// Draw Previous Month levels - only recreate if values changed
+if showPMO and not na(pmoh) and not na(pmol) and not na(pmoc)
+    pmoChanged = pmoh != prev_pmoh or pmol != prev_pmol or pmoc != prev_pmoc
+
+    if pmoChanged or na(lPMOH)
+        // Delete old lines
+        lPMOH := deleteLine(lPMOH)
+        lPMOL := deleteLine(lPMOL)
+        lPMOC := deleteLine(lPMOC)
+        lPMO50 := deleteLine(lPMO50)
+
+        // Create new lines (once) - extend both directions to cover entire chart
+        lPMOH := line.new(bar_index, pmoh, bar_index + 1, pmoh, extend=extend.both, color=colPMO, width=2, style=line.style_solid)
+        lPMOL := line.new(bar_index, pmol, bar_index + 1, pmol, extend=extend.both, color=colPMO_f, width=2, style=line.style_solid)
+        lPMOC := line.new(bar_index, pmoc, bar_index + 1, pmoc, extend=extend.both, color=colPC, width=2, style=line.style_solid)
+
+        // Draw 50% midpoint level
+        if show50Pct
+            pmo50 = (pmoh + pmol) / 2
+            lPMO50 := line.new(bar_index, pmo50, bar_index + 1, pmo50, extend=extend.both, color=color.new(colPMO_input, 60), width=1, style=line.style_dashed)
+
+        // Update tracked values
+        prev_pmoh := pmoh
+        prev_pmol := pmol
+        prev_pmoc := pmoc
+
+    // Update labels on last bar (so they stay on the right edge)
+    if barstate.islast
+        lblPMOH := deleteLabel(lblPMOH)
+        lblPMOL := deleteLabel(lblPMOL)
+        lblPMOC := deleteLabel(lblPMOC)
+        lblPMO50 := deleteLabel(lblPMO50)
+
+        lblPMOH := label.new(bar_index + 10, pmoh, "PMOH", style=label.style_label_left, color=colPMO, textcolor=color.white, size=size.tiny)
+        lblPMOL := label.new(bar_index + 10, pmol, "PMOL", style=label.style_label_left, color=colPMO_f, textcolor=color.white, size=size.tiny)
+        lblPMOC := label.new(bar_index + 10, pmoc, "PMOC", style=label.style_label_left, color=colPC, textcolor=color.white, size=size.tiny)
+
+        if show50Pct
+            pmo50 = (pmoh + pmol) / 2
+            lblPMO50 := label.new(bar_index + 10, pmo50, "PMO 50%", style=label.style_label_left, color=color.new(colPMO_input, 60), textcolor=color.white, size=size.tiny)
+
+// Draw Previous Week levels - only recreate if values changed
+if showPW and not na(pwh) and not na(pwl) and not na(pwc)
+    pwChanged = pwh != prev_pwh or pwl != prev_pwl or pwc != prev_pwc
+
+    if pwChanged or na(lPWH)
+        // Delete old lines
+        lPWH := deleteLine(lPWH)
+        lPWL := deleteLine(lPWL)
+        lPWC := deleteLine(lPWC)
+        lPW50 := deleteLine(lPW50)
+
+        // Create new lines (once) - extend both directions to cover entire chart
+        lPWH := line.new(bar_index, pwh, bar_index + 1, pwh, extend=extend.both, color=colPW, width=2, style=line.style_solid)
+        lPWL := line.new(bar_index, pwl, bar_index + 1, pwl, extend=extend.both, color=colPW_f, width=2, style=line.style_solid)
+        lPWC := line.new(bar_index, pwc, bar_index + 1, pwc, extend=extend.both, color=colPC, width=2, style=line.style_solid)
+
+        // Draw 50% midpoint level
+        if show50Pct
+            pw50 = (pwh + pwl) / 2
+            lPW50 := line.new(bar_index, pw50, bar_index + 1, pw50, extend=extend.both, color=color.new(colPW_input, 60), width=1, style=line.style_dashed)
+
+        // Update tracked values
+        prev_pwh := pwh
+        prev_pwl := pwl
+        prev_pwc := pwc
+
+    // Update labels on last bar (so they stay on the right edge)
+    if barstate.islast
+        lblPWH := deleteLabel(lblPWH)
+        lblPWL := deleteLabel(lblPWL)
+        lblPWC := deleteLabel(lblPWC)
+        lblPW50 := deleteLabel(lblPW50)
+
+        lblPWH := label.new(bar_index + 10, pwh, "PWH", style=label.style_label_left, color=colPW, textcolor=color.white, size=size.tiny)
+        lblPWL := label.new(bar_index + 10, pwl, "PWL", style=label.style_label_left, color=colPW_f, textcolor=color.white, size=size.tiny)
+        lblPWC := label.new(bar_index + 10, pwc, "PWC", style=label.style_label_left, color=colPC, textcolor=color.white, size=size.tiny)
+
+        if show50Pct
+            pw50 = (pwh + pwl) / 2
+            lblPW50 := label.new(bar_index + 10, pw50, "PW 50%", style=label.style_label_left, color=color.new(colPW_input, 60), textcolor=color.white, size=size.tiny)
+
+// Pre-Market High/Low tracking
+if newDay
+    pmHigh := na
+    pmLow := na
+
+if showPmM and isPremkt and not na(pmH)
+    pmHigh := na(pmHigh) ? pmH : math.max(pmHigh, pmH)
+    pmLow := na(pmLow) ? pmL : math.min(pmLow, pmL)
+
+// Draw Pre-Market levels - only recreate if values changed
+if showPmM and not na(pmHigh) and not na(pmLow)
+    pmmChanged = pmHigh != prev_pmHigh or pmLow != prev_pmLow
+
+    if pmmChanged or na(lPmMH)
+        // Delete old lines
+        lPmMH := deleteLine(lPmMH)
+        lPmML := deleteLine(lPmML)
+        lPmM50 := deleteLine(lPmM50)
+
+        // Create new lines (once) - extend both directions to cover entire chart
+        lPmMH := line.new(bar_index, pmHigh, bar_index + 1, pmHigh, extend=extend.both, color=colPmM, width=2, style=line.style_solid)
+        lPmML := line.new(bar_index, pmLow, bar_index + 1, pmLow, extend=extend.both, color=colPmM_f, width=2, style=line.style_solid)
+
+        // Draw 50% midpoint level
+        if show50Pct
+            pmm50 = (pmHigh + pmLow) / 2
+            lPmM50 := line.new(bar_index, pmm50, bar_index + 1, pmm50, extend=extend.both, color=color.new(colPmM_input, 60), width=1, style=line.style_dashed)
+
+        // Update tracked values
+        prev_pmHigh := pmHigh
+        prev_pmLow := pmLow
+
+    // Update labels on last bar (so they stay on the right edge)
+    if barstate.islast
+        lblPmMH := deleteLabel(lblPmMH)
+        lblPmML := deleteLabel(lblPmML)
+        lblPmM50 := deleteLabel(lblPmM50)
+
+        lblPmMH := label.new(bar_index + 10, pmHigh, "PmMH", style=label.style_label_left, color=colPmM, textcolor=color.white, size=size.tiny)
+        lblPmML := label.new(bar_index + 10, pmLow, "PmML", style=label.style_label_left, color=colPmM_f, textcolor=color.white, size=size.tiny)
+
+        if show50Pct
+            pmm50 = (pmHigh + pmLow) / 2
+            lblPmM50 := label.new(bar_index + 10, pmm50, "PmM 50%", style=label.style_label_left, color=color.new(colPmM_input, 60), textcolor=color.white, size=size.tiny)
+
+// Gap Zone tracking
+if newDay
+    todayOpen := na
+    gapFilled := false
+    if not na(gapBox)
+        box.delete(gapBox)
+        gapBox := na
+
+if showGaps and firstBarRegular and not na(pdc)
+    todayOpen := open
+    if todayOpen != pdc
+        float gapTop = math.max(todayOpen, pdc)
+        float gapBot = math.min(todayOpen, pdc)
+        gapBox := box.new(bar_index, gapTop, bar_index, gapBot,
+                         bgcolor=colGapUn, border_color=na)
+
+if showGaps and not na(gapBox) and not gapFilled
+    box.set_right(gapBox, bar_index)
+    float gapTop = box.get_top(gapBox)
+    float gapBot = box.get_bottom(gapBox)
+    
+    if low <= gapBot and high >= gapTop
+        gapFilled := true
+        box.set_bgcolor(gapBox, colGapOk)
+        if barstate.islast
+            label.delete(lblGapFilled)
+            lblGapFilled := label.new(bar_index + 10, (gapTop + gapBot)/2, "Gap Filled",
+                     style=label.style_label_left, color=colGapOk,
+                     textcolor=color.black, size=size.tiny)
+
+// Psychological levels (round numbers) - OPTIMIZED
+// Only recreate lines when price moves to a new psychological zone
+if showPsych
+    baseLevel = math.round(close / psychStep) * psychStep
+    psychChanged = baseLevel != prev_psychBase
+
+    // Only recreate lines when the base level changes (price moved to new zone)
+    if psychChanged or na(prev_psychBase)
+        // Delete all existing psychological lines
+        if array.size(psychLines) > 0
+            for i = 0 to array.size(psychLines) - 1
+                line.delete(array.get(psychLines, i))
+            array.clear(psychLines)
+
+        // Create new psychological level lines
+        for i = -psychWin to psychWin
+            psychLevel = baseLevel + i * psychStep
+            newLine = line.new(bar_index, psychLevel, bar_index + 1, psychLevel,
+                             extend=extend.both, color=colPsych, width=1, style=line.style_dotted)
+            array.push(psychLines, newLine)
+
+        // Update tracked value
+        prev_psychBase := baseLevel
+
+// ═══════════════════════════════════════════════════════════════════
+// ORB CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════
+
+// Persistent variables for ORB
+var line lORBH = na
+var line lORBL = na
+var box orbBox = na
+var float orbHigh = na
+var float orbLow = na
+var int orbStartBar = na
+var int orbEndBar = na
+var bool orbComplete = false
+var bool orbBrokenUp = false
+var bool orbBrokenDown = false
+var label lblORBHigh = na
+var label lblORBLow = na
+
+// Calculate minutes since regular session open (for time period mode)
+var int regularOpenTime = na
+if firstBarRegular
+    regularOpenTime := time
+
+int minutesSinceOpen = na
+if not na(regularOpenTime) and isRegular
+    minutesSinceOpen := int((time - regularOpenTime) / 60000)
+
+// Reset ORB on new day
+if newDay
+    orbHigh := na
+    orbLow := na
+    orbStartBar := na
+    orbEndBar := na
+    orbComplete := false
+    orbBrokenUp := false
+    orbBrokenDown := false
+    regularOpenTime := na
+    if not na(lORBH)
+        line.delete(lORBH)
+        lORBH := na
+    if not na(lORBL)
+        line.delete(lORBL)
+        lORBL := na
+    if not na(orbBox)
+        box.delete(orbBox)
+        orbBox := na
+
+// Track ORB - FIRST BAR ONLY MODE
+if showORB and orbType == "First Bar Only" and firstBarRegular
+    orbHigh := high
+    orbLow := low
+    orbStartBar := bar_index
+    orbEndBar := bar_index
+    orbComplete := true
+
+// Track ORB - TIME PERIOD MODE
+if showORB and orbType == "Time Period" and isRegular and not na(minutesSinceOpen)
+    if minutesSinceOpen <= orbMinutes
+        if na(orbStartBar)
+            orbStartBar := bar_index
+        
+        orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
+        orbLow := na(orbLow) ? low : math.min(orbLow, low)
+        orbEndBar := bar_index
+    else if not orbComplete and not na(orbHigh) and not na(orbLow)
+        orbComplete := true
+
+// Draw ORB lines and box - only create once
+if showORB and orbComplete and not na(orbHigh) and not na(orbLow)
+    // Draw ORB High line (create once) - extend both directions to cover entire chart
+    if na(lORBH)
+        lORBH := line.new(orbEndBar, orbHigh, orbEndBar + 1, orbHigh,
+                         extend=extend.both, color=colORB, width=2, style=line.style_solid)
+
+    // Update color based on breakout status
+    if not na(lORBH)
+        line.set_color(lORBH, orbBrokenUp ? colORBUp : colORB)
+
+    // Draw ORB Low line (create once) - extend both directions to cover entire chart
+    if na(lORBL)
+        lORBL := line.new(orbEndBar, orbLow, orbEndBar + 1, orbLow,
+                         extend=extend.both, color=colORB_f, width=2, style=line.style_solid)
+
+    // Update color based on breakdown status
+    if not na(lORBL)
+        line.set_color(lORBL, orbBrokenDown ? colORBDown : colORB_f)
+    
+    // Draw ORB box (shaded area)
+    if na(orbBox)
+        orbBox := box.new(left=orbStartBar, right=orbEndBar,
+                         top=orbHigh, bottom=orbLow,
+                         bgcolor=colORBBox, border_color=colORB, border_width=1)
+    
+    // Add labels on last bar - FIXED
+    if barstate.islast
+        label.delete(lblORBHigh)
+        label.delete(lblORBLow)
+        lblORBHigh := label.new(bar_index + 10, orbHigh, "ORB High",
+                 style=label.style_label_left, color=colORB,
+                 textcolor=color.black, size=size.tiny)
+        lblORBLow := label.new(bar_index + 10, orbLow, "ORB Low",
+                 style=label.style_label_left, color=colORB_f,
+                 textcolor=color.black, size=size.tiny)
+
+// Detect ORB breakouts
+if showORB and showORBBreaks and orbComplete and not na(orbHigh) and not na(orbLow)
+    // Breakout above ORB High
+    if not orbBrokenUp and close > orbHigh
+        orbBrokenUp := true
+        label.new(bar_index, low, "ORB ↑",
+                 style=label.style_label_up, color=colORBUp,
+                 textcolor=color.black, size=size.small, yloc=yloc.belowbar)
+    
+    // Breakdown below ORB Low
+    if not orbBrokenDown and close < orbLow
+        orbBrokenDown := true
+        label.new(bar_index, high, "ORB ↓",
+                 style=label.style_label_down, color=colORBDown,
+                 textcolor=color.black, size=size.small, yloc=yloc.abovebar)
+
+// ═══════════════════════════════════════════════════════════════════
+// SUPERTREND CALCULATIONS
+// ═══════════════════════════════════════════════════════════════════
+
+atr2 = ta.sma(ta.tr, Periods)
+atrVal = changeATR ? ta.atr(Periods) : atr2
+
+up = stSrc - (Multiplier * atrVal)
+up1 = nz(up[1], up)
+up := close[1] > up1 ? math.max(up, up1) : up
+
+dn = stSrc + (Multiplier * atrVal)
+dn1 = nz(dn[1], dn)
+dn := close[1] < dn1 ? math.min(dn, dn1) : dn
+
+var int trend = 1
+trend := nz(trend[1], trend)
+trend := trend == -1 and close > dn1 ? 1 : trend == 1 and close < up1 ? -1 : trend
+
+// ═══════════════════════════════════════════════════════════════════
+// SUPERTREND PLOTTING
+// ═══════════════════════════════════════════════════════════════════
+
+upPlot = plot(trend == 1 ? up : na, title="Up Trend", style=plot.style_linebr, linewidth=2, color=colSTUp)
+
+buySignal = trend == 1 and trend[1] == -1
+plotshape(buySignal ? up : na, title="UpTrend Begins", location=location.absolute, style=shape.circle, size=size.tiny, color=colSTUp)
+plotshape(buySignal and showsignals ? up : na, title="Buy", text="Buy", location=location.absolute, style=shape.labelup, size=size.tiny, color=colSTUp, textcolor=color.white)
+
+dnPlot = plot(trend == 1 ? na : dn, title="Down Trend", style=plot.style_linebr, linewidth=2, color=colSTDown)
+
+sellSignal = trend == -1 and trend[1] == 1
+plotshape(sellSignal ? dn : na, title="DownTrend Begins", location=location.absolute, style=shape.circle, size=size.tiny, color=colSTDown)
+plotshape(sellSignal and showsignals ? dn : na, title="Sell", text="Sell", location=location.absolute, style=shape.labeldown, size=size.tiny, color=colSTDown, textcolor=color.white)
+
+mPlot = plot(ohlc4, title="", style=plot.style_circles, linewidth=1, display=display.none)
+
+longFillColor = highlighting ? (trend == 1 ? colSTUpFill : color.new(color.white, 100)) : color.new(color.white, 100)
+shortFillColor = highlighting ? (trend == -1 ? colSTDownFill : color.new(color.white, 100)) : color.new(color.white, 100)
+
+fill(mPlot, upPlot, title="UpTrend Highlighter", color=longFillColor)
+fill(mPlot, dnPlot, title="DownTrend Highlighter", color=shortFillColor)
+
+// ═══════════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════════
+
+alertcondition(buySignal, title="SuperTrend Buy", message="SuperTrend Buy!")
+alertcondition(sellSignal, title="SuperTrend Sell", message="SuperTrend Sell!")
+changeCond = trend != trend[1]
+alertcondition(changeCond, title="SuperTrend Direction Change", message="SuperTrend has changed direction!")
+
+
+// ═══════════════════════════════════════════════════════════════════
+// ORB ALERTS
+// ═══════════════════════════════════════════════════════════════════
+orbBreakoutUp = showORB and orbComplete and not orbBrokenUp[1] and orbBrokenUp
+orbBreakoutDown = showORB and orbComplete and not orbBrokenDown[1] and orbBrokenDown
+
+alertcondition(orbBreakoutUp, title="ORB Breakout Up", message="Price broke above Opening Range High!")
+alertcondition(orbBreakoutDown, title="ORB Breakdown", message="Price broke below Opening Range Low!")
+
+// ═══════════════════════════════════════════════════════════════════
+// BUYING/SELLING VOLUME
+// ═══════════════════════════════════════════════════════════════════
+
+// Calculate buying and selling volume
+// buyVolume = high == low ? 0 : volume * (close - low) / (high - low)
+// sellVolume = high == low ? 0 : volume * (high - close) / (high - low)
+
+// // Plot volume bars (will appear in separate pane below chart)
+// plot(volume, style=plot.style_columns, color=color.new(color.red, 0), title="SELL V", display=display.pane)
+// plot(buyVolume, style=plot.style_columns, color=color.new(color.teal, 0), title="BUY V", display=display.pane)
