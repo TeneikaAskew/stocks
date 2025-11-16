@@ -130,21 +130,38 @@ class App {
      * Load available dates for current ticker
      */
     async loadAvailableDates() {
-        const dates = await this.dataLoader.fetchAvailableDates(this.currentTicker);
+        const months = await this.dataLoader.fetchAvailableMonths(this.currentTicker);
 
-        if (dates.length === 0) {
+        if (months.length === 0) {
             Utils.notify('No data available for this ticker', 'warning');
+            return;
+        }
+
+        // Get most recent month
+        const latestMonth = months[months.length - 1];
+
+        // Generate trading days for recent months (last 3 months)
+        const recentMonths = months.slice(-3);
+        const allDays = [];
+
+        for (const month of recentMonths) {
+            const days = this.dataLoader.getTradingDaysInMonth(month);
+            allDays.push(...days);
+        }
+
+        if (allDays.length === 0) {
+            Utils.notify('No trading days found', 'warning');
             return;
         }
 
         // Populate date selector
         const select = document.getElementById('dateSelect');
-        select.innerHTML = dates.map(date =>
+        select.innerHTML = allDays.map(date =>
             `<option value="${date}">${this.formatDateDisplay(date)}</option>`
         ).join('');
 
         // Select most recent date
-        this.currentDate = dates[dates.length - 1];
+        this.currentDate = allDays[allDays.length - 1];
         select.value = this.currentDate;
 
         // Load chart data
@@ -454,17 +471,30 @@ class App {
      * Format date for display
      */
     formatDateDisplay(dateStr) {
-        // Format: 20251114 -> Nov 14, 2025
-        const year = dateStr.substring(0, 4);
-        const month = dateStr.substring(4, 6);
-        const day = dateStr.substring(6, 8);
+        // Format: YYYYMMDD -> Nov 14, 2025
+        if (dateStr.length === 8) {
+            const year = dateStr.substring(0, 4);
+            const month = dateStr.substring(4, 6);
+            const day = dateStr.substring(6, 8);
 
-        const date = new Date(`${year}-${month}-${day}`);
-        return date.toLocaleDateString('en-US', {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric'
-        });
+            const date = new Date(`${year}-${month}-${day}`);
+            return date.toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric'
+            });
+        } else if (dateStr.length === 6) {
+            // Format: YYYYMM -> Nov 2025
+            const year = dateStr.substring(0, 4);
+            const month = dateStr.substring(4, 6);
+
+            const date = new Date(`${year}-${month}-01`);
+            return date.toLocaleDateString('en-US', {
+                month: 'short',
+                year: 'numeric'
+            });
+        }
+        return dateStr;
     }
 }
 
