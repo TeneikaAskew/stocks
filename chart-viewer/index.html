@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Trading Chart Viewer - Mark Entries & Exits</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="src/styles.css">
 </head>
 <body>
@@ -15,6 +16,7 @@
                 <p class="subtitle">Mark entries, exits, and analyze your trading patterns</p>
             </div>
             <div class="header-controls">
+                <button id="refreshBtn" class="btn btn-info" title="Hard refresh page and clear cache">🔄 Refresh</button>
                 <button id="saveDataBtn" class="btn btn-primary">💾 Save Trades</button>
                 <button id="exportBtn" class="btn btn-secondary">📊 Export CSV</button>
             </div>
@@ -26,8 +28,6 @@
                 <label for="tickerSelect">Ticker:</label>
                 <select id="tickerSelect" class="control-select">
                     <option value="IWM">IWM</option>
-                    <option value="SPY">SPY</option>
-                    <option value="QQQ">QQQ</option>
                 </select>
             </div>
 
@@ -75,6 +75,16 @@
                     <div class="time-info" id="timeInfo">
                         <span class="label">Time:</span>
                         <span class="value">--</span>
+                    </div>
+                    <div class="chart-controls">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="volumeToggle">
+                            <span>Volume</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="rthToggle" checked>
+                            <span>RTH Only</span>
+                        </label>
                     </div>
                 </div>
             </div>
@@ -128,6 +138,25 @@
                             <p class="insight-item">Mark trades to see pattern analysis</p>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Option Type Selection Modal (for drawing mode) -->
+    <div id="optionTypeModal" class="modal">
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h2>Select Option Type</h2>
+            </div>
+            <div class="modal-body">
+                <div style="display: flex; gap: 20px; justify-content: center; padding: 20px;">
+                    <button id="selectCallBtn" class="btn btn-success" style="font-size: 18px; padding: 20px 40px;">
+                        📈 CALL
+                    </button>
+                    <button id="selectPutBtn" class="btn btn-danger" style="font-size: 18px; padding: 20px 40px;">
+                        📉 PUT
+                    </button>
                 </div>
             </div>
         </div>
@@ -236,13 +265,13 @@
         </div>
     </div>
 
-    <!-- Scripts -->
+    <!-- Scripts (with cache busting) -->
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
-    <script src="src/config.js"></script>
-    <script src="src/dataLoader.js"></script>
-    <script src="src/chartManager.js"></script>
-    <script src="src/tradeMarker.js"></script>
-    <script src="src/analytics.js"></script>
-    <script src="src/app.js"></script>
+    <script src="src/config.js?v=3"></script>
+    <script src="src/dataLoader.js?v=2"></script>
+    <script src="src/chartManager.js?v=4"></script>
+    <script src="src/tradeMarker.js?v=2"></script>
+    <script src="src/analytics.js?v=2"></script>
+    <script src="src/app.js?v=4"></script>
 </body>
 </html>
