@@ -136,26 +136,45 @@ Each trade includes:
 
 ## Data Requirements
 
-The application expects minute-level OHLCV data in parquet format:
+The application uses **AlphaVantage** minute-level OHLCV data in parquet format:
 
 **Directory structure:**
 ```
 data/
-├── iwm/minute/
-│   ├── iwm_minute_20251114.parquet
-│   ├── iwm_minute_20251113.parquet
+├── iwm/intraday/
+│   ├── iwm_av_1min_202511.parquet   # Monthly files (Nov 2025)
+│   ├── iwm_av_1min_202510.parquet   # Oct 2025
+│   ├── iwm_av_1min_combined.parquet # All data combined
+│   ├── iwm_av_1min_summary.json     # Metadata
 │   └── ...
-├── spy/minute/
-│   ├── spy_minute_20251114.parquet
+├── spy/intraday/
+│   ├── spy_av_1min_202511.parquet
 │   └── ...
-└── qqq/minute/
-    ├── qqq_minute_20251114.parquet
+└── qqq/intraday/
+    ├── qqq_av_1min_202511.parquet
     └── ...
 ```
 
-**Parquet schema:**
-- Timestamp index (datetime)
-- Columns: Open, High, Low, Close, Volume
+**Data Format:**
+- **Filename:** `{ticker}_av_1min_{YYYYMM}.parquet`
+- **Coverage:** Monthly files with full month of 1-minute bars
+- **Timestamp index:** datetime
+- **Columns:** open, high, low, close, volume (lowercase)
+
+**Fetching AlphaVantage Data:**
+
+See the scripts included in this repository:
+```bash
+# Fetch IWM data for last 5 years
+python scripts/fetch_alphavantage_intraday.py --symbol IWM --years 5
+
+# Fetch single month
+python scripts/fetch_alphavantage_intraday.py --symbol IWM --month 2025-11
+```
+
+For complete documentation, see:
+- `docs/alpha-vantage-quickstart.md`
+- `docs/alpha-vantage-data-fetching.md`
 
 ## API Endpoints
 
