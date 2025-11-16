@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Chart Viewer - Mark Entries & Exits</title>
+    <link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>📈 Trading Chart Viewer</h1>
+                <p class="subtitle">Mark entries, exits, and analyze your trading patterns</p>
+            </div>
+            <div class="header-controls">
+                <button id="saveDataBtn" class="btn btn-primary">💾 Save Trades</button>
+                <button id="exportBtn" class="btn btn-secondary">📊 Export CSV</button>
+            </div>
+        </header>
+
+        <!-- Toolbar -->
+        <div class="toolbar">
+            <div class="toolbar-section">
+                <label for="tickerSelect">Ticker:</label>
+                <select id="tickerSelect" class="control-select">
+                    <option value="IWM">IWM</option>
+                    <option value="SPY">SPY</option>
+                    <option value="QQQ">QQQ</option>
+                </select>
+            </div>
+
+            <div class="toolbar-section">
+                <label for="dateSelect">Date:</label>
+                <select id="dateSelect" class="control-select">
+                    <option value="">Loading dates...</option>
+                </select>
+            </div>
+
+            <div class="toolbar-section">
+                <label for="timeframeSelect">Timeframe:</label>
+                <select id="timeframeSelect" class="control-select">
+                    <option value="1">1 min</option>
+                    <option value="5">5 min</option>
+                    <option value="15">15 min</option>
+                    <option value="30">30 min</option>
+                    <option value="60">1 hour</option>
+                </select>
+            </div>
+
+            <div class="toolbar-section">
+                <button id="markEntryBtn" class="btn btn-success">📍 Mark Entry</button>
+                <button id="markExitBtn" class="btn btn-danger">🎯 Mark Exit</button>
+            </div>
+
+            <div class="toolbar-section">
+                <div class="status-indicator" id="dataStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Ready</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Chart Area -->
+            <div class="chart-section">
+                <div id="chartContainer" class="chart-container"></div>
+                <div class="chart-info">
+                    <div class="price-info" id="priceInfo">
+                        <span class="label">Price:</span>
+                        <span class="value">--</span>
+                    </div>
+                    <div class="time-info" id="timeInfo">
+                        <span class="label">Time:</span>
+                        <span class="value">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Side Panel -->
+            <div class="side-panel">
+                <!-- Trades Tab -->
+                <div class="panel-tabs">
+                    <button class="tab-btn active" data-tab="trades">Trades</button>
+                    <button class="tab-btn" data-tab="analytics">Analytics</button>
+                </div>
+
+                <!-- Trades List -->
+                <div id="tradesTab" class="tab-content active">
+                    <div class="trades-header">
+                        <h3>Active Trades</h3>
+                        <span class="trade-count" id="tradeCount">0</span>
+                    </div>
+                    <div id="tradesList" class="trades-list">
+                        <div class="empty-state">
+                            <p>No trades marked yet</p>
+                            <small>Click "Mark Entry" to start</small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Analytics Panel -->
+                <div id="analyticsTab" class="tab-content">
+                    <div class="analytics-grid" id="analyticsGrid">
+                        <div class="metric-card">
+                            <div class="metric-label">Total Trades</div>
+                            <div class="metric-value" id="totalTrades">0</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Win Rate</div>
+                            <div class="metric-value" id="winRate">0%</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Avg P&L</div>
+                            <div class="metric-value" id="avgPnL">$0.00</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Calls vs Puts</div>
+                            <div class="metric-value" id="callPutRatio">0:0</div>
+                        </div>
+                    </div>
+
+                    <div class="insights-section">
+                        <h4>Pattern Insights</h4>
+                        <div id="patternInsights" class="insights-list">
+                            <p class="insight-item">Mark trades to see pattern analysis</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Trade Entry/Exit Modal -->
+    <div id="tradeModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">Mark Trade Entry</h2>
+                <button class="modal-close" id="modalClose">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="tradeForm">
+                    <input type="hidden" id="tradeAction" value="entry">
+                    <input type="hidden" id="tradePrice" value="">
+                    <input type="hidden" id="tradeTime" value="">
+
+                    <!-- Entry Fields -->
+                    <div id="entryFields" class="form-section">
+                        <div class="form-group">
+                            <label for="optionType">Option Type</label>
+                            <div class="radio-group">
+                                <label class="radio-label">
+                                    <input type="radio" name="optionType" value="CALL" checked>
+                                    <span class="radio-text">CALL</span>
+                                </label>
+                                <label class="radio-label">
+                                    <input type="radio" name="optionType" value="PUT">
+                                    <span class="radio-text">PUT</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="entryPrice">Entry Price</label>
+                            <input type="number" id="entryPrice" step="0.01" readonly>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Take Profit Levels</label>
+                            <div class="tp-sl-grid">
+                                <div class="tp-sl-row">
+                                    <input type="number" id="tp1Price" step="0.01" placeholder="TP1 Price">
+                                    <input type="number" id="tp1Size" step="1" placeholder="Size %" value="50">
+                                </div>
+                                <div class="tp-sl-row">
+                                    <input type="number" id="tp2Price" step="0.01" placeholder="TP2 Price">
+                                    <input type="number" id="tp2Size" step="1" placeholder="Size %" value="30">
+                                </div>
+                                <div class="tp-sl-row">
+                                    <input type="number" id="tp3Price" step="0.01" placeholder="TP3 Price">
+                                    <input type="number" id="tp3Size" step="1" placeholder="Size %" value="20">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="stopLoss">Stop Loss</label>
+                            <input type="number" id="stopLoss" step="0.01" placeholder="Stop loss price">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="tradeNotes">Notes (optional)</label>
+                            <textarea id="tradeNotes" rows="3" placeholder="Volume spike, breakout pattern, etc."></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="tradeTags">Tags (comma-separated)</label>
+                            <input type="text" id="tradeTags" placeholder="0DTE, momentum, breakout">
+                        </div>
+                    </div>
+
+                    <!-- Exit Fields -->
+                    <div id="exitFields" class="form-section" style="display: none;">
+                        <div class="form-group">
+                            <label for="exitTrade">Select Trade</label>
+                            <select id="exitTrade" class="control-select">
+                                <option value="">Select a trade to exit...</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="exitPrice">Exit Price</label>
+                            <input type="number" id="exitPrice" step="0.01" readonly>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="exitReason">Exit Reason</label>
+                            <select id="exitReason" class="control-select">
+                                <option value="TP1">Take Profit 1</option>
+                                <option value="TP2">Take Profit 2</option>
+                                <option value="TP3">Take Profit 3</option>
+                                <option value="SL">Stop Loss Hit</option>
+                                <option value="MANUAL">Manual Exit</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" id="modalCancel">Cancel</button>
+                        <button type="submit" class="btn btn-primary" id="modalSubmit">Save Trade</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="src/config.js"></script>
+    <script src="src/dataLoader.js"></script>
+    <script src="src/chartManager.js"></script>
+    <script src="src/tradeMarker.js"></script>
+    <script src="src/analytics.js"></script>
+    <script src="src/app.js"></script>
+</body>
+</html>
