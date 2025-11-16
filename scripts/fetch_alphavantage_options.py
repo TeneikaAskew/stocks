@@ -307,51 +307,106 @@ def fetch_historical_options(symbol, start_date=None, end_date=None, days=None):
         else:
             time.sleep(DELAY_BETWEEN_CALLS)
 
-    # Combine all data
-    if all_data:
-        combined_df = pd.concat(all_data, ignore_index=True)
+    # ALWAYS combine ALL daily files (not just the ones fetched in this run)
+    # This ensures the combined file is always complete and up-to-date
+    print(f"\n{'='*60}")
+    print("Combining ALL daily options parquet files...")
+    print(f"{'='*60}\n")
 
-        # Sort by snapshot date, expiration, and strike
-        combined_df = combined_df.sort_values(['snapshot_date', 'expiration', 'strike', 'type'])
+    # Find all daily parquet files
+    import glob as glob_module
+    pattern = str(data_dir / f"{symbol.lower()}_av_options_*.parquet")
+    all_daily_files = glob_module.glob(pattern)
+    # Exclude the combined file itself
+    all_daily_files = [f for f in all_daily_files if 'combined' not in f]
+    all_daily_files = sorted(all_daily_files)
 
-        # Save combined data
-        combined_file = data_dir / f"{symbol.lower()}_av_options_combined.parquet"
-        combined_df.to_parquet(combined_file, compression='snappy', index=False)
-
-        # Create summary
-        summary = {
-            'symbol': symbol,
-            'start_date': str(start_date),
-            'end_date': str(end_date),
-            'total_contracts': len(combined_df),
-            'total_days': len(trading_days),
-            'unique_expirations': int(combined_df['expiration'].nunique()),
-            'unique_strikes': int(combined_df['strike'].nunique()),
-            'calls_count': int(len(combined_df[combined_df['type'] == 'call'])),
-            'puts_count': int(len(combined_df[combined_df['type'] == 'put'])),
-            'last_update': datetime.now().isoformat(),
-            'file': str(combined_file)
-        }
-
-        summary_file = data_dir / f"{symbol.lower()}_av_options_summary.json"
-        with open(summary_file, 'w') as f:
-            json.dump(summary, f, indent=2)
-
-        print(f"\n{'='*60}")
-        print(f"Summary:")
-        print(f"  Total contracts: {summary['total_contracts']:,}")
-        print(f"  Date range: {summary['start_date']} to {summary['end_date']}")
-        print(f"  Unique expirations: {summary['unique_expirations']}")
-        print(f"  Unique strikes: {summary['unique_strikes']}")
-        print(f"  Calls: {summary['calls_count']:,} | Puts: {summary['puts_count']:,}")
-        print(f"  Combined file: {combined_file}")
-        print(f"  Summary file: {summary_file}")
-        print(f"{'='*60}\n")
-
-        return combined_df
-    else:
-        print("\nNo data was fetched.")
+    if not all_daily_files:
+        print("No daily files found to combine.")
         return None
+
+    # Load ALL daily files
+    all_daily_data = []
+    for i, file_path in enumerate(all_daily_files, 1):
+        file_name = Path(file_path).name
+        try:
+            df = pd.read_parquet(file_path)
+            all_daily_data.append(df)
+            if i % 10 == 0:
+                print(f"  Loaded {i}/{len(all_daily_files)} daily files...")
+        except Exception as e:
+            print(f"  Warning: Could not load {file_name}: {e}")
+            continue
+
+    if not all_daily_data:
+        print("ERROR: No data could be loaded from daily files!")
+        return None
+
+    print(f"  Loaded {len(all_daily_data)}/{len(all_daily_files)} daily files")
+
+    # Combine all daily data
+    combined_df = pd.concat(all_daily_data, ignore_index=True)
+
+    # Sort by snapshot date, expiration, strike, and type
+    combined_df = combined_df.sort_values(['snapshot_date', 'expiration', 'strike', 'type'])
+
+    # Remove duplicates (keep first occurrence)
+    original_len = len(combined_df)
+    combined_df = combined_df.drop_duplicates(
+        subset=['snapshot_date', 'expiration', 'strike', 'type', 'contractID'],
+        keep='first'
+    )
+    duplicates_removed = original_len - len(combined_df)
+
+    if duplicates_removed > 0:
+        print(f"  Removed {duplicates_removed:,} duplicate contracts")
+
+    # Save combined data (overwrites previous combined file)
+    combined_file = data_dir / f"{symbol.lower()}_av_options_combined.parquet"
+    combined_df.to_parquet(combined_file, compression='snappy', index=False)
+
+    # Count unique dates
+    unique_dates = combined_df['snapshot_date'].nunique()
+
+    # Create summary
+    summary = {
+        'symbol': symbol,
+        'start_date': str(combined_df['snapshot_date'].min().date()),
+        'end_date': str(combined_df['snapshot_date'].max().date()),
+        'total_contracts': len(combined_df),
+        'total_days': unique_dates,
+        'daily_files_combined': len(all_daily_files),
+        'duplicates_removed': duplicates_removed,
+        'unique_expirations': int(combined_df['expiration'].nunique()),
+        'unique_strikes': int(combined_df['strike'].nunique()),
+        'calls_count': int(len(combined_df[combined_df['type'] == 'call'])),
+        'puts_count': int(len(combined_df[combined_df['type'] == 'put'])),
+        'last_update': datetime.now().isoformat(),
+        'file': str(combined_file)
+    }
+
+    summary_file = data_dir / f"{symbol.lower()}_av_options_summary.json"
+    with open(summary_file, 'w') as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"\n{'='*60}")
+    print("COMBINED FILE SUMMARY")
+    print(f"{'='*60}")
+    print(f"Symbol: {symbol}")
+    print(f"Daily files combined: {len(all_daily_files)}")
+    print(f"Unique snapshot dates: {unique_dates}")
+    print(f"Total contracts: {len(combined_df):,}")
+    print(f"Duplicates removed: {duplicates_removed:,}")
+    print(f"Date range: {summary['start_date']} to {summary['end_date']}")
+    print(f"Unique expirations: {summary['unique_expirations']}")
+    print(f"Unique strikes: {summary['unique_strikes']}")
+    print(f"Calls: {summary['calls_count']:,} | Puts: {summary['puts_count']:,}")
+    print(f"\nFiles created/updated:")
+    print(f"  {combined_file}")
+    print(f"  {summary_file}")
+    print(f"{'='*60}\n")
+
+    return combined_df
 
 
 def analyze_options_data(df, symbol):
