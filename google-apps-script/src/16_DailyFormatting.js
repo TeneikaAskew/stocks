@@ -367,6 +367,142 @@ function EW_formatDayCheckColumns(sheet, hdrMap, strategyName) {
     }
   }
 
+  // Format PnL_High column if it exists
+  if (hdrMap.pnlHighCol) {
+    const range = sheet.getRange(2, hdrMap.pnlHighCol, lastRow - 1, 1);
+    const values = range.getValues();
+    const backgrounds = [];
+    const fontColors = [];
+
+    values.forEach(row => {
+      const value = row[0];
+      if (!value || value === '') {
+        backgrounds.push([null]);
+        fontColors.push([null]);
+      } else {
+        const numValue = parseFloat(value);
+        if (numValue > 0) {
+          backgrounds.push([GREEN]);
+          fontColors.push([TEXT_DARK_GREEN]);
+        } else if (numValue < 0) {
+          backgrounds.push([RED]);
+          fontColors.push([TEXT_DARK_RED]);
+        } else {
+          backgrounds.push([null]);
+          fontColors.push([null]);
+        }
+      }
+    });
+
+    // Apply formatting
+    if (backgrounds.length > 0) {
+      range.setBackgrounds(backgrounds);
+      range.setFontColors(fontColors);
+    }
+  }
+
+  // Format PnL_High_Pct column if it exists
+  if (hdrMap.pnlHighPctCol) {
+    const range = sheet.getRange(2, hdrMap.pnlHighPctCol, lastRow - 1, 1);
+    const values = range.getValues();
+    const backgrounds = [];
+    const fontColors = [];
+
+    values.forEach(row => {
+      const value = row[0];
+      if (!value || value === '') {
+        backgrounds.push([null]);
+        fontColors.push([null]);
+      } else {
+        const numValue = parseFloat(value);
+        if (numValue > 0) {
+          backgrounds.push([GREEN]);
+          fontColors.push([TEXT_DARK_GREEN]);
+        } else if (numValue < 0) {
+          backgrounds.push([RED]);
+          fontColors.push([TEXT_DARK_RED]);
+        } else {
+          backgrounds.push([null]);
+          fontColors.push([null]);
+        }
+      }
+    });
+
+    // Apply formatting
+    if (backgrounds.length > 0) {
+      range.setBackgrounds(backgrounds);
+      range.setFontColors(fontColors);
+    }
+  }
+
+  // Format PnL_Low column if it exists
+  if (hdrMap.pnlLowCol) {
+    const range = sheet.getRange(2, hdrMap.pnlLowCol, lastRow - 1, 1);
+    const values = range.getValues();
+    const backgrounds = [];
+    const fontColors = [];
+
+    values.forEach(row => {
+      const value = row[0];
+      if (!value || value === '') {
+        backgrounds.push([null]);
+        fontColors.push([null]);
+      } else {
+        const numValue = parseFloat(value);
+        if (numValue > 0) {
+          backgrounds.push([GREEN]);
+          fontColors.push([TEXT_DARK_GREEN]);
+        } else if (numValue < 0) {
+          backgrounds.push([RED]);
+          fontColors.push([TEXT_DARK_RED]);
+        } else {
+          backgrounds.push([null]);
+          fontColors.push([null]);
+        }
+      }
+    });
+
+    // Apply formatting
+    if (backgrounds.length > 0) {
+      range.setBackgrounds(backgrounds);
+      range.setFontColors(fontColors);
+    }
+  }
+
+  // Format PnL_Low_Pct column if it exists
+  if (hdrMap.pnlLowPctCol) {
+    const range = sheet.getRange(2, hdrMap.pnlLowPctCol, lastRow - 1, 1);
+    const values = range.getValues();
+    const backgrounds = [];
+    const fontColors = [];
+
+    values.forEach(row => {
+      const value = row[0];
+      if (!value || value === '') {
+        backgrounds.push([null]);
+        fontColors.push([null]);
+      } else {
+        const numValue = parseFloat(value);
+        if (numValue > 0) {
+          backgrounds.push([GREEN]);
+          fontColors.push([TEXT_DARK_GREEN]);
+        } else if (numValue < 0) {
+          backgrounds.push([RED]);
+          fontColors.push([TEXT_DARK_RED]);
+        } else {
+          backgrounds.push([null]);
+          fontColors.push([null]);
+        }
+      }
+    });
+
+    // Apply formatting
+    if (backgrounds.length > 0) {
+      range.setBackgrounds(backgrounds);
+      range.setFontColors(fontColors);
+    }
+  }
+
   // Format Exp_Result column if it exists
   if (hdrMap.expResultCol) {
     const range = sheet.getRange(2, hdrMap.expResultCol, lastRow - 1, 1);
