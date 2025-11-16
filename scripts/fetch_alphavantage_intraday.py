@@ -22,9 +22,14 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Alpha Vantage API configuration
-ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY', 'VNMXDQ9LBOJ5X2I6')
-#7E8X3MQLLSW5HPWF
+# Alpha Vantage API configuration - Multiple keys for failover
+ALPHA_VANTAGE_API_KEYS = [
+    os.getenv('ALPHA_VANTAGE_API_KEY', 'VNMXDQ9LBOJ5X2I6'),  # Primary key
+    '7E8X3MQLLSW5HPWF',   # Backup key 1
+    'VFIN9SZWRAI1SCGW'    # Backup key 2
+]
+current_key_index = 0
+ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEYS[current_key_index]
 BASE_URL = 'https://www.alphavantage.co/query'
 
 # Rate limiting: Alpha Vantage free tier allows 5 API calls/minute, 500/day
@@ -60,6 +65,19 @@ def get_trading_months(start_date, end_date):
             current = current.replace(month=current.month + 1)
 
     return months
+
+
+def switch_api_key():
+    """Switch to the next available API key."""
+    global current_key_index, ALPHA_VANTAGE_API_KEY
+
+    current_key_index = (current_key_index + 1) % len(ALPHA_VANTAGE_API_KEYS)
+    ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEYS[current_key_index]
+
+    print(f"\n  Switching to backup API key #{current_key_index + 1}")
+    print(f"  New key: {ALPHA_VANTAGE_API_KEY[:4]}...{ALPHA_VANTAGE_API_KEY[-4:]}")
+
+    return ALPHA_VANTAGE_API_KEY
 
 
 def fetch_intraday_month(symbol, month, interval='1min', outputsize='full', adjusted=True):
@@ -111,7 +129,42 @@ def fetch_intraday_month(symbol, month, interval='1min', outputsize='full', adju
         if 'Information' in data:
             print(f"  API Information: {data['Information']}")
             print(f"  Full Response: {json.dumps(data, indent=2)}")
-            return None
+
+            # Try switching to backup key if available
+            if current_key_index < len(ALPHA_VANTAGE_API_KEYS) - 1:
+                new_key = switch_api_key()
+                # Retry with new key
+                params['apikey'] = new_key
+                print(f"  Retrying with backup key...")
+                time.sleep(2)  # Brief pause before retry
+
+                try:
+                    response = requests.get(BASE_URL, params=params, timeout=30)
+                    response.raise_for_status()
+                    data = response.json()
+
+                    # Check if the retry worked
+                    if 'Information' not in data and 'Error Message' not in data:
+                        time_series_key = f'Time Series ({interval})'
+                        if time_series_key in data:
+                            print(f"  ✓ Successfully switched to backup key!")
+                            # Continue with processing below
+                        else:
+                            return None
+                    else:
+                        return None
+                except Exception as e:
+                    print(f"  Retry with backup key failed: {e}")
+                    return None
+            else:
+                print(f"\n{'='*60}")
+                print(f"❌ ALL API KEYS EXHAUSTED")
+                print(f"{'='*60}")
+                print(f"All {len(ALPHA_VANTAGE_API_KEYS)} API keys have hit their daily rate limits.")
+                print(f"Please wait 24 hours before trying again.")
+                print(f"Script will now exit.")
+                print(f"{'='*60}\n")
+                sys.exit(1)  # Exit the entire script
 
         # Extract time series data
         time_series_key = f'Time Series ({interval})'
@@ -156,7 +209,7 @@ def fetch_intraday_month(symbol, month, interval='1min', outputsize='full', adju
         return None
 
 
-def fetch_historical_intraday(symbol, years=5, interval='1min'):
+def fetch_historical_intraday(symbol, years=5, interval='1min', start_date=None, end_date=None):
     """
     Fetch historical intraday data for specified number of years.
 
@@ -164,13 +217,21 @@ def fetch_historical_intraday(symbol, years=5, interval='1min'):
         symbol: Stock ticker symbol
         years: Number of years of history to fetch (default: 5)
         interval: Time interval for bars (default: 1min)
+        start_date: Custom start date (string YYYY-MM-DD or datetime)
+        end_date: Custom end date (string YYYY-MM-DD or datetime)
 
     Returns:
         Combined DataFrame with all data
     """
     # Calculate date range
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=365 * years)
+    if start_date and end_date:
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d')
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d')
+    else:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365 * years)
 
     # Get list of months to fetch
     months = get_trading_months(start_date, end_date)
@@ -272,6 +333,70 @@ def fetch_historical_intraday(symbol, years=5, interval='1min'):
         return None
 
 
+def show_parquet_data(symbol, interval='1min', rows=100):
+    """
+    Load and display parquet data for a given symbol.
+
+    Args:
+        symbol: Stock ticker symbol
+        interval: Time interval (default: 1min)
+        rows: Number of rows to display (default: 100)
+    """
+    data_dir = Path('data') / symbol.lower() / 'intraday'
+    combined_file = data_dir / f"{symbol.lower()}_av_{interval}_combined.parquet"
+    summary_file = data_dir / f"{symbol.lower()}_av_{interval}_summary.json"
+
+    if not combined_file.exists():
+        print(f"\nERROR: Combined file not found: {combined_file}")
+        print(f"Please fetch data first using:")
+        print(f"  python scripts/fetch_alphavantage_intraday.py --symbol {symbol} --interval {interval}")
+        sys.exit(1)
+
+    print(f"\n{'='*60}")
+    print(f"Loading: {combined_file}")
+    print(f"{'='*60}\n")
+
+    # Load data
+    df = pd.read_parquet(combined_file)
+
+    # Show summary if available
+    if summary_file.exists():
+        with open(summary_file, 'r') as f:
+            summary = json.load(f)
+        print("Summary:")
+        print(f"  Symbol: {summary.get('symbol', 'N/A')}")
+        print(f"  Interval: {summary.get('interval', 'N/A')}")
+        print(f"  Date Range: {summary.get('start_date', 'N/A')} to {summary.get('end_date', 'N/A')}")
+        print(f"  Total Bars: {summary.get('total_bars', 'N/A'):,}")
+        print(f"  Latest Close: ${summary.get('latest_close', 0):.2f}")
+        print(f"  Last Update: {summary.get('last_update', 'N/A')}")
+        print()
+
+    # Show dataframe info
+    print(f"DataFrame Info:")
+    print(f"  Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+    print(f"  Columns: {', '.join(df.columns.tolist())}")
+    print(f"  Index: {df.index.name} ({df.index.dtype})")
+    print(f"  Memory: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
+    print()
+
+    # Show first N rows
+    display_rows = min(rows, len(df))
+    print(f"First {display_rows} rows:")
+    print(f"{'-'*60}")
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
+    pd.set_option('display.max_colwidth', 20)
+    print(df.head(display_rows))
+    print(f"{'-'*60}\n")
+
+    # Show last 5 rows for context
+    print(f"Last 5 rows:")
+    print(f"{'-'*60}")
+    print(df.tail(5))
+    print(f"{'-'*60}\n")
+
+
 def main():
     """Main function to fetch Alpha Vantage intraday data."""
     parser = argparse.ArgumentParser(
@@ -287,6 +412,10 @@ Examples:
 
   # Fetch specific month
   python fetch_alphavantage_intraday.py --symbol IWM --month 2025-01
+
+  # Show existing data
+  python fetch_alphavantage_intraday.py --symbol IWM --show
+  python fetch_alphavantage_intraday.py --symbol IWM --show --rows 200
         """
     )
 
@@ -299,8 +428,21 @@ Examples:
                        help='Time interval for bars (default: 1min)')
     parser.add_argument('--month', type=str,
                        help='Fetch specific month only (YYYY-MM format)')
+    parser.add_argument('--start-date', type=str,
+                       help='Custom start date (YYYY-MM-DD format)')
+    parser.add_argument('--end-date', type=str,
+                       help='Custom end date (YYYY-MM-DD format)')
+    parser.add_argument('--show', action='store_true',
+                       help='Display existing parquet data instead of fetching')
+    parser.add_argument('--rows', type=int, default=100,
+                       help='Number of rows to display when using --show (default: 100)')
 
     args = parser.parse_args()
+
+    # If --show flag is set, display data and exit
+    if args.show:
+        show_parquet_data(args.symbol, args.interval, args.rows)
+        return
 
     # Validate API key
     if not ALPHA_VANTAGE_API_KEY or ALPHA_VANTAGE_API_KEY == 'your_alpha_vantage_api_key_here':
@@ -329,7 +471,13 @@ Examples:
                 print(f"\nSaved {len(df)} bars to {month_file}")
         else:
             # Fetch full history
-            df = fetch_historical_intraday(args.symbol, years=args.years, interval=args.interval)
+            df = fetch_historical_intraday(
+                args.symbol,
+                years=args.years,
+                interval=args.interval,
+                start_date=args.start_date,
+                end_date=args.end_date
+            )
 
             if df is None:
                 sys.exit(1)

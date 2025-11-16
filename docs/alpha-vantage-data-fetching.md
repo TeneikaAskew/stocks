@@ -135,6 +135,32 @@ data/iwm/intraday/iwm_av_1min_combined.parquet
 --years YEARS         Number of years to fetch (default: 5)
 --interval INTERVAL   Time interval: 1min, 5min, 15min, 30min, 60min (default: 1min)
 --month MONTH         Fetch specific month only (YYYY-MM format)
+--start-date DATE     Custom start date (YYYY-MM-DD format)
+--end-date DATE       Custom end date (YYYY-MM-DD format)
+--show                Display existing parquet data without fetching
+--rows ROWS           Number of rows to display with --show (default: 100)
+```
+
+#### Viewing Existing Data
+
+To view already-fetched data without making API calls:
+
+```bash
+# Show first 100 rows (default)
+python scripts/fetch_alphavantage_intraday.py --symbol IWM --show
+
+# Show first 200 rows
+python scripts/fetch_alphavantage_intraday.py --symbol IWM --show --rows 200
+
+# View 5-minute interval data
+python scripts/fetch_alphavantage_intraday.py --symbol SPY --interval 5min --show
+```
+
+The `--show` flag displays:
+- Summary metadata (symbol, date range, total bars, etc.)
+- DataFrame info (shape, columns, memory usage)
+- First N rows of data
+- Last 5 rows for context
 ```
 
 ### Time Estimates
@@ -249,6 +275,29 @@ data/iwm/options/iwm_av_options_combined.parquet
 --end-date END           End date (YYYY-MM-DD format)
 --date DATE              Fetch single date only (YYYY-MM-DD format)
 --analyze                Show analysis of fetched data
+--show                   Display existing parquet data without fetching
+--rows ROWS              Number of rows to display with --show (default: 100)
+```
+
+#### Viewing Existing Data
+
+To view already-fetched options data without making API calls:
+
+```bash
+# Show first 100 rows (default)
+python scripts/fetch_alphavantage_options.py --symbol IWM --show
+
+# Show first 200 rows
+python scripts/fetch_alphavantage_options.py --symbol IWM --show --rows 200
+```
+
+The `--show` flag displays:
+- Summary metadata (symbol, date range, total contracts, etc.)
+- DataFrame info (shape, columns, memory usage)
+- First N rows of data
+- Last 5 rows for context
+- Distribution by option type (calls vs puts)
+- List of unique snapshot dates
 ```
 
 ### Analysis Output
