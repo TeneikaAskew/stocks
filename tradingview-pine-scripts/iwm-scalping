@@ -1,0 +1,187 @@
+//@version=6
+indicator("Scalping IWM", overlay=false, max_labels_count=500)
+
+// ── Inputs
+emaFastLen = input.int(9,  "EMA Fast")
+emaMidLen  = input.int(20, "EMA Mid")
+emaSlowLen = input.int(50, "EMA Slow")
+rvolLen    = input.int(50, "RVOL lookback")
+rvolMin    = input.float(1.5, "RVOL min", step=0.1)
+atrMin     = input.float(0.15, "ATR min", step=0.01)
+sessionET  = input.session("0935-1430", "Time window (ET)")
+showTips   = input.bool(true,  "Show tooltips on TRUE bars")
+showNeutral= input.bool(true,  "Show neutral dots when false")
+
+// ── Base series (chart TF)
+ema9  = ta.ema(close, emaFastLen)
+ema20 = ta.ema(close, emaMidLen)
+ema50 = ta.ema(close, emaSlowLen)
+vwap  = ta.vwap
+rvol  = volume / ta.sma(volume, rvolLen)
+rsi   = ta.rsi(close, 14)
+atr   = ta.atr(14)
+stochRsi = ta.stoch(rsi, rsi, rsi, 14)
+
+// ── Multi-TF (precomputed every bar)
+sym    = syminfo.tickerid
+// 1-minute
+c1     = request.security(sym, "1", close)
+h1     = request.security(sym, "1", high)
+l1     = request.security(sym, "1", low)
+ema9_1 = request.security(sym, "1", ta.ema(close, emaFastLen))
+vwap_1 = request.security(sym, "1", ta.vwap)
+// 5-minute
+c5     = request.security(sym, "5", close)
+h5     = request.security(sym, "5", high)
+l5     = request.security(sym, "5", low)
+
+// ── Conditions
+// CALL Indicators (Bullish Signals)
+priceAboveEma9    = close > ema9
+priceAboveEma20   = close > ema20  
+priceAboveVwap    = close > vwap
+rsiAbove50        = rsi > 50
+rsiAbove60        = rsi > 60
+stochRsiAbove70   = stochRsi > 70
+ema9AboveEma20    = ema9 > ema20
+ema20AboveEma50   = ema20 > ema50
+atrHigh           = atr >= atrMin
+breakUp5          = c5 > h5[1]
+rejectUp1         = (l1 < math.min(ema9_1, vwap_1)) and (c1 > math.max(ema9_1, vwap_1))
+
+// PUT Indicators (Bearish Signals)  
+priceBelowEma9    = close < ema9
+priceBelowEma20   = close < ema20
+priceBelowVwap    = close < vwap
+rsiBelow50        = rsi < 50
+rsiBelow40        = rsi < 40
+stochRsiBelow30   = stochRsi < 30
+ema9BelowEma20    = ema9 < ema20
+ema20BelowEma50   = ema20 < ema50
+breakDn5          = c5 < l5[1]
+rejectDn1         = (h1 > math.max(ema9_1, vwap_1)) and (c1 < math.min(ema9_1, vwap_1))
+
+// Universal Factors
+rvolNormal        = rvol >= 1.0
+rvolHigh          = rvol >= rvolMin
+inWindow          = not na(time(timeframe.period, sessionET, "America/New_York"))
+
+// ── Lane Y positions (top → bottom)
+rowTop = 25.0
+
+// CALL Indicators (📈 Bullish - Green)
+yPriceAboveEma9   = rowTop - 1
+yPriceAboveEma20  = rowTop - 2
+yPriceAboveVwap   = rowTop - 3
+yRsiAbove50       = rowTop - 4
+yRsiAbove60       = rowTop - 5
+yStochRsiAbove70  = rowTop - 6
+yEma9AboveEma20   = rowTop - 7
+yEma20AboveEma50  = rowTop - 8
+yAtrHigh          = rowTop - 9
+yBreakUp5         = rowTop - 10
+yRejectUp1        = rowTop - 11
+
+// PUT Indicators (📉 Bearish - Red)
+yPriceBelowEma9   = rowTop - 13
+yPriceBelowEma20  = rowTop - 14
+yPriceBelowVwap   = rowTop - 15
+yRsiBelow50       = rowTop - 16
+yRsiBelow40       = rowTop - 17
+yStochRsiBelow30  = rowTop - 18
+yEma9BelowEma20   = rowTop - 19
+yEma20BelowEma50  = rowTop - 20
+yBreakDn5         = rowTop - 21
+yRejectDn1        = rowTop - 22
+
+// Universal Factors (⚡ Neutral)
+yRvolNormal       = rowTop - 24
+yRvolHigh         = rowTop - 25
+yTimeWin          = rowTop - 26
+
+// Optional framing line for stable scaling
+hline(0), hline(rowTop + 1)
+
+// ── Helpers
+colNeu = color.new(color.gray, 70)
+fRowVal(on, y) => (on or showNeutral) ? y : na
+fRowCol(on, c) => on ? c : colNeu
+
+// ── DOT ROWS (visible on chart, excluded from status line)
+
+// 📈 CALL Indicators (Bullish Signals - Green)
+plot(fRowVal(priceAboveEma9,   yPriceAboveEma9),   style=plot.style_circles, linewidth=4, color=fRowCol(priceAboveEma9,   color.green), title="Price > EMA9", display=display.pane)
+plot(fRowVal(priceAboveEma20,  yPriceAboveEma20),  style=plot.style_circles, linewidth=4, color=fRowCol(priceAboveEma20,  color.green), title="Price > EMA20", display=display.pane)
+plot(fRowVal(priceAboveVwap,   yPriceAboveVwap),   style=plot.style_circles, linewidth=4, color=fRowCol(priceAboveVwap,   color.green), title="Price > VWAP", display=display.pane)
+plot(fRowVal(rsiAbove50,       yRsiAbove50),       style=plot.style_circles, linewidth=4, color=fRowCol(rsiAbove50,       color.green), title="RSI > 50", display=display.pane)
+plot(fRowVal(rsiAbove60,       yRsiAbove60),       style=plot.style_circles, linewidth=4, color=fRowCol(rsiAbove60,       color.green), title="RSI > 60", display=display.pane)
+plot(fRowVal(stochRsiAbove70,  yStochRsiAbove70),  style=plot.style_circles, linewidth=4, color=fRowCol(stochRsiAbove70,  color.green), title="StochRSI > 70", display=display.pane)
+plot(fRowVal(ema9AboveEma20,   yEma9AboveEma20),   style=plot.style_circles, linewidth=4, color=fRowCol(ema9AboveEma20,   color.green), title="EMA9 > EMA20", display=display.pane)
+plot(fRowVal(ema20AboveEma50,  yEma20AboveEma50),  style=plot.style_circles, linewidth=4, color=fRowCol(ema20AboveEma50,  color.green), title="EMA20 > EMA50", display=display.pane)
+plot(fRowVal(atrHigh,          yAtrHigh),          style=plot.style_circles, linewidth=4, color=fRowCol(atrHigh,          color.green), title="ATR ≥ 0.15", display=display.pane)
+plot(fRowVal(breakUp5,         yBreakUp5),         style=plot.style_circles, linewidth=4, color=fRowCol(breakUp5,         color.green), title="5m Breakout Up", display=display.pane)
+plot(fRowVal(rejectUp1,        yRejectUp1),        style=plot.style_circles, linewidth=4, color=fRowCol(rejectUp1,        color.green), title="1m Rejection Up", display=display.pane)
+
+// 📉 PUT Indicators (Bearish Signals - Red)
+plot(fRowVal(priceBelowEma9,   yPriceBelowEma9),   style=plot.style_circles, linewidth=4, color=fRowCol(priceBelowEma9,   color.red), title="Price < EMA9", display=display.pane)
+plot(fRowVal(priceBelowEma20,  yPriceBelowEma20),  style=plot.style_circles, linewidth=4, color=fRowCol(priceBelowEma20,  color.red), title="Price < EMA20", display=display.pane)
+plot(fRowVal(priceBelowVwap,   yPriceBelowVwap),   style=plot.style_circles, linewidth=4, color=fRowCol(priceBelowVwap,   color.red), title="Price < VWAP", display=display.pane)
+plot(fRowVal(rsiBelow50,       yRsiBelow50),       style=plot.style_circles, linewidth=4, color=fRowCol(rsiBelow50,       color.red), title="RSI < 50", display=display.pane)
+plot(fRowVal(rsiBelow40,       yRsiBelow40),       style=plot.style_circles, linewidth=4, color=fRowCol(rsiBelow40,       color.red), title="RSI < 40", display=display.pane)
+plot(fRowVal(stochRsiBelow30,  yStochRsiBelow30),  style=plot.style_circles, linewidth=4, color=fRowCol(stochRsiBelow30,  color.red), title="StochRSI < 30", display=display.pane)
+plot(fRowVal(ema9BelowEma20,   yEma9BelowEma20),   style=plot.style_circles, linewidth=4, color=fRowCol(ema9BelowEma20,   color.red), title="EMA9 < EMA20", display=display.pane)
+plot(fRowVal(ema20BelowEma50,  yEma20BelowEma50),  style=plot.style_circles, linewidth=4, color=fRowCol(ema20BelowEma50,  color.red), title="EMA20 < EMA50", display=display.pane)
+plot(fRowVal(breakDn5,         yBreakDn5),         style=plot.style_circles, linewidth=4, color=fRowCol(breakDn5,         color.red), title="5m Breakout Down", display=display.pane)
+plot(fRowVal(rejectDn1,        yRejectDn1),        style=plot.style_circles, linewidth=4, color=fRowCol(rejectDn1,        color.red), title="1m Rejection Down", display=display.pane)
+
+// ⚡ Universal Factors (Neutral - Yellow/Teal)
+plot(fRowVal(rvolNormal,       yRvolNormal),       style=plot.style_circles, linewidth=4, color=fRowCol(rvolNormal,       color.yellow), title="RVOL ≥ 1.0", display=display.pane)
+plot(fRowVal(rvolHigh,         yRvolHigh),         style=plot.style_circles, linewidth=4, color=fRowCol(rvolHigh,         color.orange), title="RVOL ≥ 1.5", display=display.pane)
+plot(fRowVal(inWindow,         yTimeWin),          style=plot.style_circles, linewidth=4, color=fRowCol(inWindow,         color.teal), title="Time Filter OK", display=display.pane)
+
+// ── Tooltips (only on TRUE bars, with C/P prefix)
+fTip(y, on, prefix, txt) =>
+    if showTips and on
+        label.new(bar_index, y, "", style=label.style_circle, size=size.tiny, textcolor=color.new(color.white, 100), color=color.new(color.white,100), tooltip=(prefix + ": " + txt))
+
+// ── Tooltips (with actual values)
+
+// 📈 CALL Indicators  
+fTip(yPriceAboveEma9,   priceAboveEma9,   "C", "Price > EMA9\n" + str.tostring(close, "#.##") + " > " + str.tostring(ema9, "#.##"))
+fTip(yPriceAboveEma20,  priceAboveEma20,  "C", "Price > EMA20\n" + str.tostring(close, "#.##") + " > " + str.tostring(ema20, "#.##"))
+fTip(yPriceAboveVwap,   priceAboveVwap,   "C", "Price > VWAP\n" + str.tostring(close, "#.##") + " > " + str.tostring(vwap, "#.##"))
+fTip(yRsiAbove50,       rsiAbove50,       "C", "RSI > 50 (60.6% success rate)\nRSI: " + str.tostring(rsi, "#.##"))
+fTip(yRsiAbove60,       rsiAbove60,       "C", "RSI > 60 (24.9% success rate - stronger)\nRSI: " + str.tostring(rsi, "#.##"))
+fTip(yStochRsiAbove70,  stochRsiAbove70,  "C", "StochRSI > 70 (35.9% success rate)\nStochRSI: " + str.tostring(stochRsi, "#.##"))
+fTip(yEma9AboveEma20,   ema9AboveEma20,   "C", "EMA9 > EMA20 (49.5% success rate)\n" + str.tostring(ema9, "#.##") + " > " + str.tostring(ema20, "#.##"))
+fTip(yEma20AboveEma50,  ema20AboveEma50,  "C", "EMA20 > EMA50 (45.3% success rate)\n" + str.tostring(ema20, "#.##") + " > " + str.tostring(ema50, "#.##"))
+fTip(yAtrHigh,          atrHigh,          "C", "ATR ≥ 0.15 (61.4% of call trades)\nATR: " + str.tostring(atr, "#.####"))
+fTip(yBreakUp5,         breakUp5,         "C", "5-min close > previous 5-min high\n" + str.tostring(c5, "#.##") + " > " + str.tostring(h5[1], "#.##"))
+fTip(yRejectUp1,        rejectUp1,        "C", "1-min pullback to EMA9/VWAP; upward rejection\nLow: " + str.tostring(l1, "#.##") + " Close: " + str.tostring(c1, "#.##"))
+
+// 📉 PUT Indicators
+fTip(yPriceBelowEma9,   priceBelowEma9,   "P", "Price < EMA9\n" + str.tostring(close, "#.##") + " < " + str.tostring(ema9, "#.##"))
+fTip(yPriceBelowEma20,  priceBelowEma20,  "P", "Price < EMA20\n" + str.tostring(close, "#.##") + " < " + str.tostring(ema20, "#.##"))
+fTip(yPriceBelowVwap,   priceBelowVwap,   "P", "Price < VWAP\n" + str.tostring(close, "#.##") + " < " + str.tostring(vwap, "#.##"))
+fTip(yRsiBelow50,       rsiBelow50,       "P", "RSI < 50 (62.6% success rate)\nRSI: " + str.tostring(rsi, "#.##"))
+fTip(yRsiBelow40,       rsiBelow40,       "P", "RSI < 40 (25.9% success rate - stronger)\nRSI: " + str.tostring(rsi, "#.##"))
+fTip(yStochRsiBelow30,  stochRsiBelow30,  "P", "StochRSI < 30 (34.8% success rate)\nStochRSI: " + str.tostring(stochRsi, "#.##"))
+fTip(yEma9BelowEma20,   ema9BelowEma20,   "P", "EMA9 < EMA20 (51.7% success rate)\n" + str.tostring(ema9, "#.##") + " < " + str.tostring(ema20, "#.##"))
+fTip(yEma20BelowEma50,  ema20BelowEma50,  "P", "EMA20 < EMA50 (49.1% success rate)\n" + str.tostring(ema20, "#.##") + " < " + str.tostring(ema50, "#.##"))
+fTip(yBreakDn5,         breakDn5,         "P", "5-min close < previous 5-min low\n" + str.tostring(c5, "#.##") + " < " + str.tostring(l5[1], "#.##"))
+fTip(yRejectDn1,        rejectDn1,        "P", "1-min pop to EMA9/VWAP; downward rejection\nHigh: " + str.tostring(h1, "#.##") + " Close: " + str.tostring(c1, "#.##"))
+
+// ⚡ Universal Factors
+fTip(yRvolNormal,       rvolNormal,       "U", "RVOL ≥ 1.0 (~38% of both calls and puts)\nRVOL: " + str.tostring(rvol, "#.##"))
+fTip(yRvolHigh,         rvolHigh,         "U", "RVOL ≥ 1.5 (~17% of trades - strong momentum)\nRVOL: " + str.tostring(rvol, "#.##"))
+fTip(yTimeWin,          inWindow,         "U", "Within trading window: " + sessionET + " ET")
+
+// ── Live readouts removed from status line (uncomment to enable)
+plot(ema9,     title="EMA9",     display=display.status_line)
+plot(ema20,    title="EMA20",    display=display.status_line)
+plot(ema50,    title="EMA50",    display=display.status_line)
+plot(vwap,     title="VWAP",     display=display.status_line)
+plot(rvol,     title="RVOL",     display=display.status_line)
+plot(rsi,      title="RSI",      display=display.status_line)
+plot(atr,      title="ATR",      display=display.status_line)
+plot(stochRsi, title="StochRSI", display=display.status_line)
