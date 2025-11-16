@@ -101,7 +101,7 @@ class DataLoader {
 
             const url = CONFIG.USE_LOCAL_API
                 ? `${this.getApiUrl()}/data/${ticker}/${month}?date=${date}&timeframe=${timeframe}`
-                : `${this.getApiUrl()}/${ticker.toLowerCase()}/${date}_${timeframe}min.json`;
+                : `${this.getApiUrl()}/${ticker.toLowerCase()}/${date}_1min.json`;  // Always load 1min data
 
             console.log('[DataLoader] Fetching data from URL:', url);
 
@@ -115,8 +115,15 @@ class DataLoader {
             console.log('[DataLoader] Received data points:', data.length);
 
             // Transform data for TradingView Lightweight Charts
-            const chartData = this.transformData(data);
+            let chartData = this.transformData(data);
             console.log('[DataLoader] Transformed candles:', chartData.candlestick.length);
+
+            // Aggregate to requested timeframe if needed (GitHub Pages mode)
+            if (!CONFIG.USE_LOCAL_API && timeframe > 1) {
+                console.log(`[DataLoader] Aggregating to ${timeframe}min timeframe`);
+                chartData = this.aggregateTimeframe(chartData, timeframe);
+                console.log('[DataLoader] Aggregated candles:', chartData.candlestick.length);
+            }
 
             // Cache the data
             this.cache.set(cacheKey, chartData);

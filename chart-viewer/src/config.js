@@ -102,11 +102,21 @@ const Utils = {
     },
 
     /**
-     * Format datetime to readable string
+     * Format datetime to readable string in Eastern Time
      */
     formatDateTime(timestamp) {
         const date = new Date(timestamp * 1000);
-        return date.toLocaleString();
+        // Always display in Eastern Time (America/New_York)
+        return date.toLocaleString('en-US', {
+            timeZone: 'America/New_York',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        });
     },
 
     /**
