@@ -1,0 +1,768 @@
+//@version=6
+indicator("IWM BUY & SELL VOLUME PRESSURE", shorttitle="BSVP", precision=0, max_labels_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+fastMAPeriod = input.int(3, "Base for FastMA Periods:", minval=1)
+longPeriod = input.int(27, "Buy to Sell Conv/Div Lookback:", minval=1)
+vmacd = input.bool(true, "Buy to Sell Convergence/Div OSC:")
+vinv = input.bool(false, "Buy to Sell Conv/Div as cumulative:")
+norm = input.bool(false, "Normalised (Filtered) Version:", tooltip="Raw Mode (OFF): Uses direct volume data\nFiltered Mode (ON): Normalizes volume against averages to reduce noise from HFT and day-to-day variations")
+barTransparency = input.int(80, "Bar Transparency (0=Solid, 100=Invisible)", minval=0, maxval=100, group="Visual")
+showInfoTable = input.bool(true, "Show Info Table", group="Visual")
+tablePosition = input.string("Top Left", "Table Position", options=["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group="Visual")
+showSignalIcon = input.bool(true, "Show Signal Icon (💡)", group="Visual")
+tooltipDetail = input.string("Detailed", "Signal Tooltip Detail", options=["Simple", "Detailed", "Expert"], group="Visual")
+showSignalLabels = input.bool(true, "Show Buy/Sell Signal Labels", group="Visual")
+
+
+// Reversal & Trend Strength Settings
+showDivergence = input.bool(true, "Show Divergence Signals", group="Advanced Signals")
+showTrendStrength = input.bool(true, "Show Trend Strength Background", group="Advanced Signals")
+showAcceleration = input.bool(true, "Show Momentum Acceleration Arrows", group="Advanced Signals")
+showEntryQuality = input.bool(true, "Show Entry Quality Score", group="Advanced Signals")
+divergenceLookback = input.int(14, "Divergence Lookback Period", minval=5, maxval=50, group="Advanced Signals")
+
+
+// RTH Settings
+sessionET = input.session("0930-1600", "Regular Trading Hours (ET)", group="Visual")
+alwaysOn = input.bool(false, "Always show labels (override RTH)", group="Visual")
+
+// Color Settings
+bullColor = input.color(color.green, "Bullish/Buy Color", group="Colors")
+bearColor = input.color(color.red, "Bearish/Sell Color", group="Colors")
+neutralColor = input.color(color.gray, "Neutral/Wait Color", group="Colors")
+vpo1Color = input.color(color.green, "VPO1 Line Color", group="Colors")
+vpo2Color = input.color(color.orange, "VPO2 Signal Line Color", group="Colors")
+histogramBullColor = input.color(color.green, "Histogram Bullish Color", group="Colors")
+histogramBearColor = input.color(color.red, "Histogram Bearish Color", group="Colors")
+histogramTransparency = input.int(50, "Histogram Transparency (0=Solid, 100=Invisible)", minval=0, maxval=100, group="Colors")  // ← ADD THIS LINE
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RTH CHECK
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Compute RTH flag
+inRTH = not na(time(timeframe.period, sessionET, "America/New_York"))
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DATA QUALITY CHECK
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Detect low quality bars (extended hours or low volume)
+isExtendedHours = not inRTH
+isLowVolume = volume < ta.sma(volume, 20) * 0.3
+isNarrowRange = (high - low) < ta.atr(14) * 0.2
+lowQualityBar = isExtendedHours or (isLowVolume and isNarrowRange)
+
+// Reduce confidence in signals during low quality periods
+signalQualityMultiplier = lowQualityBar ? 0.5 : 1.0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CALCULATIONS (Original Algorithm)
+// ══════════════════════════════════════════════════════════════════════════════
+
+vol = volume > 0 ? volume : 1
+
+// Bull And Bear "Power-Balance" by Vadim Gimelfarb Algorithm's
+BP = close < open ? (close[1] < open ? math.max(high - close[1], close - low) : math.max(high - open, close - low)) : close > open ? (close[1] > open ? high - low : math.max(open - close[1], high - low)) : high - close > close - low ? (close[1] < open ? math.max(high - close[1], close - low) : high - open) : high - close < close - low ? (close[1] > open ? high - low : math.max(open - close[1], high - low)) : (close[1] > open ? math.max(high - open, close - low) : close[1] < open ? math.max(open - close[1], high - low) : high - low)
+
+SP = close < open ? (close[1] > open ? math.max(close[1] - open, high - low) : high - low) : close > open ? (close[1] > open ? math.max(close[1] - low, high - close) : math.max(open - low, high - close)) : high - close > close - low ? (close[1] > open ? math.max(close[1] - open, high - low) : high - low) : high - close < close - low ? (close[1] > open ? math.max(close[1] - low, high - close) : open - low) : (close[1] > open ? math.max(close[1] - open, high - low) : close[1] < open ? math.max(open - low, high - close) : high - low)
+
+TP = BP + SP
+
+// RAW Pressure Volume Calculations
+BPV = (BP/TP) * vol
+SPV = (SP/TP) * vol
+TPV = BPV + SPV
+BPVavg = ta.ema(ta.ema(BPV, fastMAPeriod), fastMAPeriod)
+SPVavg = ta.ema(ta.ema(SPV, fastMAPeriod), fastMAPeriod)
+TPVavg = ta.ema(ta.wma(TPV, fastMAPeriod), fastMAPeriod)
+
+// Karthik Marar's Pressure Volume Normalized Version
+VN = vol / ta.ema(vol, longPeriod)
+BPN = ((BP / ta.ema(BP, longPeriod)) * VN) * 100
+SPN = ((SP / ta.ema(SP, longPeriod)) * VN) * 100
+TPN = BPN + SPN
+nbf = ta.ema(ta.wma(BPN, fastMAPeriod), fastMAPeriod)
+nsf = ta.ema(ta.wma(SPN, fastMAPeriod), fastMAPeriod)
+tpf = ta.ema(ta.wma(TPN, fastMAPeriod), fastMAPeriod)
+
+// Conditional Selectors for RAW/Norm
+BPc1 = BPV > SPV ? BPV : -math.abs(BPV)
+BPc2 = BPN > SPN ? BPN : -math.abs(BPN)
+SPc1 = SPV > BPV ? SPV : -math.abs(SPV)
+SPc2 = SPN > BPN ? SPN : -math.abs(SPN)
+BPcon = norm ? BPc2 : BPc1
+SPcon = norm ? SPc2 : SPc1
+BPAcon = norm ? nbf : BPVavg
+SPAcon = norm ? nsf : SPVavg
+TPAcon = norm ? tpf : TPVavg
+
+// Volume Pressure Convergence Divergence
+vpo1 = vinv ? ((math.sum(BPVavg, longPeriod) - math.sum(SPVavg, longPeriod)) / math.sum(TPVavg, longPeriod)) * 100 : ((BPVavg - SPVavg) / TPVavg) * 100
+vpo2 = vinv ? ((math.sum(nbf, longPeriod) - math.sum(nsf, longPeriod)) / math.sum(tpf, longPeriod)) * 100 : ((nbf - nsf) / tpf) * 100
+vph = nz((vpo1 - vpo2), 0)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DIVERGENCE DETECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Price peaks and troughs
+priceHigh = ta.highest(high, divergenceLookback)
+priceLow = ta.lowest(low, divergenceLookback)
+priceAtHigh = high == priceHigh
+priceAtLow = low == priceLow
+
+// Volume pressure peaks and troughs
+bullPressureHigh = ta.highest(BPAcon, divergenceLookback)
+sellPressureHigh = ta.highest(SPAcon, divergenceLookback)
+
+// Bearish Divergence: Price making higher high but bull pressure declining
+bearishDiv = priceAtHigh and BPAcon < BPAcon[1] and BPAcon < BPAcon[2] and vpo1 > 0
+bearishDivConfirmed = bearishDiv and vph < vph[1]
+
+// Bullish Divergence: Price making lower low but sell pressure declining  
+bullishDiv = priceAtLow and SPAcon < SPAcon[1] and SPAcon < SPAcon[2] and vpo1 < 0
+bullishDivConfirmed = bullishDiv and vph > vph[1]
+
+// Hidden Divergence (continuation patterns)
+hiddenBullDiv = priceAtHigh and vpo1 > vpo1[divergenceLookback/2] and vpo1 > 0
+hiddenBearDiv = priceAtLow and vpo1 < vpo1[divergenceLookback/2] and vpo1 < 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MOMENTUM ACCELERATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Rate of change in volume pressure
+bullAccel = ta.roc(BPAcon, 3)
+sellAccel = ta.roc(SPAcon, 3)
+vpo1Accel = ta.roc(vpo1, 3)
+
+// Exhaustion signals (high pressure but decelerating)
+bullExhaustion = BPAcon > ta.sma(BPAcon, 20) and bullAccel < -15 and vpo1 > 0
+sellExhaustion = SPAcon > ta.sma(SPAcon, 20) and sellAccel < -15 and vpo1 < 0
+
+// Early acceleration signals (building momentum)
+bullAccelerating = BPAcon > SPAcon and bullAccel > 20 and vpo1Accel > 0
+sellAccelerating = SPAcon > BPAcon and sellAccel > 20 and vpo1Accel < 0
+
+// Momentum shift detection
+momentumShift = (vph > 0 and vph[1] <= 0) or (vph < 0 and vph[1] >= 0)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TREND STRENGTH SCORE (0-100)
+// ══════════════════════════════════════════════════════════════════════════════
+
+var float trendStrength = 0.0
+
+// Factor 1: Volume pressure dominance (40 points)
+vpDominance = math.abs((BPAcon - SPAcon) / (BPAcon + SPAcon)) * 100
+vpScore = vpDominance > 70 ? 40 : vpDominance > 50 ? 30 : vpDominance > 30 ? 20 : 10
+
+// Factor 2: Convergence strength (30 points)
+vpo1Strength = math.abs(vpo1)
+convScore = vpo1Strength > 30 ? 30 : vpo1Strength > 15 ? 20 : vpo1Strength > 5 ? 10 : 5
+
+// Factor 3: Histogram momentum (30 points)
+vphStrength = math.abs(vph)
+histScore = vphStrength > 10 ? 30 : vphStrength > 5 ? 20 : vphStrength > 2 ? 10 : 5
+
+trendStrength := vpScore + convScore + histScore
+
+// Trend quality assessment
+trendQuality = trendStrength > 75 ? "STRONG" : trendStrength > 50 ? "MODERATE" : trendStrength > 30 ? "WEAK" : "CHOPPY"
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SIGNAL CALCULATIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Calculate variables for info table and tooltip
+ratio = math.round((BPV / (BPV + SPV)) * 100)
+trend = vpo1 > 0 ? "BULL" : "BEAR"
+momentum = vph > 0 ? "↑" : "↓"
+momentumValue = str.tostring(math.abs(vph), "#.#")
+
+// Generate signals
+// buySignal = BPcon > 0 and vpo1 > 0 and vpo1 > vpo2
+// sellSignal = SPcon > 0 and vpo1 < 0 and vpo1 < vpo2
+
+// // Enhanced buy/sell signals with quality check
+// buySignal = BPcon > 0 and vpo1 > 0 and vpo1 > vpo2 and not bearishDivConfirmed
+// sellSignal = SPcon > 0 and vpo1 < 0 and vpo1 < vpo2 and not bullishDivConfirmed
+
+// Enhanced extended hours check for buy/sell signals with quality check
+buySignal = (alwaysOn or inRTH) and BPcon > 0 and vpo1 > 0 and vpo1 > vpo2 and not bearishDivConfirmed and not lowQualityBar
+sellSignal = (alwaysOn or inRTH) and SPcon > 0 and vpo1 < 0 and vpo1 < vpo2 and not bullishDivConfirmed and not lowQualityBar
+
+
+// Alert signal calculations
+// strongBuy = BPcon > 0 and BPcon > BPcon[1] and vpo1 > 0 and vpo1 > vpo2 and vph > 0
+// strongSell = SPcon > 0 and SPcon > SPcon[1] and vpo1 < 0 and vpo1 < vpo2 and vph < 0
+
+// Update existing strongBuy/strongSell to incorporate new factors
+// strongBuy = BPcon > 0 and BPcon > BPcon[1] and vpo1 > 0 and vpo1 > vpo2 and vph > 0 and not bearishDiv
+// strongSell = SPcon > 0 and SPcon > SPcon[1] and vpo1 < 0 and vpo1 < vpo2 and vph < 0 and not bullishDiv
+
+// Enhanced extended hours check for strongBuy/strongSell to incorporate RTH filter
+strongBuy = (alwaysOn or inRTH) and BPcon > 0 and BPcon > BPcon[1] and vpo1 > 0 and vpo1 > vpo2 and vph > 0 and not bearishDiv
+strongSell = (alwaysOn or inRTH) and SPcon > 0 and SPcon > SPcon[1] and vpo1 < 0 and vpo1 < vpo2 and vph < 0 and not bullishDiv
+
+
+bullCross = ta.crossover(vpo1, vpo2) and vpo1 > 0
+bearCross = ta.crossunder(vpo1, vpo2) and vpo1 < 0
+
+tradeSignal = buySignal ? "BUY" : sellSignal ? "SELL" : "WAIT"
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ENTRY QUALITY SCORE (0-100)
+// ══════════════════════════════════════════════════════════════════════════════
+
+var float entryQuality = 0.0
+
+// Factor 1: Trend strength (30 points)
+trendScore = trendStrength > 75 ? 30 : trendStrength > 50 ? 20 : trendStrength > 30 ? 10 : 0
+
+// Factor 2: Momentum acceleration (25 points)
+accelScore = (bullAccelerating or sellAccelerating) ? 25 : momentumShift ? 15 : 0
+
+// Factor 3: No divergence warning (20 points)
+divScore = not bearishDiv and not bullishDiv ? 20 : 10
+
+// Factor 4: Volume pressure alignment (25 points)
+alignScore = (BPcon > 0 and vpo1 > 0 and vpo1 > vpo2) or (SPcon > 0 and vpo1 < 0 and vpo1 < vpo2) ? 25 : 10
+
+// entryQuality := trendScore + accelScore + divScore + alignScore
+
+entryQuality := (trendScore + accelScore + divScore + alignScore) * signalQualityMultiplier
+
+// Add quality warning
+dataQuality = lowQualityBar ? "LOW (Extended Hours)" : "HIGH (RTH)"
+
+
+// Entry timing assessment
+entryTiming = entryQuality > 70 ? "PRIME" : entryQuality > 50 ? "GOOD" : entryQuality > 30 ? "WAIT" : "AVOID"
+
+// Late entry warning
+lateEntry = (buySignal or sellSignal) and trendStrength > 70 and not (bullAccelerating or sellAccelerating)
+earlyEntry = (buySignal or sellSignal) and (bullAccelerating or sellAccelerating) and entryQuality > 70
+
+// Prime entry signals (high quality setups)
+// primeBuy = buySignal and earlyEntry and not bullExhaustion
+// primeSell = sellSignal and earlyEntry and not sellExhaustion
+
+// Enhanced extended hours check forPrime entry signals (high quality setups)
+primeBuy = buySignal and earlyEntry and not bullExhaustion and inRTH
+primeSell = sellSignal and earlyEntry and not sellExhaustion and inRTH
+
+
+// Add these after the Entry Quality Score section:
+plot(trendStrength, "Trend Strength", color=color.new(color.yellow, 0), display=display.status_line)
+plot(entryQuality, "Entry Quality", color=color.new(color.aqua, 0), display=display.status_line)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TOOLTIP GENERATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+signalTooltip = ""
+if tooltipDetail == "Simple"
+    signalTooltip := "Volume Pressure: " + (BPcon > 0 ? "Bullish" : "Bearish") + "\n" + "Convergence: " + (vpo1 > 0 ? "Bullish" : "Bearish") + " (" + str.tostring(vpo1, "#.#") + "%)"
+else if tooltipDetail == "Detailed"
+    // Determine current trading action
+    currentSignal = buySignal ? "🟢 STRONG CALL BUY" : sellSignal ? "🔴 STRONG PUT BUY" : (BPcon > 0 and vpo1 > 0) ? "🟡 WEAK CALL BIAS" : (SPcon > 0 and vpo1 < 0) ? "🟡 WEAK PUT BIAS" : "⚪ WAIT/FLAT"
+    
+    // Check alerts - NEW SECTION!
+    alertText = ""
+    if strongBuy
+        alertText := alertText + "✅ STRONG BUY ALERT\n"
+    if strongSell  
+        alertText := alertText + "✅ STRONG SELL ALERT\n"
+    if bullCross
+        alertText := alertText + "📈 BULL CONVERGENCE CROSS\n"
+    if bearCross
+        alertText := alertText + "📉 BEAR CONVERGENCE CROSS\n"
+    
+    // Add detailed breakdown of why alerts may not be active
+    breakdown = ""
+    
+    // Show what's needed for strong buy when in any bullish situation
+    if (BPcon > 0 and vpo1 > 0) and not strongBuy
+        breakdown := breakdown + "🔍 STRONG BUY needs:\n"
+        breakdown := breakdown + (BPcon > BPcon[1] ? "✅" : "❌") + " Buying pressure increasing\n"
+        breakdown := breakdown + (vpo1 > vpo2 ? "✅" : "❌") + " Convergence above signal line\n"
+        breakdown := breakdown + (vph > 0 ? "✅" : "❌") + " Histogram positive\n"
+    
+    // Show what's needed for strong sell when in any bearish situation  
+    if (SPcon > 0 and vpo1 < 0) and not strongSell
+        breakdown := breakdown + "🔍 STRONG SELL needs:\n"
+        breakdown := breakdown + (SPcon > SPcon[1] ? "✅" : "❌") + " Selling pressure increasing\n"
+        breakdown := breakdown + (vpo1 < vpo2 ? "✅" : "❌") + " Convergence below signal line\n"
+        breakdown := breakdown + (vph < 0 ? "✅" : "❌") + " Histogram negative\n"
+    
+    if alertText == ""
+        alertText := "⏸️ No alerts currently active" + (breakdown != "" ? "\n" + breakdown : "")
+    else
+        alertText := alertText + (breakdown != "" ? breakdown : "")
+    
+    signalTooltip := "═══ TRADING ACTION ═══\n" + currentSignal + "\n─────────────────\nVolume Pressure: " + (BPcon > 0 ? "Bullish" : "Bearish") + "\nConvergence: " + (vpo1 > 0 ? "Bullish" : "Bearish") + " (" + str.tostring(vpo1, "#.#") + "%)\nSignal Line: " + str.tostring(vpo2, "#.#") + "%\nHistogram: " + str.tostring(vph, "#.#") + "\n─────────────────\n" + (buySignal ? "🎯 ENTRY: Buy calls now\n💰 EXIT: When convergence peaks" : sellSignal ? "🎯 ENTRY: Buy puts now\n💰 EXIT: When convergence bottoms" : (vpo1 > vpo2 and vph > 0) ? "⏳ WAIT: Call setup building\n📈 WATCH: For volume confirmation" : (vpo1 < vpo2 and vph < 0) ? "⏳ WAIT: Put setup building\n📉 WATCH: For volume confirmation" : "😴 FLAT: No clear direction\n🔄 WAIT: For better setup") + "\n─────────────────\n🔔 CONFLUENCE ALERTS:\n" + alertText
+else
+    signalTooltip := "═══ FULL ANALYSIS ═══\n" + "Buy Pressure: " + str.tostring(math.round(BPV)) + " (" + str.tostring(ratio) + "%)\n" + "Sell Pressure: " + str.tostring(math.round(SPV)) + " (" + str.tostring(100-ratio) + "%)\n" + "Convergence (VPO1): " + str.tostring(vpo1, "#.##") + "%\n" + "Signal Line (VPO2): " + str.tostring(vpo2, "#.##") + "%\n" + "Histogram: " + str.tostring(vph, "#.##") + "\n" + "─────────────────\n" + "Mode: " + (norm ? "Filtered (normalized data)" : "Raw (direct volume data)") + "\n" + "─────────────────\n" + "Entry Conditions:\n" + "• Volume confirms direction\n" + "• Convergence aligns\n" + "• Histogram momentum positive"
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PLOTTING
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Color definitions
+
+// Bar Colors using user inputs
+Vpo1C = vpo1 >= 0 ? bullColor : bearColor
+Vpo2C = vpo2Color
+histC = vph >= 0 ? histogramBullColor : histogramBearColor
+
+// Volume Pressure Bars
+plot(vmacd ? na : SPcon, color=color.new(color.red, barTransparency), title="SELLING", style=plot.style_columns, linewidth=3, display=display.all)
+plot(vmacd ? na : BPcon, color=color.new(color.green, barTransparency), title="BUYING", style=plot.style_columns, linewidth=3, display=display.all)
+plot(vmacd ? na : SPAcon, color=color.new(color.red, 30), title="SPAvg", style=plot.style_line, linewidth=2)
+plot(vmacd ? na : BPAcon, color=color.new(color.green, 30), title="BPAvg", style=plot.style_line, linewidth=2)
+
+// Convergence/Divergence Lines
+plot(vmacd ? vpo1 : na, color=Vpo1C, title="VPO1", style=plot.style_line, linewidth=3)
+plot(vmacd ? vpo2 : na, color=Vpo2C, title="VPO2", style=plot.style_line, linewidth=1)
+// plot(vmacd ? vph : na, color=color.new(histC, math.min(barTransparency + 10, 100)), title="VPH", style=plot.style_columns, linewidth=3, display=display.all)
+plot(vmacd ? vph : na, color=color.new(histC, histogramTransparency), title="VPH", style=plot.style_columns, linewidth=3, display=display.all)
+
+// Add values to status line (appears at top of chart with indicator name)
+plotchar(vpo1, title="VPO1", char="", location=location.absolute, color=Vpo1C)
+plotchar(vpo2, title="VPO2", char="", location=location.absolute, color=Vpo2C)
+plotchar(vph, title="Histogram", char="", location=location.absolute, color=histC)
+plotchar(ratio, title="Buy%", char="", location=location.absolute, color=bullColor)
+plotchar(100-ratio, title="Sell%", char="", location=location.absolute, color=bearColor)
+
+// Zero line for reference
+hline(0, "Zero Line", color=color.new(color.gray, 70), linestyle=hline.style_dotted)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ADVANCED VISUAL SIGNALS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Trend Strength Background
+tsBgColor = showTrendStrength ? (
+     trendStrength > 75 ? (vpo1 > 0 ? color.new(bullColor, 95) : color.new(bearColor, 95)) :
+     trendStrength > 50 ? (vpo1 > 0 ? color.new(bullColor, 97) : color.new(bearColor, 97)) :
+     color.new(color.gray, 98)) : na
+bgcolor(tsBgColor, title="Trend Strength")
+
+// // Divergence Signals
+// plotshape(showDivergence and bearishDivConfirmed, "Bearish Div", shape.triangledown, 
+//           location.top, color.new(color.orange, 0), size=size.small, 
+//           text="⚠️", textcolor=color.orange)
+// plotshape(showDivergence and bullishDivConfirmed, "Bullish Div", shape.triangleup, 
+//           location.bottom, color.new(color.aqua, 0), size=size.small, 
+//           text="⚠️", textcolor=color.aqua)
+
+// // Acceleration Arrows
+// plotarrow(showAcceleration ? (bullAccelerating ? 1 : sellAccelerating ? -1 : na) : na,
+//           title="Acceleration", colorup=color.new(color.lime, 0), colordown=color.new(color.fuchsia, 0),
+//           maxheight=40, minheight=20)
+
+// // Exhaustion Warnings
+// plotchar(bullExhaustion, "Bull Exhaustion", "⛔", location.top, color.orange, size=size.tiny)
+// plotchar(sellExhaustion, "Sell Exhaustion", "⛔", location.bottom, color.orange, size=size.tiny)
+
+// // Entry Quality Labels
+// if showEntryQuality and barstate.islast
+//     eqColor = entryQuality > 70 ? color.new(color.green, 20) : 
+//               entryQuality > 50 ? color.new(color.yellow, 20) : 
+//               color.new(color.red, 20)
+//     eqText = "Entry: " + str.tostring(entryQuality, "#") + "\n" + entryTiming
+//     eqY = vmacd ? vpo1 : BPcon
+//     label.new(bar_index, eqY, eqText, style=label.style_label_left, 
+//               color=eqColor, textcolor=color.white, size=size.small,
+//               tooltip="Entry Quality Score: " + str.tostring(entryQuality, "#") + "/100\n" +
+//                      "Trend Strength: " + str.tostring(trendStrength, "#") + "/100 (" + trendQuality + ")\n" +
+//                      "Timing: " + entryTiming)
+
+
+
+// // Extended Hours Warning
+// bgcolor(isExtendedHours ? color.new(color.orange, 95) : na, title="Extended Hours Warning")
+
+// // Or add a label warning
+// if barstate.islast and isExtendedHours and showInfoTable
+//     label.new(bar_index, high, "⚠️ EXTENDED HOURS\nLow Volume", 
+//               style=label.style_label_down, 
+//               color=color.new(color.orange, 20), 
+//               textcolor=color.white, 
+//               size=size.small)
+
+
+
+// Divergence Signals - ADD RTH FILTER
+plotshape(showDivergence and bearishDivConfirmed and (alwaysOn or inRTH), "Bearish Div", shape.triangledown, 
+          location.bottom, color.new(color.red, 0), size=size.small, 
+          text="Rev", textcolor=color.red)
+plotshape(showDivergence and bullishDivConfirmed and (alwaysOn or inRTH), "Bullish Div", shape.triangleup, 
+          location.bottom, color.new(color.green, 0), size=size.small, 
+          text="Rev", textcolor=color.green)
+
+// // Acceleration Arrows - ADD RTH FILTER
+// plotarrow(showAcceleration and (alwaysOn or inRTH) ? (bullAccelerating ? 1 : sellAccelerating ? -1 : na) : na,
+//           title="Acceleration", colorup=color.new(color.lime, 0), colordown=color.new(color.red, 0),
+//           maxheight=40, minheight=20)
+
+// Acceleration Arrows - Fixed positioning with arrow shapes
+plotshape(showAcceleration and bullAccelerating and (alwaysOn or inRTH), 
+          "Bull Acceleration", 
+          shape.arrowup, 
+          location.bottom, 
+          color.new(color.lime, 0), 
+          size=size.small)
+
+plotshape(showAcceleration and sellAccelerating and (alwaysOn or inRTH), 
+          "Sell Acceleration", 
+          shape.arrowdown, 
+          location.top, 
+          color.new(color.red, 0), 
+          size=size.small)
+
+// Exhaustion Warnings - ADD RTH FILTER
+plotchar(bullExhaustion and (alwaysOn or inRTH), "Bull Exhaustion", "X", location.top, color.red, size=size.tiny)
+plotchar(sellExhaustion and (alwaysOn or inRTH), "Sell Exhaustion", "X", location.bottom, color.green, size=size.tiny)
+
+// // Entry Quality Labels - ADD RTH FILTER
+// if showEntryQuality and barstate.islast and (alwaysOn or inRTH)
+//     eqColor = entryQuality > 70 ? color.new(color.green, 20) : 
+//               entryQuality > 50 ? color.new(color.yellow, 20) : 
+//               color.new(color.red, 20)
+//     eqText = "Entry: " + str.tostring(entryQuality, "#") + "\n" + entryTiming
+//     eqY = vmacd ? vpo1 : BPcon
+//     label.new(bar_index, eqY, eqText, style=label.style_label_left, 
+//               color=eqColor, textcolor=color.white, size=size.small,
+//               tooltip="Entry Quality Score: " + str.tostring(entryQuality, "#") + "/100\n" +
+//                      "Trend Strength: " + str.tostring(trendStrength, "#") + "/100 (" + trendQuality + ")\n" +
+//                      "Timing: " + entryTiming)
+
+
+// Entry Quality Labels - FIXED TO SHOW ONLY ONE
+var label entryQualityLabel = na  // Add this persistent variable
+
+if showEntryQuality and barstate.islast and (alwaysOn or inRTH)
+    // Delete the previous label before creating new one
+    label.delete(entryQualityLabel)
+    
+    eqColor = entryQuality > 70 ? color.new(color.green, 20) : 
+              entryQuality > 50 ? color.new(color.yellow, 20) : 
+              color.new(color.red, 20)
+    eqText = "Entry: " + str.tostring(entryQuality, "#") + "\n" + entryTiming
+    eqY = vmacd ? vpo1 : BPcon
+    
+    // Create new label and store reference
+    entryQualityLabel := label.new(bar_index, eqY, eqText, style=label.style_label_left, 
+              color=eqColor, textcolor=color.white, size=size.small,
+              tooltip="Entry Quality Score: " + str.tostring(entryQuality, "#") + "/100\n" +
+                     "Trend Strength: " + str.tostring(trendStrength, "#") + "/100 (" + trendQuality + ")\n" +
+                     "Timing: " + entryTiming)
+// Extended Hours Warning - KEEP THIS ALWAYS ON (it's a warning, not a signal)
+// bgcolor(isExtendedHours ? color.new(color.orange, 95) : na, title="Extended Hours Warning")
+
+// // Or add a label warning - KEEP THIS ALWAYS ON (it's a warning)
+// if barstate.islast and isExtendedHours and showInfoTable
+//     label.new(bar_index, high, "⚠️ EXTENDED HOURS\nLow Volume", 
+//               style=label.style_label_down, 
+//               color=color.new(color.orange, 20), 
+//               textcolor=color.white, 
+//               size=size.small)
+
+
+// // ══════════════════════════════════════════════════════════════════════════════
+// // BUY/SELL SIGNAL LABELS (in indicator pane)
+// // ══════════════════════════════════════════════════════════════════════════════
+
+// if showSignalLabels and (alwaysOn or inRTH)
+//     // Find the highest and lowest values across all visible bars for proper scaling
+//     var float maxRange = na
+//     var float minRange = na
+    
+//     currentHigh = vmacd ? math.max(vpo1, vpo2, vph, 0) : math.max(BPcon, SPcon, BPAcon, SPAcon, 0)
+//     currentLow = vmacd ? math.min(vpo1, vpo2, vph, 0) : math.min(BPcon, SPcon, BPAcon, SPAcon, 0)
+    
+//     // Track max/min for better positioning
+//     maxRange := na(maxRange) ? currentHigh : math.max(maxRange, currentHigh)
+//     minRange := na(minRange) ? currentLow : math.min(minRange, currentLow)
+    
+//     // Calculate label positions - MIRRORED for readability
+//     paneRange = maxRange - minRange
+//     buyLabelPosition = maxRange + (paneRange * 0.25)    // Buy labels above the lines
+//     sellLabelPosition = minRange - (paneRange * 0.25)   // Sell labels below the lines
+    
+//     // Buy Signal Label - above, pointing down
+//     if buySignal and not buySignal[1]
+//         label.new(bar_index, buyLabelPosition, "Buy", 
+//                  style=label.style_label_down, 
+//                  color=color.new(bullColor, 0),//color=color.new(color.green, 0), 
+//                  textcolor=color.white, 
+//                  size=size.small,
+//                  tooltip=signalTooltip)
+    
+//     // Sell Signal Label - below, pointing up
+//     if sellSignal and not sellSignal[1]
+//         label.new(bar_index, sellLabelPosition, "Sell", 
+//                  style=label.style_label_up, 
+//                  color=color.new(bearColor, 0),//color=color.new(color.red, 0), 
+//                  textcolor=color.white, 
+//                  size=size.small,
+//                  tooltip=signalTooltip)
+
+//     // Buy Signal Label - show on every Strong Buy
+//     if strongBuy
+//         label.new(bar_index, buyLabelPosition, "Buy", style=label.style_label_down,  color=color.new(bullColor, 0),  textcolor=color.white,  size=size.small, tooltip=signalTooltip)
+
+//     // Sell Signal Label - show on every Strong Sell
+//     if strongSell
+//         label.new(bar_index, sellLabelPosition, "Sell",  style=label.style_label_up,  color=color.new(bearColor, 0), textcolor=color.white,  size=size.small, tooltip=signalTooltip)
+
+
+
+// // ══════════════════════════════════════════════════════════════════════════════
+// // BUY/SELL SIGNAL LABELS (in indicator pane)
+// // ══════════════════════════════════════════════════════════════════════════════
+
+// // Declare persistent label variables
+// var label buyLabel = na
+// var label sellLabel = na
+
+// if showSignalLabels and (alwaysOn or inRTH)
+//     // Find the highest and lowest values across all visible bars for proper scaling
+//     var float maxRange = na
+//     var float minRange = na
+    
+//     currentHigh = vmacd ? math.max(vpo1, vpo2, vph, 0) : math.max(BPcon, SPcon, BPAcon, SPAcon, 0)
+//     currentLow = vmacd ? math.min(vpo1, vpo2, vph, 0) : math.min(BPcon, SPcon, BPAcon, SPAcon, 0)
+    
+//     // Track max/min for better positioning
+//     maxRange := na(maxRange) ? currentHigh : math.max(maxRange, currentHigh)
+//     minRange := na(minRange) ? currentLow : math.min(minRange, currentLow)
+    
+//     // Calculate label positions - MIRRORED for readability
+//     paneRange = maxRange - minRange
+//     buyLabelPosition = maxRange + (paneRange * 0.25)    // Buy labels above the lines
+//     sellLabelPosition = minRange - (paneRange * 0.25)   // Sell labels below the lines
+    
+//     // Buy Signal Label - only on signal change
+//     if buySignal and not buySignal[1]
+//         label.delete(buyLabel)  // Delete previous buy label
+//         buyLabel := label.new(bar_index, buyLabelPosition, "Buy", 
+//                  style=label.style_label_down, 
+//                  color=color.new(bullColor, 0), 
+//                  textcolor=color.white, 
+//                  size=size.small,
+//                  tooltip=signalTooltip)
+    
+//     // Sell Signal Label - only on signal change
+//     if sellSignal and not sellSignal[1]
+//         label.delete(sellLabel)  // Delete previous sell label
+//         sellLabel := label.new(bar_index, sellLabelPosition, "Sell", 
+//                  style=label.style_label_up, 
+//                  color=color.new(bearColor, 0), 
+//                  textcolor=color.white, 
+//                  size=size.small,
+//                  tooltip=signalTooltip)
+    
+//     // Update label position on last bar if signal is still active
+//     if barstate.islast
+//         if buySignal
+//             label.delete(buyLabel)
+//             buyLabel := label.new(bar_index, buyLabelPosition, "Buy", 
+//                      style=label.style_label_down, 
+//                      color=color.new(bullColor, 0), 
+//                      textcolor=color.white, 
+//                      size=size.small,
+//                      tooltip=signalTooltip)
+//         else if sellSignal
+//             label.delete(sellLabel)
+//             sellLabel := label.new(bar_index, sellLabelPosition, "Sell", 
+//                      style=label.style_label_up, 
+//                      color=color.new(bearColor, 0), 
+//                      textcolor=color.white, 
+//                      size=size.small,
+//                      tooltip=signalTooltip)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// BUY/SELL SIGNAL LABELS (in indicator pane)
+// ══════════════════════════════════════════════════════════════════════════════
+
+if showSignalLabels and (alwaysOn or inRTH)
+    // Find the highest and lowest values across all visible bars for proper scaling
+    var float maxRange = na
+    var float minRange = na
+    
+    currentHigh = vmacd ? math.max(vpo1, vpo2, vph, 0) : math.max(BPcon, SPcon, BPAcon, SPAcon, 0)
+    currentLow = vmacd ? math.min(vpo1, vpo2, vph, 0) : math.min(BPcon, SPcon, BPAcon, SPAcon, 0)
+    
+    // Track max/min for better positioning
+    maxRange := na(maxRange) ? currentHigh : math.max(maxRange, currentHigh)
+    minRange := na(minRange) ? currentLow : math.min(minRange, currentLow)
+    
+    // Calculate label positions - MIRRORED for readability
+    paneRange = maxRange - minRange
+    buyLabelPosition = maxRange + (paneRange * 0.25)    // Buy labels above the lines
+    sellLabelPosition = minRange - (paneRange * 0.25)   // Sell labels below the lines
+    
+    // Buy Signal Label - CREATE NEW LABEL ON EVERY SIGNAL CHANGE
+    if buySignal and not buySignal[1]
+        label.new(bar_index, buyLabelPosition, "Buy", 
+                 style=label.style_label_down, 
+                 color=color.new(bullColor, 0), 
+                 textcolor=color.white, 
+                 size=size.small,
+                 tooltip=signalTooltip)
+    
+    // Sell Signal Label - CREATE NEW LABEL ON EVERY SIGNAL CHANGE
+    if sellSignal and not sellSignal[1]
+        label.new(bar_index, sellLabelPosition, "Sell", 
+                 style=label.style_label_up, 
+                 color=color.new(bearColor, 0), 
+                 textcolor=color.white, 
+                 size=size.small,
+                 tooltip=signalTooltip)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SIGNAL ICON & HISTORICAL TOOLTIPS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Delete any existing lightbulb labels before creating new one
+var label lightbulbLabel = na
+
+// Signal Summary at bottom of chart (visible lightbulb icon - current bar only)
+if showSignalIcon and barstate.islast and (alwaysOn or inRTH)
+    // Delete previous label if it exists
+    label.delete(lightbulbLabel)
+    
+    // Calculate bottom position based on current indicator range
+    highestValue = vmacd ? math.max(vpo1, vpo2, vph, 0) : math.max(BPcon, SPcon, 0)
+    lowestValue = vmacd ? math.min(vpo1, vpo2, vph, 0) : math.min(BPcon, SPcon, 0)
+    
+    // Calculate the range and place icon below the lowest point
+    rangeVal = highestValue - lowestValue
+    iconPosition = lowestValue - (rangeVal * 0.15) // Place 15% of range below the lowest value
+    
+    // Determine icon color based on signal
+    iconColor = buySignal ? color.new(bullColor, 20) : sellSignal ? color.new(bearColor, 20) : color.new(neutralColor, 20)
+    
+    lightbulbLabel := label.new(bar_index, iconPosition, "💡", style=label.style_label_up, color=iconColor, textcolor=color.yellow, size=size.small, tooltip=signalTooltip)
+
+// Historical tooltips - invisible labels on signal bars only
+if showSignalIcon and (alwaysOn or inRTH)
+    if buySignal or sellSignal
+        // Create invisible label with tooltip on signal bars
+        label.new(bar_index, vpo1, "", 
+                 style=label.style_circle, 
+                 size=size.tiny, 
+                 color=color.new(color.white, 100), 
+                 textcolor=color.new(color.white, 100), 
+                 tooltip=signalTooltip)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INFO TABLE  
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Determine table position
+tablePos = tablePosition == "Top Left" ? position.top_left : tablePosition == "Top Right" ? position.top_right : tablePosition == "Bottom Left" ? position.bottom_left : position.bottom_right
+
+// Create table
+var table infoTable = table.new(tablePos, 2, 6, bgcolor=color.new(color.black, 0), border_width=2, border_color=color.new(color.white, 30), frame_width=2, frame_color=color.new(color.white, 30))
+
+// if showInfoTable and barstate.islast
+//     // Title
+    
+//     // Buy/Sell Ratio
+//     table.cell(infoTable, 0, 1, "Buy/Sell", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.normal)
+//     // ratioColor = ratio > 50 ? color.green : color.red
+//     ratioColor = ratio > 50 ? bullColor : bearColor
+//     table.cell(infoTable, 1, 1, str.tostring(ratio) + "/" + str.tostring(100-ratio), text_color=ratioColor, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    
+//     // Trend
+//     table.cell(infoTable, 0, 2, "Trend", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.normal)
+//     // trendColor = vpo1 > 0 ? color.green : color.red
+//     trendColor = vpo1 > 0 ? bullColor : bearColor
+//     table.cell(infoTable, 1, 2, trend, text_color=trendColor, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    
+//     // Momentum
+//     table.cell(infoTable, 0, 3, "Momentum", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.normal)
+//     // momColor = vph > 0 ? color.green : color.red
+//     momColor = vph > 0 ? bullColor : bearColor
+//     table.cell(infoTable, 1, 3, momentum + " " + str.tostring(math.abs(vph), "#.#"), text_color=momColor, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    
+//     // Signal
+//     tableSignal = buySignal ? "BUY" : sellSignal ? "SELL" : "WAIT"
+//     table.cell(infoTable, 0, 4, "Signal", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.normal)
+//     signalColor = buySignal ? bullColor : sellSignal ? bearColor : neutralColor
+//     table.cell(infoTable, 1, 4, tableSignal, text_color=signalColor, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    
+//     // Mode
+//     mode = norm ? "Filtered" : "Raw"
+//     modeTooltip = "Raw: Direct volume data from market\nFiltered: Normalized to reduce HFT noise"
+//     table.cell(infoTable, 0, 5, "Mode", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.normal, tooltip=modeTooltip)
+//     table.cell(infoTable, 1, 5, mode, text_color=color.yellow, bgcolor=color.new(color.black, 0), text_size=size.normal, tooltip=modeTooltip)
+
+
+
+if showInfoTable and barstate.islast
+    // Buy/Sell Ratio
+    table.cell(infoTable, 0, 1, "Buy/Sell", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    ratioColor = ratio > 50 ? bullColor : bearColor
+    table.cell(infoTable, 1, 1, str.tostring(ratio) + "/" + str.tostring(100-ratio), text_color=ratioColor, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    
+    // Trend with Strength
+    table.cell(infoTable, 0, 2, "Trend", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    trendColor = vpo1 > 0 ? bullColor : bearColor
+    trendText = trend + " (" + str.tostring(trendStrength, "#") + ")"
+    table.cell(infoTable, 1, 2, trendText, text_color=trendColor, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    
+    // Momentum with Acceleration
+    table.cell(infoTable, 0, 3, "Momentum", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    momColor = vph > 0 ? bullColor : bearColor
+    accelIndicator = bullAccelerating ? "⚡" : sellAccelerating ? "⚡" : bullExhaustion ? "⛔" : sellExhaustion ? "⛔" : ""
+    table.cell(infoTable, 1, 3, momentum + " " + str.tostring(math.abs(vph), "#.#") + " " + accelIndicator, text_color=momColor, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    
+    // Signal with Entry Quality
+    tableSignal = primeBuy ? "PRIME BUY" : primeSell ? "PRIME SELL" : buySignal ? "BUY" : sellSignal ? "SELL" : "WAIT"
+    table.cell(infoTable, 0, 4, "Signal", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    signalColor = (primeBuy or buySignal) ? bullColor : (primeSell or sellSignal) ? bearColor : neutralColor
+    signalText = tableSignal + " (" + str.tostring(entryQuality, "#") + ")"
+    table.cell(infoTable, 1, 4, signalText, text_color=signalColor, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    
+    // // Mode
+    // mode = norm ? "Filtered" : "Raw"
+    // modeTooltip = "Raw: Direct volume data\nFiltered: Normalized data\n\nEntry Score: " + str.tostring(entryQuality, "#") + "/100"
+    // table.cell(infoTable, 0, 5, "Mode", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.normal, tooltip=modeTooltip)
+    // table.cell(infoTable, 1, 5, mode, text_color=color.yellow, bgcolor=color.new(color.black, 0), text_size=size.normal, tooltip=modeTooltip)
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Alert conditions using pre-calculated signals
+alertcondition(strongBuy, "Strong Buy Signal", "Strong buying pressure with positive convergence")
+alertcondition(strongSell, "Strong Sell Signal", "Strong selling pressure with negative convergence")
+alertcondition(bullCross, "Bullish Convergence Cross", "Bullish convergence crossover")
+alertcondition(bearCross, "Bearish Convergence Cross", "Bearish convergence crossunder")
+// New alert conditions
+alertcondition(primeBuy, "Prime Buy Entry", "High-quality buy setup detected")
+alertcondition(primeSell, "Prime Sell Entry", "High-quality sell setup detected")
+alertcondition(bearishDivConfirmed, "Bearish Divergence", "Bearish divergence - potential reversal")
+alertcondition(bullishDivConfirmed, "Bullish Divergence", "Bullish divergence - potential reversal")
+alertcondition(bullExhaustion, "Bull Exhaustion", "Bullish momentum exhausting")
+alertcondition(sellExhaustion, "Sell Exhaustion", "Bearish momentum exhausting")
+alertcondition(lateEntry, "Late Entry Warning", "Entry may be late in trend")
