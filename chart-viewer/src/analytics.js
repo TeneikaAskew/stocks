@@ -6,14 +6,12 @@ class Analytics {
     }
 
     /**
-     * Calculate overall statistics
+     * Expand trades with TPs into individual exit points
+     * This treats each TP level as a separate exit for analytics
      */
-    calculateStats() {
-        const allTrades = this.tradeMarker.getAllTrades();
-
-        // Expand trades with TPs into individual exit points for analytics
+    expandTradesToExits(trades) {
         const expandedTrades = [];
-        for (const trade of allTrades) {
+        for (const trade of trades) {
             if (trade.takeProfits && trade.takeProfits.length > 0) {
                 // Create a separate "trade" for each TP level
                 trade.takeProfits.forEach((tp, index) => {
@@ -32,12 +30,19 @@ class Analytics {
                     }
                 });
             } else if (trade.exitPrice) {
-                // Regular closed trade
+                // Regular closed trade with explicit exit
                 expandedTrades.push(trade);
             }
         }
+        return expandedTrades;
+    }
 
-        const closedTrades = expandedTrades;
+    /**
+     * Calculate overall statistics
+     */
+    calculateStats() {
+        const allTrades = this.tradeMarker.getAllTrades();
+        const closedTrades = this.expandTradesToExits(allTrades);
 
         if (closedTrades.length === 0) {
             return {
@@ -110,7 +115,8 @@ class Analytics {
      * Calculate performance by option type
      */
     analyzeByOptionType() {
-        const trades = this.tradeMarker.getClosedTrades();
+        const allTrades = this.tradeMarker.getAllTrades();
+        const trades = this.expandTradesToExits(allTrades);
 
         const calls = trades.filter(t => t.optionType === 'CALL');
         const puts = trades.filter(t => t.optionType === 'PUT');
@@ -125,7 +131,8 @@ class Analytics {
      * Calculate performance by ticker
      */
     analyzeByTicker() {
-        const trades = this.tradeMarker.getClosedTrades();
+        const allTrades = this.tradeMarker.getAllTrades();
+        const trades = this.expandTradesToExits(allTrades);
         const tickers = [...new Set(trades.map(t => t.ticker))];
 
         const results = {};
@@ -171,7 +178,9 @@ class Analytics {
      * Find patterns in winning trades
      */
     findWinningPatterns() {
-        const wins = this.tradeMarker.getClosedTrades().filter(t => t.status === 'win');
+        const allTrades = this.tradeMarker.getAllTrades();
+        const expandedTrades = this.expandTradesToExits(allTrades);
+        const wins = expandedTrades.filter(t => t.status === 'win');
 
         if (wins.length === 0) {
             return [];
@@ -213,7 +222,8 @@ class Analytics {
      * Analyze time-based patterns
      */
     analyzeTimePatterns() {
-        const trades = this.tradeMarker.getClosedTrades();
+        const allTrades = this.tradeMarker.getAllTrades();
+        const trades = this.expandTradesToExits(allTrades);
 
         if (trades.length === 0) {
             return null;

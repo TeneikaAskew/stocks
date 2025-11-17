@@ -201,16 +201,26 @@ class TradeMarker {
 
     /**
      * Get active trades (no exit yet)
+     * A trade is considered active if it has no exitPrice AND no take profit levels
      */
     getActiveTrades() {
-        return this.trades.filter(t => t.status === 'active');
+        return this.trades.filter(t => {
+            const hasExit = t.exitPrice !== null && t.exitPrice !== undefined;
+            const hasTPs = t.takeProfits && t.takeProfits.length > 0 && t.takeProfits.some(tp => tp.price);
+            return !hasExit && !hasTPs;
+        });
     }
 
     /**
      * Get closed trades
+     * A trade is considered closed if it has an exitPrice OR has take profit levels
      */
     getClosedTrades() {
-        return this.trades.filter(t => t.status !== 'active');
+        return this.trades.filter(t => {
+            const hasExit = t.exitPrice !== null && t.exitPrice !== undefined;
+            const hasTPs = t.takeProfits && t.takeProfits.length > 0 && t.takeProfits.some(tp => tp.price);
+            return hasExit || hasTPs;
+        });
     }
 
     /**
