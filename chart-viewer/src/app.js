@@ -383,12 +383,6 @@ class App {
      * Create trade card HTML
      */
     createTradeCard(trade) {
-        const pnlText = trade.exitPrice
-            ? `${Utils.formatCurrency(trade.pnl)} (${Utils.formatPercent(trade.pnlPercent)})`
-            : 'Active';
-
-        const pnlClass = trade.pnl > 0 ? 'positive' : trade.pnl < 0 ? 'negative' : '';
-
         // Format take profits each on a new line
         const takeProfitsHtml = trade.takeProfits.length > 0
             ? `<div class="trade-detail">
@@ -413,12 +407,6 @@ class App {
                         <span class="label">Entry:</span>
                         <span class="value">${Utils.formatCurrency(trade.entryPrice)}</span>
                     </div>
-                    ${trade.exitPrice ? `
-                        <div class="trade-detail">
-                            <span class="label">Exit:</span>
-                            <span class="value">${Utils.formatCurrency(trade.exitPrice)}</span>
-                        </div>
-                    ` : ''}
                     ${takeProfitsHtml}
                     ${trade.stopLoss ? `
                         <div class="trade-detail">
@@ -426,11 +414,6 @@ class App {
                             <span class="value">${Utils.formatCurrency(trade.stopLoss.price)}</span>
                         </div>
                     ` : ''}
-                </div>
-                <div class="trade-card-footer">
-                    <div class="trade-pnl ${pnlClass}">
-                        P&L: ${pnlText}
-                    </div>
                 </div>
             </div>
         `;
