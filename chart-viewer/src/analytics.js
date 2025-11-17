@@ -3,6 +3,8 @@
 class Analytics {
     constructor(tradeMarker) {
         this.tradeMarker = tradeMarker;
+        this.optionsAnalyzer = new OptionsAnalyzer();
+        this.analyzedTrades = [];
     }
 
     /**

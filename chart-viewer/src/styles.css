@@ -455,6 +455,25 @@ body {
     line-height: 1.5;
 }
 
+.trade-detail.options-contract {
+    background: rgba(38, 166, 154, 0.1);
+    padding: 0.5rem;
+    border-radius: 4px;
+    margin: 0.5rem 0;
+    flex-direction: column;
+}
+
+.trade-detail.options-contract .value.contract-info {
+    margin-top: 0.25rem;
+    font-size: 0.8rem;
+    line-height: 1.6;
+}
+
+.trade-detail.options-contract .value.contract-info strong {
+    color: var(--success);
+    font-size: 0.85rem;
+}
+
 .trade-card-footer {
     display: flex;
     justify-content: space-between;
