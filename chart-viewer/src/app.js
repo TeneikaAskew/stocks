@@ -59,11 +59,6 @@ class App {
             this.startDrawingMode('entry');
         });
 
-        // Mark exit button
-        document.getElementById('markExitBtn').addEventListener('click', () => {
-            this.openTradeModal('exit');
-        });
-
         // Save trades button
         document.getElementById('saveDataBtn').addEventListener('click', () => {
             this.tradeMarker.saveTrades();
@@ -244,45 +239,25 @@ class App {
     }
 
     /**
-     * Open trade modal
+     * Open trade modal for entry
      */
-    openTradeModal(action) {
+    openTradeModal() {
         const modal = document.getElementById('tradeModal');
         const modalTitle = document.getElementById('modalTitle');
         const tradeAction = document.getElementById('tradeAction');
         const entryFields = document.getElementById('entryFields');
-        const exitFields = document.getElementById('exitFields');
 
-        // Set action
-        tradeAction.value = action;
+        // Set action to entry
+        tradeAction.value = 'entry';
+        modalTitle.textContent = 'Mark Trade Entry';
+        entryFields.style.display = 'block';
 
-        if (action === 'entry') {
-            modalTitle.textContent = 'Mark Trade Entry';
-            entryFields.style.display = 'block';
-            exitFields.style.display = 'none';
-
-            // Get last click data
-            const clickData = this.chartManager.getLastClickData();
-            if (clickData) {
-                document.getElementById('tradePrice').value = clickData.price;
-                document.getElementById('tradeTime').value = clickData.time;
-                document.getElementById('entryPrice').value = clickData.price.toFixed(2);
-            }
-        } else {
-            modalTitle.textContent = 'Mark Trade Exit';
-            entryFields.style.display = 'none';
-            exitFields.style.display = 'block';
-
-            // Populate active trades
-            this.populateActiveTradesSelect();
-
-            // Get last click data
-            const clickData = this.chartManager.getLastClickData();
-            if (clickData) {
-                document.getElementById('exitPrice').value = clickData.price.toFixed(2);
-                document.getElementById('tradePrice').value = clickData.price;
-                document.getElementById('tradeTime').value = clickData.time;
-            }
+        // Get last click data
+        const clickData = this.chartManager.getLastClickData();
+        if (clickData) {
+            document.getElementById('tradePrice').value = clickData.price;
+            document.getElementById('tradeTime').value = clickData.time;
+            document.getElementById('entryPrice').value = clickData.price.toFixed(2);
         }
 
         modal.classList.add('active');
@@ -326,16 +301,10 @@ class App {
     }
 
     /**
-     * Handle trade form submission
+     * Handle trade form submission (entry only)
      */
     handleTradeFormSubmit() {
-        const action = document.getElementById('tradeAction').value;
-
-        if (action === 'entry') {
-            this.submitTradeEntry();
-        } else {
-            this.submitTradeExit();
-        }
+        this.submitTradeEntry();
     }
 
     /**
@@ -382,45 +351,6 @@ class App {
             this.refreshTradesList();
             this.closeTradeModal();
         }
-    }
-
-    /**
-     * Submit trade exit
-     */
-    submitTradeExit() {
-        const tradeId = document.getElementById('exitTrade').value;
-        const price = parseFloat(document.getElementById('tradePrice').value);
-        const time = parseInt(document.getElementById('tradeTime').value);
-        const reason = document.getElementById('exitReason').value;
-
-        if (!tradeId) {
-            Utils.notify('Please select a trade to exit', 'warning');
-            return;
-        }
-
-        const trade = this.tradeMarker.addExit(tradeId, {
-            price: price,
-            time: time,
-            reason: reason,
-        });
-
-        if (trade) {
-            this.refreshTradesList();
-            this.closeTradeModal();
-        }
-    }
-
-    /**
-     * Populate active trades select
-     */
-    populateActiveTradesSelect() {
-        const select = document.getElementById('exitTrade');
-        const activeTrades = this.tradeMarker.getActiveTrades();
-
-        select.innerHTML = '<option value="">Select a trade to exit...</option>' +
-            activeTrades.map(trade =>
-                `<option value="${trade.id}">${trade.ticker} ${trade.optionType} @ ${Utils.formatCurrency(trade.entryPrice)} - ${Utils.formatDateTime(trade.entryTime)}</option>`
-            ).join('');
     }
 
     /**
