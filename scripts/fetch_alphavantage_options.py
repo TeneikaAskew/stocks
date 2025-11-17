@@ -24,9 +24,10 @@ load_dotenv()
 
 # Alpha Vantage API configuration - Multiple keys for failover
 ALPHA_VANTAGE_API_KEYS = [
-    os.getenv('ALPHA_VANTAGE_API_KEY', 'VNMXDQ9LBOJ5X2I6'),  # Primary key
-    '7E8X3MQLLSW5HPWF',   # Backup key 1
-    'VFIN9SZWRAI1SCGW'    # Backup key 2
+    os.getenv('ALPHA_VANTAGE_API_KEY', 'PWXSRHD4ZXX8S1HI'),  # Primary key
+    'VNMXDQ9LBOJ5X2I6',   # Backup key 1
+    '7E8X3MQLLSW5HPWF',   # Backup key 2
+    'VFIN9SZWRAI1SCGW'    # Backup key 3
 ]
 current_key_index = 0
 ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEYS[current_key_index]

@@ -199,6 +199,62 @@ def get_tickers():
     return jsonify({'tickers': tickers})
 
 
+@app.route('/api/options/<ticker>/<date_param>', methods=['GET'])
+def get_options(ticker, date_param):
+    """
+    Get options contracts for a specific ticker and date (YYYYMMDD format).
+
+    Returns all options contracts available for that date.
+    """
+    ticker_paths = DATA_PATHS.get(ticker.upper())
+
+    if not ticker_paths:
+        return jsonify({'error': 'Invalid ticker'}), 400
+
+    # Look for options parquet file
+    # Check for combined file first
+    options_path = PROJECT_ROOT / 'data' / ticker.lower() / 'options' / f'{ticker.lower()}_av_options_combined.parquet'
+
+    if not options_path.exists():
+        return jsonify({'error': f'No options data found for {ticker}'}), 404
+
+    try:
+        # Load all options data
+        df = pd.read_parquet(options_path)
+
+        # Filter to specific date
+        year = int(date_param[:4])
+        month = int(date_param[4:6])
+        day = int(date_param[6:8])
+        target_date = pd.Timestamp(year=year, month=month, day=day)
+
+        # Filter by snapshot_date (the date when the snapshot was taken)
+        df_filtered = df[df['snapshot_date'] == target_date]
+
+        if len(df_filtered) == 0:
+            return jsonify({'error': f'No options data for {ticker} on {date_param}'}), 404
+
+        # Convert to JSON-friendly format
+        result = df_filtered.to_dict('records')
+
+        # Convert datetime fields to strings
+        for contract in result:
+            if 'expiration' in contract and pd.notna(contract['expiration']):
+                contract['expiration'] = contract['expiration'].strftime('%Y-%m-%d')
+            if 'date' in contract and pd.notna(contract['date']):
+                contract['date'] = contract['date'].strftime('%Y-%m-%d')
+            if 'snapshot_date' in contract and pd.notna(contract['snapshot_date']):
+                contract['snapshot_date'] = contract['snapshot_date'].strftime('%Y-%m-%d')
+            if 'fetch_timestamp' in contract:
+                del contract['fetch_timestamp']  # Remove internal timestamp
+
+        return jsonify(result)
+
+    except Exception as e:
+        print(f"Error loading options data: {e}")
+        return jsonify({'error': 'Error loading options data'}), 500
+
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
