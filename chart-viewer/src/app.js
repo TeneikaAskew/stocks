@@ -414,8 +414,10 @@ class App {
                             trade.optionsAnalysis.takeProfitAnalysis[i]) {
                             const tpAnalysis = trade.optionsAnalysis.takeProfitAnalysis[i];
                             const pnlPercent = tpAnalysis.estimatedPnLPercent.toFixed(1);
-                            const pnlAmount = Utils.formatCurrency(tpAnalysis.estimatedPnL);
-                            tpHtml += ` <span class="tp-contract-pnl">${pnlAmount} (${pnlPercent}%)</span>`;
+                            // Multiply by 100 for actual contract value (100 shares per contract)
+                            const pnlDollars = Math.round(tpAnalysis.estimatedPnL * 100);
+                            const exitPrice = tpAnalysis.estimatedOptionPrice.toFixed(2);
+                            tpHtml += ` <span class="tp-contract-pnl">$${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
                         }
 
                         return tpHtml;
@@ -431,10 +433,10 @@ class App {
                         <strong>${trade.optionsAnalysis.entryContract.contractID}</strong><br>
                         Strike: ${Utils.formatCurrency(trade.optionsAnalysis.entryContract.strike)} |
                         Δ: ${trade.optionsAnalysis.entryContract.delta.toFixed(3)}<br>
-                        Entry: ${Utils.formatCurrency(trade.optionsAnalysis.entryOptionPrice)}
+                        Entry: $${trade.optionsAnalysis.entryOptionPrice.toFixed(2)}
                         ${trade.optionsAnalysis.exitOptionPrice
-                            ? ` → ${Utils.formatCurrency(trade.optionsAnalysis.exitOptionPrice)}<br>
-                               P&L: ${Utils.formatCurrency(trade.optionsAnalysis.actualPnL)}
+                            ? ` → $${trade.optionsAnalysis.exitOptionPrice.toFixed(2)}<br>
+                               P&L: $${Math.round(trade.optionsAnalysis.actualPnL * 100)}
                                (${trade.optionsAnalysis.actualPnLPercent.toFixed(1)}%)`
                             : ''}
                     </span>
