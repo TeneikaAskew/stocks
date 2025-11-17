@@ -19,7 +19,7 @@ permissions:
   id-token: write
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -33,6 +33,9 @@ jobs:
           sed -i "s|GITHUB_TOKEN: ''|GITHUB_TOKEN: '${{ secrets.GH_TRADING_APP_KEY }}'|g" config.js
 
           echo "✅ Token injected into config.js"
+          echo "Token length: ${#GH_TRADING_APP_KEY}"
+        env:
+          GH_TRADING_APP_KEY: ${{ secrets.GH_TRADING_APP_KEY }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -42,19 +45,12 @@ jobs:
         with:
           path: './chart-viewer'
 
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
 
   handle-failure:
-    needs: [build, deploy]
+    needs: [build-and-deploy]
     if: failure()
     uses: ./.github/workflows/handle-workflow-failure.yml
     permissions:
