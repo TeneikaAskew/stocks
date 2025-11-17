@@ -125,32 +125,34 @@ class OptionsAnalyzer {
         const underlyingPrice = trade.entryPrice;
         const isCall = trade.optionType.toLowerCase() === 'call';
 
-        // For calls: ITM = strike < stock price, ATM = strike ≈ stock price
-        // For puts: ITM = strike > stock price, ATM = strike ≈ stock price
+        // For calls: Look for strike just above the current price (nearest ATM/slightly OTM)
+        // For puts: Look for strike just below the current price (nearest ATM/slightly OTM)
+        // This provides the most relevant comparison to the matched OTM contract
 
-        // Find contract closest to ATM (strike nearest to stock price)
         let bestContract = null;
         let minDiff = Infinity;
 
         for (const contract of contracts) {
-            const strikeDiff = Math.abs(contract.strike - underlyingPrice);
-
-            // Prefer slightly ITM contracts (better than deep OTM)
-            // For calls: strike just below stock price
-            // For puts: strike just above stock price
-            let score = strikeDiff;
-
-            if (isCall && contract.strike <= underlyingPrice) {
-                // Call ITM/ATM - prefer strikes at or below stock price
-                score = strikeDiff * 0.5; // Give preference to ITM
-            } else if (!isCall && contract.strike >= underlyingPrice) {
-                // Put ITM/ATM - prefer strikes at or above stock price
-                score = strikeDiff * 0.5;
-            }
-
-            if (score < minDiff) {
-                minDiff = score;
-                bestContract = contract;
+            // For calls: prefer strikes just above price (e.g., $234 when price is $233.51)
+            // For puts: prefer strikes just below price
+            if (isCall) {
+                // Only consider strikes at or above price, prefer closest above
+                if (contract.strike >= underlyingPrice) {
+                    const diff = contract.strike - underlyingPrice;
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        bestContract = contract;
+                    }
+                }
+            } else {
+                // For puts: only consider strikes at or below price, prefer closest below
+                if (contract.strike <= underlyingPrice) {
+                    const diff = underlyingPrice - contract.strike;
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        bestContract = contract;
+                    }
+                }
             }
         }
 
