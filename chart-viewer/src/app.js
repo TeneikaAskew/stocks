@@ -524,7 +524,7 @@ class App {
         const insights = this.analytics.generateInsights();
 
         // Update metrics
-        document.getElementById('totalTrades').textContent = stats.totalTrades;
+        document.getElementById('totalTrades').textContent = `${stats.totalTrades} (${stats.closedTrades} closed)`;
         document.getElementById('winRate').textContent = `${stats.winRate.toFixed(1)}%`;
         document.getElementById('avgPnL').textContent = Utils.formatCurrency(stats.avgPnL);
         document.getElementById('callPutRatio').textContent = `${stats.callCount}:${stats.putCount}`;
@@ -534,7 +534,11 @@ class App {
         // Update insights
         const insightsContainer = document.getElementById('patternInsights');
         if (insights.length === 0) {
-            insightsContainer.innerHTML = '<p class="insight-item">Mark trades to see pattern analysis</p>';
+            if (stats.closedTrades === 0 && stats.totalTrades > 0) {
+                insightsContainer.innerHTML = '<p class="insight-item">Mark exits on your trades to see analytics. You have ' + stats.totalTrades + ' active trade(s).</p>';
+            } else {
+                insightsContainer.innerHTML = '<p class="insight-item">Mark trades to see pattern analysis</p>';
+            }
         } else {
             insightsContainer.innerHTML = insights.map(insight =>
                 `<p class="insight-item">${insight}</p>`
