@@ -50,8 +50,7 @@
             </div>
 
             <div class="toolbar-section">
-                <button id="markEntryBtn" class="btn btn-success">📍 Mark Entry</button>
-                <button id="markExitBtn" class="btn btn-danger">🎯 Mark Exit</button>
+                <button id="markEntryBtn" class="btn btn-success">📍 Enter Trade</button>
             </div>
 
             <div class="toolbar-section">
@@ -235,32 +234,6 @@
                         <div class="form-group">
                             <label for="tradeTags">Tags (comma-separated)</label>
                             <input type="text" id="tradeTags" placeholder="0DTE, momentum, breakout">
-                        </div>
-                    </div>
-
-                    <!-- Exit Fields -->
-                    <div id="exitFields" class="form-section" style="display: none;">
-                        <div class="form-group">
-                            <label for="exitTrade">Select Trade</label>
-                            <select id="exitTrade" class="control-select">
-                                <option value="">Select a trade to exit...</option>
-                            </select>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="exitPrice">Exit Price</label>
-                            <input type="number" id="exitPrice" step="0.01" readonly>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="exitReason">Exit Reason</label>
-                            <select id="exitReason" class="control-select">
-                                <option value="TP1">Take Profit 1</option>
-                                <option value="TP2">Take Profit 2</option>
-                                <option value="TP3">Take Profit 3</option>
-                                <option value="SL">Stop Loss Hit</option>
-                                <option value="MANUAL">Manual Exit</option>
-                            </select>
                         </div>
                     </div>
 
