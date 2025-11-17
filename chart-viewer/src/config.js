@@ -113,26 +113,24 @@ const Utils = {
      * Format datetime to readable string in Eastern Time
      */
     formatDateTime(timestamp) {
+        // Timestamps in our data are stored as "naive" ET times (not true UTC)
+        // They represent ET hours/minutes but are stored as UTC epoch seconds
         const date = new Date(timestamp * 1000);
-        // Always display in Eastern Time (America/New_York) with timezone abbreviation
-        const dateStr = date.toLocaleString('en-US', {
-            timeZone: 'America/New_York',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-            hour12: false
-        });
 
-        // Get timezone abbreviation (EDT or EST)
-        const tzStr = date.toLocaleTimeString('en-US', {
-            timeZone: 'America/New_York',
-            timeZoneName: 'short'
-        }).split(' ').pop();
+        // Read the UTC components directly - these represent the actual ET time
+        const year = date.getUTCFullYear();
+        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(date.getUTCDate()).padStart(2, '0');
+        const hours = String(date.getUTCHours()).padStart(2, '0');
+        const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(date.getUTCSeconds()).padStart(2, '0');
 
-        return `${dateStr} ${tzStr}`;
+        // Determine if it's EDT or EST based on date (approximate)
+        // EDT: March - November, EST: December - February
+        const isEDT = date.getUTCMonth() >= 2 && date.getUTCMonth() <= 10;
+        const tzStr = isEDT ? 'EDT' : 'EST';
+
+        return `${month}/${day}/${year}, ${hours}:${minutes}:${seconds} ${tzStr}`;
     },
 
     /**

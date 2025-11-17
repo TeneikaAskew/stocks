@@ -36,23 +36,17 @@ class ChartManager {
             height: this.container.clientHeight,
             localization: {
                 timeFormatter: (timestamp) => {
-                    // Convert Unix timestamp to Eastern Time with timezone abbreviation
+                    // Timestamps are stored as "naive" ET times (not true UTC)
+                    // Read UTC components directly - they represent the actual ET time
                     const date = new Date(timestamp * 1000);
-                    const etTime = date.toLocaleString('en-US', {
-                        timeZone: 'America/New_York',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        hour12: false
-                    });
+                    const hours = String(date.getUTCHours()).padStart(2, '0');
+                    const minutes = String(date.getUTCMinutes()).padStart(2, '0');
 
-                    // Get timezone abbreviation (EDT or EST)
-                    const tzStr = date.toLocaleTimeString('en-US', {
-                        timeZone: 'America/New_York',
-                        timeZoneName: 'short'
-                    }).split(' ').pop();
+                    // Determine if it's EDT or EST based on date (approximate)
+                    const isEDT = date.getUTCMonth() >= 2 && date.getUTCMonth() <= 10;
+                    const tzStr = isEDT ? 'EDT' : 'EST';
 
-                    // Return HH:MM TZ
-                    return `${etTime} ${tzStr}`;
+                    return `${hours}:${minutes} ${tzStr}`;
                 },
             },
         });
