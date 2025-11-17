@@ -356,11 +356,11 @@ class App {
     /**
      * Refresh trades list
      */
-    refreshTradesList() {
+    async refreshTradesList() {
         const tradesContainer = document.getElementById('tradesList');
         const tradeCount = document.getElementById('tradeCount');
 
-        const trades = this.tradeMarker.getTradesForDate(this.currentTicker, this.currentDate);
+        let trades = this.tradeMarker.getTradesForDate(this.currentTicker, this.currentDate);
 
         tradeCount.textContent = trades.length;
 
@@ -372,7 +372,24 @@ class App {
                 </div>
             `;
         } else {
-            tradesContainer.innerHTML = trades.map(trade => this.createTradeCard(trade)).join('');
+            // Analyze trades with options contracts
+            const analyzedTrades = await Promise.all(
+                trades.map(async (trade) => {
+                    // Skip if already analyzed
+                    if (trade.optionsAnalysis) {
+                        return trade;
+                    }
+                    // Analyze and return
+                    try {
+                        return await this.analytics.optionsAnalyzer.calculateActualPnL(trade);
+                    } catch (error) {
+                        console.error('[App] Error analyzing trade:', error);
+                        return trade; // Return original trade if analysis fails
+                    }
+                })
+            );
+
+            tradesContainer.innerHTML = analyzedTrades.map(trade => this.createTradeCard(trade)).join('');
         }
 
         // Update chart markers
@@ -391,8 +408,26 @@ class App {
                 </div>`
             : '';
 
+        // Options contract info (if available)
+        const optionsHtml = trade.optionsAnalysis && trade.optionsAnalysis.status === 'analyzed'
+            ? `<div class="trade-detail options-contract">
+                    <span class="label">Contract:</span>
+                    <span class="value contract-info">
+                        <strong>${trade.optionsAnalysis.entryContract.contractID}</strong><br>
+                        Strike: ${Utils.formatCurrency(trade.optionsAnalysis.entryContract.strike)} |
+                        Δ: ${trade.optionsAnalysis.entryContract.delta.toFixed(3)}<br>
+                        Entry: ${Utils.formatCurrency(trade.optionsAnalysis.entryOptionPrice)}
+                        ${trade.optionsAnalysis.exitOptionPrice
+                            ? ` → ${Utils.formatCurrency(trade.optionsAnalysis.exitOptionPrice)}<br>
+                               P&L: ${Utils.formatCurrency(trade.optionsAnalysis.actualPnL)}
+                               (${trade.optionsAnalysis.actualPnLPercent.toFixed(1)}%)`
+                            : ''}
+                    </span>
+                </div>`
+            : '';
+
         return `
-            <div class="trade-card">
+            <div class="trade-card" data-trade-id="${trade.id}">
                 <div class="trade-card-header">
                     <span class="trade-type ${trade.optionType}">${trade.optionType}</span>
                     <button class="btn-delete" onclick="app.handleDeleteTrade('${trade.id}')" title="Delete trade">
@@ -404,9 +439,10 @@ class App {
                         <small>${Utils.formatDateTime(trade.entryTime)}</small>
                     </div>
                     <div class="trade-detail">
-                        <span class="label">Entry:</span>
+                        <span class="label">Stock Entry:</span>
                         <span class="value">${Utils.formatCurrency(trade.entryPrice)}</span>
                     </div>
+                    ${optionsHtml}
                     ${takeProfitsHtml}
                     ${trade.stopLoss ? `
                         <div class="trade-detail">
