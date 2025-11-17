@@ -459,13 +459,26 @@ class App {
 
         const pnlClass = trade.pnl > 0 ? 'positive' : trade.pnl < 0 ? 'negative' : '';
 
+        // Format take profits each on a new line
+        const takeProfitsHtml = trade.takeProfits.length > 0
+            ? `<div class="trade-detail">
+                    <span class="label">Targets:</span>
+                    <span class="value targets-list">${trade.takeProfits.map((tp, i) => `TP${i+1}: ${Utils.formatCurrency(tp.price)}`).join('<br>')}</span>
+                </div>`
+            : '';
+
         return `
             <div class="trade-card">
                 <div class="trade-card-header">
                     <span class="trade-type ${trade.optionType}">${trade.optionType}</span>
-                    <small>${Utils.formatDateTime(trade.entryTime)}</small>
+                    <button class="btn-delete" onclick="app.handleDeleteTrade('${trade.id}')" title="Delete trade">
+                        ✕
+                    </button>
                 </div>
                 <div class="trade-card-body">
+                    <div class="trade-detail">
+                        <small>${Utils.formatDateTime(trade.entryTime)}</small>
+                    </div>
                     <div class="trade-detail">
                         <span class="label">Entry:</span>
                         <span class="value">${Utils.formatCurrency(trade.entryPrice)}</span>
@@ -476,12 +489,7 @@ class App {
                             <span class="value">${Utils.formatCurrency(trade.exitPrice)}</span>
                         </div>
                     ` : ''}
-                    ${trade.takeProfits.length > 0 ? `
-                        <div class="trade-detail">
-                            <span class="label">Targets:</span>
-                            <span class="value">${trade.takeProfits.map((tp, i) => `TP${i+1}: ${Utils.formatCurrency(tp.price)}`).join(', ')}</span>
-                        </div>
-                    ` : ''}
+                    ${takeProfitsHtml}
                     ${trade.stopLoss ? `
                         <div class="trade-detail">
                             <span class="label">Stop Loss:</span>
@@ -493,9 +501,6 @@ class App {
                     <div class="trade-pnl ${pnlClass}">
                         P&L: ${pnlText}
                     </div>
-                    <button class="btn-delete" onclick="app.handleDeleteTrade('${trade.id}')" title="Delete trade">
-                        ✕
-                    </button>
                 </div>
             </div>
         `;
