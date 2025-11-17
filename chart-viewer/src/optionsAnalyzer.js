@@ -66,13 +66,19 @@ class OptionsAnalyzer {
         const tradeDate = new Date(timestamp * 1000);
         const tradeDateStr = tradeDate.toISOString().split('T')[0];
 
-        // Filter contracts for the specific date
-        const dateFiltered = typeFiltered.filter(c => c.date === tradeDateStr);
+        // Filter contracts for 0DTE (same-day expiration)
+        // Must match: snapshot date = trade date AND expiration date = trade date
+        const dateFiltered = typeFiltered.filter(c =>
+            c.date === tradeDateStr && c.expiration === tradeDateStr
+        );
 
         if (dateFiltered.length === 0) {
-            console.warn('[OptionsAnalyzer] No contracts found for date:', tradeDateStr);
+            console.warn('[OptionsAnalyzer] No 0DTE contracts found for date:', tradeDateStr);
+            console.warn('[OptionsAnalyzer] Looking for expiration === date ===', tradeDateStr);
             return null;
         }
+
+        console.log('[OptionsAnalyzer] Found', dateFiltered.length, '0DTE contracts for', tradeDateStr);
 
         // Find the closest strike based on underlying price (trade.entryPrice is stock price)
         // For calls: ATM or slightly OTM is typical (strike >= stock price)
