@@ -1,2 +1,2 @@
 best_entry_window,pre_vs_post,top_entry_days
-"{'window': '3-5 days', 'profit_factor': np.float64(22.451717443356518), 'win_rate': np.float64(84.7927703334372)}","{'timing': 'Pre-Earnings', 'profit_factor': np.float64(14.012254950821744)}","[29, 30, 27, 4, 3]"
+"{'window': '3-5 days', 'profit_factor': np.float64(22.999548242304336), 'win_rate': np.float64(85.18176216882317)}","{'timing': 'Pre-Earnings', 'profit_factor': np.float64(14.040289493568718)}","[29, 30, 27, 4, 3]"
