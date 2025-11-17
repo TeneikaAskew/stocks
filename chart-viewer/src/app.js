@@ -523,6 +523,8 @@ class App {
         document.getElementById('winRate').textContent = `${stats.winRate.toFixed(1)}%`;
         document.getElementById('avgPnL').textContent = Utils.formatCurrency(stats.avgPnL);
         document.getElementById('callPutRatio').textContent = `${stats.callCount}:${stats.putCount}`;
+        document.getElementById('avgMovement').textContent = `${stats.avgMovement.toFixed(2)} pts`;
+        document.getElementById('medianMovement').textContent = `${stats.medianMovement.toFixed(2)} pts`;
 
         // Update insights
         const insightsContainer = document.getElementById('patternInsights');

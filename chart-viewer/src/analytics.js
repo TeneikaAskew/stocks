@@ -29,6 +29,10 @@ class Analytics {
                 profitFactor: 0,
                 callCount: 0,
                 putCount: 0,
+                avgMovement: 0,
+                medianMovement: 0,
+                maxMovement: 0,
+                minMovement: 0,
             };
         }
 
@@ -41,6 +45,16 @@ class Analytics {
 
         const calls = allTrades.filter(t => t.optionType === 'CALL');
         const puts = allTrades.filter(t => t.optionType === 'PUT');
+
+        // Calculate movement statistics (point movement from entry to exit)
+        const movements = closedTrades.map(t => Math.abs(t.exitPrice - t.entryPrice));
+        const avgMovement = movements.reduce((sum, m) => sum + m, 0) / movements.length;
+
+        // Calculate median movement
+        const sortedMovements = [...movements].sort((a, b) => a - b);
+        const medianMovement = sortedMovements.length % 2 === 0
+            ? (sortedMovements[sortedMovements.length / 2 - 1] + sortedMovements[sortedMovements.length / 2]) / 2
+            : sortedMovements[Math.floor(sortedMovements.length / 2)];
 
         return {
             totalTrades: allTrades.length,
@@ -58,6 +72,10 @@ class Analytics {
             profitFactor: totalLossPnL > 0 ? totalWinPnL / totalLossPnL : 0,
             callCount: calls.length,
             putCount: puts.length,
+            avgMovement: avgMovement,
+            medianMovement: medianMovement,
+            maxMovement: Math.max(...movements),
+            minMovement: Math.min(...movements),
         };
     }
 
