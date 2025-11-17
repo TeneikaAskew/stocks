@@ -474,6 +474,27 @@ body {
     font-size: 0.85rem;
 }
 
+/* Alternative ITM/ATM Contract */
+.trade-detail.options-contract-alt {
+    background: rgba(66, 153, 225, 0.1);
+    padding: 0.5rem;
+    border-radius: 4px;
+    margin: 0.5rem 0;
+    flex-direction: column;
+    border-left: 3px solid rgba(66, 153, 225, 0.5);
+}
+
+.trade-detail.options-contract-alt .value.contract-info {
+    margin-top: 0.25rem;
+    font-size: 0.8rem;
+    line-height: 1.6;
+}
+
+.trade-detail.options-contract-alt .value.contract-info strong {
+    color: #4299e1;
+    font-size: 0.85rem;
+}
+
 /* Take Profit Contract P&L */
 .tp-contract-pnl {
     background: rgba(16, 185, 129, 0.2);

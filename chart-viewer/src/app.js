@@ -428,7 +428,7 @@ class App {
         // Options contract info (if available)
         const optionsHtml = trade.optionsAnalysis && trade.optionsAnalysis.status === 'analyzed'
             ? `<div class="trade-detail options-contract">
-                    <span class="label">Contract:</span>
+                    <span class="label">Contract (${trade.optionsAnalysis.moneyness}):</span>
                     <span class="value contract-info">
                         <strong>${trade.optionsAnalysis.entryContract.contractID}</strong><br>
                         Strike: ${Utils.formatCurrency(trade.optionsAnalysis.entryContract.strike)} |
@@ -440,7 +440,17 @@ class App {
                                (${trade.optionsAnalysis.actualPnLPercent.toFixed(1)}%)`
                             : ''}
                     </span>
-                </div>`
+                </div>
+                ${trade.optionsAnalysis.itmAtmContract ? `
+                <div class="trade-detail options-contract-alt">
+                    <span class="label">${trade.optionsAnalysis.itmAtmContract.moneyness} Alternative:</span>
+                    <span class="value contract-info">
+                        <strong>${trade.optionsAnalysis.itmAtmContract.contractID}</strong><br>
+                        Strike: ${Utils.formatCurrency(trade.optionsAnalysis.itmAtmContract.strike)} |
+                        Δ: ${trade.optionsAnalysis.itmAtmContract.delta.toFixed(3)}<br>
+                        Entry: $${trade.optionsAnalysis.itmAtmOptionPrice.toFixed(2)}
+                    </span>
+                </div>` : ''}`
             : '';
 
         return `

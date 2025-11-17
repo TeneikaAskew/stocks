@@ -116,6 +116,72 @@ class OptionsAnalyzer {
     }
 
     /**
+     * Find an ITM/ATM contract for comparison
+     * @param {Object} trade - Trade object
+     * @param {Array} contracts - Filtered contracts (same type and date)
+     * @returns {Object|null} - ITM/ATM contract
+     */
+    findITMATMContract(trade, contracts) {
+        const underlyingPrice = trade.entryPrice;
+        const isCall = trade.optionType.toLowerCase() === 'call';
+
+        // For calls: ITM = strike < stock price, ATM = strike ≈ stock price
+        // For puts: ITM = strike > stock price, ATM = strike ≈ stock price
+
+        // Find contract closest to ATM (strike nearest to stock price)
+        let bestContract = null;
+        let minDiff = Infinity;
+
+        for (const contract of contracts) {
+            const strikeDiff = Math.abs(contract.strike - underlyingPrice);
+
+            // Prefer slightly ITM contracts (better than deep OTM)
+            // For calls: strike just below stock price
+            // For puts: strike just above stock price
+            let score = strikeDiff;
+
+            if (isCall && contract.strike <= underlyingPrice) {
+                // Call ITM/ATM - prefer strikes at or below stock price
+                score = strikeDiff * 0.5; // Give preference to ITM
+            } else if (!isCall && contract.strike >= underlyingPrice) {
+                // Put ITM/ATM - prefer strikes at or above stock price
+                score = strikeDiff * 0.5;
+            }
+
+            if (score < minDiff) {
+                minDiff = score;
+                bestContract = contract;
+            }
+        }
+
+        return bestContract;
+    }
+
+    /**
+     * Determine if a contract is ITM, ATM, or OTM
+     * @param {Object} contract - Options contract
+     * @param {number} underlyingPrice - Stock price
+     * @param {string} optionType - 'call' or 'put'
+     * @returns {string} - 'ITM', 'ATM', or 'OTM'
+     */
+    getMoneyness(contract, underlyingPrice, optionType) {
+        const strike = contract.strike;
+        const diff = Math.abs(strike - underlyingPrice);
+        const isCall = optionType.toLowerCase() === 'call';
+
+        // Consider ATM if within $0.50 of stock price
+        if (diff <= 0.5) {
+            return 'ATM';
+        }
+
+        if (isCall) {
+            return strike < underlyingPrice ? 'ITM' : 'OTM';
+        } else {
+            return strike > underlyingPrice ? 'ITM' : 'OTM';
+        }
+    }
+
+    /**
      * Calculate actual P&L using real options contract prices
      *
      * @param {Object} trade - Trade object
@@ -140,7 +206,17 @@ class OptionsAnalyzer {
                 };
             }
 
-            // Find matching contract at entry
+            // Filter contracts by type and date for reuse
+            const typeFiltered = contracts.filter(c =>
+                c.type.toLowerCase() === trade.optionType.toLowerCase()
+            );
+            const tradeDate = new Date(trade.entryTime * 1000);
+            const tradeDateStr = tradeDate.toISOString().split('T')[0];
+            const dateFiltered = typeFiltered.filter(c =>
+                c.date === tradeDateStr && c.expiration === tradeDateStr
+            );
+
+            // Find matching contract at entry (OTM contract based on delta target)
             const entryContract = this.findMatchingContract(trade, contracts, trade.entryTime);
 
             if (!entryContract) {
@@ -153,8 +229,17 @@ class OptionsAnalyzer {
                 };
             }
 
+            // Also find ITM/ATM contract for comparison
+            const itmAtmContract = this.findITMATMContract(trade, dateFiltered);
+
+            // Determine moneyness of matched contract
+            const moneyness = this.getMoneyness(entryContract, trade.entryPrice, trade.optionType);
+
             // Calculate entry price (use mark price as it's the mid-point)
             const entryOptionPrice = entryContract.mark || (entryContract.bid + entryContract.ask) / 2;
+            const itmAtmOptionPrice = itmAtmContract
+                ? (itmAtmContract.mark || (itmAtmContract.bid + itmAtmContract.ask) / 2)
+                : null;
 
             // If trade has an exit, calculate exit P&L
             let exitOptionPrice = null;
@@ -226,6 +311,7 @@ class OptionsAnalyzer {
                 ...trade,
                 optionsAnalysis: {
                     status: 'analyzed',
+                    moneyness: moneyness, // ITM, ATM, or OTM
                     entryContract: {
                         contractID: entryContract.contractID,
                         strike: entryContract.strike,
@@ -240,6 +326,14 @@ class OptionsAnalyzer {
                     exitOptionPrice: exitOptionPrice,
                     actualPnL: actualPnL,
                     actualPnLPercent: actualPnLPercent,
+                    // ITM/ATM contract for comparison
+                    itmAtmContract: itmAtmContract ? {
+                        contractID: itmAtmContract.contractID,
+                        strike: itmAtmContract.strike,
+                        delta: itmAtmContract.delta,
+                        moneyness: this.getMoneyness(itmAtmContract, trade.entryPrice, trade.optionType)
+                    } : null,
+                    itmAtmOptionPrice: itmAtmOptionPrice,
                     takeProfitAnalysis: takeProfitAnalysis,
                     stopLossAnalysis: stopLossAnalysis,
                     // Original P&L was based on stock price, now we have option price P&L
