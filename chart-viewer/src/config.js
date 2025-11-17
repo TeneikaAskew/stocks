@@ -146,8 +146,8 @@ const CONFIG = {
 
     // Local storage keys
     STORAGE_KEYS: {
-        TRADES: 'tradingChartViewer_trades',
-        SETTINGS: 'tradingChartViewer_settings',
+        TRADES: 'tradingSimulator_trades',
+        SETTINGS: 'tradingSimulator_settings',
     },
 
     // Date format
