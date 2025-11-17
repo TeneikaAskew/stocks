@@ -106,8 +106,8 @@ const Utils = {
      */
     formatDateTime(timestamp) {
         const date = new Date(timestamp * 1000);
-        // Always display in Eastern Time (America/New_York)
-        return date.toLocaleString('en-US', {
+        // Always display in Eastern Time (America/New_York) with timezone abbreviation
+        const dateStr = date.toLocaleString('en-US', {
             timeZone: 'America/New_York',
             year: 'numeric',
             month: '2-digit',
@@ -117,6 +117,14 @@ const Utils = {
             second: '2-digit',
             hour12: false
         });
+
+        // Get timezone abbreviation (EDT or EST)
+        const tzStr = date.toLocaleTimeString('en-US', {
+            timeZone: 'America/New_York',
+            timeZoneName: 'short'
+        }).split(' ').pop();
+
+        return `${dateStr} ${tzStr}`;
     },
 
     /**

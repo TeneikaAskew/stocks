@@ -36,7 +36,7 @@ class ChartManager {
             height: this.container.clientHeight,
             localization: {
                 timeFormatter: (timestamp) => {
-                    // Convert Unix timestamp to Eastern Time
+                    // Convert Unix timestamp to Eastern Time with timezone abbreviation
                     const date = new Date(timestamp * 1000);
                     const etTime = date.toLocaleString('en-US', {
                         timeZone: 'America/New_York',
@@ -44,8 +44,15 @@ class ChartManager {
                         minute: '2-digit',
                         hour12: false
                     });
-                    // Return just HH:MM
-                    return etTime;
+
+                    // Get timezone abbreviation (EDT or EST)
+                    const tzStr = date.toLocaleTimeString('en-US', {
+                        timeZone: 'America/New_York',
+                        timeZoneName: 'short'
+                    }).split(' ').pop();
+
+                    // Return HH:MM TZ
+                    return `${etTime} ${tzStr}`;
                 },
             },
         });
