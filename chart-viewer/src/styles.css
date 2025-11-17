@@ -1,17 +1,40 @@
 /* Trading Chart Viewer Styles */
 
+/* Light Theme (Default) */
 :root {
     --primary-color: #3b82f6;
     --success-color: #10b981;
     --danger-color: #ef4444;
     --warning-color: #f59e0b;
     --info-color: #6366f1;
-    --bg-dark: #0f0f1e;
-    --bg-darker: #0a0a14;
+
+    /* Light theme colors */
+    --bg-main: #f8f9fa;
+    --bg-secondary: #ffffff;
+    --bg-card: #ffffff;
+    --text-primary: #1a1a1a;
+    --text-secondary: #6b7280;
+    --border-color: #e5e7eb;
+    --header-bg: rgba(255, 255, 255, 0.95);
+    --card-hover-bg: rgba(0, 0, 0, 0.02);
+    --control-bg: #f3f4f6;
+    --modal-overlay-bg: rgba(0, 0, 0, 0.5);
+    --shadow-color: rgba(0, 0, 0, 0.1);
+}
+
+/* Dark Theme */
+body.dark-theme {
+    --bg-main: #0f0f1e;
+    --bg-secondary: #0a0a14;
     --bg-card: #1a1a2e;
     --text-primary: #e0e0e0;
     --text-secondary: #a0a0a0;
     --border-color: #2a2a3e;
+    --header-bg: rgba(26, 26, 46, 0.95);
+    --card-hover-bg: rgba(255, 255, 255, 0.08);
+    --control-bg: #0a0a14;
+    --modal-overlay-bg: rgba(0, 0, 0, 0.7);
+    --shadow-color: rgba(0, 0, 0, 0.3);
 }
 
 * {
@@ -22,10 +45,11 @@
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    background: linear-gradient(135deg, var(--bg-dark) 0%, var(--bg-darker) 100%);
+    background: var(--bg-main);
     color: var(--text-primary);
     min-height: 100vh;
     overflow-x: hidden;
+    transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* App Container */
@@ -41,9 +65,10 @@ body {
     justify-content: space-between;
     align-items: center;
     padding: 1.5rem 2rem;
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--header-bg);
     backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--border-color);
+    transition: background-color 0.3s ease;
 }
 
 .header-content h1 {
@@ -90,13 +115,13 @@ body {
 /* Controls */
 .control-select {
     padding: 0.5rem 1rem;
-    background: var(--bg-darker);
+    background: var(--control-bg);
     border: 1px solid var(--border-color);
     border-radius: 6px;
     color: var(--text-primary);
     font-size: 0.9rem;
     cursor: pointer;
-    transition: border-color 0.2s;
+    transition: all 0.3s ease;
 }
 
 .control-select:hover {
@@ -378,7 +403,7 @@ body {
 }
 
 .trade-card:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--card-hover-bg);
     border-color: var(--primary-color);
 }
 
@@ -527,11 +552,12 @@ body {
     left: 0;
     width: 100%;
     height: 100%;
-    background: rgba(0, 0, 0, 0.7);
+    background: var(--modal-overlay-bg);
     backdrop-filter: blur(5px);
     z-index: 1000;
     align-items: center;
     justify-content: center;
+    transition: background-color 0.3s ease;
 }
 
 .modal.active {
@@ -598,11 +624,12 @@ body {
 .form-group input,
 .form-group textarea {
     padding: 0.75rem;
-    background: var(--bg-darker);
+    background: var(--control-bg);
     border: 1px solid var(--border-color);
     border-radius: 6px;
     color: var(--text-primary);
     font-size: 0.9rem;
+    transition: all 0.3s ease;
 }
 
 .form-group input:focus,

@@ -499,6 +499,13 @@ class ChartManager {
     applyTheme(theme) {
         const themeColors = CONFIG.THEMES[theme];
 
+        // Toggle body class for full app theming
+        if (theme === 'dark') {
+            document.body.classList.add('dark-theme');
+        } else {
+            document.body.classList.remove('dark-theme');
+        }
+
         // Update CONFIG with new theme
         CONFIG.currentTheme = theme;
         Object.assign(CONFIG.CHART.layout, themeColors.chart.layout);
