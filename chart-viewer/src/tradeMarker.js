@@ -4,18 +4,36 @@ class TradeMarker {
     constructor() {
         this.trades = [];
         this.currentTrade = null;
+        this.githubStorage = new GitHubStorage();
         this.loadTrades();
     }
 
     /**
-     * Load trades from localStorage
+     * Load trades from storage (GitHub or localStorage)
      */
-    loadTrades() {
+    async loadTrades() {
         try {
+            // Try loading from GitHub first if enabled
+            if (this.githubStorage.isEnabled()) {
+                console.log('[TradeMarker] Loading from GitHub...');
+                const githubTrades = await this.githubStorage.loadTrades();
+
+                if (githubTrades !== null) {
+                    this.trades = githubTrades;
+                    Utils.notify(`Loaded ${this.trades.length} trades from GitHub`, 'success');
+
+                    // Sync to localStorage as backup
+                    localStorage.setItem(CONFIG.STORAGE_KEYS.TRADES, JSON.stringify(this.trades));
+                    return;
+                }
+            }
+
+            // Fallback to localStorage
+            console.log('[TradeMarker] Loading from localStorage...');
             const stored = localStorage.getItem(CONFIG.STORAGE_KEYS.TRADES);
             if (stored) {
                 this.trades = JSON.parse(stored);
-                Utils.notify(`Loaded ${this.trades.length} trades`, 'info');
+                Utils.notify(`Loaded ${this.trades.length} trades from local storage`, 'info');
             }
         } catch (error) {
             console.error('Error loading trades:', error);
@@ -24,12 +42,29 @@ class TradeMarker {
     }
 
     /**
-     * Save trades to localStorage
+     * Save trades to storage (GitHub or localStorage)
      */
-    saveTrades() {
+    async saveTrades() {
         try {
+            // Always save to localStorage as backup
             localStorage.setItem(CONFIG.STORAGE_KEYS.TRADES, JSON.stringify(this.trades));
-            Utils.notify('Trades saved successfully', 'success');
+
+            // Try saving to GitHub if enabled
+            if (this.githubStorage.isEnabled()) {
+                console.log('[TradeMarker] Saving to GitHub...');
+                const success = await this.githubStorage.saveTrades(this.trades);
+
+                if (success) {
+                    return true;
+                }
+
+                // If GitHub save failed, still notify about local save
+                Utils.notify('Trades saved locally (GitHub save failed)', 'warning');
+                return false;
+            }
+
+            // Local storage only
+            Utils.notify('Trades saved locally', 'success');
             return true;
         } catch (error) {
             console.error('Error saving trades:', error);
