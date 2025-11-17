@@ -407,7 +407,7 @@ class App {
                     <span class="value targets-list">${trade.takeProfits.map((tp, i) => {
                         let tpHtml = `TP${i+1}: ${Utils.formatCurrency(tp.price)}`;
 
-                        // Add estimated contract P&L if available
+                        // Add estimated contract P&L if available (matched contract)
                         if (trade.optionsAnalysis &&
                             trade.optionsAnalysis.status === 'analyzed' &&
                             trade.optionsAnalysis.takeProfitAnalysis &&
@@ -417,7 +417,19 @@ class App {
                             // Multiply by 100 for actual contract value (100 shares per contract)
                             const pnlDollars = Math.round(tpAnalysis.estimatedPnL * 100);
                             const exitPrice = tpAnalysis.estimatedOptionPrice.toFixed(2);
-                            tpHtml += ` <span class="tp-contract-pnl">$${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
+                            tpHtml += `<br><span class="tp-contract-pnl">  ${trade.optionsAnalysis.moneyness}: $${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
+                        }
+
+                        // Add ITM/ATM alternative P&L if available
+                        if (trade.optionsAnalysis &&
+                            trade.optionsAnalysis.status === 'analyzed' &&
+                            trade.optionsAnalysis.itmAtmTakeProfitAnalysis &&
+                            trade.optionsAnalysis.itmAtmTakeProfitAnalysis[i]) {
+                            const tpAnalysis = trade.optionsAnalysis.itmAtmTakeProfitAnalysis[i];
+                            const pnlPercent = tpAnalysis.estimatedPnLPercent.toFixed(1);
+                            const pnlDollars = Math.round(tpAnalysis.estimatedPnL * 100);
+                            const exitPrice = tpAnalysis.estimatedOptionPrice.toFixed(2);
+                            tpHtml += `<br><span class="tp-contract-pnl-alt">  ${trade.optionsAnalysis.itmAtmContract.moneyness}: $${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
                         }
 
                         return tpHtml;
@@ -474,7 +486,7 @@ class App {
                     ${trade.stopLoss ? `
                         <div class="trade-detail">
                             <span class="label">Stop Loss:</span>
-                            <span class="value">${Utils.formatCurrency(trade.stopLoss.price)}${
+                            <span class="value stop-loss-list">${Utils.formatCurrency(trade.stopLoss.price)}${
                                 trade.optionsAnalysis &&
                                 trade.optionsAnalysis.status === 'analyzed' &&
                                 trade.optionsAnalysis.stopLossAnalysis
@@ -483,7 +495,19 @@ class App {
                                         const pnlPercent = slAnalysis.estimatedPnLPercent.toFixed(1);
                                         const pnlDollars = Math.round(slAnalysis.estimatedPnL * 100);
                                         const exitPrice = slAnalysis.estimatedOptionPrice.toFixed(2);
-                                        return ` <span class="sl-contract-pnl">$${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
+                                        return `<br><span class="sl-contract-pnl">  ${trade.optionsAnalysis.moneyness}: $${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
+                                    })()
+                                    : ''
+                            }${
+                                trade.optionsAnalysis &&
+                                trade.optionsAnalysis.status === 'analyzed' &&
+                                trade.optionsAnalysis.itmAtmStopLossAnalysis
+                                    ? (() => {
+                                        const slAnalysis = trade.optionsAnalysis.itmAtmStopLossAnalysis;
+                                        const pnlPercent = slAnalysis.estimatedPnLPercent.toFixed(1);
+                                        const pnlDollars = Math.round(slAnalysis.estimatedPnL * 100);
+                                        const exitPrice = slAnalysis.estimatedOptionPrice.toFixed(2);
+                                        return `<br><span class="sl-contract-pnl-alt">  ${trade.optionsAnalysis.itmAtmContract.moneyness}: $${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
                                     })()
                                     : ''
                             }</span>

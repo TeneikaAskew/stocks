@@ -507,10 +507,34 @@ body {
     white-space: nowrap;
 }
 
+/* Take Profit Contract P&L - Alternative (ITM/ATM) */
+.tp-contract-pnl-alt {
+    background: rgba(66, 153, 225, 0.2);
+    color: #4299e1;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-left: 0.25rem;
+    white-space: nowrap;
+}
+
 /* Stop Loss Contract P&L */
 .sl-contract-pnl {
     background: rgba(239, 68, 68, 0.2);
     color: var(--danger-color);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-left: 0.25rem;
+    white-space: nowrap;
+}
+
+/* Stop Loss Contract P&L - Alternative (ITM/ATM) */
+.sl-contract-pnl-alt {
+    background: rgba(66, 153, 225, 0.2);
+    color: #4299e1;
     padding: 0.15rem 0.4rem;
     border-radius: 3px;
     font-size: 0.8rem;
