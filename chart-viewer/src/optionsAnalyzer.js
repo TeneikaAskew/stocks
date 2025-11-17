@@ -264,7 +264,7 @@ class OptionsAnalyzer {
                 }
             }
 
-            // Calculate theoretical P&L for take profit levels
+            // Calculate theoretical P&L for take profit levels (matched contract)
             const takeProfitAnalysis = (trade.takeProfits || []).map((tp, index) => {
                 if (!tp.price) return null;
 
@@ -291,7 +291,7 @@ class OptionsAnalyzer {
                 };
             }).filter(tp => tp !== null);
 
-            // Calculate stop loss analysis
+            // Calculate stop loss analysis (matched contract)
             let stopLossAnalysis = null;
             if (trade.stopLoss && trade.stopLoss.price) {
                 const underlyingMove = trade.stopLoss.price - trade.entryPrice;
@@ -307,6 +307,50 @@ class OptionsAnalyzer {
                     estimatedPnL: slPnL,
                     estimatedPnLPercent: slPnLPercent
                 };
+            }
+
+            // Calculate TP/SL for ITM/ATM alternative contract
+            let itmAtmTakeProfitAnalysis = null;
+            let itmAtmStopLossAnalysis = null;
+
+            if (itmAtmContract && itmAtmOptionPrice) {
+                // Take profit analysis for ITM/ATM contract
+                itmAtmTakeProfitAnalysis = (trade.takeProfits || []).map((tp, index) => {
+                    if (!tp.price) return null;
+
+                    const underlyingMove = tp.price - trade.entryPrice;
+                    const optionPriceChange = underlyingMove * Math.abs(itmAtmContract.delta);
+                    const estimatedOptionPrice = itmAtmOptionPrice + optionPriceChange;
+
+                    const tpPnL = estimatedOptionPrice - itmAtmOptionPrice;
+                    const tpPnLPercent = (tpPnL / itmAtmOptionPrice) * 100;
+
+                    return {
+                        level: index + 1,
+                        targetPrice: tp.price,
+                        size: tp.size,
+                        estimatedOptionPrice: estimatedOptionPrice,
+                        estimatedPnL: tpPnL,
+                        estimatedPnLPercent: tpPnLPercent
+                    };
+                }).filter(tp => tp !== null);
+
+                // Stop loss analysis for ITM/ATM contract
+                if (trade.stopLoss && trade.stopLoss.price) {
+                    const underlyingMove = trade.stopLoss.price - trade.entryPrice;
+                    const optionPriceChange = underlyingMove * Math.abs(itmAtmContract.delta);
+                    const estimatedOptionPrice = itmAtmOptionPrice + optionPriceChange;
+
+                    const slPnL = estimatedOptionPrice - itmAtmOptionPrice;
+                    const slPnLPercent = (slPnL / itmAtmOptionPrice) * 100;
+
+                    itmAtmStopLossAnalysis = {
+                        targetPrice: trade.stopLoss.price,
+                        estimatedOptionPrice: estimatedOptionPrice,
+                        estimatedPnL: slPnL,
+                        estimatedPnLPercent: slPnLPercent
+                    };
+                }
             }
 
             return {
@@ -336,8 +380,12 @@ class OptionsAnalyzer {
                         moneyness: this.getMoneyness(itmAtmContract, trade.entryPrice, trade.optionType)
                     } : null,
                     itmAtmOptionPrice: itmAtmOptionPrice,
+                    // TP/SL analysis for matched contract
                     takeProfitAnalysis: takeProfitAnalysis,
                     stopLossAnalysis: stopLossAnalysis,
+                    // TP/SL analysis for ITM/ATM alternative contract
+                    itmAtmTakeProfitAnalysis: itmAtmTakeProfitAnalysis,
+                    itmAtmStopLossAnalysis: itmAtmStopLossAnalysis,
                     // Original P&L was based on stock price, now we have option price P&L
                     originalPnL: trade.pnl,
                     originalPnLPercent: trade.pnlPercent
