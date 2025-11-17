@@ -10,7 +10,34 @@ class Analytics {
      */
     calculateStats() {
         const allTrades = this.tradeMarker.getAllTrades();
-        const closedTrades = this.tradeMarker.getClosedTrades();
+
+        // Expand trades with TPs into individual exit points for analytics
+        const expandedTrades = [];
+        for (const trade of allTrades) {
+            if (trade.takeProfits && trade.takeProfits.length > 0) {
+                // Create a separate "trade" for each TP level
+                trade.takeProfits.forEach((tp, index) => {
+                    if (tp.price) {
+                        const pnl = Utils.calculatePnL(trade.entryPrice, tp.price, trade.optionType);
+                        const pnlPercent = Utils.calculatePnLPercent(trade.entryPrice, tp.price, trade.optionType);
+                        expandedTrades.push({
+                            ...trade,
+                            exitPrice: tp.price,
+                            exitReason: `TP${index + 1}`,
+                            pnl: pnl,
+                            pnlPercent: pnlPercent,
+                            status: pnl > 0 ? 'win' : pnl < 0 ? 'loss' : 'breakeven',
+                            size: tp.size || (1 / trade.takeProfits.length), // Default to equal size if not specified
+                        });
+                    }
+                });
+            } else if (trade.exitPrice) {
+                // Regular closed trade
+                expandedTrades.push(trade);
+            }
+        }
+
+        const closedTrades = expandedTrades;
 
         if (closedTrades.length === 0) {
             return {
