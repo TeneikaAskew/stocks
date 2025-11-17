@@ -84,6 +84,14 @@ const CONFIG = {
         '30': '30min',
         '60': '1hour',
     },
+
+    // GitHub API settings for trade storage
+    // NOTE: The token should be set via environment or injected at build time
+    // For GitHub Pages, this will be replaced during the deployment process
+    GITHUB_OWNER: 'TeneikaAskew',
+    GITHUB_REPO: 'stocks',
+    GITHUB_BRANCH: 'main',
+    GITHUB_TOKEN: '', // Will be injected by GitHub Actions during deployment
 };
 
 // Helper functions
