@@ -15,52 +15,133 @@ const CONFIG = {
         QQQ: '../data/qqq/minute'
     },
 
-    // Chart settings
+    // Theme colors
+    THEMES: {
+        light: {
+            chart: {
+                layout: {
+                    background: { color: '#ffffff' },
+                    textColor: '#191919',
+                },
+                grid: {
+                    vertLines: { color: '#e6e6e6' },
+                    horzLines: { color: '#e6e6e6' },
+                },
+                timeScale: {
+                    borderColor: '#d1d4dc',
+                },
+                rightPriceScale: {
+                    borderColor: '#d1d4dc',
+                },
+            },
+            candles: {
+                upColor: '#089981',
+                downColor: '#f23645',
+                borderUpColor: '#089981',
+                borderDownColor: '#f23645',
+                wickUpColor: '#089981',
+                wickDownColor: '#f23645',
+            },
+            volume: {
+                upColor: 'rgba(8, 153, 129, 0.5)',
+                downColor: 'rgba(242, 54, 69, 0.5)',
+            },
+            markers: {
+                CALL_ENTRY: '#089981',
+                PUT_ENTRY: '#f23645',
+                EXIT: '#2962ff',
+                TP: '#089981',
+                SL: '#f23645',
+            },
+        },
+        dark: {
+            chart: {
+                layout: {
+                    background: { color: '#131722' },
+                    textColor: '#d1d4dc',
+                },
+                grid: {
+                    vertLines: { color: '#1e222d' },
+                    horzLines: { color: '#1e222d' },
+                },
+                timeScale: {
+                    borderColor: '#2b2b43',
+                },
+                rightPriceScale: {
+                    borderColor: '#2b2b43',
+                },
+            },
+            candles: {
+                upColor: '#26a69a',
+                downColor: '#ef5350',
+                borderUpColor: '#26a69a',
+                borderDownColor: '#ef5350',
+                wickUpColor: '#26a69a',
+                wickDownColor: '#ef5350',
+            },
+            volume: {
+                upColor: 'rgba(38, 166, 154, 0.5)',
+                downColor: 'rgba(239, 83, 80, 0.5)',
+            },
+            markers: {
+                CALL_ENTRY: '#26a69a',
+                PUT_ENTRY: '#ef5350',
+                EXIT: '#2962ff',
+                TP: '#26a69a',
+                SL: '#ef5350',
+            },
+        },
+    },
+
+    // Default theme (will be overridden by user preference)
+    currentTheme: 'light',
+
+    // Chart settings (use light theme by default, will be updated dynamically)
     CHART: {
         layout: {
-            background: { color: '#0f0f1e' },
-            textColor: '#e0e0e0',
+            background: { color: '#ffffff' },
+            textColor: '#191919',
         },
         grid: {
-            vertLines: { color: '#1a1a2e' },
-            horzLines: { color: '#1a1a2e' },
+            vertLines: { color: '#e6e6e6' },
+            horzLines: { color: '#e6e6e6' },
         },
         crosshair: {
-            mode: 0, // LightweightCharts.CrosshairMode.Normal
+            mode: 0,
         },
         timeScale: {
             timeVisible: true,
             secondsVisible: false,
-            borderColor: '#2a2a3e',
+            borderColor: '#d1d4dc',
         },
         rightPriceScale: {
-            borderColor: '#2a2a3e',
+            borderColor: '#d1d4dc',
         },
     },
 
-    // Candlestick colors
+    // Candlestick colors (light theme default)
     CANDLE_COLORS: {
-        upColor: '#10b981',
-        downColor: '#ef4444',
-        borderUpColor: '#10b981',
-        borderDownColor: '#ef4444',
-        wickUpColor: '#10b981',
-        wickDownColor: '#ef4444',
+        upColor: '#089981',
+        downColor: '#f23645',
+        borderUpColor: '#089981',
+        borderDownColor: '#f23645',
+        wickUpColor: '#089981',
+        wickDownColor: '#f23645',
     },
 
-    // Volume colors
+    // Volume colors (light theme default)
     VOLUME_COLORS: {
-        upColor: 'rgba(16, 185, 129, 0.5)',
-        downColor: 'rgba(239, 68, 68, 0.5)',
+        upColor: 'rgba(8, 153, 129, 0.5)',
+        downColor: 'rgba(242, 54, 69, 0.5)',
     },
 
-    // Trade marker colors
+    // Trade marker colors (light theme default)
     MARKER_COLORS: {
-        CALL_ENTRY: '#10b981',
-        PUT_ENTRY: '#ef4444',
-        EXIT: '#6366f1',
-        TP: '#10b981',
-        SL: '#ef4444',
+        CALL_ENTRY: '#089981',
+        PUT_ENTRY: '#f23645',
+        EXIT: '#2962ff',
+        TP: '#089981',
+        SL: '#f23645',
     },
 
     // Local storage keys

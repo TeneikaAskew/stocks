@@ -18,6 +18,7 @@ class ChartManager {
         this.initializeChart();
         this.setupVolumeToggle();
         this.setupRTHToggle();
+        this.setupDarkModeToggle();
     }
 
     /**
@@ -466,5 +467,81 @@ class ChartManager {
             this.candlestickSeries.removePriceLine(line);
         });
         this.tempPriceLines = [];
+    }
+
+    /**
+     * Setup dark mode toggle listener
+     */
+    setupDarkModeToggle() {
+        const darkModeToggle = document.getElementById('darkModeToggle');
+        if (darkModeToggle) {
+            // Load saved theme preference
+            const savedTheme = localStorage.getItem('chartTheme') || 'light';
+            const isDark = savedTheme === 'dark';
+            darkModeToggle.checked = isDark;
+
+            // Apply theme on load
+            if (isDark) {
+                this.applyTheme('dark');
+            }
+
+            darkModeToggle.addEventListener('change', (e) => {
+                const theme = e.target.checked ? 'dark' : 'light';
+                this.applyTheme(theme);
+                localStorage.setItem('chartTheme', theme);
+            });
+        }
+    }
+
+    /**
+     * Apply theme to chart and update CONFIG
+     */
+    applyTheme(theme) {
+        const themeColors = CONFIG.THEMES[theme];
+
+        // Update CONFIG with new theme
+        CONFIG.currentTheme = theme;
+        Object.assign(CONFIG.CHART.layout, themeColors.chart.layout);
+        Object.assign(CONFIG.CHART.grid, themeColors.chart.grid);
+        CONFIG.CHART.timeScale.borderColor = themeColors.chart.timeScale.borderColor;
+        CONFIG.CHART.rightPriceScale.borderColor = themeColors.chart.rightPriceScale.borderColor;
+        Object.assign(CONFIG.CANDLE_COLORS, themeColors.candles);
+        Object.assign(CONFIG.VOLUME_COLORS, themeColors.volume);
+        Object.assign(CONFIG.MARKER_COLORS, themeColors.markers);
+
+        // Apply layout changes to chart
+        this.chart.applyOptions({
+            layout: themeColors.chart.layout,
+            grid: themeColors.chart.grid,
+            timeScale: {
+                ...this.chart.options().timeScale,
+                borderColor: themeColors.chart.timeScale.borderColor,
+            },
+            rightPriceScale: {
+                ...this.chart.options().rightPriceScale,
+                borderColor: themeColors.chart.rightPriceScale.borderColor,
+            },
+        });
+
+        // Update candlestick colors
+        this.candlestickSeries.applyOptions(themeColors.candles);
+
+        // Reload volume data with new colors if visible
+        if (this.volumeVisible && this.currentData) {
+            const filteredData = this.rthOnly ? this.filterRTH(this.currentData) : this.currentData;
+            const volumeData = filteredData.volume.map(v => ({
+                ...v,
+                color: v.value > 0 ? themeColors.volume.upColor : themeColors.volume.downColor,
+            }));
+            this.volumeSeries.setData(volumeData);
+        }
+
+        // Reload markers with new colors if they exist
+        const trades = this.currentData ? window.app?.tradeMarker?.getTradesForDate(this.currentTicker, this.currentDate) : [];
+        if (trades && trades.length > 0) {
+            this.addMarkers(trades);
+        }
+
+        Utils.notify(`${theme === 'dark' ? 'Dark' : 'Light'} mode enabled`, 'info');
     }
 }
