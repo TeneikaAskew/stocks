@@ -464,7 +464,19 @@ class App {
                     ${trade.stopLoss ? `
                         <div class="trade-detail">
                             <span class="label">Stop Loss:</span>
-                            <span class="value">${Utils.formatCurrency(trade.stopLoss.price)}</span>
+                            <span class="value">${Utils.formatCurrency(trade.stopLoss.price)}${
+                                trade.optionsAnalysis &&
+                                trade.optionsAnalysis.status === 'analyzed' &&
+                                trade.optionsAnalysis.stopLossAnalysis
+                                    ? (() => {
+                                        const slAnalysis = trade.optionsAnalysis.stopLossAnalysis;
+                                        const pnlPercent = slAnalysis.estimatedPnLPercent.toFixed(1);
+                                        const pnlDollars = Math.round(slAnalysis.estimatedPnL * 100);
+                                        const exitPrice = slAnalysis.estimatedOptionPrice.toFixed(2);
+                                        return ` <span class="sl-contract-pnl">$${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
+                                    })()
+                                    : ''
+                            }</span>
                         </div>
                     ` : ''}
                 </div>
