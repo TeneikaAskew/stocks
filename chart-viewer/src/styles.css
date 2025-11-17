@@ -427,6 +427,10 @@ body {
     font-weight: 600;
 }
 
+.trade-detail .value.targets-list {
+    line-height: 1.5;
+}
+
 .trade-card-footer {
     display: flex;
     justify-content: space-between;
