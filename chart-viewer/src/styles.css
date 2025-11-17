@@ -474,6 +474,18 @@ body {
     font-size: 0.85rem;
 }
 
+/* Take Profit Contract P&L */
+.tp-contract-pnl {
+    background: rgba(16, 185, 129, 0.2);
+    color: var(--success-color);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-left: 0.25rem;
+    white-space: nowrap;
+}
+
 .trade-card-footer {
     display: flex;
     justify-content: space-between;

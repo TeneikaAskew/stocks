@@ -400,11 +400,26 @@ class App {
      * Create trade card HTML
      */
     createTradeCard(trade) {
-        // Format take profits each on a new line
+        // Format take profits each on a new line with contract P&L if available
         const takeProfitsHtml = trade.takeProfits.length > 0
             ? `<div class="trade-detail">
                     <span class="label">Targets:</span>
-                    <span class="value targets-list">${trade.takeProfits.map((tp, i) => `TP${i+1}: ${Utils.formatCurrency(tp.price)}`).join('<br>')}</span>
+                    <span class="value targets-list">${trade.takeProfits.map((tp, i) => {
+                        let tpHtml = `TP${i+1}: ${Utils.formatCurrency(tp.price)}`;
+
+                        // Add estimated contract P&L if available
+                        if (trade.optionsAnalysis &&
+                            trade.optionsAnalysis.status === 'analyzed' &&
+                            trade.optionsAnalysis.takeProfitAnalysis &&
+                            trade.optionsAnalysis.takeProfitAnalysis[i]) {
+                            const tpAnalysis = trade.optionsAnalysis.takeProfitAnalysis[i];
+                            const pnlPercent = tpAnalysis.estimatedPnLPercent.toFixed(1);
+                            const pnlAmount = Utils.formatCurrency(tpAnalysis.estimatedPnL);
+                            tpHtml += ` <span class="tp-contract-pnl">${pnlAmount} (${pnlPercent}%)</span>`;
+                        }
+
+                        return tpHtml;
+                    }).join('<br>')}</span>
                 </div>`
             : '';
 
