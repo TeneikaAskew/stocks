@@ -9,6 +9,7 @@ import numpy as np
 from datetime import datetime, time
 import os
 import glob
+import shutil
 from typing import Tuple, List, Dict
 import warnings
 # import json  # No longer needed - removed run-based analysis
@@ -19,7 +20,25 @@ class IWMAnalyzer:
     def __init__(self):
         self.df = None
         self.signals_df = None
-        
+        self.data_source = None  # Track whether data is from 'csv' or 'parquet'
+
+    def _archive_file(self, file_path: str) -> None:
+        """Archive existing file with timestamp if it exists
+
+        Args:
+            file_path: Path to file to archive
+        """
+        if os.path.exists(file_path):
+            # Create archive filename with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            base_name = os.path.splitext(file_path)[0]
+            ext = os.path.splitext(file_path)[1]
+            archive_path = f"{base_name}_archive_{timestamp}{ext}"
+
+            # Move existing file to archive
+            shutil.move(file_path, archive_path)
+            print(f"  Archived existing file to: {archive_path}")
+
     def load_parquet_data(self, symbol: str = 'IWM', interval: str = '1min',
                           market_hours_only: bool = False) -> pd.DataFrame:
         """Load data from AlphaVantage parquet files
@@ -98,19 +117,18 @@ class IWMAnalyzer:
         print(f"Parquet data loaded: {len(df):,} rows")
         print(f"Date range: {df['Time'].min()} to {df['Time'].max()}")
 
+        # Set data source
+        self.data_source = 'parquet'
+        self.df = df
+
         return df
 
-    def combine_csv_files(self, folder_path: str, output_path: str,
-                         include_parquet: bool = True, symbol: str = 'IWM',
-                         interval: str = '1min') -> pd.DataFrame:
-        """Combine all CSV files from stock_prices folder, optionally including parquet data
+    def combine_csv_files(self, folder_path: str, output_path: str) -> pd.DataFrame:
+        """Combine all CSV files from stock_prices folder
 
         Args:
             folder_path: Path to CSV files
             output_path: Path to save combined data
-            include_parquet: If True, also load and merge parquet data (default: True)
-            symbol: Symbol for parquet data (default: IWM)
-            interval: Interval for parquet data (default: 1min)
         """
 
         # Load CSV files
@@ -131,19 +149,9 @@ class IWMAnalyzer:
         else:
             print(f"No CSV files found in {folder_path}")
 
-        # Load parquet data if requested
-        if include_parquet:
-            print("\nLoading parquet data...")
-            df_parquet = self.load_parquet_data(symbol, interval)
-            if df_parquet is not None:
-                dfs.append(df_parquet)
-                print(f"  Added parquet data: {len(df_parquet)} rows")
-            else:
-                print("  No parquet data found")
-
         # Check if we have any data
         if len(dfs) == 0:
-            raise FileNotFoundError(f"No data found: no CSV files in {folder_path} and no parquet data")
+            raise FileNotFoundError(f"No CSV files found in {folder_path}")
 
         # Combine all dataframes
         print(f"\nCombining {len(dfs)} data sources...")
@@ -166,12 +174,17 @@ class IWMAnalyzer:
         # Reset index
         df_combined = df_combined.reset_index(drop=True)
 
+        # Archive existing file if it exists
+        self._archive_file(output_path)
+
         # Save combined file
         df_combined.to_csv(output_path, index=False)
-        print(f"\nCombined data saved to {output_path}")
+        print(f"Combined data saved to {output_path}")
         print(f"Total rows: {len(df_combined):,}")
         print(f"Date range: {df_combined['Time'].min()} to {df_combined['Time'].max()}")
 
+        # Set data source
+        self.data_source = 'csv'
         self.df = df_combined
         return df_combined
     
@@ -1172,22 +1185,41 @@ class IWMAnalyzer:
         print("="*60)
         df = self.add_technical_indicators(df)
         
-        # Save enhanced data
-        enhanced_file = output_file.replace('.csv', '_with_indicators.csv')
-        print("\nSaving enhanced data with indicators...")
-        df.to_csv(enhanced_file, index=False)
-        print(f"SUCCESS: Enhanced data saved to: {enhanced_file}")
-        
+        # Save enhanced data (use format based on data source)
+        if self.data_source == 'parquet':
+            enhanced_file = output_file.replace('.parquet', '_with_indicators.parquet').replace('.csv', '_with_indicators.parquet')
+            print("\nSaving enhanced data with indicators (parquet format)...")
+            self._archive_file(enhanced_file)
+            # Convert %Chg back to float for parquet
+            df_save = df.copy()
+            df_save['%Chg'] = df_save['%Chg'].str.rstrip('%').astype(float)
+            df_save.to_parquet(enhanced_file, index=False)
+            print(f"SUCCESS: Enhanced data saved to: {enhanced_file}")
+        else:
+            enhanced_file = output_file.replace('.csv', '_with_indicators.csv')
+            print("\nSaving enhanced data with indicators (CSV format)...")
+            self._archive_file(enhanced_file)
+            df.to_csv(enhanced_file, index=False)
+            print(f"SUCCESS: Enhanced data saved to: {enhanced_file}")
+
         # Step 3: Generate technical indicator-based signals
         print("\n" + "="*60)
         print("STEP 3: TECHNICAL SIGNAL GENERATION")
         print("="*60)
         signals_df = self.generate_technical_signals(df)
-        
-        # Save signals
-        print("\nSaving trading signals...")
-        signals_df.to_csv(signals_file, index=False)
-        print(f"SUCCESS: Trading signals saved to: {signals_file}")
+
+        # Save signals (use format based on data source)
+        if self.data_source == 'parquet':
+            signals_file_final = signals_file.replace('.csv', '.parquet')
+            print("\nSaving trading signals (parquet format)...")
+            self._archive_file(signals_file_final)
+            signals_df.to_parquet(signals_file_final, index=False)
+            print(f"SUCCESS: Trading signals saved to: {signals_file_final}")
+        else:
+            print("\nSaving trading signals (CSV format)...")
+            self._archive_file(signals_file)
+            signals_df.to_csv(signals_file, index=False)
+            print(f"SUCCESS: Trading signals saved to: {signals_file}")
         
         # Print summary statistics
         print("\n" + "="*60)
