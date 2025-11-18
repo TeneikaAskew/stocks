@@ -400,12 +400,12 @@ class App {
      * Create trade card HTML
      */
     createTradeCard(trade) {
-        // Format take profits each on a new line with contract P&L if available
+        // Format take profits with toggleable contract P&L
         const takeProfitsHtml = trade.takeProfits.length > 0
             ? `<div class="trade-detail">
-                    <span class="label">Targets:</span>
+                    <span class="label">TP:</span>
                     <span class="value targets-list">${trade.takeProfits.map((tp, i) => {
-                        let tpHtml = `TP${i+1}: ${Utils.formatCurrency(tp.price)}`;
+                        let tpHtml = `${i+1}: ${Utils.formatCurrency(tp.price)}`;
 
                         // Add estimated contract P&L if available (matched contract)
                         if (trade.optionsAnalysis &&
@@ -414,22 +414,19 @@ class App {
                             trade.optionsAnalysis.takeProfitAnalysis[i]) {
                             const tpAnalysis = trade.optionsAnalysis.takeProfitAnalysis[i];
                             const pnlPercent = tpAnalysis.estimatedPnLPercent.toFixed(1);
-                            // Multiply by 100 for actual contract value (100 shares per contract)
                             const pnlDollars = Math.round(tpAnalysis.estimatedPnL * 100);
                             const exitPrice = tpAnalysis.estimatedOptionPrice.toFixed(2);
-                            tpHtml += `<br><span class="tp-contract-pnl">  ${trade.optionsAnalysis.moneyness}: $${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
-                        }
+                            tpHtml += ` <span class="tp-contract-pnl contract-pnl-primary">$${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
 
-                        // Add ITM/ATM alternative P&L if available
-                        if (trade.optionsAnalysis &&
-                            trade.optionsAnalysis.status === 'analyzed' &&
-                            trade.optionsAnalysis.itmAtmTakeProfitAnalysis &&
-                            trade.optionsAnalysis.itmAtmTakeProfitAnalysis[i]) {
-                            const tpAnalysis = trade.optionsAnalysis.itmAtmTakeProfitAnalysis[i];
-                            const pnlPercent = tpAnalysis.estimatedPnLPercent.toFixed(1);
-                            const pnlDollars = Math.round(tpAnalysis.estimatedPnL * 100);
-                            const exitPrice = tpAnalysis.estimatedOptionPrice.toFixed(2);
-                            tpHtml += `<br><span class="tp-contract-pnl-alt">  ${trade.optionsAnalysis.itmAtmContract.moneyness}: $${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
+                            // Add hidden ITM/ATM alternative P&L
+                            if (trade.optionsAnalysis.itmAtmTakeProfitAnalysis &&
+                                trade.optionsAnalysis.itmAtmTakeProfitAnalysis[i]) {
+                                const tpAnalysisAlt = trade.optionsAnalysis.itmAtmTakeProfitAnalysis[i];
+                                const pnlPercentAlt = tpAnalysisAlt.estimatedPnLPercent.toFixed(1);
+                                const pnlDollarsAlt = Math.round(tpAnalysisAlt.estimatedPnL * 100);
+                                const exitPriceAlt = tpAnalysisAlt.estimatedOptionPrice.toFixed(2);
+                                tpHtml += ` <span class="tp-contract-pnl-alt contract-pnl-alt" style="display:none;">$${pnlDollarsAlt} (${pnlPercentAlt}% - $${exitPriceAlt})</span>`;
+                            }
                         }
 
                         return tpHtml;
@@ -437,9 +434,24 @@ class App {
                 </div>`
             : '';
 
-        // Options contract info (if available)
+        // Options contract info with toggle (if ITM/ATM alternative available)
+        const hasAltContract = trade.optionsAnalysis &&
+                               trade.optionsAnalysis.status === 'analyzed' &&
+                               trade.optionsAnalysis.itmAtmContract;
+
         const optionsHtml = trade.optionsAnalysis && trade.optionsAnalysis.status === 'analyzed'
-            ? `<div class="trade-detail options-contract">
+            ? `${hasAltContract ? `
+                <div class="contract-toggle-wrapper">
+                    <label class="contract-toggle">
+                        <input type="checkbox" onchange="app.toggleContract('${trade.id}', this.checked)">
+                        <span class="contract-toggle-slider"></span>
+                        <span class="contract-toggle-label">
+                            <span class="toggle-label-primary">${trade.optionsAnalysis.moneyness}</span>
+                            <span class="toggle-label-alt">${trade.optionsAnalysis.itmAtmContract.moneyness}</span>
+                        </span>
+                    </label>
+                </div>` : ''}
+                <div class="trade-detail options-contract contract-view-primary">
                     <span class="label">Contract (${trade.optionsAnalysis.moneyness}):</span>
                     <span class="value contract-info">
                         <strong>${trade.optionsAnalysis.entryContract.contractID}</strong><br>
@@ -453,9 +465,9 @@ class App {
                             : ''}
                     </span>
                 </div>
-                ${trade.optionsAnalysis.itmAtmContract ? `
-                <div class="trade-detail options-contract-alt">
-                    <span class="label">${trade.optionsAnalysis.itmAtmContract.moneyness} Alternative:</span>
+                ${hasAltContract ? `
+                <div class="trade-detail options-contract-alt contract-view-alt" style="display:none;">
+                    <span class="label">Contract (${trade.optionsAnalysis.itmAtmContract.moneyness}):</span>
                     <span class="value contract-info">
                         <strong>${trade.optionsAnalysis.itmAtmContract.contractID}</strong><br>
                         Strike: ${Utils.formatCurrency(trade.optionsAnalysis.itmAtmContract.strike)} |
@@ -486,7 +498,7 @@ class App {
                     ${trade.stopLoss ? `
                         <div class="trade-detail">
                             <span class="label">Stop Loss:</span>
-                            <span class="value stop-loss-list">${Utils.formatCurrency(trade.stopLoss.price)}${
+                            <span class="value">${Utils.formatCurrency(trade.stopLoss.price)}${
                                 trade.optionsAnalysis &&
                                 trade.optionsAnalysis.status === 'analyzed' &&
                                 trade.optionsAnalysis.stopLossAnalysis
@@ -495,19 +507,18 @@ class App {
                                         const pnlPercent = slAnalysis.estimatedPnLPercent.toFixed(1);
                                         const pnlDollars = Math.round(slAnalysis.estimatedPnL * 100);
                                         const exitPrice = slAnalysis.estimatedOptionPrice.toFixed(2);
-                                        return `<br><span class="sl-contract-pnl">  ${trade.optionsAnalysis.moneyness}: $${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
-                                    })()
-                                    : ''
-                            }${
-                                trade.optionsAnalysis &&
-                                trade.optionsAnalysis.status === 'analyzed' &&
-                                trade.optionsAnalysis.itmAtmStopLossAnalysis
-                                    ? (() => {
-                                        const slAnalysis = trade.optionsAnalysis.itmAtmStopLossAnalysis;
-                                        const pnlPercent = slAnalysis.estimatedPnLPercent.toFixed(1);
-                                        const pnlDollars = Math.round(slAnalysis.estimatedPnL * 100);
-                                        const exitPrice = slAnalysis.estimatedOptionPrice.toFixed(2);
-                                        return `<br><span class="sl-contract-pnl-alt">  ${trade.optionsAnalysis.itmAtmContract.moneyness}: $${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
+                                        let slHtml = ` <span class="sl-contract-pnl contract-pnl-primary">$${pnlDollars} (${pnlPercent}% - $${exitPrice})</span>`;
+
+                                        // Add hidden ITM/ATM alternative
+                                        if (trade.optionsAnalysis.itmAtmStopLossAnalysis) {
+                                            const slAnalysisAlt = trade.optionsAnalysis.itmAtmStopLossAnalysis;
+                                            const pnlPercentAlt = slAnalysisAlt.estimatedPnLPercent.toFixed(1);
+                                            const pnlDollarsAlt = Math.round(slAnalysisAlt.estimatedPnL * 100);
+                                            const exitPriceAlt = slAnalysisAlt.estimatedOptionPrice.toFixed(2);
+                                            slHtml += ` <span class="sl-contract-pnl-alt contract-pnl-alt" style="display:none;">$${pnlDollarsAlt} (${pnlPercentAlt}% - $${exitPriceAlt})</span>`;
+                                        }
+
+                                        return slHtml;
                                     })()
                                     : ''
                             }</span>
@@ -526,6 +537,27 @@ class App {
         if (success) {
             this.refreshTradesList();
         }
+    }
+
+    /**
+     * Toggle between OTM and ITM/ATM contract display
+     */
+    toggleContract(tradeId, showAlt) {
+        const tradeCard = document.querySelector(`.trade-card[data-trade-id="${tradeId}"]`);
+        if (!tradeCard) return;
+
+        // Toggle contract info
+        const primaryContract = tradeCard.querySelector('.contract-view-primary');
+        const altContract = tradeCard.querySelector('.contract-view-alt');
+        if (primaryContract) primaryContract.style.display = showAlt ? 'none' : 'flex';
+        if (altContract) altContract.style.display = showAlt ? 'flex' : 'none';
+
+        // Toggle TP/SL P&L values
+        const primaryPnL = tradeCard.querySelectorAll('.contract-pnl-primary');
+        const altPnL = tradeCard.querySelectorAll('.contract-pnl-alt');
+
+        primaryPnL.forEach(el => el.style.display = showAlt ? 'none' : 'inline');
+        altPnL.forEach(el => el.style.display = showAlt ? 'inline' : 'none');
     }
 
     /**
