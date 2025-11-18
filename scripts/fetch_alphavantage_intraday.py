@@ -19,6 +19,15 @@ import json
 import os
 from dotenv import load_dotenv
 
+# Try to import market calendar for holiday detection
+try:
+    import pandas_market_calendars as mcal
+    CALENDAR_AVAILABLE = True
+except ImportError:
+    CALENDAR_AVAILABLE = False
+    print("Note: pandas_market_calendars not installed. Install with: pip install pandas_market_calendars")
+    print("      Holiday detection will be disabled.\n")
+
 # Load environment variables
 load_dotenv()
 
@@ -37,6 +46,41 @@ BASE_URL = 'https://www.alphavantage.co/query'
 # Rate limiting: Alpha Vantage free tier allows 5 API calls/minute, 500/day
 CALLS_PER_MINUTE = 5
 DELAY_BETWEEN_CALLS = 60 / CALLS_PER_MINUTE  # 12 seconds
+
+
+def is_month_all_non_trading_days(month_str):
+    """
+    Check if an entire month has no trading days (unlikely but possible for future months).
+
+    Args:
+        month_str: Month in YYYY-MM format
+
+    Returns:
+        True if entire month is non-trading days, False otherwise
+    """
+    if not CALENDAR_AVAILABLE:
+        return False  # Can't determine, assume it has trading days
+
+    try:
+        # Parse month
+        year, month = map(int, month_str.split('-'))
+        # Get first and last day of month
+        from calendar import monthrange
+        _, last_day = monthrange(year, month)
+
+        start = pd.Timestamp(year, month, 1)
+        end = pd.Timestamp(year, month, last_day)
+
+        # Get NYSE calendar (covers most US stocks including ETFs)
+        nyse = mcal.get_calendar('NYSE')
+        schedule = nyse.schedule(start_date=start, end_date=end)
+
+        # If schedule is empty, no trading days in this month
+        return len(schedule) == 0
+
+    except Exception as e:
+        # If any error, assume it has trading days
+        return False
 
 
 def get_trading_months(start_date, end_date):
@@ -255,15 +299,25 @@ def fetch_historical_intraday(symbol, years=5, interval='1min', start_date=None,
     for month in months:
         # Check if file already exists
         month_file = data_dir / f"{symbol.lower()}_av_{interval}_{month.replace('-', '')}.parquet"
+        nodata_marker = data_dir / f"{symbol.lower()}_av_{interval}_{month.replace('-', '')}.nodata"
 
+        # Check for actual data file FIRST
         if month_file.exists():
             print(f"  Loading cached data for {month} from {month_file}")
             try:
                 df = pd.read_parquet(month_file)
                 all_data.append(df)
+                # Delete marker file if it exists but we have data (shouldn't happen, but cleanup)
+                if nodata_marker.exists():
+                    nodata_marker.unlink()
                 continue
             except Exception as e:
                 print(f"  Error loading cached file: {e}. Re-fetching...")
+
+        # Check for "no data" marker file - skip API call if exists AND no data file
+        if nodata_marker.exists():
+            print(f"  Skipping {month} (previously returned 'No data')")
+            continue
 
         # Fetch data from API
         df = fetch_intraday_month(symbol, month, interval=interval)
@@ -279,6 +333,15 @@ def fetch_historical_intraday(symbol, years=5, interval='1min', start_date=None,
             print(f"  Saved to {month_file}")
 
             all_data.append(df)
+        else:
+            # Only create marker if this month should have trading days
+            # Don't create markers for months that are entirely holidays/weekends
+            if is_month_all_non_trading_days(month):
+                print(f"  No data for {month} (entire month is non-trading days - no marker created)")
+            else:
+                # Create marker file for months with no data to avoid wasting API calls on re-runs
+                nodata_marker.touch()
+                print(f"  Created 'no data' marker for {month} (skipped on future runs)")
 
         api_calls += 1
 
