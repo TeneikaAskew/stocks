@@ -19,6 +19,15 @@ import json
 import os
 from dotenv import load_dotenv
 
+# Try to import market calendar for holiday detection
+try:
+    import pandas_market_calendars as mcal
+    CALENDAR_AVAILABLE = True
+except ImportError:
+    CALENDAR_AVAILABLE = False
+    print("Note: pandas_market_calendars not installed. Install with: pip install pandas_market_calendars")
+    print("      Holiday detection will be disabled.\n")
+
 # Load environment variables
 load_dotenv()
 
@@ -39,14 +48,42 @@ CALLS_PER_MINUTE = 5
 DELAY_BETWEEN_CALLS = 60 / CALLS_PER_MINUTE  # 12 seconds
 
 
+def is_trading_day(date):
+    """
+    Check if a specific date is a trading day (not weekend or market holiday).
+
+    Args:
+        date: datetime.date object
+
+    Returns:
+        True if trading day, False if weekend or holiday
+    """
+    if not CALENDAR_AVAILABLE:
+        # Fallback: just check if it's a weekday
+        return date.weekday() < 5
+
+    try:
+        # Get NYSE calendar
+        nyse = mcal.get_calendar('NYSE')
+        schedule = nyse.schedule(start_date=pd.Timestamp(date), end_date=pd.Timestamp(date))
+
+        # If schedule is not empty, it's a trading day
+        return len(schedule) > 0
+
+    except Exception as e:
+        # If any error, fallback to weekday check
+        return date.weekday() < 5
+
+
 def get_trading_days(start_date, end_date, skip_weekends=True):
     """
     Generate a list of trading days between start and end dates.
+    If pandas_market_calendars is installed, this will also skip market holidays.
 
     Args:
         start_date: Start date (datetime or string YYYY-MM-DD)
         end_date: End date (datetime or string YYYY-MM-DD)
-        skip_weekends: Whether to skip Saturday and Sunday
+        skip_weekends: Whether to skip Saturday and Sunday (default: True)
 
     Returns:
         List of datetime.date objects
@@ -56,6 +93,17 @@ def get_trading_days(start_date, end_date, skip_weekends=True):
     if isinstance(end_date, str):
         end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
 
+    if CALENDAR_AVAILABLE:
+        # Use market calendar to get actual trading days
+        try:
+            nyse = mcal.get_calendar('NYSE')
+            schedule = nyse.schedule(start_date=pd.Timestamp(start_date), end_date=pd.Timestamp(end_date))
+            # Convert to list of datetime.date objects
+            return [d.date() for d in schedule.index]
+        except Exception as e:
+            print(f"Warning: Could not use market calendar ({e}). Falling back to weekday-only filtering.")
+
+    # Fallback: just skip weekends
     days = []
     current = start_date
 
@@ -271,15 +319,25 @@ def fetch_historical_options(symbol, start_date=None, end_date=None, days=None):
         # Check if file already exists
         date_str = date.strftime('%Y%m%d')
         date_file = data_dir / f"{symbol.lower()}_av_options_{date_str}.parquet"
+        nodata_marker = data_dir / f"{symbol.lower()}_av_options_{date_str}.nodata"
 
+        # Check for actual data file FIRST
         if date_file.exists():
             print(f"  Loading cached data for {date} from {date_file}")
             try:
                 df = pd.read_parquet(date_file)
                 all_data.append(df)
+                # Delete marker file if it exists but we have data (shouldn't happen, but cleanup)
+                if nodata_marker.exists():
+                    nodata_marker.unlink()
                 continue
             except Exception as e:
                 print(f"  Error loading cached file: {e}. Re-fetching...")
+
+        # Check for "no data" marker file - skip API call if exists AND no data file
+        if nodata_marker.exists():
+            print(f"  Skipping {date} (previously returned 'No data')")
+            continue
 
         # Fetch data from API
         df = fetch_options_chain(symbol, date)
@@ -295,6 +353,15 @@ def fetch_historical_options(symbol, start_date=None, end_date=None, days=None):
             print(f"  Saved to {date_file}")
 
             all_data.append(df)
+        else:
+            # Only create marker if this should be a trading day
+            # Don't create markers for weekends/holidays (shouldn't happen since we filter them)
+            if not is_trading_day(date):
+                print(f"  No data for {date} (non-trading day - no marker created)")
+            else:
+                # Create marker file for dates with no data to avoid wasting API calls on re-runs
+                nodata_marker.touch()
+                print(f"  Created 'no data' marker for {date} (skipped on future runs)")
 
         api_calls += 1
 
