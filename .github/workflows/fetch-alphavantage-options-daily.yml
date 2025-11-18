@@ -1,0 +1,258 @@
+name: Fetch Daily Alpha Vantage Options Data
+
+on:
+  schedule:
+    # Run at 9:00 PM EDT (1:00 AM UTC during EDT, 2:00 AM UTC during EST)
+    # Using 1:00 AM UTC to cover EDT (March-November)
+    - cron: '0 1 * * *'
+  workflow_dispatch:  # Allow manual triggering
+    inputs:
+      start_date:
+        description: 'Start date (YYYY-MM-DD). Leave empty for yesterday.'
+        required: false
+        default: ''
+        type: string
+      end_date:
+        description: 'End date (YYYY-MM-DD). Leave empty for today.'
+        required: false
+        default: ''
+        type: string
+      symbols:
+        description: 'Symbols to fetch (SPY IWM QQQ or ALL)'
+        required: false
+        default: 'ALL'
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  fetch-options-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: true
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-av-options-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-av-options-
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Determine date range
+      id: dates
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # Manual trigger - use provided dates or defaults
+          if [ -n "${{ github.event.inputs.start_date }}" ]; then
+            START_DATE="${{ github.event.inputs.start_date }}"
+          else
+            START_DATE=$(date -d "yesterday" +'%Y-%m-%d')
+          fi
+
+          if [ -n "${{ github.event.inputs.end_date }}" ]; then
+            END_DATE="${{ github.event.inputs.end_date }}"
+          else
+            END_DATE=$(date +'%Y-%m-%d')
+          fi
+        else
+          # Scheduled run - fetch previous day to today
+          START_DATE=$(date -d "yesterday" +'%Y-%m-%d')
+          END_DATE=$(date +'%Y-%m-%d')
+        fi
+
+        echo "START_DATE=$START_DATE" >> $GITHUB_OUTPUT
+        echo "END_DATE=$END_DATE" >> $GITHUB_OUTPUT
+        echo "Fetching options data from $START_DATE to $END_DATE"
+
+    - name: Determine symbols to fetch
+      id: symbols
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.symbols }}" ]; then
+          SYMBOLS="${{ github.event.inputs.symbols }}"
+        else
+          SYMBOLS="ALL"
+        fi
+        echo "SYMBOLS=$SYMBOLS" >> $GITHUB_OUTPUT
+        echo "Symbols: $SYMBOLS"
+
+    - name: Create .env file with API keys
+      run: |
+        echo "ALPHA_VANTAGE_API_KEY=${{ secrets.ALPHA_VANTAGE_API_KEY }}" > .env
+
+    - name: Fetch SPY options data
+      if: steps.symbols.outputs.SYMBOLS == 'ALL' || contains(steps.symbols.outputs.SYMBOLS, 'SPY')
+      continue-on-error: true
+      id: fetch_spy
+      run: |
+        echo "Fetching SPY options data..."
+        python scripts/fetch_alphavantage_options.py \
+          --symbol SPY \
+          --start-date ${{ steps.dates.outputs.START_DATE }} \
+          --end-date ${{ steps.dates.outputs.END_DATE }}
+
+    - name: Fetch IWM options data
+      if: steps.symbols.outputs.SYMBOLS == 'ALL' || contains(steps.symbols.outputs.SYMBOLS, 'IWM')
+      continue-on-error: true
+      id: fetch_iwm
+      run: |
+        echo "Fetching IWM options data..."
+        python scripts/fetch_alphavantage_options.py \
+          --symbol IWM \
+          --start-date ${{ steps.dates.outputs.START_DATE }} \
+          --end-date ${{ steps.dates.outputs.END_DATE }}
+
+    - name: Fetch QQQ options data
+      if: steps.symbols.outputs.SYMBOLS == 'ALL' || contains(steps.symbols.outputs.SYMBOLS, 'QQQ')
+      continue-on-error: true
+      id: fetch_qqq
+      run: |
+        echo "Fetching QQQ options data..."
+        python scripts/fetch_alphavantage_options.py \
+          --symbol QQQ \
+          --start-date ${{ steps.dates.outputs.START_DATE }} \
+          --end-date ${{ steps.dates.outputs.END_DATE }}
+
+    - name: Check for failures
+      id: check_failures
+      run: |
+        FAILED=false
+
+        if [ "${{ steps.fetch_spy.outcome }}" = "failure" ]; then
+          echo "❌ SPY fetch failed"
+          FAILED=true
+        fi
+
+        if [ "${{ steps.fetch_iwm.outcome }}" = "failure" ]; then
+          echo "❌ IWM fetch failed"
+          FAILED=true
+        fi
+
+        if [ "${{ steps.fetch_qqq.outcome }}" = "failure" ]; then
+          echo "❌ QQQ fetch failed"
+          FAILED=true
+        fi
+
+        if [ "$FAILED" = "true" ]; then
+          echo "FAILED=true" >> $GITHUB_OUTPUT
+          echo "Some fetches failed, but continuing to commit successful ones"
+        else
+          echo "FAILED=false" >> $GITHUB_OUTPUT
+          echo "✓ All fetches succeeded"
+        fi
+
+    - name: Commit and push data
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+
+        # Add all Alpha Vantage options data files
+        git add data/*/options/*_av_options_*.parquet 2>/dev/null || true
+        git add data/*/options/*_av_options_*.json 2>/dev/null || true
+
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          SYMBOLS="${{ steps.symbols.outputs.SYMBOLS }}"
+          COMMIT_MSG="Update Alpha Vantage options data - ${{ steps.dates.outputs.START_DATE }} to ${{ steps.dates.outputs.END_DATE }}"
+          if [ "$SYMBOLS" != "ALL" ]; then
+            COMMIT_MSG="$COMMIT_MSG ($SYMBOLS)"
+          fi
+
+          git commit -m "$COMMIT_MSG"
+
+          # Pull-rebase-push with retry logic
+          MAX_RETRIES=8
+          RETRY_COUNT=0
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "Push attempt $((RETRY_COUNT + 1)) of $MAX_RETRIES..."
+
+            if git push origin main; then
+              echo "✓ Successfully pushed changes"
+              exit 0
+            fi
+
+            echo "Push failed, pulling latest changes with rebase..."
+
+            if git pull --rebase origin main; then
+              echo "✓ Rebase succeeded, will retry push"
+            else
+              echo "⚠️ Rebase conflict detected, attempting to resolve..."
+              git checkout --ours data/
+              git add data/
+
+              if git rebase --continue; then
+                echo "✓ Conflict resolution succeeded"
+              else
+                git rebase --abort
+                echo "Falling back to merge strategy..."
+                git pull --no-rebase origin main -X ours || echo "✗ Merge also failed"
+              fi
+            fi
+
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            BASE_WAIT=$((2 ** RETRY_COUNT))
+            JITTER=$((RANDOM % 3))
+            WAIT_TIME=$((BASE_WAIT + JITTER))
+            echo "Waiting ${WAIT_TIME}s before retry..."
+            sleep $WAIT_TIME
+          done
+
+          echo "✗ Failed to push after $MAX_RETRIES attempts"
+          exit 1
+        fi
+
+    - name: Fail if any fetch failed
+      if: steps.check_failures.outputs.FAILED == 'true'
+      run: |
+        echo "One or more symbol fetches failed"
+        exit 1
+
+  # Handle workflow failures
+  handle-failure:
+    needs: fetch-options-data
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Alpha Vantage Options Data (Daily)"
+      failure_title: "❌ Alpha Vantage Daily Options Data Fetch Failed"
+      issue_labels: "workflow-failure,alpha-vantage,options-data,automated"
+      workflow_file: "fetch-alphavantage-options-daily.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: true
