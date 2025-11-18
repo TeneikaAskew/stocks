@@ -1,17 +1,7 @@
 name: Deploy Chart Viewer to GitHub Pages
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'chart-viewer/**'
-      - '.github/workflows/deploy-chart-viewer.yml'
   workflow_dispatch:
-
-# Allow one concurrent deployment
-concurrency:
-  group: "pages-${{ github.ref }}"
-  cancel-in-progress: true
 
 permissions:
   contents: read
