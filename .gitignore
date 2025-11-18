@@ -108,3 +108,6 @@ MANIFEST
 # Windows nul file (accidentally created by shell redirects)
 nul
 **/nul
+
+# AlphaVantage no-data markers (local cache indicators)
+*.nodata

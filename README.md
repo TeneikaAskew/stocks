@@ -241,6 +241,7 @@ python iwm_analysis.py -months 2
 - [NEW_FEATURES_SUMMARY.md](NEW_FEATURES_SUMMARY.md) - Complete feature overview
 - [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Quick reference guide
 - [iwm_analysis_overview.md](iwm_analysis_overview.md) - All analysis scripts overview
+- [SIGNAL_GENERATION_METHODOLOGY.md](SIGNAL_GENERATION_METHODOLOGY.md) - How trading signals are generated and validated
 
 ## Notes
 - **New Features**: 195 additional columns now available for analysis (80 Historical Levels + 108 ORB + 7 Order Blocks)
