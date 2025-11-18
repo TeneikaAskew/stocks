@@ -474,6 +474,96 @@ body {
     font-size: 0.85rem;
 }
 
+/* Contract Toggle Wrapper */
+.contract-toggle-wrapper {
+    display: flex;
+    justify-content: center;
+    margin: 0.75rem 0;
+    width: 100%;
+}
+
+/* Contract Toggle Switch */
+.contract-toggle {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+    min-width: 180px;
+}
+
+.contract-toggle input[type="checkbox"] {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    position: absolute;
+}
+
+.contract-toggle-slider {
+    position: relative;
+    display: inline-block;
+    width: 52px;
+    height: 26px;
+    background-color: var(--success-color);
+    border-radius: 26px;
+    transition: background-color 0.3s;
+    margin: 0 10px;
+    flex-shrink: 0;
+}
+
+.contract-toggle-slider:before {
+    content: "";
+    position: absolute;
+    height: 20px;
+    width: 20px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    border-radius: 50%;
+    transition: transform 0.3s;
+}
+
+.contract-toggle input:checked + .contract-toggle-slider {
+    background-color: #4299e1;
+}
+
+.contract-toggle input:checked + .contract-toggle-slider:before {
+    transform: translateX(26px);
+}
+
+.contract-toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.toggle-label-primary {
+    color: var(--success-color);
+    padding: 5px 10px;
+    border-radius: 4px;
+    background: rgba(16, 185, 129, 0.1);
+    white-space: nowrap;
+}
+
+.toggle-label-alt {
+    color: #4299e1;
+    padding: 5px 10px;
+    border-radius: 4px;
+    background: rgba(66, 153, 225, 0.1);
+    white-space: nowrap;
+}
+
+.contract-toggle input:checked ~ .contract-toggle-label .toggle-label-primary {
+    opacity: 0.5;
+}
+
+.contract-toggle input:not(:checked) ~ .contract-toggle-label .toggle-label-alt {
+    opacity: 0.5;
+}
+
 /* Alternative ITM/ATM Contract */
 .trade-detail.options-contract-alt {
     background: rgba(66, 153, 225, 0.1);

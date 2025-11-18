@@ -3,6 +3,39 @@
 class OptionsAnalyzer {
     constructor() {
         this.contractsCache = new Map();
+
+        // Delta targeting strategies for OTM contract selection
+        this.strategies = {
+            aggressive: { delta: 0.25, name: 'Aggressive (High Risk/Reward)' },
+            balanced: { delta: 0.40, name: 'Balanced (Moderate Risk/Reward)' },
+            conservative: { delta: 0.50, name: 'Conservative (Lower Risk)' }
+        };
+
+        // Default strategy - can be changed via setStrategy()
+        this.currentStrategy = 'balanced';
+    }
+
+    /**
+     * Set the delta targeting strategy
+     * @param {string} strategy - 'aggressive', 'balanced', or 'conservative'
+     */
+    setStrategy(strategy) {
+        if (this.strategies[strategy]) {
+            this.currentStrategy = strategy;
+            console.log(`[OptionsAnalyzer] Strategy set to: ${this.strategies[strategy].name}`);
+        } else {
+            console.warn(`[OptionsAnalyzer] Invalid strategy: ${strategy}. Using 'balanced'.`);
+        }
+    }
+
+    /**
+     * Get the current delta target based on strategy
+     * @param {string} optionType - 'call' or 'put'
+     * @returns {number} - Target delta value
+     */
+    getDeltaTarget(optionType) {
+        const baseDelta = this.strategies[this.currentStrategy].delta;
+        return optionType.toLowerCase() === 'call' ? baseDelta : -baseDelta;
     }
 
     /**
@@ -91,11 +124,8 @@ class OptionsAnalyzer {
         for (const contract of dateFiltered) {
             const strikeDiff = Math.abs(contract.strike - underlyingPrice);
 
-            // Also consider delta - options traders often look for specific delta ranges
-            // ATM options typically have delta around 0.50
-            // Slightly OTM calls: delta 0.30-0.50
-            // Slightly OTM puts: delta -0.30 to -0.50
-            const deltaTarget = trade.optionType.toLowerCase() === 'call' ? 0.40 : -0.40;
+            // Use configurable delta target based on selected strategy
+            const deltaTarget = this.getDeltaTarget(trade.optionType);
             const deltaDiff = Math.abs(contract.delta - deltaTarget);
 
             // Weighted scoring: strike proximity (70%) + delta proximity (30%)
@@ -109,7 +139,8 @@ class OptionsAnalyzer {
 
         if (bestContract) {
             console.log('[OptionsAnalyzer] Matched contract:', bestContract.contractID,
-                'Strike:', bestContract.strike, 'Delta:', bestContract.delta);
+                'Strike:', bestContract.strike, 'Delta:', bestContract.delta,
+                'Strategy:', this.strategies[this.currentStrategy].name);
         }
 
         return bestContract;
