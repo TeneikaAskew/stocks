@@ -21,6 +21,7 @@ class TradeAnalysisPipeline:
         self.trades_df = None
         self.iwm_df = None
         self.pivoted_trades = None
+        self.symbol = 'IWM'  # Default symbol
         self.search_months = 1  # Default to 1 month
         self.data_format = 'csv'  # Default to CSV, will be detected in step3
 
@@ -193,14 +194,15 @@ class TradeAnalysisPipeline:
         print(f"  RUNNER scenarios: {len(self.pivoted_trades[self.pivoted_trades['Exit_Type'] == 'RUNNER'])}")
         
     def step3_join_indicators(self):
-        """Step 3: Join with IWM indicators data"""
+        """Step 3: Join with indicators data"""
         print("\n" + "="*60)
         print("STEP 3: JOIN WITH INDICATORS")
         print("="*60)
 
-        # Auto-detect format (CSV or Parquet)
-        csv_files = glob.glob('data/signals/historical_iwm_*_with_indicators.csv')
-        parquet_files = glob.glob('data/signals/historical_iwm_*_with_indicators.parquet')
+        # Auto-detect format (CSV or Parquet) using the symbol
+        symbol_lower = self.symbol.lower()
+        csv_files = glob.glob(f'data/signals/historical_{symbol_lower}_*_with_indicators.csv')
+        parquet_files = glob.glob(f'data/signals/historical_{symbol_lower}_*_with_indicators.parquet')
 
         if parquet_files:
             indicator_file = parquet_files[0]
@@ -274,45 +276,51 @@ class TradeAnalysisPipeline:
                       # ORB 5-minute
                       'ORB_5m_High', 'ORB_5m_Low', 'ORB_5m_Mid', 'ORB_5m_Range',
                       'ORB_5m_Trend', 'ORB_5m_Broke_High', 'ORB_5m_Broke_Low',
-                      'ORB_5m_Within_Range', 'ORB_5m_Distance_High', 'ORB_5m_Distance_Low',
+                      'ORB_5m_Within_Range', 'ORB_5m_Distance',
+                      'ORB_5m_High_Pct', 'ORB_5m_Low_Pct', 'ORB_5m_Mid_Pct',
 
                       # ORB 15-minute
                       'ORB_15m_High', 'ORB_15m_Low', 'ORB_15m_Mid', 'ORB_15m_Range',
                       'ORB_15m_Trend', 'ORB_15m_Broke_High', 'ORB_15m_Broke_Low',
-                      'ORB_15m_Within_Range', 'ORB_15m_Distance_High', 'ORB_15m_Distance_Low',
+                      'ORB_15m_Within_Range', 'ORB_15m_Distance',
+                      'ORB_15m_High_Pct', 'ORB_15m_Low_Pct', 'ORB_15m_Mid_Pct',
 
                       # ORB 30-minute
                       'ORB_30m_High', 'ORB_30m_Low', 'ORB_30m_Mid', 'ORB_30m_Range',
                       'ORB_30m_Trend', 'ORB_30m_Broke_High', 'ORB_30m_Broke_Low',
-                      'ORB_30m_Within_Range', 'ORB_30m_Distance_High', 'ORB_30m_Distance_Low',
+                      'ORB_30m_Within_Range', 'ORB_30m_Distance',
+                      'ORB_30m_High_Pct', 'ORB_30m_Low_Pct', 'ORB_30m_Mid_Pct',
 
                       # Order Blocks
                       'Order_Block_High', 'Order_Block_Low', 'Order_Block_Mid',
-                      'Order_Block_Position', 'Order_Block_Test', 'Order_Block_Distance']
-        for col in entry_cols:
-            if col in entry_data.columns:
-                entry_data[f'Entry_{col}'] = entry_data[col]
-        
+                      'Order_Block_Position', 'Order_Block_Test', 'Order_Block_Distance',
+                      'Order_Block_Zone']
+
+        # Create entry columns efficiently using assign (avoids fragmentation)
+        entry_rename_dict = {col: f'Entry_{col}' for col in entry_cols if col in entry_data.columns}
+        entry_data = entry_data.rename(columns=entry_rename_dict)
+
         # Join exit data
         enriched = pd.merge(
-            entry_data[['ID', 'Entry_Time', 'Trade_Type', 'Exit_Type', 'Exit_Time', 'Duration'] + 
-                      [f'Entry_{col}' for col in entry_cols]],
+            entry_data[['ID', 'Entry_Time', 'Trade_Type', 'Exit_Type', 'Exit_Time', 'Duration'] +
+                      [f'Entry_{col}' for col in entry_cols if f'Entry_{col}' in entry_data.columns]],
             self.iwm_df,
             left_on='Exit_Time',
             right_on='Time',
             how='left',
             suffixes=('', '_exit')
         )
-        
-        # Select exit columns
-        for col in entry_cols:
-            if col in enriched.columns:
-                enriched[f'Exit_{col}'] = enriched[col]
-        
-        # Calculate returns
-        enriched['Price_Change'] = (enriched['Exit_Last'] - enriched['Entry_Last']).round(2)
-        enriched['Return_Pct'] = (enriched['Price_Change'] / enriched['Entry_Last'] * 100).round(2)
-        
+
+        # Create exit columns efficiently (avoids fragmentation)
+        exit_rename_dict = {col: f'Exit_{col}' for col in entry_cols if col in enriched.columns}
+        enriched = enriched.rename(columns=exit_rename_dict)
+
+        # Calculate returns efficiently using assign (avoids fragmentation)
+        enriched = enriched.assign(
+            Price_Change=lambda x: (x['Exit_Last'] - x['Entry_Last']).round(2),
+            Return_Pct=lambda x: (x['Price_Change'] / x['Entry_Last'] * 100).round(2)
+        )
+
         # Adjust for PUT trades (profit when price goes down)
         put_mask = enriched['Trade_Type'] == 'PUT'
         enriched.loc[put_mask, 'Return_Pct'] = -enriched.loc[put_mask, 'Return_Pct']
@@ -1342,10 +1350,10 @@ class TradeAnalysisPipeline:
         # RVOL criteria
         elif 'Entry_RVOL_GTE_' in criterion:
             level = criterion.split('_')[-1]
-            return f'Entry volume ≥ {level}x average'
+            return f'Entry volume >= {level}x average'
         elif 'Exit_RVOL_GTE_' in criterion:
             level = criterion.split('_')[-1]
-            return f'Exit volume ≥ {level}x average'
+            return f'Exit volume >= {level}x average'
         
         # RSI criteria
         elif 'Entry_RSI_GT_' in criterion:
@@ -1428,7 +1436,7 @@ class TradeAnalysisPipeline:
         # ATR levels
         elif 'Entry_ATR_GTE_' in criterion:
             level = criterion.split('_')[-1]
-            return f'Entry ATR ≥ {level}'
+            return f'Entry ATR >= {level}'
         
         # StochRSI
         elif 'Entry_StochRSI_GT_' in criterion:
@@ -1685,10 +1693,10 @@ class TradeAnalysisPipeline:
         
         print("\nUpdated trade_criteria_summary.md with effectiveness analysis (prepended to top)")
         
-    def generate_analysis_report(self, patterns, comprehensive_results=None):
+    def generate_analysis_report(self, patterns, comprehensive_results=None, enriched_df=None):
         """Generate comprehensive markdown report of trade analysis"""
         from datetime import datetime
-        
+
         report_lines = []
         report_lines.append("# Trade Analysis Report")
         report_lines.append(f"\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1963,21 +1971,22 @@ class TradeAnalysisPipeline:
         import subprocess
         import sys
 
-        # Check for indicator files
-        csv_files = glob.glob('data/signals/historical_iwm_*_with_indicators.csv')
-        parquet_files = glob.glob('data/signals/historical_iwm_*_with_indicators.parquet')
+        # Check for indicator files using the specified symbol
+        symbol_lower = self.symbol.lower()
+        csv_files = glob.glob(f'data/signals/historical_{symbol_lower}_*_with_indicators.csv')
+        parquet_files = glob.glob(f'data/signals/historical_{symbol_lower}_*_with_indicators.parquet')
 
         if not csv_files and not parquet_files:
             print("\n" + "="*60)
             print("PREREQUISITE: GENERATING INDICATOR DATA")
             print("="*60)
-            print("\nNo indicator files found. Running trading_analysis.py first...")
+            print(f"\nNo indicator files found for {self.symbol}. Running trading_analysis.py first...")
             print("This will generate the required historical data with indicators.\n")
 
-            # Run trading_analysis.py with default settings (24 months, IWM)
+            # Run trading_analysis.py with default settings (24 months)
             try:
                 result = subprocess.run(
-                    [sys.executable, 'trading_analysis.py', '-symbol', 'IWM', '-months', '24'],
+                    [sys.executable, 'trading_analysis.py', '-symbol', self.symbol, '-months', '24'],
                     cwd=os.getcwd(),
                     check=True,
                     capture_output=False  # Show output in real-time
@@ -1990,14 +1999,14 @@ class TradeAnalysisPipeline:
 
             except subprocess.CalledProcessError as e:
                 print(f"\nERROR: Failed to run trading_analysis.py")
-                print(f"Please run it manually: python trading_analysis.py -symbol IWM -months 24")
+                print(f"Please run it manually: python trading_analysis.py -symbol {self.symbol} -months 24")
                 raise SystemExit(1)
             except FileNotFoundError:
                 print(f"\nERROR: trading_analysis.py not found in current directory")
                 print(f"Current directory: {os.getcwd()}")
                 raise SystemExit(1)
         else:
-            print("\nIndicator files found. Skipping trading_analysis.py...\n")
+            print(f"\nIndicator files found for {self.symbol}. Skipping trading_analysis.py...\n")
 
     def run_pipeline(self):
         """Run the complete pipeline"""
@@ -2048,9 +2057,9 @@ class TradeAnalysisPipeline:
         print("\n" + "="*60)
         print("PIPELINE COMPLETE!")
         print("="*60)
-        
+
         # Generate unified markdown report with all insights
-        self.generate_analysis_report(patterns, comprehensive_results)
+        self.generate_analysis_report(patterns, comprehensive_results, enriched_df)
         
         print("\nOutput files:")
         print("  1. data/signals/trades_enriched.csv - With entry/exit indicators")
@@ -2646,12 +2655,17 @@ class TradeAnalysisPipeline:
         
         # Win rate insights
         perf = results['performance_metrics']
-        if perf['call_win_rate'] > perf['put_win_rate']:
-            diff = (perf['call_win_rate'] - perf['put_win_rate']) * 100
-            insights.append(f"CALL trades have {diff:.1f}% higher win rate than PUT trades")
+        call_wr = perf['call_win_rate'] * 100  # Convert to percentage
+        put_wr = perf['put_win_rate'] * 100
+
+        if abs(call_wr - put_wr) < 0.1:  # Essentially equal
+            insights.append(f"Both CALL and PUT trades have {call_wr:.1f}% win rate (similar trades filtered for profitability)")
+        elif call_wr > put_wr:
+            diff = call_wr - put_wr
+            insights.append(f"CALL trades have {diff:.1f}% higher win rate than PUT trades ({call_wr:.1f}% vs {put_wr:.1f}%)")
         else:
-            diff = (perf['put_win_rate'] - perf['call_win_rate']) * 100
-            insights.append(f"PUT trades have {diff:.1f}% higher win rate than CALL trades")
+            diff = put_wr - call_wr
+            insights.append(f"PUT trades have {diff:.1f}% higher win rate than CALL trades ({put_wr:.1f}% vs {call_wr:.1f}%)")
         
         # RSI insights
         rsi_patterns = results['rsi_patterns']
@@ -2807,26 +2821,31 @@ class TradeAnalysisPipeline:
 
 def main():
     import argparse
-    
+
     # Set up command line arguments
-    parser = argparse.ArgumentParser(description='Analyze trades and find patterns in IWM data')
-    parser.add_argument('-months', type=int, default=1, 
+    parser = argparse.ArgumentParser(description='Analyze trades and find patterns in market data')
+    parser.add_argument('-symbol', type=str, default='IWM',
+                       help='Stock symbol to analyze (default: IWM)')
+    parser.add_argument('-months', type=int, default=1,
                        help='Number of months to search for similar trades (default: 1)')
-    parser.add_argument('-all', action='store_true', 
+    parser.add_argument('-all', action='store_true',
                        help='Search all available data for similar trades (overrides -months)')
-    
+
     args = parser.parse_args()
-    
+
     # Determine months limit for searching
     search_months = None if args.all else args.months
-    
+    symbol = args.symbol.upper()
+
     # Display what we're searching
+    print(f"Analyzing symbol: {symbol}")
     if args.all:
         print("Will search ALL available data for similar trades...")
     else:
         print(f"Will search last {search_months} month(s) for similar trades...")
-    
+
     pipeline = TradeAnalysisPipeline()
+    pipeline.symbol = symbol
     pipeline.search_months = search_months
     pipeline.run_pipeline()
 
