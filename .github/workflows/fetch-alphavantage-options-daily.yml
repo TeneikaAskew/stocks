@@ -3,8 +3,8 @@ name: Fetch Daily Alpha Vantage Options Data
 on:
   schedule:
     # Run at 9:00 PM EDT (1:00 AM UTC during EDT, 2:00 AM UTC during EST)
-    # Using 1:00 AM UTC to cover EDT (March-November)
-    - cron: '0 1 * * *'
+    # Monday through Friday only (1-5)
+    - cron: '0 1 * * 1-5'
   workflow_dispatch:  # Allow manual triggering
     inputs:
       start_date:
