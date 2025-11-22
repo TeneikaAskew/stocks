@@ -87,7 +87,7 @@ python3 trade_analysis_pipeline.py -months 2
 ### Input Data
 - `data/stock_prices/` - Historical IWM price data (CSV files)
 - `data/iwm/intraday/` - AlphaVantage Parquet data (up to 5 years of 1-minute bars)
-- `data/trade_examples/trade_tracker.csv` - Your trade entries
+- `data/signals/trade_examples/trade_tracker.csv` - Your trade entries
 
 **Note**: The pipeline automatically loads and merges both CSV and Parquet data sources. No conversion needed!
 
@@ -242,11 +242,14 @@ python iwm_analysis.py -months 2
 - [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Quick reference guide
 - [iwm_analysis_overview.md](iwm_analysis_overview.md) - All analysis scripts overview
 - [SIGNAL_GENERATION_METHODOLOGY.md](SIGNAL_GENERATION_METHODOLOGY.md) - How trading signals are generated and validated
+- [TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md](TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md) - How the trade analysis report is built from your actual trades
+- [ADD_NEW_FEATURES_TO_CRITERIA_ANALYSIS.md](ADD_NEW_FEATURES_TO_CRITERIA_ANALYSIS.md) - Adding Historical Levels, ORB, and Order Blocks to trade analysis pipeline
+- [TRADE_PIPELINE_FORMAT_MATCHING.md](TRADE_PIPELINE_FORMAT_MATCHING.md) - Fix trade analysis pipeline to support both CSV and Parquet formats
 
 ## Notes
 - **New Features**: 195 additional columns now available for analysis (80 Historical Levels + 108 ORB + 7 Order Blocks)
 - **Minute Data Limitation**: Yahoo Finance only provides minute-level data for the past 7 days. Historical data beyond 7 days uses daily aggregates
 - The first run of `iwm_analysis.py` may take 3-4 minutes with new features
 - Indicators are calculated to match popular trading platforms (Robinhood, etc.)
-- Trade examples have been moved to `data/trade_examples/`
+- Trade examples have been moved to `data/signals/trade_examples/`
 - All market data is stored in efficient Parquet format for fast loading

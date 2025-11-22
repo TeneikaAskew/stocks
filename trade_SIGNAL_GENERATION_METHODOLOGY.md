@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document explains how trading signals are generated in `iwm_analysis.py` and how the current implementation compares to actual trade analysis from `data/trade_examples/trade_tracker.csv`.
+This document explains how trading signals are generated in `iwm_analysis.py` and how the current implementation compares to actual trade analysis from `data/signals/trade_examples/trade_tracker.csv`.
 
 **Created**: 2025-11-17
 **Status**: Current implementation uses generic technical analysis rules that may not reflect actual trading patterns
@@ -47,7 +47,7 @@ The current implementation generates signals based on **5 indicator conditions**
 ## Analysis of Actual Trades
 
 ### Data Source
-- **File**: [`data/trade_examples/trade_tracker.csv`](data/trade_examples/trade_tracker.csv)
+- **File**: [`data/signals/trade_examples/trade_tracker.csv`](data/signals/trade_examples/trade_tracker.csv)
 - **Analysis**: [`data/trade_analysis_report.md`](data/trade_analysis_report.md)
 - **Period**: 2025-08-08 (single day, 12 trades)
 - **Total Scenarios**: 36 (3 exit scenarios per trade: EXIT, STOP_LOSS, RUNNER)
@@ -271,7 +271,7 @@ After updating signal logic based on actual patterns:
 ## Data Limitations
 
 ### Current Trade Analysis Based On
-- **File**: [`data/trade_examples/trade_tracker.csv`](data/trade_examples/trade_tracker.csv)
+- **File**: [`data/signals/trade_examples/trade_tracker.csv`](data/signals/trade_examples/trade_tracker.csv)
 - **Trades**: 12 trades (5 CALL, 7 PUT)
 - **Date**: Single day (2025-08-08)
 - **Scenarios**: 36 total (3 exit scenarios per trade)
@@ -315,7 +315,7 @@ After updating signal logic based on actual patterns:
 ## Files Referenced
 
 1. **[`iwm_analysis.py`](iwm_analysis.py)** - Current signal generation logic
-2. **[`data/trade_examples/trade_tracker.csv`](data/trade_examples/trade_tracker.csv)** - Actual trades
+2. **[`data/signals/trade_examples/trade_tracker.csv`](data/signals/trade_examples/trade_tracker.csv)** - Actual trades
 3. **[`data/trade_analysis_report.md`](data/trade_analysis_report.md)** - Analysis results
 4. **[`trade_analysis_pipeline.py`](trade_analysis_pipeline.py)** - Pattern matching pipeline
 5. **[`iwm_analysis_overview.md`](iwm_analysis_overview.md)** - System overview
