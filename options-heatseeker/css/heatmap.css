@@ -1,0 +1,285 @@
+/* ===== Heatmap Specific Styles ===== */
+
+.heatmap-svg {
+    width: 100%;
+    height: 100%;
+}
+
+.strike-row {
+    cursor: pointer;
+    transition: opacity 0.2s ease;
+}
+
+.strike-row:hover {
+    opacity: 0.8;
+}
+
+.strike-bar {
+    transition: fill 0.3s ease, width 0.3s ease;
+}
+
+.strike-bar.positive {
+    /* Gradient handled by D3 */
+}
+
+.strike-bar.negative {
+    /* Gradient handled by D3 */
+}
+
+.strike-label {
+    font-size: 12px;
+    font-weight: 500;
+    fill: var(--text-primary);
+    user-select: none;
+}
+
+.strike-value {
+    font-size: 11px;
+    font-weight: 600;
+    fill: var(--text-primary);
+    user-select: none;
+}
+
+.current-price-line {
+    stroke: #ff4444;
+    stroke-width: 2;
+    stroke-dasharray: 5, 5;
+}
+
+.current-price-label {
+    fill: #ff4444;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.grid-line {
+    stroke: var(--border-color);
+    stroke-width: 1;
+    opacity: 0.3;
+}
+
+.axis-label {
+    font-size: 11px;
+    fill: var(--text-secondary);
+}
+
+/* Node indicators */
+.node-indicator {
+    stroke-width: 2;
+    fill: none;
+}
+
+.node-indicator.king {
+    stroke: #FFD700;
+}
+
+.node-indicator.gatekeeper {
+    stroke: #87CEEB;
+}
+
+.node-indicator.midpoint {
+    stroke: #9370DB;
+}
+
+.node-icon {
+    font-size: 16px;
+}
+
+/* Heatmap legend */
+.heatmap-legend {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 12px;
+}
+
+.legend-title {
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+}
+
+.legend-gradient {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.gradient-bar {
+    width: 100px;
+    height: 20px;
+    border-radius: 4px;
+}
+
+.gradient-bar.positive {
+    background: linear-gradient(to right, #90EE90, #FFD700);
+}
+
+.gradient-bar.negative {
+    background: linear-gradient(to right, #87CEEB, #9370DB);
+}
+
+.legend-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+/* Zoom controls */
+.zoom-controls {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.zoom-btn {
+    width: 32px;
+    height: 32px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.2s ease;
+}
+
+.zoom-btn:hover {
+    background-color: var(--bg-tertiary);
+}
+
+/* Price chart overlays */
+.chart-level-line {
+    stroke-width: 1.5;
+    opacity: 0.7;
+}
+
+.chart-level-line.positive {
+    stroke: #90EE90;
+}
+
+.chart-level-line.negative {
+    stroke: #87CEEB;
+}
+
+.chart-level-line.king {
+    stroke: #FFD700;
+    stroke-width: 2;
+}
+
+.chart-level-label {
+    font-size: 10px;
+    fill: var(--text-primary);
+    font-weight: 500;
+}
+
+/* Table view */
+#strike-table {
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    padding: var(--spacing-lg);
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-size-sm);
+}
+
+.data-table thead {
+    position: sticky;
+    top: 0;
+    background-color: var(--bg-secondary);
+    z-index: 10;
+}
+
+.data-table th {
+    padding: var(--spacing-sm);
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-secondary);
+    border-bottom: 2px solid var(--border-color);
+    cursor: pointer;
+    user-select: none;
+}
+
+.data-table th:hover {
+    color: var(--text-primary);
+}
+
+.data-table th.sorted-asc::after {
+    content: " ▲";
+}
+
+.data-table th.sorted-desc::after {
+    content: " ▼";
+}
+
+.data-table td {
+    padding: var(--spacing-sm);
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-primary);
+}
+
+.data-table tbody tr {
+    transition: background-color 0.2s ease;
+    cursor: pointer;
+}
+
+.data-table tbody tr:hover {
+    background-color: var(--bg-tertiary);
+}
+
+.data-table tbody tr.positive {
+    border-left: 3px solid #90EE90;
+}
+
+.data-table tbody tr.negative {
+    border-left: 3px solid #87CEEB;
+}
+
+/* Color-coded values */
+.value-positive {
+    color: #4caf50;
+}
+
+.value-negative {
+    color: #f44336;
+}
+
+.value-neutral {
+    color: var(--text-secondary);
+}
+
+/* Confluence indicators */
+.confluence-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    background-color: var(--accent-primary);
+    color: white;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.confluence-badge.high {
+    background-color: #4caf50;
+}
+
+.confluence-badge.medium {
+    background-color: #ff9800;
+}
+
+.confluence-badge.low {
+    background-color: #9e9e9e;
+}
