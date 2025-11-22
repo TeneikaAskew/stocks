@@ -104,7 +104,23 @@
       "Bash(nul)",
       "Bash(if [ -f .gitignore ])",
       "Bash(then echo \".gitignore exists\")",
-      "Bash(else echo \"No .gitignore found\")"
+      "Bash(else echo \"No .gitignore found\")",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" run view 19417297004 --log)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" issue list --label \"workflow-failure,github-pages\" --limit 5)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" api repos/TeneikaAskew/stocks/pages --jq '{status, build_type, source}')",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" run list --workflow=\"Deploy Chart Viewer to GitHub Pages\" --limit 3)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" run view 19448771702)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" workflow run \"Deploy Chart Viewer to GitHub Pages\")",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" run list --workflow=\"Deploy Chart Viewer to GitHub Pages\" --limit 1)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" api repos/TeneikaAskew/stocks/actions/runs/19448908167)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" run list --workflow=\"Deploy Chart Viewer to GitHub Pages\" --limit 2)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" run view 19450405500)",
+      "Bash(conda install:*)",
+      "Bash(C:/ProgramData/Anaconda3/Scripts/pip install pyarrow)",
+      "Bash(if [ ! -d \"data/signals\" ])",
+      "Bash(then mkdir -p data/signals)",
+      "Bash(git fetch:*)",
+      "Bash(.gitignore)"
     ],
     "deny": []
   }

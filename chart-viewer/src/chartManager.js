@@ -14,11 +14,14 @@ class ChartManager {
         this.rthOnly = true; // Default to regular trading hours only
         this.tempPriceLines = []; // Temporary price lines for drawing mode
         this.tradePriceLines = []; // Price lines for trades (TP/SL)
+        this.referenceLines = []; // Price lines for previous period OHLC
+        this.currentReferencePeriod = null; // Track current period
 
         this.initializeChart();
         this.setupVolumeToggle();
         this.setupRTHToggle();
         this.setupDarkModeToggle();
+        this.setupReferenceLinesToggle();
     }
 
     /**
@@ -550,5 +553,189 @@ class ChartManager {
         }
 
         Utils.notify(`${theme === 'dark' ? 'Dark' : 'Light'} mode enabled`, 'info');
+    }
+
+    /**
+     * Setup reference lines toggle listener
+     */
+    setupReferenceLinesToggle() {
+        const referenceToggle = document.getElementById('referenceLinesToggle');
+        if (referenceToggle) {
+            referenceToggle.addEventListener('change', async (e) => {
+                if (e.target.checked) {
+                    // Checkbox is ON - show ALL period OHLC lines + order blocks
+                    await this.addReferenceLines('day');
+                    await this.addReferenceLines('week');
+                    await this.addReferenceLines('month');
+                    await this.addReferenceLines('year');
+                    await this.addOrderBlocks();
+                } else {
+                    // Checkbox is OFF - remove all reference lines
+                    this.clearReferenceLines();
+                    this.currentReferencePeriod = null;
+                }
+            });
+        }
+    }
+
+    /**
+     * Add reference lines for a specific period
+     * @param {string} period - 'day' | 'week' | 'month' | 'year'
+     */
+    async addReferenceLines(period) {
+        if (!this.currentTicker || !this.currentDate) {
+            Utils.notify('Please load chart data first', 'error');
+            return;
+        }
+
+        // Note: Don't clear existing lines here - we want to show ALL periods at once
+        Utils.notify(`Loading previous ${period} reference lines...`, 'info');
+
+        try {
+            // Get reference line manager from app
+            const referenceManager = window.app?.referenceLineManager;
+            if (!referenceManager) {
+                console.error('ReferenceLineManager not initialized');
+                Utils.notify('Reference line manager not available', 'error');
+                return;
+            }
+
+            // Get previous period OHLC
+            const ohlc = await referenceManager.getPreviousPeriodOHLC(
+                this.currentTicker,
+                this.currentDate,
+                period
+            );
+
+            if (!ohlc) {
+                Utils.notify(`No data available for previous ${period}`, 'error');
+                return;
+            }
+
+            // Add price lines for each OHLC value
+            const periodName = referenceManager.formatPeriodName(period);
+
+            // Log the OHLC values
+            console.log(`[ChartManager] Adding reference lines for ${periodName}:`);
+            console.log(`  Period: ${ohlc.startDate} - ${ohlc.endDate}`);
+            console.log(`  Open:  ${ohlc.open.toFixed(2)}`);
+            console.log(`  High:  ${ohlc.high.toFixed(2)}`);
+            console.log(`  Low:   ${ohlc.low.toFixed(2)}`);
+            console.log(`  Close: ${ohlc.close.toFixed(2)}`);
+
+            // High line (resistance)
+            console.log(`[ChartManager] Creating HIGH line at ${ohlc.high.toFixed(2)}`);
+            const highLine = this.candlestickSeries.createPriceLine({
+                price: ohlc.high,
+                color: CONFIG.REFERENCE_LINE_COLORS.HIGH,
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: `${periodName} High: ${ohlc.high.toFixed(2)}`,
+            });
+            this.referenceLines.push(highLine);
+            console.log(`[ChartManager] HIGH line created, total lines: ${this.referenceLines.length}`);
+
+            // Low line (support)
+            console.log(`[ChartManager] Creating LOW line at ${ohlc.low.toFixed(2)}`);
+            const lowLine = this.candlestickSeries.createPriceLine({
+                price: ohlc.low,
+                color: CONFIG.REFERENCE_LINE_COLORS.LOW,
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: `${periodName} Low: ${ohlc.low.toFixed(2)}`,
+            });
+            this.referenceLines.push(lowLine);
+            console.log(`[ChartManager] LOW line created, total lines: ${this.referenceLines.length}`);
+
+            // Open line
+            console.log(`[ChartManager] Creating OPEN line at ${ohlc.open.toFixed(2)}`);
+            const openLine = this.candlestickSeries.createPriceLine({
+                price: ohlc.open,
+                color: CONFIG.REFERENCE_LINE_COLORS.OPEN,
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: `${periodName} Open: ${ohlc.open.toFixed(2)}`,
+            });
+            this.referenceLines.push(openLine);
+            console.log(`[ChartManager] OPEN line created, total lines: ${this.referenceLines.length}`);
+
+            // Close line
+            console.log(`[ChartManager] Creating CLOSE line at ${ohlc.close.toFixed(2)}`);
+            const closeLine = this.candlestickSeries.createPriceLine({
+                price: ohlc.close,
+                color: CONFIG.REFERENCE_LINE_COLORS.CLOSE,
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: `${periodName} Close: ${ohlc.close.toFixed(2)}`,
+            });
+            this.referenceLines.push(closeLine);
+            console.log(`[ChartManager] CLOSE line created, total lines: ${this.referenceLines.length}`);
+
+            this.currentReferencePeriod = period;
+            console.log(`[ChartManager] ✅ ALL 4 LINES CREATED SUCCESSFULLY`);
+            console.log(`[ChartManager] Reference lines array:`, this.referenceLines);
+
+            Utils.notify(`${periodName} reference lines added (${ohlc.startDate} - ${ohlc.endDate})`, 'success');
+        } catch (error) {
+            console.error('Error adding reference lines:', error);
+            Utils.notify(`Error adding reference lines: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Add order block lines (high and low of first candle based on timeframe)
+     */
+    async addOrderBlocks() {
+        if (!this.currentData || !this.currentData.candlestick || this.currentData.candlestick.length === 0) {
+            console.warn('[ChartManager] No candle data available for order blocks');
+            return;
+        }
+
+        // Get the first candle from the current data
+        const firstCandle = this.currentData.candlestick[0];
+
+        console.log('[ChartManager] Adding Order Blocks:');
+        console.log(`  First Candle High: ${firstCandle.high.toFixed(2)}`);
+        console.log(`  First Candle Low:  ${firstCandle.low.toFixed(2)}`);
+
+        // Order Block High line
+        const obHighLine = this.candlestickSeries.createPriceLine({
+            price: firstCandle.high,
+            color: CONFIG.REFERENCE_LINE_COLORS.HIGH, // Yellow-gold
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: `Order Block High: ${firstCandle.high.toFixed(2)}`,
+        });
+        this.referenceLines.push(obHighLine);
+        console.log(`[ChartManager] Order Block HIGH line created, total lines: ${this.referenceLines.length}`);
+
+        // Order Block Low line
+        const obLowLine = this.candlestickSeries.createPriceLine({
+            price: firstCandle.low,
+            color: CONFIG.REFERENCE_LINE_COLORS.LOW, // Yellow-gold
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: `Order Block Low: ${firstCandle.low.toFixed(2)}`,
+        });
+        this.referenceLines.push(obLowLine);
+        console.log(`[ChartManager] Order Block LOW line created, total lines: ${this.referenceLines.length}`);
+
+        Utils.notify('Order block lines added', 'success');
+    }
+
+    /**
+     * Clear all reference lines
+     */
+    clearReferenceLines() {
+        this.referenceLines.forEach(line => {
+            this.candlestickSeries.removePriceLine(line);
+        });
+        this.referenceLines = [];
     }
 }

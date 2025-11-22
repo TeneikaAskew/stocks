@@ -6,6 +6,7 @@ class App {
         this.chartManager = new ChartManager('chartContainer');
         this.tradeMarker = new TradeMarker();
         this.analytics = new Analytics(this.tradeMarker);
+        this.referenceLineManager = new ReferenceLineManager(this.dataLoader);
 
         this.currentTicker = 'IWM';
         this.currentDate = null;
