@@ -1,6 +1,6 @@
 //@version=6
-indicator("Session Levels + ORB + Supertrend", overlay=true,
-     max_lines_count=140, max_boxes_count=60, max_labels_count=140)
+indicator("Session Levels + ORB + Supertrend + 5Days", overlay=true,
+     max_lines_count=150, max_boxes_count=60, max_labels_count=150)
 
 // ═══════════════════════════════════════════════════════════════════
 // SESSION LEVELS INPUTS
@@ -8,6 +8,7 @@ indicator("Session Levels + ORB + Supertrend", overlay=true,
 showPMO   = input.bool(true,  "Prev MONTH (PMOH/PMOL/PMOC)", group="Session Levels")
 showPW    = input.bool(true,  "Prev WEEK (PWH/PWL/PWC)", group="Session Levels")
 showPD    = input.bool(true,  "Prev DAY (PDH/PDL/PDC)", group="Session Levels")
+show5Days = input.bool(true,  "Past 5 Days High/Low (D-1 to D-5)", group="Session Levels")
 showPmM   = input.bool(true,  "Pre-Market High/Low (today)", group="Session Levels")
 show50Pct = input.bool(true,  "Show 50% Midpoint Levels", group="Session Levels")
 showGaps  = input.bool(true,  "Gap Zone (yesterday close ↔ today open)", group="Session Levels")
@@ -39,6 +40,8 @@ colGapOk_input = input.color(color.white,   "Filled Gap Color", group="Session C
 colGapOk_opacity = input.int(80, "Filled Gap Opacity", minval=0, maxval=100, group="Session Colors")
 colPsych_input = input.color(color.silver,  "Psychological Levels Color", group="Session Colors")
 colPsych_opacity = input.int(60, "Psychological Levels Opacity", minval=0, maxval=100, group="Session Colors")
+col5D_input = input.color(color.fuchsia,  "Past 5 Days High/Low Color", group="Session Colors")
+col5D_opacity = input.int(20, "Past 5 Days Opacity", minval=0, maxval=100, group="Session Colors")
 
 // Create colors with user-defined opacity
 colPMO   = color.new(colPMO_input,  0)
@@ -53,6 +56,10 @@ colPmM_f = color.new(colPmM_input, colPmM_opacity)
 colGapUn = color.new(colGapUn_input, colGapUn_opacity)
 colGapOk = color.new(colGapOk_input, colGapOk_opacity)
 colPsych = color.new(colPsych_input, colPsych_opacity)
+
+// Past 5 Days colors - consistent opacity like other levels
+col5D   = color.new(col5D_input, 0)           // High lines (full opacity)
+col5D_f = color.new(col5D_input, col5D_opacity)  // Low lines (with opacity)
 
 // ═══════════════════════════════════════════════════════════════════
 // ORB INPUTS
@@ -365,6 +372,19 @@ pmoh = request.security(tickerSrc, "M", high,  barmerge.gaps_off, barmerge.looka
 pmol = request.security(tickerSrc, "M", low,   barmerge.gaps_off, barmerge.lookahead_off)[1]
 pmoc = request.security(tickerSrc, "M", close, barmerge.gaps_off, barmerge.lookahead_off)[1]
 
+// Past 5 Days High/Low levels (D-1 through D-5)
+// Using lookahead_on for historical levels (safe for past data, helps with intraday chart history)
+d1h = request.security(tickerSrc, "D", high[1], barmerge.gaps_off, barmerge.lookahead_on)  // Yesterday
+d1l = request.security(tickerSrc, "D", low[1],  barmerge.gaps_off, barmerge.lookahead_on)
+d2h = request.security(tickerSrc, "D", high[2], barmerge.gaps_off, barmerge.lookahead_on)  // 2 days ago
+d2l = request.security(tickerSrc, "D", low[2],  barmerge.gaps_off, barmerge.lookahead_on)
+d3h = request.security(tickerSrc, "D", high[3], barmerge.gaps_off, barmerge.lookahead_on)  // 3 days ago
+d3l = request.security(tickerSrc, "D", low[3],  barmerge.gaps_off, barmerge.lookahead_on)
+d4h = request.security(tickerSrc, "D", high[4], barmerge.gaps_off, barmerge.lookahead_on)  // 4 days ago
+d4l = request.security(tickerSrc, "D", low[4],  barmerge.gaps_off, barmerge.lookahead_on)
+d5h = request.security(tickerSrc, "D", high[5], barmerge.gaps_off, barmerge.lookahead_on)  // 5 days ago
+d5l = request.security(tickerSrc, "D", low[5],  barmerge.gaps_off, barmerge.lookahead_on)
+
 // Get pre-market data using security() - works even if chart is RTH only
 string tickerETH = ticker.new(syminfo.prefix, syminfo.ticker, session.extended)
 [pmH, pmL] = request.security(tickerETH, timeframe.period, [high, low], barmerge.gaps_off, barmerge.lookahead_off)
@@ -387,6 +407,18 @@ var line lPmML = na
 var line lPmM50 = na
 var box gapBox = na
 
+// Past 5 Days lines
+var line l5D_1H = na
+var line l5D_1L = na
+var line l5D_2H = na
+var line l5D_2L = na
+var line l5D_3H = na
+var line l5D_3L = na
+var line l5D_4H = na
+var line l5D_4L = na
+var line l5D_5H = na
+var line l5D_5L = na
+
 // Persistent variables for psychological level lines (array to hold multiple lines)
 var array<line> psychLines = array.new<line>()
 var float pmHigh = na
@@ -406,6 +438,18 @@ var float prev_pmol = na
 var float prev_pmoc = na
 var float prev_pmHigh = na
 var float prev_pmLow = na
+
+// Track previous 5 days values to detect changes
+var float prev_d1h = na
+var float prev_d1l = na
+var float prev_d2h = na
+var float prev_d2l = na
+var float prev_d3h = na
+var float prev_d3l = na
+var float prev_d4h = na
+var float prev_d4l = na
+var float prev_d5h = na
+var float prev_d5l = na
 
 // Track previous psychological base level to detect changes
 var float prev_psychBase = na
@@ -427,6 +471,18 @@ var label lblPmMH = na
 var label lblPmML = na
 var label lblPmM50 = na
 var label lblGapFilled = na
+
+// Past 5 Days labels
+var label lbl5D_1H = na
+var label lbl5D_1L = na
+var label lbl5D_2H = na
+var label lbl5D_2L = na
+var label lbl5D_3H = na
+var label lbl5D_3L = na
+var label lbl5D_4H = na
+var label lbl5D_4L = na
+var label lbl5D_5H = na
+var label lbl5D_5L = na
 
 // Helper function to delete line if it exists
 deleteLine(line l) =>
@@ -607,6 +663,103 @@ if showPmM and not na(pmHigh) and not na(pmLow)
         if show50Pct
             pmm50 = (pmHigh + pmLow) / 2
             lblPmM50 := label.new(bar_index + 10, pmm50, "PmM 50%", style=label.style_label_left, color=color.new(colPmM_input, 60), textcolor=color.white, size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════════
+// PAST 5 DAYS HIGH/LOW LEVELS
+// ═══════════════════════════════════════════════════════════════════
+
+// Draw Past 5 Days levels - only recreate if values changed
+if show5Days and not na(d1h) and not na(d1l)
+    d5DaysChanged = d1h != prev_d1h or d1l != prev_d1l or d2h != prev_d2h or d2l != prev_d2l or
+                     d3h != prev_d3h or d3l != prev_d3l or d4h != prev_d4h or d4l != prev_d4l or
+                     d5h != prev_d5h or d5l != prev_d5l
+
+    if d5DaysChanged or na(l5D_1H)
+        // Delete old lines
+        l5D_1H := deleteLine(l5D_1H)
+        l5D_1L := deleteLine(l5D_1L)
+        l5D_2H := deleteLine(l5D_2H)
+        l5D_2L := deleteLine(l5D_2L)
+        l5D_3H := deleteLine(l5D_3H)
+        l5D_3L := deleteLine(l5D_3L)
+        l5D_4H := deleteLine(l5D_4H)
+        l5D_4L := deleteLine(l5D_4L)
+        l5D_5H := deleteLine(l5D_5H)
+        l5D_5L := deleteLine(l5D_5L)
+
+        // Create new lines (once) - extend both directions to cover entire chart
+        // D-1 (Yesterday)
+        l5D_1H := line.new(bar_index, d1h, bar_index + 1, d1h, extend=extend.both, color=col5D, width=1, style=line.style_solid)
+        l5D_1L := line.new(bar_index, d1l, bar_index + 1, d1l, extend=extend.both, color=col5D_f, width=1, style=line.style_solid)
+
+        // D-2 (2 days ago)
+        if not na(d2h) and not na(d2l)
+            l5D_2H := line.new(bar_index, d2h, bar_index + 1, d2h, extend=extend.both, color=col5D, width=1, style=line.style_solid)
+            l5D_2L := line.new(bar_index, d2l, bar_index + 1, d2l, extend=extend.both, color=col5D_f, width=1, style=line.style_solid)
+
+        // D-3 (3 days ago)
+        if not na(d3h) and not na(d3l)
+            l5D_3H := line.new(bar_index, d3h, bar_index + 1, d3h, extend=extend.both, color=col5D, width=1, style=line.style_solid)
+            l5D_3L := line.new(bar_index, d3l, bar_index + 1, d3l, extend=extend.both, color=col5D_f, width=1, style=line.style_solid)
+
+        // D-4 (4 days ago)
+        if not na(d4h) and not na(d4l)
+            l5D_4H := line.new(bar_index, d4h, bar_index + 1, d4h, extend=extend.both, color=col5D, width=1, style=line.style_solid)
+            l5D_4L := line.new(bar_index, d4l, bar_index + 1, d4l, extend=extend.both, color=col5D_f, width=1, style=line.style_solid)
+
+        // D-5 (5 days ago)
+        if not na(d5h) and not na(d5l)
+            l5D_5H := line.new(bar_index, d5h, bar_index + 1, d5h, extend=extend.both, color=col5D, width=1, style=line.style_solid)
+            l5D_5L := line.new(bar_index, d5l, bar_index + 1, d5l, extend=extend.both, color=col5D_f, width=1, style=line.style_solid)
+
+        // Update tracked values
+        prev_d1h := d1h
+        prev_d1l := d1l
+        prev_d2h := d2h
+        prev_d2l := d2l
+        prev_d3h := d3h
+        prev_d3l := d3l
+        prev_d4h := d4h
+        prev_d4l := d4l
+        prev_d5h := d5h
+        prev_d5l := d5l
+
+    // Update labels on last bar (so they stay on the right edge)
+    if barstate.islast
+        lbl5D_1H := deleteLabel(lbl5D_1H)
+        lbl5D_1L := deleteLabel(lbl5D_1L)
+        lbl5D_2H := deleteLabel(lbl5D_2H)
+        lbl5D_2L := deleteLabel(lbl5D_2L)
+        lbl5D_3H := deleteLabel(lbl5D_3H)
+        lbl5D_3L := deleteLabel(lbl5D_3L)
+        lbl5D_4H := deleteLabel(lbl5D_4H)
+        lbl5D_4L := deleteLabel(lbl5D_4L)
+        lbl5D_5H := deleteLabel(lbl5D_5H)
+        lbl5D_5L := deleteLabel(lbl5D_5L)
+
+        // D-1 labels
+        lbl5D_1H := label.new(bar_index + 10, d1h, "D-1H", style=label.style_label_left, color=col5D, textcolor=color.white, size=size.tiny)
+        lbl5D_1L := label.new(bar_index + 10, d1l, "D-1L", style=label.style_label_left, color=col5D_f, textcolor=color.white, size=size.tiny)
+
+        // D-2 labels
+        if not na(d2h) and not na(d2l)
+            lbl5D_2H := label.new(bar_index + 10, d2h, "D-2H", style=label.style_label_left, color=col5D, textcolor=color.white, size=size.tiny)
+            lbl5D_2L := label.new(bar_index + 10, d2l, "D-2L", style=label.style_label_left, color=col5D_f, textcolor=color.white, size=size.tiny)
+
+        // D-3 labels
+        if not na(d3h) and not na(d3l)
+            lbl5D_3H := label.new(bar_index + 10, d3h, "D-3H", style=label.style_label_left, color=col5D, textcolor=color.white, size=size.tiny)
+            lbl5D_3L := label.new(bar_index + 10, d3l, "D-3L", style=label.style_label_left, color=col5D_f, textcolor=color.white, size=size.tiny)
+
+        // D-4 labels
+        if not na(d4h) and not na(d4l)
+            lbl5D_4H := label.new(bar_index + 10, d4h, "D-4H", style=label.style_label_left, color=col5D, textcolor=color.white, size=size.tiny)
+            lbl5D_4L := label.new(bar_index + 10, d4l, "D-4L", style=label.style_label_left, color=col5D_f, textcolor=color.white, size=size.tiny)
+
+        // D-5 labels
+        if not na(d5h) and not na(d5l)
+            lbl5D_5H := label.new(bar_index + 10, d5h, "D-5H", style=label.style_label_left, color=col5D, textcolor=color.white, size=size.tiny)
+            lbl5D_5L := label.new(bar_index + 10, d5l, "D-5L", style=label.style_label_left, color=col5D_f, textcolor=color.white, size=size.tiny)
 
 // Gap Zone tracking
 if newDay
