@@ -111,3 +111,4 @@ nul
 
 # AlphaVantage no-data markers (local cache indicators)
 *.nodata
+*with_indicators.parquet

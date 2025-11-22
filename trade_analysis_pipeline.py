@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Unified trade analysis pipeline:
-1. Read trade_tracker.csv from data/trade_examples/
+1. Read trade_tracker.csv from data/signals/trade_examples/
 2. Calculate durations and update to trade_tracker_updated.csv
 3. Pivot to tall format with 3 rows per trade (exit, stop_loss, runner)
 4. Join with indicators to find patterns
@@ -22,8 +22,9 @@ class TradeAnalysisPipeline:
         self.iwm_df = None
         self.pivoted_trades = None
         self.search_months = 1  # Default to 1 month
-        
-        # Phase 3: DataFrame cache to avoid re-reading CSVs
+        self.data_format = 'csv'  # Default to CSV, will be detected in step3
+
+        # Phase 3: DataFrame cache to avoid re-reading CSVs/Parquet
         self._cache = {
             'similar_trades': None,
             'criteria_effectiveness': None,
@@ -31,9 +32,13 @@ class TradeAnalysisPipeline:
         }
     
     def _get_cached_df(self, key, file_path):
-        """Get DataFrame from cache or read from file if not cached"""
+        """Get DataFrame from cache or read from file if not cached (supports CSV and Parquet)"""
         if self._cache[key] is None:
-            if os.path.exists(file_path):
+            # Try parquet first, then CSV
+            parquet_path = file_path.replace('.csv', '.parquet')
+            if os.path.exists(parquet_path):
+                self._cache[key] = pd.read_parquet(parquet_path)
+            elif os.path.exists(file_path):
                 self._cache[key] = pd.read_csv(file_path)
         return self._cache[key]
     
@@ -117,7 +122,7 @@ class TradeAnalysisPipeline:
         print("="*60)
         
         # Read trade_tracker.csv from examples folder
-        self.trades_df = pd.read_csv('data/trade_examples/trade_tracker.csv')
+        self.trades_df = pd.read_csv('data/signals/trade_examples/trade_tracker.csv')
         print(f"Loaded {len(self.trades_df)} trades")
         
         # Convert time columns
@@ -192,9 +197,27 @@ class TradeAnalysisPipeline:
         print("\n" + "="*60)
         print("STEP 3: JOIN WITH INDICATORS")
         print("="*60)
-        
-        # Load IWM data
-        self.iwm_df = pd.read_csv('data/historical_iwm_0824_0825_with_indicators.csv')
+
+        # Auto-detect format (CSV or Parquet)
+        csv_files = glob.glob('data/signals/historical_iwm_*_with_indicators.csv')
+        parquet_files = glob.glob('data/signals/historical_iwm_*_with_indicators.parquet')
+
+        if parquet_files:
+            indicator_file = parquet_files[0]
+            self.data_format = 'parquet'
+            print(f"Detected parquet format: {indicator_file}")
+            self.iwm_df = pd.read_parquet(indicator_file)
+        elif csv_files:
+            indicator_file = csv_files[0]
+            self.data_format = 'csv'
+            print(f"Detected CSV format: {indicator_file}")
+            self.iwm_df = pd.read_csv(indicator_file)
+        else:
+            raise FileNotFoundError(
+                "No indicator files found! This should have been handled by _ensure_indicator_files(). "
+                "If you see this error, try running: python trading_analysis.py -symbol IWM -months 2"
+            )
+
         self.iwm_df['Time'] = pd.to_datetime(self.iwm_df['Time'])
         
         # Filter to market hours only (9:30 AM to 4:00 PM)
@@ -223,9 +246,49 @@ class TradeAnalysisPipeline:
         )
         
         # Select all indicator columns for entry
-        entry_cols = ['Last', 'Volume', 'ATR14_W', 'RSI14_W', 'EMA9', 'EMA20', 'EMA50', 
-                      'VWAP', 'RVOL20', 'RVOL_MOD', 'RVOL_MOD_EXCL', 'OBV', 
-                      'StochRSI_K', 'StochRSI_D']
+        entry_cols = ['Last', 'Volume', 'ATR14_W', 'RSI14_W', 'EMA9', 'EMA20', 'EMA50',
+                      'VWAP', 'RVOL20', 'RVOL_MOD', 'RVOL_MOD_EXCL', 'OBV',
+                      'StochRSI_K', 'StochRSI_D',
+
+                      # Historical Levels (Previous Day)
+                      'Prev_Day_High', 'Prev_Day_Low', 'Prev_Day_Open', 'Prev_Day_Close',
+                      'Prev_Day_HL_Mid', 'Prev_Day_OC_Mid',
+                      'Prev_Day_High_Pct', 'Prev_Day_Low_Pct',
+                      'Broke_Prev_Day_High', 'Broke_Prev_Day_Low',
+                      'At_Prev_Day_High', 'At_Prev_Day_Low', 'At_Prev_Day_HL_Mid',
+
+                      # Historical Levels (Previous Week)
+                      'Prev_Week_High', 'Prev_Week_Low', 'Prev_Week_Open', 'Prev_Week_Close',
+                      'Prev_Week_HL_Mid', 'Prev_Week_OC_Mid',
+                      'Prev_Week_High_Pct', 'Prev_Week_Low_Pct',
+                      'Broke_Prev_Week_High', 'Broke_Prev_Week_Low',
+                      'At_Prev_Week_High', 'At_Prev_Week_Low', 'At_Prev_Week_HL_Mid',
+
+                      # Historical Levels (Previous Month)
+                      'Prev_Month_High', 'Prev_Month_Low', 'Prev_Month_Open', 'Prev_Month_Close',
+                      'Prev_Month_HL_Mid', 'Prev_Month_OC_Mid',
+                      'Prev_Month_High_Pct', 'Prev_Month_Low_Pct',
+                      'Broke_Prev_Month_High', 'Broke_Prev_Month_Low',
+                      'At_Prev_Month_High', 'At_Prev_Month_Low', 'At_Prev_Month_HL_Mid',
+
+                      # ORB 5-minute
+                      'ORB_5m_High', 'ORB_5m_Low', 'ORB_5m_Mid', 'ORB_5m_Range',
+                      'ORB_5m_Trend', 'ORB_5m_Broke_High', 'ORB_5m_Broke_Low',
+                      'ORB_5m_Within_Range', 'ORB_5m_Distance_High', 'ORB_5m_Distance_Low',
+
+                      # ORB 15-minute
+                      'ORB_15m_High', 'ORB_15m_Low', 'ORB_15m_Mid', 'ORB_15m_Range',
+                      'ORB_15m_Trend', 'ORB_15m_Broke_High', 'ORB_15m_Broke_Low',
+                      'ORB_15m_Within_Range', 'ORB_15m_Distance_High', 'ORB_15m_Distance_Low',
+
+                      # ORB 30-minute
+                      'ORB_30m_High', 'ORB_30m_Low', 'ORB_30m_Mid', 'ORB_30m_Range',
+                      'ORB_30m_Trend', 'ORB_30m_Broke_High', 'ORB_30m_Broke_Low',
+                      'ORB_30m_Within_Range', 'ORB_30m_Distance_High', 'ORB_30m_Distance_Low',
+
+                      # Order Blocks
+                      'Order_Block_High', 'Order_Block_Low', 'Order_Block_Mid',
+                      'Order_Block_Position', 'Order_Block_Test', 'Order_Block_Distance']
         for col in entry_cols:
             if col in entry_data.columns:
                 entry_data[f'Entry_{col}'] = entry_data[col]
@@ -270,9 +333,15 @@ class TradeAnalysisPipeline:
         
         final_cols = base_cols + indicator_cols
         enriched_final = enriched[final_cols].copy()
-        enriched_final.to_csv('data/trades_enriched.csv', index=False)
-        
-        print("Saved trades_enriched.csv with entry/exit indicators")
+
+        # Save in matching format (parquet or CSV) to signals directory
+        os.makedirs('data/signals', exist_ok=True)
+        if self.data_format == 'parquet':
+            enriched_final.to_parquet('data/signals/trades_enriched.parquet', index=False)
+            print("Saved data/signals/trades_enriched.parquet with entry/exit indicators")
+        else:
+            enriched_final.to_csv('data/signals/trades_enriched.csv', index=False)
+            print("Saved data/signals/trades_enriched.csv with entry/exit indicators")
         print("\nSample enriched data:")
         print(enriched_final.head())
         
@@ -648,7 +717,7 @@ class TradeAnalysisPipeline:
         else:
             return pd.DataFrame()  # Return empty DataFrame if no trades found
         
-    def step6_criteria_analysis(self, enriched_df, output_filename='data/trade_criteria_analysis.csv', is_similar=False):
+    def step6_criteria_analysis(self, enriched_df, output_filename='data/signals/trade_criteria_analysis.csv', is_similar=False):
         """Step 6: Generate comprehensive criteria analysis"""
         if not is_similar:
             print("\n" + "="*60)
@@ -848,10 +917,171 @@ class TradeAnalysisPipeline:
                     (base_df['Entry_StochRSI_K'] > level)
                 ).astype(int)
                 new_columns[f'Entry_StochRSI_LT_{level}'] = (
-                    pd.notna(base_df['Entry_StochRSI_K']) & 
+                    pd.notna(base_df['Entry_StochRSI_K']) &
                     (base_df['Entry_StochRSI_K'] < level)
                 ).astype(int)
-        
+
+        # Historical Levels - Breakout/Breakdown flags
+        print("  Adding Historical Levels criteria...")
+        new_columns['Entry_Broke_Prev_Day_High'] = (
+            base_df.get('Entry_Broke_Prev_Day_High', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_Broke_Prev_Day_Low'] = (
+            base_df.get('Entry_Broke_Prev_Day_Low', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_Broke_Prev_Week_High'] = (
+            base_df.get('Entry_Broke_Prev_Week_High', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_Broke_Prev_Week_Low'] = (
+            base_df.get('Entry_Broke_Prev_Week_Low', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_Broke_Prev_Month_High'] = (
+            base_df.get('Entry_Broke_Prev_Month_High', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_Broke_Prev_Month_Low'] = (
+            base_df.get('Entry_Broke_Prev_Month_Low', pd.Series([0]*len(base_df)))
+        ).astype(int)
+
+        # Historical Levels - At level flags
+        new_columns['Entry_At_Prev_Day_High'] = (
+            base_df.get('Entry_At_Prev_Day_High', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_At_Prev_Day_Low'] = (
+            base_df.get('Entry_At_Prev_Day_Low', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_At_Prev_Day_HL_Mid'] = (
+            base_df.get('Entry_At_Prev_Day_HL_Mid', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_At_Prev_Week_High'] = (
+            base_df.get('Entry_At_Prev_Week_High', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_At_Prev_Week_Low'] = (
+            base_df.get('Entry_At_Prev_Week_Low', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_At_Prev_Week_HL_Mid'] = (
+            base_df.get('Entry_At_Prev_Week_HL_Mid', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_At_Prev_Month_High'] = (
+            base_df.get('Entry_At_Prev_Month_High', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_At_Prev_Month_Low'] = (
+            base_df.get('Entry_At_Prev_Month_Low', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_At_Prev_Month_HL_Mid'] = (
+            base_df.get('Entry_At_Prev_Month_HL_Mid', pd.Series([0]*len(base_df)))
+        ).astype(int)
+
+        # ORB - Trend direction
+        print("  Adding ORB criteria...")
+        new_columns['Entry_ORB_5m_Bullish'] = (
+            base_df.get('Entry_ORB_5m_Trend', pd.Series([0]*len(base_df))) == 1
+        ).astype(int)
+        new_columns['Entry_ORB_5m_Bearish'] = (
+            base_df.get('Entry_ORB_5m_Trend', pd.Series([0]*len(base_df))) == -1
+        ).astype(int)
+        new_columns['Entry_ORB_5m_Neutral'] = (
+            base_df.get('Entry_ORB_5m_Trend', pd.Series([0]*len(base_df))) == 0
+        ).astype(int)
+        new_columns['Entry_ORB_5m_Broke_High'] = (
+            base_df.get('Entry_ORB_5m_Broke_High', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_ORB_5m_Broke_Low'] = (
+            base_df.get('Entry_ORB_5m_Broke_Low', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_ORB_5m_Within_Range'] = (
+            base_df.get('Entry_ORB_5m_Within_Range', pd.Series([0]*len(base_df)))
+        ).astype(int)
+
+        new_columns['Entry_ORB_15m_Bullish'] = (
+            base_df.get('Entry_ORB_15m_Trend', pd.Series([0]*len(base_df))) == 1
+        ).astype(int)
+        new_columns['Entry_ORB_15m_Bearish'] = (
+            base_df.get('Entry_ORB_15m_Trend', pd.Series([0]*len(base_df))) == -1
+        ).astype(int)
+        new_columns['Entry_ORB_15m_Neutral'] = (
+            base_df.get('Entry_ORB_15m_Trend', pd.Series([0]*len(base_df))) == 0
+        ).astype(int)
+        new_columns['Entry_ORB_15m_Broke_High'] = (
+            base_df.get('Entry_ORB_15m_Broke_High', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_ORB_15m_Broke_Low'] = (
+            base_df.get('Entry_ORB_15m_Broke_Low', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_ORB_15m_Within_Range'] = (
+            base_df.get('Entry_ORB_15m_Within_Range', pd.Series([0]*len(base_df)))
+        ).astype(int)
+
+        new_columns['Entry_ORB_30m_Bullish'] = (
+            base_df.get('Entry_ORB_30m_Trend', pd.Series([0]*len(base_df))) == 1
+        ).astype(int)
+        new_columns['Entry_ORB_30m_Bearish'] = (
+            base_df.get('Entry_ORB_30m_Trend', pd.Series([0]*len(base_df))) == -1
+        ).astype(int)
+        new_columns['Entry_ORB_30m_Neutral'] = (
+            base_df.get('Entry_ORB_30m_Trend', pd.Series([0]*len(base_df))) == 0
+        ).astype(int)
+        new_columns['Entry_ORB_30m_Broke_High'] = (
+            base_df.get('Entry_ORB_30m_Broke_High', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_ORB_30m_Broke_Low'] = (
+            base_df.get('Entry_ORB_30m_Broke_Low', pd.Series([0]*len(base_df)))
+        ).astype(int)
+        new_columns['Entry_ORB_30m_Within_Range'] = (
+            base_df.get('Entry_ORB_30m_Within_Range', pd.Series([0]*len(base_df)))
+        ).astype(int)
+
+        # ORB - Distance from levels
+        if 'Entry_ORB_5m_Distance_High' in base_df.columns:
+            new_columns['Entry_Near_ORB_5m_High'] = (
+                base_df['Entry_ORB_5m_Distance_High'].abs() <= 0.1
+            ).astype(int)
+            new_columns['Entry_Near_ORB_5m_Low'] = (
+                base_df['Entry_ORB_5m_Distance_Low'].abs() <= 0.1
+            ).astype(int)
+
+        if 'Entry_ORB_15m_Distance_High' in base_df.columns:
+            new_columns['Entry_Near_ORB_15m_High'] = (
+                base_df['Entry_ORB_15m_Distance_High'].abs() <= 0.1
+            ).astype(int)
+            new_columns['Entry_Near_ORB_15m_Low'] = (
+                base_df['Entry_ORB_15m_Distance_Low'].abs() <= 0.1
+            ).astype(int)
+
+        if 'Entry_ORB_30m_Distance_High' in base_df.columns:
+            new_columns['Entry_Near_ORB_30m_High'] = (
+                base_df['Entry_ORB_30m_Distance_High'].abs() <= 0.1
+            ).astype(int)
+            new_columns['Entry_Near_ORB_30m_Low'] = (
+                base_df['Entry_ORB_30m_Distance_Low'].abs() <= 0.1
+            ).astype(int)
+
+        # Order Blocks - Only keep the useful test flag
+        print("  Adding Order Blocks criteria...")
+        new_columns['Entry_Order_Block_Test'] = (
+            base_df.get('Entry_Order_Block_Test', pd.Series([0]*len(base_df)))
+        ).astype(int)
+
+        # Enhanced setup criteria with new features
+        new_columns['CALL_Full_Setup_Enhanced'] = (
+            (new_columns['CALL_Bias_Met'] == 1) &
+            (new_columns['CALL_Momentum_Met'] == 1) &
+            (new_columns['Entry_RVOL_GTE_1.0'] == 1) &
+            (
+                (new_columns.get('Entry_ORB_30m_Bullish', pd.Series([0]*len(base_df))) == 1) |
+                (new_columns.get('Entry_Broke_Prev_Day_High', pd.Series([0]*len(base_df))) == 1)
+            )
+        ).astype(int)
+
+        new_columns['PUT_Full_Setup_Enhanced'] = (
+            (new_columns['PUT_Bias_Met'] == 1) &
+            (new_columns['PUT_Momentum_Met'] == 1) &
+            (new_columns['Entry_RVOL_GTE_1.0'] == 1) &
+            (
+                (new_columns.get('Entry_ORB_30m_Bearish', pd.Series([0]*len(base_df))) == 1) |
+                (new_columns.get('Entry_Broke_Prev_Day_Low', pd.Series([0]*len(base_df))) == 1)
+            )
+        ).astype(int)
+
         # Trade outcomes
         new_columns['Trade_Profitable'] = (
             base_df['Return_Pct'] > 0
@@ -874,11 +1104,18 @@ class TradeAnalysisPipeline:
         # Now concatenate all columns at once to avoid fragmentation
         new_columns_df = pd.DataFrame(new_columns)
         criteria_df = pd.concat([base_df, new_columns_df], axis=1)
-        
-        # Save the comprehensive criteria analysis
-        criteria_df.to_csv(output_filename, index=False)
-        print(f"Created {len(criteria_df.columns)} columns in criteria analysis")
-        print(f"Saved to: {output_filename}")
+
+        # Save the comprehensive criteria analysis in matching format
+        if self.data_format == 'parquet':
+            # Change extension to .parquet if needed
+            output_path = output_filename.replace('.csv', '.parquet')
+            criteria_df.to_parquet(output_path, index=False)
+            print(f"Created {len(criteria_df.columns)} columns in criteria analysis")
+            print(f"Saved to: {output_path}")
+        else:
+            criteria_df.to_csv(output_filename, index=False)
+            print(f"Created {len(criteria_df.columns)} columns in criteria analysis")
+            print(f"Saved to: {output_filename}")
         
         # Quick summary
         for trade_type in ['CALL', 'PUT']:
@@ -903,7 +1140,7 @@ class TradeAnalysisPipeline:
         print("="*60)
         
         # Load the SIMILAR trades criteria analysis file (not the original trades)
-        criteria_df = self._get_cached_df('similar_trades', 'data/similar_trades_pipeline.csv')
+        criteria_df = self._get_cached_df('similar_trades', 'data/signals/similar_trades_pipeline.csv')
         
         # Get all boolean columns (those with 0/1 values)
         boolean_cols = []
@@ -921,10 +1158,15 @@ class TradeAnalysisPipeline:
         
         # Sort by average return
         criteria_results_df = criteria_results_df.sort_values('Avg_Return', ascending=False)
-        
-        # Save detailed results
-        criteria_results_df.to_csv('data/criteria_effectiveness.csv', index=False)
-        print(f"\nSaved detailed criteria effectiveness to: data/criteria_effectiveness.csv")
+
+        # Save detailed results in matching format to signals directory
+        os.makedirs('data/signals', exist_ok=True)
+        if self.data_format == 'parquet':
+            criteria_results_df.to_parquet('data/signals/criteria_effectiveness.parquet', index=False)
+            print(f"\nSaved detailed criteria effectiveness to: data/signals/criteria_effectiveness.parquet")
+        else:
+            criteria_results_df.to_parquet('data/signals/criteria_effectiveness.csv', index=False)
+            print(f"\nSaved detailed criteria effectiveness to: data/signals/criteria_effectiveness.csv")
         
         # Display top performing criteria
         print("\n" + "="*40)
@@ -1547,8 +1789,8 @@ class TradeAnalysisPipeline:
                 report_lines.append("")
         
         # Similar trades found
-        if os.path.exists('data/similar_trades_pipeline.csv'):
-            similar_df = self._get_cached_df('similar_trades', 'data/similar_trades_pipeline.csv')
+        if os.path.exists('data/signals/similar_trades_pipeline.csv'):
+            similar_df = self._get_cached_df('similar_trades', 'data/signals/similar_trades_pipeline.csv')
             if len(similar_df) > 0:
                 report_lines.append("\n## Similar Trades Found\n")
                 report_lines.append(f"- **Total Similar Trades**: {len(similar_df)}")
@@ -1563,9 +1805,9 @@ class TradeAnalysisPipeline:
                     report_lines.append(f"- {trade['Entry_Time']}: {trade['Trade_Type']} - {trade['Return_Pct']:.2f}% expected")
         
         # Add Top 20 Criteria by Return (separated by CALL vs PUT)
-        if os.path.exists('data/criteria_effectiveness.csv'):
-            criteria_results_df = self._get_cached_df('criteria_effectiveness', 'data/criteria_effectiveness.csv')
-            criteria_df = self._get_cached_df('similar_trades', 'data/similar_trades_pipeline.csv')
+        if os.path.exists('data/signals/criteria_effectiveness.csv'):
+            criteria_results_df = self._get_cached_df('criteria_effectiveness', 'data/signals/criteria_effectiveness.csv')
+            criteria_df = self._get_cached_df('similar_trades', 'data/signals/similar_trades_pipeline.csv')
             
             report_lines.append("\n## Top 20 Criteria by Average Return\n")
             
@@ -1709,17 +1951,62 @@ class TradeAnalysisPipeline:
                             report_lines.append(f"| {window} | {data['call']['count']} | {data['call']['avg_return']:.2f}% | {data['put']['count']} | {data['put']['avg_return']:.2f}% |")
                     report_lines.append("")
         
-        # Write unified report
-        with open('data/trade_analysis_report.md', 'w', encoding='utf-8') as f:
+        # Write unified report to signals directory
+        os.makedirs('data/signals', exist_ok=True)
+        with open('data/signals/trade_analysis_report.md', 'w', encoding='utf-8') as f:
             f.write('\n'.join(report_lines))
-        
-        print("\nGenerated unified trade analysis report: data/trade_analysis_report.md")
-    
+
+        print("\nGenerated unified trade analysis report: data/signals/trade_analysis_report.md")
+
+    def _ensure_indicator_files(self):
+        """Check if indicator files exist, if not run trading_analysis.py first"""
+        import subprocess
+        import sys
+
+        # Check for indicator files
+        csv_files = glob.glob('data/signals/historical_iwm_*_with_indicators.csv')
+        parquet_files = glob.glob('data/signals/historical_iwm_*_with_indicators.parquet')
+
+        if not csv_files and not parquet_files:
+            print("\n" + "="*60)
+            print("PREREQUISITE: GENERATING INDICATOR DATA")
+            print("="*60)
+            print("\nNo indicator files found. Running trading_analysis.py first...")
+            print("This will generate the required historical data with indicators.\n")
+
+            # Run trading_analysis.py with default settings (24 months, IWM)
+            try:
+                result = subprocess.run(
+                    [sys.executable, 'trading_analysis.py', '-symbol', 'IWM', '-months', '24'],
+                    cwd=os.getcwd(),
+                    check=True,
+                    capture_output=False  # Show output in real-time
+                )
+
+                print("\n" + "="*60)
+                print("INDICATOR DATA GENERATION COMPLETE")
+                print("="*60)
+                print("Now proceeding with trade analysis pipeline...\n")
+
+            except subprocess.CalledProcessError as e:
+                print(f"\nERROR: Failed to run trading_analysis.py")
+                print(f"Please run it manually: python trading_analysis.py -symbol IWM -months 24")
+                raise SystemExit(1)
+            except FileNotFoundError:
+                print(f"\nERROR: trading_analysis.py not found in current directory")
+                print(f"Current directory: {os.getcwd()}")
+                raise SystemExit(1)
+        else:
+            print("\nIndicator files found. Skipping trading_analysis.py...\n")
+
     def run_pipeline(self):
         """Run the complete pipeline"""
         print("TRADE ANALYSIS PIPELINE")
         print("="*60)
-        
+
+        # Check if indicator files exist, if not run trading_analysis.py first
+        self._ensure_indicator_files()
+
         # Clean old files
         self.clean_old_files()
         
@@ -1746,7 +2033,7 @@ class TradeAnalysisPipeline:
             print("\n" + "="*60)
             print("STEP 6B: CRITERIA ANALYSIS FOR SIMILAR TRADES")
             print("="*60)
-            self.step6_criteria_analysis(similar_df, 'data/similar_trades_pipeline.csv', is_similar=True)
+            self.step6_criteria_analysis(similar_df, 'data/signals/similar_trades_pipeline.csv', is_similar=True)
         
         # Step 7: Analyze criteria effectiveness
         self.step7_criteria_insights()
@@ -1766,11 +2053,11 @@ class TradeAnalysisPipeline:
         self.generate_analysis_report(patterns, comprehensive_results)
         
         print("\nOutput files:")
-        print("  1. data/trades_enriched.csv - With entry/exit indicators")
-        print("  2. data/trade_criteria_analysis.csv - Comprehensive criteria evaluation for actual trades")
-        print("  3. data/similar_trades_pipeline.csv - Similar trades with full criteria analysis")
-        print("  4. data/criteria_effectiveness.csv - Analysis of which criteria work best")
-        print("  5. data/trade_analysis_report.md - Complete unified analysis report (includes all insights)")
+        print("  1. data/signals/trades_enriched.csv - With entry/exit indicators")
+        print("  2. data/signals/trade_criteria_analysis.csv - Comprehensive criteria evaluation for actual trades")
+        print("  3. data/signals/similar_trades_pipeline.csv - Similar trades with full criteria analysis")
+        print("  4. data/signals/criteria_effectiveness.csv - Analysis of which criteria work best")
+        print("  5. data/signals/trade_analysis_report.md - Complete unified analysis report (includes all insights)")
 
     def step8_comprehensive_analysis(self):
         """Step 8: Comprehensive analysis of similar trades data"""
@@ -1779,7 +2066,7 @@ class TradeAnalysisPipeline:
         print("="*60)
         
         # Load the similar trades data
-        df = self._get_cached_df('similar_trades', 'data/similar_trades_pipeline.csv')
+        df = self._get_cached_df('similar_trades', 'data/signals/similar_trades_pipeline.csv')
         
         results = {
             'basic_stats': {},
