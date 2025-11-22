@@ -144,6 +144,14 @@ const CONFIG = {
         SL: '#f23645',
     },
 
+    // Reference line colors for previous period OHLC
+    REFERENCE_LINE_COLORS: {
+        HIGH: '#FFD700',      // Yellow-gold for all lines
+        LOW: '#FFD700',       // Yellow-gold for all lines
+        OPEN: '#FFD700',      // Yellow-gold for all lines
+        CLOSE: '#FFD700',     // Yellow-gold for all lines
+    },
+
     // Local storage keys
     STORAGE_KEYS: {
         TRADES: 'tradingSimulator_trades',
