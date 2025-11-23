@@ -1,6 +1,6 @@
 # Data files (JSON generated from parquet)
-data/*/
-!data/.gitkeep
+# Only exclude combined files (too large for GitHub)
+data/*/*_combined.json
 
 # Python cache
 __pycache__/
