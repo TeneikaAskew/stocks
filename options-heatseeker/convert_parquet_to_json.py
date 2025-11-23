@@ -89,6 +89,12 @@ def convert_recent_data(tickers=['iwm', 'qqq', 'spy'], days=30):
         for parquet_file in recent_files:
             # Extract date from filename
             date_str = parquet_file.stem.split('_')[-1]
+
+            # Skip combined files (too large for GitHub)
+            if date_str == 'combined':
+                print(f"Skipping combined file: {parquet_file.name}")
+                continue
+
             convert_parquet_to_json(ticker, date_str, data_dir, output_dir)
 
 
