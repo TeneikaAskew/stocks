@@ -168,8 +168,8 @@ const TableRenderer = {
 
     getNodeIndicator(strike, nodes) {
         if (!nodes) return null;
-        if (nodes.kingNode && Math.abs(nodes.kingNode.strike - strike) < 1) return '👑';
-        if (nodes.gatekeepers.some(g => Math.abs(g.strike - strike) < 1)) return '🛡️';
+        if (nodes.kingNode && Math.abs(nodes.kingNode.strike - strike) < 1) return 'K';
+        if (nodes.gatekeepers.some(g => Math.abs(g.strike - strike) < 1)) return 'G';
         return null;
     },
 
