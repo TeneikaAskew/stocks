@@ -4,7 +4,7 @@ const CONFIG = {
     // API Configuration
     // Set this to your Cloudflare Worker URL after deployment
     // Leave empty to use static data files (fallback mode)
-    API_ENDPOINT: '',  // e.g., 'https://options-heatseeker-api.your-subdomain.workers.dev'
+    API_ENDPOINT: 'https://options-heatseeker-api.teneika.workers.dev',
 
     // Data paths (fallback for static files)
     DATA_BASE_PATH: '../data',
