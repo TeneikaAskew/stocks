@@ -42,16 +42,32 @@ const Utils = {
      */
     formatDate(date, format = 'YYYY-MM-DD') {
         if (!date) return '-';
-        const d = new Date(date);
+
+        // Handle YYYYMMDD string format
+        let d;
+        if (typeof date === 'string' && date.length === 8 && /^\d{8}$/.test(date)) {
+            const year = date.substring(0, 4);
+            const month = date.substring(4, 6);
+            const day = date.substring(6, 8);
+            d = new Date(`${year}-${month}-${day}`);
+        } else {
+            d = new Date(date);
+        }
+
+        if (isNaN(d.getTime())) return '-';
+
         const year = d.getFullYear();
         const month = String(d.getMonth() + 1).padStart(2, '0');
         const day = String(d.getDate()).padStart(2, '0');
 
         if (format === 'YYYY-MM-DD') {
             return `${year}-${month}-${day}`;
-        } else if (format === 'MMM DD, YYYY') {
+        } else if (format === 'MMM DD' || format === 'MMM DD, YYYY') {
             const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            if (format === 'MMM DD') {
+                return `${monthNames[d.getMonth()]} ${day}`;
+            }
             return `${monthNames[d.getMonth()]} ${day}, ${year}`;
         }
         return date.toString();

@@ -169,7 +169,9 @@ const DataLoader = {
     async getAvailableDates(ticker) {
         const index = await this.loadIndex();
         if (!index || !index[ticker]) {
-            return [];
+            // Fallback: return hardcoded recent dates if index is unavailable
+            console.warn('Index not available, using fallback dates');
+            return ['20251121', '20251120', '20251119', '20251118'];
         }
         return index[ticker].dates;
     },

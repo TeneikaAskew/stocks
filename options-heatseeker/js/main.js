@@ -129,11 +129,15 @@ const App = {
                 throw new Error('No data available');
             }
 
-            // Set date picker
+            // Set date picker - mostRecentDate is already in YYYYMMDD format
             const formattedDate = Utils.formatDate(mostRecentDate, 'YYYY-MM-DD');
-            document.getElementById('date-selector').value = formattedDate;
+            const dateSelector = document.getElementById('date-selector');
+            if (dateSelector) {
+                dateSelector.value = formattedDate;
+            }
 
-            this.state.currentDate = mostRecentDate.replace(/-/g, '');
+            // Store date in YYYYMMDD format
+            this.state.currentDate = mostRecentDate;
 
             // Load data
             await this.loadData();
@@ -199,45 +203,62 @@ const App = {
     },
 
     render() {
-        if (!this.state.currentData || !this.state.aggregatedStrikes) return;
+        if (!this.state.currentData || !this.state.aggregatedStrikes) {
+            console.warn('Cannot render: missing data');
+            return;
+        }
 
-        // Calculate metrics
-        const gex = GreeksCalculator.calculateGEX(
-            this.state.currentData.options,
-            this.state.currentData.spot_price
-        );
+        try {
+            // Calculate metrics
+            const gex = GreeksCalculator.calculateGEX(
+                this.state.currentData.options,
+                this.state.currentData.spot_price
+            );
 
-        const vex = GreeksCalculator.calculateVEX(
-            this.state.currentData.options,
-            this.state.currentData.spot_price
-        );
+            const vex = GreeksCalculator.calculateVEX(
+                this.state.currentData.options,
+                this.state.currentData.spot_price
+            );
 
-        const pcRatio = GreeksCalculator.calculatePutCallRatio(
-            this.state.currentData.options
-        );
+            const pcRatio = GreeksCalculator.calculatePutCallRatio(
+                this.state.currentData.options
+            );
 
-        // Update metrics panel
-        document.getElementById('total-gex').textContent = Utils.formatCurrency(gex);
-        document.getElementById('total-gex').className = `metric-value ${gex >= 0 ? 'value-positive' : 'value-negative'}`;
+            // Update metrics panel
+            const gexEl = document.getElementById('total-gex');
+            if (gexEl) {
+                gexEl.textContent = Utils.formatCurrency(gex);
+                gexEl.className = `metric-value ${gex >= 0 ? 'value-positive' : 'value-negative'}`;
+            }
 
-        document.getElementById('total-vex').textContent = Utils.formatCurrency(vex);
-        document.getElementById('total-vex').className = `metric-value ${vex >= 0 ? 'value-positive' : 'value-negative'}`;
+            const vexEl = document.getElementById('total-vex');
+            if (vexEl) {
+                vexEl.textContent = Utils.formatCurrency(vex);
+                vexEl.className = `metric-value ${vex >= 0 ? 'value-positive' : 'value-negative'}`;
+            }
 
-        document.getElementById('pc-ratio').textContent = pcRatio.oi_ratio.toFixed(2);
-        document.getElementById('spot-price').textContent = Utils.formatCurrency(this.state.currentData.spot_price, 2);
+            const pcEl = document.getElementById('pc-ratio');
+            if (pcEl) pcEl.textContent = pcRatio.oi_ratio.toFixed(2);
 
-        // Update key nodes panel
-        this.renderKeyNodes();
+            const spotEl = document.getElementById('spot-price');
+            if (spotEl) spotEl.textContent = Utils.formatCurrency(this.state.currentData.spot_price, 2);
 
-        // Render heatmap
-        HeatmapRenderer.render(
-            this.state.aggregatedStrikes,
-            this.state.currentData.spot_price,
-            this.state.nodes
-        );
+            // Update key nodes panel
+            this.renderKeyNodes();
 
-        // Render expiration breakdown
-        this.renderExpirationBreakdown();
+            // Render heatmap
+            HeatmapRenderer.render(
+                this.state.aggregatedStrikes,
+                this.state.currentData.spot_price,
+                this.state.nodes
+            );
+
+            // Render expiration breakdown
+            this.renderExpirationBreakdown();
+        } catch (error) {
+            console.error('Error during render:', error);
+            Utils.showError(`Rendering error: ${error.message}`);
+        }
     },
 
     renderKeyNodes() {
