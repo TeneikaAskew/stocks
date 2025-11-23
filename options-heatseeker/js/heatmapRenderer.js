@@ -15,7 +15,17 @@ const HeatmapRenderer = {
         this.currentNodes = nodes;
 
         const container = document.getElementById('heatmap-canvas');
-        if (!container) return;
+        if (!container) {
+            console.error('Heatmap container not found: #heatmap-canvas');
+            return;
+        }
+
+        // Check if D3 is loaded
+        if (typeof d3 === 'undefined') {
+            console.error('D3.js is not loaded');
+            container.innerHTML = '<p style="padding: 20px; color: red;">D3.js library failed to load. Please refresh the page.</p>';
+            return;
+        }
 
         // Clear existing content
         container.innerHTML = '';
@@ -33,6 +43,11 @@ const HeatmapRenderer = {
             .attr('width', containerWidth)
             .attr('height', containerHeight)
             .attr('class', 'heatmap-svg');
+
+        if (!this.svg || this.svg.empty()) {
+            console.error('Failed to create SVG element');
+            return;
+        }
 
         const g = this.svg.append('g')
             .attr('transform', `translate(${this.margin.left},${this.margin.top})`);
