@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Analysis Tools</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            width: 100%;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 50px;
+        }
+
+        .header h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .apps {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin-top: 40px;
+        }
+
+        .app-card {
+            background: white;
+            border-radius: 12px;
+            padding: 40px 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            text-decoration: none;
+            color: inherit;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+
+        .app-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+        }
+
+        .app-icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }
+
+        .app-card h2 {
+            font-size: 1.8rem;
+            margin-bottom: 15px;
+            color: #333;
+        }
+
+        .app-card p {
+            font-size: 1rem;
+            color: #666;
+            line-height: 1.6;
+            margin-bottom: 20px;
+        }
+
+        .app-card .features {
+            list-style: none;
+            text-align: left;
+            margin-top: 20px;
+            width: 100%;
+        }
+
+        .app-card .features li {
+            padding: 8px 0;
+            color: #555;
+            font-size: 0.95rem;
+        }
+
+        .app-card .features li:before {
+            content: "✓";
+            color: #667eea;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        .cta-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 30px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-weight: 600;
+            margin-top: 20px;
+            transition: opacity 0.3s ease;
+        }
+
+        .cta-button:hover {
+            opacity: 0.9;
+        }
+
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 50px;
+            opacity: 0.8;
+            font-size: 0.9rem;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .header p {
+                font-size: 1rem;
+            }
+
+            .apps {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Trading Analysis Tools</h1>
+            <p>Professional-grade market analysis and visualization platform</p>
+        </div>
+
+        <div class="apps">
+            <a href="chart-viewer/" class="app-card">
+                <div class="app-icon">📊</div>
+                <h2>Chart Viewer</h2>
+                <p>Advanced TradingView chart integration with session levels, order blocks, and ORB analysis</p>
+                <ul class="features">
+                    <li>Multi-timeframe analysis</li>
+                    <li>Session level tracking</li>
+                    <li>Order block detection</li>
+                    <li>Opening range breakouts</li>
+                    <li>Real-time data updates</li>
+                </ul>
+                <span class="cta-button">Open Chart Viewer</span>
+            </a>
+
+            <a href="options-heatseeker/" class="app-card">
+                <div class="app-icon">🔥</div>
+                <h2>Options Heatseeker</h2>
+                <p>Visualize dealer gamma positioning and detect key market levels through GEX/VEX analysis</p>
+                <ul class="features">
+                    <li>Strike price heatmaps</li>
+                    <li>Node detection (King, Gatekeepers)</li>
+                    <li>GEX/VEX metrics</li>
+                    <li>Multi-ticker support (IWM, QQQ, SPY)</li>
+                    <li>Historical playback</li>
+                </ul>
+                <span class="cta-button">Open Options Heatseeker</span>
+            </a>
+        </div>
+
+        <div class="footer">
+            <p>Built for educational and research purposes | Options trading carries significant risk</p>
+        </div>
+    </div>
+</body>
+</html>

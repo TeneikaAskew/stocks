@@ -1,10 +1,12 @@
-name: Deploy Chart Viewer to GitHub Pages
+name: Deploy Trading Apps to GitHub Pages
 
 on:
   push:
     branches: [main]
     paths:
       - 'chart-viewer/**'
+      - 'options-heatseeker/**'
+      - 'index.html'
       - '.github/workflows/deploy-chart-viewer.yml'
   workflow_dispatch:
 
@@ -20,9 +22,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          pip install pyarrow pandas
+
+      - name: Convert options data to JSON
+        run: |
+          cd options-heatseeker
+          python convert_parquet_to_json.py --days 30
+          echo "✅ Options data converted to JSON"
+        continue-on-error: true
+
+      - name: Prepare deployment directory
+        run: |
+          mkdir -p _site
+          cp index.html _site/
+          cp -r chart-viewer _site/
+          cp -r options-heatseeker _site/
+          echo "✅ Deployment directory prepared"
+
       - name: Inject GitHub Token into config.js
         run: |
-          cd chart-viewer/src
+          cd _site/chart-viewer/src
 
           # Replace the empty GITHUB_TOKEN with the secret
           sed -i "s|GITHUB_TOKEN: ''|GITHUB_TOKEN: '${{ secrets.GH_TRADING_APP_KEY }}'|g" config.js
@@ -37,7 +63,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './chart-viewer'
+          path: './_site'
 
   deploy:
     environment:
