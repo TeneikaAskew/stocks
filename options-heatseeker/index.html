@@ -3,178 +3,52 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Options Heatseeker - Dealer Positioning Analysis</title>
-    <link rel="stylesheet" href="css/styles.css">
-    <link rel="stylesheet" href="css/heatmap.css">
+    <title>Options Heatseeker</title>
+    <link rel="stylesheet" href="css/styles-simple.css">
 </head>
 <body class="theme-dark">
     <!-- Header -->
     <header class="app-header">
         <div class="header-left">
-            <div class="logo">
-                <span class="logo-icon">🔥</span>
-                <h1>Options Heatseeker</h1>
-            </div>
+            <button class="metric-toggle active" data-metric="gex">⚡ NetGEX (#GEX)</button>
+            <button class="metric-toggle" data-metric="vex">📊 NetVEX (#FV)</button>
+            <button class="info-btn">ⓘ</button>
         </div>
         <div class="header-center">
             <select id="ticker-selector" class="ticker-selector">
-                <option value="iwm">IWM</option>
-                <option value="qqq">QQQ</option>
                 <option value="spy">SPY</option>
+                <option value="qqq">QQQ</option>
+                <option value="iwm">IWM</option>
             </select>
-            <input type="date" id="date-selector" class="date-selector">
-            <button id="refresh-btn" class="btn btn-primary">Refresh</button>
+            <div class="price-display">
+                <span id="current-price">$657.18</span>
+                <span id="price-change" class="positive">+4.65 (+0.71%)</span>
+            </div>
         </div>
         <div class="header-right">
-            <button id="theme-toggle" class="btn btn-icon" title="Toggle Dark/Light Mode">🌙</button>
-            <button id="settings-btn" class="btn btn-icon" title="Settings">⚙️</button>
-            <button id="help-btn" class="btn btn-icon" title="Help">❓</button>
+            <button class="icon-btn">📂</button>
+            <button class="icon-btn">🔍</button>
+            <button class="nav-btn">‹</button>
+            <button class="nav-btn">›</button>
         </div>
     </header>
 
-    <!-- Main Container -->
-    <div class="app-container">
-        <!-- Left Sidebar -->
-        <aside class="sidebar sidebar-left">
-            <div class="sidebar-section">
-                <h3>Filters</h3>
-
-                <div class="filter-group">
-                    <label>Expiration (DTE)</label>
-                    <div class="dte-filters">
-                        <button class="dte-filter active" data-dte="all">All</button>
-                        <button class="dte-filter" data-dte="0-7">0-7</button>
-                        <button class="dte-filter" data-dte="7-30">7-30</button>
-                        <button class="dte-filter" data-dte="30-60">30-60</button>
-                        <button class="dte-filter" data-dte="60+">60+</button>
-                    </div>
-                </div>
-
-                <div class="filter-group">
-                    <label>Strike Range</label>
-                    <div class="strike-range">
-                        <input type="number" id="strike-min" placeholder="Min" class="input-sm">
-                        <span>to</span>
-                        <input type="number" id="strike-max" placeholder="Max" class="input-sm">
-                        <button id="reset-range" class="btn btn-sm">Reset</button>
-                    </div>
-                </div>
-
-                <div class="filter-group">
-                    <label>Display Options</label>
-                    <div class="checkbox-group">
-                        <label><input type="radio" name="option-type" value="both" checked> Calls & Puts</label>
-                        <label><input type="radio" name="option-type" value="calls"> Calls Only</label>
-                        <label><input type="radio" name="option-type" value="puts"> Puts Only</label>
-                    </div>
-                </div>
-
-                <div class="filter-group">
-                    <label>Value Format</label>
-                    <div class="checkbox-group">
-                        <label><input type="radio" name="value-format" value="dollar" checked> Dollar ($)</label>
-                        <label><input type="radio" name="value-format" value="percent"> Percentage (%)</label>
-                    </div>
-                </div>
-            </div>
-
-            <div class="sidebar-section">
-                <h3>Key Metrics</h3>
-                <div class="metrics-panel">
-                    <div class="metric">
-                        <label>Total GEX</label>
-                        <span id="total-gex" class="metric-value">-</span>
-                    </div>
-                    <div class="metric">
-                        <label>Total VEX</label>
-                        <span id="total-vex" class="metric-value">-</span>
-                    </div>
-                    <div class="metric">
-                        <label>Put/Call Ratio</label>
-                        <span id="pc-ratio" class="metric-value">-</span>
-                    </div>
-                    <div class="metric">
-                        <label>Spot Price</label>
-                        <span id="spot-price" class="metric-value">-</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="sidebar-section">
-                <h3>Key Nodes</h3>
-                <div id="key-nodes" class="key-nodes-list">
-                    <!-- Populated dynamically -->
-                </div>
-            </div>
-        </aside>
-
-        <!-- Main Content -->
-        <main class="main-content">
-            <div class="content-header">
-                <div class="tabs">
-                    <button class="tab active" data-view="heatmap">Heatmap</button>
-                    <button class="tab" data-view="table">Table</button>
-                    <button class="tab" data-view="multi-ticker">Multi-Ticker</button>
-                </div>
-                <div class="actions">
-                    <button id="export-png" class="btn btn-sm">Export PNG</button>
-                    <button id="export-csv" class="btn btn-sm">Export CSV</button>
-                </div>
-            </div>
-
-            <!-- Heatmap View -->
-            <div id="heatmap-view" class="view-container active">
-                <div class="split-view">
-                    <div class="heatmap-container">
-                        <h4>Dealer Gamma Exposure by Strike</h4>
-                        <div id="heatmap-canvas"></div>
-                    </div>
-                    <div class="chart-container">
-                        <h4>Price Chart with Levels</h4>
-                        <div id="price-chart"></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Table View -->
-            <div id="table-view" class="view-container">
-                <div id="strike-table"></div>
-            </div>
-
-            <!-- Multi-Ticker View -->
-            <div id="multi-ticker-view" class="view-container">
-                <div class="multi-ticker-grid">
-                    <div class="ticker-heatmap" id="ticker-1"></div>
-                    <div class="ticker-heatmap" id="ticker-2"></div>
-                    <div class="ticker-heatmap" id="ticker-3"></div>
-                </div>
-            </div>
-        </main>
-
-        <!-- Right Sidebar -->
-        <aside class="sidebar sidebar-right">
-            <div class="sidebar-section">
-                <h3>Strike Details</h3>
-                <div id="strike-details" class="strike-details">
-                    <p class="text-muted">Hover over or click a strike for details</p>
-                </div>
-            </div>
-
-            <div class="sidebar-section">
-                <h3>Expiration Breakdown</h3>
-                <div id="expiration-breakdown" class="expiration-list">
-                    <!-- Populated dynamically -->
-                </div>
-            </div>
-
-            <div class="sidebar-section">
-                <h3>Recent Activity</h3>
-                <div id="activity-log" class="activity-log">
-                    <!-- Reshuffle alerts, changes -->
-                </div>
-            </div>
-        </aside>
-    </div>
+    <!-- Main Content -->
+    <main class="main-content">
+        <div id="heatmap-container" class="heatmap-container">
+            <table id="heatmap-table" class="heatmap-table">
+                <thead>
+                    <tr>
+                        <th class="strike-header">Strike</th>
+                        <!-- Date columns populated dynamically -->
+                    </tr>
+                </thead>
+                <tbody id="heatmap-body">
+                    <!-- Rows populated dynamically -->
+                </tbody>
+            </table>
+        </div>
+    </main>
 
     <!-- Loading Overlay -->
     <div id="loading-overlay" class="loading-overlay hidden">
@@ -186,23 +60,14 @@
     <div id="tooltip" class="tooltip hidden"></div>
 
     <!-- Scripts -->
-    <!-- D3.js for heatmap visualization -->
     <script src="https://d3js.org/d3.v7.min.js"></script>
-    <!-- Plotly.js for price charts -->
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-    <!-- Date utilities -->
-    <script src="https://cdn.jsdelivr.net/npm/date-fns@3.0.0/index.min.js"></script>
-
     <script src="js/config.js"></script>
     <script src="js/utils.js"></script>
     <script src="js/dataLoader.js"></script>
     <script src="js/greeksCalculator.js"></script>
     <script src="js/nodeAnalyzer.js"></script>
-    <script src="js/heatmapRenderer.js"></script>
-    <script src="js/chartRenderer.js"></script>
-    <script src="js/filterManager.js"></script>
+    <script src="js/tableRenderer.js"></script>
     <script src="js/tooltipManager.js"></script>
-    <script src="js/exportManager.js"></script>
-    <script src="js/main.js"></script>
+    <script src="js/main-simple.js"></script>
 </body>
 </html>
