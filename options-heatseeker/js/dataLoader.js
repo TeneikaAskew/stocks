@@ -46,8 +46,11 @@ const DataLoader = {
             let data;
 
             if (CONFIG.API_ENDPOINT) {
+                // Convert date format: 20251121 -> 2025-11-21 for API
+                const formattedDate = this.formatDateForAPI(dateStr);
+
                 // Call live API via Cloudflare Worker
-                const url = `${CONFIG.API_ENDPOINT}?symbol=${ticker.toUpperCase()}&date=${dateStr}`;
+                const url = `${CONFIG.API_ENDPOINT}?symbol=${ticker.toUpperCase()}&date=${formattedDate}`;
                 console.log(`Loading from API: ${url}`);
 
                 const response = await fetch(url);
@@ -98,6 +101,27 @@ const DataLoader = {
             console.error(`Error loading options data for ${ticker} ${dateStr}:`, error);
             throw error;
         }
+    },
+
+    /**
+     * Format date string for API (20251121 -> 2025-11-21)
+     */
+    formatDateForAPI(dateStr) {
+        // If already in YYYY-MM-DD format, return as is
+        if (dateStr.includes('-')) {
+            return dateStr;
+        }
+
+        // Convert YYYYMMDD to YYYY-MM-DD
+        if (dateStr.length === 8) {
+            const year = dateStr.substring(0, 4);
+            const month = dateStr.substring(4, 6);
+            const day = dateStr.substring(6, 8);
+            return `${year}-${month}-${day}`;
+        }
+
+        // Return as is if format is unexpected
+        return dateStr;
     },
 
     /**
