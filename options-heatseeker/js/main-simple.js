@@ -28,7 +28,13 @@ const App = {
             this.loadMultipleDates();
         });
 
-        // Metric toggles
+        // Date selector
+        document.getElementById('end-date-selector')?.addEventListener('change', (e) => {
+            // User selected a specific end date - reload data up to that date
+            this.loadMultipleDates(e.target.value);
+        });
+
+        // Metric toggles (GEX/VEX)
         document.querySelectorAll('.metric-toggle').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 document.querySelectorAll('.metric-toggle').forEach(b => b.classList.remove('active'));
@@ -38,6 +44,19 @@ const App = {
                 this.render();
             });
         });
+
+        // Option type toggles (Net/Calls/Puts)
+        document.querySelectorAll('.option-type-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.option-type-btn').forEach(b => b.classList.remove('active'));
+                e.target.classList.add('active');
+                TableRenderer.setOptionFilter(e.target.dataset.type);
+                this.render();
+            });
+        });
+
+        // Make App available globally for TableRenderer
+        window.App = this;
     },
 
     async loadMultipleDates() {

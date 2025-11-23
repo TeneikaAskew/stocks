@@ -41,7 +41,7 @@ body {
     gap: 0.75rem;
 }
 
-.metric-toggle, .info-btn, .icon-btn, .nav-btn, .ticker-selector {
+.metric-toggle, .info-btn, .icon-btn, .nav-btn, .ticker-selector, .date-selector {
     padding: 0.5rem 1rem;
     background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
@@ -49,6 +49,16 @@ body {
     color: var(--text-secondary);
     cursor: pointer;
     font-size: 0.875rem;
+}
+
+.ticker-selector {
+    font-weight: 600;
+    font-size: 1rem;
+    color: var(--text-primary);
+}
+
+.date-selector {
+    color: var(--text-primary);
 }
 
 .metric-toggle.active {
@@ -68,6 +78,47 @@ body {
 
 #price-change.positive { color: var(--positive); }
 #price-change.negative { color: var(--negative); }
+
+/* Option Type Toggle */
+.option-type-toggle {
+    display: flex;
+    gap: 0.25rem;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+    padding: 0.25rem;
+}
+
+.option-type-btn {
+    padding: 0.4rem 0.75rem;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.813rem;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.option-type-btn:hover { background: var(--hover); }
+.option-type-btn.active { background: #1e3a8a; color: #60a5fa; }
+
+/* Selected Strike */
+.selected-strike {
+    background: rgba(139, 92, 246, 0.2) !important;
+    border-left: 3px solid #8b5cf6 !important;
+}
+
+.selection-star {
+    color: #eab308;
+    margin-left: 0.25rem;
+}
+
+.price-indicator {
+    color: var(--text-primary);
+    margin-right: 0.25rem;
+    font-size: 0.875rem;
+}
 
 /* Table */
 .main-content {
