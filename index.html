@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Applications</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            width: 100%;
+        }
+
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 3rem;
+        }
+
+        h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .subtitle {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+
+        .apps-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        .app-card {
+            background: white;
+            border-radius: 16px;
+            padding: 2rem;
+            text-decoration: none;
+            color: #333;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .app-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .app-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .app-icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            display: block;
+        }
+
+        .app-card h2 {
+            font-size: 1.8rem;
+            margin-bottom: 0.75rem;
+            color: #667eea;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .badge {
+            background: #10b981;
+            color: white;
+            font-size: 0.7rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .app-card p {
+            color: #666;
+            line-height: 1.6;
+            margin-bottom: 1rem;
+        }
+
+        .features {
+            list-style: none;
+            margin-top: 1rem;
+        }
+
+        .features li {
+            color: #888;
+            font-size: 0.9rem;
+            padding: 0.3rem 0;
+            padding-left: 1.5rem;
+            position: relative;
+        }
+
+        .features li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: #10b981;
+            font-weight: bold;
+        }
+
+        footer {
+            text-align: center;
+            color: white;
+            opacity: 0.8;
+            margin-top: 2rem;
+        }
+
+        footer a {
+            color: white;
+            text-decoration: underline;
+        }
+
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2rem;
+            }
+
+            .subtitle {
+                font-size: 1rem;
+            }
+
+            .apps-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Trading Applications</h1>
+            <p class="subtitle">Professional tools for market analysis and options trading</p>
+        </header>
+
+        <div class="apps-grid">
+            <a href="chart-viewer/" class="app-card">
+                <span class="app-icon">📈</span>
+                <h2>Chart Viewer</h2>
+                <p>Interactive charting application with advanced technical analysis tools and real-time market data visualization.</p>
+                <ul class="features">
+                    <li>Real-time price charts</li>
+                    <li>Technical indicators</li>
+                    <li>Session level analysis</li>
+                    <li>Reference line system</li>
+                </ul>
+            </a>
+
+            <a href="options-heatseeker/" class="app-card">
+                <span class="app-icon">🔥</span>
+                <h2>
+                    Options Heatseeker
+                    <span class="badge">NEW</span>
+                </h2>
+                <p>Advanced options flow analysis tool with dealer positioning, gamma exposure calculations, and key node detection.</p>
+                <ul class="features">
+                    <li>GEX/VEX calculations</li>
+                    <li>King Node detection</li>
+                    <li>Interactive heatmaps</li>
+                    <li>Multi-ticker comparison</li>
+                </ul>
+            </a>
+        </div>
+
+        <footer>
+            <p>Built with data from Alpha Vantage | <a href="https://github.com/TeneikaAskew/stocks" target="_blank">View Source</a></p>
+        </footer>
+    </div>
+</body>
+</html>
