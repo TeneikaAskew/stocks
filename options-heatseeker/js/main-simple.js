@@ -96,10 +96,17 @@ const App = {
                     this.state.dataByDate[mostRecentDate],
                     this.state.spotPrice
                 );
+                console.log('Detected nodes:', this.state.nodes);
             }
 
             // Update price display
             this.updatePriceDisplay();
+
+            // Set date selector to most recent date
+            const dateSelector = document.getElementById('end-date-selector');
+            if (dateSelector && mostRecentDate) {
+                dateSelector.value = Utils.formatDate(mostRecentDate, 'YYYY-MM-DD');
+            }
 
             // Render table
             this.render();
