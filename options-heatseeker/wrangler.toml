@@ -1,0 +1,12 @@
+name = "options-heatseeker-api"
+main = "worker.js"
+compatibility_date = "2024-01-15"
+
+# Cloudflare Worker configuration for Options Heatseeker API proxy
+# This worker securely proxies requests to Alpha Vantage API
+
+[vars]
+# Public variables (if needed - currently none)
+
+# Secrets (set via: wrangler secret put ALPHA_VANTAGE_API_KEY)
+# - ALPHA_VANTAGE_API_KEY: Your Alpha Vantage API key
