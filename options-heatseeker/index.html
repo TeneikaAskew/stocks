@@ -20,14 +20,18 @@
                 <option value="qqq">QQQ</option>
                 <option value="iwm">IWM</option>
             </select>
+            <input type="date" id="end-date-selector" class="date-selector" />
             <div class="price-display">
-                <span id="current-price">$657.18</span>
-                <span id="price-change" class="positive">+4.65 (+0.71%)</span>
+                <span id="current-price">$0.00</span>
+                <span id="price-change" class="positive">+0.00 (+0.00%)</span>
             </div>
         </div>
         <div class="header-right">
-            <button class="icon-btn">📂</button>
-            <button class="icon-btn">🔍</button>
+            <div class="option-type-toggle">
+                <button class="option-type-btn active" data-type="net">Net</button>
+                <button class="option-type-btn" data-type="calls">Calls</button>
+                <button class="option-type-btn" data-type="puts">Puts</button>
+            </div>
             <button class="nav-btn">‹</button>
             <button class="nav-btn">›</button>
         </div>

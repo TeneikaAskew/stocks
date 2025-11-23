@@ -2,6 +2,8 @@
 
 const TableRenderer = {
     currentMetric: 'gex', // 'gex' or 'vex'
+    optionFilter: 'net', // 'calls', 'puts', or 'net'
+    selectedStrike: null,
 
     render(dataByDate, spotPrice, nodes) {
         const table = document.getElementById('heatmap-table');
@@ -55,22 +57,44 @@ const TableRenderer = {
         // Render rows
         strikes.forEach(strike => {
             const tr = document.createElement('tr');
+            tr.dataset.strike = strike;
+
+            // Add click handler for strike selection
+            tr.addEventListener('click', () => this.selectStrike(strike));
 
             // Strike cell
             const strikeCell = document.createElement('td');
             strikeCell.className = 'strike-cell';
 
+            // Add current price indicator
+            if (spotPrice && Math.abs(strike - spotPrice) < 2.5) {
+                const indicator = document.createElement('span');
+                indicator.className = 'price-indicator';
+                indicator.textContent = '▶';
+                strikeCell.appendChild(indicator);
+            }
+
             // Check if this is a key node
             const nodeIndicator = this.getNodeIndicator(strike, nodes);
             if (nodeIndicator) {
-                strikeCell.innerHTML = `<span class="strike-indicator">${nodeIndicator}</span><span>${strike.toFixed(1)}</span>`;
-            } else {
-                strikeCell.textContent = strike.toFixed(1);
+                const indicator = document.createElement('span');
+                indicator.className = 'strike-indicator';
+                indicator.textContent = nodeIndicator;
+                strikeCell.appendChild(indicator);
             }
 
-            // Check if near spot price
-            if (spotPrice && Math.abs(strike - spotPrice) < 5) {
-                strikeCell.classList.add('cell-spot');
+            // Strike value
+            const strikeText = document.createElement('span');
+            strikeText.textContent = strike.toFixed(1);
+            strikeCell.appendChild(strikeText);
+
+            // Check if selected
+            if (this.selectedStrike && Math.abs(this.selectedStrike - strike) < 0.1) {
+                tr.classList.add('selected-strike');
+                const star = document.createElement('span');
+                star.className = 'selection-star';
+                star.textContent = ' ★';
+                strikeCell.appendChild(star);
             }
 
             tr.appendChild(strikeCell);
@@ -96,7 +120,16 @@ const TableRenderer = {
     },
 
     getMetricValue(row) {
-        return this.currentMetric === 'gex' ? row.net_gamma : row.net_vega;
+        const baseValue = this.currentMetric === 'gex' ? row.net_gamma : row.net_vega;
+
+        // Apply option filter
+        if (this.optionFilter === 'calls') {
+            return this.currentMetric === 'gex' ? row.call_gamma : row.call_vega || 0;
+        } else if (this.optionFilter === 'puts') {
+            return this.currentMetric === 'gex' ? row.put_gamma : row.put_vega || 0;
+        }
+
+        return baseValue; // 'net' - both calls and puts
     },
 
     formatDateHeader(dateStr) {
@@ -108,7 +141,7 @@ const TableRenderer = {
     },
 
     getCellClass(value, maxAbs, strike, nodes) {
-        // Check if highlighted strike
+        // Check if highlighted strike (King Node or Gatekeeper)
         if (nodes && this.isHighlightedStrike(strike, nodes)) {
             return 'cell-highlight';
         }
@@ -140,8 +173,20 @@ const TableRenderer = {
         return null;
     },
 
+    selectStrike(strike) {
+        this.selectedStrike = strike;
+        // Trigger re-render (will be called from main app)
+        if (window.App && window.App.render) {
+            window.App.render();
+        }
+    },
+
     setMetric(metric) {
         this.currentMetric = metric;
+    },
+
+    setOptionFilter(filter) {
+        this.optionFilter = filter; // 'calls', 'puts', or 'net'
     }
 };
 
