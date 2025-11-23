@@ -41,15 +41,40 @@ const DataLoader = {
             }
         }
 
-        // Load from server
+        // Call Cloudflare Worker API (or fallback to static files)
         try {
-            const url = `data/${ticker}/${ticker}_options_${dateStr}.json`;
-            console.log(`Loading: ${url}`);
+            let data;
 
-            const response = await fetch(url);
-            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            if (CONFIG.API_ENDPOINT) {
+                // Call live API via Cloudflare Worker
+                const url = `${CONFIG.API_ENDPOINT}?symbol=${ticker.toUpperCase()}&date=${dateStr}`;
+                console.log(`Loading from API: ${url}`);
 
-            const data = await response.json();
+                const response = await fetch(url);
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+
+                    if (response.status === 429) {
+                        // Rate limit - show user-friendly message
+                        throw new Error(`Rate limit exceeded. Please wait ${errorData.retry_after || 60} seconds and try again.`);
+                    } else if (response.status === 400) {
+                        throw new Error(errorData.message || 'Invalid request parameters');
+                    } else {
+                        throw new Error(`API error: ${response.status} - ${errorData.message || response.statusText}`);
+                    }
+                }
+
+                data = await response.json();
+            } else {
+                // Fallback: Load from static files
+                const url = `data/${ticker}/${ticker}_options_${dateStr}.json`;
+                console.log(`Loading from static file: ${url}`);
+
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                data = await response.json();
+            }
 
             // Parse and enhance data
             const processedData = this.processOptionsData(data);
