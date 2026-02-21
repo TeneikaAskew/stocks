@@ -1,0 +1,127 @@
+{
+  "alerts": {
+    "primary_call_alert": {
+      "name": "IWM Contrarian CALL Setup",
+      "conditions": {
+        "time_window": "09:30-10:00",
+        "price_vs_vwap": "below",
+        "rsi_range": [45, 70],
+        "rvol_minimum": 1.5,
+        "additional_filters": [
+          "ema9_alignment",
+          "volume_surge"
+        ]
+      },
+      "message_template": "🟢 CALL: IWM ${price} | RSI: ${rsi} | RVOL: ${rvol}x | Target: ${target} | Stop: ${stop}",
+      "sound": "positive_chime",
+      "priority": "high"
+    },
+    
+    "primary_put_alert": {
+      "name": "IWM Contrarian PUT Setup",
+      "conditions": {
+        "time_window": "09:30-14:00",
+        "price_vs_vwap": "above",
+        "rsi_range": [30, 55],
+        "rvol_minimum": 1.5,
+        "additional_filters": [
+          "rsi_below_40_preferred",
+          "volume_surge"
+        ]
+      },
+      "message_template": "🔴 PUT: IWM ${price} | RSI: ${rsi} | RVOL: ${rvol}x | Target: ${target} | Stop: ${stop}",
+      "sound": "alert_chime",
+      "priority": "high"
+    },
+    
+    "exit_alerts": {
+      "profit_target_hit": {
+        "call_target": "0.30%",
+        "put_target": "0.38%",
+        "message": "🎯 TARGET HIT: ${return}% profit - EXIT NOW",
+        "sound": "success_sound",
+        "priority": "urgent"
+      },
+      
+      "time_stop": {
+        "call_minutes": 30,
+        "put_minutes": 35,
+        "message": "⏰ TIME STOP: ${minutes} minutes elapsed - EXIT NOW",
+        "sound": "warning_sound",
+        "priority": "high"
+      },
+      
+      "extreme_rsi_exit": {
+        "call_rsi_exit": 80,
+        "put_rsi_exit": 20,
+        "message": "📊 EXTREME RSI ${rsi} - CONSIDER EXIT",
+        "sound": "alert_sound",
+        "priority": "high"
+      }
+    },
+    
+    "warning_alerts": {
+      "poor_trading_time": {
+        "trigger_time": "14:00",
+        "message": "⚠️ Entering low-probability trading window",
+        "frequency": "once_daily"
+      },
+      
+      "low_volume": {
+        "rvol_threshold": 0.5,
+        "message": "⚠️ Low volume detected - RVOL: ${rvol}x",
+        "frequency": "continuous"
+      },
+      
+      "high_volatility": {
+        "atr_threshold": 0.3,
+        "rvol_threshold": 5.0,
+        "message": "⚡ Extreme volatility - ATR: ${atr} | RVOL: ${rvol}x",
+        "frequency": "continuous"
+      }
+    }
+  },
+  
+  "platform_specific": {
+    "tradingview": {
+      "webhook_url": "YOUR_WEBHOOK_URL",
+      "chart_id": "IWM_1MIN",
+      "indicators_required": [
+        "RSI(14)",
+        "VWAP",
+        "EMA(9)",
+        "EMA(20)",
+        "Volume_Ratio"
+      ]
+    },
+    
+    "thinkorswim": {
+      "study_name": "IWM_Contrarian_Alerts",
+      "scan_frequency": "1_minute",
+      "alert_types": ["visual", "audio", "message_center"]
+    },
+    
+    "discord_webhook": {
+      "url": "YOUR_DISCORD_WEBHOOK",
+      "mentions": "@everyone",
+      "embed_color": {
+        "call": "0x00ff00",
+        "put": "0xff0000",
+        "warning": "0xffff00"
+      }
+    }
+  },
+  
+  "risk_parameters": {
+    "max_daily_trades": 5,
+    "max_concurrent_positions": 1,
+    "position_sizing": {
+      "weak_signal": 0.25,
+      "medium_signal": 0.50,
+      "strong_signal": 0.75,
+      "perfect_signal": 1.00
+    },
+    "daily_loss_limit": -2.0,
+    "daily_profit_target": 3.0
+  }
+}
