@@ -194,6 +194,8 @@ class StratConfig:
     orb_alignment_bonus: int = 1
     ftfc_threshold: float = 0.6
     ftfc_direction_threshold: float = 0.3
+    ftfc_filter_enabled: bool = True    # Reject trades contradicted by FTFC
+    orb_filter_enabled: bool = True     # Reject trades contradicted by ORB trend
     timeframes: list = field(default_factory=lambda: ['5m', '15m', '1h', 'D', 'W'])
     ftfc_weights: Dict[str, float] = field(default_factory=lambda: {
         '5m': 0.10, '15m': 0.20, '1h': 0.25, 'D': 0.35, 'W': 0.10,
@@ -392,6 +394,8 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
         app.strat.orb_alignment_bonus = strat_data.get('orb_alignment_bonus', app.strat.orb_alignment_bonus)
         app.strat.ftfc_threshold = strat_data.get('ftfc_threshold', app.strat.ftfc_threshold)
         app.strat.ftfc_direction_threshold = strat_data.get('ftfc_direction_threshold', app.strat.ftfc_direction_threshold)
+        app.strat.ftfc_filter_enabled = strat_data.get('ftfc_filter_enabled', app.strat.ftfc_filter_enabled)
+        app.strat.orb_filter_enabled = strat_data.get('orb_filter_enabled', app.strat.orb_filter_enabled)
         app.strat.timeframes = strat_data.get('timeframes', app.strat.timeframes)
         app.strat.ftfc_weights = strat_data.get('ftfc_weights', app.strat.ftfc_weights)
 
@@ -507,7 +511,8 @@ def _apply_ticker_overrides(app: AppConfig, overrides: dict) -> None:
 
     # Strat overrides
     strat_ov = overrides.get('strat', {})
-    for fld in ['enabled', 'combo_bonus', 'ftfc_bonus', 'orb_alignment_bonus']:
+    for fld in ['enabled', 'combo_bonus', 'ftfc_bonus', 'orb_alignment_bonus',
+                'ftfc_filter_enabled', 'orb_filter_enabled']:
         if fld in strat_ov:
             setattr(app.strat, fld, strat_ov[fld])
     for fld in ['ftfc_threshold', 'ftfc_direction_threshold']:

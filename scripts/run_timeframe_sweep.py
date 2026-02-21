@@ -173,8 +173,8 @@ def run_combination(
     # Monkey-patch _check_entry to add higher-TF filter
     original_check_entry = engine._check_entry
 
-    def filtered_check_entry(row, bar_time, use_strat_flag, strat_df, bar_idx, day_df):
-        trade = original_check_entry(row, bar_time, use_strat_flag, strat_df, bar_idx, day_df)
+    def filtered_check_entry(row, bar_time, use_strat_flag, strat_df, ftfc_series, bar_idx, day_df):
+        trade = original_check_entry(row, bar_time, use_strat_flag, strat_df, ftfc_series, bar_idx, day_df)
         if trade is None:
             return None
 

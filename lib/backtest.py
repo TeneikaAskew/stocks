@@ -5,6 +5,11 @@ Processes each bar sequentially, enforcing risk management rules that
 depend on the sequence of trades (max daily trades, daily loss limits,
 max concurrent positions). Uses the signal logic from lib/signals and
 exit rules from lib/config.
+
+When ``use_strat=True`` the engine computes real FTFC (Full Timeframe
+Continuity) scores from multi-timeframe resampling and reads ORB trend
+columns from indicator data. Both can **filter** (reject) trades that
+contradict higher-timeframe context, not just add bonus points.
 """
 
 import pandas as pd
@@ -20,6 +25,7 @@ from lib.config import (
     IndicatorConfig, get_position_size, get_signal_strength_label,
 )
 from lib.strat import StratClassifier
+from lib.data_loader import RESAMPLE_RULES
 
 
 @dataclass
@@ -33,6 +39,8 @@ class Trade:
     position_size: float
     conditions_met: List[str]
     indicators_at_entry: Dict[str, float] = field(default_factory=dict)
+    ftfc_score: float = 0.0     # FTFC alignment at entry (-1 to +1)
+    orb_trend: int = 0          # ORB trend at entry (-1, 0, +1)
     # Filled on exit
     exit_time: Optional[datetime] = None
     exit_price: Optional[float] = None
@@ -48,6 +56,9 @@ class BacktestResult:
     daily_pnl: List[Dict]
     equity_curve: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     annualization_factor: int = 252
+    filter_counts: Dict[str, int] = field(default_factory=lambda: {
+        'ftfc_rejected': 0, 'orb_rejected': 0, 'signals_evaluated': 0,
+    })
 
     @property
     def total_trades(self) -> int:
@@ -149,6 +160,46 @@ class BacktestResult:
             total_return=('return_pct', 'sum'),
         ).round(4)
 
+    def metrics_by_exit_reason(self) -> pd.DataFrame:
+        """Performance breakdown by exit reason."""
+        rows = []
+        for t in self.trades:
+            if t.return_pct is not None and t.exit_reason is not None:
+                rows.append({
+                    'exit_reason': t.exit_reason,
+                    'return_pct': t.return_pct,
+                    'won': t.return_pct > 0,
+                })
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        return df.groupby('exit_reason').agg(
+            trades=('return_pct', 'count'),
+            win_rate=('won', 'mean'),
+            avg_return=('return_pct', 'mean'),
+            total_return=('return_pct', 'sum'),
+        ).round(4)
+
+    def metrics_by_direction(self) -> pd.DataFrame:
+        """Performance breakdown by trade direction (CALL vs PUT)."""
+        rows = []
+        for t in self.trades:
+            if t.return_pct is not None:
+                rows.append({
+                    'direction': t.direction,
+                    'return_pct': t.return_pct,
+                    'won': t.return_pct > 0,
+                })
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        return df.groupby('direction').agg(
+            trades=('return_pct', 'count'),
+            win_rate=('won', 'mean'),
+            avg_return=('return_pct', 'mean'),
+            total_return=('return_pct', 'sum'),
+        ).round(4)
+
     def summary(self, risk_config: RiskConfig = None) -> str:
         """Human-readable summary string."""
         m = self.metrics()
@@ -164,10 +215,36 @@ class BacktestResult:
             f"Max Drawdown:    {m['max_drawdown_pct']:.2%}",
             f"Sharpe Ratio:    {m['sharpe_ratio']:.2f}",
         ]
+
+        # Filter rejection stats
+        fc = self.filter_counts
+        if fc.get('signals_evaluated', 0) > 0:
+            lines.append(f"\nFiltering:")
+            lines.append(f"  Signals evaluated: {fc['signals_evaluated']}")
+            lines.append(f"  FTFC rejected:     {fc['ftfc_rejected']}")
+            lines.append(f"  ORB rejected:      {fc['orb_rejected']}")
+            total_rejected = fc['ftfc_rejected'] + fc['orb_rejected']
+            if total_rejected > 0:
+                lines.append(f"  Total filtered:    {total_rejected} "
+                             f"({total_rejected / fc['signals_evaluated']:.1%} of signals)")
+
+        # Exit reason breakdown
+        exit_df = self.metrics_by_exit_reason()
+        if not exit_df.empty:
+            lines.append(f"\nBy Exit Reason:")
+            lines.append(exit_df.to_string())
+
+        # Direction breakdown
+        dir_df = self.metrics_by_direction()
+        if not dir_df.empty:
+            lines.append(f"\nBy Direction:")
+            lines.append(dir_df.to_string())
+
         strength_df = self.metrics_by_strength(risk_config)
         if not strength_df.empty:
             lines.append(f"\nBy Signal Strength:")
             lines.append(strength_df.to_string())
+
         return '\n'.join(lines)
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -188,13 +265,23 @@ class BacktestResult:
                 'return_pct': t.return_pct,
                 'mae': t.mae,
                 'mfe': t.mfe,
+                'ftfc_score': t.ftfc_score,
+                'orb_trend': t.orb_trend,
                 'conditions': ', '.join(t.conditions_met),
             })
         return pd.DataFrame(rows)
 
 
 class BacktestEngine:
-    """Bar-by-bar backtester using the 3-of-5 signal logic and risk management."""
+    """Bar-by-bar backtester using the 3-of-5 signal logic and risk management.
+
+    When ``use_strat=True``, the engine:
+    1. Classifies Strat candle types and detects combo patterns
+    2. Computes real FTFC scores by resampling to multiple timeframes
+    3. Reads ORB trend from indicator columns
+    4. **Filters** trades that contradict FTFC / ORB (not just bonus)
+    5. Adds bonus points for aligned trades that pass the filter
+    """
 
     def __init__(
         self,
@@ -212,6 +299,77 @@ class BacktestEngine:
         self.bt = backtest_config or BacktestConfig()
         self.ind = indicator_config or IndicatorConfig()
         self.strat_classifier = StratClassifier(strat_config=self.strat_config)
+        self._filter_counts = {'ftfc_rejected': 0, 'orb_rejected': 0, 'signals_evaluated': 0}
+
+    def _compute_ftfc_series(self, df: pd.DataFrame, close_col: str = 'Close') -> pd.Series:
+        """Pre-compute FTFC alignment score for each bar.
+
+        Resamples the input data to each configured timeframe, classifies
+        Strat candle type, and computes a weighted FTFC score.
+
+        Uses shift(1) on the higher-TF classifications to avoid lookahead
+        bias — only completed bars' classifications are used.
+
+        Returns a Series aligned to the input index with values in [-1, +1].
+        """
+        timeframes = self.strat_config.timeframes
+        weights = self.strat_config.ftfc_weights
+
+        classifications = {}
+
+        for tf in timeframes:
+            rule = RESAMPLE_RULES.get(tf)
+            if rule is None:
+                continue
+
+            # Resample to higher timeframe
+            agg_dict = {
+                'Open': 'first',
+                'High': 'max',
+                'Low': 'min',
+                close_col: 'last',
+                'Volume': 'sum',
+            }
+            try:
+                resampled = df.resample(rule).agg(agg_dict).dropna()
+            except Exception:
+                continue
+
+            if len(resampled) < 2:
+                continue
+
+            # Classify Strat type on higher TF
+            labels = self.strat_classifier.classify_series(resampled)
+
+            # Map to numeric: 2U = +1, 2D = -1, neutral = 0
+            numeric = labels.map({
+                '2U': 1.0, '2D': -1.0, '1': 0.0, '3': 0.0, 'X': 0.0,
+            }).fillna(0.0)
+
+            # Shift by 1 so we only use the COMPLETED bar's classification
+            # (avoids lookahead bias — current bar is still forming)
+            numeric_shifted = numeric.shift(1)
+
+            # Forward-fill into the 1m index
+            classifications[tf] = numeric_shifted.reindex(
+                df.index, method='ffill',
+            ).fillna(0.0)
+
+        if not classifications:
+            return pd.Series(0.0, index=df.index)
+
+        # Compute weighted FTFC score
+        total_weight = sum(weights.get(tf, 0.0) for tf in classifications)
+        if total_weight == 0:
+            return pd.Series(0.0, index=df.index)
+
+        ftfc_score = pd.Series(0.0, index=df.index)
+        for tf, numeric in classifications.items():
+            w = weights.get(tf, 0.0)
+            ftfc_score += numeric * w
+
+        ftfc_score /= total_weight
+        return ftfc_score
 
     def run(
         self,
@@ -222,23 +380,28 @@ class BacktestEngine:
         """Run backtest over an indicator-enriched DataFrame.
 
         The DataFrame should already have indicator columns from
-        `add_all_indicators()`. Alternatively, the engine will compute
+        ``add_all_indicators()``. Alternatively, the engine will compute
         them if the primary RSI column is missing.
 
         Parameters
         ----------
         df : OHLCV DataFrame with Time index or column
-        use_strat : whether to apply Strat bonus scoring
+        use_strat : whether to apply Strat filtering + bonus scoring
         close_col : name of the close price column
         """
+        # Reset filter counts
+        self._filter_counts = {'ftfc_rejected': 0, 'orb_rejected': 0, 'signals_evaluated': 0}
+
         # Ensure indicators exist
         if self.ind.rsi_col not in df.columns:
             df = add_all_indicators(df, close_col=close_col, indicator_config=self.ind)
 
-        # Add Strat columns if requested
+        # Add Strat columns and compute FTFC if requested
         strat_df = None
+        ftfc_series = None
         if use_strat and self.strat_config.enabled:
             strat_df = self.strat_classifier.detect_combos(df)
+            ftfc_series = self._compute_ftfc_series(df, close_col=close_col)
 
         trades: List[Trade] = []
         daily_pnl: List[Dict] = []
@@ -310,7 +473,9 @@ class BacktestEngine:
 
                 # --- Check entry conditions ---
                 if active_trade is None and day_trades < self.risk.max_daily_trades:
-                    entry = self._check_entry(row, bar_time, use_strat, strat_df, i, day_df)
+                    entry = self._check_entry(
+                        row, bar_time, use_strat, strat_df, ftfc_series, i, day_df,
+                    )
                     if entry:
                         active_trade = entry
 
@@ -343,6 +508,7 @@ class BacktestEngine:
             daily_pnl=daily_pnl,
             equity_curve=equity_curve,
             annualization_factor=self.bt.annualization_factor,
+            filter_counts=dict(self._filter_counts),
         )
 
     def _check_entry(
@@ -351,10 +517,19 @@ class BacktestEngine:
         bar_time,
         use_strat: bool,
         strat_df: Optional[pd.DataFrame],
+        ftfc_series: Optional[pd.Series],
         bar_idx: int,
         day_df: pd.DataFrame,
     ) -> Optional[Trade]:
-        """Check if signal conditions are met for entry."""
+        """Check if signal conditions are met for entry.
+
+        When ``use_strat`` is True, this method:
+        1. Evaluates the base 3-of-5 signal
+        2. Checks time window
+        3. Looks up FTFC score and ORB trend
+        4. **Rejects** the trade if FTFC or ORB contradicts the signal direction
+        5. Computes strat bonus for aligned trades that pass filtering
+        """
         # Time window check
         if hasattr(bar_time, 'time'):
             t = bar_time.time() if not isinstance(bar_time, time) else bar_time
@@ -389,23 +564,55 @@ class BacktestEngine:
             if sig['direction'] == 'PUT' and not (put_start <= t <= put_end):
                 return None
 
-        # Strat bonus
+        # --- Strat: FTFC score + ORB trend + filtering + bonus ---
+        self._filter_counts['signals_evaluated'] += 1
+
         strat_bonus = 0
+        bar_ftfc_score = 0.0
+        bar_orb_trend = 0
+
         if use_strat and strat_df is not None:
+            bar_index = day_df.index[bar_idx]
+
+            # 1) Look up real FTFC score
+            if ftfc_series is not None:
+                bar_ftfc_score = ftfc_series.get(bar_index, 0.0)
+
+            # 2) Look up ORB trend
+            orb_label = self.ind.orb_windows[0]['label'] if self.ind.orb_windows else '5m'
+            bar_orb_trend = int(row.get(f'ORB_{orb_label}_Trend', 0))
+
+            # 3) FTFC FILTER: reject trades contradicted by higher-TF alignment
+            if self.strat_config.ftfc_filter_enabled:
+                threshold = self.strat_config.ftfc_threshold
+                if sig['direction'] == 'CALL' and bar_ftfc_score <= -threshold:
+                    self._filter_counts['ftfc_rejected'] += 1
+                    return None
+                if sig['direction'] == 'PUT' and bar_ftfc_score >= threshold:
+                    self._filter_counts['ftfc_rejected'] += 1
+                    return None
+
+            # 4) ORB FILTER: reject trades contradicted by ORB breakout direction
+            if self.strat_config.orb_filter_enabled:
+                if sig['direction'] == 'CALL' and bar_orb_trend == -1:
+                    self._filter_counts['orb_rejected'] += 1
+                    return None
+                if sig['direction'] == 'PUT' and bar_orb_trend == 1:
+                    self._filter_counts['orb_rejected'] += 1
+                    return None
+
+            # 5) Strat bonus for aligned trades (only if not filtered)
             try:
-                strat_row_idx = day_df.index[bar_idx]
-                if strat_row_idx in strat_df.index:
-                    combo = strat_df.loc[strat_row_idx, 'strat_combo']
-                    # Use ORB trend if available (column name from first ORB window)
-                    orb_label = self.ind.orb_windows[0]['label'] if self.ind.orb_windows else '5m'
-                    orb_trend = int(row.get(f'ORB_{orb_label}_Trend', 0))
-                    strat_bonus = self.strat_classifier.get_strat_bonus(
-                        signal_direction=sig['direction'],
-                        combo=combo,
-                        ftfc_score=0.0,  # TODO: compute from multi-TF data
-                        ftfc_threshold=self.strat_config.ftfc_threshold,
-                        orb_trend=orb_trend,
-                    )
+                combo = 'none'
+                if bar_index in strat_df.index:
+                    combo = strat_df.loc[bar_index, 'strat_combo']
+                strat_bonus = self.strat_classifier.get_strat_bonus(
+                    signal_direction=sig['direction'],
+                    combo=combo,
+                    ftfc_score=bar_ftfc_score,
+                    ftfc_threshold=self.strat_config.ftfc_threshold,
+                    orb_trend=bar_orb_trend,
+                )
             except (KeyError, IndexError):
                 pass
 
@@ -422,6 +629,8 @@ class BacktestEngine:
             total_score=total_score,
             position_size=get_position_size(total_score, self.risk),
             conditions_met=sig['conditions_met'],
+            ftfc_score=bar_ftfc_score,
+            orb_trend=bar_orb_trend,
             indicators_at_entry={
                 'rsi': row.get(self.ind.rsi_col),
                 'stoch_rsi_k': row.get('StochRSI_K'),

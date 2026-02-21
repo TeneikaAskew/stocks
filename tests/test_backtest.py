@@ -83,6 +83,51 @@ class TestTradeDataclass:
         assert t.mae == 0.0
         assert t.mfe == 0.0
 
+    def test_trade_ftfc_score_default(self):
+        """Trade dataclass should default ftfc_score to 0.0."""
+        t = Trade(
+            entry_time=datetime(2024, 1, 2, 10, 0),
+            entry_price=200.0,
+            direction='CALL',
+            base_score=3,
+            strat_bonus=0,
+            total_score=3,
+            position_size=0.25,
+            conditions_met=['c1', 'c2', 'c3'],
+        )
+        assert t.ftfc_score == 0.0
+
+    def test_trade_orb_trend_default(self):
+        """Trade dataclass should default orb_trend to 0."""
+        t = Trade(
+            entry_time=datetime(2024, 1, 2, 10, 0),
+            entry_price=200.0,
+            direction='PUT',
+            base_score=3,
+            strat_bonus=0,
+            total_score=3,
+            position_size=0.25,
+            conditions_met=['c1', 'c2', 'c3'],
+        )
+        assert t.orb_trend == 0
+
+    def test_trade_ftfc_score_and_orb_trend_can_be_set(self):
+        """ftfc_score and orb_trend should accept explicit values."""
+        t = Trade(
+            entry_time=datetime(2024, 1, 2, 10, 0),
+            entry_price=200.0,
+            direction='CALL',
+            base_score=3,
+            strat_bonus=1,
+            total_score=4,
+            position_size=0.50,
+            conditions_met=['c1', 'c2', 'c3'],
+            ftfc_score=0.75,
+            orb_trend=1,
+        )
+        assert t.ftfc_score == 0.75
+        assert t.orb_trend == 1
+
 
 class TestBacktestResult:
     def test_empty_result(self):
@@ -176,6 +221,110 @@ class TestBacktestResult:
         assert 'profit_factor' in m
         assert 'sharpe_ratio' in m
 
+    def test_filter_counts_default(self):
+        """BacktestResult should have filter_counts with default keys."""
+        result = BacktestResult(trades=[], daily_pnl=[])
+        assert isinstance(result.filter_counts, dict)
+        assert 'ftfc_rejected' in result.filter_counts
+        assert 'orb_rejected' in result.filter_counts
+        assert 'signals_evaluated' in result.filter_counts
+        assert result.filter_counts['ftfc_rejected'] == 0
+        assert result.filter_counts['orb_rejected'] == 0
+        assert result.filter_counts['signals_evaluated'] == 0
+
+    def test_filter_counts_custom(self):
+        """filter_counts should accept custom values."""
+        fc = {'ftfc_rejected': 5, 'orb_rejected': 3, 'signals_evaluated': 20}
+        result = BacktestResult(trades=[], daily_pnl=[], filter_counts=fc)
+        assert result.filter_counts['ftfc_rejected'] == 5
+        assert result.filter_counts['orb_rejected'] == 3
+        assert result.filter_counts['signals_evaluated'] == 20
+
+    def test_metrics_by_exit_reason_empty(self):
+        """metrics_by_exit_reason with no trades returns empty DataFrame."""
+        result = BacktestResult(trades=[], daily_pnl=[])
+        df = result.metrics_by_exit_reason()
+        assert isinstance(df, pd.DataFrame)
+        assert df.empty
+
+    def test_metrics_by_exit_reason_with_trades(self):
+        """metrics_by_exit_reason groups trades by exit reason."""
+        trades = [
+            Trade(entry_time=datetime(2024, 1, 2, 10, 0), entry_price=200.0,
+                  direction='CALL', base_score=3, strat_bonus=0, total_score=3,
+                  position_size=0.25, conditions_met=['c1', 'c2', 'c3'],
+                  exit_time=datetime(2024, 1, 2, 10, 15), exit_price=200.60,
+                  exit_reason='target', return_pct=0.003),
+            Trade(entry_time=datetime(2024, 1, 2, 11, 0), entry_price=200.50,
+                  direction='PUT', base_score=3, strat_bonus=0, total_score=3,
+                  position_size=0.25, conditions_met=['c1', 'c2', 'c3'],
+                  exit_time=datetime(2024, 1, 2, 11, 30), exit_price=200.80,
+                  exit_reason='stop_loss', return_pct=-0.0015),
+            Trade(entry_time=datetime(2024, 1, 2, 12, 0), entry_price=201.0,
+                  direction='CALL', base_score=3, strat_bonus=0, total_score=3,
+                  position_size=0.25, conditions_met=['c1', 'c2', 'c3'],
+                  exit_time=datetime(2024, 1, 2, 12, 30), exit_price=201.50,
+                  exit_reason='target', return_pct=0.0025),
+        ]
+        result = BacktestResult(trades=trades, daily_pnl=[])
+        df = result.metrics_by_exit_reason()
+        assert not df.empty
+        assert 'target' in df.index
+        assert 'stop_loss' in df.index
+        assert df.loc['target', 'trades'] == 2
+        assert df.loc['stop_loss', 'trades'] == 1
+
+    def test_metrics_by_direction_empty(self):
+        """metrics_by_direction with no trades returns empty DataFrame."""
+        result = BacktestResult(trades=[], daily_pnl=[])
+        df = result.metrics_by_direction()
+        assert isinstance(df, pd.DataFrame)
+        assert df.empty
+
+    def test_metrics_by_direction_with_trades(self):
+        """metrics_by_direction groups trades by CALL/PUT."""
+        trades = [
+            Trade(entry_time=datetime(2024, 1, 2, 10, 0), entry_price=200.0,
+                  direction='CALL', base_score=3, strat_bonus=0, total_score=3,
+                  position_size=0.25, conditions_met=['c1', 'c2', 'c3'],
+                  exit_time=datetime(2024, 1, 2, 10, 15), exit_price=200.60,
+                  exit_reason='target', return_pct=0.003),
+            Trade(entry_time=datetime(2024, 1, 2, 11, 0), entry_price=200.50,
+                  direction='PUT', base_score=3, strat_bonus=0, total_score=3,
+                  position_size=0.25, conditions_met=['c1', 'c2', 'c3'],
+                  exit_time=datetime(2024, 1, 2, 11, 30), exit_price=200.80,
+                  exit_reason='stop_loss', return_pct=-0.0015),
+            Trade(entry_time=datetime(2024, 1, 2, 12, 0), entry_price=201.0,
+                  direction='CALL', base_score=3, strat_bonus=0, total_score=3,
+                  position_size=0.25, conditions_met=['c1', 'c2', 'c3'],
+                  exit_time=datetime(2024, 1, 2, 12, 30), exit_price=201.50,
+                  exit_reason='target', return_pct=0.0025),
+        ]
+        result = BacktestResult(trades=trades, daily_pnl=[])
+        df = result.metrics_by_direction()
+        assert not df.empty
+        assert 'CALL' in df.index
+        assert 'PUT' in df.index
+        assert df.loc['CALL', 'trades'] == 2
+        assert df.loc['PUT', 'trades'] == 1
+
+    def test_to_dataframe_includes_ftfc_and_orb_columns(self):
+        """to_dataframe() should include ftfc_score and orb_trend columns."""
+        trades = [
+            Trade(entry_time=datetime(2024, 1, 2, 10, 0), entry_price=200.0,
+                  direction='CALL', base_score=3, strat_bonus=1, total_score=4,
+                  position_size=0.50, conditions_met=['c1', 'c2', 'c3'],
+                  ftfc_score=0.8, orb_trend=1,
+                  exit_time=datetime(2024, 1, 2, 10, 15), exit_price=200.60,
+                  exit_reason='target', return_pct=0.003),
+        ]
+        result = BacktestResult(trades=trades, daily_pnl=[])
+        df = result.to_dataframe()
+        assert 'ftfc_score' in df.columns
+        assert 'orb_trend' in df.columns
+        assert df.iloc[0]['ftfc_score'] == 0.8
+        assert df.iloc[0]['orb_trend'] == 1
+
 
 class TestBacktestEngine:
     def test_engine_runs_without_error(self, engine, intraday_data):
@@ -220,3 +369,66 @@ class TestBacktestEngine:
         result = engine.run(intraday_data)
         # Equity curve should have one point per trading day
         assert len(result.equity_curve) == len(result.daily_pnl)
+
+    def test_strat_filtering_produces_fewer_or_equal_trades(self, intraday_data):
+        """With use_strat=True and filtering enabled, trade count should be
+        <= the unfiltered count (filters can only remove trades)."""
+        signal_cfg = SignalConfig(min_conditions=2)
+
+        engine_no_strat = BacktestEngine(
+            risk_config=RiskConfig(),
+            exit_config=ExitConfig(),
+            signal_config=signal_cfg,
+        )
+        result_no_strat = engine_no_strat.run(intraday_data, use_strat=False)
+
+        engine_strat = BacktestEngine(
+            risk_config=RiskConfig(),
+            exit_config=ExitConfig(),
+            signal_config=signal_cfg,
+            strat_config=StratConfig(ftfc_filter_enabled=True, orb_filter_enabled=True),
+        )
+        result_strat = engine_strat.run(intraday_data, use_strat=True)
+
+        # Strat filtering can only reduce (or equal) the number of trades
+        assert result_strat.total_trades <= result_no_strat.total_trades
+
+    def test_filter_counts_populated_with_strat(self, intraday_data):
+        """When use_strat=True, filter_counts['signals_evaluated'] should be > 0."""
+        engine = BacktestEngine(
+            risk_config=RiskConfig(),
+            exit_config=ExitConfig(),
+            signal_config=SignalConfig(min_conditions=2),
+            strat_config=StratConfig(ftfc_filter_enabled=True, orb_filter_enabled=True),
+        )
+        result = engine.run(intraday_data, use_strat=True)
+
+        # signals_evaluated should be positive since we process signals
+        assert result.filter_counts['signals_evaluated'] > 0
+        # Rejection counts should be non-negative integers
+        assert result.filter_counts['ftfc_rejected'] >= 0
+        assert result.filter_counts['orb_rejected'] >= 0
+
+    def test_filter_counts_zero_without_strat(self, engine, intraday_data):
+        """Without use_strat, filter_counts should remain at zero for rejections,
+        but signals_evaluated should still be tracked."""
+        result = engine.run(intraday_data, use_strat=False)
+        # FTFC and ORB rejection counts should be zero without strat
+        assert result.filter_counts['ftfc_rejected'] == 0
+        assert result.filter_counts['orb_rejected'] == 0
+
+    def test_strat_trades_have_ftfc_and_orb_fields(self, intraday_data):
+        """When use_strat=True, trades should have ftfc_score and orb_trend set."""
+        engine = BacktestEngine(
+            risk_config=RiskConfig(),
+            exit_config=ExitConfig(),
+            signal_config=SignalConfig(min_conditions=2),
+            strat_config=StratConfig(),
+        )
+        result = engine.run(intraday_data, use_strat=True)
+
+        for trade in result.trades:
+            assert isinstance(trade.ftfc_score, float)
+            assert isinstance(trade.orb_trend, int)
+            assert -1.0 <= trade.ftfc_score <= 1.0
+            assert trade.orb_trend in (-1, 0, 1)

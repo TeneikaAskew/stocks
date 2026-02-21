@@ -132,6 +132,8 @@
     "orb_alignment_bonus": 1,
     "ftfc_threshold": 0.6,
     "ftfc_direction_threshold": 0.3,
+    "ftfc_filter_enabled": true,
+    "orb_filter_enabled": true,
     "timeframes": ["5m", "15m", "1h", "D", "W"],
     "ftfc_weights": {
       "5m": 0.10,
