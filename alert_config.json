@@ -143,7 +143,7 @@
   },
 
   "market": {
-    "tickers": ["IWM", "SPY", "QQQ"],
+    "tickers": ["IWM", "SPY", "QQQ", "SPX"],
     "market_open": "09:30",
     "market_close": "16:00",
     "data_dir": "data",
@@ -213,6 +213,99 @@
         "call": "0x00ff00",
         "put": "0xff0000",
         "warning": "0xffff00"
+      }
+    }
+  },
+
+  "ticker_overrides": {
+    "IWM": {
+      "_comment": "Best: 1m+15m filter, Sharpe=9.64, WR=53.7%, E=+0.072%/trade, PF=1.92",
+      "optimal_timeframe": "1m+15m",
+      "exit": {
+        "call_target": 0.0030,
+        "put_target": 0.0038,
+        "call_stop": 0.0015,
+        "put_stop": 0.0020,
+        "call_time_stop": 30,
+        "put_time_stop": 35
+      },
+      "signal": {
+        "call_entry_start": "09:30",
+        "call_entry_end": "10:00",
+        "put_entry_start": "09:30",
+        "put_entry_end": "14:00",
+        "call_rsi_range": [25.0, 50.0],
+        "put_rsi_range": [50.0, 75.0]
+      }
+    },
+
+    "SPY": {
+      "_comment": "Best: 1m+30m filter, Sharpe=7.23, WR=55.5%, E=+0.031%/trade, PF=1.67. Smaller avg moves than IWM — tighter targets needed.",
+      "optimal_timeframe": "1m+30m",
+      "exit": {
+        "call_target": 0.0015,
+        "put_target": 0.0020,
+        "call_stop": 0.0010,
+        "put_stop": 0.0012,
+        "call_time_stop": 30,
+        "put_time_stop": 35
+      },
+      "signal": {
+        "call_entry_start": "09:30",
+        "call_entry_end": "10:00",
+        "put_entry_start": "09:30",
+        "put_entry_end": "14:00",
+        "ema_proximity_threshold": 0.05,
+        "call_rsi_range": [30.0, 55.0],
+        "put_rsi_range": [45.0, 70.0]
+      }
+    },
+
+    "QQQ": {
+      "_comment": "Best: 1m+30m filter, Sharpe=10.24, WR=57.7%, E=+0.067%/trade, PF=2.09. Base 1m is negative — trend filter mandatory.",
+      "optimal_timeframe": "1m+30m",
+      "exit": {
+        "call_target": 0.0025,
+        "put_target": 0.0030,
+        "call_stop": 0.0012,
+        "put_stop": 0.0015,
+        "call_time_stop": 30,
+        "put_time_stop": 35
+      },
+      "signal": {
+        "call_entry_start": "09:30",
+        "call_entry_end": "10:00",
+        "put_entry_start": "09:30",
+        "put_entry_end": "14:00",
+        "ema_proximity_threshold": 0.08,
+        "call_rsi_range": [25.0, 48.0],
+        "put_rsi_range": [52.0, 75.0]
+      }
+    },
+
+    "SPX": {
+      "_comment": "Limited data (76 days Sep-Dec 2025). All configs negative. Wider targets for large index, conservative sizing. Needs more data for reliable optimization.",
+      "optimal_timeframe": "30m",
+      "exit": {
+        "call_target": 0.0020,
+        "put_target": 0.0025,
+        "call_stop": 0.0015,
+        "put_stop": 0.0018,
+        "call_time_stop": 30,
+        "put_time_stop": 30
+      },
+      "signal": {
+        "call_entry_start": "09:30",
+        "call_entry_end": "11:00",
+        "put_entry_start": "09:30",
+        "put_entry_end": "14:00",
+        "stoch_rsi_oversold": 25.0,
+        "stoch_rsi_overbought": 75.0,
+        "call_rsi_range": [30.0, 55.0],
+        "put_rsi_range": [45.0, 70.0]
+      },
+      "risk": {
+        "max_daily_trades": 3
       }
     }
   }

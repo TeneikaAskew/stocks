@@ -50,8 +50,8 @@ def main():
 
     args = parser.parse_args()
 
-    # Load config
-    cfg = load_config()
+    # Load config (with per-ticker overrides)
+    cfg = load_config(ticker=args.ticker)
     print(f"Configuration loaded: max {cfg.risk.max_daily_trades} trades/day, "
           f"CALL target {cfg.exit.call_target:.2%}, PUT target {cfg.exit.put_target:.2%}")
 

@@ -280,11 +280,15 @@ def get_signal_strength_label(score: int, risk_config: RiskConfig = None) -> str
 # JSON loader
 # ---------------------------------------------------------------------------
 
-def load_config(config_path: str = 'alert_config.json') -> AppConfig:
+def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> AppConfig:
     """Load configuration from alert_config.json.
 
     Falls back to dataclass defaults if the file is missing or incomplete.
     Returns an AppConfig containing every sub-config used across the system.
+
+    If *ticker* is provided and the JSON contains a ``ticker_overrides.<TICKER>``
+    section, those values are merged on top of the base config, allowing
+    per-ticker tuning (different targets, timeframes, thresholds, etc.).
     """
     app = AppConfig()
 
@@ -447,4 +451,69 @@ def load_config(config_path: str = 'alert_config.json') -> AppConfig:
             if fld in wf_data:
                 setattr(app.walk_forward, fld, wf_data[fld])
 
+    # --- Per-ticker overrides ---
+    if ticker:
+        overrides = data.get('ticker_overrides', {}).get(ticker.upper(), {})
+        if overrides:
+            _apply_ticker_overrides(app, overrides)
+
     return app
+
+
+def _apply_ticker_overrides(app: AppConfig, overrides: dict) -> None:
+    """Merge ticker-specific overrides on top of the base AppConfig."""
+
+    # Exit overrides
+    exit_ov = overrides.get('exit', {})
+    for fld in ['call_target', 'put_target', 'call_stop', 'put_stop']:
+        if fld in exit_ov:
+            setattr(app.exit, fld, float(exit_ov[fld]))
+    for fld in ['call_time_stop', 'put_time_stop']:
+        if fld in exit_ov:
+            setattr(app.exit, fld, int(exit_ov[fld]))
+    for fld in ['call_rsi_exit', 'put_rsi_exit']:
+        if fld in exit_ov:
+            setattr(app.exit, fld, float(exit_ov[fld]))
+
+    # Signal overrides
+    sig_ov = overrides.get('signal', {})
+    for fld in ['min_conditions', 'consecutive_periods']:
+        if fld in sig_ov:
+            setattr(app.signal, fld, int(sig_ov[fld]))
+    for fld in ['ema_proximity_threshold', 'stoch_rsi_oversold', 'stoch_rsi_overbought', 'rvol_minimum']:
+        if fld in sig_ov:
+            setattr(app.signal, fld, float(sig_ov[fld]))
+    for fld in ['call_entry_start', 'call_entry_end', 'put_entry_start', 'put_entry_end']:
+        if fld in sig_ov:
+            setattr(app.signal, fld, sig_ov[fld])
+    if 'call_rsi_range' in sig_ov:
+        app.signal.call_rsi_range = tuple(sig_ov['call_rsi_range'])
+    if 'put_rsi_range' in sig_ov:
+        app.signal.put_rsi_range = tuple(sig_ov['put_rsi_range'])
+
+    # Indicator overrides
+    ind_ov = overrides.get('indicators', {})
+    for fld in ['rsi_period', 'atr_period', 'rvol_period', 'consecutive_periods']:
+        if fld in ind_ov:
+            setattr(app.indicator, fld, int(ind_ov[fld]))
+    if 'ema_periods' in ind_ov:
+        app.indicator.ema_periods = ind_ov['ema_periods']
+
+    # Risk overrides
+    risk_ov = overrides.get('risk', {})
+    for fld in ['max_daily_trades', 'max_concurrent_positions', 'max_score']:
+        if fld in risk_ov:
+            setattr(app.risk, fld, int(risk_ov[fld]))
+
+    # Strat overrides
+    strat_ov = overrides.get('strat', {})
+    for fld in ['enabled', 'combo_bonus', 'ftfc_bonus', 'orb_alignment_bonus']:
+        if fld in strat_ov:
+            setattr(app.strat, fld, strat_ov[fld])
+    for fld in ['ftfc_threshold', 'ftfc_direction_threshold']:
+        if fld in strat_ov:
+            setattr(app.strat, fld, float(strat_ov[fld]))
+
+    # Optimal timeframe combination (metadata for downstream use)
+    if 'optimal_timeframe' in overrides:
+        app.optimal_timeframe = overrides['optimal_timeframe']
