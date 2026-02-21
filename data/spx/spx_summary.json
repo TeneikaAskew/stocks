@@ -1,0 +1,20 @@
+{
+  "ticker": "SPX",
+  "ticker_symbol": "^SPX",
+  "last_update": "2025-09-26T22:19:52.629344",
+  "last_date": "2025-09-26 00:00:00",
+  "first_date": "2025-08-25 00:00:00",
+  "total_daily_records": 24,
+  "minute_data_available_from": "2025-09-20",
+  "current_year_file": "spx_2025.parquet",
+  "latest_close": 6643.5400390625,
+  "latest_volume": 2301808765,
+  "latest_rsi_14": 70.35783372089105,
+  "latest_rvol": 0.8781409019206431,
+  "latest_stoch_rsi_k": null,
+  "latest_stoch_rsi_d": null,
+  "latest_obv": 16510619969.0,
+  "latest_atr_14": 49.80230137932634,
+  "data_source": "1-minute aggregation",
+  "ytd_return": 3.1693675323176462
+}

@@ -84,9 +84,10 @@ class DataLoader:
         """Load intraday (1-minute) data for a ticker.
 
         Priority order:
-        1. AlphaVantage combined parquet
-        2. Monthly AlphaVantage parquets
-        3. Empty DataFrame if nothing found
+        1. AlphaVantage combined parquet in intraday/
+        2. Monthly AlphaVantage parquets in intraday/
+        3. Daily minute parquets in minute/ (e.g. SPX format)
+        4. Empty DataFrame if nothing found
         """
         ticker_lower = ticker.lower()
         intraday_dir = self.data_dir / ticker_lower / 'intraday'
@@ -96,6 +97,7 @@ class DataLoader:
         if combined.exists():
             df = pd.read_parquet(combined)
             df = self.normalize_columns(df)
+            df = self._strip_timezone(df)
             df = self._filter_dates(df, start_date, end_date)
             return df.sort_index()
 
@@ -105,6 +107,18 @@ class DataLoader:
             frames = [pd.read_parquet(f) for f in monthly_files]
             df = pd.concat(frames).sort_index()
             df = self.normalize_columns(df)
+            df = self._strip_timezone(df)
+            df = self._filter_dates(df, start_date, end_date)
+            return df
+
+        # Priority 3: daily minute parquets (e.g. data/spx/minute/spx_minute_YYYYMMDD.parquet)
+        minute_dir = self.data_dir / ticker_lower / 'minute'
+        daily_files = sorted(minute_dir.glob(f'{ticker_lower}_minute_*.parquet'))
+        if daily_files:
+            frames = [pd.read_parquet(f) for f in daily_files]
+            df = pd.concat(frames).sort_index()
+            df = self.normalize_columns(df)
+            df = self._strip_timezone(df)
             df = self._filter_dates(df, start_date, end_date)
             return df
 
@@ -218,6 +232,15 @@ class DataLoader:
             except Exception:
                 continue
         return result
+
+    def _strip_timezone(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Remove timezone info from index for consistent handling across sources."""
+        if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+            df = df.copy()
+            df.index = df.index.tz_localize(None)
+            if 'Time' in df.columns:
+                df['Time'] = df['Time'].dt.tz_localize(None)
+        return df
 
     def _filter_dates(
         self,

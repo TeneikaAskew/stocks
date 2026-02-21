@@ -1,0 +1,14 @@
+{
+  "symbol": "IWM",
+  "interval": "1min",
+  "start_date": "2015-01-02 06:29:00",
+  "end_date": "2025-11-14 20:00:00",
+  "total_bars": 1807164,
+  "total_months": 131,
+  "monthly_files_combined": 131,
+  "duplicates_removed": 0,
+  "latest_close": 237.48,
+  "latest_volume": 727335,
+  "last_update": "2025-12-01T03:09:40.653257",
+  "file": "data/iwm/intraday/iwm_av_1min_combined.parquet"
+}

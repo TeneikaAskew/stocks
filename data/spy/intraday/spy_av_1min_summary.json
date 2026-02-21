@@ -1,0 +1,14 @@
+{
+  "symbol": "SPY",
+  "interval": "1min",
+  "start_date": "2015-01-02 04:05:00",
+  "end_date": "2025-11-14 20:00:00",
+  "total_bars": 2268190,
+  "total_months": 131,
+  "monthly_files_combined": 132,
+  "duplicates_removed": 21140,
+  "latest_close": 671.93,
+  "latest_volume": 954774,
+  "last_update": "2025-12-01T03:09:21.707469",
+  "file": "data/spy/intraday/spy_av_1min_combined.parquet"
+}
