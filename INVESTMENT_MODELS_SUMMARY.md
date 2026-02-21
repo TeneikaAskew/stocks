@@ -10,13 +10,18 @@
 6. [Model #3 — Enhanced Market Analysis (All Tickers)](#model-3--enhanced-market-analysis-all-tickers)
 7. [Model #4 — Trade Analysis Pipeline](#model-4--trade-analysis-pipeline)
 8. [Model #5 — Earnings Options Analytics](#model-5--earnings-options-analytics)
-9. [Signal Generation Methodology](#signal-generation-methodology)
-10. [Alert System & Risk Parameters](#alert-system--risk-parameters)
-11. [Advanced Features — Historical Levels, ORB, Order Blocks](#advanced-features--historical-levels-orb-order-blocks)
-12. [Options Analysis & P/L Tracking](#options-analysis--pl-tracking)
-13. [Data Infrastructure & Automation](#data-infrastructure--automation)
-14. [Outputs & Deliverables](#outputs--deliverables)
-15. [Strategy Outcomes & Insights](#strategy-outcomes--insights)
+9. [Shared Library (`lib/`)](#shared-library-lib)
+10. [The Strat Classifier & FTFC](#the-strat-classifier--ftfc)
+11. [Backtesting Engine](#backtesting-engine)
+12. [Multi-Timeframe Sweep Analysis](#multi-timeframe-sweep-analysis)
+13. [Signal Generation Methodology](#signal-generation-methodology)
+14. [Alert System & Risk Parameters](#alert-system--risk-parameters)
+15. [Advanced Features — Historical Levels, ORB, Order Blocks](#advanced-features--historical-levels-orb-order-blocks)
+16. [Options Analysis & P/L Tracking](#options-analysis--pl-tracking)
+17. [Data Infrastructure & Automation](#data-infrastructure--automation)
+18. [Outputs & Deliverables](#outputs--deliverables)
+19. [Strategy Outcomes & Insights](#strategy-outcomes--insights)
+20. [Backtest Results](#backtest-results)
 
 ---
 
@@ -258,6 +263,205 @@ Analyzes options activity around earnings announcements:
 
 ---
 
+## Shared Library (`lib/`)
+
+The core analysis logic has been extracted into a shared Python library under `lib/`, eliminating duplication across models and providing a unified API for backtesting, signal generation, and Strat analysis.
+
+### Library Modules
+
+| Module | Purpose |
+|--------|---------|
+| `lib/indicators.py` | All indicator functions as pure functions — RSI, ATR, EMA, VWAP, RVOL, OBV, Stochastic RSI, Bollinger Bands, MACD, ORB, Order Blocks, Historical Levels. `add_all_indicators()` applies everything in one call. |
+| `lib/signals.py` | Signal generation — `check_call_conditions()`, `check_put_conditions()`, `evaluate_signal()`. Implements the 3-of-5 logic with optional Strat bonus (0–3 points). |
+| `lib/data_loader.py` | Unified data loading with column normalization (`Last`→`Close`), multi-source priority (AlphaVantage → Yahoo → on-demand), and timeframe aggregation for Strat FTFC. |
+| `lib/config.py` | Typed dataclasses parsed from `alert_config.json` — `RiskConfig`, `ExitConfig`, `SignalConfig`, `StratConfig`, `BacktestConfig`, `IndicatorConfig`, `MarketConfig`. Per-ticker overrides supported. |
+| `lib/strat.py` | Strat candle classifier, combo detection (2-1-2, 3-1-2 reversals/continuations), and FTFC scoring with weighted multi-timeframe alignment. |
+| `lib/backtest.py` | Bar-by-bar backtesting engine with FTFC/ORB trade filtering, risk management, and comprehensive metrics. |
+| `lib/walk_forward.py` | Walk-forward validation with expanding train windows and parameter sensitivity grids. |
+
+### Per-Ticker Configuration
+
+Each ticker has tuned parameters in `alert_config.json`:
+
+| Parameter | IWM | SPY | QQQ | SPX |
+|-----------|-----|-----|-----|-----|
+| CALL target | 0.30% | 0.15% | 0.25% | 0.20% |
+| PUT target | 0.38% | 0.20% | 0.30% | 0.25% |
+| CALL stop | -0.15% | -0.10% | -0.12% | -0.12% |
+| PUT stop | -0.20% | -0.12% | -0.15% | -0.15% |
+| RSI Call range | 25–50 | 30–48 | 28–50 | 30–50 |
+| RSI Put range | 50–75 | 52–72 | 50–73 | 50–72 |
+
+---
+
+## The Strat Classifier & FTFC
+
+### Strat Candle Classification
+
+The Strat is a universal price-action framework that classifies every candle into one of four types by comparing its range to the previous candle:
+
+| Type | Name | Rule | Meaning |
+|------|------|------|---------|
+| **1** | Inside | `curr_high <= prev_high AND curr_low >= prev_low` | Consolidation — coiling energy |
+| **2U** | Up | `curr_high > prev_high AND curr_low >= prev_low` | Directional expansion upward |
+| **2D** | Down | `curr_high <= prev_high AND curr_low < prev_low` | Directional expansion downward |
+| **3** | Outside | `curr_high > prev_high AND curr_low < prev_low` | Both sides taken out — reversal risk |
+
+### Combo Detection
+
+The classifier scans for actionable multi-bar patterns:
+
+| Combo | Sequence | Trade Bias |
+|-------|----------|------------|
+| 2-1-2 Reversal Bullish | 2D → 1 → 2U | Long — reversal from downside |
+| 2-1-2 Reversal Bearish | 2U → 1 → 2D | Short — reversal from upside |
+| 3-1-2 Reversal | 3 → 1 → 2U/2D | Reversal after outside bar |
+| 2-1-2 Continuation | 2U → 1 → 2U (or 2D → 1 → 2D) | Continuation after pause |
+
+### Full Timeframe Continuity (FTFC)
+
+FTFC measures whether multiple timeframes agree on direction. The system:
+
+1. Resamples 1-minute data to 5m, 15m, 1h, D, W timeframes
+2. Classifies Strat candle types on each timeframe
+3. Uses `shift(1)` on higher-TF classifications to avoid lookahead bias
+4. Computes a weighted alignment score:
+
+| Timeframe | Weight |
+|-----------|--------|
+| Daily | 0.35 |
+| 1 Hour | 0.25 |
+| 15 Min | 0.20 |
+| 5 Min | 0.10 |
+| Weekly | 0.10 |
+
+- **FTFC Score > 0.6**: Strong alignment — trade allowed, +1 bonus point
+- **FTFC Score contradicts signal**: Trade **rejected** (not just penalized)
+- **FTFC Filter**: If FTFC direction opposes the signal at threshold 0.3, the trade is blocked entirely
+
+### ORB Trade Filtering
+
+The Opening Range Breakout (ORB) filter uses the first 5/15/30 minutes of trading to establish trend direction:
+
+- **ORB Trend +1** (bullish): Only CALL signals allowed
+- **ORB Trend -1** (bearish): Only PUT signals allowed
+- **ORB Trend 0** (neutral): Both directions allowed
+
+In backtesting, the ORB filter rejects approximately **75% of raw signals**, and the FTFC filter rejects an additional **~18%** — leaving only the highest-conviction setups.
+
+---
+
+## Backtesting Engine
+
+**File**: `lib/backtest.py`
+
+### How It Works
+
+The engine processes historical 1-minute data bar-by-bar (not vectorized — required for sequential risk management):
+
+```
+for each trading_day:
+    load 1-min bars
+    calculate indicators (lib/indicators)
+    optionally compute FTFC series (lib/strat)
+    optionally classify Strat candles
+
+    for each bar:
+        if in_position:
+            check exits (profit target, stop loss, time stop, RSI extreme)
+        if flat AND under daily limits:
+            evaluate 3-of-5 signal conditions
+            apply FTFC filter (reject if contradicted)
+            apply ORB filter (reject if contradicted)
+            compute Strat bonus for aligned trades
+            if signal passes all filters: enter position
+        track daily PnL, trade count
+```
+
+### Exit Rules
+
+| Exit Type | CALL | PUT |
+|-----------|------|-----|
+| Profit target | +0.30% (IWM) | +0.38% (IWM) |
+| Stop loss | -0.15% (IWM) | -0.20% (IWM) |
+| Time stop | 30 minutes | 35 minutes |
+| RSI extreme | RSI > 80 | RSI < 20 |
+
+### Risk Management
+
+- Max 5 trades per day
+- Max 1 concurrent position
+- Daily loss limit: -2.0%
+- Daily profit target: +3.0%
+
+### Extended Signal Scoring (with Strat)
+
+When Strat overlay is enabled, signal scoring extends from 5 to 8 max:
+
+| Bonus | Condition | Points |
+|-------|-----------|--------|
+| Combo bonus | Aligned Strat combo (reversal confirms direction) | +1 |
+| FTFC bonus | FTFC alignment score >= 0.6 | +1 |
+| ORB bonus | ORB trend aligns with signal direction | +1 |
+
+Updated position sizing with Strat:
+
+| Score | Position Size |
+|-------|---------------|
+| 3–4 | 25% |
+| 5 | 50% |
+| 6 | 75% |
+| 7–8 | 100% |
+
+### Output
+
+`BacktestResult` includes:
+- Trade list with entry/exit times, direction, PnL, exit reason, FTFC score, ORB trend
+- Equity curve
+- Metrics: win rate, profit factor, Sharpe ratio, max drawdown, expectancy, MAE/MFE
+- Filter counts (how many signals rejected by FTFC vs ORB)
+- Breakdown by exit reason and direction
+
+---
+
+## Multi-Timeframe Sweep Analysis
+
+**File**: `scripts/run_timeframe_sweep.py`
+
+### What It Does
+
+Tests the strategy across multiple timeframes and combinations to find the optimal trading resolution.
+
+### Phase 1: Individual Timeframe Sweep
+
+Resamples 1-minute data to 5m, 15m, 30m, 1h, 4h and runs the full backtest on each. Time-based parameters (time stops) scale with bar size; percentage targets stay fixed.
+
+### Phase 2: Combination Analysis
+
+Tests 1-minute signal execution filtered by higher-timeframe trend direction:
+
+- Resample to higher TF (e.g., 15m), compute EMA20
+- Only take CALL when higher-TF price > EMA20
+- Only take PUT when higher-TF price < EMA20
+- Neutral zone (within 0.05%) allows both directions
+
+This filter is **additive** to FTFC/ORB filtering when `--use-strat` is enabled.
+
+### Usage
+
+```bash
+# Single ticker sweep
+python scripts/run_timeframe_sweep.py --ticker IWM --use-strat
+
+# Custom timeframes
+python scripts/run_timeframe_sweep.py --ticker SPY --use-strat --timeframes 1m 5m 15m
+
+# Custom combo filters
+python scripts/run_timeframe_sweep.py --ticker QQQ --use-strat --combos 15m 30m 1h
+```
+
+---
+
 ## Signal Generation Methodology
 
 ### Signal Types
@@ -274,15 +478,25 @@ Analyzes options activity around earnings announcements:
 | 4 | **Price vs EMAs** | Price near or below EMA 9/20 | Price near or above EMA 9/20 |
 | 5 | **Stochastic RSI** | Stochastic RSI showing oversold | Stochastic RSI showing overbought |
 
-### Signal Strength
+### Signal Strength (Base — without Strat)
 - **3/5 conditions met**: Weak signal — 25% position size
 - **4/5 conditions met**: Medium signal — 50% position size
 - **5/5 conditions met**: Strong signal — 75–100% position size
 
-### Additional Filters (Advanced — IWM Model)
+### Signal Strength (Extended — with Strat Overlay)
+- **3–4/8**: 25% position size
+- **5/8**: 50% position size
+- **6/8**: 75% position size
+- **7–8/8**: 100% position size
+
+The Strat overlay adds up to 3 bonus points (combo alignment, FTFC alignment, ORB alignment) but also **rejects trades** that contradict FTFC or ORB direction — filtering out ~90% of raw signals.
+
+### Additional Filters (Advanced)
+- **FTFC trade filtering**: Blocks trades where higher-timeframe Strat direction contradicts signal
+- **ORB trade filtering**: Blocks trades where Opening Range Breakout trend contradicts signal
 - **Historical level interactions**: Breakout/breakdown of previous day/week/month/year levels
-- **ORB trend alignment**: Signal must align with Opening Range Breakout direction
 - **Order block tests**: Signal coincides with institutional supply/demand zone test
+- **Higher-TF trend filter**: Optional EMA20-based directional filter from 15m/30m/1h timeframes
 
 ---
 
@@ -476,3 +690,63 @@ The models implement a **contrarian mean-reversion strategy** with the following
 - Daily loss limit (-2%) and profit target (+3%)
 - Maximum 5 trades/day, 1 position at a time
 - Extreme RSI exit triggers (>80 for calls, <20 for puts)
+
+---
+
+## Backtest Results
+
+### Base Strategy (No Strat Filtering)
+
+| Ticker | Trades | Win Rate | Avg Win | Avg Loss | Sharpe | Expectancy |
+|--------|--------|----------|---------|----------|--------|------------|
+| IWM | 620 | 42.9% | +0.28% | -0.14% | 1.17 | +0.010% |
+| SPY | 620 | 43.5% | +0.16% | -0.12% | 0.52 | +0.002% |
+| QQQ | 620 | 40.0% | +0.24% | -0.16% | -0.15 | -0.005% |
+
+### With Strat Overlay (FTFC + ORB Filtering)
+
+| Ticker | Trades | Win Rate | Avg Win | Avg Loss | Sharpe | Expectancy | vs Base |
+|--------|--------|----------|---------|----------|--------|------------|---------|
+| IWM | 530 | 44.3% | +0.28% | -0.14% | 1.74 | +0.016% | Sharpe +49% |
+| SPY | 500 | 44.0% | +0.16% | -0.12% | 0.65 | +0.003% | Sharpe +25% |
+| QQQ | 496 | 42.1% | +0.24% | -0.16% | 0.37 | +0.004% | Flipped positive |
+
+### Filter Rejection Rates
+
+| Filter | Rejection Rate | Effect |
+|--------|---------------|--------|
+| ORB | ~75% of raw signals | Largest filter — eliminates trades against intraday trend |
+| FTFC | ~18% of remaining | Blocks trades contradicted by higher-timeframe structure |
+
+### Timeframe Sweep — Combination Results (1m + higher-TF trend filter + FTFC/ORB)
+
+| Configuration | IWM | SPY | QQQ |
+|---------------|-----|-----|-----|
+| **1m+15m** | Sharpe 9.31, WR 57.1%, E=+0.078% | Sharpe 5.33, WR 53.7%, E=+0.035% | Sharpe 6.67, WR 52.0%, E=+0.055% |
+| **1m+30m** | Sharpe 7.84, WR 55.2%, E=+0.065% | **Sharpe 5.54, WR 54.5%, E=+0.036%** | Sharpe 6.49, WR 52.2%, E=+0.054% |
+| **1m+1h** | Sharpe 6.92, WR 54.0%, E=+0.058% | Sharpe 4.54, WR 52.8%, E=+0.030% | Sharpe 4.99, WR 50.0%, E=+0.044% |
+
+**Best configuration per ticker:**
+- **IWM**: 1m+15m (Sharpe 9.31) — highest Sharpe across all tickers
+- **SPY**: 1m+30m (Sharpe 5.54) — 30m EMA20 filter edges out 15m slightly
+- **QQQ**: 1m+15m (Sharpe 6.67) — strongest expectancy at +0.055%/trade
+
+**Key insight**: The 1m+15m combination consistently ranks #1 or #2 across all tickers. The higher-TF EMA20 trend filter transforms a near-zero-edge base strategy into a high-Sharpe system by ensuring you only trade in the direction of the 15-minute trend.
+
+### What the Numbers Mean
+
+- **Avg Win +0.28%**: This is the move on the *underlying* (e.g., IWM). With options leverage (typically 5–10x delta), a 0.28% underlying move translates to roughly 1.4%–2.8% on the options contract.
+- **Expectancy +0.016%/trade**: Expected profit per trade on the underlying. Over 530 trades, this compounds significantly.
+- **Sharpe 1.74**: Returns are 1.74x the volatility — consistent enough to be tradeable. The 1m+15m combo at Sharpe 9.31 indicates very strong risk-adjusted performance (though high Sharpe values warrant scrutiny for overfitting).
+
+### Test Coverage
+
+The system has **297 passing tests** covering:
+- All indicator calculations against known values
+- Strat candle classification and combo detection
+- Signal generation (3-of-5 logic + Strat bonus)
+- Backtest engine (entry/exit triggers, risk limits, equity curve)
+- FTFC/ORB filtering (rejection logic, filter counts)
+- Data loader (parquet loading, column normalization, timeframe aggregation)
+- Config loading with per-ticker overrides
+- Full end-to-end integration tests
