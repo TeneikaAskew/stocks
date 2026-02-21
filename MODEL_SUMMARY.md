@@ -147,6 +147,55 @@ Analyzes options market activity around **earnings announcements** to identify o
 
 ---
 
+## Shared Library (`lib/`) — Backtesting & Strat Integration
+
+All analysis logic has been extracted into `lib/` as a shared Python library, eliminating duplication across models.
+
+### Modules
+
+| Module | Purpose |
+|--------|---------|
+| `lib/indicators.py` | Pure indicator functions — RSI, ATR, EMA, VWAP, RVOL, OBV, Stochastic RSI, ORB, etc. |
+| `lib/signals.py` | Signal evaluation — 3-of-5 conditions + optional Strat bonus (max score 8) |
+| `lib/data_loader.py` | Unified data loading, column normalization, multi-source priority, timeframe aggregation |
+| `lib/config.py` | Typed config from `alert_config.json` with per-ticker overrides (IWM, SPY, QQQ, SPX) |
+| `lib/strat.py` | The Strat classifier — candle types (1, 2U, 2D, 3), combo detection, FTFC scoring |
+| `lib/backtest.py` | Bar-by-bar backtesting with FTFC/ORB trade filtering, risk management, full metrics |
+| `lib/walk_forward.py` | Walk-forward validation with expanding windows and parameter sweeps |
+
+### The Strat & FTFC
+
+- **Candle classification**: Every bar classified as Inside (1), Up (2U), Down (2D), or Outside (3) vs prior bar
+- **Combo detection**: 2-1-2 reversals, 3-1-2 reversals, continuations
+- **FTFC (Full Timeframe Continuity)**: Weighted alignment score across 5m/15m/1h/D/W (Daily=0.35, 1h=0.25, 15m=0.20, 5m=0.10, W=0.10)
+- **Trade filtering**: Trades contradicted by FTFC or ORB direction are **rejected** (not just penalized) — filtering ~90% of raw signals
+
+### Backtesting Engine
+
+Bar-by-bar engine processing 1-minute data: evaluates signals, applies FTFC/ORB filters, manages entries/exits (profit target, stop loss, time stop, RSI extreme), tracks daily PnL with risk limits (5 trades/day, -2% daily loss).
+
+### Multi-Timeframe Sweep (`scripts/run_timeframe_sweep.py`)
+
+Tests strategy across 1m/5m/15m/30m/1h individually, then combination filters (1m signals + higher-TF EMA20 trend direction).
+
+### Backtest Results
+
+| Configuration | Ticker | Trades | Win Rate | Sharpe | Expectancy |
+|---------------|--------|--------|----------|--------|------------|
+| Base (no Strat) | IWM | 620 | 42.9% | 1.17 | +0.010% |
+| +Strat (FTFC/ORB) | IWM | 530 | 44.3% | 1.74 | +0.016% |
+| +Strat (FTFC/ORB) | SPY | 500 | 44.0% | 0.65 | +0.003% |
+| +Strat (FTFC/ORB) | QQQ | 496 | 42.1% | 0.37 | +0.004% |
+| 1m+15m combo | IWM | 492 | 57.1% | 9.31 | +0.078% |
+| 1m+30m combo | SPY | 9,528 | 54.5% | 5.54 | +0.036% |
+| 1m+15m combo | SPY | 9,959 | 53.7% | 5.33 | +0.035% |
+| 1m+15m combo | QQQ | 9,607 | 52.0% | 6.67 | +0.055% |
+| 1m+30m combo | QQQ | 9,291 | 52.2% | 6.49 | +0.054% |
+
+**297 tests** covering all modules (indicators, strat, signals, backtest, data loader, config, integration).
+
+---
+
 ## Supporting Infrastructure
 
 ### Options Data Collection
@@ -209,9 +258,11 @@ All models feed into a single unified trading strategy:
 ## Key Takeaways
 
 1. **195-feature IWM model** is the analytical core — multi-timeframe levels, ORB, and order blocks give institutional-grade context to every signal.
-2. **Signal scoring (3/5 to 5/5)** with direct position sizing tie creates built-in risk discipline — weak signals get small size, strong signals get full allocation.
-3. **Trade feedback loop** (Model 4) connects actual P/L back to indicator conditions, enabling data-driven refinement of entry/exit rules.
-4. **Cross-ticker analysis** reveals which indices are most responsive to mean reversion, allowing capital to flow toward the highest-probability setups.
-5. **Full automation** — from data fetching through signal generation to alerting — ensures no opportunity is missed and removes manual bottlenecks.
-6. **Earnings options analytics** add an orthogonal edge by exploiting implied volatility patterns around catalytic events.
-7. **Strict risk parameters** (1 position, 5 trades/day, -2% stop) protect capital even when signals misfire.
+2. **Signal scoring (3/5 to 8/8)** with Strat overlay extends the base 5-condition system with FTFC, ORB, and combo alignment bonuses, while also **filtering out** trades that contradict higher-timeframe structure.
+3. **Backtesting validates the edge** — FTFC/ORB filtering improved IWM Sharpe from 1.17 to 1.74, and flipped QQQ from negative to positive expectancy. The 1m+15m combination achieves Sharpe 9.31 with 57% win rate.
+4. **Trade feedback loop** (Model 4) connects actual P/L back to indicator conditions, enabling data-driven refinement of entry/exit rules.
+5. **Cross-ticker analysis** with per-ticker configurations reveals which indices are most responsive to mean reversion, with IWM showing the strongest edge.
+6. **Full automation** — from data fetching through signal generation to alerting — ensures no opportunity is missed and removes manual bottlenecks.
+7. **Earnings options analytics** add an orthogonal edge by exploiting implied volatility patterns around catalytic events.
+8. **Strict risk parameters** (1 position, 5 trades/day, -2% stop) protect capital even when signals misfire.
+9. **297 automated tests** ensure reliability across indicators, signals, Strat classification, backtest engine, and data loading.
