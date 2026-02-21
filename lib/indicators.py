@@ -521,4 +521,12 @@ def add_all_indicators(
     out['Daily_Range_Pct'] = (h - l) / c * 100.0
     out['Close_vs_Range'] = (c - l) / (h - l).where((h - l) > 0, np.nan)
 
+    # ORB (Opening Range Breakout)
+    if 'Time' in out.columns:
+        orb_result = calculate_all_orb(
+            pd.to_datetime(out['Time']), h, l, c,
+            orb_windows=ind.orb_windows,
+        )
+        out = pd.concat([out, orb_result], axis=1)
+
     return out

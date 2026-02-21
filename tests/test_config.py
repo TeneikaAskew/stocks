@@ -206,6 +206,19 @@ class TestStratConfigDefaults:
         assert cfg.ftfc_threshold == 0.6
         assert cfg.ftfc_direction_threshold == 0.3
 
+    def test_ftfc_filter_enabled_default(self):
+        cfg = StratConfig()
+        assert cfg.ftfc_filter_enabled is True
+
+    def test_orb_filter_enabled_default(self):
+        cfg = StratConfig()
+        assert cfg.orb_filter_enabled is True
+
+    def test_filter_enabled_can_be_disabled(self):
+        cfg = StratConfig(ftfc_filter_enabled=False, orb_filter_enabled=False)
+        assert cfg.ftfc_filter_enabled is False
+        assert cfg.orb_filter_enabled is False
+
     def test_timeframes_default(self):
         cfg = StratConfig()
         assert cfg.timeframes == ['5m', '15m', '1h', 'D', 'W']
@@ -672,6 +685,34 @@ class TestLoadConfigFromFile:
         assert app.strat.ftfc_direction_threshold == 0.4
         assert app.strat.timeframes == ['1m', '5m', '15m']
         assert app.strat.ftfc_weights == {'1m': 0.30, '5m': 0.30, '15m': 0.40}
+
+    def test_strat_filter_flags_loaded(self, tmp_path):
+        """load_config should read ftfc_filter_enabled and orb_filter_enabled
+        from the strat section in JSON."""
+        data = {
+            'strat': {
+                'ftfc_filter_enabled': False,
+                'orb_filter_enabled': False,
+            }
+        }
+        path = _write_config(tmp_path, data)
+        app = load_config(path)
+        assert app.strat.ftfc_filter_enabled is False
+        assert app.strat.orb_filter_enabled is False
+
+    def test_strat_filter_flags_default_when_absent(self, tmp_path):
+        """When ftfc_filter_enabled / orb_filter_enabled are absent from JSON,
+        they should default to True."""
+        data = {
+            'strat': {
+                'enabled': True,
+                'combo_bonus': 1,
+            }
+        }
+        path = _write_config(tmp_path, data)
+        app = load_config(path)
+        assert app.strat.ftfc_filter_enabled is True
+        assert app.strat.orb_filter_enabled is True
 
     def test_indicator_section_loaded(self, tmp_path):
         data = {

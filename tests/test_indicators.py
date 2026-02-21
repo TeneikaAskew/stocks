@@ -152,3 +152,65 @@ class TestAddAllIndicators:
         assert 'BB_Upper' in result.columns
         assert 'MACD' in result.columns
         assert 'Consecutive_Up' in result.columns
+
+    def test_orb_columns_present_when_time_exists(self, sample_ohlcv):
+        """add_all_indicators should produce ORB columns when Time column exists."""
+        result = add_all_indicators(sample_ohlcv)
+        # Default orb_windows are 5m, 15m, 30m
+        for label in ['5m', '15m', '30m']:
+            assert f'ORB_{label}_High' in result.columns, f"Missing ORB_{label}_High"
+            assert f'ORB_{label}_Low' in result.columns, f"Missing ORB_{label}_Low"
+            assert f'ORB_{label}_Trend' in result.columns, f"Missing ORB_{label}_Trend"
+            assert f'ORB_{label}_Range' in result.columns, f"Missing ORB_{label}_Range"
+            assert f'ORB_{label}_Mid' in result.columns, f"Missing ORB_{label}_Mid"
+
+    def test_orb_columns_absent_without_time(self):
+        """If the DataFrame has no Time column, ORB columns should not appear."""
+        np.random.seed(42)
+        n = 50
+        close = pd.Series(np.linspace(100, 105, n))
+        df = pd.DataFrame({
+            'Open': close * 0.999,
+            'High': close * 1.001,
+            'Low': close * 0.998,
+            'Close': close,
+            'Volume': np.random.randint(1000, 10000, n).astype(float),
+        })
+        result = add_all_indicators(df)
+        assert 'ORB_5m_High' not in result.columns
+        assert 'ORB_5m_Trend' not in result.columns
+
+    def test_orb_trend_values_valid(self, sample_ohlcv):
+        """ORB Trend column should contain only -1, 0, or 1."""
+        result = add_all_indicators(sample_ohlcv)
+        trend_col = 'ORB_5m_Trend'
+        assert trend_col in result.columns
+        valid_values = {-1, 0, 1}
+        actual_values = set(result[trend_col].dropna().unique().astype(int))
+        assert actual_values.issubset(valid_values), (
+            f"ORB_5m_Trend contains unexpected values: {actual_values - valid_values}"
+        )
+
+    def test_orb_custom_windows(self):
+        """add_all_indicators with custom orb_windows should produce matching columns."""
+        from lib.config import IndicatorConfig
+        np.random.seed(42)
+        n = 50
+        times = pd.date_range('2024-01-02 09:30', periods=n, freq='1min')
+        close = pd.Series(np.linspace(200, 201, n))
+        df = pd.DataFrame({
+            'Time': times,
+            'Open': close * 0.999,
+            'High': close * 1.001,
+            'Low': close * 0.998,
+            'Close': close,
+            'Volume': np.random.randint(1000, 10000, n).astype(float),
+        }, index=times)
+
+        custom_ind = IndicatorConfig(orb_windows=[{'minutes': 10, 'label': '10m'}])
+        result = add_all_indicators(df, indicator_config=custom_ind)
+        assert 'ORB_10m_High' in result.columns
+        assert 'ORB_10m_Low' in result.columns
+        assert 'ORB_10m_Trend' in result.columns
+        # Default labels should NOT be present
+        assert 'ORB_5m_High' not in result.columns

@@ -1177,6 +1177,223 @@ class TestIndicatorSignalChain:
             )
 
 
+class TestFTFCORBFilterIntegration:
+    """End-to-end tests for FTFC/ORB trade filtering in the full pipeline."""
+
+    def test_full_pipeline_with_strat_filter_counts_populated(self, intraday_5d):
+        """Full pipeline with use_strat=True should have filter_counts with
+        signals_evaluated > 0."""
+        config = AppConfig()
+        config.signal.min_conditions = 2
+
+        df = add_all_indicators(intraday_5d, indicator_config=config.indicator)
+
+        engine = BacktestEngine(
+            risk_config=config.risk,
+            exit_config=config.exit,
+            signal_config=config.signal,
+            strat_config=StratConfig(
+                ftfc_filter_enabled=True,
+                orb_filter_enabled=True,
+            ),
+            backtest_config=config.backtest,
+            indicator_config=config.indicator,
+        )
+        result = engine.run(df, use_strat=True)
+
+        assert isinstance(result, BacktestResult)
+        assert result.filter_counts['signals_evaluated'] > 0
+        # Total rejections should be non-negative
+        total_rejected = (
+            result.filter_counts['ftfc_rejected']
+            + result.filter_counts['orb_rejected']
+        )
+        assert total_rejected >= 0
+
+    def test_strat_filter_reduces_or_preserves_trade_count(self, intraday_5d):
+        """With filtering on, the trade count should be <= the base (no-strat)
+        count since filters can only remove trades."""
+        config = AppConfig()
+        config.signal.min_conditions = 2
+
+        df = add_all_indicators(intraday_5d, indicator_config=config.indicator)
+
+        # Run without strat
+        engine_base = BacktestEngine(
+            risk_config=config.risk,
+            exit_config=config.exit,
+            signal_config=config.signal,
+            indicator_config=config.indicator,
+        )
+        result_base = engine_base.run(df, use_strat=False)
+
+        # Run with strat filtering
+        engine_strat = BacktestEngine(
+            risk_config=config.risk,
+            exit_config=config.exit,
+            signal_config=config.signal,
+            strat_config=StratConfig(
+                ftfc_filter_enabled=True,
+                orb_filter_enabled=True,
+            ),
+            backtest_config=config.backtest,
+            indicator_config=config.indicator,
+        )
+        result_strat = engine_strat.run(df, use_strat=True)
+
+        assert result_strat.total_trades <= result_base.total_trades
+
+    def test_filter_counts_in_summary(self, intraday_5d):
+        """The summary string should include filter statistics when strat
+        filtering is active."""
+        config = AppConfig()
+        config.signal.min_conditions = 2
+
+        df = add_all_indicators(intraday_5d, indicator_config=config.indicator)
+
+        engine = BacktestEngine(
+            risk_config=config.risk,
+            exit_config=config.exit,
+            signal_config=config.signal,
+            strat_config=StratConfig(
+                ftfc_filter_enabled=True,
+                orb_filter_enabled=True,
+            ),
+            indicator_config=config.indicator,
+        )
+        result = engine.run(df, use_strat=True)
+        summary = result.summary()
+
+        # Filter info should appear when signals_evaluated > 0
+        if result.filter_counts['signals_evaluated'] > 0:
+            assert 'Signals evaluated' in summary
+            assert 'FTFC rejected' in summary
+            assert 'ORB rejected' in summary
+
+    def test_orb_columns_flow_through_pipeline(self, intraday_5d):
+        """ORB columns computed by add_all_indicators should be available
+        when the backtest engine runs with strat."""
+        config = AppConfig()
+        config.signal.min_conditions = 2
+
+        df = add_all_indicators(intraday_5d, indicator_config=config.indicator)
+
+        # Verify ORB columns exist before backtest
+        assert 'ORB_5m_High' in df.columns
+        assert 'ORB_5m_Low' in df.columns
+        assert 'ORB_5m_Trend' in df.columns
+
+        engine = BacktestEngine(
+            risk_config=config.risk,
+            exit_config=config.exit,
+            signal_config=config.signal,
+            strat_config=config.strat,
+            indicator_config=config.indicator,
+        )
+        result = engine.run(df, use_strat=True)
+
+        # Trades should have orb_trend set from the ORB columns
+        for trade in result.trades:
+            assert trade.orb_trend in (-1, 0, 1)
+
+    def test_ftfc_score_range_in_trades(self, intraday_5d):
+        """FTFC scores on trades should be in the [-1, +1] range."""
+        config = AppConfig()
+        config.signal.min_conditions = 2
+
+        df = add_all_indicators(intraday_5d, indicator_config=config.indicator)
+
+        engine = BacktestEngine(
+            risk_config=config.risk,
+            exit_config=config.exit,
+            signal_config=config.signal,
+            strat_config=config.strat,
+            indicator_config=config.indicator,
+        )
+        result = engine.run(df, use_strat=True)
+
+        for trade in result.trades:
+            assert -1.0 <= trade.ftfc_score <= 1.0
+
+    def test_disabling_filters_allows_more_trades(self, intraday_5d):
+        """Disabling both FTFC and ORB filters should produce >= the number
+        of trades compared to having both filters enabled."""
+        config = AppConfig()
+        config.signal.min_conditions = 2
+
+        df = add_all_indicators(intraday_5d, indicator_config=config.indicator)
+
+        # With filters enabled
+        engine_filtered = BacktestEngine(
+            risk_config=config.risk,
+            exit_config=config.exit,
+            signal_config=config.signal,
+            strat_config=StratConfig(
+                ftfc_filter_enabled=True,
+                orb_filter_enabled=True,
+            ),
+            indicator_config=config.indicator,
+        )
+        result_filtered = engine_filtered.run(df, use_strat=True)
+
+        # With filters disabled
+        engine_unfiltered = BacktestEngine(
+            risk_config=config.risk,
+            exit_config=config.exit,
+            signal_config=config.signal,
+            strat_config=StratConfig(
+                ftfc_filter_enabled=False,
+                orb_filter_enabled=False,
+            ),
+            indicator_config=config.indicator,
+        )
+        result_unfiltered = engine_unfiltered.run(df, use_strat=True)
+
+        assert result_unfiltered.total_trades >= result_filtered.total_trades
+
+    def test_metrics_by_exit_reason_in_pipeline(self, intraday_5d):
+        """metrics_by_exit_reason should work on pipeline results."""
+        config = AppConfig()
+        config.signal.min_conditions = 2
+
+        df = add_all_indicators(intraday_5d, indicator_config=config.indicator)
+
+        engine = BacktestEngine(
+            risk_config=config.risk,
+            exit_config=config.exit,
+            signal_config=config.signal,
+            indicator_config=config.indicator,
+        )
+        result = engine.run(df)
+
+        exit_df = result.metrics_by_exit_reason()
+        if result.total_trades > 0:
+            assert not exit_df.empty
+            assert 'trades' in exit_df.columns
+            assert 'win_rate' in exit_df.columns
+
+    def test_metrics_by_direction_in_pipeline(self, intraday_5d):
+        """metrics_by_direction should work on pipeline results."""
+        config = AppConfig()
+        config.signal.min_conditions = 2
+
+        df = add_all_indicators(intraday_5d, indicator_config=config.indicator)
+
+        engine = BacktestEngine(
+            risk_config=config.risk,
+            exit_config=config.exit,
+            signal_config=config.signal,
+            indicator_config=config.indicator,
+        )
+        result = engine.run(df)
+
+        dir_df = result.metrics_by_direction()
+        if result.total_trades > 0:
+            assert not dir_df.empty
+            for direction in dir_df.index:
+                assert direction in ('CALL', 'PUT')
+
+
 class TestMAEMFETracking:
     """Verify that MAE (Max Adverse Excursion) and MFE (Max Favorable Excursion)
     are tracked correctly during trades."""
