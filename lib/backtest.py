@@ -15,7 +15,10 @@ from typing import List, Dict, Optional, Tuple
 
 from lib.indicators import add_all_indicators
 from lib.signals import evaluate_signal
-from lib.config import RiskConfig, ExitConfig, SignalConfig, StratConfig, get_position_size, get_signal_strength_label
+from lib.config import (
+    RiskConfig, ExitConfig, SignalConfig, StratConfig, BacktestConfig,
+    IndicatorConfig, get_position_size, get_signal_strength_label,
+)
 from lib.strat import StratClassifier
 
 
@@ -44,6 +47,7 @@ class BacktestResult:
     trades: List[Trade]
     daily_pnl: List[Dict]
     equity_curve: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
+    annualization_factor: int = 252
 
     @property
     def total_trades(self) -> int:
@@ -107,7 +111,7 @@ class BacktestResult:
         daily_returns = pd.Series([d['pnl'] for d in self.daily_pnl])
         if daily_returns.std() == 0:
             return 0.0
-        return (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
+        return (daily_returns.mean() / daily_returns.std()) * np.sqrt(self.annualization_factor)
 
     def metrics(self) -> Dict[str, float]:
         """Summary metrics as a dict."""
@@ -124,14 +128,14 @@ class BacktestResult:
             'total_losers': len(self.losers),
         }
 
-    def metrics_by_strength(self) -> pd.DataFrame:
+    def metrics_by_strength(self, risk_config: RiskConfig = None) -> pd.DataFrame:
         """Performance breakdown by signal strength."""
         rows = []
         for t in self.trades:
             if t.return_pct is not None:
                 rows.append({
                     'total_score': t.total_score,
-                    'strength': get_signal_strength_label(t.total_score),
+                    'strength': get_signal_strength_label(t.total_score, risk_config),
                     'return_pct': t.return_pct,
                     'won': t.return_pct > 0,
                 })
@@ -145,7 +149,7 @@ class BacktestResult:
             total_return=('return_pct', 'sum'),
         ).round(4)
 
-    def summary(self) -> str:
+    def summary(self, risk_config: RiskConfig = None) -> str:
         """Human-readable summary string."""
         m = self.metrics()
         lines = [
@@ -160,7 +164,7 @@ class BacktestResult:
             f"Max Drawdown:    {m['max_drawdown_pct']:.2%}",
             f"Sharpe Ratio:    {m['sharpe_ratio']:.2f}",
         ]
-        strength_df = self.metrics_by_strength()
+        strength_df = self.metrics_by_strength(risk_config)
         if not strength_df.empty:
             lines.append(f"\nBy Signal Strength:")
             lines.append(strength_df.to_string())
@@ -198,12 +202,16 @@ class BacktestEngine:
         exit_config: ExitConfig = None,
         signal_config: SignalConfig = None,
         strat_config: StratConfig = None,
+        backtest_config: BacktestConfig = None,
+        indicator_config: IndicatorConfig = None,
     ):
         self.risk = risk_config or RiskConfig()
         self.exit = exit_config or ExitConfig()
         self.signal = signal_config or SignalConfig()
         self.strat_config = strat_config or StratConfig()
-        self.strat_classifier = StratClassifier()
+        self.bt = backtest_config or BacktestConfig()
+        self.ind = indicator_config or IndicatorConfig()
+        self.strat_classifier = StratClassifier(strat_config=self.strat_config)
 
     def run(
         self,
@@ -215,7 +223,7 @@ class BacktestEngine:
 
         The DataFrame should already have indicator columns from
         `add_all_indicators()`. Alternatively, the engine will compute
-        them if 'RSI14' is missing.
+        them if the primary RSI column is missing.
 
         Parameters
         ----------
@@ -224,8 +232,8 @@ class BacktestEngine:
         close_col : name of the close price column
         """
         # Ensure indicators exist
-        if 'RSI14' not in df.columns:
-            df = add_all_indicators(df, close_col=close_col)
+        if self.ind.rsi_col not in df.columns:
+            df = add_all_indicators(df, close_col=close_col, indicator_config=self.ind)
 
         # Add Strat columns if requested
         strat_df = None
@@ -234,7 +242,7 @@ class BacktestEngine:
 
         trades: List[Trade] = []
         daily_pnl: List[Dict] = []
-        equity = [1.0]  # Start with $1 normalized
+        equity = [self.bt.starting_equity]
 
         # Get unique trading days
         if 'Time' in df.columns:
@@ -248,7 +256,7 @@ class BacktestEngine:
             day_mask = df_dates == day
             day_df = df[day_mask]
 
-            if len(day_df) < 10:  # Skip days with too few bars
+            if len(day_df) < self.bt.min_bars_per_day:
                 continue
 
             day_trades = 0
@@ -330,7 +338,12 @@ class BacktestEngine:
         eq_dates = [d['date'] for d in daily_pnl]
         equity_curve = pd.Series(equity[1:], index=eq_dates) if eq_dates else pd.Series(dtype=float)
 
-        return BacktestResult(trades=trades, daily_pnl=daily_pnl, equity_curve=equity_curve)
+        return BacktestResult(
+            trades=trades,
+            daily_pnl=daily_pnl,
+            equity_curve=equity_curve,
+            annualization_factor=self.bt.annualization_factor,
+        )
 
     def _check_entry(
         self,
@@ -357,6 +370,8 @@ class BacktestEngine:
             consecutive_periods=self.signal.consecutive_periods,
             call_rsi_range=self.signal.call_rsi_range,
             put_rsi_range=self.signal.put_rsi_range,
+            signal_config=self.signal,
+            indicator_config=self.ind,
         )
 
         if sig is None:
@@ -381,12 +396,13 @@ class BacktestEngine:
                 strat_row_idx = day_df.index[bar_idx]
                 if strat_row_idx in strat_df.index:
                     combo = strat_df.loc[strat_row_idx, 'strat_combo']
-                    # Use ORB trend if available
-                    orb_trend = int(row.get('ORB_5m_Trend', 0))
+                    # Use ORB trend if available (column name from first ORB window)
+                    orb_label = self.ind.orb_windows[0]['label'] if self.ind.orb_windows else '5m'
+                    orb_trend = int(row.get(f'ORB_{orb_label}_Trend', 0))
                     strat_bonus = self.strat_classifier.get_strat_bonus(
                         signal_direction=sig['direction'],
                         combo=combo,
-                        ftfc_score=0.0,  # FTFC calculated separately for multi-TF
+                        ftfc_score=0.0,  # TODO: compute from multi-TF data
                         ftfc_threshold=self.strat_config.ftfc_threshold,
                         orb_trend=orb_trend,
                     )
@@ -404,14 +420,14 @@ class BacktestEngine:
             base_score=sig['base_score'],
             strat_bonus=strat_bonus,
             total_score=total_score,
-            position_size=get_position_size(total_score),
+            position_size=get_position_size(total_score, self.risk),
             conditions_met=sig['conditions_met'],
             indicators_at_entry={
-                'rsi': row.get('RSI14'),
+                'rsi': row.get(self.ind.rsi_col),
                 'stoch_rsi_k': row.get('StochRSI_K'),
-                'ema9': row.get('EMA9'),
+                'ema_fast': row.get(f'EMA{self.ind.ema_fast_period}'),
                 'vwap': row.get('VWAP'),
-                'atr': row.get('ATR14'),
+                'atr': row.get(self.ind.atr_col),
                 'rvol': row.get('RVOL'),
             },
         )
@@ -456,7 +472,7 @@ class BacktestEngine:
             return 'time_stop', close_price
 
         # RSI extreme exit
-        rsi = row.get('RSI14', 50.0)
+        rsi = row.get(self.ind.rsi_col, 50.0)
         if trade.direction == 'CALL' and rsi > self.exit.call_rsi_exit:
             return 'rsi_extreme', close_price
         if trade.direction == 'PUT' and rsi < self.exit.put_rsi_exit:

@@ -12,7 +12,7 @@ analyze_market_data_enhanced.py (Bollinger, MACD, consecutive moves).
 import pandas as pd
 import numpy as np
 from datetime import datetime, time, timedelta
-from typing import Tuple
+from typing import Dict, List, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -277,13 +277,15 @@ def calculate_orb(
     close: pd.Series,
     minutes: int = 5,
     label: str = '5m',
+    market_open: time = None,
 ) -> pd.DataFrame:
     """ORB for a single timeframe window.
 
     Returns ~12 columns: High/Low/Range/Mid, price-position percentages,
     breakout flags, trend direction, and distance.
     """
-    market_open = time(9, 30)
+    if market_open is None:
+        market_open = time(9, 30)
     orb_end = (datetime.combine(datetime.today(), market_open) + timedelta(minutes=minutes)).time()
 
     df = pd.DataFrame({
@@ -336,12 +338,26 @@ def calculate_orb(
 
 
 def calculate_all_orb(
-    times: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series,
+    times: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    orb_windows: List[Dict] = None,
+    market_open: time = None,
 ) -> pd.DataFrame:
-    """Calculate ORB for 5-min, 15-min, and 30-min windows."""
+    """Calculate ORB for configured windows (default: 5/15/30-min)."""
+    if orb_windows is None:
+        from lib.config import IndicatorConfig
+        orb_windows = IndicatorConfig().orb_windows
+
     frames = []
-    for mins, lbl in [(5, '5m'), (15, '15m'), (30, '30m')]:
-        frames.append(calculate_orb(times, high, low, close, minutes=mins, label=lbl))
+    for window in orb_windows:
+        frames.append(calculate_orb(
+            times, high, low, close,
+            minutes=window['minutes'],
+            label=window['label'],
+            market_open=market_open,
+        ))
     return pd.concat(frames, axis=1)
 
 
@@ -355,6 +371,11 @@ def calculate_order_blocks(
     close: pd.Series,
     atr: pd.Series = None,
     lookback: int = 20,
+    consol_window: int = 5,
+    consol_threshold: int = 3,
+    vol_ratio: float = 0.6,
+    ffill_limit: int = 30,
+    level_tolerance: float = 0.001,
 ) -> pd.DataFrame:
     """Detect institutional consolidation zones.
 
@@ -362,25 +383,24 @@ def calculate_order_blocks(
     """
     volatility = atr if atr is not None else (high - low)
     avg_vol = volatility.rolling(window=lookback, min_periods=1).mean()
-    low_vol_threshold = avg_vol * 0.6
+    low_vol_threshold = avg_vol * vol_ratio
 
     zone = (volatility < low_vol_threshold).astype(int)
 
-    consolidation_window = 5
-    consol_count = zone.rolling(window=consolidation_window, min_periods=consolidation_window).sum()
-    is_ob = consol_count >= 3
+    consol_count = zone.rolling(window=consol_window, min_periods=consol_window).sum()
+    is_ob = consol_count >= consol_threshold
 
-    ob_high = high.rolling(window=consolidation_window, min_periods=consolidation_window).max()
-    ob_low = low.rolling(window=consolidation_window, min_periods=consolidation_window).min()
+    ob_high = high.rolling(window=consol_window, min_periods=consol_window).max()
+    ob_low = low.rolling(window=consol_window, min_periods=consol_window).min()
     ob_high[~is_ob] = np.nan
     ob_low[~is_ob] = np.nan
 
     ob_mid = (ob_high + ob_low) / 2.0
 
-    # Forward-fill for 30 bars
-    ob_high = ob_high.ffill(limit=30)
-    ob_low = ob_low.ffill(limit=30)
-    ob_mid = ob_mid.ffill(limit=30)
+    # Forward-fill for configured number of bars
+    ob_high = ob_high.ffill(limit=ffill_limit)
+    ob_low = ob_low.ffill(limit=ffill_limit)
+    ob_mid = ob_mid.ffill(limit=ffill_limit)
 
     position = pd.Series(0, index=close.index)
     position[close > ob_high] = 1
@@ -392,9 +412,8 @@ def calculate_order_blocks(
     distance[above] = close[above] - ob_high[above]
     distance[below] = close[below] - ob_low[below]
 
-    tolerance = 0.001
-    at_high = ((close - ob_high) / ob_high).abs() <= tolerance
-    at_low = ((close - ob_low) / ob_low).abs() <= tolerance
+    at_high = ((close - ob_high) / ob_high).abs() <= level_tolerance
+    at_low = ((close - ob_low) / ob_low).abs() <= level_tolerance
     test = (at_high | at_low).astype(int)
 
     return pd.DataFrame({
@@ -412,12 +431,26 @@ def calculate_order_blocks(
 # Convenience: add all indicators to a DataFrame
 # ---------------------------------------------------------------------------
 
-def add_all_indicators(df: pd.DataFrame, close_col: str = 'Close') -> pd.DataFrame:
+def add_all_indicators(
+    df: pd.DataFrame,
+    close_col: str = 'Close',
+    indicator_config=None,
+) -> pd.DataFrame:
     """Add a comprehensive set of indicators to an OHLCV DataFrame.
 
     Expects columns: Open, High, Low, Close (or `close_col`), Volume, Time.
     Handles both 'Close' and 'Last' column naming via `close_col`.
+
+    Parameters
+    ----------
+    indicator_config : IndicatorConfig, optional
+        All indicator periods and parameters. Uses defaults if None.
     """
+    if indicator_config is None:
+        from lib.config import IndicatorConfig
+        indicator_config = IndicatorConfig()
+
+    ind = indicator_config
     out = df.copy()
     c = out[close_col]
     h = out['High']
@@ -425,18 +458,18 @@ def add_all_indicators(df: pd.DataFrame, close_col: str = 'Close') -> pd.DataFra
     v = out['Volume']
 
     # ATR
-    out['ATR14'] = calculate_atr(h, l, c, 14)
+    out[ind.atr_col] = calculate_atr(h, l, c, ind.atr_period)
 
     # RSI
-    out['RSI14'] = calculate_rsi(c, 14)
-    out['RSI9'] = calculate_rsi(c, 9)
+    out[ind.rsi_col] = calculate_rsi(c, ind.rsi_period)
+    out[ind.rsi_fast_col] = calculate_rsi(c, ind.rsi_fast_period)
 
     # EMAs
-    for p in [9, 20, 50]:
+    for p in ind.ema_periods:
         out[f'EMA{p}'] = calculate_ema(c, p)
 
     # SMAs
-    for p in [5, 10, 20, 50, 200]:
+    for p in ind.sma_periods:
         out[f'SMA{p}'] = calculate_sma(c, p)
 
     # VWAP
@@ -445,31 +478,41 @@ def add_all_indicators(df: pd.DataFrame, close_col: str = 'Close') -> pd.DataFra
         out['VWAP'] = calculate_vwap(h, l, c, v, dates)
 
     # RVOL
-    out['RVOL'] = calculate_rvol(v, 20)
+    out['RVOL'] = calculate_rvol(v, ind.rvol_period)
 
     # OBV
     out['OBV'] = calculate_obv(c, v)
 
     # Stochastic RSI
-    out['StochRSI_K'], out['StochRSI_D'] = calculate_stoch_rsi(out['RSI14'])
+    out['StochRSI_K'], out['StochRSI_D'] = calculate_stoch_rsi(
+        out[ind.rsi_col], ind.stoch_rsi_period, ind.stoch_rsi_k_period, ind.stoch_rsi_d_period,
+    )
 
     # Bollinger Bands
-    out['BB_Upper'], out['BB_Middle'], out['BB_Lower'] = calculate_bollinger_bands(c)
+    out['BB_Upper'], out['BB_Middle'], out['BB_Lower'] = calculate_bollinger_bands(
+        c, ind.bb_period, ind.bb_std_mult,
+    )
     out['BB_Width'] = out['BB_Upper'] - out['BB_Lower']
     bb_range = out['BB_Upper'] - out['BB_Lower']
     out['BB_Pct'] = (c - out['BB_Lower']) / bb_range.where(bb_range > 0, np.nan)
 
     # MACD
-    out['MACD'], out['MACD_Signal'], out['MACD_Histogram'] = calculate_macd(c)
+    out['MACD'], out['MACD_Signal'], out['MACD_Histogram'] = calculate_macd(
+        c, ind.macd_fast, ind.macd_slow, ind.macd_signal,
+    )
 
     # Consecutive moves
     price_change = c.pct_change() * 100.0
     out['Price_Change'] = price_change
-    out['Consecutive_Up'], out['Consecutive_Down'] = calculate_consecutive_moves(price_change, 3)
+    out['Consecutive_Up'], out['Consecutive_Down'] = calculate_consecutive_moves(
+        price_change, ind.consecutive_periods,
+    )
 
-    # Price position relative to indicators
-    out['Price_vs_EMA9'] = (c - out['EMA9']) / out['EMA9'] * 100.0
-    out['Price_vs_EMA20'] = (c - out['EMA20']) / out['EMA20'] * 100.0
+    # Price position relative to first two EMAs
+    ema_fast_p = ind.ema_fast_period
+    ema_mid_p = ind.ema_mid_period
+    out[f'Price_vs_EMA{ema_fast_p}'] = (c - out[f'EMA{ema_fast_p}']) / out[f'EMA{ema_fast_p}'] * 100.0
+    out[f'Price_vs_EMA{ema_mid_p}'] = (c - out[f'EMA{ema_mid_p}']) / out[f'EMA{ema_mid_p}'] * 100.0
     if 'VWAP' in out.columns:
         out['Price_vs_VWAP'] = (c - out['VWAP']) / out['VWAP'] * 100.0
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Weekend review — Cloud Run Job triggered Saturday morning.
+Weekend review -- Cloud Run Job triggered Saturday morning.
 
 Loads the week's trades, enriches with indicators, compares actual
 performance to backtest expectations, and sends a Discord summary.
@@ -22,10 +22,13 @@ from gcp.trade_logger import TradeLogger
 from lib.config import load_config, get_signal_strength_label
 
 
-def generate_weekly_review(trades_dir: str = 'data/trades') -> dict:
+def generate_weekly_review(cfg=None, trades_dir: str = None) -> dict:
     """Generate weekly performance review from logged trades."""
+    if cfg is None:
+        cfg = load_config()
+
+    trades_dir = trades_dir or cfg.market.trades_dir
     logger = TradeLogger(output_dir=trades_dir)
-    risk, exit_, signal, strat = load_config()
 
     trades = logger.get_weekly_trades()
     review = {
@@ -58,6 +61,7 @@ def generate_weekly_review(trades_dir: str = 'data/trades') -> dict:
                 )
 
     # By signal strength
+    max_score = cfg.risk.max_score
     if 'signal_strength' in trades.columns or 'total_score' in trades.columns:
         score_col = 'total_score' if 'total_score' in trades.columns else 'signal_strength'
         strength_data = []
@@ -65,9 +69,10 @@ def generate_weekly_review(trades_dir: str = 'data/trades') -> dict:
             score_trades = trades[trades[score_col] == score]
             strength_data.append({
                 'score': int(score),
-                'label': get_signal_strength_label(int(score)),
+                'label': get_signal_strength_label(int(score), cfg.risk),
                 'trades': len(score_trades),
                 'win_rate': float((score_trades['return_pct'] > 0).mean()) if 'return_pct' in score_trades.columns else 0,
+                'max_score': max_score,
             })
         review['by_strength'] = strength_data
 
@@ -95,7 +100,7 @@ def generate_weekly_review(trades_dir: str = 'data/trades') -> dict:
     return review
 
 
-def format_discord_message(review: dict) -> dict:
+def format_discord_message(review: dict, max_score: int = 8) -> dict:
     """Format weekly review as Discord embed."""
     if not review.get('has_trades'):
         return {
@@ -134,8 +139,9 @@ def format_discord_message(review: dict) -> dict:
     if 'by_strength' in review:
         strength_lines = []
         for s in review['by_strength']:
+            s_max = s.get('max_score', max_score)
             strength_lines.append(
-                f"{s['label']} ({s['score']}/8): {s['trades']} trades, {s['win_rate']:.1%} win rate"
+                f"{s['label']} ({s['score']}/{s_max}): {s['trades']} trades, {s['win_rate']:.1%} win rate"
             )
         fields.append({
             'name': 'By Signal Strength',
@@ -156,19 +162,21 @@ def format_discord_message(review: dict) -> dict:
 
 def main():
     webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
-    trades_dir = os.environ.get('TRADES_DIR', 'data/trades')
+
+    cfg = load_config()
+    trades_dir = os.environ.get('TRADES_DIR', cfg.market.trades_dir)
 
     print("Generating weekly review...")
-    review = generate_weekly_review(trades_dir=trades_dir)
+    review = generate_weekly_review(cfg=cfg, trades_dir=trades_dir)
     print(json.dumps(review, indent=2, default=str))
 
-    message = format_discord_message(review)
+    message = format_discord_message(review, max_score=cfg.risk.max_score)
 
     if webhook_url:
-        requests.post(webhook_url, json=message, timeout=10)
+        requests.post(webhook_url, json=message, timeout=cfg.monitor.discord_timeout)
         print("Discord message sent.")
     else:
-        print("\nDISCORD_WEBHOOK_URL not set — printing message only")
+        print("\nDISCORD_WEBHOOK_URL not set -- printing message only")
         print(json.dumps(message, indent=2))
 
 

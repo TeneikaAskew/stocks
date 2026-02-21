@@ -28,10 +28,10 @@ from lib.config import load_config, ExitConfig, SignalConfig
 from lib.backtest import BacktestEngine, BacktestResult
 
 
-# ── Timeframe definitions ────────────────────────────────────────────────────
+# -- Timeframe definitions ----------------------------------------------------
 # bar_minutes: minutes per candle  (for scaling time-based params)
 TIMEFRAMES = {
-    '1m':  {'bar_minutes': 1,   'resample': None},     # base — no resampling
+    '1m':  {'bar_minutes': 1,   'resample': None},     # base -- no resampling
     '5m':  {'bar_minutes': 5,   'resample': '5min'},
     '15m': {'bar_minutes': 15,  'resample': '15min'},
     '30m': {'bar_minutes': 30,  'resample': '30min'},
@@ -78,7 +78,7 @@ def scale_signal_config(base_signal: SignalConfig, bar_minutes: int) -> SignalCo
     Consecutive-periods stays at 3 bars (semantically: 3 bars of pressure).
     Entry windows are time-based and don't change.
 
-    For longer bars (≥30 min), we widen the entry window so the engine can
+    For longer bars (>=30 min), we widen the entry window so the engine can
     find enough bars to evaluate.
     """
     cfg = deepcopy(base_signal)
@@ -96,10 +96,9 @@ def scale_signal_config(base_signal: SignalConfig, bar_minutes: int) -> SignalCo
 
 def run_single_tf(
     df_tf: pd.DataFrame,
-    risk,
+    cfg,
     exit_cfg: ExitConfig,
     signal_cfg: SignalConfig,
-    strat,
     use_strat: bool,
     label: str,
 ) -> BacktestResult:
@@ -110,28 +109,29 @@ def run_single_tf(
     df_tf = add_all_indicators(df_tf, close_col=close_col)
 
     engine = BacktestEngine(
-        risk_config=risk,
+        risk_config=cfg.risk,
         exit_config=exit_cfg,
         signal_config=signal_cfg,
-        strat_config=strat,
+        strat_config=cfg.strat,
+        backtest_config=cfg.backtest,
+        indicator_config=cfg.indicator,
     )
     return engine.run(df_tf, use_strat=use_strat, close_col=close_col)
 
 
-# ── Combination analysis ─────────────────────────────────────────────────────
+# -- Combination analysis -----------------------------------------------------
 def run_combination(
     df_1m: pd.DataFrame,
     higher_tf_key: str,
-    risk,
+    cfg,
     base_exit: ExitConfig,
     base_signal: SignalConfig,
-    strat,
     use_strat: bool,
 ) -> BacktestResult:
     """Run 1-minute signals filtered by a higher-TF trend direction.
 
     Logic:
-    - Resample 1m → higher TF, compute EMA20 on higher TF
+    - Resample 1m -> higher TF, compute EMA20 on higher TF
     - For each 1m bar, look up the *most recent completed* higher-TF bar
     - Only allow CALL signals when higher-TF price > higher-TF EMA20
     - Only allow PUT signals when higher-TF price < higher-TF EMA20
@@ -160,17 +160,14 @@ def run_combination(
     df_work = add_all_indicators(df_1m.copy(), close_col=close_col)
 
     # 4) Filter: zero-out signal conditions that conflict with higher-TF trend.
-    #    When htf_trend=1 (bullish), suppress PUT conditions by pushing
-    #    Consecutive_Up to 0 and StochRSI_K to 50 for PUT checks.
-    #    When htf_trend=-1 (bearish), suppress CALL conditions similarly.
-    #    We do this by creating masked versions of the indicators.
-
-    # Simpler approach: run backtest bar-by-bar manually with filter
+    #    Simpler approach: run backtest bar-by-bar manually with filter
     engine = BacktestEngine(
-        risk_config=risk,
+        risk_config=cfg.risk,
         exit_config=base_exit,
         signal_config=base_signal,
-        strat_config=strat,
+        strat_config=cfg.strat,
+        backtest_config=cfg.backtest,
+        indicator_config=cfg.indicator,
     )
 
     # Monkey-patch _check_entry to add higher-TF filter
@@ -199,7 +196,7 @@ def run_combination(
     return result
 
 
-# ── Reporting ────────────────────────────────────────────────────────────────
+# -- Reporting -----------------------------------------------------------------
 def format_metrics_table(rows: list) -> str:
     """Pretty-print a comparison table of backtest metrics."""
     headers = [
@@ -250,7 +247,7 @@ def rank_results(rows: list) -> list:
     return sorted(rows, key=lambda r: r['expectancy'], reverse=True)
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# -- Main ---------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description='Multi-timeframe backtest sweep')
     parser.add_argument('--ticker', default='IWM', choices=['IWM', 'SPY', 'QQQ', 'SPX'])
@@ -258,8 +255,8 @@ def main():
     parser.add_argument('--end', type=str, help='End date (YYYY-MM-DD)')
     parser.add_argument('--use-strat', action='store_true',
                         help='Enable Strat bonus scoring')
-    parser.add_argument('--output-dir', type=str, default='data/backtest_results',
-                        help='Directory to save results')
+    parser.add_argument('--output-dir', type=str, default=None,
+                        help='Directory to save results (default from config)')
     parser.add_argument('--timeframes', nargs='+',
                         default=['1m', '5m', '15m', '30m', '1h'],
                         help='Timeframes to test (default: 1m 5m 15m 30m 1h)')
@@ -269,9 +266,9 @@ def main():
     args = parser.parse_args()
 
     # Load config
-    risk, exit_, signal, strat = load_config()
-    print(f"Config: max {risk.max_daily_trades} trades/day, "
-          f"CALL target {exit_.call_target:.2%}, PUT target {exit_.put_target:.2%}")
+    cfg = load_config()
+    print(f"Config: max {cfg.risk.max_daily_trades} trades/day, "
+          f"CALL target {cfg.exit.call_target:.2%}, PUT target {cfg.exit.put_target:.2%}")
 
     # Load 1-minute data (base)
     loader = DataLoader()
@@ -285,11 +282,11 @@ def main():
     close_col = 'Close' if 'Close' in df.columns else 'Last'
     print(f"Loaded {len(df):,} bars from {df.index.min()} to {df.index.max()}")
 
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir or cfg.market.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-    # ── Phase 1: Individual timeframe sweep ──────────────────────────────
+    # -- Phase 1: Individual timeframe sweep -----------------------------------
     print("\n" + "=" * 70)
     print("  PHASE 1: Individual Timeframe Sweep")
     print("=" * 70)
@@ -311,8 +308,8 @@ def main():
             df_tf = resample_ohlcv(df, rule)
 
         # Scale configs
-        exit_cfg = scale_exit_config(exit_, bar_min)
-        sig_cfg = scale_signal_config(signal, bar_min)
+        exit_cfg = scale_exit_config(cfg.exit, bar_min)
+        sig_cfg = scale_signal_config(cfg.signal, bar_min)
 
         print(f"         time_stop: CALL={exit_cfg.call_time_stop} bars "
               f"({exit_cfg.call_time_stop * bar_min}min), "
@@ -322,13 +319,13 @@ def main():
               f"PUT {sig_cfg.put_entry_start}-{sig_cfg.put_entry_end}")
         print(f"         bars: {len(df_tf):,}")
 
-        result = run_single_tf(df_tf, risk, exit_cfg, sig_cfg, strat, args.use_strat, tf_key)
+        result = run_single_tf(df_tf, cfg, exit_cfg, sig_cfg, args.use_strat, tf_key)
         tf_results[tf_key] = result
 
         row = result_to_row(tf_key, result)
         single_rows.append(row)
 
-        print(f"         → {row['trades']} trades, "
+        print(f"         -> {row['trades']} trades, "
               f"WR={row['win_rate']:.1%}, "
               f"E={row['expectancy']:+.3%}/trade, "
               f"Sharpe={row['sharpe']:.2f}")
@@ -345,7 +342,7 @@ def main():
         print(f"\n  >>> Best single TF: {best['label']} "
               f"(E={best['expectancy']:+.3%}, Sharpe={best['sharpe']:.2f})")
 
-    # ── Phase 2: Combination analysis (1m signals + higher-TF filter) ────
+    # -- Phase 2: Combination analysis (1m signals + higher-TF filter) ---------
     print("\n\n" + "=" * 70)
     print("  PHASE 2: Combination Analysis (1m signals + higher-TF trend filter)")
     print("=" * 70)
@@ -366,16 +363,16 @@ def main():
 
         try:
             combo_result = run_combination(
-                df, htf, risk, exit_, signal, strat, args.use_strat,
+                df, htf, cfg, cfg.exit, cfg.signal, args.use_strat,
             )
             row = result_to_row(f'1m+{htf}', combo_result)
             combo_rows.append(row)
-            print(f"         → {row['trades']} trades, "
+            print(f"         -> {row['trades']} trades, "
                   f"WR={row['win_rate']:.1%}, "
                   f"E={row['expectancy']:+.3%}/trade, "
                   f"Sharpe={row['sharpe']:.2f}")
         except Exception as e:
-            print(f"         → Error: {e}")
+            print(f"         -> Error: {e}")
 
     if combo_rows:
         print("\n\n" + "=" * 70)
@@ -389,7 +386,7 @@ def main():
             print(f"\n  >>> Best combo: {best_c['label']} "
                   f"(E={best_c['expectancy']:+.3%}, Sharpe={best_c['sharpe']:.2f})")
 
-    # ── Phase 3: Save all results to CSV ─────────────────────────────────
+    # -- Phase 3: Save all results to CSV --------------------------------------
     all_rows = []
     for r in single_rows:
         r['type'] = 'single'
@@ -403,7 +400,7 @@ def main():
     results_df.to_csv(output_file, index=False)
     print(f"\n\nResults saved to {output_file}")
 
-    # ── Summary ──────────────────────────────────────────────────────────
+    # -- Summary ---------------------------------------------------------------
     print("\n" + "=" * 70)
     print("  SUMMARY")
     print("=" * 70)
