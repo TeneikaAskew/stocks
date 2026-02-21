@@ -185,3 +185,210 @@ class TestFilterDates:
         result = loader._filter_dates(minute_data, '2024-01-02 10:00', '2024-01-02 12:00')
         assert result.index.min() >= pd.Timestamp('2024-01-02 10:00')
         assert result.index.max() <= pd.Timestamp('2024-01-02 12:00')
+
+
+# ---------------------------------------------------------------------------
+# New test classes for newly-added functionality
+# ---------------------------------------------------------------------------
+
+
+class TestStripTimezone:
+    """Tests for the _strip_timezone() helper method."""
+
+    def test_strips_utc_timezone(self, loader):
+        """Create a DataFrame with UTC timezone and verify it is removed."""
+        times = pd.date_range('2024-01-02 09:30', periods=5, freq='1min', tz='UTC')
+        df = pd.DataFrame({
+            'Open': [100, 101, 102, 103, 104],
+            'High': [105, 106, 107, 108, 109],
+            'Low': [95, 96, 97, 98, 99],
+            'Close': [102, 103, 104, 105, 106],
+            'Volume': [1000, 1100, 1200, 1300, 1400],
+        }, index=times)
+
+        result = loader._strip_timezone(df)
+
+        assert result.index.tz is None
+        # Values should be preserved
+        assert len(result) == 5
+        assert result.iloc[0]['Close'] == 102
+
+    def test_no_op_on_naive(self, loader):
+        """Create a DataFrame without timezone and verify it is unchanged."""
+        times = pd.date_range('2024-01-02 09:30', periods=5, freq='1min')
+        df = pd.DataFrame({
+            'Open': [100, 101, 102, 103, 104],
+            'High': [105, 106, 107, 108, 109],
+            'Low': [95, 96, 97, 98, 99],
+            'Close': [102, 103, 104, 105, 106],
+            'Volume': [1000, 1100, 1200, 1300, 1400],
+        }, index=times)
+
+        result = loader._strip_timezone(df)
+
+        assert result.index.tz is None
+        # Data should be identical (same object since no copy needed)
+        pd.testing.assert_frame_equal(result, df)
+
+    def test_strips_time_column_too(self, loader):
+        """Verify the 'Time' column also gets timezone stripped."""
+        times = pd.date_range('2024-01-02 09:30', periods=5, freq='1min', tz='UTC')
+        df = pd.DataFrame({
+            'Open': [100, 101, 102, 103, 104],
+            'High': [105, 106, 107, 108, 109],
+            'Low': [95, 96, 97, 98, 99],
+            'Close': [102, 103, 104, 105, 106],
+            'Volume': [1000, 1100, 1200, 1300, 1400],
+            'Time': times,
+        }, index=times)
+
+        result = loader._strip_timezone(df)
+
+        # Index should be tz-naive
+        assert result.index.tz is None
+        # Time column should also be tz-naive
+        assert result['Time'].dt.tz is None
+        # Timestamps should match after stripping
+        expected_times = times.tz_localize(None)
+        pd.testing.assert_index_equal(result.index, expected_times)
+        pd.testing.assert_index_equal(
+            pd.DatetimeIndex(result['Time']),
+            expected_times,
+            check_names=False,
+        )
+
+
+class TestLoadMinuteDir:
+    """Tests for loading from the minute/ subdirectory (SPX format)."""
+
+    def test_loads_daily_minute_parquets(self, loader, tmp_path):
+        """Create a daily minute parquet in the minute/ dir and verify load_intraday finds it."""
+        minute_dir = tmp_path / 'spx' / 'minute'
+        minute_dir.mkdir(parents=True)
+
+        # Create a small 1-minute parquet for one day
+        times = pd.date_range('2025-10-01 09:30', periods=10, freq='1min')
+        df = pd.DataFrame({
+            'Open': np.arange(100, 110, dtype=float),
+            'High': np.arange(101, 111, dtype=float),
+            'Low': np.arange(99, 109, dtype=float),
+            'Close': np.arange(100.5, 110.5, dtype=float),
+            'Volume': np.full(10, 5000, dtype=float),
+        }, index=times)
+        df.to_parquet(minute_dir / 'spx_minute_20251001.parquet')
+
+        result = loader.load_intraday('SPX')
+        assert not result.empty
+        assert len(result) == 10
+        assert 'Close' in result.columns
+
+    def test_intraday_dir_takes_priority(self, loader, tmp_path):
+        """If both intraday/ and minute/ exist, intraday/ wins."""
+        # Create intraday/ combined parquet (Priority 1)
+        intraday_dir = tmp_path / 'spx' / 'intraday'
+        intraday_dir.mkdir(parents=True)
+        times_intraday = pd.date_range('2025-10-01 09:30', periods=5, freq='1min')
+        df_intraday = pd.DataFrame({
+            'Open': np.arange(200, 205, dtype=float),
+            'High': np.arange(201, 206, dtype=float),
+            'Low': np.arange(199, 204, dtype=float),
+            'Close': np.arange(200.5, 205.5, dtype=float),
+            'Volume': np.full(5, 8000, dtype=float),
+        }, index=times_intraday)
+        df_intraday.to_parquet(intraday_dir / 'spx_av_1min_combined.parquet')
+
+        # Create minute/ parquet (Priority 3)
+        minute_dir = tmp_path / 'spx' / 'minute'
+        minute_dir.mkdir(parents=True)
+        times_minute = pd.date_range('2025-10-01 09:30', periods=10, freq='1min')
+        df_minute = pd.DataFrame({
+            'Open': np.arange(100, 110, dtype=float),
+            'High': np.arange(101, 111, dtype=float),
+            'Low': np.arange(99, 109, dtype=float),
+            'Close': np.arange(100.5, 110.5, dtype=float),
+            'Volume': np.full(10, 5000, dtype=float),
+        }, index=times_minute)
+        df_minute.to_parquet(minute_dir / 'spx_minute_20251001.parquet')
+
+        result = loader.load_intraday('SPX')
+        # intraday/ has 5 bars, minute/ has 10 — we should get 5 (intraday wins)
+        assert len(result) == 5
+
+    def test_minute_dir_timezone_stripped(self, loader, tmp_path):
+        """Create parquet with UTC timezone, verify timezone is stripped in output."""
+        minute_dir = tmp_path / 'spx' / 'minute'
+        minute_dir.mkdir(parents=True)
+
+        times = pd.date_range('2025-10-01 09:30', periods=10, freq='1min', tz='UTC')
+        df = pd.DataFrame({
+            'Open': np.arange(100, 110, dtype=float),
+            'High': np.arange(101, 111, dtype=float),
+            'Low': np.arange(99, 109, dtype=float),
+            'Close': np.arange(100.5, 110.5, dtype=float),
+            'Volume': np.full(10, 5000, dtype=float),
+        }, index=times)
+        df.to_parquet(minute_dir / 'spx_minute_20251001.parquet')
+
+        result = loader.load_intraday('SPX')
+        assert not result.empty
+        assert result.index.tz is None
+
+
+class TestLoadBestAvailable:
+    """Tests for the load_best_available() multi-source fallback method."""
+
+    def test_prefers_intraday(self, loader, tmp_path):
+        """Create data in both intraday/ and yearly parquet, verify intraday returned."""
+        # Create intraday data
+        intraday_dir = tmp_path / 'iwm' / 'intraday'
+        intraday_dir.mkdir(parents=True)
+        times = pd.date_range('2024-01-02 09:30', periods=20, freq='1min')
+        df_intraday = pd.DataFrame({
+            'Open': np.arange(200, 220, dtype=float),
+            'High': np.arange(201, 221, dtype=float),
+            'Low': np.arange(199, 219, dtype=float),
+            'Close': np.arange(200.5, 220.5, dtype=float),
+            'Volume': np.full(20, 9000, dtype=float),
+        }, index=times)
+        df_intraday.to_parquet(intraday_dir / 'iwm_av_1min_combined.parquet')
+
+        # Create daily data
+        ticker_dir = tmp_path / 'iwm'
+        dates = pd.bdate_range('2024-01-02', periods=50)
+        df_daily = pd.DataFrame({
+            'Open': np.random.uniform(195, 205, 50),
+            'High': np.random.uniform(200, 210, 50),
+            'Low': np.random.uniform(190, 200, 50),
+            'Close': np.random.uniform(195, 205, 50),
+            'Volume': np.random.randint(100000, 500000, 50),
+        }, index=dates)
+        df_daily.to_parquet(ticker_dir / 'iwm_2024.parquet')
+
+        result = loader.load_best_available('IWM')
+        # Should return intraday (20 bars), not daily (50 bars)
+        assert len(result) == 20
+
+    def test_falls_back_to_daily(self, loader, tmp_path):
+        """Create only yearly parquet, verify load_best_available returns it."""
+        ticker_dir = tmp_path / 'iwm'
+        ticker_dir.mkdir(parents=True)
+
+        dates = pd.bdate_range('2024-01-02', periods=50)
+        df_daily = pd.DataFrame({
+            'Open': np.random.uniform(195, 205, 50),
+            'High': np.random.uniform(200, 210, 50),
+            'Low': np.random.uniform(190, 200, 50),
+            'Close': np.random.uniform(195, 205, 50),
+            'Volume': np.random.randint(100000, 500000, 50),
+        }, index=dates)
+        df_daily.to_parquet(ticker_dir / 'iwm_2024.parquet')
+
+        result = loader.load_best_available('IWM')
+        assert not result.empty
+        assert len(result) == 50
+
+    def test_empty_when_no_data(self, loader):
+        """Verify empty DataFrame returned when no data exists for ticker."""
+        result = loader.load_best_available('NONEXISTENT')
+        assert isinstance(result, pd.DataFrame)
+        assert result.empty
