@@ -12,7 +12,10 @@ from typing import Dict, List, Optional
 from itertools import product
 
 from lib.backtest import BacktestEngine, BacktestResult
-from lib.config import RiskConfig, ExitConfig, SignalConfig, StratConfig
+from lib.config import (
+    RiskConfig, ExitConfig, SignalConfig, StratConfig,
+    BacktestConfig, IndicatorConfig, WalkForwardConfig,
+)
 
 
 @dataclass
@@ -62,15 +65,23 @@ class WalkForwardValidator:
         exit_config: ExitConfig = None,
         signal_config: SignalConfig = None,
         strat_config: StratConfig = None,
-        train_months: int = 6,
-        test_months: int = 1,
+        backtest_config: BacktestConfig = None,
+        indicator_config: IndicatorConfig = None,
+        walk_forward_config: WalkForwardConfig = None,
+        train_months: int = None,
+        test_months: int = None,
     ):
         self.risk = risk_config or RiskConfig()
         self.exit = exit_config or ExitConfig()
         self.signal = signal_config or SignalConfig()
         self.strat = strat_config or StratConfig()
-        self.train_months = train_months
-        self.test_months = test_months
+        self.bt_config = backtest_config or BacktestConfig()
+        self.ind_config = indicator_config or IndicatorConfig()
+        self.wf_config = walk_forward_config or WalkForwardConfig()
+
+        # train_months / test_months: explicit args override config defaults
+        self.train_months = train_months if train_months is not None else self.wf_config.default_train_months
+        self.test_months = test_months if test_months is not None else self.wf_config.default_test_months
 
     def run(
         self,
@@ -81,8 +92,8 @@ class WalkForwardValidator:
         """Run walk-forward validation over the full dataset.
 
         Folds:
-        - Fold 1: Train [0, train_months) → Test [train_months, train_months+test_months)
-        - Fold 2: Train [0, train_months+test_months) → Test [train+test, train+2*test)
+        - Fold 1: Train [0, train_months) -> Test [train_months, train_months+test_months)
+        - Fold 2: Train [0, train_months+test_months) -> Test [train+test, train+2*test)
         - ... until data runs out
         """
         if 'Time' in df.columns:
@@ -95,6 +106,8 @@ class WalkForwardValidator:
 
         fold_results = []
         fold_dates = []
+
+        min_test_bars = self.wf_config.min_test_bars
 
         # First test period starts after initial training window
         train_end = start_date + pd.DateOffset(months=self.train_months)
@@ -113,7 +126,7 @@ class WalkForwardValidator:
             test_mask = (dates >= test_start) & (dates < test_end)
             test_df = df[test_mask]
 
-            if len(test_df) < 50:  # Need minimum data for meaningful test
+            if len(test_df) < min_test_bars:  # Need minimum data for meaningful test
                 train_end = test_end
                 continue
 
@@ -123,6 +136,8 @@ class WalkForwardValidator:
                 exit_config=self.exit,
                 signal_config=self.signal,
                 strat_config=self.strat,
+                backtest_config=self.bt_config,
+                indicator_config=self.ind_config,
             )
             result = engine.run(test_df, use_strat=use_strat, close_col=close_col)
 
@@ -202,6 +217,8 @@ class WalkForwardValidator:
                 exit_config=exit_,
                 signal_config=sig,
                 strat_config=self.strat,
+                backtest_config=self.bt_config,
+                indicator_config=self.ind_config,
             )
             result = engine.run(df, use_strat=use_strat, close_col=close_col)
             metrics = result.metrics()

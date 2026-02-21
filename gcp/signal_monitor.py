@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Real-time signal monitor — Cloud Run Service during market hours.
+Real-time signal monitor -- Cloud Run Service during market hours.
 
 Polls Yahoo Finance every 60 seconds, maintains a rolling indicator window,
 evaluates signals, and fires Discord alerts when conditions align.
@@ -28,31 +28,35 @@ from lib.strat import StratClassifier
 from lib.config import load_config, get_position_size, get_signal_strength_label
 
 
-TICKERS = ['IWM', 'SPY', 'QQQ']
-MARKET_OPEN = time(9, 30)
-MARKET_CLOSE = time(16, 0)
-POLL_INTERVAL = 60  # seconds
-
-
 class SignalMonitor:
     """Real-time signal monitor for market hours."""
 
     def __init__(self):
-        self.risk, self.exit, self.signal_cfg, self.strat_cfg = load_config()
-        self.strat = StratClassifier()
+        self.cfg = load_config()
+        self.risk = self.cfg.risk
+        self.exit = self.cfg.exit
+        self.signal_cfg = self.cfg.signal
+        self.strat_cfg = self.cfg.strat
+        self.indicator_cfg = self.cfg.indicator
+        self.monitor_cfg = self.cfg.monitor
+        self.market_cfg = self.cfg.market
+
+        self.strat = StratClassifier(strat_config=self.strat_cfg)
         self.webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
+
+        tickers = self.market_cfg.tickers
         # Rolling data windows per ticker
-        self.windows: dict = {t: pd.DataFrame() for t in TICKERS}
-        self.daily_trades: dict = {t: 0 for t in TICKERS}
-        self.daily_pnl: dict = {t: 0.0 for t in TICKERS}
-        self.active_positions: dict = {t: None for t in TICKERS}
-        self.orb_levels: dict = {t: {} for t in TICKERS}
+        self.windows: dict = {t: pd.DataFrame() for t in tickers}
+        self.daily_trades: dict = {t: 0 for t in tickers}
+        self.daily_pnl: dict = {t: 0.0 for t in tickers}
+        self.active_positions: dict = {t: None for t in tickers}
+        self.orb_levels: dict = {t: {} for t in tickers}
 
     def is_market_hours(self) -> bool:
         now = datetime.now()
         if now.weekday() >= 5:
             return False
-        return MARKET_OPEN <= now.time() <= MARKET_CLOSE
+        return self.market_cfg.market_open_time <= now.time() <= self.market_cfg.market_close_time
 
     def fetch_latest_bar(self, ticker: str) -> pd.DataFrame:
         """Fetch the latest 1-minute bar from Yahoo Finance."""
@@ -72,17 +76,17 @@ class SignalMonitor:
             return pd.DataFrame()
 
     def update_window(self, ticker: str, new_data: pd.DataFrame):
-        """Append new data to the rolling window, keep last 200 bars."""
+        """Append new data to the rolling window, keep last N bars."""
         if new_data.empty:
             return
         existing = self.windows[ticker]
         combined = pd.concat([existing, new_data]).drop_duplicates(subset=['Time'], keep='last')
-        self.windows[ticker] = combined.tail(200).reset_index(drop=True)
+        self.windows[ticker] = combined.tail(self.monitor_cfg.rolling_window_bars).reset_index(drop=True)
 
     def calculate_indicators(self, ticker: str) -> pd.DataFrame:
         """Calculate indicators on the rolling window."""
         df = self.windows[ticker].copy()
-        if len(df) < 20:
+        if len(df) < self.monitor_cfg.min_bars_for_indicators:
             return df
 
         close = df['Close']
@@ -90,29 +94,33 @@ class SignalMonitor:
         low = df['Low']
         volume = df['Volume']
 
-        df['RSI14'] = calculate_rsi(close, 14)
-        df['EMA9'] = calculate_ema(close, 9)
-        df['EMA20'] = calculate_ema(close, 20)
-        df['ATR14'] = calculate_atr(high, low, close, 14)
+        ind = self.indicator_cfg
+
+        df[ind.rsi_col] = calculate_rsi(close, ind.rsi_period)
+        df[f'EMA{ind.ema_fast_period}'] = calculate_ema(close, ind.ema_fast_period)
+        df[f'EMA{ind.ema_mid_period}'] = calculate_ema(close, ind.ema_mid_period)
+        df[ind.atr_col] = calculate_atr(high, low, close, ind.atr_period)
 
         # VWAP
         dates = pd.to_datetime(df['Time']).dt.date
         df['VWAP'] = calculate_vwap(high, low, close, volume, dates)
 
-        df['RVOL'] = calculate_rvol(volume, 20)
+        df['RVOL'] = calculate_rvol(volume, ind.rvol_period)
         df['OBV'] = calculate_obv(close, volume)
 
-        stoch_k, stoch_d = calculate_stoch_rsi(df['RSI14'])
+        stoch_k, stoch_d = calculate_stoch_rsi(df[ind.rsi_col])
         df['StochRSI_K'] = stoch_k
         df['StochRSI_D'] = stoch_d
 
         price_change = close.pct_change() * 100
         df['Price_Change'] = price_change
-        df['Consecutive_Up'], df['Consecutive_Down'] = calculate_consecutive_moves(price_change, 3)
+        df['Consecutive_Up'], df['Consecutive_Down'] = calculate_consecutive_moves(
+            price_change, ind.consecutive_periods,
+        )
 
         df['Price_vs_VWAP'] = (close - df['VWAP']) / df['VWAP'] * 100
-        df['Price_vs_EMA9'] = (close - df['EMA9']) / df['EMA9'] * 100
-        df['Price_vs_EMA20'] = (close - df['EMA20']) / df['EMA20'] * 100
+        df[ind.price_vs_ema_fast_col] = (close - df[f'EMA{ind.ema_fast_period}']) / df[f'EMA{ind.ema_fast_period}'] * 100
+        df[ind.price_vs_ema_mid_col] = (close - df[f'EMA{ind.ema_mid_period}']) / df[f'EMA{ind.ema_mid_period}'] * 100
 
         return df
 
@@ -121,10 +129,11 @@ class SignalMonitor:
         if df.empty or 'Time' not in df.columns:
             return
 
+        market_open = self.market_cfg.market_open_time
         times = pd.to_datetime(df['Time'])
         for minutes, label in [(5, '5m'), (15, '15m'), (30, '30m')]:
             orb_end = time(9, 30 + minutes) if minutes < 30 else time(10, 0)
-            in_orb = (times.dt.time >= MARKET_OPEN) & (times.dt.time <= orb_end)
+            in_orb = (times.dt.time >= market_open) & (times.dt.time <= orb_end)
             orb_data = df[in_orb]
             if not orb_data.empty:
                 self.orb_levels[ticker][f'{label}_high'] = orb_data['High'].max()
@@ -137,7 +146,7 @@ class SignalMonitor:
     def evaluate_ticker(self, ticker: str):
         """Evaluate signals for a single ticker."""
         df = self.calculate_indicators(ticker)
-        if len(df) < 30:
+        if len(df) < self.monitor_cfg.min_bars_for_signals:
             return
 
         self.check_orb(ticker, df)
@@ -183,8 +192,8 @@ class SignalMonitor:
             )
 
         total_score = sig['base_score'] + strat_bonus
-        size = get_position_size(total_score)
-        strength = get_signal_strength_label(total_score)
+        size = get_position_size(total_score, self.risk)
+        strength = get_signal_strength_label(total_score, self.risk)
 
         self.fire_alert(ticker, sig, total_score, strength, size, strat_bonus, latest)
 
@@ -202,6 +211,7 @@ class SignalMonitor:
             time_stop = self.exit.put_time_stop
             color = 0xff0000
 
+        max_score = self.risk.max_score
         conditions_str = '\n'.join([f"  {c}" for c in sig['conditions_met']])
         orb_info = ""
         for label in ['5m', '15m']:
@@ -214,11 +224,11 @@ class SignalMonitor:
             'embeds': [{
                 'title': f"{'CALL' if direction == 'CALL' else 'PUT'} SIGNAL \u2014 {ticker} @ ${price:.2f}",
                 'description': (
-                    f"**Strength: {total_score}/8 ({strength}) \u2192 {size:.0%} size**\n"
+                    f"**Strength: {total_score}/{max_score} ({strength}) \u2192 {size:.0%} size**\n"
                     f"Base: {sig['base_score']}/5 | Strat bonus: +{strat_bonus}\n\n"
                     f"Conditions met:\n{conditions_str}\n\n"
                     f"Target: ${target:.2f} | Time stop: {time_stop} min\n"
-                    f"RSI: {latest.get('RSI14', 0):.1f} | "
+                    f"RSI: {latest.get(self.indicator_cfg.rsi_col, 0):.1f} | "
                     f"RVOL: {latest.get('RVOL', 0):.2f}x"
                     f"{orb_info}"
                 ),
@@ -233,35 +243,38 @@ class SignalMonitor:
 
         if self.webhook_url:
             try:
-                requests.post(self.webhook_url, json=message, timeout=10)
+                requests.post(self.webhook_url, json=message, timeout=self.monitor_cfg.discord_timeout)
             except Exception as e:
                 print(f"  Discord send failed: {e}")
 
     def run_loop(self):
         """Main market-hours loop."""
+        tickers = self.market_cfg.tickers
+        poll_interval = self.monitor_cfg.poll_interval
+
         print("Signal Monitor started")
-        print(f"Tickers: {', '.join(TICKERS)}")
-        print(f"Poll interval: {POLL_INTERVAL}s")
+        print(f"Tickers: {', '.join(tickers)}")
+        print(f"Poll interval: {poll_interval}s")
         print(f"Discord: {'configured' if self.webhook_url else 'NOT configured'}")
 
         while True:
             if not self.is_market_hours():
                 now = datetime.now()
-                if now.time() > MARKET_CLOSE:
+                if now.time() > self.market_cfg.market_close_time:
                     print("Market closed. Shutting down.")
                     break
                 print(f"Waiting for market open ({now.strftime('%H:%M:%S')})...")
-                time_module.sleep(30)
+                time_module.sleep(self.monitor_cfg.pre_market_sleep)
                 continue
 
             print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Polling...")
 
-            for ticker in TICKERS:
+            for ticker in tickers:
                 new_data = self.fetch_latest_bar(ticker)
                 self.update_window(ticker, new_data)
                 self.evaluate_ticker(ticker)
 
-            time_module.sleep(POLL_INTERVAL)
+            time_module.sleep(poll_interval)
 
 
 def main():

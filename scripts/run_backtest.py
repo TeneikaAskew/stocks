@@ -37,23 +37,23 @@ def main():
                         help='Enable Strat candle classification bonus')
     parser.add_argument('--walk-forward', action='store_true',
                         help='Run walk-forward validation instead of single backtest')
-    parser.add_argument('--train-months', type=int, default=6,
-                        help='Training window for walk-forward (months)')
-    parser.add_argument('--test-months', type=int, default=1,
-                        help='Test window for walk-forward (months)')
+    parser.add_argument('--train-months', type=int, default=None,
+                        help='Training window for walk-forward (months, default from config)')
+    parser.add_argument('--test-months', type=int, default=None,
+                        help='Test window for walk-forward (months, default from config)')
     parser.add_argument('--param-sweep', action='store_true',
                         help='Run parameter sensitivity analysis')
-    parser.add_argument('--output-dir', type=str, default='data/backtest_results',
-                        help='Directory to save results')
+    parser.add_argument('--output-dir', type=str, default=None,
+                        help='Directory to save results (default from config)')
     parser.add_argument('--daily-data', action='store_true',
                         help='Use daily data instead of intraday')
 
     args = parser.parse_args()
 
     # Load config
-    risk, exit_, signal, strat = load_config()
-    print(f"Configuration loaded: max {risk.max_daily_trades} trades/day, "
-          f"CALL target {exit_.call_target:.2%}, PUT target {exit_.put_target:.2%}")
+    cfg = load_config()
+    print(f"Configuration loaded: max {cfg.risk.max_daily_trades} trades/day, "
+          f"CALL target {cfg.exit.call_target:.2%}, PUT target {cfg.exit.put_target:.2%}")
 
     # Load data
     loader = DataLoader()
@@ -75,22 +75,29 @@ def main():
     # Add indicators
     print("Calculating indicators...")
     df = add_all_indicators(df, close_col=close_col)
-    print(f"Added indicators — {len(df.columns)} total columns")
+    print(f"Added indicators -- {len(df.columns)} total columns")
 
-    # Create output directory
-    output_dir = Path(args.output_dir)
+    # Create output directory (CLI arg overrides config)
+    output_dir = Path(args.output_dir or cfg.market.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
+    # Resolve train/test months (CLI arg overrides config defaults)
+    train_months = args.train_months if args.train_months is not None else cfg.walk_forward.default_train_months
+    test_months = args.test_months if args.test_months is not None else cfg.walk_forward.default_test_months
+
     if args.walk_forward:
         # Walk-forward validation
-        print(f"\nRunning walk-forward validation ({args.train_months}mo train / {args.test_months}mo test)...")
+        print(f"\nRunning walk-forward validation ({train_months}mo train / {test_months}mo test)...")
         validator = WalkForwardValidator(
-            risk_config=risk,
-            exit_config=exit_,
-            signal_config=signal,
-            strat_config=strat,
+            risk_config=cfg.risk,
+            exit_config=cfg.exit,
+            signal_config=cfg.signal,
+            strat_config=cfg.strat,
+            backtest_config=cfg.backtest,
+            indicator_config=cfg.indicator,
+            walk_forward_config=cfg.walk_forward,
             train_months=args.train_months,
             test_months=args.test_months,
         )
@@ -110,10 +117,13 @@ def main():
         # Parameter sensitivity
         print("\nRunning parameter sensitivity analysis...")
         validator = WalkForwardValidator(
-            risk_config=risk,
-            exit_config=exit_,
-            signal_config=signal,
-            strat_config=strat,
+            risk_config=cfg.risk,
+            exit_config=cfg.exit,
+            signal_config=cfg.signal,
+            strat_config=cfg.strat,
+            backtest_config=cfg.backtest,
+            indicator_config=cfg.indicator,
+            walk_forward_config=cfg.walk_forward,
         )
         param_grid = {
             'consecutive_periods': [2, 3, 4],
@@ -135,10 +145,12 @@ def main():
         strat_label = " + Strat" if args.use_strat else ""
         print(f"\nRunning backtest{strat_label}...")
         engine = BacktestEngine(
-            risk_config=risk,
-            exit_config=exit_,
-            signal_config=signal,
-            strat_config=strat,
+            risk_config=cfg.risk,
+            exit_config=cfg.exit,
+            signal_config=cfg.signal,
+            strat_config=cfg.strat,
+            backtest_config=cfg.backtest,
+            indicator_config=cfg.indicator,
         )
         result = engine.run(df, use_strat=args.use_strat, close_col=close_col)
         print(f"\n{result.summary()}")

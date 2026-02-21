@@ -12,6 +12,8 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Tuple, Optional
 
+from lib.config import StratConfig
+
 
 class StratClassifier:
     """Classify candles and detect Strat patterns."""
@@ -24,6 +26,14 @@ class StratClassifier:
         'D': 0.35,
         'W': 0.10,
     }
+
+    def __init__(self, strat_config: StratConfig = None):
+        self.config = strat_config or StratConfig()
+        # If config provides ftfc_weights, use those as the instance default
+        if strat_config is not None and strat_config.ftfc_weights:
+            self._default_weights = strat_config.ftfc_weights
+        else:
+            self._default_weights = self.DEFAULT_WEIGHTS
 
     # -----------------------------------------------------------------------
     # Single-candle classification
@@ -69,7 +79,7 @@ class StratClassifier:
         labels[~higher_high & lower_low] = '2D'
         labels[higher_high & lower_low] = '3'
 
-        # First bar has no prior — mark as unknown
+        # First bar has no prior -- mark as unknown
         labels.iloc[0] = 'X'
 
         return labels
@@ -80,7 +90,7 @@ class StratClassifier:
 
     @staticmethod
     def get_trigger_levels(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
-        """Return (trigger_high, trigger_low) — prior bar's High and Low.
+        """Return (trigger_high, trigger_low) -- prior bar's High and Low.
 
         Breaking above trigger_high = bullish trigger.
         Breaking below trigger_low = bearish trigger.
@@ -122,19 +132,19 @@ class StratClassifier:
 
         # --- Reversal combos ---
 
-        # 2D-1-2U Reversal (Bullish): bearish move → compression → bullish breakout
+        # 2D-1-2U Reversal (Bullish): bearish move -> compression -> bullish breakout
         mask_212_bull = (prev2 == '2D') & (prev1 == '1') & (df['High'] > one_bar_high)
         result.loc[mask_212_bull, 'strat_combo'] = '2D-1-2U_reversal'
 
-        # 2U-1-2D Reversal (Bearish): bullish move → compression → bearish breakout
+        # 2U-1-2D Reversal (Bearish): bullish move -> compression -> bearish breakout
         mask_212_bear = (prev2 == '2U') & (prev1 == '1') & (df['Low'] < one_bar_low)
         result.loc[mask_212_bear, 'strat_combo'] = '2U-1-2D_reversal'
 
-        # 3-1-2U Reversal (Bullish): outside bar → compression → bullish
+        # 3-1-2U Reversal (Bullish): outside bar -> compression -> bullish
         mask_312_bull = (prev2 == '3') & (prev1 == '1') & (df['High'] > one_bar_high)
         result.loc[mask_312_bull, 'strat_combo'] = '3-1-2U_reversal'
 
-        # 3-1-2D Reversal (Bearish): outside bar → compression → bearish
+        # 3-1-2D Reversal (Bearish): outside bar -> compression -> bearish
         mask_312_bear = (prev2 == '3') & (prev1 == '1') & (df['Low'] < one_bar_low)
         result.loc[mask_312_bear, 'strat_combo'] = '3-1-2D_reversal'
 
@@ -192,7 +202,7 @@ class StratClassifier:
         labels : dict of timeframe -> latest strat type
         """
         if weights is None:
-            weights = self.DEFAULT_WEIGHTS
+            weights = self._default_weights
 
         total_weight = 0.0
         weighted_sum = 0.0
@@ -219,9 +229,10 @@ class StratClassifier:
 
         score = weighted_sum / total_weight
 
-        if score > 0.3:
+        direction_threshold = self.config.ftfc_direction_threshold
+        if score > direction_threshold:
             direction = 'bullish'
-        elif score < -0.3:
+        elif score < -direction_threshold:
             direction = 'bearish'
         else:
             direction = 'mixed'
@@ -237,7 +248,7 @@ class StratClassifier:
         signal_direction: str,
         combo: str,
         ftfc_score: float,
-        ftfc_threshold: float = 0.6,
+        ftfc_threshold: float = None,
         orb_trend: int = 0,
     ) -> int:
         """Calculate bonus points for combined scoring.
@@ -248,41 +259,49 @@ class StratClassifier:
         combo : strat combo label from detect_combos()
         ftfc_score : -1.0 to +1.0 from calculate_ftfc()
         ftfc_threshold : minimum absolute FTFC score for bonus
+            (defaults to config.ftfc_threshold)
         orb_trend : ORB trend direction (1=bullish, -1=bearish, 0=neutral)
 
         Returns
         -------
         bonus : 0 to 3 (or negative if FTFC strongly contradicts)
         """
+        if ftfc_threshold is None:
+            ftfc_threshold = self.config.ftfc_threshold
+
+        combo_bonus = self.config.combo_bonus
+        ftfc_bonus = self.config.ftfc_bonus
+        orb_alignment_bonus = self.config.orb_alignment_bonus
+
         bonus = 0
 
-        # +1 for aligned Strat combo
+        # +combo_bonus for aligned Strat combo
         if signal_direction == 'CALL' and combo in (
             '2D-1-2U_reversal', '3-1-2U_reversal', '3-2U_reversal',
         ):
-            bonus += 1
+            bonus += combo_bonus
         elif signal_direction == 'PUT' and combo in (
             '2U-1-2D_reversal', '3-1-2D_reversal', '3-2D_reversal',
         ):
-            bonus += 1
+            bonus += combo_bonus
 
-        # +1 for FTFC alignment (or -1 for strong contradiction)
+        # +ftfc_bonus for FTFC alignment (or -ftfc_bonus for strong contradiction)
         if signal_direction == 'CALL':
             if ftfc_score >= ftfc_threshold:
-                bonus += 1
+                bonus += ftfc_bonus
             elif ftfc_score <= -ftfc_threshold:
-                bonus -= 1  # FTFC contradicts — penalty
+                bonus -= ftfc_bonus  # FTFC contradicts -- penalty
         elif signal_direction == 'PUT':
             if ftfc_score <= -ftfc_threshold:
-                bonus += 1
+                bonus += ftfc_bonus
             elif ftfc_score >= ftfc_threshold:
-                bonus -= 1
+                bonus -= ftfc_bonus
 
-        # +1 for ORB alignment
+        # +orb_alignment_bonus for ORB alignment
         if signal_direction == 'CALL' and orb_trend == 1:
-            bonus += 1
+            bonus += orb_alignment_bonus
         elif signal_direction == 'PUT' and orb_trend == -1:
-            bonus += 1
+            bonus += orb_alignment_bonus
 
         return bonus
 

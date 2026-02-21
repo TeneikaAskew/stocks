@@ -12,11 +12,11 @@
           "volume_surge"
         ]
       },
-      "message_template": "🟢 CALL: IWM ${price} | RSI: ${rsi} | RVOL: ${rvol}x | Target: ${target} | Stop: ${stop}",
+      "message_template": "CALL: IWM ${price} | RSI: ${rsi} | RVOL: ${rvol}x | Target: ${target} | Stop: ${stop}",
       "sound": "positive_chime",
       "priority": "high"
     },
-    
+
     "primary_put_alert": {
       "name": "IWM Contrarian PUT Setup",
       "conditions": {
@@ -29,59 +29,164 @@
           "volume_surge"
         ]
       },
-      "message_template": "🔴 PUT: IWM ${price} | RSI: ${rsi} | RVOL: ${rvol}x | Target: ${target} | Stop: ${stop}",
+      "message_template": "PUT: IWM ${price} | RSI: ${rsi} | RVOL: ${rvol}x | Target: ${target} | Stop: ${stop}",
       "sound": "alert_chime",
       "priority": "high"
     },
-    
+
     "exit_alerts": {
       "profit_target_hit": {
         "call_target": "0.30%",
         "put_target": "0.38%",
-        "message": "🎯 TARGET HIT: ${return}% profit - EXIT NOW",
+        "message": "TARGET HIT: ${return}% profit - EXIT NOW",
         "sound": "success_sound",
         "priority": "urgent"
       },
-      
+
       "time_stop": {
         "call_minutes": 30,
         "put_minutes": 35,
-        "message": "⏰ TIME STOP: ${minutes} minutes elapsed - EXIT NOW",
+        "message": "TIME STOP: ${minutes} minutes elapsed - EXIT NOW",
         "sound": "warning_sound",
         "priority": "high"
       },
-      
+
       "extreme_rsi_exit": {
         "call_rsi_exit": 80,
         "put_rsi_exit": 20,
-        "message": "📊 EXTREME RSI ${rsi} - CONSIDER EXIT",
+        "message": "EXTREME RSI ${rsi} - CONSIDER EXIT",
         "sound": "alert_sound",
         "priority": "high"
       }
     },
-    
+
     "warning_alerts": {
       "poor_trading_time": {
         "trigger_time": "14:00",
-        "message": "⚠️ Entering low-probability trading window",
+        "message": "Entering low-probability trading window",
         "frequency": "once_daily"
       },
-      
+
       "low_volume": {
         "rvol_threshold": 0.5,
-        "message": "⚠️ Low volume detected - RVOL: ${rvol}x",
+        "message": "Low volume detected - RVOL: ${rvol}x",
         "frequency": "continuous"
       },
-      
+
       "high_volatility": {
         "atr_threshold": 0.3,
         "rvol_threshold": 5.0,
-        "message": "⚡ Extreme volatility - ATR: ${atr} | RVOL: ${rvol}x",
+        "message": "Extreme volatility - ATR: ${atr} | RVOL: ${rvol}x",
         "frequency": "continuous"
       }
     }
   },
-  
+
+  "signal": {
+    "min_conditions": 3,
+    "consecutive_periods": 3,
+    "ema_proximity_threshold": 0.1,
+    "stoch_rsi_oversold": 30.0,
+    "stoch_rsi_overbought": 70.0,
+    "call_entry_start": "09:30",
+    "call_entry_end": "10:00",
+    "put_entry_start": "09:30",
+    "put_entry_end": "14:00",
+    "premarket_signal_threshold": 3,
+    "premarket_building_threshold": 2
+  },
+
+  "indicators": {
+    "rsi_period": 14,
+    "rsi_fast_period": 9,
+    "ema_periods": [9, 20, 50],
+    "sma_periods": [5, 10, 20, 50, 200],
+    "atr_period": 14,
+    "rvol_period": 20,
+    "stoch_rsi_period": 14,
+    "stoch_rsi_k_period": 3,
+    "stoch_rsi_d_period": 3,
+    "bb_period": 20,
+    "bb_std_mult": 2.0,
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9,
+    "consecutive_periods": 3,
+    "orb_windows": [
+      {"minutes": 5, "label": "5m"},
+      {"minutes": 15, "label": "15m"},
+      {"minutes": 30, "label": "30m"}
+    ],
+    "order_block_lookback": 20,
+    "order_block_consol_window": 5,
+    "order_block_consol_threshold": 3,
+    "order_block_vol_ratio": 0.6,
+    "order_block_ffill_limit": 30,
+    "order_block_level_tolerance": 0.001
+  },
+
+  "strat": {
+    "enabled": true,
+    "combo_bonus": 1,
+    "ftfc_bonus": 1,
+    "orb_alignment_bonus": 1,
+    "ftfc_threshold": 0.6,
+    "ftfc_direction_threshold": 0.3,
+    "timeframes": ["5m", "15m", "1h", "D", "W"],
+    "ftfc_weights": {
+      "5m": 0.10,
+      "15m": 0.20,
+      "1h": 0.25,
+      "D": 0.35,
+      "W": 0.10
+    }
+  },
+
+  "market": {
+    "tickers": ["IWM", "SPY", "QQQ"],
+    "market_open": "09:30",
+    "market_close": "16:00",
+    "data_dir": "data",
+    "output_dir": "data/backtest_results",
+    "trades_dir": "data/trades"
+  },
+
+  "monitor": {
+    "poll_interval": 60,
+    "rolling_window_bars": 200,
+    "min_bars_for_indicators": 20,
+    "min_bars_for_signals": 30,
+    "pre_market_sleep": 30,
+    "discord_timeout": 10
+  },
+
+  "backtest": {
+    "min_bars_per_day": 10,
+    "starting_equity": 1.0,
+    "annualization_factor": 252
+  },
+
+  "walk_forward": {
+    "min_test_bars": 50,
+    "default_train_months": 6,
+    "default_test_months": 1
+  },
+
+  "risk_parameters": {
+    "max_daily_trades": 5,
+    "max_concurrent_positions": 1,
+    "position_sizing": {
+      "weak_signal": 0.25,
+      "medium_signal": 0.50,
+      "strong_signal": 0.75,
+      "perfect_signal": 1.00
+    },
+    "score_thresholds": [4, 5, 6],
+    "max_score": 8,
+    "daily_loss_limit": -2.0,
+    "daily_profit_target": 3.0
+  },
+
   "platform_specific": {
     "tradingview": {
       "webhook_url": "YOUR_WEBHOOK_URL",
@@ -94,13 +199,13 @@
         "Volume_Ratio"
       ]
     },
-    
+
     "thinkorswim": {
       "study_name": "IWM_Contrarian_Alerts",
       "scan_frequency": "1_minute",
       "alert_types": ["visual", "audio", "message_center"]
     },
-    
+
     "discord_webhook": {
       "url": "YOUR_DISCORD_WEBHOOK",
       "mentions": "@everyone",
@@ -110,18 +215,5 @@
         "warning": "0xffff00"
       }
     }
-  },
-  
-  "risk_parameters": {
-    "max_daily_trades": 5,
-    "max_concurrent_positions": 1,
-    "position_sizing": {
-      "weak_signal": 0.25,
-      "medium_signal": 0.50,
-      "strong_signal": 0.75,
-      "perfect_signal": 1.00
-    },
-    "daily_loss_limit": -2.0,
-    "daily_profit_target": 3.0
   }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pre-market brief — Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET.
+Pre-market brief -- Cloud Run Job triggered by Cloud Scheduler at 8:30 AM ET.
 
 Loads latest data, computes Strat daily/weekly labels and FTFC,
 checks which tickers have signals building, and sends a Discord embed.
@@ -19,21 +19,27 @@ from lib.data_loader import DataLoader
 from lib.indicators import add_all_indicators
 from lib.strat import StratClassifier
 from lib.signals import check_call_conditions, check_put_conditions
+from lib.config import load_config
 
 
-TICKERS = ['IWM', 'SPY', 'QQQ']
-
-
-def generate_premarket_brief(data_dir: str = 'data') -> dict:
+def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     """Generate pre-market brief for all tickers.
 
     Returns a dict with per-ticker analysis.
     """
+    if cfg is None:
+        cfg = load_config()
+
+    data_dir = data_dir or cfg.market.data_dir
+    tickers = cfg.market.tickers
+    signal_threshold = cfg.signal.premarket_signal_threshold
+    building_threshold = cfg.signal.premarket_building_threshold
+
     loader = DataLoader(data_dir=data_dir)
-    strat = StratClassifier()
+    strat = StratClassifier(strat_config=cfg.strat)
     brief = {'date': datetime.now().strftime('%a %b %d, %Y'), 'tickers': {}}
 
-    for ticker in TICKERS:
+    for ticker in tickers:
         # Load daily data with indicators
         df = loader.load_daily(ticker)
         if df.empty:
@@ -44,7 +50,7 @@ def generate_premarket_brief(data_dir: str = 'data') -> dict:
         df = add_all_indicators(df, close_col=close_col)
 
         latest = df.iloc[-1]
-        rsi = latest.get('RSI14', 50)
+        rsi = latest.get(cfg.indicator.rsi_col, 50)
         consec_up = int(latest.get('Consecutive_Up', 0))
         consec_down = int(latest.get('Consecutive_Down', 0))
 
@@ -69,13 +75,13 @@ def generate_premarket_brief(data_dir: str = 'data') -> dict:
         put_score, put_conds = check_put_conditions(latest)
 
         # Determine status
-        if call_score >= 3:
+        if call_score >= signal_threshold:
             signal_status = f'CALL setup ({call_score}/5)'
-        elif put_score >= 3:
+        elif put_score >= signal_threshold:
             signal_status = f'PUT setup ({put_score}/5)'
-        elif call_score >= 2:
+        elif call_score >= building_threshold:
             signal_status = f'CALL building ({call_score}/5)'
-        elif put_score >= 2:
+        elif put_score >= building_threshold:
             signal_status = f'PUT building ({put_score}/5)'
         else:
             signal_status = 'No signal'
@@ -141,26 +147,28 @@ def format_discord_message(brief: dict) -> dict:
     return embed
 
 
-def send_to_discord(message: dict, webhook_url: str):
+def send_to_discord(message: dict, webhook_url: str, timeout: int = 10):
     """Send formatted message to Discord webhook."""
-    response = requests.post(webhook_url, json=message, timeout=10)
+    response = requests.post(webhook_url, json=message, timeout=timeout)
     response.raise_for_status()
     print(f"Discord message sent successfully (status {response.status_code})")
 
 
 def main():
     webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
-    data_dir = os.environ.get('DATA_DIR', 'data')
+
+    cfg = load_config()
+    data_dir = os.environ.get('DATA_DIR', cfg.market.data_dir)
 
     print("Generating pre-market brief...")
-    brief = generate_premarket_brief(data_dir=data_dir)
+    brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
     print(json.dumps(brief, indent=2, default=str))
 
     if webhook_url:
         message = format_discord_message(brief)
-        send_to_discord(message, webhook_url)
+        send_to_discord(message, webhook_url, timeout=cfg.monitor.discord_timeout)
     else:
-        print("\nDISCORD_WEBHOOK_URL not set — printing message only")
+        print("\nDISCORD_WEBHOOK_URL not set -- printing message only")
         message = format_discord_message(brief)
         print(json.dumps(message, indent=2))
 
