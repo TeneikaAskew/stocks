@@ -298,15 +298,15 @@ Three major feature sets added with **195 new columns** for enhanced pattern rec
 3. **Order Blocks** (7 columns) — institutional consolidation zone detection
 
 ### Documentation
-- [INVESTMENT_MODELS_SUMMARY.md](INVESTMENT_MODELS_SUMMARY.md) - Detailed summary of all 5 models, Strat/FTFC, backtest engine, and results
-- [MODEL_SUMMARY.md](MODEL_SUMMARY.md) - Concise model overview with backtest results
+- [INVESTMENT_MODELS_SUMMARY.md](docs/INVESTMENT_MODELS_SUMMARY.md) - Detailed summary of all 5 models, Strat/FTFC, backtest engine, and results
+- [MODEL_SUMMARY.md](docs/MODEL_SUMMARY.md) - Concise model overview with backtest results
 - [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Quick reference guide for indicators and patterns
-- [NEW_FEATURES_SUMMARY.md](NEW_FEATURES_SUMMARY.md) - Complete feature overview
-- [iwm_analysis_overview.md](iwm_analysis_overview.md) - All analysis scripts overview
-- [SIGNAL_GENERATION_METHODOLOGY.md](SIGNAL_GENERATION_METHODOLOGY.md) - How trading signals are generated and validated
-- [TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md](TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md) - How the trade analysis report is built from your actual trades
-- [ADD_NEW_FEATURES_TO_CRITERIA_ANALYSIS.md](ADD_NEW_FEATURES_TO_CRITERIA_ANALYSIS.md) - Adding Historical Levels, ORB, and Order Blocks to trade analysis pipeline
-- [TRADE_PIPELINE_FORMAT_MATCHING.md](TRADE_PIPELINE_FORMAT_MATCHING.md) - Fix trade analysis pipeline to support both CSV and Parquet formats
+- [NEW_FEATURES_SUMMARY.md](docs/NEW_FEATURES_SUMMARY.md) - Complete feature overview
+- [iwm_analysis_overview.md](docs/iwm_analysis_overview.md) - All analysis scripts overview
+- [SIGNAL_GENERATION_METHODOLOGY.md](docs/SIGNAL_GENERATION_METHODOLOGY.md) - How trading signals are generated and validated
+- [TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md](docs/TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md) - How the trade analysis report is built from your actual trades
+- [ADD_NEW_FEATURES_TO_CRITERIA_ANALYSIS.md](docs/ADD_NEW_FEATURES_TO_CRITERIA_ANALYSIS.md) - Adding Historical Levels, ORB, and Order Blocks to trade analysis pipeline
+- [TRADE_PIPELINE_FORMAT_MATCHING.md](docs/TRADE_PIPELINE_FORMAT_MATCHING.md) - Fix trade analysis pipeline to support both CSV and Parquet formats
 
 ## Notes
 - **New Features**: 195 additional columns now available for analysis (80 Historical Levels + 108 ORB + 7 Order Blocks)
