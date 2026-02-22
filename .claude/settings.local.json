@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "Bash(*)",
       "WebFetch(domain:docs.anthropic.com)",
       "Bash(python:*)",
       "Bash(ls:*)",
