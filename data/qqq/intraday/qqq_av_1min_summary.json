@@ -1,0 +1,14 @@
+{
+  "symbol": "QQQ",
+  "interval": "1min",
+  "start_date": "2015-01-02 04:36:00",
+  "end_date": "2025-11-14 19:59:00",
+  "total_bars": 2103021,
+  "total_months": 131,
+  "monthly_files_combined": 132,
+  "duplicates_removed": 21120,
+  "latest_close": 611.45,
+  "latest_volume": 1819,
+  "last_update": "2025-12-01T03:09:24.449131",
+  "file": "data/qqq/intraday/qqq_av_1min_combined.parquet"
+}
