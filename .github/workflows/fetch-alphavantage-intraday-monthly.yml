@@ -121,7 +121,8 @@ jobs:
           --symbol SPY \
           --interval ${{ steps.dates.outputs.INTERVAL }} \
           --start-date ${{ steps.dates.outputs.START_DATE }} \
-          --end-date ${{ steps.dates.outputs.END_DATE }}
+          --end-date ${{ steps.dates.outputs.END_DATE }} \
+          --delay 1
 
     - name: Fetch QQQ intraday data
       if: steps.symbols.outputs.SYMBOLS == 'ALL' || contains(steps.symbols.outputs.SYMBOLS, 'QQQ')
@@ -133,7 +134,8 @@ jobs:
           --symbol QQQ \
           --interval ${{ steps.dates.outputs.INTERVAL }} \
           --start-date ${{ steps.dates.outputs.START_DATE }} \
-          --end-date ${{ steps.dates.outputs.END_DATE }}
+          --end-date ${{ steps.dates.outputs.END_DATE }} \
+          --delay 1
 
     - name: Fetch IWM intraday data
       if: steps.symbols.outputs.SYMBOLS == 'ALL' || contains(steps.symbols.outputs.SYMBOLS, 'IWM')
@@ -145,7 +147,8 @@ jobs:
           --symbol IWM \
           --interval ${{ steps.dates.outputs.INTERVAL }} \
           --start-date ${{ steps.dates.outputs.START_DATE }} \
-          --end-date ${{ steps.dates.outputs.END_DATE }}
+          --end-date ${{ steps.dates.outputs.END_DATE }} \
+          --delay 1
 
     - name: Check for failures
       id: check_failures
