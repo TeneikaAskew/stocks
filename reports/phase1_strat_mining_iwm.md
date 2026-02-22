@@ -1,6 +1,6 @@
 # Phase 1: Strat Pattern Mining — IWM
 
-Generated: 2026-02-22 05:30:35
+Generated: 2026-02-22 13:56:10
 Data range: 2015-01-02 09:30:00 to 2025-11-14 16:00:00
 Total 1m bars: 1,067,154
 
@@ -387,15 +387,17 @@ When higher timeframes agree vs. conflict.
 ### Alignment Scenarios
 | Alignment | Count | % of Bars | Next 1 Bar (bps) | Next 5 Bars (bps) | Next 15 Bars (bps) | 1m 2U Prob | 1m 2D Prob |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Mixed** | 1,067,154 | 100.0% | +0.0 bps | +0.1 bps | +0.2 bps | 38.3% | 37.6% |
+| **All Bullish** | 72,842 | 6.8% | -0.0 bps | +0.0 bps | +0.1 bps | 38.4% | 36.6% |
+| **All Bearish** | 53,642 | 5.0% | +0.0 bps | +0.1 bps | +0.5 bps | 37.9% | 38.9% |
+| **Mixed** | 940,670 | 88.1% | +0.0 bps | +0.1 bps | +0.1 bps | 38.3% | 37.6% |
 
 ### Specific HTF Combinations
 | Combination | Count | 1m Next Return (bps) | 1m 2U Follows | 1m 2D Follows | Net Direction |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| D 2U + 1h 2U + 15m 2U | 0 | N/A (low n) | N/A | N/A | N/A |
-| D 2U + 1h 2U + 15m 2D | 0 | N/A (low n) | N/A | N/A | N/A |
-| D 2U + 1h 2D + 15m 2U | 0 | N/A (low n) | N/A | N/A | N/A |
-| D 2D + 1h 2D + 15m 2D | 0 | N/A (low n) | N/A | N/A | N/A |
-| D 2D + 1h 2D + 15m 2U | 0 | N/A (low n) | N/A | N/A | N/A |
-| D 2D + 1h 2U + 15m 2D | 0 | N/A (low n) | N/A | N/A | N/A |
+| D 2U + 1h 2U + 15m 2U | 72,842 | -0.0 bps | 38.4% | 36.6% | Neutral |
+| D 2U + 1h 2U + 15m 2D | 59,612 | -0.0 bps | 38.3% | 37.2% | Neutral |
+| D 2U + 1h 2D + 15m 2U | 58,956 | +0.0 bps | 37.8% | 37.6% | Neutral |
+| D 2D + 1h 2D + 15m 2D | 53,642 | +0.0 bps | 37.9% | 38.9% | Neutral |
+| D 2D + 1h 2D + 15m 2U | 49,965 | +0.0 bps | 38.1% | 38.0% | Neutral |
+| D 2D + 1h 2U + 15m 2D | 52,858 | -0.0 bps | 37.9% | 37.7% | Neutral |
 
