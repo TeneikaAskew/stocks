@@ -1,4 +1,4 @@
-.PHONY: install test pipeline pipeline-fast report sweep backtest clean help
+.PHONY: install test test-e2e test-scripts install-playwright pipeline pipeline-fast report sweep backtest clean help
 
 PYTHON ?= python
 TICKERS ?= IWM SPY QQQ
@@ -7,9 +7,22 @@ TICKERS ?= IWM SPY QQQ
 install:
 	$(PYTHON) -m pip install -r requirements.txt
 
-## Run the full test suite
+## Run the full test suite (unit + integration, excludes E2E)
 test:
-	$(PYTHON) -m pytest tests/ -x -q
+	$(PYTHON) -m pytest tests/ -x -q --ignore=tests/test_e2e.py
+
+## Run Playwright E2E tests for all web apps (requires: make install-playwright)
+test-e2e:
+	$(PYTHON) -m pytest tests/test_e2e.py -v
+
+## Run script CLI regression tests only
+test-scripts:
+	$(PYTHON) -m pytest tests/test_scripts.py -v
+
+## Install Playwright browsers and system deps (run once after pip install)
+install-playwright:
+	playwright install chromium
+	playwright install-deps chromium
 
 ## Run full pipeline: backtest (base + strat) + sweep + report for all tickers
 pipeline:
@@ -44,11 +57,14 @@ clean:
 ## Show help
 help:
 	@echo "Available targets:"
-	@echo "  make install        Install Python dependencies"
-	@echo "  make test           Run test suite"
-	@echo "  make pipeline       Full pipeline (backtest + sweep + report)"
-	@echo "  make pipeline-fast  Pipeline without sweep"
-	@echo "  make report         Regenerate report from existing CSVs"
-	@echo "  make sweep          Run timeframe sweeps"
-	@echo "  make backtest       Run backtest for TICKER (default: IWM)"
-	@echo "  make clean          Remove generated CSV files"
+	@echo "  make install             Install Python dependencies"
+	@echo "  make install-playwright  Install Playwright browser binaries"
+	@echo "  make test                Run unit/integration test suite"
+	@echo "  make test-e2e            Run Playwright E2E tests for web apps"
+	@echo "  make test-scripts        Run script CLI regression tests"
+	@echo "  make pipeline            Full pipeline (backtest + sweep + report)"
+	@echo "  make pipeline-fast       Pipeline without sweep"
+	@echo "  make report              Regenerate report from existing CSVs"
+	@echo "  make sweep               Run timeframe sweeps"
+	@echo "  make backtest            Run backtest for TICKER (default: IWM)"
+	@echo "  make clean               Remove generated CSV files"
