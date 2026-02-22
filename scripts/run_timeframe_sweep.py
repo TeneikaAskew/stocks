@@ -5,9 +5,14 @@ Multi-timeframe backtest sweep.
 Resamples 1-minute data to 5m/15m/30m/1h/4h, runs the backtest engine on
 each interval, compares performance, and tests multi-TF combination filters.
 
+Phase 1: Individual timeframe sweep (1m, 5m, 15m, 30m, 1h)
+Phase 2: 1m signals + higher-TF trend filter (original)
+Phase 3: All entry+filter combos (5m+15m, 5m+30m, 15m+30m, etc.)
+
 Usage:
     python scripts/run_timeframe_sweep.py --ticker IWM
     python scripts/run_timeframe_sweep.py --ticker IWM --use-strat
+    python scripts/run_timeframe_sweep.py --ticker IWM --all-combos
 """
 
 import argparse
@@ -196,6 +201,89 @@ def run_combination(
     return result
 
 
+def run_combination_general(
+    df_1m: pd.DataFrame,
+    entry_tf_key: str,
+    filter_tf_key: str,
+    cfg,
+    base_exit: ExitConfig,
+    base_signal: SignalConfig,
+    use_strat: bool,
+) -> BacktestResult:
+    """Run entry signals on any timeframe, filtered by a higher-TF trend.
+
+    Generalises run_combination() so the entry timeframe is not restricted
+    to 1m.  The filter timeframe must be coarser than the entry timeframe.
+
+    Logic is the same as run_combination:
+    - Resample 1m data to *both* timeframes
+    - Compute EMA20 on the filter TF to determine trend
+    - Forward-fill trend into the entry-TF index
+    - Only allow CALL when higher-TF price > EMA20, PUT when < EMA20
+    """
+    close_col = 'Close' if 'Close' in df_1m.columns else 'Last'
+    entry_info = TIMEFRAMES[entry_tf_key]
+    filter_info = TIMEFRAMES[filter_tf_key]
+
+    # Resample to entry TF (or use raw 1m)
+    if entry_info['resample'] is None:
+        df_entry = df_1m.copy()
+    else:
+        df_entry = resample_ohlcv(df_1m, entry_info['resample'])
+
+    # Resample to filter TF
+    df_filter = resample_ohlcv(df_1m, filter_info['resample'])
+
+    # Build higher-TF trend from filter TF
+    filter_close = df_filter['Close']
+    filter_ema20 = filter_close.ewm(span=20, adjust=False).mean()
+    df_filter['htf_trend'] = 0
+    df_filter.loc[filter_close > filter_ema20 * 1.0005, 'htf_trend'] = 1
+    df_filter.loc[filter_close < filter_ema20 * 0.9995, 'htf_trend'] = -1
+
+    # Forward-fill trend into entry-TF index
+    htf_trend = df_filter['htf_trend'].reindex(df_entry.index, method='ffill').fillna(0).astype(int)
+
+    # Scale configs for entry TF
+    bar_min = entry_info['bar_minutes']
+    exit_cfg = scale_exit_config(base_exit, bar_min)
+    sig_cfg = scale_signal_config(base_signal, bar_min)
+
+    # Compute indicators on entry-TF data
+    df_work = add_all_indicators(df_entry.copy(), close_col=close_col)
+
+    engine = BacktestEngine(
+        risk_config=cfg.risk,
+        exit_config=exit_cfg,
+        signal_config=sig_cfg,
+        strat_config=cfg.strat,
+        backtest_config=cfg.backtest,
+        indicator_config=cfg.indicator,
+    )
+
+    # Monkey-patch to add higher-TF filter
+    original_check_entry = engine._check_entry
+
+    def filtered_check_entry(row, bar_time, use_strat_flag, strat_df, ftfc_series, bar_idx, day_df):
+        trade = original_check_entry(row, bar_time, use_strat_flag, strat_df, ftfc_series, bar_idx, day_df)
+        if trade is None:
+            return None
+
+        idx = day_df.index[bar_idx]
+        trend = htf_trend.get(idx, 0)
+
+        if trade.direction == 'CALL' and trend == -1:
+            return None
+        if trade.direction == 'PUT' and trend == 1:
+            return None
+
+        return trade
+
+    engine._check_entry = filtered_check_entry
+    result = engine.run(df_work, use_strat=use_strat, close_col=close_col)
+    return result
+
+
 # -- Reporting -----------------------------------------------------------------
 def format_metrics_table(rows: list) -> str:
     """Pretty-print a comparison table of backtest metrics."""
@@ -263,6 +351,8 @@ def main():
     parser.add_argument('--combos', nargs='+',
                         default=['15m', '30m', '1h'],
                         help='Higher-TF filters for combination tests (default: 15m 30m 1h)')
+    parser.add_argument('--all-combos', action='store_true',
+                        help='Test ALL entry+filter combinations (5m+15m, 5m+30m, 15m+30m, etc.)')
     args = parser.parse_args()
 
     # Load config (with per-ticker overrides)
@@ -386,13 +476,68 @@ def main():
             print(f"\n  >>> Best combo: {best_c['label']} "
                   f"(E={best_c['expectancy']:+.3%}, Sharpe={best_c['sharpe']:.2f})")
 
-    # -- Phase 3: Save all results to CSV --------------------------------------
+    # -- Phase 3: All entry+filter combinations ----------------------------------
+    general_combo_rows = []
+
+    if args.all_combos:
+        # Build all valid (entry, filter) pairs where filter is coarser than entry
+        tf_order = ['1m', '5m', '15m', '30m', '1h']
+        available = [tf for tf in tf_order if tf in args.timeframes]
+
+        pairs = []
+        for i, entry_tf in enumerate(available):
+            for filter_tf in available[i + 1:]:
+                # Skip 1m entry combos -- already covered in Phase 2
+                if entry_tf == '1m':
+                    continue
+                pairs.append((entry_tf, filter_tf))
+
+        if pairs:
+            print("\n\n" + "=" * 70)
+            print("  PHASE 3: All Entry + Filter Combinations")
+            print("=" * 70)
+            print("  Testing coarser entry TFs with higher-TF trend filters\n")
+
+            for entry_tf, filter_tf in pairs:
+                label = f'{entry_tf}+{filter_tf}'
+                print(f"  [{label}] Running {entry_tf} entries filtered by {filter_tf} trend...")
+
+                try:
+                    combo_result = run_combination_general(
+                        df, entry_tf, filter_tf, cfg,
+                        cfg.exit, cfg.signal, args.use_strat,
+                    )
+                    row = result_to_row(label, combo_result)
+                    general_combo_rows.append(row)
+                    print(f"         -> {row['trades']} trades, "
+                          f"WR={row['win_rate']:.1%}, "
+                          f"E={row['expectancy']:+.3%}/trade, "
+                          f"Sharpe={row['sharpe']:.2f}")
+                except Exception as e:
+                    print(f"         -> Error: {e}")
+
+            if general_combo_rows:
+                print("\n\n" + "=" * 70)
+                print("  ALL ENTRY+FILTER COMBINATION RESULTS (ranked by expectancy)")
+                print("=" * 70)
+                ranked_general = rank_results(general_combo_rows)
+                print(format_metrics_table(ranked_general))
+
+                if ranked_general and ranked_general[0]['trades'] > 0:
+                    best_g = ranked_general[0]
+                    print(f"\n  >>> Best general combo: {best_g['label']} "
+                          f"(E={best_g['expectancy']:+.3%}, Sharpe={best_g['sharpe']:.2f})")
+
+    # -- Save all results to CSV -----------------------------------------------
     all_rows = []
     for r in single_rows:
         r['type'] = 'single'
         all_rows.append(r)
     for r in combo_rows:
         r['type'] = 'combo'
+        all_rows.append(r)
+    for r in general_combo_rows:
+        r['type'] = 'general_combo'
         all_rows.append(r)
 
     results_df = pd.DataFrame(all_rows)
