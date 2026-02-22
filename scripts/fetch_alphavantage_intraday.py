@@ -31,13 +31,35 @@ except ImportError:
 # Load environment variables
 load_dotenv()
 
-# Alpha Vantage API configuration - Premium key from .env or environment
-ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY', '')
+# Alpha Vantage API configuration - Premium key + free-tier backups for failover
+ALPHA_VANTAGE_API_KEYS = [
+    os.getenv('ALPHA_VANTAGE_API_KEY', ''),  # Premium key from .env/secrets
+    'KKYWD9FJ9VITR3F5',   # Backup key 0
+    'PWXSRHD4ZXX8S1HI',   # Backup key 1
+    'VNMXDQ9LBOJ5X2I6',   # Backup key 2
+    '7E8X3MQLLSW5HPWF',   # Backup key 3
+    'VFIN9SZWRAI1SCGW',   # Backup key 4
+]
+current_key_index = 0
+ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEYS[current_key_index]
 BASE_URL = 'https://www.alphavantage.co/query'
 
 # Rate limiting: Premium tier allows 150 API calls/minute
 CALLS_PER_MINUTE = 150
 DELAY_BETWEEN_CALLS = 60 / CALLS_PER_MINUTE  # ~0.4 seconds
+
+
+def switch_api_key():
+    """Switch to the next available API key."""
+    global current_key_index, ALPHA_VANTAGE_API_KEY
+
+    current_key_index = (current_key_index + 1) % len(ALPHA_VANTAGE_API_KEYS)
+    ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEYS[current_key_index]
+
+    print(f"\n  Switching to API key #{current_key_index}")
+    print(f"  New key: {ALPHA_VANTAGE_API_KEY[:4]}...{ALPHA_VANTAGE_API_KEY[-4:]}")
+
+    return ALPHA_VANTAGE_API_KEY
 
 
 def is_month_all_non_trading_days(month_str):
@@ -151,9 +173,34 @@ def fetch_intraday_month(symbol, month, interval='1min', outputsize='full', adju
 
         if 'Information' in data:
             print(f"  API Information: {data['Information']}")
-            print("  Rate limit reached. Waiting 60 seconds...")
-            time.sleep(60)
-            return None
+
+            # Try switching to backup key if available
+            if current_key_index < len(ALPHA_VANTAGE_API_KEYS) - 1:
+                new_key = switch_api_key()
+                params['apikey'] = new_key
+                print(f"  Retrying with backup key...")
+                time.sleep(2)
+
+                try:
+                    response = requests.get(BASE_URL, params=params, timeout=30)
+                    response.raise_for_status()
+                    data = response.json()
+
+                    if 'Information' not in data and 'Error Message' not in data:
+                        time_series_key = f'Time Series ({interval})'
+                        if time_series_key in data:
+                            print(f"  Backup key worked!")
+                        else:
+                            return None
+                    else:
+                        return None
+                except Exception as e:
+                    print(f"  Retry with backup key failed: {e}")
+                    return None
+            else:
+                print("  All API keys exhausted. Waiting 60 seconds...")
+                time.sleep(60)
+                return None
 
         # Extract time series data
         time_series_key = f'Time Series ({interval})'
