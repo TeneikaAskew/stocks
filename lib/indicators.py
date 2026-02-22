@@ -56,17 +56,22 @@ def calculate_stoch_rsi(
     k_period: int = 3,
     d_period: int = 3,
 ) -> Tuple[pd.Series, pd.Series]:
-    """Stochastic RSI with Wilder's smoothing for %K and %D."""
-    rsi_min = rsi.rolling(window=period).min()
-    rsi_max = rsi.rolling(window=period).max()
+    """Stochastic RSI with SMA smoothing for %K and %D.
+
+    Uses SMA (not Wilder's RMA) for %K and %D, per the original Chande &
+    Kroll specification and matching TradingView, Alpha Vantage, and TA-Lib.
+    Returns NaN for the raw StochRSI until `period` RSI bars are available.
+    """
+    rsi_min = rsi.rolling(window=period, min_periods=period).min()
+    rsi_max = rsi.rolling(window=period, min_periods=period).max()
     rsi_range = rsi_max - rsi_min
 
     with np.errstate(divide='ignore', invalid='ignore'):
         stoch_rsi = 100.0 * (rsi - rsi_min) / rsi_range.where(rsi_range > 0, np.nan)
         stoch_rsi = pd.Series(stoch_rsi, index=rsi.index).fillna(50.0)
 
-    stoch_rsi_k = wilder_moving_average(stoch_rsi, k_period)
-    stoch_rsi_d = wilder_moving_average(stoch_rsi_k, d_period)
+    stoch_rsi_k = stoch_rsi.rolling(window=k_period, min_periods=k_period).mean()
+    stoch_rsi_d = stoch_rsi_k.rolling(window=d_period, min_periods=d_period).mean()
     return stoch_rsi_k, stoch_rsi_d
 
 
@@ -76,11 +81,16 @@ def calculate_macd(
     slow: int = 26,
     signal: int = 9,
 ) -> Tuple[pd.Series, pd.Series, pd.Series]:
-    """MACD line, signal line, and histogram."""
-    ema_fast = close.ewm(span=fast, min_periods=1, adjust=False).mean()
-    ema_slow = close.ewm(span=slow, min_periods=1, adjust=False).mean()
+    """MACD line, signal line, and histogram.
+
+    MACD is NaN until the slow EMA is warmed up (`slow` bars); the signal
+    line is NaN for a further `signal` bars. Matches TradingView / Alpha
+    Vantage behaviour.
+    """
+    ema_fast = close.ewm(span=fast, min_periods=slow, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, min_periods=slow, adjust=False).mean()
     macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, min_periods=1, adjust=False).mean()
+    signal_line = macd_line.ewm(span=signal, min_periods=signal, adjust=False).mean()
     histogram = macd_line - signal_line
     return macd_line, signal_line, histogram
 
@@ -90,13 +100,17 @@ def calculate_macd(
 # ---------------------------------------------------------------------------
 
 def calculate_ema(prices: pd.Series, period: int) -> pd.Series:
-    """Exponential Moving Average (standard span-based)."""
-    return prices.ewm(span=period, adjust=False).mean()
+    """Exponential Moving Average (standard span-based).
+
+    Returns NaN until `period` bars are available, matching TradingView
+    and Alpha Vantage behaviour.
+    """
+    return prices.ewm(span=period, min_periods=period, adjust=False).mean()
 
 
 def calculate_sma(prices: pd.Series, period: int) -> pd.Series:
-    """Simple Moving Average."""
-    return prices.rolling(window=period, min_periods=1).mean()
+    """Simple Moving Average. Returns NaN until `period` bars are available."""
+    return prices.rolling(window=period, min_periods=period).mean()
 
 
 # ---------------------------------------------------------------------------
@@ -125,9 +139,14 @@ def calculate_atr(
 def calculate_bollinger_bands(
     close: pd.Series, period: int = 20, std_mult: float = 2.0,
 ) -> Tuple[pd.Series, pd.Series, pd.Series]:
-    """Bollinger Bands — returns (upper, middle, lower)."""
-    middle = close.rolling(window=period, min_periods=1).mean()
-    std = close.rolling(window=period, min_periods=1).std()
+    """Bollinger Bands — returns (upper, middle, lower).
+
+    Uses population std (ddof=0) to match TradingView, TA-Lib, Bloomberg,
+    and Alpha Vantage — per John Bollinger's original specification.
+    Returns NaN for bars before the lookback period is satisfied.
+    """
+    middle = close.rolling(window=period, min_periods=period).mean()
+    std = close.rolling(window=period, min_periods=period).std(ddof=0)
     upper = middle + std_mult * std
     lower = middle - std_mult * std
     return upper, middle, lower
