@@ -1,6 +1,53 @@
-# IWM Analysis - Quick Reference Guide
+# Stock Market Analysis - Quick Reference Guide
 
-## New Features at a Glance
+## Backtesting & Strat Commands
+
+### Run Backtests
+```bash
+# Single ticker backtest
+python scripts/run_backtest.py --ticker IWM --use-strat
+
+# Multi-timeframe sweep (tests 1m/5m/15m/30m/1h + combo filters)
+python scripts/run_timeframe_sweep.py --ticker IWM --use-strat
+
+# All tickers
+for ticker in IWM SPY QQQ; do
+    python scripts/run_timeframe_sweep.py --ticker $ticker --use-strat
+done
+
+# Run tests
+python -m pytest tests/ -v  # 297 tests
+```
+
+### Strat Candle Types
+```
+Type 1 (Inside):  curr_high <= prev_high AND curr_low >= prev_low
+Type 2U (Up):     curr_high > prev_high AND curr_low >= prev_low
+Type 2D (Down):   curr_high <= prev_high AND curr_low < prev_low
+Type 3 (Outside): curr_high > prev_high AND curr_low < prev_low
+```
+
+### FTFC Weights
+```
+Daily: 0.35, 1h: 0.25, 15m: 0.20, 5m: 0.10, Weekly: 0.10
+Score > 0.6 = aligned (trade allowed + bonus)
+Score contradicts signal at 0.3 threshold = trade REJECTED
+```
+
+### Signal Scoring (with Strat)
+```
+Base: 3-of-5 conditions (consecutive moves, RSI, VWAP, EMA, StochRSI)
++1 Strat combo bonus (reversal confirms direction)
++1 FTFC alignment bonus (score >= 0.6)
++1 ORB alignment bonus (ORB trend matches direction)
+Max: 8 points → 100% position size
+```
+
+---
+
+## Indicator Reference
+
+### New Features at a Glance
 
 ### Historical Levels (80 columns)
 ```python
@@ -226,23 +273,37 @@ for _, row in corr_df.iterrows():
 
 ```bash
 # Run full analysis (all data)
-python iwm_analysis.py -all
+python trading_analysis.py -all
 
 # Run limited analysis (last 2 months)
-python iwm_analysis.py -months 2
+python trading_analysis.py -months 2
 
-# Test historical levels
-python test_historical_levels.py
+# Run analysis for specific symbol
+python trading_analysis.py -symbol SPY
 
-# Analyze signals
-python -c "
-import pandas as pd
-signals = pd.read_csv('data/historical_iwm_0824_0825_signals.csv')
-print(f'Total signals: {len(signals)}')
-print(f'CALL signals: {len(signals[signals[\"trade_type\"]==\"call\"])}')
-print(f'PUT signals: {len(signals[signals[\"trade_type\"]==\"put\"])}')
-print(f'Win rate: {(signals[\"return_pct\"] > 0).mean():.1%}')
-"
+# Run trade analysis pipeline (validates real trades)
+python trade_analysis_pipeline.py
+
+# Run backtests
+python scripts/run_backtest.py --ticker IWM --use-strat
+python scripts/run_timeframe_sweep.py --ticker IWM --use-strat
+
+# Run all tickers
+for ticker in IWM SPY QQQ; do
+    python scripts/run_timeframe_sweep.py --ticker $ticker --use-strat
+done
+
+# Run Phase analysis (7-phase statistical system)
+python scripts/analysis/phase1_strat_mining.py --ticker IWM
+python scripts/analysis/phase2_indicator_confirmation.py --ticker IWM
+python scripts/analysis/phase3_orb_strategies.py --ticker IWM
+python scripts/analysis/phase4_setup_discovery.py --ticker IWM
+python scripts/analysis/phase5_dimensions.py --ticker IWM
+python scripts/analysis/phase6_playbook.py --ticker IWM
+python scripts/analysis/phase7_feedback_loop.py --ticker IWM
+
+# Run tests
+python -m pytest tests/ -v
 ```
 
 ## Column Naming Convention
@@ -266,27 +327,121 @@ print(f'Win rate: {(signals[\"return_pct\"] > 0).mean():.1%}')
 - `ORB_15m_*`: 15-minute ORB data
 - `ORB_30m_*`: 30-minute ORB data
 
+---
+
+## Phase Analysis System (7-Phase Statistical Foundation)
+
+The Phase system provides probability-calibrated statistics for every pattern, indicator, and setup.
+
+### Phase Reports (in `reports/`)
+| Phase | Report | What It Provides |
+|-------|--------|-----------------|
+| 1 | `phase1_strat_mining_{ticker}.md` | Transition probabilities, 3-bar sequences, consecutive move analysis, FTFC alignment |
+| 2 | `phase2_indicator_confirmation_{ticker}.md` | Indicator predictive lift, reversal early warning scorecard |
+| 3 | `phase3_orb_strategies_{ticker}.md` | ORB breakout/failure/range-bound strategy backtests |
+| 4 | `phase4_setup_discovery_{ticker}.md` | High-probability indicator combos (65%+ WR, 30+ trades), decision tree paths |
+| 5 | `phase5_dimensions_{ticker}.md` | Regime analysis, time-of-day, day-of-week, options P/L, walk-forward validation |
+| 6 | `phase6_playbook_{ticker}.md` | 12 actionable decision cards per ticker with entry/exit rules |
+| 7 | `phase7_feedback_loop.md` | Trade tracker template, weekly review, pre-market regime check |
+
+### Cross-Ticker Reports
+- `phase1_strat_mining_combined.md` — Divergence analysis across IWM/SPY/QQQ
+- `phase4_setup_comparison.md` — Universal vs. ticker-specific setups
+- `phase5d_cross_ticker.md` — Correlation and confirmation effects
+- `phase6_playbook_combined.md` — All 36 cards + quick reference
+
+### Key Backtest Results (10-Year: 2015-2025)
+
+| Ticker | Config | Trades | Win Rate | Sharpe | Expectancy |
+|--------|--------|--------|----------|--------|------------|
+| IWM | Base | 13,674 | 41.2% | 0.30 | +0.002% |
+| IWM | +Strat/FTFC/ORB | 11,664 | 42.1% | 0.51 | +0.004% |
+| **IWM** | **1m+15m combo** | **492** | **57.1%** | **9.31** | **+0.078%** |
+| SPY | +Strat/FTFC/ORB | 11,359 | 43.6% | 0.18 | +0.001% |
+| **SPY** | **1m+30m combo** | **9,528** | **54.5%** | **5.54** | **+0.036%** |
+| QQQ | +Strat/FTFC/ORB | 11,402 | 39.9% | -0.06 | -0.000% |
+| **QQQ** | **1m+15m combo** | **9,607** | **52.0%** | **6.67** | **+0.055%** |
+
+### Playbook Cards Quick Reference (12 per ticker)
+1. Bullish Continuation (2U-2U-2U) — CALL
+2. Bearish Continuation (2D-2D-2D) — PUT
+3. Bullish Reversal (2D-1-2U) — CALL
+4. Bearish Reversal (2U-1-2D) — PUT
+5. Outside Bar Breakout (Type 3) — Direction of close
+6. ORB Breakout Bullish — CALL
+7. ORB Breakout Bearish — PUT
+8. ORB Failure / Mean Reversion — Fade the false breakout
+9. Support Bounce — CALL at prev day/week low
+10. Resistance Rejection — PUT at prev day/week high
+11. Order Block Test — Direction of bounce
+12. FTFC Maximum Conviction — Highest position size
+
+### Ticker Personalities
+- **IWM**: Volatile mean reverter. Reversals work best. Best combo: 1m+15m (Sharpe 9.31)
+- **SPY**: Steady grinder. VWAP is #1 indicator. Best combo: 1m+30m (Sharpe 5.54)
+- **QQQ**: Momentum runner. CALLs only 37.6% WR (be selective). Best combo: 1m+15m (Sharpe 6.67)
+
+---
+
+## TradingView PineScript Indicators
+
+Existing indicators in `tradingview-pine-scripts/`:
+
+| Indicator | Maturity | What It Does |
+|-----------|----------|-------------|
+| **session-levels-trends** | 90% | Previous D/W/M levels, ORB overlay, Supertrend, gap zones |
+| **orb-30** | 80% | Multi-symbol ORB breakout scanner with aggregated alerts |
+| **iwm-bsvp** | 85% | Volume pressure analysis, divergence detection, entry scoring |
+| **iwm-scalping** | 75% | 27-lane multi-indicator dashboard for 0DTE scalping |
+
+### PineScript Enhancement Priorities (from Phase analysis)
+1. **Strat Candle Classifier + FTFC Overlay** — Port strat.py to Pine (biggest edge: +70-195% Sharpe)
+2. **Phase 6 Playbook Alerts** — Encode 12 cards as Pine conditions with signal score
+3. **Multi-TF Trend Filter** — 15m EMA20 direction overlay (the 1m+15m Sharpe 9.31 edge)
+4. **Reversal Early Warning Scorecard** — Phase 2 weighted checklist as Pine panel
+5. **Regime-Aware Parameters** — Auto-adjust targets/stops based on ATR regime
+
+---
+
+## Legacy Python Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `trading_analysis.py` | Primary: 195+ features, ML feature importance, signal generation |
+| `trade_analysis_pipeline.py` | Validation: Matches real trades against historical patterns, tests 100+ criteria |
+| `morning_checklist_analysis.ipynb` | Daily: Scores current conditions against your patterns |
+| `iwm_trading_alerts.py` | Real-time: Contrarian alerts with audio notifications |
+
+---
+
 ## Documentation Files
 
-- [iwm_analysis_overview.md](iwm_analysis_overview.md) - Complete overview
-- [HISTORICAL_LEVELS_FEATURE.md](HISTORICAL_LEVELS_FEATURE.md) - Historical levels docs
-- [ORB_AND_ORDER_BLOCKS_FEATURE.md](ORB_AND_ORDER_BLOCKS_FEATURE.md) - ORB/OB docs
-- [NEW_FEATURES_SUMMARY.md](NEW_FEATURES_SUMMARY.md) - Feature summary
-- [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - This file
+- [trade_analysis_overview.md](trade_analysis_overview.md) — Complete system overview + glossary
+- [trade_SIGNAL_GENERATION_METHODOLOGY.md](trade_SIGNAL_GENERATION_METHODOLOGY.md) — Signal logic analysis vs. actual trades
+- [TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md](TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md) — Pipeline build process
+- [INVESTMENT_MODELS_SUMMARY.md](INVESTMENT_MODELS_SUMMARY.md) — All 5 investment models with Phase analysis
+- [BACKTEST_RESULTS.md](BACKTEST_RESULTS.md) — 10-year backtest results across all tickers
+- [MODEL_SUMMARY.md](MODEL_SUMMARY.md) — Model architecture summary
+- [HISTORICAL_LEVELS_FEATURE.md](HISTORICAL_LEVELS_FEATURE.md) — Historical levels documentation
+- [ORB_AND_ORDER_BLOCKS_FEATURE.md](ORB_AND_ORDER_BLOCKS_FEATURE.md) — ORB/Order Block documentation
+- [QUICK_REFERENCE.md](QUICK_REFERENCE.md) — This file
 
 ## Tips
 
 1. **Start Small**: Use `-months 2` for faster iterations
 2. **Combine Features**: Look for confluence (multiple confirmations)
-3. **Test Patterns**: Use `analyze_pattern()` function for each pattern
-4. **Check Correlations**: Find which features matter most
-5. **Validate**: Test patterns on different time periods
-6. **Document**: Keep track of what works in your trading journal
+3. **Use Playbook Cards**: Reference Phase 6 cards for structured entries
+4. **Check Higher TF**: The 15m EMA20 trend filter is the single biggest edge
+5. **Respect FTFC**: Never trade against full timeframe continuity
+6. **Know Your Ticker**: IWM = mean reversion, SPY = balanced, QQQ = momentum
+7. **Validate Live**: Use Phase 7 tracker to compare real vs. backtest performance
+8. **Update PineScript Constants**: Re-run Phase analysis quarterly, update Pine thresholds
 
-## Next Steps
+## Recommended Workflow
 
-1. Run: `python iwm_analysis.py -months 2`
-2. Load signals: `signals = pd.read_csv('data/historical_iwm_0824_0825_signals.csv')`
-3. Test patterns using examples above
-4. Find your edge: Which patterns have best win rate?
-5. Integrate into live trading: Update `iwm_trading_alerts.py`
+1. **Monthly**: Re-run Phase 1-5 to update probabilities and regime parameters
+2. **Weekly**: Phase 7B weekly review against your trade journal
+3. **Daily (Pre-Market)**: `morning_checklist_analysis.ipynb` + Phase 7C regime check
+4. **Live Trading**: PineScript indicators (with Phase-calibrated thresholds)
+5. **Post-Trade**: Log in Phase 7A tracker, run `trade_analysis_pipeline.py`
+6. **Quarterly**: Phase 5G walk-forward validation to check pattern stability
