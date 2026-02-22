@@ -178,21 +178,41 @@ Bar-by-bar engine processing 1-minute data: evaluates signals, applies FTFC/ORB 
 
 Tests strategy across 1m/5m/15m/30m/1h individually, then combination filters (1m signals + higher-TF EMA20 trend direction).
 
-### Backtest Results
+### Backtest Results (Full 10-Year Data: Jan 2015 – Feb 2025)
 
-| Configuration | Ticker | Trades | Win Rate | Sharpe | Expectancy |
-|---------------|--------|--------|----------|--------|------------|
-| Base (no Strat) | IWM | 620 | 42.9% | 1.17 | +0.010% |
-| +Strat (FTFC/ORB) | IWM | 530 | 44.3% | 1.74 | +0.016% |
-| +Strat (FTFC/ORB) | SPY | 500 | 44.0% | 0.65 | +0.003% |
-| +Strat (FTFC/ORB) | QQQ | 496 | 42.1% | 0.37 | +0.004% |
-| 1m+15m combo | IWM | 492 | 57.1% | 9.31 | +0.078% |
-| 1m+30m combo | SPY | 9,528 | 54.5% | 5.54 | +0.036% |
-| 1m+15m combo | SPY | 9,959 | 53.7% | 5.33 | +0.035% |
-| 1m+15m combo | QQQ | 9,607 | 52.0% | 6.67 | +0.055% |
-| 1m+30m combo | QQQ | 9,291 | 52.2% | 6.49 | +0.054% |
+| Configuration | Ticker | Trades | Win Rate | PF | Sharpe | Expectancy |
+|---------------|--------|--------|----------|------|--------|------------|
+| Base (no Strat) | IWM | 13,674 | 41.2% | 1.02 | 0.30 | +0.002% |
+| Base (no Strat) | SPY | 13,675 | 43.6% | 0.99 | -0.19 | -0.001% |
+| Base (no Strat) | QQQ | 13,674 | 40.1% | 0.97 | -0.40 | -0.002% |
+| +Strat (FTFC/ORB) | IWM | 11,664 | 42.1% | 1.04 | 0.51 | +0.004% |
+| +Strat (FTFC/ORB) | SPY | 11,359 | 43.6% | 1.01 | 0.18 | +0.001% |
+| +Strat (FTFC/ORB) | QQQ | 11,402 | 39.9% | 1.00 | -0.06 | -0.000% |
+| 1m+15m combo | IWM | 492 | 57.1% | 2.04 | 9.31 | +0.078% |
+| 1m+30m combo | SPY | 9,528 | 54.5% | 1.68 | 5.54 | +0.036% |
+| 1m+15m combo | QQQ | 9,607 | 52.0% | 1.76 | 6.67 | +0.055% |
 
-**297 tests** covering all modules (indicators, strat, signals, backtest, data loader, config, integration).
+### Pipeline & CI/CD
+
+Run the full pipeline end-to-end:
+
+```bash
+make pipeline     # Full: backtests → sweeps → report (all tickers)
+make report       # Report-only (regenerate from existing CSVs)
+make test         # Run all 321 tests
+```
+
+Or use the Python script directly:
+
+```bash
+python scripts/run_pipeline.py                    # Full pipeline
+python scripts/run_pipeline.py --report-only      # Report only
+python scripts/run_pipeline.py --tickers IWM SPY  # Specific tickers
+```
+
+GitHub Actions runs tests on every push and supports manual pipeline dispatch.
+
+**321 tests** covering all modules (indicators, strat, signals, backtest, data loader, config, integration, production readiness).
 
 ---
 

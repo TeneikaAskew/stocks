@@ -237,20 +237,41 @@ python scripts/run_timeframe_sweep.py --ticker IWM --use-strat
 - **ORB filtering**: Trades contradicted by Opening Range Breakout trend are rejected
 - **Result**: ~90% of raw signals filtered, remaining signals have higher win rates and Sharpe ratios
 
-### Backtest Results
+### Backtest Results (Full 10-Year Data)
 
-| Configuration | Ticker | Trades | Win Rate | Sharpe | Expectancy |
-|---------------|--------|--------|----------|--------|------------|
-| Base | IWM | 620 | 42.9% | 1.17 | +0.010% |
-| +Strat (FTFC/ORB) | IWM | 530 | 44.3% | 1.74 | +0.016% |
-| 1m+15m combo | IWM | 492 | 57.1% | 9.31 | +0.078% |
-| 1m+30m combo | SPY | 9,528 | 54.5% | 5.54 | +0.036% |
-| 1m+15m combo | QQQ | 9,607 | 52.0% | 6.67 | +0.055% |
+| Configuration | Ticker | Trades | Win Rate | PF | Sharpe | Expectancy |
+|---------------|--------|--------|----------|------|--------|------------|
+| Base | IWM | 13,674 | 41.2% | 1.02 | 0.30 | +0.002% |
+| +Strat (FTFC/ORB) | IWM | 11,664 | 42.1% | 1.04 | 0.51 | +0.004% |
+| +Strat (FTFC/ORB) | SPY | 11,359 | 43.6% | 1.01 | 0.18 | +0.001% |
+| +Strat (FTFC/ORB) | QQQ | 11,402 | 39.9% | 1.00 | -0.06 | -0.000% |
+| 1m+15m combo | IWM | 492 | 57.1% | 2.04 | 9.31 | +0.078% |
+| 1m+30m combo | SPY | 9,528 | 54.5% | 1.68 | 5.54 | +0.036% |
+| 1m+15m combo | QQQ | 9,607 | 52.0% | 1.76 | 6.67 | +0.055% |
+
+See [BACKTEST_RESULTS.md](BACKTEST_RESULTS.md) for the full auto-generated report with trade duration, exit analysis, and signal strength breakdowns.
+
+### End-to-End Pipeline
+
+```bash
+# Full pipeline: base + strat backtests → timeframe sweeps → report
+make pipeline
+
+# Report-only (regenerate from existing backtest CSVs)
+make report
+
+# Or use the Python script directly
+python scripts/run_pipeline.py
+python scripts/run_pipeline.py --report-only
+python scripts/run_pipeline.py --tickers IWM SPY
+```
+
+GitHub Actions (`.github/workflows/backtest-pipeline.yml`) runs tests on every push and supports manual pipeline dispatch with artifact uploads.
 
 ### Tests
 
 ```bash
-# Run all 297 tests
+# Run all 321 tests
 python -m pytest tests/ -v
 ```
 
@@ -260,34 +281,21 @@ python -m pytest tests/ -v
 - `data/*_summary.json` - Latest statistics for each ticker
 - `data/backtest_results/` - Backtest output CSVs and equity curves
 
-## Recent Updates (December 2024)
+## Recent Updates
 
-### New Features: Historical Levels, ORB, and Order Blocks
-Three major feature sets have been added with **195 new columns** for enhanced pattern recognition:
+### February 2025: Production Pipeline & Full-Range Backtests
+- **End-to-end pipeline** (`scripts/run_pipeline.py`, `Makefile`) — single command runs backtests + sweeps + report for all tickers
+- **GitHub Actions CI/CD** — tests on every push, manual pipeline dispatch with artifact uploads
+- **Full 10-year backtests** — all tickers backtested across Jan 2015 – Feb 2025 (~13K+ trades each)
+- **Production hardening** — division-by-zero guards, NaN handling, config parsing robustness, CSV discovery fixes
+- **321 automated tests** including 24 dedicated production-readiness tests
 
-1. **Historical Levels** (80 columns) - [Details](HISTORICAL_LEVELS_FEATURE.md)
-   - Track previous day/week/month/year levels
-   - Identify breakouts and support/resistance tests
-   - 50% retracement levels (HL_Mid, OC_Mid)
+### December 2024: Historical Levels, ORB, and Order Blocks
+Three major feature sets added with **195 new columns** for enhanced pattern recognition:
 
-2. **Opening Range Breakout - ORB** (108 columns) - [Details](ORB_AND_ORDER_BLOCKS_FEATURE.md)
-   - 5m, 15m, 30m opening range analysis
-   - Trend identification (bullish/bearish/neutral)
-   - Intraday direction and momentum tracking
-
-3. **Order Blocks** (7 columns) - [Details](ORB_AND_ORDER_BLOCKS_FEATURE.md)
-   - Consolidation zone detection
-   - Institutional supply/demand zones
-   - Support/resistance confirmation
-
-### Quick Test
-```bash
-# Test historical levels feature
-python test_historical_levels.py
-
-# Run analysis with new features (2 months for testing)
-python iwm_analysis.py -months 2
-```
+1. **Historical Levels** (80 columns) — previous day/week/month/year levels, breakout flags, at-level indicators
+2. **Opening Range Breakout - ORB** (108 columns) — 5m/15m/30m analysis, trend direction, momentum tracking
+3. **Order Blocks** (7 columns) — institutional consolidation zone detection
 
 ### Documentation
 - [INVESTMENT_MODELS_SUMMARY.md](INVESTMENT_MODELS_SUMMARY.md) - Detailed summary of all 5 models, Strat/FTFC, backtest engine, and results

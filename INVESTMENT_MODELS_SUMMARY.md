@@ -695,28 +695,52 @@ The models implement a **contrarian mean-reversion strategy** with the following
 
 ## Backtest Results
 
-### Base Strategy (No Strat Filtering)
+All backtests use the **full 10-year historical data range** (Jan 2015 – Feb 2025, ~1.8M bars per ticker) for maximum statistical significance.
 
-| Ticker | Trades | Win Rate | Avg Win | Avg Loss | Sharpe | Expectancy |
-|--------|--------|----------|---------|----------|--------|------------|
-| IWM | 620 | 42.9% | +0.28% | -0.14% | 1.17 | +0.010% |
-| SPY | 620 | 43.5% | +0.16% | -0.12% | 0.52 | +0.002% |
-| QQQ | 620 | 40.0% | +0.24% | -0.16% | -0.15 | -0.005% |
+### Base Strategy vs Strat Overlay (FTFC + ORB Filtering)
 
-### With Strat Overlay (FTFC + ORB Filtering)
+| Ticker | Mode | Trades | Win Rate | Avg Win | Avg Loss | PF | Sharpe | Expectancy |
+|--------|------|--------|----------|---------|----------|------|--------|------------|
+| **IWM** | Base | 13,674 | 41.2% | +0.29% | -0.20% | 1.02 | 0.30 | +0.002% |
+| **IWM** | **Strat** | 11,664 | 42.1% | +0.29% | -0.20% | 1.04 | 0.51 | +0.004% |
+| **SPY** | Base | 13,675 | 43.6% | +0.15% | -0.12% | 0.99 | -0.19 | -0.001% |
+| **SPY** | **Strat** | 11,359 | 43.6% | +0.16% | -0.12% | 1.01 | 0.18 | +0.001% |
+| **QQQ** | Base | 13,674 | 40.1% | +0.23% | -0.16% | 0.97 | -0.40 | -0.002% |
+| **QQQ** | **Strat** | 11,402 | 39.9% | +0.24% | -0.16% | 1.00 | -0.06 | -0.000% |
 
-| Ticker | Trades | Win Rate | Avg Win | Avg Loss | Sharpe | Expectancy | vs Base |
-|--------|--------|----------|---------|----------|--------|------------|---------|
-| IWM | 530 | 44.3% | +0.28% | -0.14% | 1.74 | +0.016% | Sharpe +49% |
-| SPY | 500 | 44.0% | +0.16% | -0.12% | 0.65 | +0.003% | Sharpe +25% |
-| QQQ | 496 | 42.1% | +0.24% | -0.16% | 0.37 | +0.004% | Flipped positive |
+**What the Strat overlay does:**
+- **IWM**: Removed 2,010 low-quality trades, win rate +0.8% pts, Sharpe 0.30 → 0.51 (+70%)
+- **SPY**: Removed 2,316 low-quality trades, Sharpe -0.19 → 0.18 (+195%)
+- **QQQ**: Removed 2,272 low-quality trades, Sharpe -0.40 → -0.06 (+84%)
 
 ### Filter Rejection Rates
 
-| Filter | Rejection Rate | Effect |
-|--------|---------------|--------|
-| ORB | ~75% of raw signals | Largest filter — eliminates trades against intraday trend |
-| FTFC | ~18% of remaining | Blocks trades contradicted by higher-timeframe structure |
+| Ticker | Base Signals | Strat Signals | Filtered Out | Filter Rate |
+|--------|-------------|---------------|--------------|-------------|
+| **IWM** | 13,674 | 11,664 | 2,010 | 14.7% |
+| **SPY** | 13,675 | 11,359 | 2,316 | 16.9% |
+| **QQQ** | 13,674 | 11,402 | 2,272 | 16.6% |
+
+The FTFC + ORB filters reject **~16%** of raw signals on average, leaving only trades aligned with higher-timeframe structure.
+
+### Performance by Signal Strength
+
+| Ticker | Score | Trades | Win Rate | Avg Return | Position Size |
+|--------|-------|--------|----------|------------|---------------|
+| **IWM** | 3/8 | 3,949 | 41.5% | +0.6 bps | 25% |
+| **IWM** | 4/8 | 5,509 | 42.5% | +0.6 bps | 25% |
+| **IWM** | 5/8 | 2,102 | 42.2% | -0.2 bps | 50% |
+| **IWM** | 6/8 | 104 | 37.5% | -4.0 bps | 75% |
+| **SPY** | 3/8 | 3,859 | 43.2% | -0.3 bps | 25% |
+| **SPY** | 4/8 | 4,770 | 43.3% | +0.1 bps | 25% |
+| **SPY** | 5/8 | 2,646 | 44.9% | +0.7 bps | 50% |
+| **SPY** | 6/8 | 83 | 43.4% | +0.7 bps | 75% |
+| **QQQ** | 3/8 | 3,977 | 39.2% | -0.4 bps | 25% |
+| **QQQ** | 4/8 | 5,681 | 39.4% | -0.2 bps | 25% |
+| **QQQ** | 5/8 | 1,668 | 42.6% | +1.2 bps | 50% |
+| **QQQ** | 6/8 | 75 | 52.0% | +3.5 bps | 75% |
+
+Higher signal scores generally produce better win rates and returns. Score 5+ trades (with Strat bonus) outperform score 3–4 trades.
 
 ### Timeframe Sweep — Combination Results (1m + higher-TF trend filter + FTFC/ORB)
 
@@ -737,13 +761,13 @@ The models implement a **contrarian mean-reversion strategy** with the following
 
 All entries are on **1-minute candles**. The system is not entering on 5m or 15m bars — those timeframes are only used as directional filters.
 
-#### Typical Trade Profile (Strat-filtered)
+#### Typical Trade Profile (Strat-filtered, full 10-year data)
 
-| Ticker | Avg Hold | Median Hold | Avg Hold (wins) | Avg Hold (losses) | Target Hit % | Stopped Out % | Time Stop % |
-|--------|----------|-------------|-----------------|-------------------|--------------|---------------|-------------|
-| **IWM** | 19 min | 17 min | 23 min | 16 min | 24.0% | 43.4% | 32.5% |
-| **SPY** | 25 min | 30 min | 27 min | 23 min | 19.6% | 34.6% | 45.6% |
-| **QQQ** | 22 min | 24 min | 27 min | 19 min | 19.4% | 44.6% | 35.9% |
+| Ticker | Trades | Win Rate | Avg Hold | Median Hold | Avg Hold (wins) | Avg Hold (losses) | Target Hit % | Stopped Out % | Time Stop % |
+|--------|--------|----------|----------|-------------|-----------------|-------------------|--------------|---------------|-------------|
+| **IWM** | 11,664 | 42.1% | 18 min | 15 min | 22 min | 15 min | 23.3% | 47.1% | 29.4% |
+| **SPY** | 11,359 | 43.6% | 19 min | 16 min | 21 min | 17 min | 26.6% | 42.7% | 30.5% |
+| **QQQ** | 11,402 | 39.9% | 17 min | 13 min | 21 min | 14 min | 23.6% | 49.2% | 26.8% |
 
 #### Duration by Exit Reason
 
@@ -751,61 +775,121 @@ All entries are on **1-minute candles**. The system is not entering on 5m or 15m
 
 | Exit Reason | Count | % | Avg Duration | Median | IQR | Avg Return | Win Rate |
 |-------------|-------|---|--------------|--------|-----|------------|----------|
-| target | 127 | 24% | 14 min | 12 min | 6–21 min | **+39 bps** | 100% |
-| stop_loss | 230 | 43% | 11 min | 8 min | 3–16 min | -22 bps | 0% |
-| time_stop | 172 | 33% | 35 min | 35 min | 35–35 min | +6 bps | 62% |
+| target | 2,717 | 23% | 13 min | 11 min | 5–19 min | **+41 bps** | 100% |
+| stop_loss | 5,491 | 47% | 11 min | 8 min | 3–16 min | -23 bps | 0% |
+| time_stop | 3,425 | 29% | 35 min | 35 min | 35–35 min | +6 bps | 63% |
+| rsi_extreme | 31 | 0% | 21 min | 23 min | 14–28 min | +29 bps | 100% |
 
 **SPY:**
 
 | Exit Reason | Count | % | Avg Duration | Median | IQR | Avg Return | Win Rate |
 |-------------|-------|---|--------------|--------|-----|------------|----------|
-| target | 98 | 20% | 17 min | 15 min | 9–25 min | **+21 bps** | 100% |
-| stop_loss | 173 | 35% | 16 min | 15 min | 9–23 min | -13 bps | 0% |
-| time_stop | 228 | 46% | 35 min | 35 min | 35–35 min | +2 bps | 53% |
+| target | 3,023 | 27% | 12 min | 10 min | 5–18 min | **+22 bps** | 100% |
+| stop_loss | 4,848 | 43% | 11 min | 8 min | 4–17 min | -15 bps | 0% |
+| time_stop | 3,465 | 31% | 34 min | 35 min | 35–35 min | +2 bps | 55% |
+| rsi_extreme | 23 | 0% | 18 min | 18 min | 9–26 min | +16 bps | 100% |
 
 **QQQ:**
 
 | Exit Reason | Count | % | Avg Duration | Median | IQR | Avg Return | Win Rate |
 |-------------|-------|---|--------------|--------|-----|------------|----------|
-| target | 96 | 19% | 18 min | 18 min | 11–25 min | **+32 bps** | 100% |
-| stop_loss | 221 | 45% | 14 min | 13 min | 6–19 min | -17 bps | 0% |
-| time_stop | 178 | 36% | 34 min | 35 min | 35–35 min | +5 bps | 63% |
+| target | 2,695 | 24% | 12 min | 10 min | 5–18 min | **+34 bps** | 100% |
+| stop_loss | 5,615 | 49% | 10 min | 7 min | 3–15 min | -18 bps | 0% |
+| time_stop | 3,060 | 27% | 34 min | 35 min | 35–35 min | +4 bps | 60% |
+| rsi_extreme | 32 | 0% | 19 min | 20 min | 11–26 min | +23 bps | 100% |
 
 #### Key Insights on Trade Duration
 
-1. **Winners need time to work.** Winning trades take longer (23–27 min avg) than losers (16–23 min). If a trade is going to hit target, expect to wait 12–18 minutes.
+1. **Winners need time to work.** Winning trades take longer (21–22 min avg) than losers (14–17 min). If a trade is going to hit target, expect to wait 10–13 minutes.
 
-2. **Losers fail fast.** Stop losses hit in 8–15 min median. On IWM, half of all stopped-out trades fail within 8 minutes. If the trade hasn't moved in your favor by ~10 min, probability drops.
+2. **Losers fail fast.** Stop losses hit in 7–8 min median. On QQQ, half of all stopped-out trades fail within 7 minutes. If the trade hasn't moved in your favor by ~10 min, probability drops.
 
-3. **Time stops are not wasted trades.** Time-stop trades (never hit target or stop) still win 53–63% of the time with small positive returns (+2 to +6 bps). They just didn't move enough.
+3. **Time stops are not wasted trades.** Time-stop trades (never hit target or stop) still win 55–63% of the time with small positive returns (+2 to +6 bps). They just didn't move enough.
 
-4. **CALL trades are faster than PUTs.** CALL entries (9:30–10:00 window) average 10–17 min hold. PUT entries (9:30–2:00 window) average 23–27 min. This reflects the tighter CALL window and more volatile morning session.
+4. **CALL trades are faster than PUTs.** CALL entries (9:30–10:00 window) average 10–11 min hold. PUT entries (9:30–2:00 window) average 20–22 min. This reflects the tighter CALL window and more volatile morning session.
 
 #### Direction Breakdown
 
 | Ticker | Dir | Trades | Win Rate | Avg Hold | Avg Hold (W) | Avg Hold (L) | Avg Win | Avg Loss |
 |--------|-----|--------|----------|----------|--------------|--------------|---------|----------|
-| **IWM** | CALL | 158 | 41.8% | 10 min | 14 min | 7 min | +31 bps | -20 bps |
-| **IWM** | PUT | 372 | 45.4% | 23 min | 27 min | 20 min | +27 bps | -19 bps |
-| **SPY** | CALL | 94 | 52.1% | 17 min | 20 min | 14 min | +13 bps | -12 bps |
-| **SPY** | PUT | 406 | 42.1% | 27 min | 28 min | 25 min | +13 bps | -10 bps |
-| **QQQ** | CALL | 116 | 41.4% | 15 min | 22 min | 10 min | +21 bps | -15 bps |
-| **QQQ** | PUT | 380 | 42.4% | 24 min | 28 min | 21 min | +21 bps | -14 bps |
+| **IWM** | CALL | 3,252 | 38.5% | 10 min | 13 min | 8 min | +32 bps | -20 bps |
+| **IWM** | PUT | 8,412 | 43.4% | 22 min | 26 min | 18 min | +28 bps | -20 bps |
+| **SPY** | CALL | 3,169 | 43.5% | 11 min | 13 min | 9 min | +16 bps | -13 bps |
+| **SPY** | PUT | 8,190 | 43.7% | 22 min | 24 min | 20 min | +16 bps | -12 bps |
+| **QQQ** | CALL | 3,219 | 37.6% | 10 min | 13 min | 7 min | +27 bps | -17 bps |
+| **QQQ** | PUT | 8,183 | 40.8% | 20 min | 24 min | 17 min | +23 bps | -16 bps |
 
 ### What the Numbers Mean
 
-- **Avg Win +0.28%**: This is the move on the *underlying* (e.g., IWM). With options leverage (typically 5–10x delta), a 0.28% underlying move translates to roughly 1.4%–2.8% on the options contract.
-- **Expectancy +0.016%/trade**: Expected profit per trade on the underlying. Over 530 trades, this compounds significantly.
-- **Sharpe 1.74**: Returns are 1.74x the volatility — consistent enough to be tradeable. The 1m+15m combo at Sharpe 9.31 indicates very strong risk-adjusted performance (though high Sharpe values warrant scrutiny for overfitting).
+- **Avg Win +0.29%**: This is the move on the *underlying* (e.g., IWM). With options leverage (typically 5–10x delta), a 0.29% underlying move translates to roughly 1.5%–2.9% on the options contract.
+- **Expectancy +0.004%/trade**: Expected profit per trade on the underlying. Over 11,664 trades across 10 years, this compounds.
+- **Sharpe 0.51**: Risk-adjusted return metric. The 1m+15m combo at Sharpe 9.31 indicates very strong risk-adjusted performance (though high Sharpe values warrant scrutiny for overfitting).
+
+---
+
+## Pipeline & CI/CD Infrastructure
+
+### End-to-End Pipeline (`scripts/run_pipeline.py`)
+
+A single command runs the full analysis chain: base backtests → Strat backtests → timeframe sweeps → report generation, for all tickers.
+
+```bash
+# Full pipeline (all tickers, all steps)
+python scripts/run_pipeline.py
+
+# Report-only (skip backtests, regenerate from existing CSVs)
+python scripts/run_pipeline.py --report-only
+
+# Single ticker
+python scripts/run_pipeline.py --tickers IWM
+
+# Skip timeframe sweeps (faster)
+python scripts/run_pipeline.py --no-sweep
+```
+
+### Makefile
+
+```bash
+make install      # Install dependencies
+make test         # Run all tests
+make pipeline     # Full pipeline (all tickers)
+make report       # Report-only
+make sweep        # Timeframe sweeps only
+make clean        # Remove generated CSVs
+make help         # Show all targets
+```
+
+### GitHub Actions (`.github/workflows/backtest-pipeline.yml`)
+
+| Job | Trigger | What it does |
+|-----|---------|-------------|
+| `test` | Push to main/claude/** | Runs `pytest` — all 321 tests |
+| `report` | Manual dispatch | Runs full or report-only pipeline, uploads artifacts |
+
+The workflow supports three modes: `report-only`, `full`, and `full-no-sweep`.
+
+### Production-Readiness Fixes
+
+The following hardening was applied during production audit:
+
+- **Config robustness**: `_parse_pct()` handles all percentage formats (0.30%, "0.0030", "30%")
+- **Indicator safety**: Division-by-zero guards on RSI, StochRSI, VWAP, RVOL for constant-price edge cases
+- **Signal NaN handling**: Skips rows with missing VWAP or StochRSI instead of propagating NaN
+- **CSV discovery**: Strat vs base CSVs identified by non-zero `ftfc_score` values (not just column presence)
+- **Pandas compatibility**: Replaced deprecated `reindex(method='ffill')` with `.reindex().ffill()`
+- **Error propagation**: Pipeline and Makefile report failures correctly with non-zero exit codes
 
 ### Test Coverage
 
-The system has **297 passing tests** covering:
+The system has **321 passing tests** covering:
 - All indicator calculations against known values
+- Division-by-zero edge cases on all indicators
 - Strat candle classification and combo detection
-- Signal generation (3-of-5 logic + Strat bonus)
+- Signal generation (3-of-5 logic + Strat bonus + NaN handling)
 - Backtest engine (entry/exit triggers, risk limits, equity curve)
 - FTFC/ORB filtering (rejection logic, filter counts)
 - Data loader (parquet loading, column normalization, timeframe aggregation)
-- Config loading with per-ticker overrides
+- Config loading with per-ticker overrides and percentage parsing
+- CSV discovery (strat vs base detection)
+- Production readiness (24 dedicated hardening tests)
 - Full end-to-end integration tests
