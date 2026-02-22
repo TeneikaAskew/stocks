@@ -34,13 +34,13 @@ deploy_premarket() {
         --cpu 1 \
         --max-retries 1 \
         --command python,-m,gcp.premarket_brief \
-        --set-env-vars "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}" \
+        --set-env-vars "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-},ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update premarket-brief \
         --image "${IMAGE}" \
         --region "${REGION}" \
         --command python,-m,gcp.premarket_brief \
-        --set-env-vars "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}" \
+        --set-env-vars "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-},ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}" \
         --quiet
 
     # Schedule: 8:30 AM ET weekdays (13:30 UTC)
@@ -66,7 +66,7 @@ deploy_monitor() {
         --max-instances 1 \
         --concurrency 1 \
         --command python,-m,gcp.signal_monitor \
-        --set-env-vars "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}" \
+        --set-env-vars "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-},ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}" \
         --no-allow-unauthenticated \
         --quiet
 }
@@ -81,13 +81,13 @@ deploy_weekend() {
         --cpu 1 \
         --max-retries 1 \
         --command python,-m,gcp.weekend_review \
-        --set-env-vars "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}" \
+        --set-env-vars "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-},ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update weekend-review \
         --image "${IMAGE}" \
         --region "${REGION}" \
         --command python,-m,gcp.weekend_review \
-        --set-env-vars "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}" \
+        --set-env-vars "DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-},ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}" \
         --quiet
 
     # Schedule: Saturday 9 AM ET (14:00 UTC)
