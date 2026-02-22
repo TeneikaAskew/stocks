@@ -35,9 +35,9 @@ load_dotenv()
 ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY', '')
 BASE_URL = 'https://www.alphavantage.co/query'
 
-# Rate limiting: Premium tier allows 75 API calls/minute
-CALLS_PER_MINUTE = 75
-DELAY_BETWEEN_CALLS = 60 / CALLS_PER_MINUTE  # ~0.8 seconds
+# Rate limiting: Premium tier allows 150 API calls/minute
+CALLS_PER_MINUTE = 150
+DELAY_BETWEEN_CALLS = 60 / CALLS_PER_MINUTE  # ~0.4 seconds
 
 
 def is_trading_day(date):
