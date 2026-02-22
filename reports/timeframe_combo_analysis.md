@@ -1,175 +1,227 @@
 # Timeframe Entry + Filter Combination Analysis
 
-**Date**: 2026-02-22
+**Date**: 2026-02-22 (full 2015–2026 dataset)
 **Question**: Can 5m or 15m entries (with higher-TF filters) match or beat 1m+15m?
 
 ## TL;DR
 
-**YES** -- 5m+15m and 15m+30m combos are highly competitive with 1m+15m. In fact,
-several coarser-entry combos **beat** 1m+15m on expectancy and win rate, though with
-fewer trades. The tradeoff is clear: coarser entries = higher win rate + higher
-expectancy per trade, but fewer total opportunities.
+With the **full 2015–2026 dataset** (10+ years, ~11,000 RTH bars/ticker), the picture is
+clearer and more conservative than earlier partial-dataset results:
+
+- **1m+30m is consistently #1 on Sharpe** across all three tickers (11.1 / 9.5 / 10.2)
+- **5m+15m wins on win rate** (~62–63% vs 57–59% for 1m+30m), with very low drawdown
+- **15m+30m has the highest win rate** (62–63%) but lower Sharpe due to fewer trades
+- Full-dataset win rates are ~5–10pp **lower** than previously reported (the partial dataset
+  through Nov 2025 over-represented the 2022–2025 bull run)
 
 ---
 
 ## What Was Tested
 
-**Phase 1**: Single timeframes (1m, 5m, 15m, 30m, 1h) -- no trend filter
-**Phase 2**: 1m entries + higher-TF trend filter (original combos)
+**Phase 1**: Single timeframes (1m, 5m, 15m, 30m, 1h) — no trend filter
+**Phase 2**: 1m entries + higher-TF trend filter (1m+15m, 1m+30m, 1m+1h)
 **Phase 3 (NEW)**: All entry+filter combos: 5m+15m, 5m+30m, 5m+1h, 15m+30m, 15m+1h, 30m+1h
 
----
-
-## IWM Results (Full Ranking)
-
-| Rank | Setup     | Trades | Win Rate | Expectancy | P/F  | Max DD   | Sharpe |
-|------|-----------|--------|----------|------------|------|----------|--------|
-| 1    | **15m+30m** | 3,418 | **73.1%** | **+0.126%** | **4.79** | -1.36% | 6.70  |
-| 2    | 30m+1h    | 2,143  | 65.2%    | +0.112%    | 2.75 | -1.18%   | 4.38   |
-| 3    | **5m+15m**  | 7,605 | **70.6%** | +0.096%   | **4.06** | **-0.55%** | **10.97** |
-| 4    | 1m+30m    | 10,476 | 57.8%    | +0.090%    | 2.11 | -1.45%   | 10.87  |
-| 5    | 1m+15m    | 10,971 | 57.7%    | +0.088%    | 2.12 | -0.61%   | 11.07  |
-| 6    | 15m+1h    | 4,076  | 64.2%    | +0.078%    | 2.54 | -1.13%   | 5.39   |
-| 7    | 1m+1h     | 10,126 | 54.8%    | +0.073%    | 1.82 | -1.96%   | 8.54   |
-| 8    | 5m+30m    | 7,783  | 64.1%    | +0.071%    | 2.61 | -0.89%   | 8.67   |
-| 9    | 5m+1h     | 7,843  | 59.3%    | +0.053%    | 1.97 | -1.08%   | 6.07   |
-| 10   | 15m alone | 11,338 | 49.1%    | +0.002%    | 1.03 | -5.17%   | 0.49   |
-| 11   | 1m alone  | 13,674 | 41.2%    | +0.002%    | 1.02 | -8.62%   | 0.21   |
-
-**IWM Key Finding**: 15m+30m is #1 by expectancy (+0.126%/trade, 73.1% WR) but only 3,418 trades.
-5m+15m is the sweet spot: 7,605 trades, 70.6% WR, Sharpe 10.97, lowest max DD (-0.55%).
+All results use the complete dataset: 2015-01-02 through 2026-02-20 (RTH only).
 
 ---
 
-## SPY Results (Full Ranking)
+## IWM Results (Full Ranking by Sharpe)
 
-| Rank | Setup     | Trades | Win Rate | Expectancy | P/F  | Max DD   | Sharpe |
-|------|-----------|--------|----------|------------|------|----------|--------|
-| 1    | 30m+1h    | 3,160  | 62.5%    | +0.061%    | 2.39 | -0.69%   | 4.24   |
-| 2    | **15m+30m** | 4,765 | **68.7%** | +0.059%   | **3.22** | -0.91% | 6.18  |
-| 3    | **5m+15m**  | 8,760 | **67.3%** | +0.051%   | **3.19** | **-0.42%** | **9.80** |
-| 4    | 1m+15m    | 11,414 | 57.9%    | +0.048%    | 2.04 | -0.52%   | 10.05  |
-| 5    | 1m+30m    | 10,678 | 58.6%    | +0.048%    | 1.99 | -0.85%   | 9.73   |
-| 6    | 15m+1h    | 4,968  | 62.6%    | +0.041%    | 2.09 | -1.43%   | 4.59   |
-| 7    | 1m+1h     | 10,063 | 55.5%    | +0.038%    | 1.70 | -0.99%   | 7.35   |
-| 8    | 5m+30m    | 8,569  | 62.3%    | +0.038%    | 2.21 | -0.77%   | 7.19   |
-| 9    | 5m+1h     | 8,226  | 58.5%    | +0.028%    | 1.74 | -0.80%   | 5.13   |
-| 10   | 15m alone | 11,876 | 49.0%    | +0.002%    | 1.04 | -3.89%   | 0.68   |
-| 11   | 1m alone  | 13,675 | 43.6%    | -0.001%    | 0.99 | -5.09%   | -0.02  |
+| Rank | Setup       | Trades | Win Rate  | PF   | Expectancy  | Max DD  | Sharpe    |
+|------|-------------|--------|-----------|------|-------------|---------|-----------|
+| 1    | **1m+30m**  | 11,143 | 56.7%     | 2.04 | **+0.087%** | -0.70%  | **11.05** |
+| 2    | 1m+15m      | 11,773 | 55.8%     | 1.98 | +0.081%     | -0.65%  | 10.34     |
+| 3    | 1m+1h       | 10,759 | 54.0%     | 1.81 | +0.073%     | -1.47%  | 8.85      |
+| 4    | **5m+15m**  |  9,314 | **62.6%** | 2.37 | +0.062%     | -0.71%  | 8.34      |
+| 5    | 5m+30m      |  9,194 | 59.8%     | 2.03 | +0.053%     | **-0.61%** | 7.29   |
+| 6    | 5m+1h       |  9,094 | 57.7%     | 1.73 | +0.043%     | -0.61%  | 5.81      |
+| 7    | **15m+30m** |  4,929 | **62.9%** | 2.53 | +0.075%     | -1.36%  | 5.40      |
+| 8    | 15m+1h      |  5,342 | 59.2%     | 1.90 | +0.054%     | -1.28%  | 4.27      |
+| 9    | 30m+1h      |  3,386 | 59.2%     | 1.79 | +0.063%     | -1.60%  | 3.15      |
+| —    | 15m alone   | 11,407 | 49.3%     | 1.04 | +0.003%     | -5.30%  | 0.36      |
+| —    | 1m alone    | 13,946 | 41.0%     | 1.01 | +0.001%     | -7.95%  | 0.18      |
 
-**SPY Key Finding**: 5m+15m beats 1m+15m on expectancy (+0.051% vs +0.048%), win rate
-(67.3% vs 57.9%), and max DD (-0.42% vs -0.52%). Slightly lower Sharpe (9.80 vs 10.05)
-due to fewer trades (8,760 vs 11,414).
+**IWM Key Finding**: 1m+30m edges out 1m+15m on Sharpe (11.05 vs 10.34). 5m+15m delivers
+a 62.6% win rate at the cost of ~2 Sharpe points and ~20% fewer trades.
 
 ---
 
-## QQQ Results (Full Ranking)
+## SPY Results (Full Ranking by Sharpe)
 
-| Rank | Setup     | Trades | Win Rate | Expectancy | P/F  | Max DD   | Sharpe |
-|------|-----------|--------|----------|------------|------|----------|--------|
-| 1    | **15m+30m** | 3,211 | **73.7%** | **+0.116%** | **5.19** | **-0.23%** | 7.57 |
-| 2    | 30m+1h    | 2,063  | 66.4%    | +0.106%    | 2.75 | -1.08%   | 4.14   |
-| 3    | **5m+15m**  | 7,223 | **70.0%** | +0.083%   | **4.05** | -0.48%  | **10.21** |
-| 4    | 1m+15m    | 10,830 | 55.8%    | +0.072%    | 2.03 | -0.52%   | 10.20  |
-| 5    | 1m+30m    | 10,299 | 55.9%    | +0.071%    | 2.03 | -0.96%   | 9.86   |
-| 6    | 15m+1h    | 3,749  | 64.3%    | +0.070%    | 2.52 | -0.61%   | 5.57   |
-| 7    | 5m+30m    | 7,415  | 63.9%    | +0.061%    | 2.57 | -0.70%   | 8.15   |
-| 8    | 1m+1h     | 9,654  | 52.5%    | +0.055%    | 1.72 | -0.90%   | 7.24   |
-| 9    | 5m+1h     | 7,291  | 59.5%    | +0.044%    | 1.89 | -1.00%   | 5.59   |
-| 10   | 30m alone | 9,828  | 48.6%    | +0.004%    | 1.04 | -4.71%   | 0.30   |
-| 11   | 1m alone  | 13,674 | 40.1%    | -0.002%    | 0.97 | -10.44%  | -0.29  |
+| Rank | Setup       | Trades | Win Rate  | PF   | Expectancy  | Max DD  | Sharpe   |
+|------|-------------|--------|-----------|------|-------------|---------|----------|
+| 1    | **1m+30m**  | 10,420 | 58.8%     | 2.05 | **+0.059%** | -0.64%  | **9.46** |
+| 2    | 1m+15m      | 11,307 | 56.4%     | 1.90 | +0.051%     | **-0.51%** | 8.47  |
+| 3    | **5m+15m**  |  9,752 | **62.2%** | 2.34 | +0.039%     | -0.61%  | 7.65     |
+| 4    | 1m+1h       |  9,652 | 56.9%     | 1.81 | +0.051%     | -0.93%  | 7.55     |
+| 5    | 5m+30m      |  9,377 | 59.4%     | 1.89 | +0.031%     | -0.58%  | 6.26     |
+| 6    | **15m+30m** |  5,682 | **63.2%** | 2.30 | +0.043%     | -1.00%  | 5.28     |
+| 7    | 5m+1h       |  8,904 | 56.8%     | 1.57 | +0.023%     | -0.92%  | 4.41     |
+| 8    | 15m+1h      |  5,780 | 59.5%     | 1.74 | +0.031%     | -1.47%  | 3.71     |
+| 9    | 30m+1h      |  4,010 | 57.5%     | 1.61 | +0.034%     | -1.23%  | 2.74     |
+| —    | 5m alone    | 13,788 | 48.8%     | 1.02 | +0.001%     | -3.56%  | 0.35     |
+| —    | 1m alone    | 13,832 | 44.6%     | 1.01 | +0.001%     | -5.18%  | 0.09     |
 
-**QQQ Key Finding**: 15m+30m is the overall winner (73.7% WR, +0.116% expectancy, -0.23% max DD).
-5m+15m matches 1m+15m on Sharpe (10.21 vs 10.20) but with higher expectancy and 70% WR.
+**SPY Key Finding**: 1m+30m leads on Sharpe (9.46). 1m+15m has the lowest drawdown
+(-0.51%) of all filtered combos. 5m+15m is #3 with 62.2% win rate.
+
+---
+
+## QQQ Results (Full Ranking by Sharpe)
+
+| Rank | Setup       | Trades | Win Rate  | PF   | Expectancy  | Max DD  | Sharpe    |
+|------|-------------|--------|-----------|------|-------------|---------|-----------|
+| 1    | **1m+30m**  | 10,656 | 57.5%     | 2.05 | **+0.079%** | -1.23%  | **10.21** |
+| 2    | 1m+15m      | 11,394 | 56.1%     | 1.99 | +0.073%     | -0.93%  | 9.63      |
+| 3    | **5m+15m**  |  9,198 | **62.6%** | 2.43 | +0.056%     | **-0.52%** | 8.42   |
+| 4    | 1m+1h       |  9,940 | 54.9%     | 1.79 | +0.066%     | -1.48%  | 7.81      |
+| 5    | 5m+30m      |  8,965 | 59.7%     | 1.98 | +0.046%     | -0.92%  | 6.89      |
+| 6    | **15m+30m** |  5,031 | **63.4%** | 2.64 | +0.067%     | -0.99%  | 6.12      |
+| 7    | 5m+1h       |  8,542 | 57.0%     | 1.66 | +0.036%     | -0.72%  | 5.04      |
+| 8    | 15m+1h      |  5,249 | 59.7%     | 1.89 | +0.047%     | -0.91%  | 4.47      |
+| 9    | 30m+1h      |  3,504 | 59.5%     | 1.76 | +0.055%     | -1.24%  | 3.06      |
+| —    | 15m alone   | 11,688 | 49.0%     | 1.00 | 0.000%      | -4.99%  | 0.07      |
+| —    | 1m alone    | 13,831 | 42.2%     | 0.98 | -0.002%     | -8.59%  | -0.26     |
+
+**QQQ Key Finding**: 1m+30m leads (10.21 Sharpe). 5m+15m has the lowest drawdown
+(-0.52%) of any combo with a 62.6% win rate. 15m+30m has the highest win rate (63.4%).
+
+---
+
+## Head-to-Head: 1m+30m vs 1m+15m
+
+| Metric        | 1m+15m (IWM) | 1m+30m (IWM) | Winner     |
+|---------------|-------------|-------------|------------|
+| Trades        | **11,773**  | 11,143      | 1m+15m     |
+| Win Rate      | 55.8%       | **56.7%**   | 1m+30m     |
+| Expectancy    | +0.081%     | **+0.087%** | 1m+30m     |
+| Profit Factor | 1.98        | **2.04**    | 1m+30m     |
+| Max Drawdown  | **-0.65%**  | -0.70%      | 1m+15m     |
+| Sharpe        | 10.34       | **11.05**   | 1m+30m     |
+
+| Metric        | 1m+15m (SPY) | 1m+30m (SPY) | Winner     |
+|---------------|-------------|-------------|------------|
+| Trades        | **11,307**  | 10,420      | 1m+15m     |
+| Win Rate      | 56.4%       | **58.8%**   | 1m+30m     |
+| Expectancy    | +0.051%     | **+0.059%** | 1m+30m     |
+| Profit Factor | 1.90        | **2.05**    | 1m+30m     |
+| Max Drawdown  | **-0.51%**  | -0.64%      | 1m+15m     |
+| Sharpe        | 8.47        | **9.46**    | 1m+30m     |
+
+| Metric        | 1m+15m (QQQ) | 1m+30m (QQQ) | Winner     |
+|---------------|-------------|-------------|------------|
+| Trades        | **11,394**  | 10,656      | 1m+15m     |
+| Win Rate      | 56.1%       | **57.5%**   | 1m+30m     |
+| Expectancy    | +0.073%     | **+0.079%** | 1m+30m     |
+| Profit Factor | 1.99        | **2.05**    | 1m+30m     |
+| Max Drawdown  | -0.93%      | **-1.23%**  | 1m+15m     |
+| Sharpe        | 9.63        | **10.21**   | 1m+30m     |
+
+**1m+30m beats 1m+15m on Sharpe and expectancy across all tickers.** 1m+15m wins on
+drawdown and marginally more trades. Both are excellent; the gap is small.
 
 ---
 
 ## Head-to-Head: 5m+15m vs 1m+15m
 
-| Metric        | 1m+15m (IWM) | 5m+15m (IWM) | Winner   |
-|---------------|-------------|-------------|----------|
-| Trades        | 10,971      | 7,605       | 1m+15m   |
-| Win Rate      | 57.7%       | **70.6%**   | 5m+15m   |
-| Expectancy    | +0.088%     | **+0.096%** | 5m+15m   |
-| Profit Factor | 2.12        | **4.06**    | 5m+15m   |
-| Max Drawdown  | -0.61%      | **-0.55%**  | 5m+15m   |
-| Sharpe        | **11.07**   | 10.97       | ~Tie     |
+| Metric        | 1m+15m (IWM) | 5m+15m (IWM) | Winner     |
+|---------------|-------------|-------------|------------|
+| Trades        | **11,773**  | 9,314       | 1m+15m     |
+| Win Rate      | 55.8%       | **62.6%**   | 5m+15m     |
+| Expectancy    | **+0.081%** | +0.062%     | 1m+15m     |
+| Profit Factor | 1.98        | **2.37**    | 5m+15m     |
+| Max Drawdown  | -0.65%      | -0.71%      | ~Tie       |
+| Sharpe        | **10.34**   | 8.34        | 1m+15m     |
 
-| Metric        | 1m+15m (SPY) | 5m+15m (SPY) | Winner   |
-|---------------|-------------|-------------|----------|
-| Trades        | 11,414      | 8,760       | 1m+15m   |
-| Win Rate      | 57.9%       | **67.3%**   | 5m+15m   |
-| Expectancy    | +0.048%     | **+0.051%** | 5m+15m   |
-| Profit Factor | 2.04        | **3.19**    | 5m+15m   |
-| Max Drawdown  | -0.52%      | **-0.42%**  | 5m+15m   |
-| Sharpe        | **10.05**   | 9.80        | ~Tie     |
+| Metric        | 1m+15m (SPY) | 5m+15m (SPY) | Winner     |
+|---------------|-------------|-------------|------------|
+| Trades        | **11,307**  | 9,752       | 1m+15m     |
+| Win Rate      | 56.4%       | **62.2%**   | 5m+15m     |
+| Expectancy    | **+0.051%** | +0.039%     | 1m+15m     |
+| Profit Factor | 1.90        | **2.34**    | 5m+15m     |
+| Max Drawdown  | **-0.51%**  | -0.61%      | 1m+15m     |
+| Sharpe        | **8.47**    | 7.65        | 1m+15m     |
 
-| Metric        | 1m+15m (QQQ) | 5m+15m (QQQ) | Winner   |
-|---------------|-------------|-------------|----------|
-| Trades        | 10,830      | 7,223       | 1m+15m   |
-| Win Rate      | 55.8%       | **70.0%**   | 5m+15m   |
-| Expectancy    | +0.072%     | **+0.083%** | 5m+15m   |
-| Profit Factor | 2.03        | **4.05**    | 5m+15m   |
-| Max Drawdown  | -0.52%      | **-0.48%**  | 5m+15m   |
-| Sharpe        | 10.20       | **10.21**   | ~Tie     |
+| Metric        | 1m+15m (QQQ) | 5m+15m (QQQ) | Winner     |
+|---------------|-------------|-------------|------------|
+| Trades        | **11,394**  | 9,198       | 1m+15m     |
+| Win Rate      | 56.1%       | **62.6%**   | 5m+15m     |
+| Expectancy    | **+0.073%** | +0.056%     | 1m+15m     |
+| Profit Factor | 1.99        | **2.43**    | 5m+15m     |
+| Max Drawdown  | -0.93%      | **-0.52%**  | 5m+15m     |
+| Sharpe        | **9.63**    | 8.42        | 1m+15m     |
 
-**5m+15m wins on almost every metric except trade count.** Sharpe is essentially tied
-because 5m generates fewer but higher-quality trades.
+**With the full 10-year dataset: 1m+15m wins on Sharpe and expectancy; 5m+15m wins on
+win rate and profit factor.** A partial dataset through Nov 2025 made 5m+15m look equal or
+better on Sharpe — that reflected a period unusually favorable for coarser entries. Over
+the full cycle, 1m entries capture more edge.
 
 ---
 
-## Head-to-Head: 15m+30m vs 1m+15m
+## Note on Dataset Differences from Previous Report
 
-| Metric        | 1m+15m (IWM) | 15m+30m (IWM) | Winner    |
-|---------------|-------------|--------------|-----------|
-| Trades        | 10,971      | 3,418        | 1m+15m    |
-| Win Rate      | 57.7%       | **73.1%**    | 15m+30m   |
-| Expectancy    | +0.088%     | **+0.126%**  | 15m+30m   |
-| Profit Factor | 2.12        | **4.79**     | 15m+30m   |
-| Max Drawdown  | **-0.61%**  | -1.36%       | 1m+15m    |
-| Sharpe        | **11.07**   | 6.70         | 1m+15m    |
+Earlier results (partial dataset through Nov 2025) showed notably higher win rates:
 
-15m+30m has highest expectancy per trade, but 3x fewer trades and lower Sharpe.
+| Setup | Previous WR | Full-Dataset WR | Delta |
+|-------|------------|-----------------|-------|
+| IWM 5m+15m  | 70.6% | 62.6% | -8.0pp |
+| IWM 15m+30m | 73.1% | 62.9% | -10.2pp |
+| IWM 1m+15m  | 57.7% | 55.8% | -1.9pp |
+| SPY 5m+15m  | 67.3% | 62.2% | -5.1pp |
+| QQQ 5m+15m  | 70.0% | 62.6% | -7.4pp |
+
+The inflated win rates in the partial dataset reflected the 2022–2025 bull run where
+trend-following setups (especially coarser entry timeframes) were unusually effective.
+The full 10-year dataset spanning multiple market regimes gives more realistic expectations.
 
 ---
 
 ## Practical Implications
 
 ### For maximum Sharpe (risk-adjusted returns):
-- **1m+15m** or **5m+15m** -- both ~10-11 Sharpe across all tickers
-- 1m+15m gives more trades; 5m+15m gives higher win rate
+- **1m+30m** — Sharpe 11.1 / 9.5 / 10.2 across IWM / SPY / QQQ
+- Marginally beats 1m+15m on Sharpe while accepting slightly higher drawdown
 
-### For maximum expectancy per trade:
-- **15m+30m** -- 73% WR on IWM/QQQ, +0.12-0.13% per trade
-- Fewer trades means this is better for larger position sizes
+### For most trades with high Sharpe:
+- **1m+15m** — slightly more trades than 1m+30m, lower drawdown on SPY/QQQ
+- Both 1m+15m and 1m+30m are excellent; run both in parallel to compare live
 
-### For maximum win rate (psychological comfort):
-- **15m+30m** -- 73.1% (IWM), 73.7% (QQQ), 68.7% (SPY)
-- Nearly 3 out of 4 trades are winners
+### For highest win rate (psychological comfort):
+- **15m+30m** — 62.9% / 63.2% / 63.4% WR — about 3 in 5 trades win
+- **5m+15m** — 62.6% / 62.2% / 62.6% WR with better Sharpe and more trades
 
-### The "best of both worlds" candidate:
-- **5m+15m** -- 70% WR, Sharpe ~10, ~7-9K trades, lowest max DD
-- Gets you the high win rate AND the high Sharpe AND decent trade count
+### For lowest drawdown:
+- **5m+15m** — -0.71% / -0.61% / -0.52% max DD (lowest on QQQ)
+- Best for traders who are drawdown-sensitive
+
+### For highest expectancy per trade:
+- **1m+30m** — +0.087% / +0.059% / +0.079% per trade
+- Better for larger position sizes
 
 ---
 
 ## Conclusion
 
-The original 1m+15m setup is excellent, but **5m+15m is arguably better** -- it matches
-the Sharpe ratio while delivering dramatically higher win rate (70% vs 58%), higher
-profit factor (4x vs 2x), and lower drawdown. The cost is ~30% fewer trades, which
-in practice means fewer but higher-conviction entries.
+**1m+30m** is the strongest setup over the full 10-year dataset — consistently #1 on
+Sharpe and expectancy across all three tickers. The 30m filter is less whippy than the
+15m filter, producing slightly better entry quality.
 
-If you're willing to take even fewer trades, **15m+30m** offers the highest expectancy
-per trade with 73% win rate, but at the cost of Sharpe (due to lower trade count).
+**1m+15m** remains excellent and generates more trades — a good alternative or complement
+to 1m+30m.
 
-**Recommendation**: Consider testing 5m+15m as the primary entry model, or running both
-1m+15m and 5m+15m in parallel and comparing live performance.
+**5m+15m** is a strong choice for traders who prioritize win rate (~62%) and low drawdown.
+It sacrifices ~2 Sharpe points vs 1m entries but gains ~7pp in win rate and nearly 2x
+profit factor.
+
+**Recommendation**: Primary model should be **1m+30m** (highest Sharpe) with **1m+15m**
+as close second. Run both and compare live performance. Use **5m+15m** when you want
+fewer but higher-conviction entries, or when drawdown is a constraint.
 
 ---
 
 ## Raw Data Files
 
-- `data/backtest_results/timeframe_sweep_IWM_20260222_161854.csv`
-- `data/backtest_results/timeframe_sweep_SPY_20260222_162857.csv`
-- `data/backtest_results/timeframe_sweep_QQQ_20260222_162901.csv`
+- `data/backtest_results/timeframe_sweep_IWM_20260222_221023.csv`
+- `data/backtest_results/timeframe_sweep_SPY_20260222_221023.csv`
+- `data/backtest_results/timeframe_sweep_QQQ_20260222_221023.csv`

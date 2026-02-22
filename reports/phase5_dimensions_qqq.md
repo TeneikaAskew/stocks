@@ -1,7 +1,7 @@
 # Phase 5: Additional Dimensions — QQQ
 
-Generated: 2026-02-22 06:46:21
-Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,740 bars)
+Generated: 2026-02-22 23:44:24
+Data: 2015-01-02 09:30:00 to 2026-02-20 16:00:00 (1,081,034 bars)
 
 ## 5A. Market Regime Analysis — QQQ
 
@@ -10,22 +10,22 @@ Performance segmented by ATR-based volatility regime.
 ### Volatility Regime Performance
 | Regime | Bars | % of Data | Avg Next Return (bps) | 2U Freq | 2D Freq | Type 3 Freq | Suggested Target Adj |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Low Vol** | 294,794 | 27.6% | +0.1 bps | 38.7% | 35.2% | 7.5% | 0.5x |
-| **Normal** | 469,778 | 44.0% | +0.0 bps | 38.6% | 36.6% | 7.7% | 1x |
-| **High Vol** | 303,168 | 28.4% | -0.1 bps | 37.7% | 38.6% | 7.9% | 2x |
+| **Low Vol** | 296,358 | 27.4% | +0.1 bps | 38.7% | 35.2% | 7.5% | 0.5x |
+| **Normal** | 476,034 | 44.0% | +0.0 bps | 38.6% | 36.6% | 7.7% | 1x |
+| **High Vol** | 308,642 | 28.6% | -0.1 bps | 37.7% | 38.6% | 8.0% | 2x |
 
 ### Trend Regime Performance
 | Regime | Days | % of Data | Avg Next Return (bps) | 2U Freq | 2D Freq | CALL Edge | PUT Edge |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Trending Up** | 643,653 | 60.3% | +0.1 bps | 38.7% | 35.9% | +0.0 bps | -0.1 bps |
-| **Range-Bound** | 274,147 | 25.7% | -0.0 bps | 38.0% | 37.7% | -0.0 bps | -0.0 bps |
-| **Trending Down** | 149,940 | 14.0% | -0.0 bps | 37.6% | 39.0% | -0.1 bps | +0.0 bps |
+| **Trending Up** | 650,300 | 60.2% | +0.1 bps | 38.7% | 35.9% | +0.0 bps | -0.1 bps |
+| **Range-Bound** | 279,621 | 25.9% | -0.0 bps | 38.0% | 37.8% | -0.0 bps | +0.0 bps |
+| **Trending Down** | 151,113 | 14.0% | -0.0 bps | 37.6% | 39.0% | -0.1 bps | +0.0 bps |
 
 ### Suggested Regime-Adaptive Targets
 
 **Low Vol:** Avg move = +2.3 bps, P75 = +3.0 bps, P90 = +5.1 bps
 
-**Normal:** Avg move = +3.2 bps, P75 = +4.1 bps, P90 = +7.1 bps
+**Normal:** Avg move = +3.2 bps, P75 = +4.1 bps, P90 = +7.0 bps
 
 **High Vol:** Avg move = +5.1 bps, P75 = +6.5 bps, P90 = +11.2 bps
 
@@ -35,11 +35,11 @@ Performance by intraday time window.
 
 | Window | Bars | % of Data | Avg Return (bps) | Std (bps) | 2U % | 2D % | 3 % | CALL Edge | PUT Edge |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Open (9:30-10:00)** | 81,981 | 7.7% | +0.0 bps | +8.2 bps | 39.9% | 37.9% | 7.7% | +5.6 bps | +5.8 bps |
-| **Mid-Morning (10:00-11:00)** | 164,075 | 15.4% | -0.0 bps | +6.2 bps | 38.7% | 37.4% | 7.9% | +4.3 bps | +4.4 bps |
-| **Midday (11:00-13:00)** | 328,197 | 30.7% | +0.0 bps | +4.6 bps | 38.6% | 36.6% | 7.7% | +3.1 bps | +3.2 bps |
-| **Afternoon (13:00-15:00)** | 327,354 | 30.7% | +0.0 bps | +4.8 bps | 38.1% | 36.3% | 7.4% | +3.0 bps | +3.0 bps |
-| **Close (15:00-16:00)** | 163,410 | 15.3% | +0.0 bps | +5.4 bps | 37.6% | 36.9% | 8.0% | +3.4 bps | +3.5 bps |
+| **Open (9:30-10:00)** | 83,001 | 7.7% | +0.0 bps | +8.2 bps | 39.9% | 37.9% | 7.7% | +5.7 bps | +5.8 bps |
+| **Mid-Morning (10:00-11:00)** | 166,115 | 15.4% | -0.0 bps | +6.2 bps | 38.7% | 37.4% | 7.9% | +4.3 bps | +4.4 bps |
+| **Midday (11:00-13:00)** | 332,277 | 30.7% | +0.0 bps | +4.6 bps | 38.6% | 36.6% | 7.7% | +3.1 bps | +3.2 bps |
+| **Afternoon (13:00-15:00)** | 331,434 | 30.7% | +0.0 bps | +4.8 bps | 38.1% | 36.3% | 7.5% | +2.9 bps | +3.0 bps |
+| **Close (15:00-16:00)** | 165,450 | 15.3% | -0.0 bps | +5.4 bps | 37.6% | 37.0% | 8.1% | +3.4 bps | +3.5 bps |
 
 ### Optimal Entry Windows
 Current config: CALL 9:30-10:00, PUT 9:30-14:00
@@ -49,38 +49,38 @@ Current config: CALL 9:30-10:00, PUT 9:30-14:00
 
 | Window | Bars | CALL Next Return | Win Rate |
 | :--- | :--- | :--- | :--- |
-| 09:30-10:00 | 81,981 | +0.0 bps | 49.5% |
-| 10:00-10:30 | 82,026 | +0.0 bps | 49.2% |
-| 10:30-11:00 | 82,049 | -0.0 bps | 48.8% |
-| 11:00-11:30 | 82,050 | +0.0 bps | 49.1% |
-| 11:30-12:00 | 82,050 | +0.0 bps | 48.7% |
-| 12:00-12:30 | 82,050 | -0.0 bps | 48.5% |
-| 12:30-13:00 | 82,047 | +0.0 bps | 48.4% |
-| 13:00-13:30 | 81,962 | -0.0 bps | 48.1% |
-| 13:30-14:00 | 81,869 | +0.0 bps | 48.2% |
-| 14:00-14:30 | 81,782 | +0.0 bps | 48.2% |
-| 14:30-15:00 | 81,741 | +0.0 bps | 48.5% |
-| 15:00-15:30 | 81,700 | -0.0 bps | 48.2% |
-| 15:30-16:00 | 81,710 | +0.0 bps | 48.4% |
+| 09:30-10:00 | 83,001 | +0.0 bps | 49.5% |
+| 10:00-10:30 | 83,046 | +0.0 bps | 49.2% |
+| 10:30-11:00 | 83,069 | -0.0 bps | 48.8% |
+| 11:00-11:30 | 83,070 | +0.0 bps | 49.1% |
+| 11:30-12:00 | 83,070 | +0.0 bps | 48.7% |
+| 12:00-12:30 | 83,070 | -0.0 bps | 48.5% |
+| 12:30-13:00 | 83,067 | +0.0 bps | 48.4% |
+| 13:00-13:30 | 82,982 | -0.0 bps | 48.1% |
+| 13:30-14:00 | 82,889 | +0.0 bps | 48.2% |
+| 14:00-14:30 | 82,802 | +0.0 bps | 48.2% |
+| 14:30-15:00 | 82,761 | +0.0 bps | 48.5% |
+| 15:00-15:30 | 82,720 | -0.0 bps | 48.1% |
+| 15:30-16:00 | 82,730 | +0.0 bps | 48.4% |
 
 
 **PUT by half-hour window:**
 
 | Window | Bars | PUT Next Return | Win Rate |
 | :--- | :--- | :--- | :--- |
-| 09:30-10:00 | 81,981 | -0.0 bps | 48.0% |
-| 10:00-10:30 | 82,026 | -0.0 bps | 47.8% |
-| 10:30-11:00 | 82,049 | +0.0 bps | 47.7% |
-| 11:00-11:30 | 82,050 | -0.0 bps | 47.1% |
-| 11:30-12:00 | 82,050 | -0.0 bps | 47.0% |
-| 12:00-12:30 | 82,050 | +0.0 bps | 46.9% |
-| 12:30-13:00 | 82,047 | -0.0 bps | 46.7% |
-| 13:00-13:30 | 81,962 | +0.0 bps | 46.7% |
-| 13:30-14:00 | 81,869 | -0.0 bps | 46.8% |
-| 14:00-14:30 | 81,782 | -0.0 bps | 47.2% |
-| 14:30-15:00 | 81,741 | -0.0 bps | 46.8% |
-| 15:00-15:30 | 81,700 | +0.0 bps | 47.5% |
-| 15:30-16:00 | 81,710 | -0.0 bps | 47.7% |
+| 09:30-10:00 | 83,001 | -0.0 bps | 48.0% |
+| 10:00-10:30 | 83,046 | -0.0 bps | 47.8% |
+| 10:30-11:00 | 83,069 | +0.0 bps | 47.8% |
+| 11:00-11:30 | 83,070 | -0.0 bps | 47.1% |
+| 11:30-12:00 | 83,070 | -0.0 bps | 47.1% |
+| 12:00-12:30 | 83,070 | +0.0 bps | 47.0% |
+| 12:30-13:00 | 83,067 | -0.0 bps | 46.8% |
+| 13:00-13:30 | 82,982 | +0.0 bps | 46.8% |
+| 13:30-14:00 | 82,889 | -0.0 bps | 46.8% |
+| 14:00-14:30 | 82,802 | -0.0 bps | 47.2% |
+| 14:30-15:00 | 82,761 | -0.0 bps | 46.8% |
+| 15:00-15:30 | 82,720 | +0.0 bps | 47.6% |
+| 15:30-16:00 | 82,730 | -0.0 bps | 47.7% |
 
 ## 5C. Day-of-Week Analysis — QQQ
 
@@ -88,11 +88,11 @@ Performance by trading day.
 
 | Day | Bars | Avg Return (bps) | Volatility (bps) | 2U % | 2D % | 3 % | CALL WR | PUT WR |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Monday** | 199,191 | +0.1 bps | +6.8 bps | 38.4% | 36.5% | 7.7% | 48.6% | 47.0% |
-| **Tuesday** | 219,896 | +0.0 bps | +6.4 bps | 38.3% | 36.7% | 7.7% | 48.7% | 47.2% |
-| **Wednesday** | 218,846 | +0.0 bps | +6.9 bps | 38.3% | 36.8% | 7.7% | 48.7% | 47.3% |
-| **Thursday** | 215,963 | +0.0 bps | +6.8 bps | 38.5% | 37.0% | 7.7% | 48.6% | 47.4% |
-| **Friday** | 213,844 | -0.0 bps | +8.0 bps | 38.3% | 36.8% | 7.6% | 48.5% | 47.2% |
+| **Monday** | 201,146 | +0.1 bps | +6.8 bps | 38.4% | 36.5% | 7.7% | 48.6% | 47.0% |
+| **Tuesday** | 222,633 | +0.0 bps | +6.4 bps | 38.3% | 36.7% | 7.7% | 48.7% | 47.3% |
+| **Wednesday** | 221,583 | +0.0 bps | +6.9 bps | 38.3% | 36.8% | 7.7% | 48.7% | 47.3% |
+| **Thursday** | 218,700 | +0.0 bps | +6.8 bps | 38.5% | 37.1% | 7.7% | 48.6% | 47.4% |
+| **Friday** | 216,972 | -0.0 bps | +8.0 bps | 38.3% | 36.8% | 7.7% | 48.5% | 47.2% |
 
 ## 5E. Drawdown & Streak Analysis — QQQ
 
@@ -104,35 +104,35 @@ Worst-case scenarios and streak analysis.
 | Max consecutive losses | 20 |
 | Avg losing streak length | 2.1 |
 | Median losing streak | 2 |
-| Streaks of 3+ | 55,558 |
-| Streaks of 5+ | 15,140 |
-| Streaks of 7+ | 4,173 |
-| Total losing streaks | 201,737 |
+| Streaks of 3+ | 56,201 |
+| Streaks of 5+ | 15,299 |
+| Streaks of 7+ | 4,217 |
+| Total losing streaks | 204,237 |
 
 
 **Streak Length Distribution:**
 
 | Streak Length | Occurrences | % of Streaks |
 | :--- | :--- | :--- |
-| 1 | 96,048 | 47.6% |
-| 2 | 50,131 | 24.8% |
-| 3 | 26,491 | 13.1% |
-| 4 | 13,927 | 6.9% |
-| 5 | 7,180 | 3.6% |
-| 6 | 3,787 | 1.9% |
-| 7 | 1,913 | 0.9% |
-| 8 | 1,053 | 0.5% |
-| 9 | 538 | 0.3% |
-| 10 | 344 | 0.2% |
+| 1 | 97,270 | 47.6% |
+| 2 | 50,766 | 24.9% |
+| 3 | 26,800 | 13.1% |
+| 4 | 14,102 | 6.9% |
+| 5 | 7,257 | 3.6% |
+| 6 | 3,825 | 1.9% |
+| 7 | 1,934 | 0.9% |
+| 8 | 1,065 | 0.5% |
+| 9 | 540 | 0.3% |
+| 10 | 351 | 0.2% |
 
 ### Cumulative P&L Drawdown
 | Metric | Value |
 | :--- | :--- |
 | Max drawdown (bps) | -22100.0 bps |
-| Max drawdown duration (trades) | 802,119 |
-| Total P&L (bps) | -11232.0 bps |
-| Total trades | 802,425 |
-| Win rate | 47.1% |
+| Max drawdown duration (trades) | 812,212 |
+| Total P&L (bps) | -10535.4 bps |
+| Total trades | 812,518 |
+| Win rate | 47.2% |
 
 ### Psychological Preparation
 > "This system wins 47% of the time on QQQ, but you should expect 3+ consecutive losses about 1.4x per month. The max consecutive loss streak in the data was 20."
@@ -207,10 +207,11 @@ Testing pattern stability over rolling windows.
 | Window 19 | 2024-01-2024-07 | 9,506 | 47.5% | +0.1 bps | Yes |
 | Window 20 | 2024-07-2025-01 | 9,362 | 46.1% | -0.0 bps | Yes |
 | Window 21 | 2025-01-2025-07 | 9,226 | 47.6% | +0.1 bps | Yes |
-| Window 22 | 2025-07-2025-11 | 7,186 | 47.5% | -0.1 bps | Yes |
+| Window 22 | 2025-07-2026-01 | 7,186 | 47.5% | -0.1 bps | Yes |
+| Window 23 | 2026-01-2026-02 | 2,333 | 45.3% | -0.1 bps | Yes |
 
 Coefficient of variation: 0.05 (STABLE)
-Mean rate: 44.8%, Std: 2.2%
+Mean rate: 44.9%, Std: 2.1%
 
 ### Pattern: 2D continuation
 | Window | Period | Occurrences | Next=2D Rate | Avg Fwd Return (bps) | Stable? |
@@ -236,10 +237,11 @@ Mean rate: 44.8%, Std: 2.2%
 | Window 19 | 2024-01-2024-07 | 8,104 | 43.7% | -0.0 bps | Yes |
 | Window 20 | 2024-07-2025-01 | 8,432 | 44.3% | +0.0 bps | Yes |
 | Window 21 | 2025-01-2025-07 | 8,607 | 46.9% | -0.0 bps | Yes |
-| Window 22 | 2025-07-2025-11 | 6,399 | 45.6% | +0.0 bps | Yes |
+| Window 22 | 2025-07-2026-01 | 6,399 | 45.6% | +0.0 bps | Yes |
+| Window 23 | 2026-01-2026-02 | 2,393 | 47.0% | -0.1 bps | Yes |
 
 Coefficient of variation: 0.05 (STABLE)
-Mean rate: 43.5%, Std: 2.1%
+Mean rate: 43.7%, Std: 2.2%
 
 ### Pattern: 2D-1-2U reversal
 | Window | Period | Occurrences | Next=2U Rate | Avg Fwd Return (bps) | Stable? |
@@ -265,10 +267,11 @@ Mean rate: 43.5%, Std: 2.1%
 | Window 19 | 2024-01-2024-07 | 1,319 | 49.0% | -0.2 bps | Yes |
 | Window 20 | 2024-07-2025-01 | 1,252 | 51.1% | +0.1 bps | Yes |
 | Window 21 | 2025-01-2025-07 | 1,116 | 49.8% | -0.0 bps | Yes |
-| Window 22 | 2025-07-2025-11 | 927 | 52.0% | +0.1 bps | Yes |
+| Window 22 | 2025-07-2026-01 | 927 | 52.0% | +0.1 bps | Yes |
+| Window 23 | 2026-01-2026-02 | 295 | 44.7% | +0.1 bps | Yes |
 
 Coefficient of variation: 0.05 (STABLE)
-Mean rate: 48.2%, Std: 2.5%
+Mean rate: 48.0%, Std: 2.5%
 
 ### Pattern: 2U-1-2D reversal
 | Window | Period | Occurrences | Next=2D Rate | Avg Fwd Return (bps) | Stable? |
@@ -294,8 +297,9 @@ Mean rate: 48.2%, Std: 2.5%
 | Window 19 | 2024-01-2024-07 | 1,164 | 44.6% | +0.3 bps | Yes |
 | Window 20 | 2024-07-2025-01 | 1,097 | 47.6% | -0.1 bps | Yes |
 | Window 21 | 2025-01-2025-07 | 1,049 | 47.8% | -0.0 bps | Yes |
-| Window 22 | 2025-07-2025-11 | 864 | 47.2% | -0.0 bps | Yes |
+| Window 22 | 2025-07-2026-01 | 864 | 47.2% | -0.0 bps | Yes |
+| Window 23 | 2026-01-2026-02 | 289 | 49.8% | -0.3 bps | Yes |
 
 Coefficient of variation: 0.05 (STABLE)
-Mean rate: 46.2%, Std: 2.2%
+Mean rate: 46.3%, Std: 2.3%
 
