@@ -168,8 +168,17 @@ def add_strat_columns(df: pd.DataFrame) -> pd.DataFrame:
 # Indicator enrichment
 # ---------------------------------------------------------------------------
 
-def enrich_with_indicators(df: pd.DataFrame, indicator_config: IndicatorConfig = None) -> pd.DataFrame:
-    """Add all technical indicators + Strat + historical levels + order blocks."""
+def enrich_with_indicators(df: pd.DataFrame, indicator_config: IndicatorConfig = None,
+                           skip_levels: bool = False) -> pd.DataFrame:
+    """Add all technical indicators + Strat + historical levels + order blocks.
+
+    Args:
+        df: Input OHLCV DataFrame.
+        indicator_config: Optional indicator configuration.
+        skip_levels: If True, skip calculate_historical_levels and calculate_order_blocks
+                     to reduce peak memory usage (~1.5GB savings on 1M bar datasets).
+                     Columns guarded by 'if col in df.columns' checks will simply be absent.
+    """
     if indicator_config is None:
         indicator_config = IndicatorConfig()
 
@@ -178,33 +187,34 @@ def enrich_with_indicators(df: pd.DataFrame, indicator_config: IndicatorConfig =
     # Core indicators (RSI, EMA, VWAP, ATR, BB, MACD, ORB, etc.)
     df = add_all_indicators(df, close_col=close_col, indicator_config=indicator_config)
 
-    # Historical levels (prev day/week/month/year highs/lows)
-    if 'Time' in df.columns:
+    if not skip_levels:
+        # Historical levels (prev day/week/month/year highs/lows)
+        if 'Time' in df.columns:
+            try:
+                levels = calculate_historical_levels(
+                    pd.to_datetime(df['Time']),
+                    df['High'], df['Low'], df['Open'], df[close_col],
+                )
+                df = pd.concat([df, levels], axis=1)
+            except Exception:
+                pass
+
+        # Order blocks
         try:
-            levels = calculate_historical_levels(
-                pd.to_datetime(df['Time']),
-                df['High'], df['Low'], df['Open'], df[close_col],
+            atr_col = indicator_config.atr_col
+            atr = df[atr_col] if atr_col in df.columns else None
+            ob = calculate_order_blocks(
+                df['High'], df['Low'], df[close_col], atr=atr,
+                lookback=indicator_config.order_block_lookback,
+                consol_window=indicator_config.order_block_consol_window,
+                consol_threshold=indicator_config.order_block_consol_threshold,
+                vol_ratio=indicator_config.order_block_vol_ratio,
+                ffill_limit=indicator_config.order_block_ffill_limit,
+                level_tolerance=indicator_config.order_block_level_tolerance,
             )
-            df = pd.concat([df, levels], axis=1)
+            df = pd.concat([df, ob], axis=1)
         except Exception:
             pass
-
-    # Order blocks
-    try:
-        atr_col = indicator_config.atr_col
-        atr = df[atr_col] if atr_col in df.columns else None
-        ob = calculate_order_blocks(
-            df['High'], df['Low'], df[close_col], atr=atr,
-            lookback=indicator_config.order_block_lookback,
-            consol_window=indicator_config.order_block_consol_window,
-            consol_threshold=indicator_config.order_block_consol_threshold,
-            vol_ratio=indicator_config.order_block_vol_ratio,
-            ffill_limit=indicator_config.order_block_ffill_limit,
-            level_tolerance=indicator_config.order_block_level_tolerance,
-        )
-        df = pd.concat([df, ob], axis=1)
-    except Exception:
-        pass
 
     # Strat classification
     df = add_strat_columns(df)
