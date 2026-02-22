@@ -13,27 +13,37 @@ Usage:
 """
 
 import argparse
+import logging
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 DEFAULT_TICKERS = ["IWM", "SPY", "QQQ"]
 
 
+log = logging.getLogger("pipeline")
+
+
 def run_step(cmd: list[str], label: str) -> bool:
     """Run a subprocess, printing its output in real time. Returns True on success."""
-    print(f"\n{'='*70}")
-    print(f"  {label}")
-    print(f"{'='*70}\n")
+    log.info("START: %s", label)
     t0 = time.time()
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
     elapsed = time.time() - t0
     ok = result.returncode == 0
-    status = "OK" if ok else "FAILED"
-    print(f"\n  [{status}] {label} ({elapsed:.0f}s)")
+    if ok:
+        log.info("OK: %s (%.0fs)", label, elapsed)
+    else:
+        log.error("FAILED: %s (%.0fs, exit %d)", label, elapsed, result.returncode)
     return ok
 
 
@@ -63,9 +73,8 @@ def main():
     tickers = args.tickers
     failed: list[str] = []
 
-    print(f"Pipeline: tickers={tickers}")
-    print(f"          skip_sweep={args.skip_sweep}")
-    print(f"          report_only={args.report_only}")
+    log.info("Pipeline: tickers=%s  skip_sweep=%s  report_only=%s",
+             tickers, args.skip_sweep, args.report_only)
     t_start = time.time()
 
     if not args.report_only:
@@ -114,16 +123,13 @@ def main():
 
     # --- Summary ---
     elapsed_total = time.time() - t_start
-    print(f"\n{'='*70}")
-    print(f"  PIPELINE COMPLETE ({elapsed_total:.0f}s)")
-    print(f"{'='*70}")
     if failed:
-        print(f"\n  FAILED steps: {', '.join(failed)}")
+        log.error("PIPELINE FAILED (%.0fs) — failed steps: %s",
+                  elapsed_total, ", ".join(failed))
         sys.exit(1)
     else:
-        print(f"\n  All steps passed for {tickers}")
         output_path = args.output or str(PROJECT_ROOT / "BACKTEST_RESULTS.md")
-        print(f"  Report: {output_path}")
+        log.info("PIPELINE COMPLETE (%.0fs) — report: %s", elapsed_total, output_path)
         sys.exit(0)
 
 

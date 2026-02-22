@@ -193,6 +193,8 @@ def generate_signals(
         # Skip bars with missing critical indicators
         if pd.isna(row.get(ind.rsi_col)) or pd.isna(row.get('Close', row.get('Last'))):
             continue
+        if pd.isna(row.get('Price_vs_VWAP')) or pd.isna(row.get('StochRSI_K')):
+            continue
 
         sig = evaluate_signal(
             row,

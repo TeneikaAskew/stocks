@@ -56,51 +56,32 @@ def find_latest(pattern: str) -> Path | None:
     return files[0] if files else None
 
 
-def find_trade_csv_pair(ticker: str) -> tuple[Path | None, Path | None]:
-    """Find the latest (base, strat) CSV pair for a ticker.
+def _is_strat_csv(filepath: Path) -> bool:
+    """Check whether a backtest CSV was generated with Strat overlay enabled.
 
-    They are generated as pairs — the base CSV has more trades (no filtering),
-    the strat CSV has fewer (FTFC+ORB filtered).  We find the two most-recent
-    CSVs and assign based on line count.
+    Strat runs have a populated ``ftfc_score`` column; base runs don't (all NaN
+    or column absent).
     """
-    files = sorted(RESULTS_DIR.glob(f"backtest_{ticker}_*.csv"),
-                   key=lambda f: f.stat().st_mtime, reverse=True)
-    if len(files) < 2:
-        return (files[0] if files else None, None)
-
-    # Take two most recent — the one with more lines is base
-    f1, f2 = files[0], files[1]
-    n1 = sum(1 for _ in open(f1))
-    n2 = sum(1 for _ in open(f2))
-    if n1 >= n2:
-        return (f2, f1)  # f2=more lines=base... wait, f1 is most recent
-    else:
-        return (f1, f2)
-
-    # Actually: base always has more trades than strat.
-    # Most recent pair: the strat run comes after the base run.
-    # So files[0] = strat (more recent, fewer trades), files[1] = base (older, more trades)
+    try:
+        df = pd.read_csv(filepath, nrows=5, usecols=lambda c: c in ('ftfc_score',))
+        return 'ftfc_score' in df.columns and df['ftfc_score'].notna().any()
+    except Exception:
+        return False
 
 
 def find_trade_csv(ticker: str, strat: bool = True) -> Path | None:
-    """Find the latest backtest_{ticker}_*.csv — base or strat version."""
+    """Find the latest backtest_{ticker}_*.csv — base or strat version.
+
+    Identifies strat vs base by checking whether ``ftfc_score`` is populated,
+    which is the definitive marker of a Strat-overlay run.
+    """
     files = sorted(RESULTS_DIR.glob(f"backtest_{ticker}_*.csv"),
                    key=lambda f: f.stat().st_mtime, reverse=True)
-    if not files:
-        return None
-
-    if len(files) < 2:
-        return files[0]
-
-    # The two most recent are a pair: strat (fewer lines, newer) and base (more lines, older)
-    f_newer, f_older = files[0], files[1]
-    n_newer = sum(1 for _ in open(f_newer))
-    n_older = sum(1 for _ in open(f_older))
-
-    if strat:
-        return f_newer if n_newer <= n_older else f_older
-    else:
-        return f_older if n_older >= n_newer else f_newer
+    for f in files:
+        if _is_strat_csv(f) == strat:
+            return f
+    # Fallback: return most recent regardless
+    return files[0] if files else None
 
 
 def find_sweep_csv(ticker: str) -> Path | None:
@@ -362,7 +343,12 @@ def main():
     print(f"Generating report for {args.tickers}...")
     report = build_report(args.tickers)
 
+    if "*No backtest data found.*" in report:
+        print("ERROR: No backtest data found for any ticker.", file=sys.stderr)
+        sys.exit(1)
+
     output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(report)
     print(f"Report written to {output_path}")
     print(f"  ({len(report.splitlines())} lines)")
