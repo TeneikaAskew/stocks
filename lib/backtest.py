@@ -124,6 +124,54 @@ class BacktestResult:
             return 0.0
         return (daily_returns.mean() / daily_returns.std()) * np.sqrt(self.annualization_factor)
 
+    def _trade_durations(self) -> List[float]:
+        """Duration of each trade in minutes."""
+        return [(t.exit_time - t.entry_time).total_seconds() / 60.0
+                for t in self.trades if t.entry_time and t.exit_time]
+
+    def duration_metrics(self) -> Dict[str, float]:
+        """Trade duration statistics in minutes."""
+        durations = self._trade_durations()
+        if not durations:
+            return {}
+        s = pd.Series(durations)
+        winners = [d for d, t in zip(durations, self.trades) if t.return_pct and t.return_pct > 0]
+        losers = [d for d, t in zip(durations, self.trades) if t.return_pct and t.return_pct <= 0]
+        result = {
+            'avg_duration_min': s.mean(), 'median_duration_min': s.median(),
+            'p25_duration_min': s.quantile(0.25), 'p75_duration_min': s.quantile(0.75),
+        }
+        if winners:
+            ws = pd.Series(winners)
+            result['avg_win_duration_min'] = ws.mean()
+            result['median_win_duration_min'] = ws.median()
+        if losers:
+            ls = pd.Series(losers)
+            result['avg_loss_duration_min'] = ls.mean()
+            result['median_loss_duration_min'] = ls.median()
+        return result
+
+    def duration_by_exit_reason(self) -> pd.DataFrame:
+        """Duration and return breakdown by exit reason."""
+        rows = []
+        for t in self.trades:
+            if t.entry_time and t.exit_time and t.return_pct is not None:
+                rows.append({
+                    'exit_reason': t.exit_reason,
+                    'duration_min': (t.exit_time - t.entry_time).total_seconds() / 60.0,
+                    'return_pct': t.return_pct, 'won': t.return_pct > 0,
+                })
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        return df.groupby('exit_reason').agg(
+            trades=('duration_min', 'count'),
+            avg_duration=('duration_min', 'mean'),
+            median_duration=('duration_min', 'median'),
+            avg_return_bps=('return_pct', lambda x: x.mean() * 10000),
+            win_rate=('won', 'mean'),
+        ).round(2)
+
     def metrics(self) -> Dict[str, float]:
         """Summary metrics as a dict."""
         return {
@@ -137,6 +185,7 @@ class BacktestResult:
             'sharpe_ratio': self.sharpe_ratio,
             'total_winners': len(self.winners),
             'total_losers': len(self.losers),
+            **self.duration_metrics(),
         }
 
     def metrics_by_strength(self, risk_config: RiskConfig = None) -> pd.DataFrame:
@@ -215,6 +264,23 @@ class BacktestResult:
             f"Max Drawdown:    {m['max_drawdown_pct']:.2%}",
             f"Sharpe Ratio:    {m['sharpe_ratio']:.2f}",
         ]
+
+        # Duration stats
+        dm = self.duration_metrics()
+        if dm:
+            lines.append(f"\nTrade Duration:")
+            lines.append(f"  Avg hold (all):    {dm.get('avg_duration_min', 0):.1f} min")
+            lines.append(f"  Median hold (all): {dm.get('median_duration_min', 0):.1f} min")
+            if 'avg_win_duration_min' in dm:
+                lines.append(f"  Avg hold (wins):   {dm['avg_win_duration_min']:.1f} min")
+            if 'avg_loss_duration_min' in dm:
+                lines.append(f"  Avg hold (losses): {dm['avg_loss_duration_min']:.1f} min")
+
+        # Duration by exit reason
+        dur_df = self.duration_by_exit_reason()
+        if not dur_df.empty:
+            lines.append(f"\nDuration by Exit Reason:")
+            lines.append(dur_df.to_string())
 
         # Filter rejection stats
         fc = self.filter_counts

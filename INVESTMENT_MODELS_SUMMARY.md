@@ -733,6 +733,65 @@ The models implement a **contrarian mean-reversion strategy** with the following
 
 **Key insight**: The 1m+15m combination consistently ranks #1 or #2 across all tickers. The higher-TF EMA20 trend filter transforms a near-zero-edge base strategy into a high-Sharpe system by ensuring you only trade in the direction of the 15-minute trend.
 
+### Trade Duration & Mechanics — What a Typical Trade Looks Like
+
+All entries are on **1-minute candles**. The system is not entering on 5m or 15m bars — those timeframes are only used as directional filters.
+
+#### Typical Trade Profile (Strat-filtered)
+
+| Ticker | Avg Hold | Median Hold | Avg Hold (wins) | Avg Hold (losses) | Target Hit % | Stopped Out % | Time Stop % |
+|--------|----------|-------------|-----------------|-------------------|--------------|---------------|-------------|
+| **IWM** | 19 min | 17 min | 23 min | 16 min | 24.0% | 43.4% | 32.5% |
+| **SPY** | 25 min | 30 min | 27 min | 23 min | 19.6% | 34.6% | 45.6% |
+| **QQQ** | 22 min | 24 min | 27 min | 19 min | 19.4% | 44.6% | 35.9% |
+
+#### Duration by Exit Reason
+
+**IWM:**
+
+| Exit Reason | Count | % | Avg Duration | Median | IQR | Avg Return | Win Rate |
+|-------------|-------|---|--------------|--------|-----|------------|----------|
+| target | 127 | 24% | 14 min | 12 min | 6–21 min | **+39 bps** | 100% |
+| stop_loss | 230 | 43% | 11 min | 8 min | 3–16 min | -22 bps | 0% |
+| time_stop | 172 | 33% | 35 min | 35 min | 35–35 min | +6 bps | 62% |
+
+**SPY:**
+
+| Exit Reason | Count | % | Avg Duration | Median | IQR | Avg Return | Win Rate |
+|-------------|-------|---|--------------|--------|-----|------------|----------|
+| target | 98 | 20% | 17 min | 15 min | 9–25 min | **+21 bps** | 100% |
+| stop_loss | 173 | 35% | 16 min | 15 min | 9–23 min | -13 bps | 0% |
+| time_stop | 228 | 46% | 35 min | 35 min | 35–35 min | +2 bps | 53% |
+
+**QQQ:**
+
+| Exit Reason | Count | % | Avg Duration | Median | IQR | Avg Return | Win Rate |
+|-------------|-------|---|--------------|--------|-----|------------|----------|
+| target | 96 | 19% | 18 min | 18 min | 11–25 min | **+32 bps** | 100% |
+| stop_loss | 221 | 45% | 14 min | 13 min | 6–19 min | -17 bps | 0% |
+| time_stop | 178 | 36% | 34 min | 35 min | 35–35 min | +5 bps | 63% |
+
+#### Key Insights on Trade Duration
+
+1. **Winners need time to work.** Winning trades take longer (23–27 min avg) than losers (16–23 min). If a trade is going to hit target, expect to wait 12–18 minutes.
+
+2. **Losers fail fast.** Stop losses hit in 8–15 min median. On IWM, half of all stopped-out trades fail within 8 minutes. If the trade hasn't moved in your favor by ~10 min, probability drops.
+
+3. **Time stops are not wasted trades.** Time-stop trades (never hit target or stop) still win 53–63% of the time with small positive returns (+2 to +6 bps). They just didn't move enough.
+
+4. **CALL trades are faster than PUTs.** CALL entries (9:30–10:00 window) average 10–17 min hold. PUT entries (9:30–2:00 window) average 23–27 min. This reflects the tighter CALL window and more volatile morning session.
+
+#### Direction Breakdown
+
+| Ticker | Dir | Trades | Win Rate | Avg Hold | Avg Hold (W) | Avg Hold (L) | Avg Win | Avg Loss |
+|--------|-----|--------|----------|----------|--------------|--------------|---------|----------|
+| **IWM** | CALL | 158 | 41.8% | 10 min | 14 min | 7 min | +31 bps | -20 bps |
+| **IWM** | PUT | 372 | 45.4% | 23 min | 27 min | 20 min | +27 bps | -19 bps |
+| **SPY** | CALL | 94 | 52.1% | 17 min | 20 min | 14 min | +13 bps | -12 bps |
+| **SPY** | PUT | 406 | 42.1% | 27 min | 28 min | 25 min | +13 bps | -10 bps |
+| **QQQ** | CALL | 116 | 41.4% | 15 min | 22 min | 10 min | +21 bps | -15 bps |
+| **QQQ** | PUT | 380 | 42.4% | 24 min | 28 min | 21 min | +21 bps | -14 bps |
+
 ### What the Numbers Mean
 
 - **Avg Win +0.28%**: This is the move on the *underlying* (e.g., IWM). With options leverage (typically 5–10x delta), a 0.28% underlying move translates to roughly 1.4%–2.8% on the options contract.
