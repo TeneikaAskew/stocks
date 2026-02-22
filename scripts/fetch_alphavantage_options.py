@@ -44,8 +44,9 @@ ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEYS[current_key_index]
 BASE_URL = 'https://www.alphavantage.co/query'
 
 # Rate limiting: Alpha Vantage free tier allows 5 API calls/minute, 500/day
+# Premium plans support up to 75+ RPM — override with --delay argument
 CALLS_PER_MINUTE = 5
-DELAY_BETWEEN_CALLS = 60 / CALLS_PER_MINUTE  # 12 seconds
+DELAY_BETWEEN_CALLS = 60 / CALLS_PER_MINUTE  # 12 seconds (overridden by --delay at runtime)
 
 
 def is_trading_day(date):
@@ -649,8 +650,18 @@ Note: Free tier is limited to 5 calls/minute and 500 calls/day.
                        help='Display existing parquet data instead of fetching')
     parser.add_argument('--rows', type=int, default=100,
                        help='Number of rows to display when using --show (default: 100)')
+    parser.add_argument('--delay', type=float, default=None,
+                       help='Seconds between API calls (default: 12 for free tier, use 2 for premium plans)')
 
     args = parser.parse_args()
+
+    # Override rate limiting if --delay provided (premium keys support much higher RPM)
+    if args.delay is not None:
+        global DELAY_BETWEEN_CALLS, CALLS_PER_MINUTE
+        DELAY_BETWEEN_CALLS = args.delay
+        # Set CALLS_PER_MINUTE high enough that the 60s batch-wait never triggers
+        # (batch wait fires when elapsed < 60s after N calls; with delay=1 and N=150, elapsed=150s > 60s)
+        CALLS_PER_MINUTE = max(60, int(60 / args.delay)) if args.delay > 0 else 150
 
     # If --show flag is set, display data and exit
     if args.show:

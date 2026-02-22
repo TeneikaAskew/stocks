@@ -111,7 +111,8 @@ jobs:
         python scripts/fetch_alphavantage_options.py \
           --symbol SPY \
           --start-date ${{ steps.dates.outputs.START_DATE }} \
-          --end-date ${{ steps.dates.outputs.END_DATE }}
+          --end-date ${{ steps.dates.outputs.END_DATE }} \
+          --delay 1
 
     - name: Fetch IWM options data
       if: steps.symbols.outputs.SYMBOLS == 'ALL' || contains(steps.symbols.outputs.SYMBOLS, 'IWM')
@@ -122,7 +123,8 @@ jobs:
         python scripts/fetch_alphavantage_options.py \
           --symbol IWM \
           --start-date ${{ steps.dates.outputs.START_DATE }} \
-          --end-date ${{ steps.dates.outputs.END_DATE }}
+          --end-date ${{ steps.dates.outputs.END_DATE }} \
+          --delay 1
 
     - name: Fetch QQQ options data
       if: steps.symbols.outputs.SYMBOLS == 'ALL' || contains(steps.symbols.outputs.SYMBOLS, 'QQQ')
@@ -133,7 +135,8 @@ jobs:
         python scripts/fetch_alphavantage_options.py \
           --symbol QQQ \
           --start-date ${{ steps.dates.outputs.START_DATE }} \
-          --end-date ${{ steps.dates.outputs.END_DATE }}
+          --end-date ${{ steps.dates.outputs.END_DATE }} \
+          --delay 1
 
     - name: Check for failures
       id: check_failures
