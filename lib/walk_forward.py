@@ -233,11 +233,13 @@ class WalkForwardValidator:
             return {}
 
         all_metrics = [r.metrics() for r in fold_results]
-        keys = all_metrics[0].keys()
+        keys = set()
+        for m in all_metrics:
+            keys.update(m.keys())
 
         aggregate = {}
         for key in keys:
-            values = [m[key] for m in all_metrics if isinstance(m[key], (int, float))]
+            values = [m[key] for m in all_metrics if key in m and isinstance(m.get(key), (int, float))]
             if values:
                 aggregate[f'avg_{key}'] = np.mean(values)
                 aggregate[f'std_{key}'] = np.std(values)
