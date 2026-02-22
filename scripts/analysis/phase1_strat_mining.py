@@ -403,7 +403,12 @@ def analyze_mtf_alignment(ticker: str, tf_dict: Dict) -> str:
         tf_labels = classify_strat_series(df_tf)
         # Map to 1m index using forward-fill (use completed bar only)
         tf_numeric = tf_labels.map({'2U': 1, '2D': -1, '1': 0, '3': 0, 'X': 0}).fillna(0)
-        aligned = tf_numeric.shift(1).reindex(df_1m.index).ffill().fillna(0)
+        # Use method='ffill' so timestamps that don't exist in 1m index
+        # (e.g. daily midnight bars, hourly boundaries) still propagate forward
+        shifted = tf_numeric.shift(1)
+        # Sort both indices to ensure ffill works correctly
+        shifted = shifted.sort_index()
+        aligned = shifted.reindex(df_1m.index, method='ffill').fillna(0)
         htf_labels[tf] = aligned
 
     if len(htf_labels) < 2:

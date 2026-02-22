@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from scripts.analysis.shared_utils import (
     TICKERS, REPORTS_DIR,
     load_ticker_1m, enrich_with_indicators, classify_strat_series,
+    resample_to_timeframe,
     md_header, md_table, fmt_pct, fmt_bps, fmt_num, save_report,
     timestamp_str, sample_size_label, progress,
     IndicatorConfig,
@@ -588,11 +589,107 @@ def analyze_sample_sizes(ticker: str, results_df: pd.DataFrame) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 4A-HTF: Multi-Timeframe Combinatorial Scan (Forward Return Win Condition)
+# ---------------------------------------------------------------------------
+
+def run_combinatorial_scan_fwd(
+    df: pd.DataFrame,
+    labels: pd.Series,
+    groups: Dict[str, Dict[str, pd.Series]],
+    fwd_return: pd.Series,
+    min_samples: int = 50,
+    min_win_rate: float = 0.60,
+    max_combos: int = 3,
+) -> pd.DataFrame:
+    """Scan combinations using forward multi-bar return as win condition.
+
+    Instead of 'next bar is 2U', uses 'positive forward return over N bars'.
+    This is less noisy than single-bar Strat classification.
+    """
+    group_names = list(groups.keys())
+    results = []
+
+    for direction, dir_label in [('CALL', 'Bullish'), ('PUT', 'Bearish')]:
+        if direction == 'CALL':
+            win_mask = fwd_return > 0
+            return_signed = fwd_return
+        else:
+            win_mask = fwd_return < 0
+            return_signed = -fwd_return
+
+        # 2-way combinations
+        for i, g1_name in enumerate(group_names):
+            for g2_name in group_names[i + 1:]:
+                for f1_name, f1_mask in groups[g1_name].items():
+                    for f2_name, f2_mask in groups[g2_name].items():
+                        combined = f1_mask & f2_mask
+                        valid = combined & fwd_return.notna()
+                        n = valid.sum()
+                        if n < min_samples:
+                            continue
+
+                        wins = (valid & win_mask).sum()
+                        wr = wins / n
+                        avg_ret = return_signed[valid].mean()
+
+                        if wr >= min_win_rate:
+                            results.append({
+                                'direction': dir_label,
+                                'combo_size': 2,
+                                'setup': f"{f1_name} + {f2_name}",
+                                'win_rate': wr,
+                                'trades': int(n),
+                                'avg_return_bps': float(avg_ret),
+                                'confidence': sample_size_label(int(n)),
+                            })
+
+        # 3-way combinations
+        if max_combos >= 3 and len(group_names) >= 3:
+            for combo_groups in combinations(range(len(group_names)), 3):
+                g1, g2, g3 = [group_names[i] for i in combo_groups]
+
+                for f1_name, f1_mask in groups[g1].items():
+                    for f2_name, f2_mask in groups[g2].items():
+                        for f3_name, f3_mask in groups[g3].items():
+                            combined = f1_mask & f2_mask & f3_mask
+                            valid = combined & fwd_return.notna()
+                            n = valid.sum()
+                            if n < min_samples:
+                                continue
+
+                            wins = (valid & win_mask).sum()
+                            wr = wins / n
+                            avg_ret = return_signed[valid].mean()
+
+                            if wr >= min_win_rate:
+                                results.append({
+                                    'direction': dir_label,
+                                    'combo_size': 3,
+                                    'setup': f"{f1_name} + {f2_name} + {f3_name}",
+                                    'win_rate': wr,
+                                    'trades': int(n),
+                                    'avg_return_bps': float(avg_ret),
+                                    'confidence': sample_size_label(int(n)),
+                                })
+
+    if not results:
+        return pd.DataFrame()
+
+    results_df = pd.DataFrame(results)
+    results_df = results_df.sort_values('win_rate', ascending=False)
+    return results_df
+
+
+# ---------------------------------------------------------------------------
 # Main Runner
 # ---------------------------------------------------------------------------
 
 def run_phase4(tickers: list = None):
-    """Run full Phase 4 analysis for all tickers."""
+    """Run full Phase 4 analysis for all tickers.
+
+    Enhanced to scan on 5m and 15m bars in addition to 1m,
+    using multi-bar forward return as win condition for HTF scans.
+    """
     if tickers is None:
         tickers = TICKERS
 
@@ -601,7 +698,7 @@ def run_phase4(tickers: list = None):
     for ticker in tickers:
         progress(f"Starting Phase 4 analysis", ticker)
 
-        # Load and enrich
+        # Load and enrich 1m data
         progress("Loading and enriching 1m data...", ticker)
         df_1m = load_ticker_1m(ticker)
         if df_1m.empty:
@@ -617,31 +714,72 @@ def run_phase4(tickers: list = None):
         report += f"\nGenerated: {timestamp_str()}\n"
         report += f"Data: {df.index.min()} to {df.index.max()} ({len(df):,} bars)\n\n"
 
-        # 4A: Combinatorial scan
-        progress("Running combinatorial feature scan...", ticker)
+        # ---- 4A: Combinatorial scan on 1m (original) ----
+        progress("Running 1m combinatorial feature scan...", ticker)
         groups = define_feature_groups(df, labels)
         progress(f"  Defined {len(groups)} feature groups, scanning combinations...", ticker)
         results_df = run_combinatorial_scan(df, labels, groups, min_samples=30, min_win_rate=0.65)
         report += format_scan_results(ticker, results_df)
-        all_setups[ticker] = results_df
 
-        # 4B: Decision tree analysis
+        # ---- 4A-HTF: Combinatorial scan on 5m and 15m ----
+        all_tf_results = [results_df] if not results_df.empty else []
+
+        for htf in ['5m', '15m']:
+            progress(f"Running {htf} combinatorial feature scan...", ticker)
+            try:
+                df_htf = resample_to_timeframe(df_1m, htf)
+                df_htf = enrich_with_indicators(df_htf)
+                labels_htf = df_htf['strat_type'] if 'strat_type' in df_htf.columns else classify_strat_series(df_htf)
+                groups_htf = define_feature_groups(df_htf, labels_htf)
+
+                # Use 5-bar forward return as win condition
+                close_htf = df_htf['Close'] if 'Close' in df_htf.columns else df_htf['Last']
+                fwd_5_ret = close_htf.pct_change(5).shift(-5) * 10000
+
+                results_htf = run_combinatorial_scan_fwd(
+                    df_htf, labels_htf, groups_htf, fwd_5_ret,
+                    min_samples=50, min_win_rate=0.60,
+                )
+
+                if not results_htf.empty:
+                    results_htf['timeframe'] = htf
+                    all_tf_results.append(results_htf)
+
+                    report += md_header(f"4A-{htf.upper()}: Combinatorial Scan on {htf} Bars", 2)
+                    report += f"\nWin condition: positive return over next 5 {htf} bars.\n"
+                    report += f"Threshold: 60%+ WR with 50+ trades.\n\n"
+                    report += format_scan_results(f"{ticker} ({htf})", results_htf)
+
+                progress(f"  {htf}: found {len(results_htf)} setups", ticker)
+            except Exception as e:
+                progress(f"  {htf} scan failed: {e}", ticker)
+
+        # Combine all results
+        if all_tf_results:
+            combined_results = pd.concat(all_tf_results, ignore_index=True)
+            combined_results = combined_results.sort_values('win_rate', ascending=False)
+        else:
+            combined_results = results_df
+
+        all_setups[ticker] = combined_results
+
+        # ---- 4B: Decision tree analysis ----
         progress("Running decision tree analysis...", ticker)
         report += md_header(f"4B. Decision Tree / Random Forest — {ticker}", 2)
         report += run_decision_tree_analysis(df, labels)
 
-        # 4D: Sample size analysis
-        if not results_df.empty:
+        # ---- 4D: Sample size analysis ----
+        if not combined_results.empty:
             progress("Analyzing sample sizes...", ticker)
-            report += analyze_sample_sizes(ticker, results_df)
+            report += analyze_sample_sizes(ticker, combined_results)
 
         save_report(report, f'phase4_setup_discovery_{ticker.lower()}.md')
 
         # Save CSV of all setups
-        if not results_df.empty:
+        if not combined_results.empty:
             csv_dir = REPORTS_DIR / 'data'
             csv_dir.mkdir(parents=True, exist_ok=True)
-            results_df.to_csv(csv_dir / f'high_prob_setups_{ticker.lower()}.csv', index=False)
+            combined_results.to_csv(csv_dir / f'high_prob_setups_{ticker.lower()}.csv', index=False)
 
         progress("Phase 4 complete!", ticker)
 
@@ -651,7 +789,6 @@ def run_phase4(tickers: list = None):
         comparison = md_header("Phase 4: Cross-Ticker Setup Comparison", 1)
         comparison += f"\nGenerated: {timestamp_str()}\n\n"
 
-        # Find setups that appear in multiple tickers
         comparison += md_header("Universal vs Ticker-Specific Setups", 2)
 
         all_setup_names = {}
@@ -663,7 +800,6 @@ def run_phase4(tickers: list = None):
                         all_setup_names[name] = {}
                     all_setup_names[name][ticker] = r['win_rate']
 
-        # Setups in 2+ tickers
         universal = {k: v for k, v in all_setup_names.items() if len(v) >= 2}
         if universal:
             comparison += "Setups found in multiple tickers (potential universal edges):\n\n"
@@ -683,15 +819,15 @@ def run_phase4(tickers: list = None):
             comparison += "**No universal setups found across tickers.** All high-probability setups "
             comparison += "are ticker-specific, confirming that each ticker requires its own playbook.\n\n"
 
-        # List per-ticker setups for reference
         comparison += md_header("Per-Ticker Best Setups", 2)
         for ticker, df_setups in all_setups.items():
             if df_setups.empty:
-                comparison += f"**{ticker}:** No setups found at 65%+ WR with 30+ trades.\n\n"
+                comparison += f"**{ticker}:** No setups found.\n\n"
                 continue
             comparison += f"**{ticker}** ({len(df_setups)} setups):\n"
-            for _, r in df_setups.head(3).iterrows():
-                comparison += f"- {r['setup']} — WR: {fmt_pct(r['win_rate'] * 100)}, "
+            for _, r in df_setups.head(5).iterrows():
+                tf_note = f" [{r['timeframe']}]" if 'timeframe' in r.index and pd.notna(r.get('timeframe')) else ""
+                comparison += f"- {r['setup']}{tf_note} — WR: {fmt_pct(r['win_rate'] * 100)}, "
                 comparison += f"n={int(r['trades'])}, {r['direction']}\n"
             comparison += '\n'
 
