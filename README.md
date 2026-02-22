@@ -1,7 +1,7 @@
 # Stock Market Analysis System
 
 ## Overview
-This repository contains tools for analyzing stock market data (IWM, SPY, QQQ, SPX), calculating technical indicators, generating trading signals, and fetching real-time market data.
+This repository contains tools for analyzing stock market data (IWM, SPY, QQQ, SPX), calculating technical indicators, generating trading signals, backtesting strategies, and fetching real-time market data. The system implements a **contrarian mean-reversion strategy** with **The Strat** candle classification and **Full Timeframe Continuity (FTFC)** filtering.
 
 ## Main Components
 
@@ -203,43 +203,105 @@ python3 scripts/analyze_market_data_enhanced.py --export
 python3 scripts/analyze_market_data_enhanced.py --compare
 ```
 
+## Shared Library (`lib/`)
+
+The core analysis logic is extracted into a shared Python library, eliminating duplication and providing a unified API for backtesting and signal generation.
+
+| Module | Purpose |
+|--------|---------|
+| `lib/indicators.py` | All indicator functions (RSI, ATR, EMA, VWAP, RVOL, OBV, Stochastic RSI, ORB, etc.) |
+| `lib/signals.py` | Signal evaluation — 3-of-5 conditions + optional Strat bonus (max score 8) |
+| `lib/data_loader.py` | Unified data loading, column normalization, multi-source priority |
+| `lib/config.py` | Typed config from `alert_config.json` with per-ticker overrides |
+| `lib/strat.py` | The Strat classifier — candle types (1, 2U, 2D, 3), combos, FTFC scoring |
+| `lib/backtest.py` | Bar-by-bar backtesting with FTFC/ORB trade filtering and risk management |
+| `lib/walk_forward.py` | Walk-forward validation with expanding windows |
+
+### Backtesting
+
+```bash
+# Run backtest for a ticker
+python scripts/run_backtest.py --ticker IWM --start 2020-01-01 --end 2025-11-01
+
+# With Strat overlay (FTFC/ORB filtering)
+python scripts/run_backtest.py --ticker IWM --use-strat
+
+# Multi-timeframe sweep
+python scripts/run_timeframe_sweep.py --ticker IWM --use-strat
+```
+
+### The Strat & FTFC
+
+- **Candle classification**: Inside (1), Up (2U), Down (2D), Outside (3) vs prior bar
+- **FTFC**: Weighted alignment across 5m/15m/1h/D/W — trades contradicted by FTFC are rejected
+- **ORB filtering**: Trades contradicted by Opening Range Breakout trend are rejected
+- **Result**: ~90% of raw signals filtered, remaining signals have higher win rates and Sharpe ratios
+
+### Backtest Results (Full 10-Year Data)
+
+| Configuration | Ticker | Trades | Win Rate | PF | Sharpe | Expectancy |
+|---------------|--------|--------|----------|------|--------|------------|
+| Base | IWM | 13,674 | 41.2% | 1.02 | 0.30 | +0.002% |
+| +Strat (FTFC/ORB) | IWM | 11,664 | 42.1% | 1.04 | 0.51 | +0.004% |
+| +Strat (FTFC/ORB) | SPY | 11,359 | 43.6% | 1.01 | 0.18 | +0.001% |
+| +Strat (FTFC/ORB) | QQQ | 11,402 | 39.9% | 1.00 | -0.06 | -0.000% |
+| 1m+15m combo | IWM | 492 | 57.1% | 2.04 | 9.31 | +0.078% |
+| 1m+30m combo | SPY | 9,528 | 54.5% | 1.68 | 5.54 | +0.036% |
+| 1m+15m combo | QQQ | 9,607 | 52.0% | 1.76 | 6.67 | +0.055% |
+
+See [BACKTEST_RESULTS.md](BACKTEST_RESULTS.md) for the full auto-generated report with trade duration, exit analysis, and signal strength breakdowns.
+
+### End-to-End Pipeline
+
+```bash
+# Full pipeline: base + strat backtests → timeframe sweeps → report
+make pipeline
+
+# Report-only (regenerate from existing backtest CSVs)
+make report
+
+# Or use the Python script directly
+python scripts/run_pipeline.py
+python scripts/run_pipeline.py --report-only
+python scripts/run_pipeline.py --tickers IWM SPY
+```
+
+GitHub Actions (`.github/workflows/backtest-pipeline.yml`) runs tests on every push and supports manual pipeline dispatch with artifact uploads.
+
+### Tests
+
+```bash
+# Run all 321 tests
+python -m pytest tests/ -v
+```
+
 ## Data Storage
 - `data/` - Daily aggregated data in Parquet format
 - `data/minute/` - Minute-level data (last 7 days only)
 - `data/*_summary.json` - Latest statistics for each ticker
+- `data/backtest_results/` - Backtest output CSVs and equity curves
 
-## Recent Updates (December 2024)
+## Recent Updates
 
-### New Features: Historical Levels, ORB, and Order Blocks
-Three major feature sets have been added with **195 new columns** for enhanced pattern recognition:
+### February 2025: Production Pipeline & Full-Range Backtests
+- **End-to-end pipeline** (`scripts/run_pipeline.py`, `Makefile`) — single command runs backtests + sweeps + report for all tickers
+- **GitHub Actions CI/CD** — tests on every push, manual pipeline dispatch with artifact uploads
+- **Full 10-year backtests** — all tickers backtested across Jan 2015 – Feb 2025 (~13K+ trades each)
+- **Production hardening** — division-by-zero guards, NaN handling, config parsing robustness, CSV discovery fixes
+- **321 automated tests** including 24 dedicated production-readiness tests
 
-1. **Historical Levels** (80 columns) - [Details](HISTORICAL_LEVELS_FEATURE.md)
-   - Track previous day/week/month/year levels
-   - Identify breakouts and support/resistance tests
-   - 50% retracement levels (HL_Mid, OC_Mid)
+### December 2024: Historical Levels, ORB, and Order Blocks
+Three major feature sets added with **195 new columns** for enhanced pattern recognition:
 
-2. **Opening Range Breakout - ORB** (108 columns) - [Details](ORB_AND_ORDER_BLOCKS_FEATURE.md)
-   - 5m, 15m, 30m opening range analysis
-   - Trend identification (bullish/bearish/neutral)
-   - Intraday direction and momentum tracking
-
-3. **Order Blocks** (7 columns) - [Details](ORB_AND_ORDER_BLOCKS_FEATURE.md)
-   - Consolidation zone detection
-   - Institutional supply/demand zones
-   - Support/resistance confirmation
-
-### Quick Test
-```bash
-# Test historical levels feature
-python test_historical_levels.py
-
-# Run analysis with new features (2 months for testing)
-python iwm_analysis.py -months 2
-```
+1. **Historical Levels** (80 columns) — previous day/week/month/year levels, breakout flags, at-level indicators
+2. **Opening Range Breakout - ORB** (108 columns) — 5m/15m/30m analysis, trend direction, momentum tracking
+3. **Order Blocks** (7 columns) — institutional consolidation zone detection
 
 ### Documentation
+- [INVESTMENT_MODELS_SUMMARY.md](INVESTMENT_MODELS_SUMMARY.md) - Detailed summary of all 5 models, Strat/FTFC, backtest engine, and results
+- [MODEL_SUMMARY.md](MODEL_SUMMARY.md) - Concise model overview with backtest results
+- [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Quick reference guide for indicators and patterns
 - [NEW_FEATURES_SUMMARY.md](NEW_FEATURES_SUMMARY.md) - Complete feature overview
-- [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Quick reference guide
 - [iwm_analysis_overview.md](iwm_analysis_overview.md) - All analysis scripts overview
 - [SIGNAL_GENERATION_METHODOLOGY.md](SIGNAL_GENERATION_METHODOLOGY.md) - How trading signals are generated and validated
 - [TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md](TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md) - How the trade analysis report is built from your actual trades
