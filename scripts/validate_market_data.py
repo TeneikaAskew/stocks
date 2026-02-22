@@ -84,24 +84,112 @@ class ValidationResult:
 def get_expected_date() -> date:
     """
     Get the expected date for market data.
-    If today is a weekend or after market close, use last trading day.
+    If today is a weekend, holiday, or after market close, use last trading day.
     """
     eastern = pytz.timezone('US/Eastern')
     now = datetime.now(eastern)
     today = now.date()
 
-    # If it's Saturday (5) or Sunday (6), go back to Friday
-    if today.weekday() == 5:  # Saturday
-        expected_date = today - timedelta(days=1)
-    elif today.weekday() == 6:  # Sunday
-        expected_date = today - timedelta(days=2)
-    else:
-        # On weekdays, expect today's data after market close
-        # Market closes at 4pm ET, data processing takes time
-        # At 9pm ET we should have all data for today
-        expected_date = today
+    expected_date = today
+
+    # Walk back to find the most recent trading day
+    # Handles weekends and US market holidays
+    expected_date = _get_last_trading_day(expected_date)
 
     return expected_date
+
+
+# Major US market holidays (month, day) - fixed-date holidays
+# Holidays that fall on weekends are observed on the nearest weekday
+_FIXED_HOLIDAYS = {
+    (1, 1),    # New Year's Day
+    (6, 19),   # Juneteenth
+    (7, 4),    # Independence Day
+    (12, 25),  # Christmas Day
+}
+
+
+def _get_us_market_holidays(year: int) -> set:
+    """Return a set of dates that are US stock market holidays for the given year."""
+    holidays = set()
+
+    # Fixed-date holidays (with weekend observation rules)
+    for month, day in _FIXED_HOLIDAYS:
+        d = date(year, month, day)
+        if d.weekday() == 5:  # Saturday -> observe Friday
+            holidays.add(d - timedelta(days=1))
+        elif d.weekday() == 6:  # Sunday -> observe Monday
+            holidays.add(d + timedelta(days=1))
+        else:
+            holidays.add(d)
+
+    # MLK Day: 3rd Monday in January
+    holidays.add(_nth_weekday(year, 1, 0, 3))
+
+    # Presidents' Day: 3rd Monday in February
+    holidays.add(_nth_weekday(year, 2, 0, 3))
+
+    # Good Friday: 2 days before Easter Sunday
+    holidays.add(_easter(year) - timedelta(days=2))
+
+    # Memorial Day: last Monday in May
+    holidays.add(_last_weekday(year, 5, 0))
+
+    # Labor Day: 1st Monday in September
+    holidays.add(_nth_weekday(year, 9, 0, 1))
+
+    # Thanksgiving: 4th Thursday in November
+    holidays.add(_nth_weekday(year, 11, 3, 4))
+
+    return holidays
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    """Return the nth occurrence of a weekday in a given month."""
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (n - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    """Return the last occurrence of a weekday in a given month."""
+    if month == 12:
+        last_day = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        last_day = date(year, month + 1, 1) - timedelta(days=1)
+    offset = (last_day.weekday() - weekday) % 7
+    return last_day - timedelta(days=offset)
+
+
+def _easter(year: int) -> date:
+    """Compute Easter Sunday using the Anonymous Gregorian algorithm."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month, day = divmod(h + l - 7 * m + 114, 31)
+    return date(year, month, day + 1)
+
+
+def _get_last_trading_day(d: date) -> date:
+    """Walk back from date d until we find a trading day (not weekend, not holiday)."""
+    holidays = _get_us_market_holidays(d.year)
+    # Also grab prior year in case we walk back across year boundary
+    if d.month == 1 and d.day <= 7:
+        holidays |= _get_us_market_holidays(d.year - 1)
+
+    while d.weekday() >= 5 or d in holidays:
+        d -= timedelta(days=1)
+        # Refresh holidays if we crossed a year boundary
+        if d not in holidays and d.year != (d + timedelta(days=1)).year:
+            holidays |= _get_us_market_holidays(d.year)
+
+    return d
 
 
 def validate_daily_market_data(ticker: str, result: ValidationResult) -> bool:

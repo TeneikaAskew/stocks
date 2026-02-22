@@ -411,7 +411,7 @@ def fetch_daily_snapshot(tickers, output_dir='data/options/earnings', skip_exist
                 snapshot_time = now.strftime('%I:%M %p')
                 print(f"\n✓ All {original_count} tickers already have data for {snapshot_time}!")
                 print(f"   Use without --skip-existing to re-fetch")
-                return None
+                return {"status": "skipped", "message": f"All {original_count} tickers already fetched"}
 
             print(f"\n⚠️  Skipping {original_count - len(tickers)} already-fetched tickers for this time")
             print(f"   Remaining to fetch: {len(tickers)} tickers")
