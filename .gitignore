@@ -2,8 +2,4 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
-data/iwm/
-data/qqq/
-data/spy/
-data/spx/
-data/signals/
+data/*/options/
