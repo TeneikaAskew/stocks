@@ -1,7 +1,7 @@
 # Phase 6: IWM Playbook
 
-Generated: 2026-02-22 06:48:30
-Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
+Generated: 2026-02-22 23:45:24
+Data: 2015-01-02 09:30:00 to 2026-02-20 16:00:00 (1,089,011 bars)
 
 12 decision cards for real-time trading.
 
@@ -21,14 +21,14 @@ Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
   - [ ] EMA9 > EMA20 (bullish cross)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=89,377)
+  - Confidence: High (n=91,353)
   - Historical win rate: 47.9%
   - Avg return: -0.1 bps
   - Target: +0.30%
   - Stop: -0.15%
   - Expected hold: 10-15 min
-  - Avg MFE: +20.0 bps
-  - Avg MAE: -20.9 bps
+  - Avg MFE: +19.9 bps
+  - Avg MAE: -20.8 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - RSI crosses above 75 -> take profit
@@ -59,13 +59,13 @@ Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
   - [ ] EMA9 < EMA20 (bearish cross)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=85,526)
+  - Confidence: High (n=87,545)
   - Historical win rate: 47.4%
   - Avg return: -0.1 bps
   - Target: +0.38%
   - Stop: -0.20%
   - Expected hold: 10-15 min
-  - Avg MFE: +21.9 bps
+  - Avg MFE: +21.8 bps
   - Avg MAE: -22.0 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
@@ -95,7 +95,7 @@ Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
   - [ ] Volume confirming (RVOL > 1.0)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=28,943)
+  - Confidence: High (n=29,412)
   - Historical win rate: 47.8%
   - Avg return: +0.0 bps
   - Target: +0.30%
@@ -129,7 +129,7 @@ Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
   - [ ] Volume confirming (RVOL > 1.0)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=28,845)
+  - Confidence: High (n=29,301)
   - Historical win rate: 47.4%
   - Avg return: +0.1 bps
   - Target: +0.38%
@@ -162,7 +162,7 @@ Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
   - [ ] Higher timeframe supports the direction
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=38,542)
+  - Confidence: High (n=39,619)
   - Historical win rate: 47.6%
   - Avg return: +0.1 bps
   - Target: +0.30%
@@ -196,14 +196,14 @@ Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
   - [ ] At least 30 min after market open
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=143,569)
+  - Confidence: High (n=147,071)
   - Historical win rate: 47.5%
   - Avg return: -0.0 bps
   - Target: +0.30%
   - Stop: -0.15%
   - Expected hold: 10-15 min
-  - Avg MFE: +18.3 bps
-  - Avg MAE: -18.3 bps
+  - Avg MFE: +18.2 bps
+  - Avg MAE: -18.2 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price returns inside ORB range -> failed breakout, exit
@@ -230,14 +230,14 @@ Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
   - [ ] At least 30 min after market open
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=136,006)
-  - Historical win rate: 47.9%
+  - Confidence: High (n=139,347)
+  - Historical win rate: 48.0%
   - Avg return: -0.0 bps
   - Target: +0.38%
   - Stop: -0.20%
   - Expected hold: 10-15 min
-  - Avg MFE: +22.4 bps
-  - Avg MAE: -22.1 bps
+  - Avg MFE: +22.2 bps
+  - Avg MAE: -22.0 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price returns inside ORB range -> failed breakdown, exit
@@ -263,13 +263,13 @@ Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
   - [ ] VWAP is nearby (target)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=6,550)
+  - Confidence: High (n=6,675)
   - Historical win rate: 47.9%
   - Avg return: +0.2 bps
   - Target: +0.38%
   - Stop: -0.20%
   - Expected hold: 8-15 min
-  - Avg MFE: +22.0 bps
+  - Avg MFE: +21.9 bps
   - Avg MAE: -20.5 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
@@ -296,14 +296,14 @@ Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
   - [ ] Volume increasing on bounce
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=21,436)
-  - Historical win rate: 47.5%
+  - Confidence: High (n=22,077)
+  - Historical win rate: 47.4%
   - Avg return: -0.0 bps
   - Target: +0.30%
   - Stop: -0.15%
   - Expected hold: 10-15 min
-  - Avg MFE: +17.8 bps
-  - Avg MAE: -18.7 bps
+  - Avg MFE: +17.6 bps
+  - Avg MAE: -18.6 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price breaks below prev day low -> support failed, exit immediately
@@ -329,14 +329,14 @@ Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
   - [ ] Bearish divergence (price higher, RSI lower)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=25,776)
-  - Historical win rate: 45.7%
+  - Confidence: High (n=26,193)
+  - Historical win rate: 45.8%
   - Avg return: -0.0 bps
   - Target: +0.38%
   - Stop: -0.20%
   - Expected hold: 10-15 min
   - Avg MFE: +16.6 bps
-  - Avg MAE: -15.7 bps
+  - Avg MAE: -15.8 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price breaks above prev day high -> resistance cleared, exit
@@ -398,14 +398,14 @@ Data: 2015-01-02 09:30:00 to 2025-11-14 16:00:00 (1,067,154 bars)
   - [ ] RVOL > 1.0 (volume confirms)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=54,357)
+  - Confidence: High (n=55,635)
   - Historical win rate: 47.6%
   - Avg return: -0.0 bps
   - Target: +0.30%
   - Stop: -0.15%
   - Expected hold: 10-15 min
-  - Avg MFE: +17.6 bps
-  - Avg MAE: -17.5 bps
+  - Avg MFE: +17.5 bps
+  - Avg MAE: -17.4 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Any single alignment breaks -> reduce size

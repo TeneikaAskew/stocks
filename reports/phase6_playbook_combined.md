@@ -1,6 +1,6 @@
 # Phase 6: The Beginner's Playbook — All Tickers
 
-Generated: 2026-02-22 06:48:21
+Generated: 2026-02-22 23:45:09
 
 12 decision cards per ticker, each with specific entry/exit rules.
 
@@ -48,14 +48,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] EMA9 > EMA20 (bullish cross)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=89,377)
+  - Confidence: High (n=91,353)
   - Historical win rate: 47.9%
   - Avg return: -0.1 bps
   - Target: +0.30%
   - Stop: -0.15%
   - Expected hold: 10-15 min
-  - Avg MFE: +20.0 bps
-  - Avg MAE: -20.9 bps
+  - Avg MFE: +19.9 bps
+  - Avg MAE: -20.8 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - RSI crosses above 75 -> take profit
@@ -86,13 +86,13 @@ Generated: 2026-02-22 06:48:21
   - [ ] EMA9 < EMA20 (bearish cross)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=85,526)
+  - Confidence: High (n=87,545)
   - Historical win rate: 47.4%
   - Avg return: -0.1 bps
   - Target: +0.38%
   - Stop: -0.20%
   - Expected hold: 10-15 min
-  - Avg MFE: +21.9 bps
+  - Avg MFE: +21.8 bps
   - Avg MAE: -22.0 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
@@ -122,7 +122,7 @@ Generated: 2026-02-22 06:48:21
   - [ ] Volume confirming (RVOL > 1.0)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=28,943)
+  - Confidence: High (n=29,412)
   - Historical win rate: 47.8%
   - Avg return: +0.0 bps
   - Target: +0.30%
@@ -156,7 +156,7 @@ Generated: 2026-02-22 06:48:21
   - [ ] Volume confirming (RVOL > 1.0)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=28,845)
+  - Confidence: High (n=29,301)
   - Historical win rate: 47.4%
   - Avg return: +0.1 bps
   - Target: +0.38%
@@ -189,7 +189,7 @@ Generated: 2026-02-22 06:48:21
   - [ ] Higher timeframe supports the direction
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=38,542)
+  - Confidence: High (n=39,619)
   - Historical win rate: 47.6%
   - Avg return: +0.1 bps
   - Target: +0.30%
@@ -223,14 +223,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] At least 30 min after market open
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=143,569)
+  - Confidence: High (n=147,071)
   - Historical win rate: 47.5%
   - Avg return: -0.0 bps
   - Target: +0.30%
   - Stop: -0.15%
   - Expected hold: 10-15 min
-  - Avg MFE: +18.3 bps
-  - Avg MAE: -18.3 bps
+  - Avg MFE: +18.2 bps
+  - Avg MAE: -18.2 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price returns inside ORB range -> failed breakout, exit
@@ -257,14 +257,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] At least 30 min after market open
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=136,006)
-  - Historical win rate: 47.9%
+  - Confidence: High (n=139,347)
+  - Historical win rate: 48.0%
   - Avg return: -0.0 bps
   - Target: +0.38%
   - Stop: -0.20%
   - Expected hold: 10-15 min
-  - Avg MFE: +22.4 bps
-  - Avg MAE: -22.1 bps
+  - Avg MFE: +22.2 bps
+  - Avg MAE: -22.0 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price returns inside ORB range -> failed breakdown, exit
@@ -290,13 +290,13 @@ Generated: 2026-02-22 06:48:21
   - [ ] VWAP is nearby (target)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=6,550)
+  - Confidence: High (n=6,675)
   - Historical win rate: 47.9%
   - Avg return: +0.2 bps
   - Target: +0.38%
   - Stop: -0.20%
   - Expected hold: 8-15 min
-  - Avg MFE: +22.0 bps
+  - Avg MFE: +21.9 bps
   - Avg MAE: -20.5 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
@@ -323,14 +323,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] Volume increasing on bounce
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=21,436)
-  - Historical win rate: 47.5%
+  - Confidence: High (n=22,077)
+  - Historical win rate: 47.4%
   - Avg return: -0.0 bps
   - Target: +0.30%
   - Stop: -0.15%
   - Expected hold: 10-15 min
-  - Avg MFE: +17.8 bps
-  - Avg MAE: -18.7 bps
+  - Avg MFE: +17.6 bps
+  - Avg MAE: -18.6 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price breaks below prev day low -> support failed, exit immediately
@@ -356,14 +356,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] Bearish divergence (price higher, RSI lower)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=25,776)
-  - Historical win rate: 45.7%
+  - Confidence: High (n=26,193)
+  - Historical win rate: 45.8%
   - Avg return: -0.0 bps
   - Target: +0.38%
   - Stop: -0.20%
   - Expected hold: 10-15 min
   - Avg MFE: +16.6 bps
-  - Avg MAE: -15.7 bps
+  - Avg MAE: -15.8 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price breaks above prev day high -> resistance cleared, exit
@@ -425,14 +425,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] RVOL > 1.0 (volume confirms)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=54,357)
+  - Confidence: High (n=55,635)
   - Historical win rate: 47.6%
   - Avg return: -0.0 bps
   - Target: +0.30%
   - Stop: -0.15%
   - Expected hold: 10-15 min
-  - Avg MFE: +17.6 bps
-  - Avg MAE: -17.5 bps
+  - Avg MFE: +17.5 bps
+  - Avg MAE: -17.4 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Any single alignment breaks -> reduce size
@@ -465,14 +465,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] EMA9 > EMA20 (bullish cross)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=82,362)
+  - Confidence: High (n=83,480)
   - Historical win rate: 46.9%
   - Avg return: -0.1 bps
   - Target: +0.15%
   - Stop: -0.10%
   - Expected hold: 12-18 min
   - Avg MFE: +13.9 bps
-  - Avg MAE: -14.4 bps
+  - Avg MAE: -14.3 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - RSI crosses above 75 -> take profit
@@ -503,14 +503,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] EMA9 < EMA20 (bearish cross)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=76,706)
-  - Historical win rate: 46.3%
+  - Confidence: High (n=77,799)
+  - Historical win rate: 46.4%
   - Avg return: -0.1 bps
   - Target: +0.20%
   - Stop: -0.12%
   - Expected hold: 12-18 min
   - Avg MFE: +15.9 bps
-  - Avg MAE: -16.0 bps
+  - Avg MAE: -15.9 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - RSI crosses below 25 -> take profit
@@ -538,7 +538,7 @@ Generated: 2026-02-22 06:48:21
   - [ ] Volume confirming (RVOL > 1.0)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=30,708)
+  - Confidence: High (n=31,012)
   - Historical win rate: 48.7%
   - Avg return: +0.0 bps
   - Target: +0.15%
@@ -571,14 +571,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] Volume confirming (RVOL > 1.0)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=30,836)
+  - Confidence: High (n=31,131)
   - Historical win rate: 46.6%
   - Avg return: -0.0 bps
   - Target: +0.20%
   - Stop: -0.12%
   - Expected hold: 12-18 min
   - Avg MFE: +13.0 bps
-  - Avg MAE: -12.9 bps
+  - Avg MAE: -12.8 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - If price recovers back above inside bar's low -> exit immediately
@@ -604,7 +604,7 @@ Generated: 2026-02-22 06:48:21
   - [ ] Higher timeframe supports the direction
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=39,877)
+  - Confidence: High (n=40,493)
   - Historical win rate: 49.0%
   - Avg return: +0.1 bps
   - Target: +0.15%
@@ -638,14 +638,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] At least 30 min after market open
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=163,572)
+  - Confidence: High (n=165,852)
   - Historical win rate: 48.1%
   - Avg return: -0.0 bps
   - Target: +0.15%
   - Stop: -0.10%
   - Expected hold: 12-18 min
-  - Avg MFE: +12.5 bps
-  - Avg MAE: -12.4 bps
+  - Avg MFE: +12.4 bps
+  - Avg MAE: -12.3 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price returns inside ORB range -> failed breakout, exit
@@ -672,14 +672,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] At least 30 min after market open
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=134,259)
-  - Historical win rate: 47.8%
+  - Confidence: High (n=136,061)
+  - Historical win rate: 47.9%
   - Avg return: -0.1 bps
   - Target: +0.20%
   - Stop: -0.12%
   - Expected hold: 12-18 min
   - Avg MFE: +17.3 bps
-  - Avg MAE: -16.8 bps
+  - Avg MAE: -16.7 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price returns inside ORB range -> failed breakdown, exit
@@ -705,14 +705,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] VWAP is nearby (target)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=7,331)
-  - Historical win rate: 45.3%
+  - Confidence: High (n=7,423)
+  - Historical win rate: 45.4%
   - Avg return: -0.1 bps
   - Target: +0.20%
   - Stop: -0.12%
   - Expected hold: 8-15 min
   - Avg MFE: +14.3 bps
-  - Avg MAE: -13.9 bps
+  - Avg MAE: -13.8 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price re-breaks ORB high -> failure of the failure, exit
@@ -738,14 +738,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] Volume increasing on bounce
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=29,650)
+  - Confidence: High (n=29,974)
   - Historical win rate: 47.7%
-  - Avg return: +0.0 bps
+  - Avg return: +0.1 bps
   - Target: +0.15%
   - Stop: -0.10%
   - Expected hold: 12-18 min
-  - Avg MFE: +12.5 bps
-  - Avg MAE: -12.4 bps
+  - Avg MFE: +12.6 bps
+  - Avg MAE: -12.3 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price breaks below prev day low -> support failed, exit immediately
@@ -771,7 +771,7 @@ Generated: 2026-02-22 06:48:21
   - [ ] Bearish divergence (price higher, RSI lower)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=45,660)
+  - Confidence: High (n=46,153)
   - Historical win rate: 45.7%
   - Avg return: -0.0 bps
   - Target: +0.20%
@@ -840,13 +840,13 @@ Generated: 2026-02-22 06:48:21
   - [ ] RVOL > 1.0 (volume confirms)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=62,013)
+  - Confidence: High (n=62,878)
   - Historical win rate: 48.2%
   - Avg return: -0.0 bps
   - Target: +0.15%
   - Stop: -0.10%
   - Expected hold: 12-18 min
-  - Avg MFE: +11.7 bps
+  - Avg MFE: +11.6 bps
   - Avg MAE: -11.7 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
@@ -880,8 +880,8 @@ Generated: 2026-02-22 06:48:21
   - [ ] EMA9 > EMA20 (bullish cross)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=85,656)
-  - Historical win rate: 47.0%
+  - Confidence: High (n=86,713)
+  - Historical win rate: 47.1%
   - Avg return: -0.0 bps
   - Target: +0.25%
   - Stop: -0.12%
@@ -918,8 +918,8 @@ Generated: 2026-02-22 06:48:21
   - [ ] EMA9 < EMA20 (bearish cross)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=77,165)
-  - Historical win rate: 45.9%
+  - Confidence: High (n=78,289)
+  - Historical win rate: 46.0%
   - Avg return: -0.1 bps
   - Target: +0.25%
   - Stop: -0.12%
@@ -953,7 +953,7 @@ Generated: 2026-02-22 06:48:21
   - [ ] Volume confirming (RVOL > 1.0)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=30,370)
+  - Confidence: High (n=30,665)
   - Historical win rate: 48.2%
   - Avg return: +0.0 bps
   - Target: +0.25%
@@ -986,13 +986,13 @@ Generated: 2026-02-22 06:48:21
   - [ ] Volume confirming (RVOL > 1.0)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=30,135)
+  - Confidence: High (n=30,424)
   - Historical win rate: 46.7%
   - Avg return: +0.0 bps
   - Target: +0.25%
   - Stop: -0.12%
   - Expected hold: 10-15 min
-  - Avg MFE: +17.2 bps
+  - Avg MFE: +17.1 bps
   - Avg MAE: -16.7 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
@@ -1019,7 +1019,7 @@ Generated: 2026-02-22 06:48:21
   - [ ] Higher timeframe supports the direction
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=39,775)
+  - Confidence: High (n=40,401)
   - Historical win rate: 48.2%
   - Avg return: +0.0 bps
   - Target: +0.25%
@@ -1053,14 +1053,14 @@ Generated: 2026-02-22 06:48:21
   - [ ] At least 30 min after market open
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=158,121)
+  - Confidence: High (n=160,212)
   - Historical win rate: 47.8%
   - Avg return: -0.0 bps
   - Target: +0.25%
   - Stop: -0.12%
   - Expected hold: 10-15 min
   - Avg MFE: +15.8 bps
-  - Avg MAE: -15.6 bps
+  - Avg MAE: -15.5 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
   - Price returns inside ORB range -> failed breakout, exit
@@ -1087,7 +1087,7 @@ Generated: 2026-02-22 06:48:21
   - [ ] At least 30 min after market open
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=125,765)
+  - Confidence: High (n=127,560)
   - Historical win rate: 47.7%
   - Avg return: -0.0 bps
   - Target: +0.25%
@@ -1120,8 +1120,8 @@ Generated: 2026-02-22 06:48:21
   - [ ] VWAP is nearby (target)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=6,967)
-  - Historical win rate: 44.4%
+  - Confidence: High (n=7,031)
+  - Historical win rate: 44.5%
   - Avg return: -0.2 bps
   - Target: +0.25%
   - Stop: -0.12%
@@ -1153,13 +1153,13 @@ Generated: 2026-02-22 06:48:21
   - [ ] Volume increasing on bounce
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=20,999)
+  - Confidence: High (n=21,133)
   - Historical win rate: 47.3%
   - Avg return: +0.0 bps
   - Target: +0.25%
   - Stop: -0.12%
   - Expected hold: 10-15 min
-  - Avg MFE: +17.5 bps
+  - Avg MFE: +17.6 bps
   - Avg MAE: -16.7 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
@@ -1186,8 +1186,8 @@ Generated: 2026-02-22 06:48:21
   - [ ] Bearish divergence (price higher, RSI lower)
 
 **IF ALL CONFIRMED -> PUT ENTRY**
-  - Confidence: High (n=36,497)
-  - Historical win rate: 45.0%
+  - Confidence: High (n=36,960)
+  - Historical win rate: 45.1%
   - Avg return: -0.0 bps
   - Target: +0.25%
   - Stop: -0.12%
@@ -1255,13 +1255,13 @@ Generated: 2026-02-22 06:48:21
   - [ ] RVOL > 1.0 (volume confirms)
 
 **IF ALL CONFIRMED -> CALL ENTRY**
-  - Confidence: High (n=58,951)
+  - Confidence: High (n=59,707)
   - Historical win rate: 47.8%
   - Avg return: +0.0 bps
   - Target: +0.25%
   - Stop: -0.12%
   - Expected hold: 10-15 min
-  - Avg MFE: +15.1 bps
+  - Avg MFE: +15.0 bps
   - Avg MAE: -14.7 bps
 
 **REVERSAL WARNING SIGNS (exit early):**
