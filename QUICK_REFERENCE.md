@@ -416,14 +416,14 @@ Existing indicators in `tradingview-pine-scripts/`:
 
 ## Documentation Files
 
-- [trade_analysis_overview.md](trade_analysis_overview.md) — Complete system overview + glossary
-- [trade_SIGNAL_GENERATION_METHODOLOGY.md](trade_SIGNAL_GENERATION_METHODOLOGY.md) — Signal logic analysis vs. actual trades
-- [TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md](TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md) — Pipeline build process
-- [INVESTMENT_MODELS_SUMMARY.md](INVESTMENT_MODELS_SUMMARY.md) — All 5 investment models with Phase analysis
+- [trade_analysis_overview.md](docs/trade_analysis_overview.md) — Complete system overview + glossary
+- [trade_SIGNAL_GENERATION_METHODOLOGY.md](docs/trade_SIGNAL_GENERATION_METHODOLOGY.md) — Signal logic analysis vs. actual trades
+- [TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md](docs/TRADE_ANALYSIS_REPORT_BUILD_PROCESS.md) — Pipeline build process
+- [INVESTMENT_MODELS_SUMMARY.md](docs/INVESTMENT_MODELS_SUMMARY.md) — All 5 investment models with Phase analysis
 - [BACKTEST_RESULTS.md](BACKTEST_RESULTS.md) — 10-year backtest results across all tickers
-- [MODEL_SUMMARY.md](MODEL_SUMMARY.md) — Model architecture summary
-- [HISTORICAL_LEVELS_FEATURE.md](HISTORICAL_LEVELS_FEATURE.md) — Historical levels documentation
-- [ORB_AND_ORDER_BLOCKS_FEATURE.md](ORB_AND_ORDER_BLOCKS_FEATURE.md) — ORB/Order Block documentation
+- [MODEL_SUMMARY.md](docs/MODEL_SUMMARY.md) — Model architecture summary
+- [HISTORICAL_LEVELS_FEATURE.md](docs/HISTORICAL_LEVELS_FEATURE.md) — Historical levels documentation
+- [ORB_AND_ORDER_BLOCKS_FEATURE.md](docs/ORB_AND_ORDER_BLOCKS_FEATURE.md) — ORB/Order Block documentation
 - [QUICK_REFERENCE.md](QUICK_REFERENCE.md) — This file
 
 ## Tips
