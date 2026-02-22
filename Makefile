@@ -1,4 +1,4 @@
-.PHONY: install test pipeline pipeline-fast report sweep backtest clean
+.PHONY: install test pipeline pipeline-fast report sweep backtest clean help
 
 PYTHON ?= python
 TICKERS ?= IWM SPY QQQ
@@ -26,7 +26,7 @@ report:
 ## Run timeframe sweep for all tickers
 sweep:
 	@for t in $(TICKERS); do \
-		$(PYTHON) scripts/run_timeframe_sweep.py --ticker $$t --use-strat; \
+		$(PYTHON) scripts/run_timeframe_sweep.py --ticker $$t --use-strat || exit 1; \
 	done
 
 ## Run backtest (base + strat) for a single ticker: make backtest TICKER=IWM

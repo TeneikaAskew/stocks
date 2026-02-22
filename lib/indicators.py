@@ -42,8 +42,11 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
     avg_gain = wilder_moving_average(gain, period)
     avg_loss = wilder_moving_average(loss, period)
 
-    rs = avg_gain / avg_loss
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rs = avg_gain / avg_loss
     rsi = 100.0 - (100.0 / (1.0 + rs))
+    # Pure uptrend (avg_loss=0) → rs=inf → RSI=100; fill any remaining NaN
+    rsi = rsi.fillna(50.0)
     return rsi
 
 
@@ -59,8 +62,8 @@ def calculate_stoch_rsi(
     rsi_range = rsi_max - rsi_min
 
     with np.errstate(divide='ignore', invalid='ignore'):
-        stoch_rsi = 100.0 * (rsi - rsi_min) / rsi_range
-        stoch_rsi = pd.Series(stoch_rsi, index=rsi.index)
+        stoch_rsi = 100.0 * (rsi - rsi_min) / rsi_range.where(rsi_range > 0, np.nan)
+        stoch_rsi = pd.Series(stoch_rsi, index=rsi.index).fillna(50.0)
 
     stoch_rsi_k = wilder_moving_average(stoch_rsi, k_period)
     stoch_rsi_d = wilder_moving_average(stoch_rsi_k, d_period)
@@ -154,14 +157,14 @@ def calculate_vwap(
     cum_tpv = df_tmp.groupby('date')['tpv'].cumsum()
     cum_vol = df_tmp.groupby('date')['vol'].cumsum()
 
-    vwap = cum_tpv / cum_vol
+    vwap = cum_tpv / cum_vol.where(cum_vol > 0, np.nan)
     return vwap
 
 
 def calculate_rvol(volume: pd.Series, period: int = 20) -> pd.Series:
     """Relative Volume — current volume / rolling average volume."""
     rolling_avg = volume.rolling(window=period, min_periods=1).mean()
-    return volume / rolling_avg
+    return volume / rolling_avg.where(rolling_avg > 0, np.nan)
 
 
 def calculate_rvol_minute_of_day(

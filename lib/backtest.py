@@ -418,8 +418,8 @@ class BacktestEngine:
 
             # Forward-fill into the 1m index
             classifications[tf] = numeric_shifted.reindex(
-                df.index, method='ffill',
-            ).fillna(0.0)
+                df.index,
+            ).ffill().fillna(0.0)
 
         if not classifications:
             return pd.Series(0.0, index=df.index)

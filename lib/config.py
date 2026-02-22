@@ -279,6 +279,32 @@ def get_signal_strength_label(score: int, risk_config: RiskConfig = None) -> str
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_pct(value) -> float:
+    """Parse a percentage value that may be a string like ``"0.30%"`` or a raw float.
+
+    Returns a decimal fraction (e.g. 0.003 for 0.30%).
+
+    Handles three formats:
+    - ``"0.30%"`` → strip ``%``, divide by 100 → 0.003
+    - ``0.30`` or ``"0.30"`` (no ``%``, >= 0.01) → treat as percent, divide by 100 → 0.003
+    - ``0.003`` (already a decimal fraction, < 0.01) → use as-is
+    """
+    s = str(value)
+    if '%' in s:
+        return float(s.replace('%', '')) / 100.0
+    f = float(s)
+    # Profit targets / stops are always < 1%.  A raw value >= 0.01 is almost
+    # certainly expressed as a percentage (e.g. 0.30 meaning 0.30%) rather than
+    # a decimal fraction (which would mean 30%).
+    if abs(f) >= 0.01:
+        return f / 100.0
+    return f
+
+
+# ---------------------------------------------------------------------------
 # JSON loader
 # ---------------------------------------------------------------------------
 
@@ -333,16 +359,16 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
         if pt:
             call_t = pt.get('call_target', None)
             if call_t is not None:
-                app.exit.call_target = float(str(call_t).replace('%', '')) / 100.0
+                app.exit.call_target = _parse_pct(call_t)
             put_t = pt.get('put_target', None)
             if put_t is not None:
-                app.exit.put_target = float(str(put_t).replace('%', '')) / 100.0
+                app.exit.put_target = _parse_pct(put_t)
             call_s = pt.get('call_stop', None)
             if call_s is not None:
-                app.exit.call_stop = float(str(call_s).replace('%', '')) / 100.0
+                app.exit.call_stop = _parse_pct(call_s)
             put_s = pt.get('put_stop', None)
             if put_s is not None:
-                app.exit.put_stop = float(str(put_s).replace('%', '')) / 100.0
+                app.exit.put_stop = _parse_pct(put_s)
 
         ts = exit_alerts.get('time_stop', {})
         if ts:
