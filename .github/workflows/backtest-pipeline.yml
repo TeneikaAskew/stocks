@@ -1,0 +1,92 @@
+name: Backtest Pipeline
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "lib/**"
+      - "scripts/**"
+      - "tests/**"
+      - "alert_config.json"
+      - "requirements.txt"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Space-separated tickers (default: IWM SPY QQQ)"
+        required: false
+        default: "IWM SPY QQQ"
+      mode:
+        description: "Pipeline mode"
+        required: false
+        default: "report-only"
+        type: choice
+        options:
+          - report-only
+          - full
+          - full-no-sweep
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest tests/ -x -q
+
+  report:
+    name: Generate Report
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine tickers
+        id: tickers
+        run: echo "list=${{ github.event.inputs.tickers || 'IWM SPY QQQ' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Run pipeline
+        run: |
+          MODE="${{ github.event.inputs.mode || 'report-only' }}"
+          TICKERS="${{ steps.tickers.outputs.list }}"
+
+          if [ "$MODE" = "report-only" ]; then
+            python scripts/run_pipeline.py --tickers $TICKERS --report-only
+          elif [ "$MODE" = "full-no-sweep" ]; then
+            python scripts/run_pipeline.py --tickers $TICKERS --skip-sweep
+          else
+            python scripts/run_pipeline.py --tickers $TICKERS
+          fi
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-report
+          path: BACKTEST_RESULTS.md
+
+      - name: Upload backtest CSVs
+        uses: actions/upload-artifact@v4
+        if: github.event.inputs.mode != 'report-only'
+        with:
+          name: backtest-results
+          path: data/backtest_results/*.csv
