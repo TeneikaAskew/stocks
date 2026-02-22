@@ -1,0 +1,37 @@
+# Production dependencies for Cloud Run image
+# Dev-only packages (matplotlib, seaborn, plotly, streamlit, jupyter, pytest, black, flake8, mypy, scipy, scikit-learn)
+# are intentionally excluded — use requirements.txt for local dev and GitHub Actions.
+
+# Core data processing
+pandas>=2.1.4
+numpy>=1.26.2
+pyarrow>=14.0.0
+
+# Market data fetching
+yfinance>=0.2.33
+yahooquery>=2.3.0
+requests>=2.31.0
+beautifulsoup4>=4.12.2
+lxml>=4.9.3
+fredapi>=0.5.0
+
+# Options Greeks calculation (used in gcp/fetchers/fetch_etf_options.py and fetch_earnings_options.py)
+py_vollib>=1.0.1
+
+# Date and time handling
+python-dateutil>=2.8.0
+pytz>=2025.1
+
+# API and data formats
+protobuf>=4.24.0
+websockets>=11.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Google Cloud
+cloud-sql-python-connector[pg8000]>=1.7.0
+google-cloud-storage>=2.14.0
+SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.9
+pandas-market-calendars>=4.3.1

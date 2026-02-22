@@ -28,47 +28,54 @@
 
 ### Service Account & IAM
 - [x] Service account name defined: `trading-runner`
-- [ ] Service account created with required roles:
-  - [ ] `roles/cloudsql.client`
-  - [ ] `roles/storage.objectAdmin`
-  - [ ] `roles/secretmanager.secretAccessor`
-  - [ ] `roles/run.invoker`
+- [x] Service account created with required roles ✅ 2026-02-22
+  - [x] `roles/cloudsql.client`
+  - [x] `roles/storage.objectAdmin`
+  - [x] `roles/secretmanager.secretAccessor`
+  - [x] `roles/run.invoker`
 
 ### Artifact Registry
-- [ ] Repository created: `trading-system` in `us-east1`
+- [x] Repository created: `trading` in `us-east1` ✅ 2026-02-22
+  - Image path: `us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system`
 
 ### Cloud Storage
-- [ ] Bucket created: `adept-mountain-474619-d4-trading-data`
-- [ ] Lifecycle policy: delete `raw/` objects after 730 days
+- [x] Bucket created: `adept-mountain-474619-d4-trading-data` ✅ 2026-02-22
+- [x] Lifecycle policy: delete `raw/` objects after 730 days
 
 ### Cloud SQL
-- [ ] PostgreSQL 15 instance created: `trading-db` (db-g1-small, 20GB)
-- [ ] Database `trading` created
-- [ ] User `trading_user` created
-- [ ] Password stored in Secret Manager as `db-trading-pass`
-- [ ] Schema applied (`gcp/schema.sql`)
-  - [ ] `market_data_daily` table
-  - [ ] `market_data_intraday` table (partitioned by ticker)
-    - [ ] Partition: `market_data_intraday_spy`
-    - [ ] Partition: `market_data_intraday_iwm`
-    - [ ] Partition: `market_data_intraday_qqq`
-    - [ ] Partition: `market_data_intraday_spx`
-    - [ ] Partition: `market_data_intraday_other`
-  - [ ] `etf_options_snapshots` table
-  - [ ] `earnings_options_snapshots` table
-  - [ ] `signal_alerts` table
-  - [ ] `trades` table
-  - [ ] `premarket_analysis` table
-  - [ ] `economic_events` table
-  - [ ] All indexes created
+- [x] PostgreSQL 15 instance created: `trading-db` (db-g1-small, 20GB) ✅ 2026-02-22
+  - Public IP: `34.24.66.12` | Region: `us-east1-c` | Status: RUNNABLE
+- [x] Database `trading` created
+- [x] User `trading_user` created
+- [x] Password stored in Secret Manager as `db-trading-pass`
+- [x] Schema applied (`gcp/schema.sql`) ✅ 2026-02-22
+  - [x] `market_data_daily` table (+ auto-update trigger)
+  - [x] `market_data_intraday` table (partitioned by ticker, PK fixed for pg15)
+    - [x] Partition: `market_data_intraday_spy`
+    - [x] Partition: `market_data_intraday_iwm`
+    - [x] Partition: `market_data_intraday_qqq`
+    - [x] Partition: `market_data_intraday_spx`
+    - [x] Partition: `market_data_intraday_other`
+  - [x] `etf_options_snapshots` table
+  - [x] `earnings_options_snapshots` table
+  - [x] `signal_alerts` table
+  - [x] `trades` table
+  - [x] `premarket_analysis` table
+  - [x] `economic_events` table
+  - [x] All indexes created (6 indexes)
+- **Note:** `gcp/schema.sql` patched — removed `id BIGSERIAL PRIMARY KEY` from `market_data_intraday`; PK is now `(ticker, interval, ts)` (required for PostgreSQL LIST partitioning).
 
 ### Secret Manager
-- [ ] `cloud-sql-connection-name` secret
-- [ ] `db-trading-user` secret
-- [ ] `db-trading-pass` secret
-- [ ] `gcs-trading-bucket` secret
-- [ ] `alpha-vantage-api-key` secret
-- [ ] `slack-webhook-url` secret (for alerts)
+- [x] `cloud-sql-connection-name` = `adept-mountain-474619-d4:us-east1:trading-db` ✅
+- [x] `db-trading-user` = `trading_user` ✅
+- [x] `db-trading-pass` = (generated, stored) ✅
+- [x] `gcs-trading-bucket` = `adept-mountain-474619-d4-trading-data` ✅
+- [x] `av-api-key` = (from .env `ALPHA_VANTAGE_API_KEY`) ✅
+- [x] `discord-webhook` = **PLACEHOLDER** ⚠️ — update with real URL:
+  ```bash
+  echo -n 'https://discord.com/api/webhooks/YOUR_ID/TOKEN' | \
+    gcloud secrets versions add discord-webhook --data-file=-
+  ```
 
 ---
 
@@ -255,12 +262,13 @@
 |-------|--------|-------|------|
 | Unit/Integration (`make test`) | ✅ PASS | 339/339 | 2026-02-22 |
 | E2E Playwright (`make test-e2e`) | Not run | 28 | — |
-| Scripts CLI (`make test-scripts`) | Not run | 18 | — |
+| Scripts CLI (`make test-scripts`) | ✅ PASS | 18/18 | 2026-02-22 |
 
 ---
 
 ## Change Log
 
+- 2026-02-22: Pre-migration cleanup — add .gcloudignore + .dockerignore, create requirements-gcp.txt (prod-only), update gcp/Dockerfile, delete orphaned root files
 - 2026-02-22: Fix indicator warmup periods — StochRSI→SMA, MACD/EMA/SMA min_periods=period, BB ddof=0 (matches TradingView/AV spec)
 - 2026-02-22: DataLoader gains Cloud SQL priority-0 for load_intraday/load_daily; new load_options/load_trades methods
 - 2026-02-22: TradeLogger upgraded to Cloud SQL dual-write with Parquet fallback; reads prefer Cloud SQL

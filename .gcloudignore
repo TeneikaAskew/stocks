@@ -1,0 +1,57 @@
+# .gcloudignore — controls what Cloud Build receives when running gcloud builds submit
+# gcp/Dockerfile copies: lib/ gcp/ scripts/ alert_config.json requirements-gcp.txt
+# Everything else is excluded to keep Cloud Build uploads small (~5MB vs ~4GB).
+
+# Large market data — migrated to Cloud SQL/GCS via gcp/migrate_to_gcp.py
+data/
+
+# Web apps — deployed separately (GitHub Pages / Firebase)
+chart-viewer/
+options-heatseeker/
+success-report-site/
+website/
+
+# Google Apps Script — separate clasp deployment, not part of Cloud Run
+google-apps-script/
+
+# Earnings analytics — isolated system with own requirements
+earnings_options_analytics/
+
+# Analysis reports — generated outputs, not needed in container
+reports/
+
+# Jupyter notebooks
+notebooks/
+*.ipynb
+
+# Development documentation
+docs/
+
+# GitHub Actions CI/CD metadata
+.github/
+
+# Development containers and local dev setup
+.devcontainer/
+Dockerfile
+Dockerfile.claude
+docker-compose.yml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Tests — run in CI (GitHub Actions), not in Cloud Run
+tests/
+
+# Claude Code settings
+.claude/
+
+# Security — never in Cloud Build
+.env
+*.pem
+*.key
+*-credentials.json
+service-account*.json

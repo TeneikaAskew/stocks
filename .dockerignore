@@ -1,0 +1,56 @@
+# .dockerignore — mirrors .gcloudignore for local docker build runs
+# gcp/Dockerfile copies: lib/ gcp/ scripts/ alert_config.json requirements-gcp.txt
+
+# Large market data
+data/
+
+# Web apps
+chart-viewer/
+options-heatseeker/
+success-report-site/
+website/
+
+# Google Apps Script
+google-apps-script/
+
+# Earnings analytics
+earnings_options_analytics/
+
+# Analysis reports
+reports/
+
+# Jupyter notebooks
+notebooks/
+*.ipynb
+
+# Development documentation
+docs/
+
+# GitHub Actions
+.github/
+
+# Development containers
+.devcontainer/
+Dockerfile
+Dockerfile.claude
+docker-compose.yml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Tests
+tests/
+
+# Claude Code settings
+.claude/
+
+# Security
+.env
+*.pem
+*.key
+*-credentials.json
+service-account*.json

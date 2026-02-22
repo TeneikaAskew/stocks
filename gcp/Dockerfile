@@ -7,9 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev gcc g++ curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies (production-only subset — see requirements-gcp.txt)
+COPY requirements-gcp.txt .
+RUN pip install --no-cache-dir -r requirements-gcp.txt
 
 # Copy shared library, GCP modules, and scripts
 COPY lib/ lib/
