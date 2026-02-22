@@ -59,12 +59,15 @@ def find_latest(pattern: str) -> Path | None:
 def _is_strat_csv(filepath: Path) -> bool:
     """Check whether a backtest CSV was generated with Strat overlay enabled.
 
-    Strat runs have a populated ``ftfc_score`` column; base runs don't (all NaN
-    or column absent).
+    Strat runs have non-zero ``ftfc_score`` values; base runs have all zeros
+    or NaN (the column may still exist but with no real scores).
     """
     try:
-        df = pd.read_csv(filepath, nrows=5, usecols=lambda c: c in ('ftfc_score',))
-        return 'ftfc_score' in df.columns and df['ftfc_score'].notna().any()
+        df = pd.read_csv(filepath, nrows=20, usecols=lambda c: c in ('ftfc_score',))
+        if 'ftfc_score' not in df.columns:
+            return False
+        scores = df['ftfc_score'].dropna()
+        return len(scores) > 0 and (scores != 0.0).any()
     except Exception:
         return False
 
