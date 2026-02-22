@@ -441,7 +441,7 @@ def analyze_intraday_pnl(ticker, strike, option_type, entry_time, exit_time, dat
             continue
 
     # Calculate P/L if we have both entry and exit
-    if entry_price and exit_price:
+    if entry_price is not None and exit_price is not None:
         pnl_dollars = (exit_price - entry_price) * 100
         pnl_percent = (exit_price - entry_price) / entry_price * 100
 
