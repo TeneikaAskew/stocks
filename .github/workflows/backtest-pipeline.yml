@@ -66,6 +66,8 @@ jobs:
         run: echo "list=${{ github.event.inputs.tickers || 'IWM SPY QQQ' }}" >> "$GITHUB_OUTPUT"
 
       - name: Run pipeline
+        env:
+          ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
         run: |
           MODE="${{ github.event.inputs.mode || 'report-only' }}"
           TICKERS="${{ steps.tickers.outputs.list }}"
