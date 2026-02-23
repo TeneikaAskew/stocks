@@ -108,7 +108,7 @@ An event-driven options trading intelligence system that:
 | Data Storage | Cloud SQL (PostgreSQL 15) | Primary structured data store |
 | Backup Storage | Google Cloud Storage | Raw Parquet archives |
 | Scheduled Jobs | Cloud Run Jobs | All data fetching + analysis |
-| Real-time Monitor | Cloud Run Service | Intraday signal polling |
+| Real-time Monitor | Cloud Run Job | Intraday signal polling (scheduled 9:25 AM ET) |
 | Scheduling | Cloud Scheduler | 21 cron triggers |
 | Alerts | Discord Webhooks | Real-time trade alerts |
 | Secrets | Secret Manager | API keys, DB credentials, webhook URLs |
@@ -1437,7 +1437,7 @@ done
 |---------|--------------|------------------|
 | Cloud SQL | `db-g1-small`, 20 GB SSD, daily backups | ~$25/mo |
 | Cloud Run Jobs | 7 jobs × ~50 executions/day avg × 1-2 min | ~$3/mo |
-| Cloud Run Service | signal-monitor, min-instances 0, ~7h/day | ~$8/mo |
+| Cloud Run Job | signal-monitor, 8h timeout, 0 retries, scheduled daily | ~$3/mo |
 | Cloud Storage | ~50 GB + 15 write ops/day | ~$2/mo |
 | Cloud Scheduler | 21 triggers × ~20 weekdays/mo | ~$0.21/mo |
 | Secret Manager | 6 secrets × ~100 accesses/day | ~$0.06/mo |

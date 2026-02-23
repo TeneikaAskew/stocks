@@ -281,6 +281,12 @@
 - 2026-02-22: enrich_with_indicators gains skip_levels flag (~1.5GB memory savings on large datasets)
 - 2026-02-22: requirements.txt adds playwright, GCP cloud packages; Makefile adds test-e2e/test-scripts targets
 - 2026-02-22: Phase reports regenerated with corrected indicator values; BACKTEST_RESULTS.md narrowed to IWM
+- 2026-02-22: Full 2015–2026 dataset re-run (all 7 phases + timeframe sweep); 1m+30m confirmed primary signal (Sharpe 11.05 IWM)
+- 2026-02-22: Backfilled 10yr historical options data (IWM 2016–2026, SPY 2018–2025, QQQ 2022 partial)
+- 2026-02-22: deploy.sh build context reduced ~4 GB → ~1.3 MB; market_data_intraday schema uses composite PK
+- 2026-02-22: walk_forward_tf_combos.py — rolling-window OOS validation of top TF combos with volatility regime split
+- 2026-02-22: options_pnl_translation.py — Greeks-approximation 0DTE P&L estimator using daily options chains
+- 2026-02-22: phase6_playbook_combined.md — appendix with multi-TF filtered win rates (1m+30m 56–59%, 5m+15m ~62%)
 
 ---
 
