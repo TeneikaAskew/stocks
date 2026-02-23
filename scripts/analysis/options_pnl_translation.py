@@ -160,6 +160,7 @@ def run_combo_trades(df_1m: pd.DataFrame, entry_tf: str, filter_tf: str,
 
     df = pd.DataFrame(rows)
     df['entry_time'] = pd.to_datetime(df['entry_time'])
+    df['hhmm'] = df['entry_time'].dt.hour * 100 + df['entry_time'].dt.minute
     return df
 
 
@@ -325,6 +326,7 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
         est['direction']      = trade['direction']
         est['underlying_ret'] = trade['return_pct']
         est['hold_min']       = trade['hold_min']
+        est['hhmm']           = int(trade.get('hhmm', 0))
         results.append(est)
 
     progress(f'  Options match: {len(results):,}/{len(trades):,} trades '
@@ -397,6 +399,33 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
             fmt_pct(sub['net_pnl_pct'].mean() * 100),
         ])
     out += md_table(['Direction', 'Trades', 'Options WR', 'Options Expectancy'], dir_rows) + '\n'
+
+    # By time of day
+    out += '\n**By Time of Day:**\n\n'
+    tod_buckets = [
+        ('Morning (9:30–10:59)',    df['hhmm'] < 1100),
+        ('Midday (11:00–13:59)',    (df['hhmm'] >= 1100) & (df['hhmm'] < 1400)),
+        ('Afternoon (14:00–16:00)', df['hhmm'] >= 1400),
+    ]
+    tod_rows = []
+    for bucket_name, mask in tod_buckets:
+        sub = df[mask]
+        if sub.empty:
+            tod_rows.append([bucket_name, '0', 'N/A', 'N/A', 'N/A', 'N/A'])
+            continue
+        tod_rows.append([
+            bucket_name,
+            fmt_num(len(sub)),
+            fmt_pct(sub['option_win'].mean() * 100),
+            fmt_pct(sub['underlying_win'].mean() * 100),
+            f'${sub["theta_cost"].mean():.3f}',
+            fmt_pct(sub['net_pnl_pct'].mean() * 100),
+        ])
+    out += md_table(
+        ['Period', 'Trades', 'Options WR', 'Underlying WR', 'Avg Theta Cost', 'Expectancy'],
+        tod_rows,
+    ) + '\n'
+    out += '_Note: afternoon theta cost is understated — EOD Greeks do not capture 0DTE acceleration after 14:00._\n\n'
 
     # Underlying WR vs options WR mismatch analysis
     same_dir   = (df['underlying_win'] == df['option_win']).mean()

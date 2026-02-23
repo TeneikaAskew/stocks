@@ -202,6 +202,7 @@ def window_metrics(trades: pd.DataFrame, ws: pd.Timestamp, we: pd.Timestamp):
         'profit_factor': pf,
         'sharpe':        sharpe,
         'profitable':    exp > 0,
+        'low_sample':    n < 100,
     }
 
 
@@ -225,16 +226,34 @@ def vol_regime(df_1m: pd.DataFrame, lookback: int = 20) -> pd.Series:
 # Report helpers
 # ---------------------------------------------------------------------------
 
-def _verdict(pct_prof: float, avg_wr: float) -> str:
+def _verdict(pct_prof: float, avg_wr: float, low_sample_majority: bool = False) -> str:
     if pct_prof >= 90 and avg_wr >= 0.55:
-        return '✅ STRONG — Consistent edge across regimes. Trade-ready.'
-    if pct_prof >= 80 and avg_wr >= 0.52:
-        return '✅ VALIDATED — Edge holds across most windows.'
-    if pct_prof >= 70 and avg_wr >= 0.50:
-        return '⚠️ MARGINAL — Profitable most windows; add filters before live trading.'
-    if avg_wr >= 0.50:
-        return '⚠️ WEAK — Barely positive. High regime sensitivity.'
-    return '❌ REGIME-DEPENDENT — Edge not consistent. Not tradeable as-is.'
+        label = 'STRONG'
+    elif pct_prof >= 80 and avg_wr >= 0.52:
+        label = 'VALIDATED'
+    elif pct_prof >= 70 and avg_wr >= 0.50:
+        label = 'MARGINAL'
+    elif avg_wr >= 0.50:
+        label = 'WEAK'
+    else:
+        label = 'REGIME-DEPENDENT'
+
+    if low_sample_majority:
+        if label == 'STRONG':
+            label = 'VALIDATED (low sample)'
+        elif label == 'VALIDATED':
+            label = 'MARGINAL (low sample)'
+
+    messages = {
+        'STRONG':                    '✅ STRONG — Consistent edge across regimes. Trade-ready.',
+        'VALIDATED':                 '✅ VALIDATED — Edge holds across most windows.',
+        'VALIDATED (low sample)':    '✅ VALIDATED (low sample) — Edge holds but <100 trades/window; treat as indicative.',
+        'MARGINAL':                  '⚠️ MARGINAL — Profitable most windows; add filters before live trading.',
+        'MARGINAL (low sample)':     '⚠️ MARGINAL (low sample) — Profitable but thin windows; validate on more data.',
+        'WEAK':                      '⚠️ WEAK — Barely positive. High regime sensitivity.',
+        'REGIME-DEPENDENT':          '❌ REGIME-DEPENDENT — Edge not consistent. Not tradeable as-is.',
+    }
+    return messages[label]
 
 
 def section_combo(label: str, desc: str, window_results: list) -> str:
@@ -253,6 +272,7 @@ def section_combo(label: str, desc: str, window_results: list) -> str:
     avg_exp   = np.mean(exps)
     avg_sh    = np.mean(sharpes)
     pct_prof  = sum(1 for r in valid if r['profitable']) / len(valid) * 100
+    pct_low   = sum(1 for r in valid if r.get('low_sample', False)) / len(valid) * 100
     cv        = std_wr / avg_wr if avg_wr > 0 else float('inf')
 
     out = f'\n### {label} — {desc}\n\n'
@@ -265,8 +285,9 @@ def section_combo(label: str, desc: str, window_results: list) -> str:
         ['Avg Expectancy/trade',    fmt_pct(avg_exp * 100)],
         ['Avg Window Sharpe',       f'{avg_sh:.2f}'],
         ['% Windows Profitable',    fmt_pct(pct_prof)],
+        ['% Windows Low Sample',    fmt_pct(pct_low)],
     ]) + '\n'
-    out += f'\n**Verdict: {_verdict(pct_prof, avg_wr)}**\n\n'
+    out += f'\n**Verdict: {_verdict(pct_prof, avg_wr, low_sample_majority=pct_low > 50)}**\n\n'
 
     # Per-window detail table
     out += '**Per-Window Results:**\n\n'
@@ -283,11 +304,14 @@ def section_combo(label: str, desc: str, window_results: list) -> str:
             pf_s,
             f"{r['sharpe']:.2f}",
             '✅' if r['profitable'] else '❌',
+            'LOW' if r.get('low_sample', False) else 'OK',
         ])
     out += md_table(
-        ['Window', 'Trades', 'Win Rate', 'Expectancy', 'Prof Factor', 'Sharpe', 'OK'],
+        ['Window', 'Trades', 'Win Rate', 'Expectancy', 'Prof Factor', 'Sharpe', 'OK', 'Sample'],
         tbl,
     ) + '\n'
+    if pct_low > 0:
+        out += '_Windows marked LOW have fewer than 100 trades and should be treated as indicative only._\n\n'
     return out
 
 
