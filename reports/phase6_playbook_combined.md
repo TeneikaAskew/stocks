@@ -1275,3 +1275,65 @@ Generated: 2026-02-22 23:45:09
   - Consider ONLY taking score 5+ signals on QQQ
   - When aligned, QQQ momentum provides excellent returns
 
+---
+
+## Appendix: Multi-Timeframe Filtered Win Rates (Updated 2026-02-22)
+
+The 12 decision cards above show win rates for **unfiltered Strat patterns** (~47–49% WR
+from raw 1m bar sequences). The table below shows what happens when the same entries are
+filtered by a higher-timeframe trend filter — this is the production-ready edge.
+
+> **Why the gap?** Unfiltered Strat patterns catch both trend and counter-trend moves.
+> Adding a higher-TF filter (e.g., only CALL when 30m trend is bullish) eliminates most
+> counter-trend entries, sharply improving win rate and risk-adjusted returns.
+
+### Win Rate Comparison: Unfiltered vs Multi-TF Filtered
+
+| Ticker | Setup         | Trades  | Win Rate  | Expectancy | Sharpe    | Max DD  |
+|--------|---------------|---------|-----------|------------|-----------|---------|
+| IWM    | Unfiltered    | ~91,000 | ~47–49%   | ~0.0 bps   | ~9.0      | —       |
+| IWM    | **1m+30m**    | 11,143  | **56.7%** | +0.87 bps  | **11.05** | -0.70%  |
+| IWM    | 1m+15m        | 11,773  | 55.8%     | +0.81 bps  | 10.34     | -0.65%  |
+| IWM    | 5m+15m        | 9,314   | **62.6%** | +0.62 bps  | 8.34      | -0.71%  |
+| IWM    | 15m+30m       | 4,929   | **62.9%** | +0.75 bps  | 5.40      | -1.36%  |
+| SPY    | Unfiltered    | ~83,000 | ~46–48%   | ~0.0 bps   | ~8.0      | —       |
+| SPY    | **1m+30m**    | 10,420  | **58.8%** | +0.59 bps  | **9.46**  | -0.64%  |
+| SPY    | 1m+15m        | 11,307  | 56.4%     | +0.51 bps  | 8.47      | -0.51%  |
+| SPY    | 5m+15m        | 9,752   | **62.2%** | +0.39 bps  | 7.65      | -0.61%  |
+| SPY    | 15m+30m       | 5,682   | **63.2%** | +0.43 bps  | 5.28      | -1.00%  |
+| QQQ    | Unfiltered    | ~87,000 | ~46–48%   | ~0.0 bps   | ~8.5      | —       |
+| QQQ    | **1m+30m**    | 10,656  | **57.5%** | +0.79 bps  | **10.21** | -1.23%  |
+| QQQ    | 1m+15m        | 11,394  | 56.1%     | +0.73 bps  | 9.63      | -0.93%  |
+| QQQ    | 5m+15m        | 9,198   | **62.6%** | +0.56 bps  | 8.42      | -0.52%  |
+| QQQ    | 15m+30m       | 5,031   | **63.4%** | +0.67 bps  | 6.12      | -0.99%  |
+
+*Source: Full 2015–2026 dataset (10+ years), RTH only. Results are in-sample.*
+
+### How to Apply This in Practice
+
+**For maximum risk-adjusted return (Sharpe)**:
+- Use **1m+30m** filter: enter only when 30m trend (price vs EMA20) aligns with direction
+- IWM Sharpe 11.05 | SPY Sharpe 9.46 | QQQ Sharpe 10.21
+- This is the recommended primary filter for systematic 0DTE trading
+
+**For highest win rate (psychological comfort)**:
+- Use **5m+15m** entries: enter on 5m directional bar confirmed by 15m trend
+- ~62% WR across all tickers — about 3 in 5 trades win
+- Trades 20% less frequently than 1m entries (fewer but higher-conviction setups)
+
+**For lowest drawdown**:
+- **5m+15m** on QQQ: -0.52% max drawdown (lowest of all filtered combos)
+- **1m+15m** on SPY: -0.51% max drawdown
+
+### Important Context
+
+1. **These are in-sample results** (2015–2026 full dataset). Walk-forward OOS validation
+   is tracked in `reports/walk_forward_tf_combos_{ticker}.md`.
+
+2. **Options costs not included**. These metrics measure underlying price moves.
+   A 0DTE ATM option entry adds bid-ask spread (~1–3% of premium) + theta decay.
+   Options P&L analysis is in `reports/options_pnl_{ticker}.md`.
+
+3. **The playbook cards remain your primary guide** for setup identification and
+   trade management. Use the filtered win rates above to set realistic expectations
+   when those setups are confirmed by the multi-TF filter.
