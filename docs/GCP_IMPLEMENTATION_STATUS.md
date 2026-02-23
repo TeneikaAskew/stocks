@@ -71,11 +71,7 @@
 - [x] `db-trading-pass` = (generated, stored) ✅
 - [x] `gcs-trading-bucket` = `adept-mountain-474619-d4-trading-data` ✅
 - [x] `av-api-key` = (from .env `ALPHA_VANTAGE_API_KEY`) ✅
-- [x] `discord-webhook` = **PLACEHOLDER** ⚠️ — update with real URL:
-  ```bash
-  echo -n 'https://discord.com/api/webhooks/YOUR_ID/TOKEN' | \
-    gcloud secrets versions add discord-webhook --data-file=-
-  ```
+- [x] `discord-webhook` = (set) ✅ 2026-02-22
 
 ---
 
@@ -206,23 +202,31 @@
 ## Phase 4: Deployment
 
 ### Docker Image
-- [ ] `./gcp/deploy.sh build` — First successful Cloud Build
-- [ ] Image available in Artifact Registry
+- [x] `./gcp/deploy.sh build` — First successful Cloud Build ✅ 2026-02-23
+  - Build ID: `1cfaf281-8465-485c-9a68-c14da0130157` (2m 20s, 86 files / 1.3 MB)
+  - Digest: `sha256:0a01010aefc4e1ff7c6dfd10410402fae9fa9b1e8ee67cba665d6cebb76c5021`
+- [x] Image available in Artifact Registry ✅
+  - `us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest`
+- **Note:** `gcp/deploy.sh build` updated to use a minimal temp build context (86 files / ~1.3 MB) instead of the full repo (4 GB). Copies only `lib/`, `gcp/`, `scripts/`, `alert_config.json`, `requirements-gcp.txt`.
 
-### Cloud Run Jobs (10 jobs)
-- [ ] `fetch-market-data` — Daily at 5:00 PM ET
-- [ ] `fetch-etf-options` — 9× daily during market hours
-- [ ] `fetch-earnings-options` — 6× daily
-- [ ] `fetch-av-intraday` — 1st of each month
-- [ ] `premarket-brief` — Weekdays 8:30 AM ET
-- [ ] `signal-monitor` — Weekdays 9:30 AM ET
-- [ ] `weekend-review` — Saturdays 10:00 AM ET
-- [ ] `migrate` — On-demand (one-time migration)
-- [ ] `analyze-market-data` — Weekdays 6:00 PM ET
-- [ ] `run-pipeline` — Weekdays 6:30 PM ET
+### Cloud Run Jobs (7 jobs) ✅ 2026-02-23
+- [x] `fetch-market-data` — deployed
+- [x] `fetch-etf-options` — deployed
+- [x] `fetch-earnings-options` — deployed
+- [x] `fetch-alphavantage-intraday` — deployed
+- [x] `premarket-brief` — deployed
+- [x] `signal-monitor` — deployed as Job (8h timeout; exits at market close)
+- [x] `weekend-review` — deployed
+- **Note:** `signal-monitor` converted from Cloud Run Service → Job (no HTTP server needed for polling loop)
 
-### Cloud Scheduler Triggers (21 triggers)
-- [ ] All 21 schedulers created and enabled
+### Cloud Scheduler Triggers (22 triggers) ✅ 2026-02-23
+- [x] `premarket-brief-daily` — `30 8 * * 1-5` ET
+- [x] `signal-monitor-daily` — `25 9 * * 1-5` ET (new — was missing)
+- [x] `weekend-review-weekly` — `0 9 * * 6` ET
+- [x] `fetch-market-data-daily` — `0 17 * * 1-5` ET
+- [x] `etf-options-0930` through `etf-options-1605` — 9 triggers
+- [x] `earnings-opts-0900` through `earnings-opts-1630` — 6 triggers
+- [x] `av-intraday-monthly` — `0 21 1 * *` ET
 - [ ] Test manual trigger on each job
 
 ### Monitoring
