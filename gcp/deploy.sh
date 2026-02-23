@@ -51,7 +51,18 @@ migrate() {
 # ── Image build ───────────────────────────────────────────────────────────────
 build_image() {
     echo "Building Docker image..."
-    gcloud builds submit --tag "${IMAGE}" .
+    # Use a minimal build context — only the files gcp/Dockerfile actually COPYs.
+    # This avoids sending the 4GB data/ directory to Cloud Build.
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    cp requirements-gcp.txt    "$tmpdir/"
+    cp alert_config.json       "$tmpdir/"
+    cp gcp/Dockerfile          "$tmpdir/Dockerfile"
+    cp -r lib/                 "$tmpdir/lib/"
+    cp -r gcp/                 "$tmpdir/gcp/"
+    cp -r scripts/             "$tmpdir/scripts/"
+    gcloud builds submit --tag "${IMAGE}" "$tmpdir"
+    rm -rf "$tmpdir"
 }
 
 # ── Shared env vars injected into every Cloud Run job ─────────────────────────
@@ -85,17 +96,21 @@ deploy_premarket() {
         --quiet
 }
 
-# ── Signal monitor (Cloud Run Service) ───────────────────────────────────────
+# ── Signal monitor (Cloud Run Job — runs during market hours, exits at close) ─
 deploy_monitor() {
-    echo "Deploying signal monitor service..."
-    gcloud run deploy signal-monitor \
+    echo "Deploying signal monitor job..."
+    gcloud run jobs create signal-monitor \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 2Gi --cpu 1 \
-        --min-instances 0 --max-instances 1 --concurrency 1 \
+        --memory 2Gi --cpu 1 --max-retries 0 \
+        --task-timeout 28800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.signal_monitor" \
         --set-env-vars "$(_env_string)" \
-        --no-allow-unauthenticated \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-monitor \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.signal_monitor" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 }
 
@@ -215,6 +230,8 @@ deploy_schedulers() {
 
     # Pre-market brief — 8:30 AM ET weekdays
     _schedule "premarket-brief-daily"    "30 8 * * 1-5"   "premarket-brief"
+    # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
+    _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
     # Weekend review — Saturday 9 AM ET
     _schedule "weekend-review-weekly"    "0 9 * * 6"      "weekend-review"
     # Market data — 5 PM ET weekdays

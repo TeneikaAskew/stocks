@@ -772,7 +772,7 @@ All sources are normalized to canonical names before returning:
 | Relational DB | Cloud SQL | `trading-db` | PostgreSQL 15, `db-g1-small`, 20 GB, us-east1 |
 | Object Storage | Cloud Storage | `PROJECT-trading-data` | Standard, us-east1, 730-day raw/ lifecycle |
 | Scheduled Jobs | Cloud Run Jobs | 7 jobs | 1–2 Gi memory, max-retries 1–2 |
-| Real-time Service | Cloud Run Service | `signal-monitor` | 2 Gi, min-instances 0, market-hours only |
+| Real-time Monitor | Cloud Run Job | `signal-monitor` | 2 Gi, 8h timeout, 0 retries, scheduled 9:25 AM ET |
 | Cron Triggers | Cloud Scheduler | 21 triggers | All America/New_York timezone |
 | Container Images | Artifact Registry | `trading/trading-system` | us-east1 |
 | Build | Cloud Build | (default) | `gcloud builds submit` |
@@ -823,7 +823,7 @@ CMD ["python", "-m", "gcp.premarket_brief"]   # overridden per-job at deploy tim
 | Job Name | Module | Memory | CPU | Timeout | Max Retries |
 |----------|--------|--------|-----|---------|-------------|
 | `premarket-brief` | `gcp.premarket_brief` | 1 Gi | 1 | 300s | 1 |
-| `signal-monitor` | `gcp.signal_monitor` | 2 Gi | 1 | service | — |
+| `signal-monitor` | `gcp.signal_monitor` | 2 Gi | 1 | 28800s (8h) | 0 |
 | `weekend-review` | `gcp.weekend_review` | 1 Gi | 1 | 300s | 1 |
 | `fetch-market-data` | `gcp.fetchers.fetch_market_data` | 1 Gi | 1 | 600s | 1 |
 | `fetch-etf-options` | `gcp.fetchers.fetch_etf_options` | 1 Gi | 1 | 300s | 2 |
@@ -883,7 +883,7 @@ INSERT premarket_analysis row → Cloud SQL
 ### Data Flow: Real-Time Signal Monitor
 
 ```
-Cloud Run Service: signal-monitor (running 09:30–16:00 ET)
+Cloud Run Job: signal-monitor (scheduled 9:25 AM ET, exits at 16:00 ET)
 
 Every 60 seconds:
     ↓
@@ -998,7 +998,7 @@ updated_at      TIMESTAMPTZ DEFAULT NOW()
 ### market_data_intraday (partitioned)
 
 ```sql
--- Parent table (range partitioned by ticker)
+-- Parent table (LIST partitioned by ticker); no surrogate id column
 ticker          VARCHAR(10)
 ts              TIMESTAMPTZ
 interval        VARCHAR(10)     -- '1min' | '5min' | '15min'
@@ -1006,6 +1006,8 @@ open, high, low, close  DECIMAL(10,4)
 volume          BIGINT
 data_source     VARCHAR(20)     -- 'alphavantage' | 'yfinance'
 inserted_at     TIMESTAMPTZ DEFAULT NOW()
+
+PRIMARY KEY (ticker, interval, ts)  -- composite PK; deduplication on upsert
 
 -- Partitions
 market_data_intraday_spy   WHERE ticker = 'SPY'
@@ -1206,8 +1208,10 @@ echo -n 'YOUR_AV_KEY' | \
 
 ```bash
 ./gcp/deploy.sh build
-# Runs: gcloud builds submit --tag IMAGE .
-# Expected: 3-5 minutes
+# Copies only lib/, gcp/, scripts/, requirements-gcp.txt, alert_config.json to a temp dir,
+# then runs: gcloud builds submit --tag IMAGE <tmpdir>
+# Avoids uploading the 4 GB data/ directory to Cloud Build (~86 files / ~1.3 MB context)
+# Expected: 2-3 minutes
 ```
 
 **Step 5 — Deploy Cloud Run jobs**
@@ -1216,7 +1220,7 @@ echo -n 'YOUR_AV_KEY' | \
 ./gcp/deploy.sh fetchers    # all 4 data-fetching jobs
 ./gcp/deploy.sh premarket
 ./gcp/deploy.sh weekend
-./gcp/deploy.sh monitor     # signal-monitor service
+./gcp/deploy.sh monitor     # signal-monitor job (Cloud Run Job, not Service)
 ```
 
 **Step 6 — Create Cloud Scheduler triggers**
@@ -1493,16 +1497,14 @@ For large intraday files, run from GCP Cloud Shell (co-located with Cloud SQL):
 python gcp/migrate_to_gcp.py --table market_data_intraday --skip-gcs
 ```
 
-### signal-monitor not scaling up
+### signal-monitor not running
 
-Service uses `--min-instances 0` and starts only during market hours via Python `is_market_hours()` check. To test outside market hours:
+`signal-monitor` is a **Cloud Run Job** (not a Service) scheduled at 9:25 AM ET. It exits at 16:00 ET via Python `is_market_hours()` check. To trigger manually:
 
 ```bash
-gcloud run services update signal-monitor \
-  --region us-east1 --min-instances 1
-# Restore after testing:
-gcloud run services update signal-monitor \
-  --region us-east1 --min-instances 0
+gcloud run jobs execute signal-monitor --region us-east1
+# View execution status:
+gcloud run jobs executions list --job signal-monitor --region us-east1
 ```
 
 ### AlphaVantage rate limit errors

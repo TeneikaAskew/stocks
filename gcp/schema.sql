@@ -80,7 +80,6 @@ CREATE INDEX IF NOT EXISTS idx_market_data_daily_ticker_date
 
 
 CREATE TABLE IF NOT EXISTS market_data_intraday (
-    id          BIGSERIAL PRIMARY KEY,
     ticker      VARCHAR(10)  NOT NULL,
     interval    VARCHAR(5)   NOT NULL DEFAULT '1min',  -- '1min','5min','15min','30min','1h'
     ts          TIMESTAMPTZ  NOT NULL,
@@ -92,7 +91,7 @@ CREATE TABLE IF NOT EXISTS market_data_intraday (
     data_source VARCHAR(50),                            -- 'alphavantage' | 'yfinance'
     inserted_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
-    CONSTRAINT uq_market_data_intraday UNIQUE (ticker, interval, ts)
+    PRIMARY KEY (ticker, interval, ts)
 ) PARTITION BY LIST (ticker);
 
 -- Per-ticker partitions (add more as needed)
