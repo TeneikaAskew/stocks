@@ -31,22 +31,20 @@ except ImportError:
 # Load environment variables
 load_dotenv()
 
-# Alpha Vantage API configuration - Multiple keys for failover
-ALPHA_VANTAGE_API_KEYS = [
-    os.getenv('ALPHA_VANTAGE_API_KEY', 'KKYWD9FJ9VITR3F5'),  # Primary key
-    'PWXSRHD4ZXX8S1HI',   # Backup key 1
-    'VNMXDQ9LBOJ5X2I6',   # Backup key 2
-    '7E8X3MQLLSW5HPWF',   # Backup key 3
-    'VFIN9SZWRAI1SCGW'    # Backup key 4
-]
+# Alpha Vantage API configuration — keys loaded from environment only (never hardcoded).
+# Set ALPHA_VANTAGE_API_KEY (single) or ALPHA_VANTAGE_API_KEYS (comma-separated) in .env.
+from lib.config import AlphaVantageConfig as _AV
+
+_av_cfg = _AV()
+ALPHA_VANTAGE_API_KEYS = _av_cfg.get_api_keys()
 current_key_index = 0
 ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEYS[current_key_index]
 BASE_URL = 'https://www.alphavantage.co/query'
 
-# Rate limiting: Alpha Vantage free tier allows 5 API calls/minute, 500/day
-# Premium plans support up to 75+ RPM — override with --delay argument
-CALLS_PER_MINUTE = 5
-DELAY_BETWEEN_CALLS = 60 / CALLS_PER_MINUTE  # 12 seconds (overridden by --delay at runtime)
+# Rate limiting — driven by lib.config.AlphaVantageConfig (currently 150 RPM premium plan).
+# Can be overridden at runtime with --delay argument.
+CALLS_PER_MINUTE = _av_cfg.rpm
+DELAY_BETWEEN_CALLS = _av_cfg.delay_between_calls  # overridden by --delay at runtime
 
 
 def is_trading_day(date):

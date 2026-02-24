@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""
+Cloud Run Job: Fetch daily AV HISTORICAL_OPTIONS and write to GCS + Cloud SQL.
+
+Replaces the GitHub Actions workflow fetch-alphavantage-options-daily.yml
+for the Cloud SQL write path.  The GitHub Actions workflow continues to write
+local parquets to GCS; this job writes the same data to Cloud SQL with
+data_source='alphavantage' so consumers can query it directly.
+
+Scheduled by Cloud Scheduler after market close (e.g., 10 PM ET weekdays).
+
+Usage:
+    python -m gcp.fetchers.fetch_av_historical_options [--tickers ALL] [--date YYYY-MM-DD]
+"""
+
+import argparse
+import logging
+import os
+import sys
+from datetime import datetime, date
+from pathlib import Path
+
+import pandas as pd
+import requests
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from gcp.database import upsert_dataframe, is_cloud_sql_configured
+from gcp.gcs_utils import upload_dataframe_as_parquet
+from lib.config import AlphaVantageConfig
+
+from lib.logging_config import setup_logging
+setup_logging()
+log = logging.getLogger(__name__)
+
+AV_BASE_URL = 'https://www.alphavantage.co/query'
+TICKERS = ['SPY', 'IWM', 'QQQ']
+_av_cfg = AlphaVantageConfig()
+
+
+def fetch_av_options(ticker: str, fetch_date: str, api_key: str) -> pd.DataFrame:
+    """
+    Fetch end-of-day options chain from AV HISTORICAL_OPTIONS for one ticker/date.
+
+    Returns normalized DataFrame ready for etf_options_snapshots, or empty on error.
+    """
+    symbol = ticker
+    params = {
+        'function': 'HISTORICAL_OPTIONS',
+        'symbol':   symbol,
+        'date':     fetch_date,
+        'apikey':   api_key,
+        'datatype': 'json',
+    }
+    try:
+        resp = requests.get(AV_BASE_URL, params=params, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get('message') != 'success' or data.get('endpoint') != 'Historical Options':
+            log.warning("  AV options: unexpected response for %s %s: %s",
+                        ticker, fetch_date, data.get('message', data.get('Information', '')))
+            return pd.DataFrame()
+
+        records = data.get('data', [])
+        if not records:
+            log.info("  AV options: no contracts for %s %s", ticker, fetch_date)
+            return pd.DataFrame()
+
+        df = pd.DataFrame(records)
+        return _normalize_av_response(df, ticker, fetch_date)
+
+    except Exception as e:
+        log.error("  AV options fetch failed for %s %s: %s", ticker, fetch_date, e)
+        return pd.DataFrame()
+
+
+def _normalize_av_response(df: pd.DataFrame, ticker: str, fetch_date: str) -> pd.DataFrame:
+    """Normalize raw AV HISTORICAL_OPTIONS JSON response to etf_options_snapshots schema."""
+    out = df.copy()
+
+    # Coerce numeric columns
+    numeric = ['strike', 'last', 'mark', 'bid', 'ask', 'volume', 'open_interest',
+               'implied_volatility', 'delta', 'gamma', 'theta', 'vega', 'rho']
+    for col in numeric:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors='coerce')
+
+    # snapshot_ts at 23:00 UTC (EOD marker, distinct from yahooquery intraday)
+    out['snapshot_ts'] = pd.Timestamp(f"{fetch_date}T23:00:00Z")
+    out['snapshot_date'] = pd.to_datetime(fetch_date).date()
+    out['market_session'] = 'EOD'
+    out['ticker'] = ticker.upper()
+    out['data_source'] = 'alphavantage'
+
+    # option_type normalisation
+    if 'type' in out.columns:
+        out['option_type'] = out['type'].str.lower().map({'call': 'calls', 'put': 'puts'})
+    elif 'option_type' in out.columns:
+        out['option_type'] = out['option_type'].str.lower()
+
+    # Column renames from AV JSON keys
+    rename = {
+        'contractID':   'contract_symbol',
+        'expiration':   'expiration',
+        'last':         'last_price',
+    }
+    out = out.rename(columns={k: v for k, v in rename.items() if k in out.columns})
+
+    keep = [
+        'ticker', 'snapshot_ts', 'snapshot_date', 'market_session',
+        'contract_symbol', 'option_type', 'expiration', 'strike',
+        'bid', 'ask', 'mark', 'last_price', 'volume', 'open_interest',
+        'implied_volatility', 'delta', 'gamma', 'theta', 'vega', 'rho',
+        'data_source',
+    ]
+    out = out[[c for c in keep if c in out.columns]]
+    out = out.dropna(subset=['option_type', 'expiration', 'strike'])
+    return out
+
+
+def process_ticker(ticker: str, fetch_date: str, bucket: str, api_key: str):
+    """Fetch AV options for one ticker/date → Cloud SQL + GCS."""
+    log.info("  Fetching %s options for %s...", ticker, fetch_date)
+
+    df = fetch_av_options(ticker, fetch_date, api_key)
+    if df.empty:
+        log.warning("    No options data returned for %s %s", ticker, fetch_date)
+        return
+
+    log.info("    %d contracts received", len(df))
+
+    if is_cloud_sql_configured():
+        upsert_dataframe(
+            df, 'etf_options_snapshots',
+            ['ticker', 'snapshot_ts', 'option_type', 'expiration', 'strike'],
+        )
+        log.info("    ✓ upserted to Cloud SQL")
+
+    if bucket:
+        upload_dataframe_as_parquet(
+            df, bucket,
+            f"raw/{ticker.lower()}/options/"
+            f"{ticker.lower()}_av_options_{fetch_date.replace('-', '')}.parquet",
+        )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Fetch daily AV HISTORICAL_OPTIONS to Cloud SQL + GCS')
+    parser.add_argument('--tickers', default='ALL',
+                        help='Space-separated tickers or ALL')
+    parser.add_argument('--date', default=None,
+                        help='Date to fetch (YYYY-MM-DD). Defaults to today.')
+    args = parser.parse_args()
+
+    fetch_date = args.date or date.today().strftime('%Y-%m-%d')
+    bucket = os.environ.get('GCS_BUCKET', '')
+    api_key = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
+    tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
+
+    log.info("Fetch AV Historical Options Job")
+    log.info("  Date    : %s", fetch_date)
+    log.info("  Tickers : %s", tickers)
+    log.info("  SQL     : %s", 'yes' if is_cloud_sql_configured() else 'NO')
+    log.info("  GCS     : %s", bucket or 'disabled')
+    log.info("  AV key  : %s", 'set' if api_key else 'MISSING')
+
+    if not api_key:
+        log.error("AV_API_KEY not set — cannot fetch options")
+        sys.exit(1)
+
+    errors = []
+    for i, ticker in enumerate(tickers):
+        if i > 0:
+            import time
+            time.sleep(_av_cfg.delay_between_calls)
+        try:
+            process_ticker(ticker, fetch_date, bucket, api_key)
+        except Exception as e:
+            log.error("  ✗ %s failed: %s", ticker, e)
+            errors.append(ticker)
+
+    if errors:
+        log.error("Failed: %s", errors)
+        sys.exit(1)
+    log.info("Done.")
+
+
+if __name__ == '__main__':
+    main()

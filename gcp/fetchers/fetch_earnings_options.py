@@ -17,22 +17,25 @@ import logging
 import os
 import sys
 import io
+import time as time_module
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from gcp.gcs_utils import upload_dataframe_as_parquet, download_csv_from_gcs
+from lib.config import AlphaVantageConfig
 
+from lib.logging_config import setup_logging
+setup_logging()
 log = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s  %(levelname)-7s  %(message)s',
-    datefmt='%H:%M:%S',
-)
+
+AV_BASE_URL = 'https://www.alphavantage.co/query'
+_av_cfg = AlphaVantageConfig()
 
 STRATEGY_FILES = [
     'LongCalls.csv', 'CoveredCalls.csv', 'BullSpreads.csv', 'BearSpreads.csv',
@@ -116,31 +119,57 @@ def calculate_greeks(row: pd.Series, underlying_price: float) -> dict:
         return dict.fromkeys(['delta', 'gamma', 'theta', 'vega', 'rho'], None)
 
 
-def fetch_options_for_symbol(symbol: str) -> pd.DataFrame:
-    """Fetch earnings options chain for a single symbol via yahooquery."""
-    from yahooquery import Ticker
+def fetch_options_for_symbol(symbol: str, fetch_date: str, api_key: str) -> pd.DataFrame:
+    """Fetch earnings options chain for a single symbol via AV HISTORICAL_OPTIONS."""
+    if not api_key:
+        log.warning("    No AV API key — cannot fetch options for %s", symbol)
+        return pd.DataFrame()
 
+    params = {
+        'function': 'HISTORICAL_OPTIONS',
+        'symbol': symbol,
+        'date': fetch_date,
+        'apikey': api_key,
+        'datatype': 'json',
+    }
     try:
-        t = Ticker(symbol)
-        chain = t.option_chain
-        if isinstance(chain, (str, dict)) or chain is None:
+        resp = requests.get(AV_BASE_URL, params=params, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get('message') != 'success' or data.get('endpoint') != 'Historical Options':
+            msg = data.get('message', data.get('Information', ''))
+            if msg:
+                log.warning("    AV options: unexpected response for %s: %s", symbol, msg)
             return pd.DataFrame()
 
-        price_info = t.price
-        underlying_price = 0.0
-        if isinstance(price_info, dict) and symbol in price_info:
-            underlying_price = float(
-                price_info[symbol].get('regularMarketPrice', 0) or 0
-            )
+        records = data.get('data', [])
+        if not records:
+            return pd.DataFrame()
 
-        df = chain.reset_index()
+        df = pd.DataFrame(records)
+
+        # Coerce numeric columns
+        numeric = ['strike', 'last', 'mark', 'bid', 'ask', 'volume', 'open_interest',
+                   'implied_volatility', 'delta', 'gamma', 'theta', 'vega', 'rho']
+        for col in numeric:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Map AV field names to match normalize_for_sql expectations
+        if 'type' in df.columns:
+            df['optionType'] = df['type'].str.lower().map({'call': 'calls', 'put': 'puts'})
+        if 'contractID' in df.columns:
+            df['contractSymbol'] = df['contractID']
+        if 'last' in df.columns:
+            df['lastPrice'] = df['last']
+        if 'implied_volatility' in df.columns:
+            df['impliedVolatility'] = df['implied_volatility']
+        if 'open_interest' in df.columns:
+            df['openInterest'] = df['open_interest']
+
         df['symbol'] = symbol
-        df['underlying_price'] = underlying_price
-
-        # Add Greeks
-        greek_rows = [calculate_greeks(row, underlying_price) for _, row in df.iterrows()]
-        greek_df = pd.DataFrame(greek_rows, index=df.index)
-        df = pd.concat([df, greek_df], axis=1)
+        df['underlying_price'] = 0.0
 
         return df
 
@@ -168,7 +197,7 @@ def normalize_for_sql(df: pd.DataFrame, snapshot_ts: pd.Timestamp) -> pd.DataFra
 
     df['snapshot_ts'] = snapshot_ts
     df['snapshot_date'] = snapshot_ts.date()
-    df['data_source'] = 'daily_eod'
+    df['data_source'] = 'alphavantage'
 
     if 'expiration' in df.columns:
         df['expiration'] = pd.to_datetime(df['expiration'], errors='coerce').dt.date
@@ -197,11 +226,17 @@ def main():
     snap_date = args.date or date.today().strftime('%Y-%m-%d')
     snapshot_ts = pd.Timestamp.now(tz='UTC')
     bucket = os.environ.get('GCS_BUCKET', '')
+    api_key = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
-    log.info("Earnings Options Fetch Job")
+    log.info("Earnings Options Fetch Job (AlphaVantage)")
     log.info("  Date      : %s", snap_date)
     log.info("  SQL       : %s", 'yes' if is_cloud_sql_configured() else 'NO')
     log.info("  GCS       : %s", bucket or 'disabled')
+    log.info("  AV key    : %s", 'set' if api_key else 'MISSING')
+
+    if not api_key:
+        log.error("ALPHA_VANTAGE_API_KEY not set — cannot fetch options")
+        sys.exit(1)
 
     # Resolve tickers
     if args.symbols:
@@ -228,9 +263,11 @@ def main():
         log.info("  Batch %d-%d / %d: %s",
                  i + 1, min(i + BATCH_SIZE, len(tickers)), len(tickers), batch)
 
-        for symbol in batch:
+        for j, symbol in enumerate(batch):
+            if j > 0:
+                time_module.sleep(_av_cfg.delay_between_calls)
             try:
-                df = fetch_options_for_symbol(symbol)
+                df = fetch_options_for_symbol(symbol, snap_date, api_key)
                 if df.empty:
                     continue
 
