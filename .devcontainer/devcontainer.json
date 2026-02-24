@@ -1,4 +1,15 @@
 {
+  "forwardPorts": [5173, 8000],
+  "portsAttributes": {
+    "5173": {
+      "label": "Platform (Vite)",
+      "onAutoForward": "notify"
+    },
+    "8000": {
+      "label": "Platform API",
+      "onAutoForward": "notify"
+    }
+  },
   "customizations": {
     "codespaces": {
       "repositories": {

@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-02-22
+**Last Updated**: 2026-02-23 (session 5)
 
 ---
 
@@ -84,10 +84,12 @@
   - [x] `load_intraday()` — Priority 0: Cloud SQL
   - [x] `_load_intraday_from_sql()` — Parameterized query
   - [x] `load_daily()` — Cloud SQL path added
-  - [x] `_load_daily_from_sql()` — Maps SQL cols to canonical names
-  - [x] `load_options()` — New: queries etf/earnings options tables
+  - [x] `_load_daily_from_sql()` — Maps SQL cols to canonical names (expanded: 30+ indicator columns)
+  - [x] `load_options()` — New: queries etf/earnings options tables; added `data_source=` filter param
   - [x] `load_trades()` — New: queries trades table
   - [x] Zero breaking changes (env-var-gated, Parquet fallback preserved)
+
+- [x] `lib/config.py` — Added `AlphaVantageConfig` dataclass (rpm=150, delay/batch properties)
 
 - [x] `gcp/trade_logger.py` — Added Cloud SQL write path
   - [x] `log_trade()` — Upserts to Cloud SQL + Parquet fallback
@@ -111,7 +113,7 @@
   - [x] `download_parquet_from_gcs()`
   - [x] `list_blobs()`
 
-- [x] `gcp/schema.sql` — PostgreSQL 15 schema (8 tables)
+- [x] `gcp/schema.sql` — PostgreSQL 15 schema (9 tables: + `journal_entries`, `etf_options_snapshots` gains `data_source` + `mark` columns)
 
 - [x] `gcp/migrate_to_gcp.py` — Parquet → GCS + Cloud SQL migration
   - [x] `upload_raw_parquets()` — All Parquet → GCS raw/
@@ -138,6 +140,10 @@
   - [x] 5-key rotation, 13s rate limiting
   - [x] GCS skip-existing check
   - [x] Writes to `market_data_intraday`, GCS
+- [x] `gcp/fetchers/fetch_av_historical_options.py` — New: AV HISTORICAL_OPTIONS daily → Cloud SQL + GCS
+  - [x] Fetches EOD options chains with real Greeks (delta, gamma, theta, vega)
+  - [x] Respects centralized AV rate limit (150 RPM)
+  - [x] Upserts to `etf_options_snapshots` with `data_source='alphavantage'`
 
 ### Infrastructure Scripts
 - [x] `gcp/setup_cloud_sql.sh` — One-shot provisioning
@@ -170,31 +176,34 @@
 
 ## Phase 3: Data Migration
 
-### Raw Parquet Backup to GCS
-- [ ] SPY daily parquets → `gs://BUCKET/raw/spy/`
-- [ ] IWM daily parquets → `gs://BUCKET/raw/iwm/`
-- [ ] QQQ daily parquets → `gs://BUCKET/raw/qqq/`
-- [ ] SPX daily parquets → `gs://BUCKET/raw/spx/`
-- [ ] SPY intraday parquets → `gs://BUCKET/raw/spy/intraday/`
-- [ ] IWM intraday parquets → `gs://BUCKET/raw/iwm/intraday/`
-- [ ] QQQ intraday parquets → `gs://BUCKET/raw/qqq/intraday/`
-- [ ] ETF options parquets → `gs://BUCKET/raw/options/etfs/`
-- [ ] Earnings options parquets → `gs://BUCKET/raw/options/earnings/`
-- [ ] Trade logs → `gs://BUCKET/raw/trades/`
+### Raw Parquet Backup to GCS ✅ 2026-02-23
+- [x] All local parquets synced → `gs://adept-mountain-474619-d4-trading-data/raw/data/` ✅
+  - 7.61 GiB total, ~1,580 options files + intraday monthly parquets + daily summaries
+  - SPY/IWM/QQQ intraday, ETF options (IWM/QQQ/SPX/SPY), earnings options, trade logs
+- [x] `data/` removed from git tracking (`f287259b`) — GCS is now source of truth
+  - `.gitignore` updated; local copies preserved but untracked
+  - Retrieval: `gsutil -m cp -r gs://adept-mountain-474619-d4-trading-data/raw/data/ data/`
 
 ### Cloud SQL Ingestion
-- [ ] `market_data_daily` — SPY, IWM, QQQ, SPX historical
-- [ ] `market_data_intraday` — SPY 1-min (~16GB compressed)
-- [ ] `market_data_intraday` — IWM 1-min
-- [ ] `market_data_intraday` — QQQ 1-min
-- [ ] `etf_options_snapshots` — Historical options snapshots
-- [ ] `earnings_options_snapshots` — Historical earnings options
-- [ ] `trades` — Trade log history
+- [x] `market_data_intraday` — SPY 2,300,839 rows (2015-01-02 → 2026-02-21) ✅ exact parquet match
+- [x] `market_data_intraday` — IWM 1,858,427 rows (2015-01-02 → 2026-02-21) ✅ exact parquet match
+- [x] `market_data_intraday` — QQQ 2,135,654 rows (2015-01-02 → 2026-02-21) ✅ exact parquet match
+- [x] `market_data_daily` — 19,785 rows (SPY/IWM/QQQ ~6,600 each + SPX 81) ✅
+  - Backfilled daily indicators from 250-day daily series via `compute_and_upsert_daily_indicators()`
+  - Indicator columns: `sma_200, ema_20, macd, macd_signal, macd_histogram, bb_upper, bb_lower, bb_width, bb_pct, price_vs_ema20`
+- [x] `etf_options_snapshots` — IWM 1,346,868 rows ✅ exact match
+- [x] `etf_options_snapshots` — QQQ 2,840,359 rows ✅ exact match
+- [~] `etf_options_snapshots` — ^SPX ~5.2M rows (target ~6.8M) — migration in progress
+- [~] `etf_options_snapshots` — SPY ~460K rows (target ~3.1M) — migration in progress
+- [ ] `earnings_options_snapshots` — not yet migrated
+- [ ] `trades` — not yet migrated
 
-### Verification
-- [ ] Row counts match between Parquet and Cloud SQL
-- [ ] Date ranges complete (no gaps)
-- [ ] Indicator values match (`RSI_14`, `EMA9`, etc.)
+### Verification ✅ 2026-02-23
+- [x] Row counts match Parquet sources (IWM/QQQ/SPY intraday exact; IWM/QQQ options exact)
+- [x] Zero NULLs on required fields (ticker, ts, open, high, low, close, volume)
+- [x] PRIMARY KEY / UNIQUE constraints prevent any duplicates
+- [x] Date ranges verified (intraday: 2015–2026; options: Oct–Dec 2025)
+- [ ] Indicator values spot-checked against TradingView/AV
 - [ ] Backtest produces same results with Cloud SQL vs Parquet
 
 ---
@@ -260,6 +269,118 @@
 
 ---
 
+## Platform: Unified Trading Dashboard (`platform/`)
+
+A production-grade React/TypeScript web app that replaces 4 separate vanilla JS apps (chart-viewer, options-heatseeker, website, success-report-site) with a single unified platform backed by the GCP data stack.
+
+### Stack
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Vite 7 + React 19 + TypeScript + Tailwind CSS 4 |
+| State | Zustand (client) + TanStack Query v5 (server cache) |
+| Charts | TradingView Lightweight Charts (candles) + Recharts (metrics) + D3.js (options heatmap) |
+| Backend | FastAPI — thin wrapper over `lib/` modules + Cloud SQL |
+| AI | Vertex AI Gemini 2.0 Flash (streaming, 4 modes) |
+| Data | Cloud SQL PostgreSQL 15 (primary) + GCS parquets (fallback) |
+
+### Routes (10 pages)
+| Route | Page | Status |
+|-------|------|--------|
+| `/` | Dashboard — backtest KPIs, recent signals, playbook summary | ✅ Live |
+| `/live` | Live Market — Alpha Vantage quotes, EMA/RSI/StochRSI/ATR, signal detection, sound alerts | ✅ Live |
+| `/charts` | Chart Viewer — TradingView candlesticks, trade marking, multi-TF (1/5/15/30/60) | ✅ Live |
+| `/options` | Options Flow — D3.js GEX/VEX heatmap, king nodes, gatekeepers, midpoints, date navigation | ✅ Live |
+| `/playbook` | Playbook — 12 decision cards per ticker, interactive condition checklists | ✅ Live |
+| `/backtest` | Backtester — equity curve (Recharts), trade table (TanStack Table), summary metrics | ✅ Live |
+| `/reports` | Reports — markdown report browser (6 phases) with sidebar navigation | ✅ Live |
+| `/signals` | Signal Explorer — 330K+ signals, filter by direction/score/date | ✅ Live |
+| `/journal` | Trade Journal — Cloud SQL-backed (local JSON fallback) | ✅ Live |
+| `/insights` | AI Insights — Vertex AI Gemini streaming chat, 4 modes (Chat/Market/Strategy/Trade Review) | ✅ Live |
+
+### FastAPI Backend (`platform/api/`)
+8 routers: `live`, `options`, `playbook`, `backtest`, `signals`, `insights`, `journal`
+
+Key data flows:
+- **Chart data**: Cloud SQL `market_data_intraday` (3,115 dates, 2015–2026) with local parquet fallback
+- **Reference levels**: Cloud SQL `market_data_daily` for previous day OHLC support/resistance
+- **Live quotes**: Alpha Vantage GLOBAL_QUOTE (15s polling, 150 RPM plan)
+- **Options flow**: Alpha Vantage HISTORICAL_OPTIONS proxy (replaces Cloudflare Worker)
+- **Journal**: Cloud SQL `journal_entries` table (CRUD) with local JSON fallback
+- **Backtest results**: reads `data/backtest_results/backtest_{TICKER}_*.csv`
+- **Signals**: reads `data/signals/historical_{TICKER}_*_signals.parquet`
+- **AI chat**: Vertex AI Gemini 2.0 Flash via `google.genai` SDK, SSE streaming
+
+### Cloud SQL Integration ✅ 2026-02-23
+- **Reads**: `market_data_daily`, `market_data_intraday`, `etf_options_snapshots` — via `lib/data_loader.py` + direct queries in `main.py`
+- **Chart endpoints**: `/api/market/dates`, `/api/market/data`, `/api/market/reference` — Cloud SQL primary, local parquet fallback
+- **Journal CRUD**: `journal_entries` table — GET/POST/DELETE with local JSON fallback
+- Health endpoint (`/api/health`) reports `cloud_sql: true/false`
+
+### Journal Cloud SQL Migration ✅ 2026-02-23
+- [x] `journal_entries` table added to `gcp/schema.sql` (UUID PK, ticker, direction, timestamps, prices, return_pct, notes)
+- [x] `platform/api/routers/journal.py` — full CRUD (GET/POST/DELETE) against Cloud SQL with local JSON fallback
+- [x] `platform/src/routes/JournalPage.tsx` — TanStack Query hooks (Cloud SQL primary, localStorage as optimistic cache)
+- [x] Data source indicator in UI: green "Cloud SQL" or amber "Local storage"
+
+### Dev Server Access (GitHub Codespace) ✅ 2026-02-23
+- [x] `platform/vite.config.ts` — `host: true` (listens on `0.0.0.0`)
+- [x] `platform/api/main.py` — `allow_origin_regex=r"https://.*\.app\.github\.dev"` in CORS middleware
+- [x] `.devcontainer/devcontainer.json` — `forwardPorts: [5173, 8000]` with labels
+
+### Production Static File Serving ✅ 2026-02-23
+- [x] `platform/api/main.py` — `/assets` StaticFiles mount + SPA catch-all `@app.get("/{full_path:path}")` at end of file
+- Production workflow: `npm run build` → `uvicorn api.main:app --host 0.0.0.0 --port 8000` (single port)
+
+### How to Start (Development)
+```bash
+# Terminal 1 — FastAPI backend
+cd /workspaces/stocks/platform
+set -a && source ../.env && set +a
+uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Terminal 2 — Vite frontend
+cd /workspaces/stocks/platform
+npm run dev
+# → http://localhost:5173  (or Codespace URL on port 5173)
+```
+
+### GCP Dependencies Required
+```
+CLOUD_SQL_CONNECTION_NAME=adept-mountain-474619-d4:us-east1:trading-db
+DB_USER=trading_user
+DB_PASS=<from Secret Manager: db-trading-pass>
+DB_NAME=trading
+AV_API_KEY=<from Secret Manager: av-api-key>
+GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
+```
+
+---
+
+## Cost Estimates (Monthly)
+
+> Based on current data: 7.61 GiB GCS, ~14M Cloud SQL rows, 22 Cloud Scheduler triggers, 7 Cloud Run Jobs
+
+| Service | Resource | Est. Cost/mo |
+|---------|----------|-------------|
+| **Cloud SQL** | db-g1-small instance (us-east1, 24/7) | ~$10–12 |
+| **Cloud SQL** | 20 GB SSD storage | ~$3.40 |
+| **Cloud SQL** | Automated backups (~5 GB) | ~$0.40 |
+| **Cloud Storage** | 7.6 GB standard storage | ~$0.15 |
+| **Cloud Storage** | Operations (reads/writes) | ~$0.05 |
+| **Cloud Run Jobs** | Execution time (all 7 jobs) | ~$1.50 |
+| **Cloud Scheduler** | 22 triggers (3 free) | ~$1.90 |
+| **Secret Manager** | Access operations | ~$0.02 |
+| **Artifact Registry** | Docker image storage | ~$0.10 |
+| **Total estimate** | | **~$17–20/mo** |
+
+**Notes:**
+- Cloud SQL dominates cost (~75%). Upgrade to `db-n1-standard-1` if query performance degrades.
+- If Cloud Run jobs are disabled (GitHub Actions cutover not done), subtract ~$1.50.
+- GCS cost stays low (<$0.25) even as data grows — parquets compress well.
+- Scale: at $0.02/GB, even 100 GB of GCS backups = $2/month.
+
+---
+
 ## Test Results
 
 | Suite | Status | Tests | Date |
@@ -283,10 +404,42 @@
 - 2026-02-22: Phase reports regenerated with corrected indicator values; BACKTEST_RESULTS.md narrowed to IWM
 - 2026-02-22: Full 2015–2026 dataset re-run (all 7 phases + timeframe sweep); 1m+30m confirmed primary signal (Sharpe 11.05 IWM)
 - 2026-02-22: Backfilled 10yr historical options data (IWM 2016–2026, SPY 2018–2025, QQQ 2022 partial)
+- 2026-02-22: options_pnl_translation.py and walk_forward_tf_combos.py — time-of-day breakdown and low-sample flags
+- 2026-02-22: Extended SPY options coverage through 2026-02-20 (added 2022-11 → 2026-02 batch)
+- 2026-02-23: Recover trading_analysis.py, trade_analysis_pipeline.py, iwm_trading_alerts.py + trade_tracker CSVs
+- 2026-02-23: gcp/database.py bulk_insert rewritten with SQLAlchemy Core to fix pg8000 65535-param limit; chunksize 10000→5000 in migrate_to_gcp.py
+- 2026-02-23: BACKTEST_RESULTS.md expanded to include SPY and QQQ parameter table + filter rejection rates
 - 2026-02-22: deploy.sh build context reduced ~4 GB → ~1.3 MB; market_data_intraday schema uses composite PK
 - 2026-02-22: walk_forward_tf_combos.py — rolling-window OOS validation of top TF combos with volatility regime split
 - 2026-02-22: options_pnl_translation.py — Greeks-approximation 0DTE P&L estimator using daily options chains
 - 2026-02-22: phase6_playbook_combined.md — appendix with multi-TF filtered win rates (1m+30m 56–59%, 5m+15m ~62%)
+- 2026-02-23: trade_analysis_pipeline.py — fix market-hours filter (allow 4:00 PM exits), add Trade_Profitable fallback for 6-month comparison; IWM report updated with 6-month window analysis
+- 2026-02-23: GCS sync completed — 7.61 GiB backed up to gs://adept-mountain-474619-d4-trading-data/raw/data/
+- 2026-02-23: data/ removed from git tracking (f287259b); GCS is now source of truth; .gitignore updated
+- 2026-02-23: Cloud SQL intraday migration complete — SPY 2.3M, IWM 1.86M, QQQ 2.14M rows (exact parquet match)
+- 2026-02-23: ETF options migration complete for IWM (1.35M) and QQQ (2.84M); SPX/SPY in progress (~14M total target)
+- 2026-02-23: Data quality verified — PK/UNIQUE constraints prevent dupes; zero NULLs on required fields
+- 2026-02-23: .env + .gcp-key.json created for persistent credentials (both gitignored); secrets also in Secret Manager
+- 2026-02-23: AlphaVantageConfig centralized in lib/config.py (rpm=150); AV scripts + data_loader use config instead of hardcoded values
+- 2026-02-23: gcp/database.py query_to_dataframe uses sqlalchemy.text() for correct named-param handling across DBAPIs
+- 2026-02-23: data_loader load_daily expanded to 30+ indicator columns; load_options gains data_source= filter
+- 2026-02-23: gcp/schema.sql — etf_options_snapshots gains data_source VARCHAR(30) + mark DOUBLE PRECISION columns
+- 2026-02-23: gcp/migrate_to_gcp.py — added av_options migration key; daily_indicators backfill support
+- 2026-02-23: gcp/fetchers/fetch_market_data.py — compute_and_upsert_daily_indicators() from 250-day daily series
+- 2026-02-23: gcp/fetchers/fetch_av_historical_options.py — new fetcher for AV HISTORICAL_OPTIONS → Cloud SQL + GCS
+- 2026-02-23: market_data_daily backfilled to 19,785 rows (SPY/IWM/QQQ ~6,600 each)
+- 2026-02-23: trade_analysis_pipeline.py — fix RTH filter (entry cutoff 3:55 PM, exit 3:58 PM, same-day check)
+- 2026-02-23: scripts/find_swing_trades.py — new swing trade scanner (afternoon entry, next-day exit, --options-pnl flag)
+- 2026-02-23: options_pnl_translation.py — find_swing_option + estimate_swing_options_pnl for overnight swing trades
+- 2026-02-23: Swing scanner gains winner vs loser indicator profiling (predictive/non-predictive factor tables)
+- 2026-02-23: platform/ — unified React/TypeScript trading dashboard (10 routes, FastAPI backend, Vertex AI Gemini chat, D3.js options heatmap, TradingView candlesticks, TanStack Table signals/trades); replaces 4 separate vanilla JS apps
+- 2026-02-23: fix(config) — remove hardcoded AV API keys from scripts; centralize key management in AlphaVantageConfig.get_api_keys() (env-only)
+- 2026-02-23: feat(gcp) — AV options migration gains checkpoint-resume (skips existing dates) and streaming row-group reads (constant memory)
+- 2026-02-23: chore(deps) — add requirements.lock/requirements-gcp.lock; Makefile gains `lock` target; Dockerfile prefers lock file
+- 2026-02-23: fix(platform) — SPA catch-all route moved to end of main.py to avoid shadowing /api/* routes; Codespace CORS regex added; BacktestPage/DashboardPage TS fixes
+- 2026-02-23: feat(platform) — chart data endpoints upgraded to Cloud SQL primary (3,115 dates from 2015–2026); reference levels from market_data_daily; local parquet fallback preserved
+- 2026-02-23: feat(platform) — journal_entries Cloud SQL CRUD (GET/POST/DELETE) with local JSON fallback; TanStack Query + useMutation hooks
+- 2026-02-23: chore(devcontainer) — forwardPorts [5173, 8000] with labels for Codespace auto-forwarding
 
 ---
 
@@ -295,4 +448,7 @@
 - All Cloud SQL access is **environment-variable-gated** via `CLOUD_SQL_CONNECTION_NAME`. Setting this env var enables Cloud SQL; omitting it falls back to local Parquet (zero breaking changes for local dev).
 - Migration script supports `--dry-run` to preview without writing.
 - Initial migration of ~16GB intraday data may take 30–60 minutes; run in screen/tmux.
-- All credentials stored in Secret Manager — never in env files committed to git.
+- All credentials stored in Secret Manager. Also present as `.env` + `.gcp-key.json` in project root (both gitignored) for local dev convenience.
+- `data/` is not in git — use `gsutil -m cp -r gs://adept-mountain-474619-d4-trading-data/raw/data/ data/` to restore locally.
+- **Daily OHLCV data**: `market_data_daily` backfilled to 19,785 rows (SPY/IWM/QQQ ~6,600 each, 2000–2026). Indicators computed from 250-day daily series via `compute_and_upsert_daily_indicators()`.
+- **Options data sources**: ETF options use yahooquery (9x intraday snapshots/day, `data_source=NULL`). AlphaVantage provides EOD options with real Greeks (`data_source='alphavantage'`). Filter with `data_source=` param in `load_options()`.

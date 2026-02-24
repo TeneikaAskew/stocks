@@ -3,9 +3,7 @@ pandas>=2.1.4
 numpy>=1.26.2
 pyarrow>=14.0.0
 
-# Market data fetching
-yfinance>=0.2.33
-yahooquery>=2.3.0
+# Market data fetching (AlphaVantage via REST API)
 requests>=2.31.0
 beautifulsoup4>=4.12.2
 lxml>=4.9.3

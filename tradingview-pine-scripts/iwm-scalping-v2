@@ -1,0 +1,368 @@
+//@version=6
+indicator("Scalping IWM v2", overlay=false, max_labels_count=500)
+
+// ── Inputs
+emaFastLen = input.int(9,  "EMA Fast")
+emaMidLen  = input.int(20, "EMA Mid")
+emaSlowLen = input.int(50, "EMA Slow")
+rvolLen    = input.int(50, "RVOL lookback")
+rvolMin    = input.float(1.5, "RVOL min", step=0.1)
+atrMin     = input.float(0.15, "ATR min", step=0.01)
+sessionET  = input.session("0935-1430", "Time window (ET)")
+showTips   = input.bool(true,  "Show lane name table")
+
+// v2 Inputs
+callThreshold  = input.int(8, "CALL score threshold", minval=1, maxval=20, group="v2 Scoring")
+putThreshold   = input.int(7, "PUT score threshold", minval=1, maxval=20, group="v2 Scoring")
+showScoreTable = input.bool(true, "Show Score Table", group="v2 Scoring")
+showGrade      = input.bool(true, "Show Signal Grade Label", group="v2 Scoring")
+
+// ── Base series (chart TF)
+ema9  = ta.ema(close, emaFastLen)
+ema20 = ta.ema(close, emaMidLen)
+ema50 = ta.ema(close, emaSlowLen)
+vwap  = ta.vwap
+rvol  = volume / ta.sma(volume, rvolLen)
+rsi   = ta.rsi(close, 14)
+atr   = ta.atr(14)
+stochRsi = ta.stoch(rsi, rsi, rsi, 14)
+
+// ── Multi-TF (precomputed every bar)
+sym    = syminfo.tickerid
+// 1-minute
+c1     = request.security(sym, "1", close)
+h1     = request.security(sym, "1", high)
+l1     = request.security(sym, "1", low)
+ema9_1 = request.security(sym, "1", ta.ema(close, emaFastLen))
+vwap_1 = request.security(sym, "1", ta.vwap)
+// 5-minute
+c5     = request.security(sym, "5", close)
+h5     = request.security(sym, "5", high)
+l5     = request.security(sym, "5", low)
+
+// ── v2: 30-minute data (1m+30m combo = Sharpe 11.05, highest tested)
+ema9_30  = request.security(sym, "30", ta.ema(close, emaFastLen))
+ema20_30 = request.security(sym, "30", ta.ema(close, emaMidLen))
+c30      = request.security(sym, "30", close)
+h30      = request.security(sym, "30", high)
+l30      = request.security(sym, "30", low)
+
+// ── v2: OBV (On-Balance Volume) — +2-3pp lift per backtests
+obvVal     = ta.obv
+obvSma20   = ta.sma(obvVal, 20)
+
+// ── Conditions
+// CALL Indicators (Bullish Signals)
+priceAboveEma9    = close > ema9
+priceAboveEma20   = close > ema20
+priceAboveVwap    = close > vwap
+rsiAbove50        = rsi > 50
+rsiAbove60        = rsi > 60
+stochRsiAbove70   = stochRsi > 70
+ema9AboveEma20    = ema9 > ema20
+ema20AboveEma50   = ema20 > ema50
+atrHigh           = atr >= atrMin
+breakUp5          = c5 > h5[1]
+rejectUp1         = (l1 < math.min(ema9_1, vwap_1)) and (c1 > math.max(ema9_1, vwap_1))
+
+// PUT Indicators (Bearish Signals)
+priceBelowEma9    = close < ema9
+priceBelowEma20   = close < ema20
+priceBelowVwap    = close < vwap
+rsiBelow50        = rsi < 50
+rsiBelow40        = rsi < 40
+stochRsiBelow30   = stochRsi < 30
+ema9BelowEma20    = ema9 < ema20
+ema20BelowEma50   = ema20 < ema50
+breakDn5          = c5 < l5[1]
+rejectDn1         = (h1 > math.max(ema9_1, vwap_1)) and (c1 < math.min(ema9_1, vwap_1))
+
+// Universal Factors
+rvolNormal        = rvol >= 1.0
+rvolHigh          = rvol >= rvolMin
+inWindow          = not na(time(timeframe.period, sessionET, "America/New_York"))
+
+// ── v2: 30-minute lanes (1m+30m combo = best Sharpe)
+ema9Above20_30m   = ema9_30 > ema20_30
+ema9Below20_30m   = ema9_30 < ema20_30
+breakUp30         = c30 > h30[1]
+breakDn30         = c30 < l30[1]
+
+// ── v2: OBV lanes (+2-3pp lift)
+obvRising         = obvVal > obvSma20
+obvFalling        = obvVal < obvSma20
+
+// ── v2: Strat pattern detection (IWM best for mean reversion, 2-1-2 reversals = 66%+ WR)
+// Bar classification: 1=inside, 2U=up, 2D=down, 3=outside
+isInsideBar = high <= high[1] and low >= low[1]
+is2Up       = high > high[1] and not (low < low[1])
+is2Down     = low < low[1] and not (high > high[1])
+// 2-1-2 Bullish Reversal: 2D then 1 (inside) then current breaks above inside bar high
+prevWas2D     = (low[2] < low[3]) and not (high[2] > high[3])
+prevWasInside = high[1] <= high[2] and low[1] >= low[2]
+strat212Bull  = prevWas2D and prevWasInside and is2Up
+// 2-1-2 Bearish Reversal
+prevWas2U     = (high[2] > high[3]) and not (low[2] < low[3])
+strat212Bear  = prevWas2U and prevWasInside and is2Down
+
+// ── v2: Morning momentum detection (backtest: 9:30-10:30 = peak WR)
+sessionMorning = "0930-1030"
+sessionStd     = "1030-1400"
+sessionLate    = "1400-1600"
+isMorningPrime = not na(time(timeframe.period, sessionMorning, "America/New_York"))
+isStandardTime = not na(time(timeframe.period, sessionStd, "America/New_York"))
+isLateSession  = not na(time(timeframe.period, sessionLate, "America/New_York"))
+
+// ══════════════════════════════════════════════════════════════════
+// v2: COMPOSITE SCORE CALCULATION
+// ══════════════════════════════════════════════════════════════════
+
+// CALL score: count all active bullish lanes (split to avoid 4-space-multiple continuation)
+callEma   = (priceAboveEma9 ? 1 : 0) + (priceAboveEma20 ? 1 : 0) + (priceAboveVwap ? 1 : 0)
+callMom   = (rsiAbove50 ? 1 : 0) + (rsiAbove60 ? 1 : 0) + (stochRsiAbove70 ? 1 : 0)
+callTrend = (ema9AboveEma20 ? 1 : 0) + (ema20AboveEma50 ? 1 : 0) + (atrHigh ? 1 : 0)
+callBreak = (breakUp5 ? 1 : 0) + (rejectUp1 ? 1 : 0)
+callV2    = (ema9Above20_30m ? 1 : 0) + (breakUp30 ? 1 : 0) + (obvRising ? 1 : 0) + (strat212Bull ? 1 : 0)
+callScore = callEma + callMom + callTrend + callBreak + callV2
+
+// PUT score: count all active bearish lanes
+putEma   = (priceBelowEma9 ? 1 : 0) + (priceBelowEma20 ? 1 : 0) + (priceBelowVwap ? 1 : 0)
+putMom   = (rsiBelow50 ? 1 : 0) + (rsiBelow40 ? 1 : 0) + (stochRsiBelow30 ? 1 : 0)
+putTrend = (ema9BelowEma20 ? 1 : 0) + (ema20BelowEma50 ? 1 : 0)
+putBreak = (breakDn5 ? 1 : 0) + (rejectDn1 ? 1 : 0)
+putV2    = (ema9Below20_30m ? 1 : 0) + (breakDn30 ? 1 : 0) + (obvFalling ? 1 : 0) + (strat212Bear ? 1 : 0)
+putScore = putEma + putMom + putTrend + putBreak + putV2
+
+// Universal score
+univScore = (rvolNormal ? 1 : 0) + (rvolHigh ? 1 : 0) + (inWindow ? 1 : 0)
+
+// Morning momentum bonus (+2 during prime, +0 during late — backtested peak hours)
+morningBonus = isMorningPrime ? 2 : 0
+
+// Adjusted scores with morning bonus
+adjCallScore = callScore + morningBonus
+adjPutScore  = putScore + morningBonus
+
+// Signal detection
+strongCall = adjCallScore >= callThreshold and putScore <= 3 and rvolHigh and inWindow
+strongPut  = adjPutScore >= putThreshold and callScore <= 3 and rvolHigh and inWindow
+
+// Grade calculation (A+/A/B/C based on backtest-proven indicator count)
+// 5 key indicators: EMA9, RSI extreme, EMA20, StochRSI extreme, volume
+keyCallCount = (priceAboveEma9 ? 1 : 0) + (rsiAbove60 ? 1 : 0) + (priceAboveEma20 ? 1 : 0) + (stochRsiAbove70 ? 1 : 0) + (rvolHigh ? 1 : 0)
+keyPutCount  = (priceBelowEma9 ? 1 : 0) + (rsiBelow40 ? 1 : 0) + (priceBelowEma20 ? 1 : 0) + (stochRsiBelow30 ? 1 : 0) + (rvolHigh ? 1 : 0)
+
+callGrade = keyCallCount >= 5 and isMorningPrime and strat212Bull ? "A+" : keyCallCount >= 4 ? "A" : keyCallCount >= 2 ? "B" : "C"
+putGrade  = keyPutCount >= 5 and isMorningPrime and strat212Bear ? "A+" : keyPutCount >= 4 ? "A" : keyPutCount >= 2 ? "B" : "C"
+
+// Grade color
+callGradeColor = callGrade == "A+" ? color.new(#00FF00, 0) : callGrade == "A" ? color.green : callGrade == "B" ? color.yellow : color.gray
+putGradeColor  = putGrade == "A+" ? color.new(#00FF00, 0) : putGrade == "A" ? color.green : putGrade == "B" ? color.yellow : color.gray
+
+// ── Lane Y positions (top → bottom)
+rowTop = 30.0
+
+// CALL Indicators (Bullish - Green) — original lanes
+yPriceAboveEma9   = rowTop - 1
+yPriceAboveEma20  = rowTop - 2
+yPriceAboveVwap   = rowTop - 3
+yRsiAbove50       = rowTop - 4
+yRsiAbove60       = rowTop - 5
+yStochRsiAbove70  = rowTop - 6
+yEma9AboveEma20   = rowTop - 7
+yEma20AboveEma50  = rowTop - 8
+yAtrHigh          = rowTop - 9
+yBreakUp5         = rowTop - 10
+yRejectUp1        = rowTop - 11
+// v2 CALL lanes
+yEma930mBull      = rowTop - 12
+yBreakUp30        = rowTop - 13
+yObvRising        = rowTop - 14
+yStrat212Bull     = rowTop - 15
+
+// PUT Indicators (Bearish - Red)
+yPriceBelowEma9   = rowTop - 17
+yPriceBelowEma20  = rowTop - 18
+yPriceBelowVwap   = rowTop - 19
+yRsiBelow50       = rowTop - 20
+yRsiBelow40       = rowTop - 21
+yStochRsiBelow30  = rowTop - 22
+yEma9BelowEma20   = rowTop - 23
+yEma20BelowEma50  = rowTop - 24
+yBreakDn5         = rowTop - 25
+yRejectDn1        = rowTop - 26
+// v2 PUT lanes
+yEma930mBear      = rowTop - 27
+yBreakDn30        = rowTop - 28
+yObvFalling       = rowTop - 29
+yStrat212Bear     = rowTop - 30
+
+// Universal Factors
+yRvolNormal       = rowTop - 32
+yRvolHigh         = rowTop - 33
+yTimeWin          = rowTop - 34
+yMorning          = rowTop - 35
+
+// Optional framing line for stable scaling
+hline(0)
+hline(rowTop + 1)
+
+// ── Helpers (const colors only — series color doubles plot count per official docs)
+colNeu = color.new(color.gray, 70)
+fOn(on, y) => on ? y : na
+
+// ── DOT ROWS — const colors = 1 plot count each (series = 2 each, blows past 64 limit)
+
+// CALL Indicators (Bullish Signals - Green)
+plot(fOn(priceAboveEma9,   yPriceAboveEma9),   style=plot.style_circles, linewidth=4, color=color.green, title="Price > EMA9", display=display.pane)
+plot(fOn(priceAboveEma20,  yPriceAboveEma20),  style=plot.style_circles, linewidth=4, color=color.green, title="Price > EMA20", display=display.pane)
+plot(fOn(priceAboveVwap,   yPriceAboveVwap),   style=plot.style_circles, linewidth=4, color=color.green, title="Price > VWAP", display=display.pane)
+plot(fOn(rsiAbove50,       yRsiAbove50),       style=plot.style_circles, linewidth=4, color=color.green, title="RSI > 50", display=display.pane)
+plot(fOn(rsiAbove60,       yRsiAbove60),       style=plot.style_circles, linewidth=4, color=color.green, title="RSI > 60", display=display.pane)
+plot(fOn(stochRsiAbove70,  yStochRsiAbove70),  style=plot.style_circles, linewidth=4, color=color.green, title="StochRSI > 70", display=display.pane)
+plot(fOn(ema9AboveEma20,   yEma9AboveEma20),   style=plot.style_circles, linewidth=4, color=color.green, title="EMA9 > EMA20", display=display.pane)
+plot(fOn(ema20AboveEma50,  yEma20AboveEma50),  style=plot.style_circles, linewidth=4, color=color.green, title="EMA20 > EMA50", display=display.pane)
+plot(fOn(atrHigh,          yAtrHigh),          style=plot.style_circles, linewidth=4, color=color.green, title="ATR >= 0.15", display=display.pane)
+plot(fOn(breakUp5,         yBreakUp5),         style=plot.style_circles, linewidth=4, color=color.green, title="5m Breakout Up", display=display.pane)
+plot(fOn(rejectUp1,        yRejectUp1),        style=plot.style_circles, linewidth=4, color=color.green, title="1m Rejection Up", display=display.pane)
+// v2 CALL lanes
+plot(fOn(ema9Above20_30m,  yEma930mBull),      style=plot.style_circles, linewidth=4, color=color.lime, title="30m EMA9>20", display=display.pane)
+plot(fOn(breakUp30,        yBreakUp30),        style=plot.style_circles, linewidth=4, color=color.lime, title="30m Breakout Up", display=display.pane)
+plot(fOn(obvRising,        yObvRising),        style=plot.style_circles, linewidth=4, color=color.lime, title="OBV Rising", display=display.pane)
+plot(fOn(strat212Bull,     yStrat212Bull),     style=plot.style_circles, linewidth=4, color=#00FF00, title="2-1-2 Bull Rev", display=display.pane)
+
+// PUT Indicators (Bearish Signals - Red)
+plot(fOn(priceBelowEma9,   yPriceBelowEma9),   style=plot.style_circles, linewidth=4, color=color.red, title="Price < EMA9", display=display.pane)
+plot(fOn(priceBelowEma20,  yPriceBelowEma20),  style=plot.style_circles, linewidth=4, color=color.red, title="Price < EMA20", display=display.pane)
+plot(fOn(priceBelowVwap,   yPriceBelowVwap),   style=plot.style_circles, linewidth=4, color=color.red, title="Price < VWAP", display=display.pane)
+plot(fOn(rsiBelow50,       yRsiBelow50),       style=plot.style_circles, linewidth=4, color=color.red, title="RSI < 50", display=display.pane)
+plot(fOn(rsiBelow40,       yRsiBelow40),       style=plot.style_circles, linewidth=4, color=color.red, title="RSI < 40", display=display.pane)
+plot(fOn(stochRsiBelow30,  yStochRsiBelow30),  style=plot.style_circles, linewidth=4, color=color.red, title="StochRSI < 30", display=display.pane)
+plot(fOn(ema9BelowEma20,   yEma9BelowEma20),   style=plot.style_circles, linewidth=4, color=color.red, title="EMA9 < EMA20", display=display.pane)
+plot(fOn(ema20BelowEma50,  yEma20BelowEma50),  style=plot.style_circles, linewidth=4, color=color.red, title="EMA20 < EMA50", display=display.pane)
+plot(fOn(breakDn5,         yBreakDn5),         style=plot.style_circles, linewidth=4, color=color.red, title="5m Breakout Down", display=display.pane)
+plot(fOn(rejectDn1,        yRejectDn1),        style=plot.style_circles, linewidth=4, color=color.red, title="1m Rejection Down", display=display.pane)
+// v2 PUT lanes
+plot(fOn(ema9Below20_30m,  yEma930mBear),      style=plot.style_circles, linewidth=4, color=#FF4444, title="30m EMA9<20", display=display.pane)
+plot(fOn(breakDn30,        yBreakDn30),        style=plot.style_circles, linewidth=4, color=#FF4444, title="30m Breakout Down", display=display.pane)
+plot(fOn(obvFalling,       yObvFalling),        style=plot.style_circles, linewidth=4, color=#FF4444, title="OBV Falling", display=display.pane)
+plot(fOn(strat212Bear,     yStrat212Bear),     style=plot.style_circles, linewidth=4, color=#FF0000, title="2-1-2 Bear Rev", display=display.pane)
+
+// Universal Factors
+plot(fOn(rvolNormal,       yRvolNormal),       style=plot.style_circles, linewidth=4, color=color.yellow, title="RVOL >= 1.0", display=display.pane)
+plot(fOn(rvolHigh,         yRvolHigh),         style=plot.style_circles, linewidth=4, color=color.orange, title="RVOL >= 1.5", display=display.pane)
+plot(fOn(inWindow,         yTimeWin),          style=plot.style_circles, linewidth=4, color=color.teal, title="Time Filter OK", display=display.pane)
+// v2: Morning prime indicator (series color = 2 counts, worth it for 4-phase display)
+morningColor = isMorningPrime ? color.new(#00FF00, 0) : isStandardTime ? color.yellow : isLateSession ? color.new(color.gray, 50) : color.new(color.gray, 80)
+plot(yMorning, style=plot.style_circles, linewidth=4, color=morningColor, title="Session Phase", display=display.pane)
+
+// ── Lane Name Labels (right edge, last bar only — uses 1 table instead of 34 fTip labels to stay under 64 plot limit)
+var table laneTable = table.new(position.bottom_right, 1, 36, bgcolor=color.new(color.black, 100), border_width=0)
+
+if showTips and barstate.islast
+    // CALL lanes
+    table.cell(laneTable, 0, 0,  "P>EMA9 +20pp",    text_color=priceAboveEma9 ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 1,  "P>EMA20 +10pp",   text_color=priceAboveEma20 ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 2,  "P>VWAP",          text_color=priceAboveVwap ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 3,  "RSI>50",          text_color=rsiAbove50 ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 4,  "RSI>60 +12pp",    text_color=rsiAbove60 ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 5,  "SRsi>70 +9pp",    text_color=stochRsiAbove70 ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 6,  "EMA9>20",         text_color=ema9AboveEma20 ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 7,  "EMA20>50",        text_color=ema20AboveEma50 ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 8,  "ATR>0.15",        text_color=atrHigh ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 9,  "5m Break",        text_color=breakUp5 ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 10, "1m Reject",       text_color=rejectUp1 ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 11, "30m E9>20",       text_color=ema9Above20_30m ? color.lime : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 12, "30m Break",       text_color=breakUp30 ? color.lime : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 13, "OBV Rise",        text_color=obvRising ? color.lime : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 14, "212 Bull",        text_color=strat212Bull ? color.lime : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    // gap row
+    table.cell(laneTable, 0, 15, "",                 text_color=colNeu, text_size=size.tiny)
+    // PUT lanes
+    table.cell(laneTable, 0, 16, "P<EMA9 +20pp",    text_color=priceBelowEma9 ? color.red : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 17, "P<EMA20 +10pp",   text_color=priceBelowEma20 ? color.red : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 18, "P<VWAP",          text_color=priceBelowVwap ? color.red : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 19, "RSI<50",          text_color=rsiBelow50 ? color.red : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 20, "RSI<40 +12pp",    text_color=rsiBelow40 ? color.red : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 21, "SRsi<30 +9pp",    text_color=stochRsiBelow30 ? color.red : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 22, "EMA9<20",         text_color=ema9BelowEma20 ? color.red : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 23, "EMA20<50",        text_color=ema20BelowEma50 ? color.red : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 24, "5m Break",        text_color=breakDn5 ? color.red : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 25, "1m Reject",       text_color=rejectDn1 ? color.red : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 26, "30m E9<20",       text_color=ema9Below20_30m ? #FF4444 : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 27, "30m Break",       text_color=breakDn30 ? #FF4444 : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 28, "OBV Fall",        text_color=obvFalling ? #FF4444 : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 29, "212 Bear",        text_color=strat212Bear ? #FF0000 : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    // gap row
+    table.cell(laneTable, 0, 30, "",                 text_color=colNeu, text_size=size.tiny)
+    // Universal lanes
+    table.cell(laneTable, 0, 31, "RVOL>=1.0",       text_color=rvolNormal ? color.yellow : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 32, "RVOL>=1.5",       text_color=rvolHigh ? color.orange : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 33, "Time OK",         text_color=inWindow ? color.teal : colNeu, text_size=size.tiny, text_halign=text.align_right)
+    table.cell(laneTable, 0, 34, "Morning",         text_color=isMorningPrime ? color.green : colNeu, text_size=size.tiny, text_halign=text.align_right)
+
+// ── v2: Score Table (shows composite CALL/PUT scores + grade)
+var table scoreTable = table.new(position.bottom_left, 2, 5, bgcolor=color.new(color.black, 10), border_width=1, border_color=color.new(color.white, 50))
+
+if showScoreTable and barstate.islast
+    // Header
+    table.cell(scoreTable, 0, 0, "CALL", text_color=color.green, text_size=size.normal, bgcolor=color.new(color.black, 0))
+    table.cell(scoreTable, 1, 0, "PUT", text_color=color.red, text_size=size.normal, bgcolor=color.new(color.black, 0))
+    // Scores
+    table.cell(scoreTable, 0, 1, str.tostring(adjCallScore) + "/" + str.tostring(callThreshold), text_color=adjCallScore >= callThreshold ? color.green : color.gray, text_size=size.large, bgcolor=color.new(color.black, 0))
+    table.cell(scoreTable, 1, 1, str.tostring(adjPutScore) + "/" + str.tostring(putThreshold), text_color=adjPutScore >= putThreshold ? color.red : color.gray, text_size=size.large, bgcolor=color.new(color.black, 0))
+    // Grades
+    table.cell(scoreTable, 0, 2, callGrade, text_color=callGradeColor, text_size=size.large, bgcolor=color.new(color.black, 0))
+    table.cell(scoreTable, 1, 2, putGrade, text_color=putGradeColor, text_size=size.large, bgcolor=color.new(color.black, 0))
+    // Session phase
+    sessionPhase = isMorningPrime ? "PRIME" : isStandardTime ? "STD" : isLateSession ? "LATE" : "PRE/POST"
+    sessionColor = isMorningPrime ? color.green : isStandardTime ? color.yellow : color.gray
+    table.cell(scoreTable, 0, 3, sessionPhase, text_color=sessionColor, text_size=size.small, bgcolor=color.new(color.black, 0))
+    table.cell(scoreTable, 1, 3, "RVOL " + str.tostring(rvol, "#.#"), text_color=rvolHigh ? color.orange : color.gray, text_size=size.small, bgcolor=color.new(color.black, 0))
+    // Key confirmed count
+    table.cell(scoreTable, 0, 4, "Key:" + str.tostring(keyCallCount) + "/5", text_color=color.white, text_size=size.tiny, bgcolor=color.new(color.black, 0))
+    table.cell(scoreTable, 1, 4, "Key:" + str.tostring(keyPutCount) + "/5", text_color=color.white, text_size=size.tiny, bgcolor=color.new(color.black, 0))
+
+// ── v2: Signal Grade Label (on strong signals)
+var label gradeLabel = na
+if showGrade and barstate.islast
+    label.delete(gradeLabel)
+    if strongCall
+        gradeLabel := label.new(bar_index + 2, rowTop + 2, "CALL " + callGrade,
+                     style=label.style_label_down, color=callGradeColor, textcolor=color.white, size=size.normal,
+                     tooltip="CALL Score: " + str.tostring(adjCallScore) + " (threshold: " + str.tostring(callThreshold) + ")\n" +
+                             "Key indicators: " + str.tostring(keyCallCount) + "/5\n" +
+                             "Grade: " + callGrade + "\n" +
+                             (isMorningPrime ? "Morning Prime active (+2 bonus)\n" : "") +
+                             (strat212Bull ? "2-1-2 Bullish Reversal detected\n" : "") +
+                             "Backtest expected WR: " + (callGrade == "A+" ? "70%+" : callGrade == "A" ? "62-70%" : callGrade == "B" ? "52-58%" : "45-50%"))
+    else if strongPut
+        gradeLabel := label.new(bar_index + 2, rowTop + 2, "PUT " + putGrade,
+                     style=label.style_label_down, color=putGradeColor, textcolor=color.white, size=size.normal,
+                     tooltip="PUT Score: " + str.tostring(adjPutScore) + " (threshold: " + str.tostring(putThreshold) + ")\n" +
+                             "Key indicators: " + str.tostring(keyPutCount) + "/5\n" +
+                             "Grade: " + putGrade + "\n" +
+                             (isMorningPrime ? "Morning Prime active (+2 bonus)\n" : "") +
+                             (strat212Bear ? "2-1-2 Bearish Reversal detected\n" : "") +
+                             "Backtest expected WR: " + (putGrade == "A+" ? "70%+" : putGrade == "A" ? "62-70%" : putGrade == "B" ? "52-58%" : "45-50%"))
+
+// ── Live readouts on status line
+plot(ema9,     title="EMA9",     display=display.status_line)
+plot(ema20,    title="EMA20",    display=display.status_line)
+plot(ema50,    title="EMA50",    display=display.status_line)
+plot(vwap,     title="VWAP",     display=display.status_line)
+plot(rvol,     title="RVOL",     display=display.status_line)
+plot(rsi,      title="RSI",      display=display.status_line)
+plot(atr,      title="ATR",      display=display.status_line)
+plot(stochRsi, title="StochRSI", display=display.status_line)
+// v2 status line additions
+plot(adjCallScore, title="CALL Score", display=display.status_line)
+plot(adjPutScore,  title="PUT Score",  display=display.status_line)
+
+// ── v2: Alert Conditions
+alertcondition(strongCall, "Strong CALL Signal", "CALL score >= threshold with RVOL and time confirmation")
+alertcondition(strongPut,  "Strong PUT Signal",  "PUT score >= threshold with RVOL and time confirmation")
+alertcondition(strongCall and callGrade == "A+", "A+ CALL Signal", "Maximum conviction CALL: 5/5 key indicators + morning + Strat 2-1-2")
+alertcondition(strongPut and putGrade == "A+",   "A+ PUT Signal",  "Maximum conviction PUT: 5/5 key indicators + morning + Strat 2-1-2")
+alertcondition(strat212Bull, "2-1-2 Bullish Reversal", "IWM Strat 2-1-2 bullish reversal pattern detected")
+alertcondition(strat212Bear, "2-1-2 Bearish Reversal", "IWM Strat 2-1-2 bearish reversal pattern detected")
