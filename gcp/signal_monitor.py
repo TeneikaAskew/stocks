@@ -2,7 +2,7 @@
 """
 Real-time signal monitor -- Cloud Run Service during market hours.
 
-Polls Yahoo Finance every 60 seconds, maintains a rolling indicator window,
+Polls AlphaVantage every 60 seconds, maintains a rolling indicator window,
 evaluates signals, and fires Discord alerts when conditions align.
 """
 
@@ -28,6 +28,9 @@ from lib.strat import StratClassifier
 from lib.config import load_config, get_position_size, get_signal_strength_label
 
 
+AV_BASE_URL = 'https://www.alphavantage.co/query'
+
+
 class SignalMonitor:
     """Real-time signal monitor for market hours."""
 
@@ -43,6 +46,7 @@ class SignalMonitor:
 
         self.strat = StratClassifier(strat_config=self.strat_cfg)
         self.webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
+        self.av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
         tickers = self.market_cfg.tickers
         # Rolling data windows per ticker
@@ -59,18 +63,52 @@ class SignalMonitor:
         return self.market_cfg.market_open_time <= now.time() <= self.market_cfg.market_close_time
 
     def fetch_latest_bar(self, ticker: str) -> pd.DataFrame:
-        """Fetch the latest 1-minute bar from Yahoo Finance."""
+        """Fetch the latest 1-minute bars from AlphaVantage TIME_SERIES_INTRADAY."""
+        if not self.av_api_key:
+            print(f"  No AV API key — cannot fetch {ticker}")
+            return pd.DataFrame()
+
+        symbol = ticker  # AV uses plain symbols (SPX, not ^GSPC)
+        params = {
+            'function': 'TIME_SERIES_INTRADAY',
+            'symbol': symbol,
+            'interval': '1min',
+            'outputsize': 'compact',  # last 100 data points
+            'adjusted': 'true',
+            'apikey': self.av_api_key,
+            'datatype': 'json',
+        }
         try:
-            import yfinance as yf
-            symbol = ticker if ticker != 'SPX' else '^GSPC'
-            data = yf.download(symbol, period='1d', interval='1m', progress=False, prepost=False)
-            if data.empty:
+            resp = requests.get(AV_BASE_URL, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if 'Error Message' in data or 'Information' in data or 'Note' in data:
+                print(f"  AV error for {ticker}: {data.get('Error Message', data.get('Information', data.get('Note', '')))}")
                 return pd.DataFrame()
-            # Normalize columns
-            if isinstance(data.columns, pd.MultiIndex):
-                data.columns = data.columns.get_level_values(-1)
-            data['Time'] = data.index
-            return data
+
+            ts_key = 'Time Series (1min)'
+            ts = data.get(ts_key, {})
+            if not ts:
+                return pd.DataFrame()
+
+            df = pd.DataFrame.from_dict(ts, orient='index')
+            df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+            for col in ['Open', 'High', 'Low', 'Close']:
+                df[col] = pd.to_numeric(df[col])
+            df['Volume'] = pd.to_numeric(df['Volume']).astype('int64')
+            df.index = pd.to_datetime(df.index)
+            df = df.sort_index()
+
+            # Filter to today only
+            today = datetime.now().date()
+            df = df[df.index.date == today]
+
+            if df.empty:
+                return pd.DataFrame()
+
+            df['Time'] = df.index
+            return df
         except Exception as e:
             print(f"  Error fetching {ticker}: {e}")
             return pd.DataFrame()

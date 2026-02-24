@@ -39,7 +39,7 @@ Limitations (IMPORTANT — read before interpreting results):
 
 Coverage:
   - IWM options: 2016-02-22 to 2026-02-20
-  - SPY options: 2018-05-23 to 2025-11-21
+  - SPY options: 2018-05-23 to 2026-02-20
   - QQQ options: 2022-02-14 to 2022-09-09 (partial coverage)
 
 Usage:
@@ -176,7 +176,42 @@ def options_path(ticker: str, date) -> Path:
 
 
 def load_options_chain(ticker: str, date) -> pd.DataFrame:
-    """Load the options chain for a ticker/date. Returns empty DF if missing."""
+    """Load the AV EOD options chain for a ticker/date.
+
+    Tries Cloud SQL first (WHERE data_source='alphavantage'), falls back to
+    local parquet.  Returns empty DataFrame if neither source has data.
+    """
+    import os
+    d = pd.Timestamp(date).date()
+
+    # Try Cloud SQL first (data_source='alphavantage' → EOD, real Greeks)
+    if os.environ.get('CLOUD_SQL_CONNECTION_NAME'):
+        try:
+            from gcp.database import query_to_dataframe
+            sql = """
+                SELECT contract_symbol AS "contractID",
+                       ticker AS symbol,
+                       expiration, strike,
+                       option_type AS type,
+                       last_price AS last,
+                       mark, bid, ask, volume, open_interest,
+                       snapshot_date AS date,
+                       implied_volatility, delta, gamma, theta, vega, rho
+                FROM etf_options_snapshots
+                WHERE ticker = :ticker
+                  AND snapshot_date = :snap_date
+                  AND data_source = 'alphavantage'
+                ORDER BY expiration, strike, option_type
+            """
+            df = query_to_dataframe(sql, {'ticker': ticker.upper(), 'snap_date': str(d)})
+            if not df.empty:
+                # Normalise option_type back to AV parquet convention (calls→call, puts→put)
+                df['type'] = df['type'].map({'calls': 'call', 'puts': 'put'}).fillna(df['type'])
+                return df
+        except Exception:
+            pass
+
+    # Fallback: local parquet
     p = options_path(ticker, date)
     if not p.exists():
         return pd.DataFrame()
@@ -226,7 +261,151 @@ def find_atm_option(chain: pd.DataFrame, entry_price: float,
 
 
 # ---------------------------------------------------------------------------
-# Options P&L estimation (Greeks approximation)
+# Swing-trade option selection (overnight hold)
+# ---------------------------------------------------------------------------
+
+def find_swing_option(chain: pd.DataFrame, entry_price: float,
+                      entry_date, exit_date, direction: str) -> pd.Series:
+    """Find ATM option for an overnight swing trade.
+
+    Priority:
+      1. Expiration == exit_date (0DTE on exit day — max leverage)
+      2. Nearest expiration after exit_date (fallback — more conservative)
+    Never selects options expiring on or before entry_date.
+    """
+    if chain.empty:
+        return pd.Series(dtype=float)
+
+    opt_type = 'call' if direction == 'CALL' else 'put'
+    entry_d = pd.Timestamp(entry_date).normalize()
+    exit_d = pd.Timestamp(exit_date).normalize()
+
+    sub = chain[chain['type'].str.lower() == opt_type].copy()
+    if sub.empty:
+        return pd.Series(dtype=float)
+
+    sub['exp_dt'] = pd.to_datetime(sub['expiration']).dt.normalize()
+
+    # Exclude options expiring on or before entry date (would expire before exit)
+    sub = sub[sub['exp_dt'] > entry_d]
+    if sub.empty:
+        return pd.Series(dtype=float)
+
+    # Priority 1: expiring on exit date
+    exact = sub[sub['exp_dt'] == exit_d]
+    if not exact.empty:
+        exact = exact.copy()
+        exact['strike_dist'] = (exact['strike'] - entry_price).abs()
+        return exact.loc[exact['strike_dist'].idxmin()]
+
+    # Priority 2: nearest expiration after exit date
+    future = sub[sub['exp_dt'] > exit_d]
+    if future.empty:
+        # Fallback: anything after entry date (already filtered above)
+        sub = sub.copy()
+        sub['strike_dist'] = (sub['strike'] - entry_price).abs()
+        nearest_exp = sub['exp_dt'].min()
+        nearest = sub[sub['exp_dt'] == nearest_exp]
+        return nearest.loc[nearest['strike_dist'].idxmin()]
+
+    nearest_exp = future['exp_dt'].min()
+    nearest = future[future['exp_dt'] == nearest_exp].copy()
+    nearest['strike_dist'] = (nearest['strike'] - entry_price).abs()
+    return nearest.loc[nearest['strike_dist'].idxmin()]
+
+
+def estimate_swing_options_pnl(entry_price: float, direction: str,
+                                atm_opt: pd.Series, entry_date, exit_date,
+                                underlying_returns: dict) -> dict:
+    """Estimate options P&L for multiple exit scenarios of a swing trade.
+
+    Args:
+        entry_price: Underlying price at entry.
+        direction: 'CALL' or 'PUT'.
+        atm_opt: Selected option row from find_swing_option.
+        entry_date: Entry date.
+        exit_date: Exit date (next trading day).
+        underlying_returns: Dict with keys like 'Noon', 'BestEOD', 'EOD',
+            values are return percentages (e.g. 0.5 means 0.5%).
+
+    Returns dict with option info and P&L for each scenario, or None.
+    """
+    if atm_opt.empty:
+        return None
+
+    mark = float(atm_opt.get('mark', np.nan))
+    bid = float(atm_opt.get('bid', np.nan))
+    ask = float(atm_opt.get('ask', np.nan))
+    delta = float(atm_opt.get('delta', np.nan))
+    gamma = float(atm_opt.get('gamma', np.nan))
+    theta = float(atm_opt.get('theta', np.nan))
+    iv = float(atm_opt.get('implied_volatility', np.nan))
+
+    if any(pd.isna(v) for v in [mark, delta, theta]) or mark <= 0:
+        return None
+
+    eff_delta = abs(delta)
+    eff_gamma = abs(gamma) if not pd.isna(gamma) else 0.0
+
+    # Calendar days for theta
+    cal_days = max(1, (pd.Timestamp(exit_date) - pd.Timestamp(entry_date)).days)
+    theta_cost = abs(theta) * cal_days
+
+    # Spread cost (half-spread at entry)
+    if not pd.isna(bid) and not pd.isna(ask) and ask > bid:
+        spread_cost = (ask - bid) / 2.0
+    else:
+        spread_cost = mark * 0.02
+
+    result = {
+        'Opt_Strike': float(atm_opt['strike']),
+        'Opt_Expiration': pd.Timestamp(atm_opt['expiration']).date()
+            if not pd.isna(atm_opt.get('expiration')) else np.nan,
+        'Opt_DTE': int((pd.Timestamp(atm_opt['expiration'])
+                        - pd.Timestamp(entry_date)).days),
+        'Opt_Mark': round(mark, 3),
+        'Opt_Delta': round(delta, 4),
+        'Opt_Gamma': round(eff_gamma, 5),
+        'Opt_Theta': round(theta, 4),
+        'Opt_IV': round(iv, 4) if not pd.isna(iv) else np.nan,
+        'Opt_Theta_Days': cal_days,
+        'Opt_Spread_Cost': round(spread_cost, 3),
+    }
+
+    for scenario, ret_pct in underlying_returns.items():
+        prefix = f'Opt_{scenario}'
+        if pd.isna(ret_pct):
+            result[f'{prefix}_PnL'] = np.nan
+            result[f'{prefix}_PnL_Pct'] = np.nan
+            result[f'{prefix}_Win'] = np.nan
+            continue
+
+        # Underlying dollar move
+        und_move = entry_price * ret_pct / 100.0
+
+        # First-order: delta P&L
+        delta_pnl = eff_delta * abs(und_move)
+
+        # Second-order: gamma adjustment
+        gamma_adj = 0.5 * eff_gamma * (und_move ** 2)
+
+        # Sign: ret_pct is already direction-adjusted (positive = favorable)
+        if ret_pct >= 0:
+            total_pnl = delta_pnl + gamma_adj - theta_cost - spread_cost
+        else:
+            total_pnl = -delta_pnl + gamma_adj - theta_cost - spread_cost
+
+        pnl_pct = total_pnl / mark * 100
+
+        result[f'{prefix}_PnL'] = round(total_pnl, 3)
+        result[f'{prefix}_PnL_Pct'] = round(pnl_pct, 2)
+        result[f'{prefix}_Win'] = int(total_pnl > 0)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Options P&L estimation — intraday 0DTE (Greeks approximation)
 # ---------------------------------------------------------------------------
 
 def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series) -> dict:

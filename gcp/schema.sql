@@ -19,46 +19,51 @@ CREATE TABLE IF NOT EXISTS market_data_daily (
     close         DOUBLE PRECISION,
     volume        BIGINT,
 
-    -- Core indicators (from fetch_market_data.py)
-    ma_5          DOUBLE PRECISION,
-    ma_10         DOUBLE PRECISION,
-    ma_20         DOUBLE PRECISION,
-    ma_50         DOUBLE PRECISION,
-    ma_390        DOUBLE PRECISION,
+    -- Moving averages (SMA from lib/indicators, period = suffix)
+    ma_5          DOUBLE PRECISION,   -- SMA5
+    ma_10         DOUBLE PRECISION,   -- SMA10
+    ma_20         DOUBLE PRECISION,   -- SMA20
+    ma_50         DOUBLE PRECISION,   -- SMA50
+    sma_200       DOUBLE PRECISION,   -- SMA200 (bull/bear line)
     ema_9         DOUBLE PRECISION,
-    ema_21        DOUBLE PRECISION,
+    ema_20        DOUBLE PRECISION,   -- renamed from ema_21 (ema_periods = [9,20,50])
     ema_50        DOUBLE PRECISION,
+
+    -- Momentum
     rsi_14        DOUBLE PRECISION,
     rsi_9         DOUBLE PRECISION,
     rsi_30        DOUBLE PRECISION,
     stoch_rsi_k   DOUBLE PRECISION,
     stoch_rsi_d   DOUBLE PRECISION,
+    macd          DOUBLE PRECISION,
+    macd_signal   DOUBLE PRECISION,
+    macd_histogram DOUBLE PRECISION,
+
+    -- Volatility
     atr_14        DOUBLE PRECISION,
     atr_20        DOUBLE PRECISION,
-    obv           DOUBLE PRECISION,
-    rvol          DOUBLE PRECISION,
-    rvol_10       DOUBLE PRECISION,
-    volume_ma_10  DOUBLE PRECISION,
-    volume_ma_20  DOUBLE PRECISION,
-    volume_usd    DOUBLE PRECISION,
-
-    -- Return / volatility
-    return              DOUBLE PRECISION,
-    volatility_30min    DOUBLE PRECISION,
-    volatility_day      DOUBLE PRECISION,
+    bb_upper      DOUBLE PRECISION,
+    bb_lower      DOUBLE PRECISION,
+    bb_width      DOUBLE PRECISION,
+    bb_pct        DOUBLE PRECISION,
+    volatility_20d      DOUBLE PRECISION,   -- 20-day annualised historical vol
     volatility_5d       DOUBLE PRECISION,
-    volatility_20d      DOUBLE PRECISION,
-    intraday_return     DOUBLE PRECISION,
     high_low_spread     DOUBLE PRECISION,
     high_low_spread_pct DOUBLE PRECISION,
 
-    -- lib/indicators extras (add_all_indicators)
+    -- Volume / breadth
+    obv           DOUBLE PRECISION,
+    rvol          DOUBLE PRECISION,
+
+    -- Pattern
     consecutive_up      INTEGER,
     consecutive_down    INTEGER,
+
+    -- Intraday-derived (VWAP from 1-min bars; stored as EOD value)
     vwap                DOUBLE PRECISION,
     price_vs_vwap       DOUBLE PRECISION,
     price_vs_ema9       DOUBLE PRECISION,
-    price_vs_ema21      DOUBLE PRECISION,
+    price_vs_ema20      DOUBLE PRECISION,   -- renamed from price_vs_ema21
 
     -- Strat fields (populated by analyze_market_data)
     strat_candle        VARCHAR(10),
@@ -66,6 +71,9 @@ CREATE TABLE IF NOT EXISTS market_data_daily (
     strat_setup         BOOLEAN,
     ftfc_score          DOUBLE PRECISION,
     ftfc_direction      VARCHAR(10),
+
+    -- Split/dividend-adjusted close from AlphaVantage TIME_SERIES_DAILY_ADJUSTED
+    adjusted_close      DOUBLE PRECISION,
 
     -- Metadata
     data_source   VARCHAR(50),
@@ -131,6 +139,7 @@ CREATE TABLE IF NOT EXISTS etf_options_snapshots (
     -- Pricing
     bid                 DOUBLE PRECISION,
     ask                 DOUBLE PRECISION,
+    mark                DOUBLE PRECISION,   -- (bid+ask)/2 mid price; real from AV, derived for Yahoo
     last_price          DOUBLE PRECISION,
     change              DOUBLE PRECISION,
     percent_change      DOUBLE PRECISION,
@@ -151,6 +160,9 @@ CREATE TABLE IF NOT EXISTS etf_options_snapshots (
 
     -- Underlying at snapshot time
     underlying_price    DOUBLE PRECISION,
+
+    -- Source: 'alphavantage' (EOD, real Greeks) | 'yahooquery' (intraday, B-S Greeks)
+    data_source         VARCHAR(30),
 
     inserted_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
@@ -279,6 +291,35 @@ CREATE TABLE IF NOT EXISTS trades (
 
 CREATE INDEX IF NOT EXISTS idx_trades_ticker_date
     ON trades (ticker, trade_date DESC);
+
+
+-- ─────────────────────────────────────────────────────────
+-- PLATFORM JOURNAL (user-authored manual trade log)
+-- Separate from the automated pipeline `trades` table so
+-- user data and pipeline data are never mixed.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS journal_entries (
+    id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticker          VARCHAR(10)  NOT NULL,
+    direction       VARCHAR(4)   NOT NULL CHECK (direction IN ('CALL', 'PUT')),
+    entry_ts        TIMESTAMPTZ  NOT NULL,
+    exit_ts         TIMESTAMPTZ  NOT NULL,
+    entry_price     DOUBLE PRECISION NOT NULL,
+    exit_price      DOUBLE PRECISION NOT NULL,
+    return_pct      DOUBLE PRECISION,   -- computed on insert by application layer
+    notes           TEXT,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_journal_entries_ticker_ts
+    ON journal_entries (ticker, entry_ts DESC);
+
+-- Reuse the existing update_updated_at_column() trigger function
+CREATE OR REPLACE TRIGGER set_journal_updated_at
+    BEFORE UPDATE ON journal_entries
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 
 -- ─────────────────────────────────────────────────────────

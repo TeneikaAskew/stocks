@@ -1488,6 +1488,15 @@ Yahoo Finance / yahooquery rate limits. Job has `max-retries 2`. If persistent:
 python -c "from yahooquery import Ticker; t = Ticker('IWM'); print(type(t.option_chain))"
 ```
 
+### `struct.pack` / pg8000 parameter count crash during migration
+
+pg8000 uses a 16-bit unsigned short for the parameter count, so any single INSERT
+statement with more than 65 535 parameters causes a `struct.pack('H', ...)` overflow.
+The `bulk_insert_dataframe` function now uses SQLAlchemy Core (not `pandas.to_sql`)
+with `chunksize=2000` (safe for tables up to 32 columns: 2000 × 32 = 64 000 params).
+`migrate_to_gcp.py` uses `chunksize=5000` for `market_data_intraday` (9 columns → 45 000
+params per batch, well within the limit). If you see this crash, reduce the chunksize.
+
 ### Migration OOM / timeout
 
 For large intraday files, run from GCP Cloud Shell (co-located with Cloud SQL):

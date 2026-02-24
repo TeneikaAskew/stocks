@@ -29,24 +29,30 @@ Note: Scheduling is handled by .github/workflows/fetch_etf_options.yml
 
 import argparse
 import sys
+import os
 import pandas as pd
 import numpy as np
+import requests
 from datetime import datetime, time
-from yahooquery import Ticker
 from pathlib import Path
 import glob
 from py_vollib.black_scholes import black_scholes as bs
 from py_vollib.black_scholes.greeks import analytical as greeks
 import warnings
 import time as time_module
+from dotenv import load_dotenv
 warnings.filterwarnings('ignore')  # Suppress vollib warnings
+
+load_dotenv()
 
 # Fix encoding for Windows
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8')
 
 # ETF tickers for scalping
-ETF_TICKERS = ['IWM', 'SPY', 'QQQ', '^SPX']  # Use ^SPX for S&P 500 index options
+ETF_TICKERS = ['IWM', 'SPY', 'QQQ', 'SPX']
+AV_BASE_URL = 'https://www.alphavantage.co/query'
+AV_API_KEY = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
 
 def retry_with_backoff(func, max_retries=4, initial_delay=2, backoff_factor=2, *args, **kwargs):
@@ -202,51 +208,77 @@ def fetch_intraday_snapshot(output_dir='data/options/etfs', target_date=None):
     print(f"Session: {get_market_session(now.time())}")
     print(f"Tickers: {', '.join(ETF_TICKERS)}")
 
-    # Fetch options for all ETFs
-    print(f"\nFetching options data...")
+    # Fetch options for all ETFs via AlphaVantage HISTORICAL_OPTIONS
+    print(f"\nFetching options data from AlphaVantage...")
+    snap_date = now.strftime('%Y-%m-%d')
 
-    def fetch_options_chain():
-        """Fetch options chain with error handling."""
-        ticker = Ticker(ETF_TICKERS)
-        options_df = ticker.option_chain
-
-        if options_df.empty or not isinstance(options_df, pd.DataFrame):
-            raise ValueError("No options data returned from API")
-
-        return options_df
+    def fetch_av_options_for_ticker(ticker_symbol):
+        """Fetch options chain for a single ticker via AV HISTORICAL_OPTIONS."""
+        params = {
+            'function': 'HISTORICAL_OPTIONS',
+            'symbol': ticker_symbol,
+            'date': snap_date,
+            'apikey': AV_API_KEY,
+            'datatype': 'json',
+        }
+        resp = requests.get(AV_BASE_URL, params=params, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get('message') != 'success':
+            raise ValueError(f"AV error for {ticker_symbol}: {data.get('message', data.get('Information', ''))}")
+        records = data.get('data', [])
+        if not records:
+            return pd.DataFrame()
+        df = pd.DataFrame(records)
+        df['symbol'] = ticker_symbol
+        # Map AV fields to match existing column expectations
+        if 'type' in df.columns:
+            df['optionType'] = df['type'].str.lower().map({'call': 'calls', 'put': 'puts'})
+        if 'contractID' in df.columns:
+            df['contractSymbol'] = df['contractID']
+        if 'last' in df.columns:
+            df['lastPrice'] = df['last']
+        if 'implied_volatility' in df.columns:
+            df['impliedVolatility'] = df['implied_volatility']
+        if 'open_interest' in df.columns:
+            df['openInterest'] = df['open_interest']
+        # Coerce numerics
+        for col in ['strike', 'lastPrice', 'bid', 'ask', 'volume', 'openInterest', 'impliedVolatility',
+                     'delta', 'gamma', 'theta', 'vega', 'rho', 'mark']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df
 
     try:
-        # Retry the options chain fetch with exponential backoff
-        options_df = retry_with_backoff(fetch_options_chain, max_retries=4, initial_delay=2)
+        all_frames = []
+        for ticker_symbol in ETF_TICKERS:
+            try:
+                ticker_df = retry_with_backoff(fetch_av_options_for_ticker, max_retries=3, initial_delay=2, ticker_symbol=ticker_symbol)
+                if not ticker_df.empty:
+                    all_frames.append(ticker_df)
+                time_module.sleep(0.5)  # Rate limiting between tickers
+            except Exception as e:
+                print(f"  Failed to fetch {ticker_symbol}: {e}")
 
-        if options_df.empty or not isinstance(options_df, pd.DataFrame):
-            print("❌ No options data returned")
+        if not all_frames:
+            print("No options data returned")
             return None
 
-        # Reset index and add metadata
-        df = options_df.reset_index()
+        df = pd.concat(all_frames, ignore_index=True)
         df['snapshot_datetime'] = now
         df['snapshot_date'] = now.date()
         df['snapshot_time'] = now.time()
         df['market_session'] = get_market_session(now.time())
 
-        print(f"✓ Fetched {len(df):,} contracts")
+        print(f"Fetched {len(df):,} contracts")
         print(f"  Symbols: {df['symbol'].unique().tolist()}")
         print(f"  Expirations: {df['expiration'].nunique()} dates")
 
-        # Fetch underlying prices for each ticker
-        print(f"\nFetching underlying prices...")
+        # AV doesn't provide underlying prices in options endpoint
+        # Set underlying_prices to 0 — Greeks already come from AV
         underlying_prices = {}
         for ticker_symbol in df['symbol'].unique():
-            def fetch_underlying_price():
-                """Fetch underlying price for a single ticker."""
-                t = Ticker(ticker_symbol)
-                price_data = t.price
-                if isinstance(price_data, dict) and ticker_symbol in price_data:
-                    underlying_price = price_data[ticker_symbol].get('regularMarketPrice', None)
-                    if underlying_price:
-                        return float(underlying_price)
-                raise ValueError(f"Could not extract price for {ticker_symbol}")
+            underlying_prices[ticker_symbol] = 0.0
 
             try:
                 # Retry the price fetch with exponential backoff

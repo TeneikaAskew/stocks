@@ -51,7 +51,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install yfinance pandas pyarrow pytz
+        pip install pandas pyarrow pytz requests python-dotenv
     
     - name: Determine tickers to fetch
       id: tickers
