@@ -15,8 +15,14 @@ Usage:
     # Only upload raw files to GCS, skip Cloud SQL
     python gcp/migrate_to_gcp.py --skip-sql
 
-    # Only one table
-    python gcp/migrate_to_gcp.py --table market_data_daily
+    # Backfill 20yr daily OHLCV from AlphaVantage
+    python gcp/migrate_to_gcp.py --table market_data_daily_av
+
+    # Compute all technical indicators on the daily series already in Cloud SQL
+    python gcp/migrate_to_gcp.py --table daily_indicators --skip-gcs
+
+    # Backfill AV EOD historical options (data_source='alphavantage') — run in background
+    nohup python gcp/migrate_to_gcp.py --table av_options --skip-gcs > /tmp/av_options.log 2>&1 &
 
     # Custom data directory
     python gcp/migrate_to_gcp.py --data-dir /path/to/data
@@ -24,24 +30,24 @@ Usage:
 Environment variables:
     CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME  (required for --skip-sql=False)
     GCS_BUCKET   e.g. adept-mountain-474619-d4-trading-data
+    ALPHA_VANTAGE_API_KEY  (required for --table market_data_daily_av; 150 RPM plan)
 """
 
 import argparse
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from datetime import datetime
 
 import pandas as pd
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s  %(levelname)-7s  %(message)s',
-    datefmt='%H:%M:%S',
-)
+from lib.logging_config import setup_logging
+setup_logging()
 log = logging.getLogger(__name__)
 
 DEFAULT_DATA_DIR = Path(__file__).parent.parent / 'data'
@@ -93,21 +99,35 @@ COLUMN_MAP = {
     'volume': 'volume',
 }
 
-DAILY_INDICATOR_MAP = {
-    'ma_5': 'ma_5', 'ma_10': 'ma_10', 'ma_20': 'ma_20', 'ma_50': 'ma_50',
-    'ma_390': 'ma_390', 'ema_9': 'ema_9', 'ema_21': 'ema_21', 'ema_50': 'ema_50',
-    'rsi_14': 'rsi_14', 'rsi_9': 'rsi_9', 'rsi_30': 'rsi_30',
-    'stoch_rsi_k': 'stoch_rsi_k', 'stoch_rsi_d': 'stoch_rsi_d',
-    'atr_14': 'atr_14', 'atr_20': 'atr_20', 'obv': 'obv',
-    'rvol': 'rvol', 'rvol_10': 'rvol_10',
-    'volume_ma_10': 'volume_ma_10', 'volume_ma_20': 'volume_ma_20',
-    'volume_usd': 'volume_usd', 'return': 'return',
-    'volatility_30min': 'volatility_30min', 'volatility_day': 'volatility_day',
-    'volatility_5d': 'volatility_5d', 'volatility_20d': 'volatility_20d',
-    'intraday_return': 'intraday_return',
-    'high_low_spread': 'high_low_spread', 'high_low_spread_pct': 'high_low_spread_pct',
-    'Consecutive_Up': 'consecutive_up', 'Consecutive_Down': 'consecutive_down',
-    'VWAP': 'vwap', 'Price_vs_VWAP': 'price_vs_vwap',
+# add_all_indicators() column name → market_data_daily SQL column name
+_DAILY_IND_TO_SQL = {
+    'RSI14':          'rsi_14',
+    'RSI9':           'rsi_9',
+    'ATR14':          'atr_14',
+    'EMA9':           'ema_9',
+    'EMA20':          'ema_20',
+    'EMA50':          'ema_50',
+    'SMA5':           'ma_5',
+    'SMA10':          'ma_10',
+    'SMA20':          'ma_20',
+    'SMA50':          'ma_50',
+    'SMA200':         'sma_200',
+    'MACD':           'macd',
+    'MACD_Signal':    'macd_signal',
+    'MACD_Histogram': 'macd_histogram',
+    'BB_Upper':       'bb_upper',
+    'BB_Lower':       'bb_lower',
+    'BB_Width':       'bb_width',
+    'BB_Pct':         'bb_pct',
+    'StochRSI_K':     'stoch_rsi_k',
+    'StochRSI_D':     'stoch_rsi_d',
+    'OBV':            'obv',
+    'RVOL':           'rvol',
+    'Consecutive_Up':   'consecutive_up',
+    'Consecutive_Down': 'consecutive_down',
+    'Price_vs_EMA9':    'price_vs_ema9',
+    'Price_vs_EMA20':   'price_vs_ema20',
+    'volatility_20d':   'volatility_20d',
 }
 
 
@@ -120,71 +140,83 @@ def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ── Market data daily ─────────────────────────────────────────────────────────
+# ── Market data daily indicators backfill ─────────────────────────────────────
 
-def migrate_market_data_daily(data_dir: Path, dry_run: bool):
-    from gcp.database import upsert_dataframe
+def backfill_daily_indicators(data_dir: Path, dry_run: bool):
+    """
+    Compute and upsert all technical indicators for the full market_data_daily
+    history already in Cloud SQL (6,600+ rows per ticker from AV backfill).
 
-    log.info("Migrating market_data_daily...")
-    total = 0
+    Reads each ticker's full OHLCV series, runs add_all_indicators() on it,
+    computes 20-day historical volatility, then upserts the indicator columns
+    for every row.  Safe to re-run: uses ON CONFLICT UPDATE.
+
+    Usage:
+        python gcp/migrate_to_gcp.py --table daily_indicators --skip-gcs
+    """
+    import numpy as np
+    from lib.indicators import add_all_indicators
+    from gcp.database import query_to_dataframe, upsert_dataframe
+
+    log.info("Backfilling daily indicators for market_data_daily...")
 
     for ticker_lower in TICKERS:
-        ticker_dir = data_dir / ticker_lower
-        if not ticker_dir.exists():
+        ticker = ticker_lower.upper()
+        log.info("  Processing %s...", ticker)
+
+        sql = """
+            SELECT date,
+                   open  AS "Open",
+                   high  AS "High",
+                   low   AS "Low",
+                   close AS "Close",
+                   volume AS "Volume"
+            FROM market_data_daily
+            WHERE ticker = :ticker
+            ORDER BY date ASC
+        """
+        try:
+            df = query_to_dataframe(sql, {'ticker': ticker})
+        except Exception as e:
+            log.warning("  ✗ %s query failed: %s", ticker, e)
             continue
 
-        files = sorted(ticker_dir.glob(f'{ticker_lower}_*.parquet'))
-        # skip intraday / options / minute files
-        files = [f for f in files if f.parent == ticker_dir]
+        if df.empty:
+            log.info("  %s: no rows found, skipping", ticker)
+            continue
 
-        for f in files:
-            try:
-                df = pd.read_parquet(f)
-                df = _normalize_ohlcv(df)
+        log.info("  %s: %d rows (%s → %s)",
+                 ticker, len(df), df['date'].min(), df['date'].max())
 
-                # Ensure date column
-                if isinstance(df.index, pd.DatetimeIndex):
-                    df['date'] = df.index.date
-                elif 'date' not in df.columns and 'Time' in df.columns:
-                    df['date'] = pd.to_datetime(df['Time']).dt.date
+        # Compute indicators on the full series
+        enriched = add_all_indicators(df, close_col='Close')
+        enriched['volatility_20d'] = (
+            enriched['Close'].pct_change().rolling(20).std() * np.sqrt(252)
+        )
 
-                df['ticker'] = ticker_lower.upper()
+        # Integer columns in the schema
+        _INT_COLS = {'consecutive_up', 'consecutive_down'}
 
-                # Rename indicator columns
-                df = df.rename(columns={
-                    k: v for k, v in DAILY_INDICATOR_MAP.items() if k in df.columns
-                })
+        # Build upsert rows — only include computed (non-NaN) values
+        rows = []
+        for i, (_, row) in enumerate(enriched.iterrows()):
+            r: dict = {'ticker': ticker, 'date': df['date'].iloc[i]}
+            for src, dst in _DAILY_IND_TO_SQL.items():
+                val = row.get(src)
+                if val is not None and pd.notna(val):
+                    r[dst] = int(val) if dst in _INT_COLS else float(val)
+            rows.append(r)
 
-                # Keep only schema columns
-                keep = [c for c in df.columns if c in _daily_schema_cols()]
-                df = df[keep].drop_duplicates(subset=['ticker', 'date'])
+        out_df = pd.DataFrame(rows)
+        log.info("  %s: upserting %d indicator rows...", ticker, len(out_df))
 
-                if dry_run:
-                    log.info("  [DRY RUN] %s: %d rows", f.name, len(df))
-                else:
-                    upsert_dataframe(df, 'market_data_daily', ['ticker', 'date'])
-                    log.info("  ✓ %s: %d rows", f.name, len(df))
+        if not dry_run:
+            upsert_dataframe(out_df, 'market_data_daily', ['ticker', 'date'])
+            log.info("  ✓ %s done", ticker)
+        else:
+            log.info("  [DRY RUN] would upsert %d rows for %s", len(out_df), ticker)
 
-                total += len(df)
-            except Exception as e:
-                log.warning("  ✗ %s: %s", f.name, e)
-
-    log.info("market_data_daily: %d total rows processed", total)
-
-
-def _daily_schema_cols():
-    return {
-        'ticker', 'date', 'open', 'high', 'low', 'close', 'volume',
-        'ma_5', 'ma_10', 'ma_20', 'ma_50', 'ma_390',
-        'ema_9', 'ema_21', 'ema_50',
-        'rsi_14', 'rsi_9', 'rsi_30', 'stoch_rsi_k', 'stoch_rsi_d',
-        'atr_14', 'atr_20', 'obv', 'rvol', 'rvol_10',
-        'volume_ma_10', 'volume_ma_20', 'volume_usd',
-        'return', 'volatility_30min', 'volatility_day', 'volatility_5d', 'volatility_20d',
-        'intraday_return', 'high_low_spread', 'high_low_spread_pct',
-        'consecutive_up', 'consecutive_down',
-        'vwap', 'price_vs_vwap', 'data_source',
-    }
+    log.info("Daily indicators backfill complete.")
 
 
 # ── Market data intraday ──────────────────────────────────────────────────────
@@ -229,13 +261,215 @@ def migrate_market_data_intraday(data_dir: Path, dry_run: bool):
                     "DELETE FROM market_data_intraday WHERE ticker = :t AND interval = :i",
                     {'t': ticker_lower.upper(), 'i': '1min'}
                 )
-                bulk_insert_dataframe(df, 'market_data_intraday', chunksize=10000)
+                bulk_insert_dataframe(df, 'market_data_intraday', chunksize=5000)
                 log.info("  ✓ %s intraday loaded", ticker_lower.upper())
             else:
                 log.info("  [DRY RUN] would load %d rows for %s", len(df), ticker_lower.upper())
 
         except Exception as e:
             log.warning("  ✗ %s: %s", ticker_lower.upper(), e)
+
+
+# ── AV historical options ─────────────────────────────────────────────────────
+
+AV_OPTIONS_TICKERS = ['spy', 'iwm', 'qqq']
+
+
+def _normalize_av_options(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """Normalize an AV options parquet (daily file or combined) to etf_options_snapshots schema.
+
+    AV parquet columns: contractID, symbol, expiration, strike, type, last, mark,
+    bid, bid_size, ask, ask_size, volume, open_interest, date, implied_volatility,
+    delta, gamma, theta, vega, rho, fetch_timestamp, snapshot_date
+    """
+    out = df.copy()
+
+    # snapshot_ts: midnight UTC of the snapshot date + 23:00 (EOD marker, distinct from
+    # yahooquery intraday snapshots which are in 14:30–21:00 UTC range)
+    date_col = 'date' if 'date' in out.columns else 'snapshot_date'
+    dates = pd.to_datetime(out[date_col]).dt.date
+    out['snapshot_ts'] = pd.to_datetime(
+        [f"{d}T23:00:00Z" for d in dates], utc=True
+    )
+    out['snapshot_date'] = dates
+    out['market_session'] = 'EOD'
+    out['ticker'] = ticker.upper()
+    out['data_source'] = 'alphavantage'
+
+    # option_type: 'call' → 'calls', 'put' → 'puts'
+    out['option_type'] = out['type'].str.lower().map({'call': 'calls', 'put': 'puts'})
+
+    out = out.rename(columns={'last': 'last_price', 'contractID': 'contract_symbol'})
+
+    keep = [
+        'ticker', 'snapshot_ts', 'snapshot_date', 'market_session',
+        'contract_symbol', 'option_type', 'expiration', 'strike',
+        'bid', 'ask', 'mark', 'last_price', 'volume', 'open_interest',
+        'implied_volatility', 'delta', 'gamma', 'theta', 'vega', 'rho',
+        'data_source',
+    ]
+    out = out[[c for c in keep if c in out.columns]]
+    out = out.dropna(subset=['option_type', 'expiration', 'strike'])
+    return out
+
+
+def _get_av_existing_dates(ticker: str) -> set:
+    """Return set of snapshot_dates already in Cloud SQL for this ticker + alphavantage."""
+    from gcp.database import query_to_dataframe
+    sql = (
+        "SELECT DISTINCT snapshot_date FROM etf_options_snapshots "
+        "WHERE ticker = :ticker AND data_source = 'alphavantage'"
+    )
+    df = query_to_dataframe(sql, {'ticker': ticker.upper()})
+    if df.empty:
+        return set()
+    return set(pd.to_datetime(df['snapshot_date']).dt.date)
+
+
+def migrate_av_options(data_dir: Path, dry_run: bool):
+    """
+    Backfill etf_options_snapshots with AV HISTORICAL_OPTIONS data.
+
+    Uses combined parquets where available (SPY/QQQ have full 2015-2026 coverage);
+    falls back to individual daily files for IWM (combined is incomplete).
+
+    Checkpoint/resume: skips dates already present in Cloud SQL per ticker,
+    so it can be safely re-run after a crash without duplicating data.
+
+    Runs as: python gcp/migrate_to_gcp.py --table av_options --skip-gcs
+    Expected volume: ~45M rows total (SPY 20M + QQQ 14M + IWM ~10M).
+    Run in background with nohup for large datasets.
+    """
+    from gcp.database import bulk_insert_dataframe
+
+    CHUNKSIZE = 200_000  # rows per DB batch
+
+    for ticker_lower in AV_OPTIONS_TICKERS:
+        ticker = ticker_lower.upper()
+        options_dir = data_dir / ticker_lower / 'options'
+
+        # Check what's already in Cloud SQL for this ticker
+        existing_dates = _get_av_existing_dates(ticker)
+        if existing_dates:
+            log.info("  %s: %d dates already in Cloud SQL (checkpoint resume)",
+                     ticker, len(existing_dates))
+
+        # Prefer combined parquet if it covers 2015+ history
+        combined = options_dir / f'{ticker_lower}_av_options_combined.parquet'
+        if combined.exists():
+            try:
+                sample = pd.read_parquet(combined, columns=['date'])
+                min_date = pd.to_datetime(sample['date']).min()
+                use_combined = min_date.year <= 2015
+            except Exception:
+                use_combined = False
+        else:
+            use_combined = False
+
+        if use_combined:
+            log.info("  %s: streaming combined parquet (%s) in row-group chunks...",
+                     ticker, combined.name)
+            try:
+                import pyarrow.parquet as pq
+                pf = pq.ParquetFile(combined)
+                inserted = 0
+                skipped = 0
+                rg_count = pf.metadata.num_row_groups
+
+                for rg_idx in range(rg_count):
+                    df = pf.read_row_group(rg_idx).to_pandas()
+                    df = _normalize_av_options(df, ticker)
+
+                    # Filter out dates already in Cloud SQL
+                    if existing_dates:
+                        before = len(df)
+                        df = df[~df['snapshot_date'].isin(existing_dates)]
+                        skipped += before - len(df)
+
+                    if df.empty:
+                        continue
+
+                    if not dry_run:
+                        # Insert in sub-chunks if row group is very large
+                        for i in range(0, len(df), CHUNKSIZE):
+                            chunk = df.iloc[i:i + CHUNKSIZE]
+                            bulk_insert_dataframe(chunk, 'etf_options_snapshots')
+                            inserted += len(chunk)
+                    else:
+                        inserted += len(df)
+
+                    if (rg_idx + 1) % 5 == 0 or rg_idx == rg_count - 1:
+                        log.info("  %s: row group %d/%d — %d inserted, %d skipped",
+                                 ticker, rg_idx + 1, rg_count, inserted, skipped)
+
+                    del df  # free memory between row groups
+
+                log.info("  %s: %d rows inserted (%d skipped as existing)",
+                         ticker, inserted, skipped)
+
+            except Exception as e:
+                log.error("  %s combined failed: %s", ticker, e, exc_info=True)
+            continue
+
+        # Fall back to individual daily files
+        daily_files = sorted(options_dir.glob(f'{ticker_lower}_av_options_2*.parquet'))
+        if not daily_files:
+            log.info("  %s: no AV options files found, skipping", ticker)
+            continue
+
+        # Filter out daily files whose date is already in Cloud SQL
+        if existing_dates:
+            import re
+            filtered = []
+            for f in daily_files:
+                m = re.search(r'(\d{8})\.parquet$', f.name)
+                if m:
+                    file_date = pd.to_datetime(m.group(1), format='%Y%m%d').date()
+                    if file_date not in existing_dates:
+                        filtered.append(f)
+                else:
+                    filtered.append(f)
+            log.info("  %s: %d daily files to process (%d skipped as already in DB)",
+                     ticker, len(filtered), len(daily_files) - len(filtered))
+            daily_files = filtered
+
+        if not daily_files:
+            log.info("  %s: all daily files already migrated, skipping", ticker)
+            continue
+
+        log.info("  %s: reading %d daily files...", ticker, len(daily_files))
+        total = 0
+        batch_dfs = []
+        batch_rows = 0
+
+        for f in daily_files:
+            try:
+                df = pd.read_parquet(f)
+                df = _normalize_av_options(df, ticker)
+                batch_dfs.append(df)
+                batch_rows += len(df)
+
+                if batch_rows >= CHUNKSIZE:
+                    batch = pd.concat(batch_dfs, ignore_index=True)
+                    if not dry_run:
+                        bulk_insert_dataframe(batch, 'etf_options_snapshots')
+                    total += len(batch)
+                    log.info("  %s: %d rows inserted so far", ticker, total)
+                    batch_dfs = []
+                    batch_rows = 0
+
+            except Exception as e:
+                log.warning("  %s: %s", f.name, e)
+
+        if batch_dfs:
+            batch = pd.concat(batch_dfs, ignore_index=True)
+            if not dry_run:
+                bulk_insert_dataframe(batch, 'etf_options_snapshots')
+            total += len(batch)
+
+        log.info("  %s: %d total rows inserted", ticker, total)
+
+    log.info("AV options migration complete.")
 
 
 # ── ETF options ───────────────────────────────────────────────────────────────
@@ -345,6 +579,103 @@ def _normalize_options_df(df: pd.DataFrame, source: str) -> pd.DataFrame:
     return df.dropna(subset=['snapshot_ts'])
 
 
+# ── AlphaVantage daily backfill ───────────────────────────────────────────────
+
+AV_BASE_URL = 'https://www.alphavantage.co/query'
+# AV symbols for TIME_SERIES_DAILY_ADJUSTED (index symbol differs from yfinance)
+AV_DAILY_SYMBOLS = {
+    'spy': 'SPY',
+    'iwm': 'IWM',
+    'qqq': 'QQQ',
+    'spx': 'SPX',
+}
+
+
+def migrate_market_data_daily_av(data_dir: Path, dry_run: bool):
+    """
+    Backfill market_data_daily with 20+ years of AlphaVantage TIME_SERIES_DAILY_ADJUSTED data.
+
+    - Uses outputsize=full to get the complete history per ticker (4 API calls total).
+    - Upserts into market_data_daily, so existing rows are updated with adjusted_close.
+    - Requires ALPHA_VANTAGE_API_KEY environment variable.
+    - Rate limit: 150 req/min; waits 1s between calls (4 calls total — well within limit).
+    """
+    from gcp.database import upsert_dataframe
+
+    api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
+    if not api_key:
+        log.error("ALPHA_VANTAGE_API_KEY not set — cannot run AV daily backfill")
+        return
+
+    log.info("Backfilling market_data_daily from AlphaVantage TIME_SERIES_DAILY_ADJUSTED...")
+    log.info("  outputsize=full → 20+ years per ticker (4 calls, 1s apart).")
+
+    total = 0
+    for i, (ticker_lower, av_symbol) in enumerate(AV_DAILY_SYMBOLS.items()):
+        if i > 0:
+            time.sleep(1)  # 150 RPM plan; 1s gap is sufficient for 4 calls
+
+        log.info("  Fetching %s (AV symbol: %s)...", ticker_lower.upper(), av_symbol)
+        params = {
+            'function':   'TIME_SERIES_DAILY_ADJUSTED',
+            'symbol':     av_symbol,
+            'outputsize': 'full',
+            'datatype':   'json',
+            'apikey':     api_key,
+        }
+        try:
+            resp = requests.get(AV_BASE_URL, params=params, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if 'Error Message' in data:
+                log.warning("  AV error for %s: %s", av_symbol, data['Error Message'])
+                continue
+            if 'Information' in data or 'Note' in data:
+                log.warning("  AV rate limit hit for %s — try again later", av_symbol)
+                continue
+
+            ts = data.get('Time Series (Daily)', {})
+            if not ts:
+                log.warning("  No data returned for %s", av_symbol)
+                continue
+
+            rows = []
+            for date_str, v in ts.items():
+                rows.append({
+                    'ticker':         ticker_lower.upper(),
+                    'date':           date_str,
+                    'open':           float(v['1. open']),
+                    'high':           float(v['2. high']),
+                    'low':            float(v['3. low']),
+                    'close':          float(v['4. close']),
+                    'adjusted_close': float(v['5. adjusted close']),
+                    'volume':         int(v['6. volume']),
+                    'data_source':    'alphavantage_daily',
+                })
+
+            df = pd.DataFrame(rows)
+            df['date'] = pd.to_datetime(df['date']).dt.date
+            df = df.sort_values('date').reset_index(drop=True)
+
+            log.info("  %s: %d rows (%s → %s)",
+                     ticker_lower.upper(), len(df),
+                     df['date'].min(), df['date'].max())
+
+            if not dry_run:
+                upsert_dataframe(df, 'market_data_daily', ['ticker', 'date'])
+                log.info("  ✓ %s upserted", ticker_lower.upper())
+            else:
+                log.info("  [DRY RUN] would upsert %d rows for %s", len(df), ticker_lower.upper())
+
+            total += len(df)
+
+        except Exception as e:
+            log.warning("  ✗ %s failed: %s", ticker_lower.upper(), e)
+
+    log.info("market_data_daily_av backfill: %d total rows processed", total)
+
+
 # ── Trades ────────────────────────────────────────────────────────────────────
 
 def migrate_trades(data_dir: Path, dry_run: bool):
@@ -380,12 +711,14 @@ def migrate_trades(data_dir: Path, dry_run: bool):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 TABLE_FUNCS = {
-    'gcs_raw':                 upload_raw_parquets,
-    'market_data_daily':       migrate_market_data_daily,
-    'market_data_intraday':    migrate_market_data_intraday,
-    'etf_options_snapshots':   migrate_etf_options,
+    'gcs_raw':                    upload_raw_parquets,
+    'market_data_daily_av':       migrate_market_data_daily_av,    # AV 20yr OHLCV backfill
+    'daily_indicators':           backfill_daily_indicators,        # compute indicators on existing rows
+    'market_data_intraday':       migrate_market_data_intraday,
+    'etf_options_snapshots':      migrate_etf_options,              # Yahoo intraday snapshots
+    'av_options':                 migrate_av_options,               # AV EOD historical options (data_source='alphavantage')
     'earnings_options_snapshots': migrate_earnings_options,
-    'trades':                  migrate_trades,
+    'trades':                     migrate_trades,
 }
 
 
@@ -399,7 +732,7 @@ def main():
                         help='Skip raw Parquet upload to GCS')
     parser.add_argument('--skip-sql', action='store_true',
                         help='Skip Cloud SQL inserts')
-    parser.add_argument('--table', choices=list(TABLE_FUNCS.keys()),
+    parser.add_argument('--table', choices=sorted(TABLE_FUNCS.keys()),
                         help='Migrate only one specific table/task')
     args = parser.parse_args()
 
@@ -423,7 +756,6 @@ def main():
             upload_raw_parquets(data_dir, bucket, dry)
 
         if not args.skip_sql:
-            migrate_market_data_daily(data_dir, dry)
             migrate_market_data_intraday(data_dir, dry)
             migrate_etf_options(data_dir, dry)
             migrate_earnings_options(data_dir, dry)
