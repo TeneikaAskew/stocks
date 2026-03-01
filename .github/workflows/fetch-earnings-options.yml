@@ -61,7 +61,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install yahooquery pandas pyarrow py_vollib numpy
+        pip install requests pandas pyarrow py_vollib numpy python-dotenv
 
     - name: Determine effective run date
       id: run_date
