@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-02-23 (session 5)
+**Last Updated**: 2026-03-01 (session 6)
 
 ---
 
@@ -385,7 +385,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 
 | Suite | Status | Tests | Date |
 |-------|--------|-------|------|
-| Unit/Integration (`make test`) | ✅ PASS | 339/339 | 2026-02-22 |
+| Unit/Integration (`make test`) | ✅ PASS | 363/363 | 2026-03-01 |
 | E2E Playwright (`make test-e2e`) | Not run | 28 | — |
 | Scripts CLI (`make test-scripts`) | ✅ PASS | 18/18 | 2026-02-22 |
 
@@ -440,6 +440,8 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 - 2026-02-23: feat(platform) — chart data endpoints upgraded to Cloud SQL primary (3,115 dates from 2015–2026); reference levels from market_data_daily; local parquet fallback preserved
 - 2026-02-23: feat(platform) — journal_entries Cloud SQL CRUD (GET/POST/DELETE) with local JSON fallback; TanStack Query + useMutation hooks
 - 2026-02-23: chore(devcontainer) — forwardPorts [5173, 8000] with labels for Codespace auto-forwarding
+- 2026-03-01: feat(platform) — add markdown rendering (marked) for ReportsPage tables and InsightsPage chat bubbles; prose-report CSS styles
+- 2026-03-01: chore(workflows) — remove yfinance/yahooquery from GitHub Actions pip installs (analyze-market-data, fetch-earnings-options, update-economic-events-calendar)
 
 ---
 
@@ -451,4 +453,4 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 - All credentials stored in Secret Manager. Also present as `.env` + `.gcp-key.json` in project root (both gitignored) for local dev convenience.
 - `data/` is not in git — use `gsutil -m cp -r gs://adept-mountain-474619-d4-trading-data/raw/data/ data/` to restore locally.
 - **Daily OHLCV data**: `market_data_daily` backfilled to 19,785 rows (SPY/IWM/QQQ ~6,600 each, 2000–2026). Indicators computed from 250-day daily series via `compute_and_upsert_daily_indicators()`.
-- **Options data sources**: ETF options use yahooquery (9x intraday snapshots/day, `data_source=NULL`). AlphaVantage provides EOD options with real Greeks (`data_source='alphavantage'`). Filter with `data_source=` param in `load_options()`.
+- **Options data sources**: All fetchers use AlphaVantage (`data_source='alphavantage'`). Historical Yahoo intraday data (`data_source=NULL`) remains in Cloud SQL; API handles timezone conversion for legacy rows. Filter with `data_source=` param in `load_options()`.
