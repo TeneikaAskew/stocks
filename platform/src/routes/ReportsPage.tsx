@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { marked } from 'marked';
 import { useTickerStore } from '@/stores/tickerStore';
 import { FileText, AlertTriangle } from 'lucide-react';
 
@@ -48,23 +49,16 @@ function useReportContent(ticker: string, phase: string, enabled: boolean) {
   });
 }
 
-// Simple markdown → HTML renderer (no external dep)
-function renderMarkdown(md: string): string {
-  return md
-    .replace(/^### (.+)$/gm, '<h3 class="text-base font-bold mt-4 mb-1 text-[var(--color-text-primary)]">$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2 class="text-lg font-bold mt-6 mb-2 text-[var(--color-text-primary)]">$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1 class="text-xl font-bold mt-6 mb-3 text-[var(--color-text-primary)]">$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-[var(--color-text-primary)]">$1</strong>')
-    .replace(/`([^`]+)`/g, '<code class="font-mono text-[10px] bg-[var(--color-bg-tertiary)] px-1 py-0.5 rounded">$1</code>')
-    .replace(/^---+$/gm, '<hr class="my-4 border-[var(--color-border)]"/>')
-    .replace(/^[-*] (.+)$/gm, '<li class="ml-4 text-sm text-[var(--color-text-secondary)] list-disc">$1</li>')
-    .replace(/^\d+\. (.+)$/gm, '<li class="ml-4 text-sm text-[var(--color-text-secondary)] list-decimal">$1</li>')
-    .replace(/^(?!<[hlutcd]).+$/gm, '<p class="text-sm text-[var(--color-text-secondary)] leading-relaxed my-1">$&</p>')
-    .replace(/\n{2,}/g, '\n');
-}
+// Configure marked for GFM (tables, strikethrough, etc.)
+marked.setOptions({ gfm: true, breaks: false });
 
 function ReportViewer({ ticker, phase }: { ticker: string; phase: string }) {
   const { data: content, isLoading, isError } = useReportContent(ticker, phase, true);
+
+  const html = useMemo(() => {
+    if (!content) return '';
+    return marked.parse(content) as string;
+  }, [content]);
 
   if (isLoading) {
     return (
@@ -85,8 +79,8 @@ function ReportViewer({ ticker, phase }: { ticker: string; phase: string }) {
 
   return (
     <div
-      className="max-w-none p-4"
-      dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
+      className="prose-report max-w-none p-4"
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }

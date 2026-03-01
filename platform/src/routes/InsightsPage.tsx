@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
+import { marked } from 'marked';
 import { useTickerStore } from '@/stores/tickerStore';
 import { Send, BarChart2, TrendingUp, BookOpen, MessageSquare, Loader2 } from 'lucide-react';
 
@@ -58,18 +59,27 @@ const MODE_CONFIG: Record<Mode, { label: string; icon: React.ReactNode; placehol
 
 function MessageBubble({ msg }: { msg: Message }) {
   const isUser = msg.role === 'user';
+
+  const html = useMemo(() => {
+    if (isUser) return '';
+    return marked.parse(msg.content) as string;
+  }, [msg.content, isUser]);
+
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`max-w-[85%] rounded-lg px-4 py-2.5 text-sm leading-relaxed ${
-          isUser
-            ? 'bg-[var(--color-accent-blue)] text-white'
-            : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)]'
-        }`}
-        style={{ whiteSpace: 'pre-wrap' }}
-      >
-        {msg.content}
-      </div>
+      {isUser ? (
+        <div
+          className="max-w-[85%] rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-[var(--color-accent-blue)] text-white"
+          style={{ whiteSpace: 'pre-wrap' }}
+        >
+          {msg.content}
+        </div>
+      ) : (
+        <div
+          className="prose-report max-w-[85%] rounded-lg px-4 py-2.5 bg-[var(--color-bg-tertiary)]"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      )}
     </div>
   );
 }
