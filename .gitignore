@@ -112,3 +112,6 @@ nul
 # AlphaVantage no-data markers (local cache indicators)
 *.nodata
 *with_indicators.parquet
+
+# Generated Pine Script docs export
+pine_script_v6_manual.md
