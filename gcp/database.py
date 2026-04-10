@@ -88,12 +88,15 @@ def get_engine():
 def query_to_dataframe(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     """Run a SELECT query and return results as a DataFrame.
 
+    Uses sqlalchemy.text() so named parameters (:name style) are handled
+    correctly regardless of the underlying DBAPI (pg8000, psycopg2, etc.).
     Returns an empty DataFrame on error (so callers can fall back gracefully).
     """
     try:
+        import sqlalchemy
         engine = get_engine()
         with engine.connect() as conn:
-            return pd.read_sql(sql, conn, params=params)
+            return pd.read_sql(sqlalchemy.text(sql), conn, params=params)
     except Exception as e:
         logger.warning("Cloud SQL query failed: %s", e)
         return pd.DataFrame()
@@ -129,6 +132,12 @@ def upsert_dataframe(
     meta.reflect(bind=engine, only=[table])
     tbl = meta.tables[table]
 
+    # Only keep DataFrame columns that actually exist in the table schema.
+    # Extra columns in the DataFrame (e.g. from source files) would cause a
+    # KeyError when building the ON CONFLICT SET clause.
+    table_col_names = {col.name for col in tbl.columns}
+    df = df[[c for c in df.columns if c in table_col_names]]
+
     if update_cols is None:
         update_cols = [c for c in df.columns if c not in conflict_cols]
 
@@ -158,25 +167,59 @@ def upsert_dataframe(
 def bulk_insert_dataframe(
     df: pd.DataFrame,
     table: str,
-    chunksize: int = 5000,
+    chunksize: int = 2000,
 ) -> int:
-    """Fast bulk insert using pandas to_sql (no conflict handling).
+    """Bulk insert a DataFrame using SQLAlchemy Core (no conflict handling).
+
+    Uses SQLAlchemy Table.insert() rather than pandas to_sql() to avoid two
+    known failure modes with the pg8000 driver:
+
+    1. pg8000 parameter count limit (65535 max, 2-byte unsigned short).
+       pandas 'multi' method sends all columns × chunksize params in one call.
+       At 9 columns × 10 000 rows = 90 000 params → struct.pack('H', ...) crash.
+       We cap each batch at chunksize rows (default 2 000 → 18 000 params, safe
+       for tables with up to 32 columns).
+
+    2. Partitioned tables (LIST / RANGE).
+       pandas inspect().has_table() may return False for partitioned tables,
+       causing to_sql(if_exists='append') to attempt CREATE TABLE and fail with
+       'relation already exists'.  SQLAlchemy MetaData.reflect() handles this
+       correctly.
 
     Use for initial data loads where duplicates won't exist.
     """
     if df.empty:
         return 0
+
+    import sqlalchemy
+
     engine = get_engine()
-    rows = df.to_sql(
-        table,
-        engine,
-        if_exists='append',
-        index=False,
-        chunksize=chunksize,
-        method='multi',
-    )
-    logger.info("Bulk-inserted %s rows into %s", rows, table)
-    return rows or 0
+    meta = sqlalchemy.MetaData()
+    meta.reflect(bind=engine, only=[table])
+    tbl = meta.tables[table]
+
+    # Only keep DataFrame columns that exist in the table schema.
+    table_col_names = {col.name for col in tbl.columns}
+    df = df[[c for c in df.columns if c in table_col_names]]
+
+    records = df.to_dict(orient='records')
+    total = 0
+
+    # Commit after every batch rather than wrapping all rows in one giant
+    # transaction.  A single transaction for millions of rows creates excessive
+    # WAL pressure on Cloud SQL and may never commit within query-timeout limits.
+    with engine.connect() as conn:
+        for i in range(0, len(records), chunksize):
+            batch = records[i: i + chunksize]
+            # Use .values(batch) to emit ONE multi-row INSERT per chunk, not
+            # executemany (conn.execute(stmt, list)) which sends one INSERT per
+            # row and is extremely slow for millions of rows.
+            conn.execute(tbl.insert().values(batch))
+            conn.commit()
+            total += len(batch)
+
+    logger.info("Bulk-inserted %d rows into %s", total, table)
+    return total
 
 
 def table_exists(table: str) -> bool:

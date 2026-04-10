@@ -1,0 +1,447 @@
+// © cautiousRice86527 - Fresh Rebuild (v2)
+//@version=6
+indicator("ORB 30 Alerts v2", overlay=true, max_lines_count=500, max_labels_count=500, shorttitle="ORB 30min v2")
+
+// === USER INPUTS ===
+watchlist = input.string("QQQ,SPY,IWM,GLD,MNQ1!,MES1!,M2K1!,MGC1!", "Comma-separated Watchlist")
+session_choice = input.string("New York", "Trading Session", options=["New York", "London", "Tokyo"])
+
+tp_mult = input.float(0.5, "TP fraction of ORB (base)", step=0.05)
+show_labels = input.bool(false, "Show Buy/Sell Labels")
+buy_label_emoji = input.string("Buy🟢", "Buy Label")
+sell_label_emoji = input.string("Sell🔴", "Sell Label")
+label_size_str = input.string("small", "Label Size", options=["tiny","small","normal","large","huge"])
+
+orbLineStyleStr = input.string("dotted", "ORB Line Style", options=["solid","dashed","dotted"])
+tpLineStyleStr = input.string("dashed", "TP Line Style", options=["solid","dashed","dotted"])
+clr_high = input.color(color.new(color.green, 0), "ORB High Line Color")
+clr_low  = input.color(color.new(color.red, 0), "ORB Low Line Color")
+clr_mid  = input.color(color.new(color.gray, 0), "ORB Mid Line Color")
+clr_tp   = input.color(color.new(color.blue, 0), "TP Lines Color")
+
+debug_mode = input.bool(false, "Show Mock-Alert Panel")
+
+// === v2 INPUTS ===
+showQuality = input.bool(true, "Show ORB Quality Score", group="v2 Quality")
+failureBars = input.int(5, "Bars before failure detection", minval=2, maxval=20, group="v2 Quality")
+alertCutoffHour = input.int(14, "Alert cutoff hour (ET, 24h)", minval=9, maxval=16, group="v2 Quality")
+alertCutoffMin = input.int(0, "Alert cutoff minute (ET)", minval=0, maxval=59, group="v2 Quality")
+
+// === HELPER FUNCTIONS ===
+lineStyle(_s) => _s == "dotted" ? line.style_dotted : _s == "dashed" ? line.style_dashed : line.style_solid
+sizeFromString(_s) => _s == "tiny" ? size.tiny : _s == "small" ? size.small : _s == "normal" ? size.normal : _s == "large" ? size.large : size.huge
+
+style_orb = lineStyle(orbLineStyleStr)
+style_tp  = lineStyle(tpLineStyleStr)
+label_sz  = sizeFromString(label_size_str)
+
+// === v2 QUALITY COMPUTATIONS (chart symbol only) ===
+rsiVal = ta.rsi(close, 14)
+atrVal = ta.atr(14)
+atrSma50 = ta.sma(atrVal, 50)
+highVol = atrVal > atrSma50 * 1.5
+lowVol = atrVal < atrSma50 * 0.7
+volRegime = highVol ? "HIGH" : lowVol ? "LOW" : "NORMAL"
+
+var string orbQualityStr = ""
+var int orbQualityScore = 0
+
+// === SESSION DEFINITIONS (all in ET) ===
+tz = "America/New_York"
+
+// 30-minute ORB windows (first 30 min of each session)
+ny_orb_window    = "0930-1000"
+lon_orb_window   = "0300-0330"
+tokyo_orb_window = "2000-2030"
+
+// Full session windows (for breakout monitoring)
+ny_full    = "0930-1600"
+lon_full   = "0300-1130"
+
+// --- FIXED TOKYO SESSION LOGIC (spans midnight) ---
+tokyo_full_1 = "2000-2359"
+tokyo_full_2 = "0000-0500"
+
+// Select windows based on user choice
+orb_window = session_choice == "New York" ? ny_orb_window : session_choice == "London" ? lon_orb_window : tokyo_orb_window
+full_session = session_choice == "New York" ? ny_full : session_choice == "London" ? lon_full : ""
+
+// Session state detection with proper Tokyo handling
+inSession = session_choice == "Tokyo" ?
+     (not na(time(timeframe.period, tokyo_full_1, tz)) or not na(time(timeframe.period, tokyo_full_2, tz))) :
+     not na(time(timeframe.period, full_session, tz))
+wasInSession = session_choice == "Tokyo" ?
+     (not na(time(timeframe.period, tokyo_full_1, tz)[1]) or not na(time(timeframe.period, tokyo_full_2, tz)[1])) :
+     not na(time(timeframe.period, full_session, tz)[1])
+sessionJustEnded = wasInSession and not inSession
+
+// === v2 TIME-OF-DAY ALERT CUTOFF ===
+// Build cutoff session string: "0930-HHmm"
+cutoffHH = str.tostring(alertCutoffHour)
+cutoffMM = alertCutoffMin < 10 ? "0" + str.tostring(alertCutoffMin) : str.tostring(alertCutoffMin)
+cutoffHH_padded = alertCutoffHour < 10 ? "0" + cutoffHH : cutoffHH
+alertWindowStr = "0930-" + cutoffHH_padded + cutoffMM
+inAlertWindow = not na(time(timeframe.period, alertWindowStr, tz))
+
+// === WATCHLIST SETUP ===
+symbols = str.split(watchlist, ",")
+num_symbols = array.size(symbols)
+
+// === STORAGE ARRAYS ===
+var float[] orbHighs = array.new_float(num_symbols, na)
+var float[] orbLows = array.new_float(num_symbols, na)
+var bool[] orbCaptured = array.new_bool(num_symbols, false)
+var float[] lastClose10 = array.new_float(num_symbols, na)
+var bool[] alertedHigh = array.new_bool(num_symbols, false)
+var bool[] alertedLow = array.new_bool(num_symbols, false)
+
+// === v2 FAILURE TRACKING ARRAYS ===
+var int[] barsSinceAlertHigh = array.new_int(num_symbols, 0)
+var int[] barsSinceAlertLow = array.new_int(num_symbols, 0)
+var bool[] failedHigh = array.new_bool(num_symbols, false)
+var bool[] failedLow = array.new_bool(num_symbols, false)
+
+// Line storage (only for chart symbol)
+var line lineHigh = na
+var line lineLow = na
+var line lineMid = na
+var line lineTP1H = na
+var line lineTP2H = na
+var line lineTP3H = na
+var line lineTP1L = na
+var line lineTP2L = na
+var line lineTP3L = na
+
+// Label storage (Only drawn once per session, prevents max_labels_count limit)
+var label labelH = na
+var label labelL = na
+var label labelM = na
+var label labelTP1H = na
+var label labelTP2H = na
+var label labelTP3H = na
+var label labelTP1L = na
+var label labelTP2L = na
+var label labelTP3L = na
+
+// === ALERT TRACKING ===
+var string buyList = ""
+var string sellList = ""
+
+// Temporary per-bar new-trigger lists (clear each bar)
+var string newBuyList = ""
+var string newSellList = ""
+
+// === v2 FAILURE ALERT LISTS ===
+var string failBuyList = ""
+var string failSellList = ""
+
+// === DEBUG TABLE ===
+var table debugTable = na
+if debug_mode and na(debugTable)
+    debugTable := table.new(position.top_right, 1, 2, border_width=1, border_color=color.new(color.white, 80))
+
+// === RESET AT SESSION END ===
+if sessionJustEnded
+    // Reset all arrays
+    for i = 0 to num_symbols - 1
+        array.set(orbCaptured, i, false)
+        array.set(alertedHigh, i, false)
+        array.set(alertedLow, i, false)
+        array.set(lastClose10, i, na)
+        array.set(orbHighs, i, na)
+        array.set(orbLows, i, na)
+        // v2 reset failure tracking
+        array.set(barsSinceAlertHigh, i, 0)
+        array.set(barsSinceAlertLow, i, 0)
+        array.set(failedHigh, i, false)
+        array.set(failedLow, i, false)
+
+    // Reset v2 quality
+    orbQualityStr := ""
+    orbQualityScore := 0
+
+    // Delete lines for chart symbol
+    if not na(lineHigh)
+        line.delete(lineHigh)
+        lineHigh := na
+    if not na(lineLow)
+        line.delete(lineLow)
+        lineLow := na
+    if not na(lineMid)
+        line.delete(lineMid)
+        lineMid := na
+    if not na(lineTP1H)
+        line.delete(lineTP1H)
+        lineTP1H := na
+    if not na(lineTP2H)
+        line.delete(lineTP2H)
+        lineTP2H := na
+    if not na(lineTP3H)
+        line.delete(lineTP3H)
+        lineTP3H := na
+    if not na(lineTP1L)
+        line.delete(lineTP1L)
+        lineTP1L := na
+    if not na(lineTP2L)
+        line.delete(lineTP2L)
+        lineTP2L := na
+    if not na(lineTP3L)
+        line.delete(lineTP3L)
+        lineTP3L := na
+
+    // Delete labels for chart symbol (NEW)
+    if not na(labelH)
+        label.delete(labelH)
+        labelH := na
+    if not na(labelL)
+        label.delete(labelL)
+        labelL := na
+    if not na(labelM)
+        label.delete(labelM)
+        labelM := na
+    if not na(labelTP1H)
+        label.delete(labelTP1H)
+        labelTP1H := na
+    if not na(labelTP2H)
+        label.delete(labelTP2H)
+        labelTP2H := na
+    if not na(labelTP3H)
+        label.delete(labelTP3H)
+        labelTP3H := na
+    if not na(labelTP1L)
+        label.delete(labelTP1L)
+        labelTP1L := na
+    if not na(labelTP2L)
+        label.delete(labelTP2L)
+        labelTP2L := na
+    if not na(labelTP3L)
+        label.delete(labelTP3L)
+        labelTP3L := na
+
+// Reset alert lists each bar
+buyList := ""
+sellList := ""
+
+// v2 reset per-bar failure lists
+failBuyList := ""
+failSellList := ""
+
+var string[] buyTriggered = array.new_string()
+var string[] sellTriggered = array.new_string()
+
+
+// === MAIN LOOP: Process each symbol ===
+for i = 0 to num_symbols - 1
+    sym = str.trim(array.get(symbols, i))
+
+    // === STEP 1: CAPTURE THE 30-MIN ORB ===
+    [high30, low30, barConfirmed, inOrb] = request.security(sym, "30",[high, low, barstate.isconfirmed, not na(time("30", orb_window, tz))],lookahead = barmerge.lookahead_off)
+
+    // When the *ORB window just ended*, record that high/low once
+    if barConfirmed and inOrb and not array.get(orbCaptured, i)
+        array.set(orbHighs, i, high30)
+        array.set(orbLows, i, low30)
+        array.set(orbCaptured, i, true)
+        array.set(lastClose10, i, na)
+        array.set(alertedHigh, i, false)
+        array.set(alertedLow, i, false)
+        // v2 reset failure tracking on new ORB capture
+        array.set(barsSinceAlertHigh, i, 0)
+        array.set(barsSinceAlertLow, i, 0)
+        array.set(failedHigh, i, false)
+        array.set(failedLow, i, false)
+
+        // v2: Compute quality score for chart symbol
+        if showQuality and sym == syminfo.ticker
+            orbRange = high30 - low30
+            q1 = orbRange < atrVal ? 1 : 0
+            q2 = rsiVal > 55 or rsiVal < 45 ? 1 : 0
+            q3 = volume > ta.sma(volume, 20) ? 1 : 0
+            q4 = not lowVol ? 1 : 0
+            orbQualityScore := q1 + q2 + q3 + q4
+            orbQualityStr := "Q:" + str.tostring(orbQualityScore) + "/4, Vol:" + volRegime + ", RSI:" + str.tostring(math.round(rsiVal))
+
+    // === STEP 2: DRAW LINES (only for chart symbol) ===
+    if array.get(orbCaptured, i) and sym == syminfo.ticker and na(lineHigh)
+        orbH = array.get(orbHighs, i)
+        orbL = array.get(orbLows, i)
+        orbM = (orbH + orbL) / 2
+        rng = orbH - orbL
+
+        // Draw ORB lines
+        lineHigh := line.new(bar_index, orbH, bar_index + 1, orbH, color=clr_high, style=style_orb, extend=extend.right)
+        lineLow := line.new(bar_index, orbL, bar_index + 1, orbL, color=clr_low, style=style_orb, extend=extend.right)
+        lineMid := line.new(bar_index, orbM, bar_index + 1, orbM, color=clr_mid, style=style_orb, extend=extend.right)
+
+        // Draw TP lines
+        lineTP1H := line.new(bar_index, orbH + rng*tp_mult, bar_index + 1, orbH + rng*tp_mult, color=clr_tp, style=style_tp, extend=extend.right)
+        lineTP2H := line.new(bar_index, orbH + rng*tp_mult*2, bar_index + 1, orbH + rng*tp_mult*2, color=clr_tp, style=style_tp, extend=extend.right)
+        lineTP3H := line.new(bar_index, orbH + rng*tp_mult*3, bar_index + 1, orbH + rng*tp_mult*3, color=clr_tp, style=style_tp, extend=extend.right)
+        lineTP1L := line.new(bar_index, orbL - rng*tp_mult, bar_index + 1, orbL - rng*tp_mult, color=clr_tp, style=style_tp, extend=extend.right)
+        lineTP2L := line.new(bar_index, orbL - rng*tp_mult*2, bar_index + 1, orbL - rng*tp_mult*2, color=clr_tp, style=style_tp, extend=extend.right)
+        lineTP3L := line.new(bar_index, orbL - rng*tp_mult*3, bar_index + 1, orbL - rng*tp_mult*3, color=clr_tp, style=style_tp, extend=extend.right)
+
+    // === ADD LABELS TO SHOW PRICES (Labels created once and stored) ===
+        // v2: Append quality score to ORB High/Low labels if available
+        qualitySuffix = showQuality and str.length(orbQualityStr) > 0 ? " [" + orbQualityStr + "]" : ""
+        labelH := label.new(bar_index, orbH, text = str.tostring(orbH, format.mintick) + qualitySuffix, style = label.style_label_right,color = color.new(clr_high, 70),textcolor = color.white)
+        labelL := label.new(bar_index, orbL,text = str.tostring(orbL, format.mintick) + qualitySuffix,style = label.style_label_right,color = color.new(clr_low, 70),textcolor = color.white)
+        labelM := label.new(bar_index, orbM,text = str.tostring(orbM, format.mintick),style = label.style_label_right,color = color.new(clr_mid, 70),textcolor = color.white)
+        labelTP1H := label.new(bar_index, orbH + rng * tp_mult,text = str.tostring(orbH + rng * tp_mult, format.mintick),style = label.style_label_right,color = color.new(clr_tp, 70),textcolor = color.white)
+        labelTP2H := label.new(bar_index, orbH + rng * tp_mult * 2,text = str.tostring(orbH + rng * tp_mult * 2, format.mintick),style = label.style_label_right,color = color.new(clr_tp, 70),textcolor = color.white)
+        labelTP3H := label.new(bar_index, orbH + rng * tp_mult * 3,text = str.tostring(orbH + rng * tp_mult * 3, format.mintick),style = label.style_label_right,color = color.new(clr_tp, 70),textcolor = color.white)
+        labelTP1L := label.new(bar_index, orbL - rng * tp_mult,text = str.tostring(orbL - rng * tp_mult, format.mintick),style = label.style_label_right,color = color.new(clr_tp, 70),textcolor = color.white)
+        labelTP2L := label.new(bar_index, orbL - rng * tp_mult * 2,text = str.tostring(orbL - rng * tp_mult * 2, format.mintick),style = label.style_label_right,color = color.new(clr_tp, 70),textcolor = color.white)
+        labelTP3L := label.new(bar_index, orbL - rng * tp_mult * 3,text = str.tostring(orbL - rng * tp_mult * 3, format.mintick),style = label.style_label_right,color = color.new(clr_tp, 70),textcolor = color.white)
+
+    // === STEP 3: MONITOR 10-MIN BREAKOUTS ===
+    if array.get(orbCaptured, i) and inSession
+        // Get 10-min close and confirmation status
+        [close10, confirmed10] = request.security(sym, "10", [close, barstate.isconfirmed], lookahead=barmerge.lookahead_off)
+
+        // Only check on confirmed 10-min bars
+        if confirmed10
+            orbH = array.get(orbHighs, i)
+            orbL = array.get(orbLows, i)
+            prevClose = array.get(lastClose10, i)
+
+            // Initialize prevClose to mid-ORB if this is first check
+            if na(prevClose)
+                prevClose := (orbH + orbL) / 2
+
+            // Check for breakouts
+            crossedAbove = close10 > orbH and prevClose <= orbH
+            crossedBelow = close10 < orbL and prevClose >= orbL
+            backInside = close10 <= orbH and close10 >= orbL
+
+            // === FIX START ===
+            if crossedAbove and not array.get(alertedHigh, i)
+                array.push(buyTriggered, sym)
+                array.set(alertedHigh, i, true)
+                array.set(alertedLow, i, false)
+                newBuyList += (str.length(newBuyList) > 0 ? ", " : "") + sym
+                // v2: reset failure counters on new breakout
+                array.set(barsSinceAlertHigh, i, 1)
+                array.set(failedHigh, i, false)
+
+            if crossedBelow and not array.get(alertedLow, i)
+                array.push(sellTriggered, sym)
+                array.set(alertedLow, i, true)
+                array.set(alertedHigh, i, false)
+                newSellList += (str.length(newSellList) > 0 ? ", " : "") + sym
+                // v2: reset failure counters on new breakout
+                array.set(barsSinceAlertLow, i, 1)
+                array.set(failedLow, i, false)
+            // === FIX END ===
+
+            // === v2 FAILURE DETECTION ===
+            // Track bars since high-side alert
+            if array.get(alertedHigh, i) and not array.get(failedHigh, i)
+                barsH = array.get(barsSinceAlertHigh, i)
+                if barsH > 0
+                    array.set(barsSinceAlertHigh, i, barsH + 1)
+                // If price drops back below orbHigh within failureBars
+                if barsH > 0 and barsH <= failureBars and close10 < orbH
+                    array.set(failedHigh, i, true)
+                    failBuyList += (str.length(failBuyList) > 0 ? ", " : "") + sym
+                    // Chart symbol: draw FAIL label
+                    if sym == syminfo.ticker
+                        label.new(bar_index, close, text="FAIL", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+
+            // Track bars since low-side alert
+            if array.get(alertedLow, i) and not array.get(failedLow, i)
+                barsL = array.get(barsSinceAlertLow, i)
+                if barsL > 0
+                    array.set(barsSinceAlertLow, i, barsL + 1)
+                // If price rises back above orbLow within failureBars
+                if barsL > 0 and barsL <= failureBars and close10 > orbL
+                    array.set(failedLow, i, true)
+                    failSellList += (str.length(failSellList) > 0 ? ", " : "") + sym
+                    // Chart symbol: draw FAIL label
+                    if sym == syminfo.ticker
+                        label.new(bar_index, close, text="FAIL", style=label.style_label_up, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+
+            // Store this bar's close for next comparison
+            array.set(lastClose10, i, close10)
+
+            // === FLAG LABELS (Buy/Sell markers) ===
+            if show_labels and sym == syminfo.ticker
+                if crossedAbove
+                    label.new(bar_index, close, text=buy_label_emoji, style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=label_sz)
+                if crossedBelow
+                    label.new(bar_index, close, text=sell_label_emoji, style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=label_sz)
+
+
+// Build full-history lists (kept for debug/history if you want)
+if array.size(buyTriggered) > 0
+    for j = 0 to array.size(buyTriggered) - 1
+        buyList += (j > 0 ? ", " : "") + array.get(buyTriggered, j)
+
+if array.size(sellTriggered) > 0
+    for j = 0 to array.size(sellTriggered) - 1
+        sellList += (j > 0 ? ", " : "") + array.get(sellTriggered, j)
+
+// NOTE: when we detect a new trigger we now append to newBuyList/newSellList
+// (you must have added the appends next to your array.push() lines in the per-symbol loop).
+// e.g. inside the crossedAbove block add:
+//     newBuyList += (str.length(newBuyList) > 0 ? ", " : "") + sym
+// and inside crossedBelow block add:
+//     newSellList += (str.length(newSellList) > 0 ? ", " : "") + sym
+
+// === SEND COMBINED ALERT (only using NEW triggers this bar) ===
+// v2: Include quality context for chart symbol in alert messages
+alertMsg = ""
+if str.length(newBuyList) > 0
+    qualityTag = showQuality and str.length(orbQualityStr) > 0 ? " [" + orbQualityStr + "]" : ""
+    alertMsg += "🟢 ORB Upside: " + newBuyList + qualityTag + " - Wait for new 10min candle to go 2up\n"
+if str.length(newSellList) > 0
+    qualityTag = showQuality and str.length(orbQualityStr) > 0 ? " [" + orbQualityStr + "]" : ""
+    alertMsg += "🔴 ORB Downside: " + newSellList + qualityTag + " - Wait for new 10min candle to go 2down\n"
+
+// v2: Time-of-day cutoff — only fire alerts within the active window
+if barstate.isconfirmed and str.length(alertMsg) > 0 and inAlertWindow
+    alert(alertMsg, alert.freq_once_per_bar_close)
+
+// === v2 FAILURE ALERTS ===
+failAlertMsg = ""
+if str.length(failBuyList) > 0
+    failAlertMsg += "🔻 ORB FAIL: " + failBuyList + " broke above then reversed\n"
+if str.length(failSellList) > 0
+    failAlertMsg += "🔺 ORB FAIL: " + failSellList + " broke below then reversed\n"
+
+if barstate.isconfirmed and str.length(failAlertMsg) > 0 and inAlertWindow
+    alert(failAlertMsg, alert.freq_once_per_bar_close)
+
+// === RESET PER-BAR LISTS AFTER ALERT ===
+newBuyList := ""
+newSellList := ""
+
+// === RESET FULL TRIGGER ARRAYS WHEN SESSION ENDS ===
+if not inSession
+    array.clear(buyTriggered)
+    array.clear(sellTriggered)
+    buyList := ""
+    sellList := ""
+
+// === FIXED: only clear arrays when new bar starts, not same bar ===
+//if barstate.isnew and inSession and not inSession[1]
+//    array.clear(buyTriggered)
+//    array.clear(sellTriggered)
+
+// === UPDATE DEBUG TABLE ===
+if debug_mode
+    statusText = "\n"+ "🟩 Buy: " + (str.length(buyList) > 0 ? buyList : "—") + "\n" +
+                 "🟥 Sell: " + (str.length(sellList) > 0 ? sellList : "—") + "\n" +
+                 "Session: " + session_choice + (inSession ? " (Active)" : " (Ended)")
+    table.cell(debugTable, 0, 0, statusText, text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 70))
+
+    // v2: Quality row in debug table
+    qualityText = showQuality and str.length(orbQualityStr) > 0 ?
+         "Quality: " + orbQualityStr +
+         " | Cutoff: " + cutoffHH_padded + ":" + cutoffMM + " ET" +
+         (inAlertWindow ? " (Active)" : " (Suppressed)") +
+         (str.length(failBuyList) > 0 ? "\nFAIL Buy: " + failBuyList : "") +
+         (str.length(failSellList) > 0 ? "\nFAIL Sell: " + failSellList : "") :
+         "Quality: awaiting ORB | Cutoff: " + cutoffHH_padded + ":" + cutoffMM + " ET" +
+         (inAlertWindow ? " (Active)" : " (Suppressed)")
+    table.cell(debugTable, 0, 1, qualityText, text_size=size.small, text_color=color.yellow, bgcolor=color.new(color.black, 70))

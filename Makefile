@@ -1,11 +1,20 @@
-.PHONY: install test test-e2e test-scripts install-playwright pipeline pipeline-fast report sweep backtest clean help
+.PHONY: install install-unpinned lock test test-e2e test-scripts install-playwright pipeline pipeline-fast report sweep backtest clean help
 
 PYTHON ?= python
 TICKERS ?= IWM SPY QQQ
 
-## Install dependencies
+## Install dependencies (uses lock file for reproducibility)
 install:
+	$(PYTHON) -m pip install -r requirements.lock
+
+## Install dependencies (unpinned, for upgrading)
+install-unpinned:
 	$(PYTHON) -m pip install -r requirements.txt
+
+## Regenerate lock files from current environment
+lock:
+	pip freeze --exclude-editable | sort > requirements.lock
+	@echo "Updated requirements.lock ($$(wc -l < requirements.lock) packages)"
 
 ## Run the full test suite (unit + integration, excludes E2E)
 test:

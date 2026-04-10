@@ -239,12 +239,19 @@ class DataLoader:
 
         sql = f"""
             SELECT date, open AS "Open", high AS "High", low AS "Low",
-                   close AS "Close", volume AS "Volume",
-                   rsi_14, ema_9, ema_21, atr_14, vwap, rvol, obv,
+                   close AS "Close", adjusted_close, volume AS "Volume",
+                   rsi_14, rsi_9,
+                   ema_9, ema_20, ema_50,
+                   ma_5, ma_10, ma_20, ma_50, sma_200,
+                   atr_14, atr_20,
+                   macd, macd_signal, macd_histogram,
+                   bb_upper, bb_lower, bb_width, bb_pct,
                    stoch_rsi_k AS "StochRSI_K", stoch_rsi_d AS "StochRSI_D",
+                   obv, rvol, volatility_20d,
                    consecutive_up AS "Consecutive_Up",
                    consecutive_down AS "Consecutive_Down",
-                   price_vs_vwap AS "Price_vs_VWAP",
+                   vwap, price_vs_vwap AS "Price_vs_VWAP",
+                   price_vs_ema9, price_vs_ema20,
                    strat_candle, strat_combo, strat_setup,
                    ftfc_score, ftfc_direction
             FROM market_data_daily
@@ -262,8 +269,18 @@ class DataLoader:
 
         # Map lowercase SQL cols back to the canonical names callers expect
         rename = {
-            'rsi_14': 'RSI_14', 'ema_9': 'EMA9', 'ema_21': 'EMA21',
-            'atr_14': 'ATR_14', 'rvol': 'RVOL', 'obv': 'OBV', 'vwap': 'VWAP',
+            'rsi_14': 'RSI14', 'rsi_9': 'RSI9',
+            'ema_9': 'EMA9', 'ema_20': 'EMA20', 'ema_50': 'EMA50',
+            'ma_5': 'SMA5', 'ma_10': 'SMA10', 'ma_20': 'SMA20',
+            'ma_50': 'SMA50', 'sma_200': 'SMA200',
+            'atr_14': 'ATR14', 'atr_20': 'ATR20',
+            'macd': 'MACD', 'macd_signal': 'MACD_Signal',
+            'macd_histogram': 'MACD_Histogram',
+            'bb_upper': 'BB_Upper', 'bb_lower': 'BB_Lower',
+            'bb_width': 'BB_Width', 'bb_pct': 'BB_Pct',
+            'obv': 'OBV', 'rvol': 'RVOL', 'vwap': 'VWAP',
+            'price_vs_ema9': 'Price_vs_EMA9',
+            'price_vs_ema20': 'Price_vs_EMA20',
         }
         return df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
 
@@ -358,6 +375,7 @@ class DataLoader:
         end_date: Optional[str] = None,
         option_type: Optional[str] = None,
         source: str = 'etf',
+        data_source: Optional[str] = None,
     ) -> pd.DataFrame:
         """Load options snapshots from Cloud SQL.
 
@@ -365,6 +383,8 @@ class DataLoader:
         ----------
         source : 'etf' (etf_options_snapshots) or 'earnings' (earnings_options_snapshots)
         option_type : 'calls', 'puts', or None for both
+        data_source : 'alphavantage' (EOD, real Greeks), 'yahooquery' (intraday, B-S Greeks),
+                      or None for all sources
         """
         if not _cloud_sql_active():
             return pd.DataFrame()
@@ -383,6 +403,9 @@ class DataLoader:
         if option_type:
             where += " AND option_type = :opt"
             params['opt'] = option_type
+        if data_source:
+            where += " AND data_source = :data_source"
+            params['data_source'] = data_source
 
         sql = f"SELECT * FROM {table} {where} ORDER BY snapshot_ts, expiration, strike"
         return _query_cloud_sql(sql, params)

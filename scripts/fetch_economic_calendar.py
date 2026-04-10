@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import json
 import requests
 from pathlib import Path
-import yfinance as yf
+import requests as _requests_lib
 import os
 import warnings
 warnings.filterwarnings('ignore')
@@ -140,35 +140,45 @@ class EconomicCalendarFetcher:
         return pd.DataFrame(fred_data)
     
     def fetch_market_data(self, tickers=['SPY', 'QQQ', 'IWM', 'DIA', 'TLT', 'GLD', 'USO']):
-        """Fetch market data for correlation analysis."""
+        """Fetch market data for correlation analysis via AlphaVantage."""
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()
+        av_key = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
         market_data = {}
-        
+
         for ticker in tickers:
             try:
-                # Fetch data from Yahoo Finance
-                data = yf.download(ticker, start='2025-01-01', end='2025-12-31', progress=False)
+                params = {
+                    'function': 'TIME_SERIES_DAILY_ADJUSTED',
+                    'symbol': ticker,
+                    'outputsize': 'full',
+                    'datatype': 'json',
+                    'apikey': av_key,
+                }
+                resp = _requests_lib.get('https://www.alphavantage.co/query', params=params, timeout=60)
+                resp.raise_for_status()
+                raw = resp.json()
+                ts = raw.get('Time Series (Daily)', {})
+                if not ts:
+                    continue
+                data = pd.DataFrame.from_dict(ts, orient='index')
+                data = data.rename(columns={
+                    '1. open': 'Open', '2. high': 'High', '3. low': 'Low',
+                    '4. close': 'Close', '6. volume': 'Volume',
+                })
+                for col in ['Open', 'High', 'Low', 'Close']:
+                    data[col] = pd.to_numeric(data[col])
+                data['Volume'] = pd.to_numeric(data['Volume']).astype('int64')
+                data.index = pd.to_datetime(data.index)
+                data = data.sort_index()
                 if not data.empty:
-                    # Handle multi-level columns from yfinance
-                    if isinstance(data.columns, pd.MultiIndex):
-                        # Extract data for the ticker
-                        close_col = ('Close', ticker) if ('Close', ticker) in data.columns else 'Close'
-                        volume_col = ('Volume', ticker) if ('Volume', ticker) in data.columns else 'Volume'
-                        high_col = ('High', ticker) if ('High', ticker) in data.columns else 'High'
-                        low_col = ('Low', ticker) if ('Low', ticker) in data.columns else 'Low'
-                        open_col = ('Open', ticker) if ('Open', ticker) in data.columns else 'Open'
-                    else:
-                        close_col = 'Close'
-                        volume_col = 'Volume'
-                        high_col = 'High'
-                        low_col = 'Low'
-                        open_col = 'Open'
-                    
                     market_data[ticker] = {
-                        'close': data[close_col] if close_col in data.columns else None,
-                        'volume': data[volume_col] if volume_col in data.columns else None,
-                        'high': data[high_col] if high_col in data.columns else None,
-                        'low': data[low_col] if low_col in data.columns else None,
-                        'open': data[open_col] if open_col in data.columns else None
+                        'close': data['Close'],
+                        'volume': data['Volume'],
+                        'high': data['High'],
+                        'low': data['Low'],
+                        'open': data['Open']
                     }
                     print(f"Fetched data for {ticker}")
             except Exception as e:

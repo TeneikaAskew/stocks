@@ -27,12 +27,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from gcp.database import bulk_insert_dataframe, execute_sql, is_cloud_sql_configured
 from gcp.gcs_utils import upload_dataframe_as_parquet, parquet_exists_in_gcs
 
+from lib.logging_config import setup_logging
+setup_logging()
 log = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s  %(levelname)-7s  %(message)s',
-    datefmt='%H:%M:%S',
-)
 
 SYMBOLS = ['SPY', 'IWM', 'QQQ']
 AV_BASE_URL = 'https://www.alphavantage.co/query'

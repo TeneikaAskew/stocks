@@ -45,8 +45,11 @@ def parquet_exists_in_gcs(bucket: str, blob_path: str) -> bool:
         return False
 
 
-def download_csv_from_gcs(bucket: str, blob_path: str) -> Optional[pd.DataFrame]:
-    """Download a CSV blob from GCS and return as a DataFrame."""
+def download_csv_from_gcs(bucket: str, blob_path: str) -> pd.DataFrame:
+    """Download a CSV blob from GCS and return as a DataFrame.
+
+    Returns empty DataFrame on error (consistent with data-function convention).
+    """
     try:
         from google.cloud import storage as gcs
         buf = io.BytesIO()
@@ -55,11 +58,14 @@ def download_csv_from_gcs(bucket: str, blob_path: str) -> Optional[pd.DataFrame]
         return pd.read_csv(buf)
     except Exception as e:
         log.warning("  GCS CSV download failed (%s): %s", blob_path, e)
-        return None
+        return pd.DataFrame()
 
 
-def download_parquet_from_gcs(bucket: str, blob_path: str) -> Optional[pd.DataFrame]:
-    """Download a Parquet blob from GCS and return as a DataFrame."""
+def download_parquet_from_gcs(bucket: str, blob_path: str) -> pd.DataFrame:
+    """Download a Parquet blob from GCS and return as a DataFrame.
+
+    Returns empty DataFrame on error (consistent with data-function convention).
+    """
     try:
         from google.cloud import storage as gcs
         buf = io.BytesIO()
@@ -68,7 +74,7 @@ def download_parquet_from_gcs(bucket: str, blob_path: str) -> Optional[pd.DataFr
         return pd.read_parquet(buf)
     except Exception as e:
         log.warning("  GCS Parquet download failed (%s): %s", blob_path, e)
-        return None
+        return pd.DataFrame()
 
 
 def list_blobs(bucket: str, prefix: str) -> list:

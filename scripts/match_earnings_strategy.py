@@ -4,7 +4,7 @@
 Earnings Strategy Matcher
 
 Reads EARNINGS strategy CSV files (Long Calls, Covered Calls, Bull Spreads, Bear Spreads)
-and matches them with live options chain data from yahooquery to calculate
+and matches them with options chain data from AlphaVantage HISTORICAL_OPTIONS to calculate
 profit/loss and other metrics.
 
 Designed for MULTI-DAY holds around earnings (Day 0-5 tracking).
@@ -16,11 +16,18 @@ Usage:
 
 import argparse
 import sys
+import os
 import pandas as pd
 import numpy as np
+import requests
 from pathlib import Path
 from datetime import datetime, timedelta
-from yahooquery import Ticker
+from dotenv import load_dotenv
+
+load_dotenv()
+
+AV_BASE_URL = 'https://www.alphavantage.co/query'
+AV_API_KEY = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
 # Fix encoding for Windows
 if sys.platform == 'win32':
@@ -136,7 +143,7 @@ def create_lookup_keys(df):
 
 def fetch_options_for_tickers(tickers):
     """
-    Fetch options chain from yahooquery for given tickers.
+    Fetch options chain from AlphaVantage HISTORICAL_OPTIONS for given tickers.
 
     Args:
         tickers: List of ticker symbols
@@ -145,45 +152,80 @@ def fetch_options_for_tickers(tickers):
         DataFrame with options chain data
     """
     print("\n" + "="*80)
-    print("Fetching Options Chain from yahooquery")
+    print("Fetching Options Chain from AlphaVantage")
     print("="*80)
 
     print(f"Fetching options for {len(tickers)} ticker(s): {', '.join(tickers)}")
+    fetch_date = datetime.now().strftime('%Y-%m-%d')
 
     try:
-        # Fetch all tickers at once
-        ticker_obj = Ticker(tickers)
-        options_df = ticker_obj.option_chain
+        all_frames = []
+        for symbol in tickers:
+            params = {
+                'function': 'HISTORICAL_OPTIONS',
+                'symbol': symbol,
+                'date': fetch_date,
+                'apikey': AV_API_KEY,
+                'datatype': 'json',
+            }
+            resp = requests.get(AV_BASE_URL, params=params, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
 
-        if isinstance(options_df, pd.DataFrame) and not options_df.empty:
-            # Reset index to make it easier to work with
-            options_df = options_df.reset_index()
-            print(f"\n" + "-"*40)
-            print("Options Data Summary")
-            print("-"*40)
-            # print(f"Columns: {options_df.columns.tolist()}")
-            # print(f"Data types:\n{options_df.dtypes}")
-            print(f"Sample data:\n{options_df.head(3).to_string(index=False)}")
+            if data.get('message') != 'success':
+                print(f"  {symbol}: AV error — {data.get('message', data.get('Information', ''))}")
+                continue
 
-            print(f"✓ Fetched {len(options_df):,} option contracts")
-            print(f"  Symbols: {options_df['symbol'].unique().tolist()}")
-            print(f"  Expirations: {options_df['expiration'].nunique()} dates")
+            records = data.get('data', [])
+            if not records:
+                print(f"  {symbol}: No contracts")
+                continue
 
-            # Create matching keys
-            options_df['join_underlying'] = options_df['symbol'].str.upper()
-            options_df['join_expiration'] = pd.to_datetime(options_df['expiration']).dt.date
-            options_df['join_strike_x1000'] = (options_df['strike'] * 1000).astype(int)
-            options_df['join_opt_type'] = options_df['optionType'].apply(
-                lambda x: 'C' if x == 'calls' else 'P'
-            )
+            df = pd.DataFrame(records)
+            df['symbol'] = symbol
+            # Map AV fields to expected column names
+            if 'type' in df.columns:
+                df['optionType'] = df['type'].str.lower().map({'call': 'calls', 'put': 'puts'})
+            if 'contractID' in df.columns:
+                df['contractSymbol'] = df['contractID']
+            if 'last' in df.columns:
+                df['lastPrice'] = df['last']
+            if 'implied_volatility' in df.columns:
+                df['impliedVolatility'] = df['implied_volatility']
+            if 'open_interest' in df.columns:
+                df['openInterest'] = df['open_interest']
+            for col in ['strike', 'lastPrice', 'bid', 'ask', 'volume', 'openInterest',
+                        'impliedVolatility', 'delta', 'gamma', 'theta', 'vega', 'rho', 'mark']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            all_frames.append(df)
+            print(f"  {symbol}: {len(df):,} contracts")
 
-            return options_df
-        else:
-            print("❌ No options data returned")
+            import time
+            time.sleep(0.5)  # Rate limiting
+
+        if not all_frames:
+            print("No options data returned")
             return pd.DataFrame()
 
+        options_df = pd.concat(all_frames, ignore_index=True)
+
+        print(f"\nFetched {len(options_df):,} option contracts total")
+        print(f"  Symbols: {options_df['symbol'].unique().tolist()}")
+        print(f"  Expirations: {options_df['expiration'].nunique()} dates")
+
+        # Create matching keys
+        options_df['join_underlying'] = options_df['symbol'].str.upper()
+        options_df['join_expiration'] = pd.to_datetime(options_df['expiration']).dt.date
+        options_df['join_strike_x1000'] = (options_df['strike'] * 1000).astype(int)
+        options_df['join_opt_type'] = options_df['optionType'].apply(
+            lambda x: 'C' if x == 'calls' else 'P'
+        )
+
+        return options_df
+
     except Exception as e:
-        print(f"❌ Error fetching options: {e}")
+        print(f"Error fetching options: {e}")
         import traceback
         traceback.print_exc()
         return pd.DataFrame()
@@ -195,7 +237,7 @@ def match_strategy_to_options(strategy_df, options_df):
 
     Args:
         strategy_df: Strategy CSV data with lookup keys
-        options_df: Options chain data from yahooquery
+        options_df: Options chain data from AlphaVantage
 
     Returns:
         Merged DataFrame with matched options
@@ -264,10 +306,10 @@ def calculate_profit_loss(merged_df):
     merged_df['entry_bid_EW'] = merged_df['bid_EW'] if 'bid_EW' in merged_df.columns else pd.Series([np.nan]*len(merged_df))
     merged_df['entry_ask_EW'] = merged_df['ask_EW'] if 'ask_EW' in merged_df.columns else pd.Series([np.nan]*len(merged_df))
 
-    # Current market price - from yahooquery (clean names)
+    # Current market price - from AV (clean names)
     merged_df['current_price'] = merged_df['lastPrice'] if 'lastPrice' in merged_df.columns else pd.Series([np.nan]*len(merged_df))
 
-    # Current Bid/Ask from market - clean names from yahooquery
+    # Current Bid/Ask from market - clean names from AV
     merged_df['market_bid'] = merged_df['bid'] if 'bid' in merged_df.columns else pd.Series([np.nan]*len(merged_df))
     merged_df['market_ask'] = merged_df['ask'] if 'ask' in merged_df.columns else pd.Series([np.nan]*len(merged_df))
 
@@ -282,7 +324,7 @@ def calculate_profit_loss(merged_df):
         pd.to_datetime(merged_df['join_expiration']) - pd.to_datetime(today)
     ).dt.days
 
-    # Volume and Open Interest from market - clean names from yahooquery
+    # Volume and Open Interest from market - clean names from AV
     merged_df['market_volume'] = merged_df['volume'] if 'volume' in merged_df.columns else pd.Series([np.nan]*len(merged_df))
     merged_df['market_open_interest'] = merged_df['openInterest'] if 'openInterest' in merged_df.columns else pd.Series([np.nan]*len(merged_df))
 
