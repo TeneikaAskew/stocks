@@ -63,6 +63,9 @@ export interface PlaybookCard {
 export interface MetricCardData {
   label: string;
   value: string | number;
+  direction?: 'up' | 'down' | 'neutral';
+  subtitle?: string;
+  /** @deprecated Use direction instead */
   change?: number;
   changeLabel?: string;
 }
