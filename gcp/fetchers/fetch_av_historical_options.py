@@ -17,7 +17,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -145,22 +145,51 @@ def process_ticker(ticker: str, fetch_date: str, bucket: str, api_key: str):
         )
 
 
+def _weekday_range(start: date, end: date) -> list[str]:
+    """Return YYYY-MM-DD strings for all weekdays in [start, end] inclusive."""
+    out = []
+    cur = start
+    while cur <= end:
+        if cur.weekday() < 5:  # Mon-Fri
+            out.append(cur.strftime('%Y-%m-%d'))
+        cur += timedelta(days=1)
+    return out
+
+
 def main():
+    import time
+
     parser = argparse.ArgumentParser(
         description='Fetch daily AV HISTORICAL_OPTIONS to Cloud SQL + GCS')
     parser.add_argument('--tickers', default='ALL',
                         help='Space-separated tickers or ALL')
     parser.add_argument('--date', default=None,
-                        help='Date to fetch (YYYY-MM-DD). Defaults to today.')
+                        help='Single date to fetch (YYYY-MM-DD). Defaults to today. '
+                             'Ignored if --start-date / --end-date are provided.')
+    parser.add_argument('--start-date', default=None,
+                        help='Backfill range start (YYYY-MM-DD, inclusive).')
+    parser.add_argument('--end-date', default=None,
+                        help='Backfill range end (YYYY-MM-DD, inclusive). Defaults to today.')
     args = parser.parse_args()
 
-    fetch_date = args.date or date.today().strftime('%Y-%m-%d')
+    # Resolve date list: range mode wins if either bound is given.
+    if args.start_date or args.end_date:
+        start = date.fromisoformat(args.start_date) if args.start_date else date.today()
+        end = date.fromisoformat(args.end_date) if args.end_date else date.today()
+        if start > end:
+            log.error("start-date must be <= end-date")
+            sys.exit(2)
+        fetch_dates = _weekday_range(start, end)
+        log.info("Backfill range: %s → %s (%d weekdays)", start, end, len(fetch_dates))
+    else:
+        fetch_dates = [args.date or date.today().strftime('%Y-%m-%d')]
+
     bucket = os.environ.get('GCS_BUCKET', '')
     api_key = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
 
     log.info("Fetch AV Historical Options Job")
-    log.info("  Date    : %s", fetch_date)
+    log.info("  Dates   : %d date(s)", len(fetch_dates))
     log.info("  Tickers : %s", tickers)
     log.info("  SQL     : %s", 'yes' if is_cloud_sql_configured() else 'NO')
     log.info("  GCS     : %s", bucket or 'disabled')
@@ -171,20 +200,23 @@ def main():
         sys.exit(1)
 
     errors = []
-    for i, ticker in enumerate(tickers):
-        if i > 0:
-            import time
-            time.sleep(_av_cfg.delay_between_calls)
-        try:
-            process_ticker(ticker, fetch_date, bucket, api_key)
-        except Exception as e:
-            log.error("  ✗ %s failed: %s", ticker, e)
-            errors.append(ticker)
+    total_calls = 0
+    for fetch_date in fetch_dates:
+        for ticker in tickers:
+            if total_calls > 0:
+                time.sleep(_av_cfg.delay_between_calls)
+            total_calls += 1
+            try:
+                process_ticker(ticker, fetch_date, bucket, api_key)
+            except Exception as e:
+                log.error("  ✗ %s %s failed: %s", ticker, fetch_date, e)
+                errors.append(f"{ticker}/{fetch_date}")
 
     if errors:
-        log.error("Failed: %s", errors)
+        log.error("Failed (%d): first 20 = %s", len(errors), errors[:20])
         sys.exit(1)
-    log.info("Done.")
+    log.info("Done. %d AV calls across %d dates × %d tickers.",
+             total_calls, len(fetch_dates), len(tickers))
 
 
 if __name__ == '__main__':
