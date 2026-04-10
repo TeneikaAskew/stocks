@@ -1,8 +1,18 @@
-import { useState } from 'react';
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTickerStore } from '@/stores/tickerStore';
-import { CheckCircle, Circle, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';
-
+import { useLiveStatus } from '@/hooks/useLiveStatus';
+import { useLiveQuote } from '@/hooks/useLiveQuote';
+import { useLiveHistory, useAvgVolume } from '@/hooks/useLiveHistory';
+import { computeIndicators, calculateStochRSI } from '@/lib/indicators';
+import {
+  evalConditions,
+  computeORB,
+  minutesSinceOpen,
+  type MarketSnapshot,
+  type EvalResult,
+} from '@/lib/playbookEvaluator';
+import { CheckCircle, Circle, HelpCircle, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';
 
 interface PlaybookCard {
   id: string;
@@ -19,6 +29,15 @@ interface PlaybookResponse {
   cards: PlaybookCard[];
 }
 
+interface ReferenceResponse {
+  ticker: string;
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
 function usePlaybook(ticker: string) {
   return useQuery<PlaybookResponse>({
     queryKey: ['playbook', ticker],
@@ -31,74 +50,125 @@ function usePlaybook(ticker: string) {
   });
 }
 
-function ConditionChecklist({
-  conditions,
-  checked,
-  onToggle,
-}: {
-  conditions: string[];
-  checked: boolean[];
-  onToggle: (i: number) => void;
+function useReference(ticker: string) {
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  return useQuery<ReferenceResponse | null>({
+    queryKey: ['reference', ticker, today],
+    queryFn: async () => {
+      const r = await fetch(`/api/market/reference/${ticker}/${today}`);
+      if (!r.ok) return null;
+      return r.json();
+    },
+    staleTime: 3_600_000,
+  });
+}
+
+// ── Card UI ────────────────────────────────────────────────────────────────
+
+function dirColors(dir: PlaybookCard['direction']) {
+  if (dir === 'CALL') {
+    return {
+      text: 'text-green-400',
+      bg: 'bg-green-500/20',
+      bgSoft: 'bg-green-500/5',
+      border: 'border-green-500/40',
+      borderIdle: 'border-green-500/10',
+      bar: 'bg-green-400',
+      icon: 'text-green-400',
+    };
+  }
+  if (dir === 'PUT') {
+    return {
+      text: 'text-red-400',
+      bg: 'bg-red-500/20',
+      bgSoft: 'bg-red-500/5',
+      border: 'border-red-500/40',
+      borderIdle: 'border-red-500/10',
+      bar: 'bg-red-400',
+      icon: 'text-red-400',
+    };
+  }
+  return {
+    text: 'text-[var(--color-accent-blue)]',
+    bg: 'bg-[var(--color-accent-blue)]/20',
+    bgSoft: 'bg-[var(--color-accent-blue)]/5',
+    border: 'border-[var(--color-accent-blue)]/40',
+    borderIdle: 'border-[var(--color-accent-blue)]/10',
+    bar: 'bg-[var(--color-accent-blue)]',
+    icon: 'text-[var(--color-accent-blue)]',
+  };
+}
+
+function ConditionRow({ condition, result, color }: {
+  condition: string;
+  result: EvalResult;
+  color: ReturnType<typeof dirColors>;
 }) {
+  const isMet = result.status === 'met';
+  const isUnknown = result.status === 'unknown';
+
   return (
-    <div className="space-y-1.5">
-      {conditions.map((cond, i) => (
-        <button
-          key={i}
-          onClick={() => onToggle(i)}
-          className="flex w-full items-start gap-2 text-left"
+    <div className="flex w-full items-start gap-2 text-left">
+      {isMet ? (
+        <CheckCircle size={14} className={`mt-0.5 shrink-0 ${color.icon}`} />
+      ) : isUnknown ? (
+        <HelpCircle size={14} className="mt-0.5 shrink-0 text-[var(--color-text-muted)] opacity-60" />
+      ) : (
+        <Circle size={14} className="mt-0.5 shrink-0 text-[var(--color-text-muted)]" />
+      )}
+      <div className="flex-1 min-w-0">
+        <div
+          className={`text-xs leading-relaxed ${
+            isMet
+              ? 'text-[var(--color-text-primary)]'
+              : 'text-[var(--color-text-muted)]'
+          }`}
         >
-          {checked[i] ? (
-            <CheckCircle size={14} className="mt-0.5 shrink-0 text-green-400" />
-          ) : (
-            <Circle size={14} className="mt-0.5 shrink-0 text-[var(--color-text-muted)]" />
-          )}
-          <span
-            className={`text-xs leading-relaxed ${
-              checked[i]
-                ? 'text-[var(--color-text-primary)]'
-                : 'text-[var(--color-text-muted)]'
-            }`}
-          >
-            {cond}
-          </span>
-        </button>
-      ))}
+          {condition}
+        </div>
+        {result.status !== 'unknown' && 'detail' in result && (
+          <div className="font-mono text-[10px] text-[var(--color-text-muted)]">{result.detail}</div>
+        )}
+        {isUnknown && (
+          <div className="font-mono text-[10px] text-[var(--color-text-muted)] opacity-70">{result.reason}</div>
+        )}
+      </div>
     </div>
   );
 }
 
-function PlaybookCardUI({ card }: { card: PlaybookCard }) {
-  const [checked, setChecked] = useState<boolean[]>(card.conditions.map(() => false));
-
-  const metCount = checked.filter(Boolean).length;
+function PlaybookCardUI({ card, results, hasLiveData }: {
+  card: PlaybookCard;
+  results: EvalResult[];
+  hasLiveData: boolean;
+}) {
+  const color = dirColors(card.direction);
   const total = card.conditions.length;
+  const metCount = results.filter(r => r.status === 'met').length;
+  const unknownCount = results.filter(r => r.status === 'unknown').length;
+  const autoEvaluable = total - unknownCount;
   const pct = total > 0 ? Math.round((metCount / total) * 100) : 0;
+
+  // Tint strength: idle until something is met, brighter as more fill in.
+  // "Fully lit" = every auto-evaluable condition is met AND at least one was auto-evaluable.
+  const allAutoMet = autoEvaluable > 0 && metCount === autoEvaluable;
+  const tintClass =
+    !hasLiveData ? 'border-[var(--color-border)] bg-[var(--color-bg-secondary)]' :
+    metCount === 0 ? `${color.borderIdle} bg-[var(--color-bg-secondary)]` :
+    allAutoMet ? `${color.border} ${color.bgSoft}` :
+    `${color.borderIdle} ${color.bgSoft}`;
 
   const isCall = card.direction === 'CALL';
   const isPut = card.direction === 'PUT';
 
-  const toggle = (i: number) => setChecked(prev => prev.map((v, j) => (j === i ? !v : v)));
-  const reset = () => setChecked(card.conditions.map(() => false));
-
   return (
-    <div
-      className={`rounded-lg border p-4 ${
-        metCount === total && total > 0
-          ? isCall
-            ? 'border-green-500/40 bg-green-500/5'
-            : isPut
-            ? 'border-red-500/40 bg-red-500/5'
-            : 'border-[var(--color-accent-blue)]/40 bg-[var(--color-accent-blue)]/5'
-          : 'border-[var(--color-border)] bg-[var(--color-bg-secondary)]'
-      }`}
-    >
+    <div className={`rounded-lg border p-4 transition-colors ${tintClass}`}>
       {/* Header */}
       <div className="mb-3 flex items-start justify-between gap-2">
-        <div>
+        <div className="min-w-0">
           <div className="flex items-center gap-2">
-            {isCall && <TrendingUp size={14} className="text-green-400" />}
-            {isPut && <TrendingDown size={14} className="text-red-400" />}
+            {isCall && <TrendingUp size={14} className="text-green-400 shrink-0" />}
+            {isPut && <TrendingDown size={14} className="text-red-400 shrink-0" />}
             <span className="text-sm font-semibold text-[var(--color-text-primary)]">
               {card.name}
             </span>
@@ -109,13 +179,7 @@ function PlaybookCardUI({ card }: { card: PlaybookCard }) {
             </p>
           )}
         </div>
-        <span
-          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${
-            isCall ? 'bg-green-500/20 text-green-400' :
-            isPut ? 'bg-red-500/20 text-red-400' :
-            'bg-[var(--color-accent-blue)]/20 text-[var(--color-accent-blue)]'
-          }`}
-        >
+        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${color.bg} ${color.text}`}>
           {card.direction}
         </span>
       </div>
@@ -124,26 +188,35 @@ function PlaybookCardUI({ card }: { card: PlaybookCard }) {
       {total > 0 && (
         <div className="mb-3">
           <div className="mb-1 flex justify-between text-[10px] text-[var(--color-text-muted)]">
-            <span>{metCount}/{total} conditions met</span>
-            <span>{pct}%</span>
+            <span>
+              {hasLiveData
+                ? <>
+                    {metCount}/{total} conditions met
+                    {unknownCount > 0 && (
+                      <span className="opacity-70"> · {unknownCount} subjective</span>
+                    )}
+                  </>
+                : <>{total} conditions (no live data)</>}
+            </span>
+            <span>{hasLiveData ? `${pct}%` : '—'}</span>
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-bg-tertiary)]">
             <div
-              className={`h-full rounded-full transition-all duration-300 ${
-                pct === 100
-                  ? isCall ? 'bg-green-400' : isPut ? 'bg-red-400' : 'bg-[var(--color-accent-blue)]'
-                  : 'bg-[var(--color-text-muted)]'
-              }`}
-              style={{ width: `${pct}%` }}
+              className={`h-full rounded-full transition-all duration-300 ${color.bar}`}
+              style={{ width: `${hasLiveData ? pct : 0}%` }}
             />
           </div>
         </div>
       )}
 
       {/* Conditions */}
-      <ConditionChecklist conditions={card.conditions} checked={checked} onToggle={toggle} />
+      <div className="space-y-1.5">
+        {card.conditions.map((cond, i) => (
+          <ConditionRow key={i} condition={cond} result={results[i]} color={color} />
+        ))}
+      </div>
 
-      {/* Stats + reset */}
+      {/* Stats */}
       <div className="mt-3 flex items-center justify-between border-t border-[var(--color-border)] pt-2">
         <div className="flex gap-4 text-[10px] text-[var(--color-text-muted)]">
           {card.win_rate !== null && (
@@ -159,24 +232,68 @@ function PlaybookCardUI({ card }: { card: PlaybookCard }) {
             </span>
           )}
         </div>
-        {metCount > 0 && (
-          <button
-            onClick={reset}
-            className="text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
-          >
-            Reset
-          </button>
-        )}
       </div>
     </div>
   );
 }
 
+// ── Page ───────────────────────────────────────────────────────────────────
+
 export default function PlaybookPage() {
   const { activeTicker } = useTickerStore();
+
   const { data, isLoading, isError } = usePlaybook(activeTicker);
+  const { data: status } = useLiveStatus();
+  const isMarketOpenish = !!status?.is_open || status?.session === 'pre-market' || status?.session === 'after-hours';
+
+  const { data: history } = useLiveHistory(activeTicker, isMarketOpenish);
+  const { data: quote } = useLiveQuote(activeTicker, isMarketOpenish);
+  const { data: avgVol } = useAvgVolume(activeTicker);
+  const { data: reference } = useReference(activeTicker);
+
+  const snapshot = useMemo<MarketSnapshot | null>(() => {
+    const bars = history?.bars;
+    if (!bars || bars.length === 0) return null;
+
+    const indicators = computeIndicators(bars);
+
+    // Previous-bar StochK for "turning up/down" conditions
+    const closes = bars.map(b => b.close);
+    const prevStoch =
+      closes.length > 2
+        ? calculateStochRSI(closes.slice(0, -1))
+        : { k: null, d: null };
+
+    const lastBar = bars[bars.length - 1];
+    const orb = computeORB(bars);
+
+    return {
+      price: quote?.price ?? lastBar?.close ?? null,
+      prevClose: reference?.close ?? null,
+      prevHigh: reference?.high ?? null,
+      prevLow: reference?.low ?? null,
+      volumeToday: quote?.volume ?? null,
+      avgVolume20d: avgVol?.avg_volume_20d ?? null,
+      orbHigh: orb.high,
+      orbLow: orb.low,
+      lastBar: lastBar ?? null,
+      minutesSinceOpen: minutesSinceOpen(lastBar ?? null),
+      stochKPrev: prevStoch.k,
+      indicators,
+    };
+  }, [history, quote, avgVol, reference]);
 
   const cards = data?.cards ?? [];
+  const hasLiveData = snapshot !== null;
+
+  const cardResults = useMemo(() => {
+    if (!snapshot) return new Map<string, EvalResult[]>();
+    const m = new Map<string, EvalResult[]>();
+    for (const card of cards) {
+      m.set(card.id, evalConditions(card.conditions, snapshot));
+    }
+    return m;
+  }, [cards, snapshot]);
 
   return (
     <div className="space-y-4">
@@ -186,7 +303,9 @@ export default function PlaybookPage() {
             {activeTicker} Playbook
           </h1>
           <p className="text-xs text-[var(--color-text-muted)]">
-            Decision cards with interactive condition checklists
+            {hasLiveData
+              ? 'Cards light up as live market conditions are met'
+              : 'No live data — evaluation paused'}
           </p>
         </div>
         {data && (
@@ -218,7 +337,12 @@ export default function PlaybookPage() {
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {cards.map(card => (
-          <PlaybookCardUI key={card.id} card={card} />
+          <PlaybookCardUI
+            key={card.id}
+            card={card}
+            results={cardResults.get(card.id) ?? card.conditions.map(() => ({ status: 'unknown', reason: 'no data' }))}
+            hasLiveData={hasLiveData}
+          />
         ))}
       </div>
     </div>

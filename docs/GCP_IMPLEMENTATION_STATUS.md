@@ -443,6 +443,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 - 2026-03-01: feat(platform) — add markdown rendering (marked) for ReportsPage tables and InsightsPage chat bubbles; prose-report CSS styles
 - 2026-03-01: chore(workflows) — remove yfinance/yahooquery from GitHub Actions pip installs (analyze-market-data, fetch-earnings-options, update-economic-events-calendar)
 - 2026-04-10: fix(platform) — header market-session badge + ticker price now driven by live /api/live/status and /api/live/quote via shared useLiveStatus/useLiveQuote hooks; dead marketStore deleted (badge was permanently stuck on "Market Closed")
+- 2026-04-10: feat(platform) — PlaybookPage auto-evaluates each card's condition strings against a live MarketSnapshot (RSI/VWAP/EMA/StochRSI/RVOL/ORB/prev-day levels/minutes-since-open) via new lib/playbookEvaluator.ts regex mapper; cards light up in direction color (green CALL / red PUT), counter reads metCount/total with "N subjective" suffix for unevaluable conditions, progress bar and border intensify as live market satisfies the setup
 
 ---
 
