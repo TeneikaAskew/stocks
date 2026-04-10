@@ -69,8 +69,6 @@ _is3BearishRevStratReversal = "3 Bearish \nRevStrat Reversal"
 _is3BullishRevStratReversal = "3 Bullish \nRevStrat Reversal"
 
 // Ftc variables
-_ftcLocation = location.absolute
-
 _oneMinuteTimeFrame = "1"
 _threeMinuteTimeFrame = "3"
 _fiveMinuteTimeFrame = "5"
@@ -86,27 +84,6 @@ _dayTimeFrame = "D"
 _weekTimeFrame = "W"
 _monthTimeFrame = "M"
 _quarterTimeFrame = "3M"
-
-_ftcBaseOffset = 1
-_ftc15Offset = _ftcBaseOffset + 1
-_ftc30Offset = _ftcBaseOffset + 2
-_ftcHourOffset = _ftcBaseOffset + 3
-_ftcFourHourOffset = _ftcBaseOffset + 4
-_ftcDayOffset = _ftcBaseOffset + 5
-_ftcWeekOffset = _ftcBaseOffset + 6
-_ftcMonthOffset = _ftcBaseOffset + 7
-_ftcQuarterOffset = _ftcBaseOffset + 8
-
-_ftc15Text = "15"
-_ftc30Text = "30"
-_ftcHourText = "H"
-_ftcFourHourText = "4H"
-_ftcDayText = "D"
-_ftcWeekText = "W"
-_ftcMonthText = "M"
-_ftcQuarterText = "Q"
-_ftcInsideText = "IN\n"
-_ftcOutsideText = "O\n"
 
 ///////////////////////////////////////////////
 // END: static variables / constants
@@ -312,25 +289,6 @@ isWeekValidTimeFrame = isDayValidTimeFrame or timeframe.period == _weekTimeFrame
 isMonthValidTimeFrame = isWeekValidTimeFrame or timeframe.ismonthly
 isQuarterValidTimeFrame = isWeekValidTimeFrame or timeframe.isdwm
 
-// offset for time frame so it doesn't go too far right
-int ftcTimeFrameOffset = 0
-if not isQuarterValidTimeFrame
-    ftcTimeFrameOffset := 8
-else if not isMonthValidTimeFrame
-    ftcTimeFrameOffset := 7
-else if not isWeekValidTimeFrame
-    ftcTimeFrameOffset := 6
-else if not isDayValidTimeFrame
-    ftcTimeFrameOffset := 5
-else if not isFourHourValidTimeFrame
-    ftcTimeFrameOffset := 4
-else if not isHourValidTimeFrame
-    ftcTimeFrameOffset := 3
-else if not is30ValidTimeFrame
-    ftcTimeFrameOffset := 2
-else if not is15ValidTimeFrame
-    ftcTimeFrameOffset := 1
-
 // ensure the timeframe as well as the history are both valid
 is15Valid = is15ValidTimeFrame
 is30Valid = is30ValidTimeFrame
@@ -340,47 +298,6 @@ isDayValid = isDayValidTimeFrame
 isWeekValid = isWeekValidTimeFrame
 isMonthValid = isMonthValidTimeFrame
 isQuarterValid = isQuarterValidTimeFrame
-
-// bulk logic for Ftc to display the various shapes, colors, and indicators
-is15FtcGreenPlot = _isFtcActive and is15Valid and is15FtcGreen
-is15FtcRedPlot = _isFtcActive and is15Valid and not is15FtcGreen
-is15FtcInsidePlot = _isFtcActive and is15Valid and is15FtcInside
-is15FtcOutsidePlot = _isFtcActive and is15Valid and is15FtcOutside
-
-is30FtcGreenPlot = is30Valid and is30FtcGreen
-is30FtcRedPlot = is30Valid and not is30FtcGreen
-is30FtcInsidePlot = _isFtcActive and is30Valid and is30FtcInside
-is30FtcOutsidePlot = _isFtcActive and is30Valid and is30FtcOutside
-
-isHourFtcGreenPlot = isHourValid and isHourFtcGreen
-isHourFtcRedPlot = isHourValid and not isHourFtcGreen
-isHourFtcInsidePlot = _isFtcActive and isHourValid and isHourFtcInside
-isHourFtcOutsidePlot = _isFtcActive and isHourValid and isHourFtcOutside
-
-isFourHourFtcGreenPlot = isFourHourValid and isFourHourFtcGreen
-isFourHourFtcRedPlot = isFourHourValid and not isFourHourFtcGreen
-isFourHourFtcInsidePlot = _isFtcActive and isFourHourValid and isFourHourFtcInside
-isFourHourFtcOutsidePlot = _isFtcActive and isFourHourValid and isFourHourFtcOutside
-
-isDayFtcGreenPlot = isDayValid and isDayFtcGreen
-isDayFtcRedPlot = isDayValid and not isDayFtcGreen
-isDayFtcInsidePlot = _isFtcActive and isDayValid and isDayFtcInside
-isDayFtcOutsidePlot = _isFtcActive and isDayValid and isDayFtcOutside
-
-isWeekFtcGreenPlot = isWeekValid and isWeekFtcGreen
-isWeekFtcRedPlot = isWeekValid and not isWeekFtcGreen
-isWeekFtcInsidePlot = _isFtcActive and isWeekValid and isWeekFtcInside
-isWeekFtcOutsidePlot = _isFtcActive and isWeekValid and isWeekFtcOutside
-
-isMonthFtcGreenPlot = isMonthValid and isMonthFtcGreen
-isMonthFtcRedPlot = isMonthValid and not isMonthFtcGreen
-isMonthFtcInsidePlot = _isFtcActive and isMonthValid and isMonthFtcInside
-isMonthFtcOutsidePlot = _isFtcActive and isMonthValid and isMonthFtcOutside
-
-isQuarterFtcGreenPlot = isQuarterValid and isQuarterFtcGreen
-isQuarterFtcRedPlot = isQuarterValid and not isQuarterFtcGreen
-isQuarterFtcInsidePlot = _isFtcActive and isQuarterValid and isQuarterFtcInside
-isQuarterFtcOutsidePlot = _isFtcActive and isQuarterValid and isQuarterFtcOutside
 
 ///////////////////////////////////////////////
 // END: Functions & Logic
@@ -426,46 +343,53 @@ plotshape(isShooter, title="isShooter Label", style=_actionalSignalShape, color=
 plotshape(isHammer, title="isHammer Label", style=_actionalSignalShape, color=_bullColor, location=_actionalSignalLocation, text="Hammer", textcolor=_bullColor, offset=_actionableOffset, show_last=1)
 plotshape(isInsideBar, title="isInsideBar Label", style=_actionalSignalShape, color=_insideColor, location=_actionalSignalLocation, text="Inside Bar", textcolor=_insideColor, offset=_actionableOffset, show_last=1)
 
-// plot shape for full time frame continuity
-plotchar(is15FtcInsidePlot ? close : na, title="isFtc15Inside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftc15Offset - ftcTimeFrameOffset, color=_insideColor, show_last=1)
-plotchar(is15FtcOutsidePlot ? close : na, title="isFtc15Outside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftc15Offset - ftcTimeFrameOffset, color=_outsideColor, show_last=1)
-plotshape(is15FtcGreenPlot ? close : na, title="isFtc15Green", style=_bullShape, text=_ftc15Text, location=_ftcLocation, offset=_ftc15Offset - ftcTimeFrameOffset, color=_bullColor, show_last=1)
-plotshape(is15FtcRedPlot ? close : na, title="isFtc15Red", style=_bearShape, text=_ftc15Text, location=_ftcLocation, offset=_ftc15Offset - ftcTimeFrameOffset, color=_bearColor, show_last=1)
-
-plotchar(is30FtcInsidePlot ? close : na, title="isFtc30Inside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftc30Offset - ftcTimeFrameOffset, color=_insideColor, show_last=1)
-plotchar(is30FtcOutsidePlot ? close : na, title="isFtc30Outside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftc30Offset - ftcTimeFrameOffset, color=_outsideColor, show_last=1)
-plotshape(is30FtcGreenPlot ? close : na, title="isFtc30Green", style=_bullShape, text=_ftc30Text, location=_ftcLocation, offset=_ftc30Offset - ftcTimeFrameOffset, color=_bullColor, show_last=1)
-plotshape(is30FtcRedPlot ? close : na, title="isFtc30Red", style=_bearShape, text=_ftc30Text, location=_ftcLocation, offset=_ftc30Offset - ftcTimeFrameOffset, color=_bearColor, show_last=1)
-
-plotchar(isHourFtcInsidePlot ? close : na, title="isFtcHourInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcHourOffset - ftcTimeFrameOffset, color=_insideColor, show_last=1)
-plotchar(isHourFtcOutsidePlot ? close : na, title="isFtcHourOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcHourOffset - ftcTimeFrameOffset, color=_outsideColor, show_last=1)
-plotshape(isHourFtcGreenPlot ? close : na, title="isFtcHourGreen", style=_bullShape, text=_ftcHourText, location=_ftcLocation, offset=_ftcHourOffset - ftcTimeFrameOffset, color=_bullColor, show_last=1)
-plotshape(isHourFtcRedPlot ? close : na, title="isFtcHourRed", style=_bearShape, text=_ftcHourText, location=_ftcLocation, offset=_ftcHourOffset - ftcTimeFrameOffset, color=_bearColor, show_last=1)
-
-plotchar(isFourHourFtcInsidePlot ? close : na, title="isFtcFourHourInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcFourHourOffset - ftcTimeFrameOffset, color=_insideColor, show_last=1)
-plotchar(isFourHourFtcOutsidePlot ? close : na, title="isFtcFourHourOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcFourHourOffset - ftcTimeFrameOffset, color=_outsideColor, show_last=1)
-plotshape(isFourHourFtcGreenPlot ? close : na, title="isFtcFourHourGreen", style=_bullShape, text=_ftcFourHourText, location=_ftcLocation, offset=_ftcFourHourOffset - ftcTimeFrameOffset, color=_bullColor, show_last=1)
-plotshape(isFourHourFtcRedPlot ? close : na, title="isFtcFourHourRed", style=_bearShape, text=_ftcFourHourText, location=_ftcLocation, offset=_ftcFourHourOffset - ftcTimeFrameOffset, color=_bearColor, show_last=1)
-
-plotchar(isDayFtcInsidePlot ? close : na, title="isFtcDayInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcDayOffset - ftcTimeFrameOffset, color=_insideColor, show_last=1)
-plotchar(isDayFtcOutsidePlot ? close : na, title="isFtcDayOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcDayOffset - ftcTimeFrameOffset, color=_outsideColor, show_last=1)
-plotshape(isDayFtcGreenPlot ? close : na, title="isFtcDayGreen", style=_bullShape, text=_ftcDayText, location=_ftcLocation, offset=_ftcDayOffset - ftcTimeFrameOffset, color=_bullColor, show_last=1)
-plotshape(isDayFtcRedPlot ? close : na, title="isFtcDayRed", style=_bearShape, text=_ftcDayText, location=_ftcLocation, offset=_ftcDayOffset - ftcTimeFrameOffset, color=_bearColor, show_last=1)
-
-plotchar(isWeekFtcInsidePlot ? close : na, title="isFtcWeekInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcWeekOffset - ftcTimeFrameOffset, color=_insideColor, show_last=1)
-plotchar(isWeekFtcOutsidePlot ? close : na, title="isFtcWeekOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcWeekOffset - ftcTimeFrameOffset, color=_outsideColor, show_last=1)
-plotshape(isWeekFtcGreenPlot ? close : na, title="isFtcWeekGreen", style=_bullShape, text=_ftcWeekText, location=_ftcLocation, offset=_ftcWeekOffset - ftcTimeFrameOffset, color=_bullColor, show_last=1)
-plotshape(isWeekFtcRedPlot ? close : na, title="isFtcWeekRed", style=_bearShape, text=_ftcWeekText, location=_ftcLocation, offset=_ftcWeekOffset - ftcTimeFrameOffset, color=_bearColor, show_last=1)
-
-plotchar(isMonthFtcInsidePlot ? close : na, title="isFtcMonthInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcMonthOffset - ftcTimeFrameOffset, color=_insideColor, show_last=1)
-plotchar(isMonthFtcOutsidePlot ? close : na, title="isFtcMonthOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcMonthOffset - ftcTimeFrameOffset, color=_outsideColor, show_last=1)
-plotshape(isMonthFtcGreenPlot ? close : na, title="isFtcMonthGreen", style=_bullShape, text=_ftcMonthText, location=_ftcLocation, offset=_ftcMonthOffset - ftcTimeFrameOffset, color=_bullColor, show_last=1)
-plotshape(isMonthFtcRedPlot ? close : na, title="isFtcMonthRed", style=_bearShape, text=_ftcMonthText, location=_ftcLocation, offset=_ftcMonthOffset - ftcTimeFrameOffset, color=_bearColor, show_last=1)
-
-plotchar(isQuarterFtcInsidePlot ? close : na, title="isFtcQuarterInside", char="", text=_ftcInsideText, location=_ftcLocation, offset=_ftcQuarterOffset - ftcTimeFrameOffset, color=_insideColor, show_last=1)
-plotchar(isQuarterFtcOutsidePlot ? close : na, title="isFtcQuarterOutside", char="", text=_ftcOutsideText, location=_ftcLocation, offset=_ftcQuarterOffset - ftcTimeFrameOffset, color=_outsideColor, show_last=1)
-plotshape(isQuarterFtcGreenPlot ? close : na, title="isFtcQuarterGreen", style=_bullShape, text=_ftcQuarterText, location=_ftcLocation, offset=_ftcQuarterOffset - ftcTimeFrameOffset, color=_bullColor, show_last=1)
-plotshape(isQuarterFtcRedPlot ? close : na, title="isFtcQuarterRed", style=_bearShape, text=_ftcQuarterText, location=_ftcLocation, offset=_ftcQuarterOffset - ftcTimeFrameOffset, color=_bearColor, show_last=1)
+// Full Time Frame Continuity Table (tables = 0 plot outputs)
+var table ftcTable = na
+if _isFtcActive
+    if na(ftcTable)
+        ftcTable := table.new(position.top_right, 8, 2, border_width=1, border_color=color.new(color.gray, 50))
+    // Header row
+    table.cell(ftcTable, 0, 0, "15", text_size=size.tiny, text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(ftcTable, 1, 0, "30", text_size=size.tiny, text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(ftcTable, 2, 0, "H", text_size=size.tiny, text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(ftcTable, 3, 0, "4H", text_size=size.tiny, text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(ftcTable, 4, 0, "D", text_size=size.tiny, text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(ftcTable, 5, 0, "W", text_size=size.tiny, text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(ftcTable, 6, 0, "M", text_size=size.tiny, text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(ftcTable, 7, 0, "Q", text_size=size.tiny, text_color=color.white, bgcolor=color.new(color.gray, 60))
+    // Status row: direction (up/down) with inside/outside override, colored background
+    table.cell(ftcTable, 0, 1,
+      is15Valid ? (is15FtcInside ? "IN" : is15FtcOutside ? "OUT" : is15FtcGreen ? "▲" : "▼") : "—",
+      text_size=size.tiny, text_color=color.white,
+      bgcolor=is15Valid ? (is15FtcInside ? _insideColor : is15FtcOutside ? _outsideColor : is15FtcGreen ? _bullColor : _bearColor) : color.new(color.gray, 80))
+    table.cell(ftcTable, 1, 1,
+      is30Valid ? (is30FtcInside ? "IN" : is30FtcOutside ? "OUT" : is30FtcGreen ? "▲" : "▼") : "—",
+      text_size=size.tiny, text_color=color.white,
+      bgcolor=is30Valid ? (is30FtcInside ? _insideColor : is30FtcOutside ? _outsideColor : is30FtcGreen ? _bullColor : _bearColor) : color.new(color.gray, 80))
+    table.cell(ftcTable, 2, 1,
+      isHourValid ? (isHourFtcInside ? "IN" : isHourFtcOutside ? "OUT" : isHourFtcGreen ? "▲" : "▼") : "—",
+      text_size=size.tiny, text_color=color.white,
+      bgcolor=isHourValid ? (isHourFtcInside ? _insideColor : isHourFtcOutside ? _outsideColor : isHourFtcGreen ? _bullColor : _bearColor) : color.new(color.gray, 80))
+    table.cell(ftcTable, 3, 1,
+      isFourHourValid ? (isFourHourFtcInside ? "IN" : isFourHourFtcOutside ? "OUT" : isFourHourFtcGreen ? "▲" : "▼") : "—",
+      text_size=size.tiny, text_color=color.white,
+      bgcolor=isFourHourValid ? (isFourHourFtcInside ? _insideColor : isFourHourFtcOutside ? _outsideColor : isFourHourFtcGreen ? _bullColor : _bearColor) : color.new(color.gray, 80))
+    table.cell(ftcTable, 4, 1,
+      isDayValid ? (isDayFtcInside ? "IN" : isDayFtcOutside ? "OUT" : isDayFtcGreen ? "▲" : "▼") : "—",
+      text_size=size.tiny, text_color=color.white,
+      bgcolor=isDayValid ? (isDayFtcInside ? _insideColor : isDayFtcOutside ? _outsideColor : isDayFtcGreen ? _bullColor : _bearColor) : color.new(color.gray, 80))
+    table.cell(ftcTable, 5, 1,
+      isWeekValid ? (isWeekFtcInside ? "IN" : isWeekFtcOutside ? "OUT" : isWeekFtcGreen ? "▲" : "▼") : "—",
+      text_size=size.tiny, text_color=color.white,
+      bgcolor=isWeekValid ? (isWeekFtcInside ? _insideColor : isWeekFtcOutside ? _outsideColor : isWeekFtcGreen ? _bullColor : _bearColor) : color.new(color.gray, 80))
+    table.cell(ftcTable, 6, 1,
+      isMonthValid ? (isMonthFtcInside ? "IN" : isMonthFtcOutside ? "OUT" : isMonthFtcGreen ? "▲" : "▼") : "—",
+      text_size=size.tiny, text_color=color.white,
+      bgcolor=isMonthValid ? (isMonthFtcInside ? _insideColor : isMonthFtcOutside ? _outsideColor : isMonthFtcGreen ? _bullColor : _bearColor) : color.new(color.gray, 80))
+    table.cell(ftcTable, 7, 1,
+      isQuarterValid ? (isQuarterFtcInside ? "IN" : isQuarterFtcOutside ? "OUT" : isQuarterFtcGreen ? "▲" : "▼") : "—",
+      text_size=size.tiny, text_color=color.white,
+      bgcolor=isQuarterValid ? (isQuarterFtcInside ? _insideColor : isQuarterFtcOutside ? _outsideColor : isQuarterFtcGreen ? _bullColor : _bearColor) : color.new(color.gray, 80))
 
 
 ///////////////////////////////////////////////
