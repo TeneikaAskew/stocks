@@ -1,26 +1,25 @@
-import { TrendingUp, TrendingDown } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import type { MetricCardData } from '@/types';
 
-export function MetricCard({ label, value, change, changeLabel }: MetricCardData) {
+export function MetricCard({ label, value, direction, subtitle, change, changeLabel }: MetricCardData) {
+  // Resolve direction: prefer new `direction` prop, fall back to legacy `change` number
+  const dir = direction ?? (change !== undefined ? (change >= 0 ? 'up' : 'down') : undefined);
+
   return (
     <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4">
       <p className="text-xs text-[var(--color-text-muted)]">{label}</p>
-      <p className="mt-1 text-2xl font-bold">{value}</p>
-      {change !== undefined && (
-        <div className="mt-1 flex items-center gap-1">
-          {change >= 0 ? (
-            <TrendingUp size={14} className="text-[var(--color-accent-green)]" />
-          ) : (
-            <TrendingDown size={14} className="text-[var(--color-accent-red)]" />
+      <p className="mt-1 text-2xl font-bold font-mono">{value}</p>
+      {(dir || subtitle || changeLabel) && (
+        <div className="mt-1 flex items-center gap-1.5">
+          {dir === 'up' && <TrendingUp size={14} className="text-[var(--color-accent-green)]" />}
+          {dir === 'down' && <TrendingDown size={14} className="text-[var(--color-accent-red)]" />}
+          {dir === 'neutral' && <Minus size={14} className="text-[var(--color-text-muted)]" />}
+          {subtitle && (
+            <span className="text-xs text-[var(--color-text-muted)]">{subtitle}</span>
           )}
-          <span
-            className={`text-xs font-medium ${
-              change >= 0 ? 'text-[var(--color-accent-green)]' : 'text-[var(--color-accent-red)]'
-            }`}
-          >
-            {change >= 0 ? '+' : ''}{change}%
-            {changeLabel && <span className="text-[var(--color-text-muted)]"> {changeLabel}</span>}
-          </span>
+          {changeLabel && (
+            <span className="text-xs text-[var(--color-text-muted)]">{changeLabel}</span>
+          )}
         </div>
       )}
     </div>
