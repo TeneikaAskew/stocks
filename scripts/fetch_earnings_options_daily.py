@@ -39,13 +39,20 @@ Run ONCE daily at 4:15 PM ET (after market close)
 
 import argparse
 import sys
+import os
 import json
 import pandas as pd
 import numpy as np
+import requests
 from datetime import datetime
-from yahooquery import Ticker
 from pathlib import Path
 from py_vollib.black_scholes.greeks.analytical import delta, gamma, theta, vega, rho
+from dotenv import load_dotenv
+
+load_dotenv()
+
+AV_BASE_URL = 'https://www.alphavantage.co/query'
+AV_API_KEY = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
 # Fix encoding for Windows
 if sys.platform == 'win32':
@@ -337,7 +344,7 @@ def update_summary_log(df, output_path, date_str):
         'total_expirations': df['expiration'].nunique(),
         'tickers': tickers_fetched,
         'expiration_dates': [str(d) for d in expiration_dates],
-        'data_source': 'yahooquery',
+        'data_source': 'alphavantage',
         'fetch_frequency': 'daily_eod',
         'ticker_stats': ticker_stats
     })
@@ -422,96 +429,91 @@ def fetch_daily_snapshot(tickers, output_dir='data/options/earnings', skip_exist
     print(f"Time: {now.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Tickers: {len(tickers)} symbols")
 
-    # Batch fetch (yahooquery can handle multiple tickers)
-    # Split into batches of 10 to avoid overloading
+    # Fetch via AlphaVantage HISTORICAL_OPTIONS (one ticker at a time)
     batch_size = 10
     all_options = []
-    stock_prices = {}  # Store stock prices for Greeks calculation
+    stock_prices = {}  # AV doesn't provide underlying prices in options endpoint
+    snap_date = now.strftime('%Y-%m-%d')
 
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i+batch_size]
         print(f"\nFetching batch {i//batch_size + 1}: {', '.join(batch)}")
 
-        try:
-            ticker_obj = Ticker(batch)
+        for symbol in batch:
+            try:
+                params = {
+                    'function': 'HISTORICAL_OPTIONS',
+                    'symbol': symbol,
+                    'date': snap_date,
+                    'apikey': AV_API_KEY,
+                    'datatype': 'json',
+                }
+                resp = requests.get(AV_BASE_URL, params=params, timeout=60)
+                resp.raise_for_status()
+                data = resp.json()
 
-            # Fetch options chain
-            options_df = ticker_obj.option_chain
+                if data.get('message') != 'success':
+                    msg = data.get('message', data.get('Information', ''))
+                    if msg:
+                        print(f"    {symbol}: AV error — {msg}")
+                    continue
 
-            if isinstance(options_df, pd.DataFrame) and not options_df.empty:
-                df = options_df.reset_index()
+                records = data.get('data', [])
+                if not records:
+                    print(f"    {symbol}: No contracts")
+                    continue
+
+                df = pd.DataFrame(records)
+                df['symbol'] = symbol
+
+                # Map AV field names
+                if 'type' in df.columns:
+                    df['optionType'] = df['type'].str.lower().map({'call': 'calls', 'put': 'puts'})
+                if 'contractID' in df.columns:
+                    df['contractSymbol'] = df['contractID']
+                if 'last' in df.columns:
+                    df['lastPrice'] = df['last']
+                if 'implied_volatility' in df.columns:
+                    df['impliedVolatility'] = df['implied_volatility']
+                if 'open_interest' in df.columns:
+                    df['openInterest'] = df['open_interest']
+                for col in ['strike', 'lastPrice', 'bid', 'ask', 'volume', 'openInterest',
+                            'impliedVolatility', 'delta', 'gamma', 'theta', 'vega', 'rho', 'mark']:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
 
                 # Filter by expiration dates and strikes if specified
                 if ticker_expirations or ticker_strikes:
-                    filtered_dfs = []
-                    for symbol in batch:
-                        symbol_df = df[df['symbol'] == symbol]
-
-                        # Filter by strikes if provided (most specific)
-                        if ticker_strikes and symbol in ticker_strikes and ticker_strikes[symbol]:
-                            # Filter to specific (expiration, strike) pairs
-                            matching_rows = []
-                            for exp_date, strike_val in ticker_strikes[symbol]:
-                                exp_ts = pd.Timestamp(exp_date)
-                                # Match both expiration and strike
-                                matches = symbol_df[
-                                    (symbol_df['expiration'] == exp_ts) &
-                                    (symbol_df['strike'] == strike_val)
-                                ]
-                                if not matches.empty:
-                                    matching_rows.append(matches)
-
-                            if matching_rows:
-                                symbol_df = pd.concat(matching_rows, ignore_index=True)
-                                strike_info = [f"{d}@{s}" for d, s in ticker_strikes[symbol]]
-                                filtered_dfs.append(symbol_df)
-                                print(f"    {symbol}: {len(symbol_df)} contracts (strikes: {', '.join(strike_info[:3])}{'...' if len(strike_info) > 3 else ''})")
-                            else:
-                                print(f"    {symbol}: No contracts found for specified strikes")
-
-                        # Filter by expirations only (if no strikes specified)
-                        elif ticker_expirations and symbol in ticker_expirations and ticker_expirations[symbol]:
-                            # Convert expiration dates to datetime for comparison
-                            target_dates = [pd.Timestamp(d) for d in ticker_expirations[symbol]]
-
-                            # Filter to only matching expiration dates
-                            symbol_df = symbol_df[symbol_df['expiration'].isin(target_dates)]
-
-                            if not symbol_df.empty:
-                                filtered_dfs.append(symbol_df)
-                                print(f"    {symbol}: {len(symbol_df)} contracts (expirations: {[str(d.date()) for d in target_dates]})")
-                            else:
-                                print(f"    {symbol}: No contracts found for specified expirations")
+                    if ticker_strikes and symbol in ticker_strikes and ticker_strikes[symbol]:
+                        matching_rows = []
+                        for exp_date, strike_val in ticker_strikes[symbol]:
+                            matches = df[
+                                (df['expiration'] == exp_date) &
+                                (df['strike'] == strike_val)
+                            ]
+                            if not matches.empty:
+                                matching_rows.append(matches)
+                        if matching_rows:
+                            df = pd.concat(matching_rows, ignore_index=True)
                         else:
-                            # No filter for this ticker, include all
-                            if not symbol_df.empty:
-                                filtered_dfs.append(symbol_df)
-                                print(f"    {symbol}: {len(symbol_df)} contracts (all expirations)")
+                            print(f"    {symbol}: No contracts found for specified strikes")
+                            continue
+                    elif ticker_expirations and symbol in ticker_expirations and ticker_expirations[symbol]:
+                        target_dates = ticker_expirations[symbol]
+                        df = df[df['expiration'].isin(target_dates)]
+                        if df.empty:
+                            print(f"    {symbol}: No contracts found for specified expirations")
+                            continue
 
-                    if filtered_dfs:
-                        df = pd.concat(filtered_dfs, ignore_index=True)
-                    else:
-                        df = pd.DataFrame()  # Empty
+                all_options.append(df)
+                print(f"    {symbol}: {len(df):,} contracts")
 
-                # Fetch current stock prices for Greeks calculation
-                price_data = ticker_obj.price
-                for symbol in batch:
-                    if symbol in price_data and isinstance(price_data[symbol], dict):
-                        # Use regularMarketPrice (current price) or postMarketPrice if after hours
-                        stock_prices[symbol] = price_data[symbol].get('regularMarketPrice') or \
-                                               price_data[symbol].get('postMarketPrice')
+                import time as time_mod
+                time_mod.sleep(0.5)  # Rate limiting
 
-                if not df.empty:
-                    all_options.append(df)
-                    print(f"  ✓ Total: {len(df):,} contracts")
-                else:
-                    print(f"  ⚠ No contracts after filtering")
-            else:
-                print(f"  ⚠ No data for this batch")
-
-        except Exception as e:
-            print(f"  ❌ Error: {e}")
-            continue
+            except Exception as e:
+                print(f"    {symbol}: Error — {e}")
+                continue
 
     if not all_options:
         print("\n❌ No options data fetched")
@@ -524,31 +526,12 @@ def fetch_daily_snapshot(tickers, output_dir='data/options/earnings', skip_exist
     combined_df['snapshot_datetime'] = now
     combined_df['snapshot_date'] = now.date()
     combined_df['snapshot_time'] = now.time()
-    combined_df['data_source'] = 'daily_eod'
+    combined_df['data_source'] = 'alphavantage'
 
-    # Add underlying stock prices
-    combined_df['underlying_price'] = combined_df['symbol'].map(stock_prices)
-
-    # Calculate Greeks for each option
-    print(f"\nCalculating Greeks...")
-    greeks_list = []
-    for idx, row in combined_df.iterrows():
-        stock_price = stock_prices.get(row['symbol'])
-        if stock_price:
-            greeks = calculate_greeks(row, stock_price)
-            greeks_list.append(greeks)
-        else:
-            # No stock price available
-            greeks_list.append({
-                'delta': None,
-                'gamma': None,
-                'theta': None,
-                'vega': None,
-                'rho': None
-            })
-
-    # Add Greeks columns
-    greeks_df = pd.DataFrame(greeks_list)
+    # AV provides Greeks directly — skip local calculation if present
+    if 'delta' in combined_df.columns and combined_df['delta'].notna().any():
+        print(f"\nGreeks already provided by AlphaVantage — skipping local calculation")
+        greeks_df = pd.DataFrame()  # empty, no need to add
     combined_df = pd.concat([combined_df, greeks_df], axis=1)
 
     print(f"✓ Greeks calculated for {combined_df['delta'].notna().sum():,} contracts")

@@ -21,6 +21,7 @@ credentials/
 *.key
 *-credentials.json
 service-account*.json
+.gcp-key.json
 
 # Logs
 logs
@@ -101,9 +102,9 @@ wheels/
 *.egg
 MANIFEST
 
-# Data files (optional - remove if you want to track data)
+# Data files — backed up to GCS (gs://adept-mountain-474619-d4-trading-data/raw/data/)
+data/
 *.csv
-# Allowing data/, *.json, and *.parquet files to be tracked
 
 # Windows nul file (accidentally created by shell redirects)
 nul

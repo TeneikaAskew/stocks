@@ -1,0 +1,147 @@
+@import "tailwindcss";
+
+/* Custom dark theme tokens */
+:root {
+  --color-bg-primary: #0a0a0f;
+  --color-bg-secondary: #111118;
+  --color-bg-tertiary: #1a1a24;
+  --color-bg-hover: #22222e;
+  --color-border: #2a2a3a;
+  --color-border-active: #3a3a5a;
+  --color-text-primary: #e8e8f0;
+  --color-text-secondary: #9898b0;
+  --color-text-muted: #686880;
+  --color-accent-green: #22c55e;
+  --color-accent-red: #ef4444;
+  --color-accent-blue: #3b82f6;
+  --color-accent-amber: #f59e0b;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-bg-secondary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-active);
+}
+
+/* Markdown report prose styles */
+.prose-report {
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.prose-report h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin: 1.5rem 0 0.75rem;
+}
+.prose-report h2 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin: 1.25rem 0 0.5rem;
+}
+.prose-report h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 1rem 0 0.4rem;
+}
+.prose-report h4 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin: 0.75rem 0 0.3rem;
+}
+.prose-report p {
+  margin: 0.4rem 0;
+}
+.prose-report strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+.prose-report code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  background: var(--color-bg-tertiary);
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+.prose-report pre {
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+}
+.prose-report pre code {
+  background: none;
+  padding: 0;
+}
+.prose-report ul, .prose-report ol {
+  padding-left: 1.5rem;
+  margin: 0.4rem 0;
+}
+.prose-report ul { list-style: disc; }
+.prose-report ol { list-style: decimal; }
+.prose-report li {
+  margin: 0.15rem 0;
+}
+.prose-report hr {
+  border-color: var(--color-border);
+  margin: 1rem 0;
+}
+.prose-report table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  margin: 0.5rem 0;
+}
+.prose-report thead th {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border-bottom: 2px solid var(--color-border);
+  white-space: nowrap;
+}
+.prose-report tbody td {
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+.prose-report tbody tr:hover {
+  background: var(--color-bg-hover);
+}
+.prose-report a {
+  color: var(--color-accent-blue);
+  text-decoration: underline;
+}
+.prose-report blockquote {
+  border-left: 3px solid var(--color-border-active);
+  padding-left: 1rem;
+  color: var(--color-text-muted);
+  margin: 0.5rem 0;
+}
+.prose-report > *:first-child { margin-top: 0; }
+.prose-report > *:last-child { margin-bottom: 0; }

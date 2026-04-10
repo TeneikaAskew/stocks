@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Fetch minute-level market data from Yahoo Finance for multiple tickers
+Fetch minute-level market data from AlphaVantage for multiple tickers
 and calculate daily OHLCV with comprehensive technical indicators.
 
-Supports: IWM, SPY, QQQ, and SPX (^GSPC)
+Supports: IWM, SPY, QQQ, and SPX
 """
 
-import yfinance as yf
 import pandas as pd
+import requests
 from datetime import datetime, timedelta, time
 import os
 import sys
@@ -15,6 +15,12 @@ from pathlib import Path
 import pytz
 import argparse
 import json
+from dotenv import load_dotenv
+
+load_dotenv()
+
+AV_BASE_URL = 'https://www.alphavantage.co/query'
+AV_API_KEY = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
 def calculate_daily_ohlcv(minute_df):
     """
@@ -129,62 +135,56 @@ def calculate_atr(high, low, close, period=14):
 
 def fetch_minute_data_for_date(ticker, date):
     """
-    Fetch minute-level data for a specific date.
+    Fetch minute-level data for a specific date from AlphaVantage TIME_SERIES_INTRADAY.
     """
-    eastern = pytz.timezone('US/Eastern')
-    
-    # Create timestamps for the date - set to market hours
-    start_time = datetime.combine(date, time(9, 30))  # Market open
-    end_time = datetime.combine(date, time(16, 0))    # Market close
-    
-    start_time = eastern.localize(start_time)
-    end_time = eastern.localize(end_time)
-    
+    if not AV_API_KEY:
+        print(f"  ERROR: No AlphaVantage API key set")
+        return pd.DataFrame()
+
+    month_str = date.strftime('%Y-%m')
+    date_str = date.strftime('%Y-%m-%d')
+
     try:
-        # Download minute data for the date
-        df = yf.download(
-            ticker,
-            start=start_time,
-            end=end_time + timedelta(minutes=1),
-            interval="1m",
-            progress=False,
-            prepost=False,  # Only regular market hours
-            group_by=None,
-            auto_adjust=True,
-            threads=False
-        )
-        
+        params = {
+            'function': 'TIME_SERIES_INTRADAY',
+            'symbol': ticker,
+            'interval': '1min',
+            'month': month_str,
+            'outputsize': 'full',
+            'adjusted': 'true',
+            'apikey': AV_API_KEY,
+            'datatype': 'json',
+        }
+        resp = requests.get(AV_BASE_URL, params=params, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if 'Error Message' in data:
+            print(f"  AV error for {ticker}: {data['Error Message']}")
+            return pd.DataFrame()
+        if 'Information' in data or 'Note' in data:
+            print(f"  AV rate limit for {ticker}: {data.get('Information', data.get('Note', ''))}")
+            return pd.DataFrame()
+
+        ts = data.get('Time Series (1min)', {})
+        if not ts:
+            print(f"  No data for {ticker} month {month_str}")
+            return pd.DataFrame()
+
+        df = pd.DataFrame.from_dict(ts, orient='index')
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in ['Open', 'High', 'Low', 'Close']:
+            df[col] = pd.to_numeric(df[col])
+        df['Volume'] = pd.to_numeric(df['Volume']).astype('int64')
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+
+        # Filter to the requested date
+        df = df[df.index.date == date]
+
         if not df.empty:
-            # Handle multi-level columns from yfinance
-            if isinstance(df.columns, pd.MultiIndex):
-                # For single ticker, yfinance returns columns like ('SPY', 'Open')
-                # We need to flatten to just 'Open', 'Close', etc. - use level 1!
-                df.columns = df.columns.get_level_values(1)
-            
-            # Standardize column names to match expected format
-            expected_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-            if not all(col in df.columns for col in expected_columns):
-                # Try to map columns if they're different case or format
-                column_mapping = {}
-                for col in df.columns:
-                    col_lower = str(col).lower().strip()
-                    normalized = col_lower.replace(' ', '_')
-
-                    if normalized == 'open':
-                        column_mapping[col] = 'Open'
-                    elif normalized == 'high':
-                        column_mapping[col] = 'High'
-                    elif normalized == 'low':
-                        column_mapping[col] = 'Low'
-                    elif normalized in ('close', 'adj_close', 'adjclose'):
-                        column_mapping[col] = 'Close'
-                    elif normalized == 'volume':
-                        column_mapping[col] = 'Volume'
-
-                if column_mapping:
-                    df = df.rename(columns=column_mapping)
-            
-            # Ensure timezone awareness
+            # AV returns naive ET timestamps; localize for compatibility
+            eastern = pytz.timezone('US/Eastern')
             if df.index.tz is None:
                 df.index = df.index.tz_localize('US/Eastern')
         
@@ -274,7 +274,7 @@ def calculate_all_indicators(df, ticker_symbol, is_minute_data=False):
     df['stoch_rsi_k'], df['stoch_rsi_d'] = calculate_stochastic_rsi(df['Close'])
     
     # Calculate OBV (skip for SPX as it has no volume)
-    if ticker_symbol != '^GSPC':
+    if ticker_symbol not in ('^GSPC', 'SPX'):
         df['obv'] = calculate_obv(df['Close'], df['Volume'])
     
     # Calculate ATR
@@ -291,60 +291,71 @@ def calculate_all_indicators(df, ticker_symbol, is_minute_data=False):
 
 def fetch_historical_daily_data(ticker_symbol, start_date, end_date):
     """
-    Fetch historical daily data from Yahoo Finance.
-    This is used for data beyond the 7-day minute data window.
+    Fetch historical daily data from AlphaVantage TIME_SERIES_DAILY_ADJUSTED.
 
     Args:
-        ticker_symbol: Yahoo Finance ticker symbol
+        ticker_symbol: Ticker symbol (e.g., 'SPY', 'SPX')
         start_date: Start date (YYYY-MM-DD or datetime.date)
         end_date: End date (YYYY-MM-DD or datetime.date)
 
     Returns:
         DataFrame with daily OHLCV data
     """
+    if not AV_API_KEY:
+        print("  ERROR: No AlphaVantage API key set")
+        return pd.DataFrame()
+
     try:
         print(f"  Fetching historical daily data from {start_date} to {end_date}...")
 
-        # Download daily data
-        df = yf.download(
-            ticker_symbol,
-            start=start_date,
-            end=end_date,
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-            threads=False
-        )
+        params = {
+            'function': 'TIME_SERIES_DAILY_ADJUSTED',
+            'symbol': ticker_symbol,
+            'outputsize': 'full',
+            'datatype': 'json',
+            'apikey': AV_API_KEY,
+        }
+        resp = requests.get(AV_BASE_URL, params=params, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if 'Error Message' in data:
+            print(f"  AV daily error for {ticker_symbol}: {data['Error Message']}")
+            return pd.DataFrame()
+        if 'Information' in data or 'Note' in data:
+            print(f"  AV rate limit: {data.get('Information', data.get('Note', ''))}")
+            return pd.DataFrame()
+
+        ts = data.get('Time Series (Daily)', {})
+        if not ts:
+            print(f"  No daily data for {ticker_symbol}")
+            return pd.DataFrame()
+
+        df = pd.DataFrame.from_dict(ts, orient='index')
+        df = df.rename(columns={
+            '1. open': 'Open',
+            '2. high': 'High',
+            '3. low': 'Low',
+            '4. close': 'Close',
+            '5. adjusted close': 'Adj Close',
+            '6. volume': 'Volume',
+        })
+        for col in ['Open', 'High', 'Low', 'Close']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col])
+        if 'Volume' in df.columns:
+            df['Volume'] = pd.to_numeric(df['Volume']).astype('int64')
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+
+        # Filter to date range
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+        df = df[(df.index >= start_dt) & (df.index <= end_dt)]
 
         if not df.empty:
-            # Handle multi-level columns from yfinance
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
-            # Standardize column names
-            expected_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-            if not all(col in df.columns for col in expected_columns):
-                column_mapping = {}
-                for col in df.columns:
-                    col_lower = str(col).lower()
-                    if 'open' in col_lower:
-                        column_mapping[col] = 'Open'
-                    elif 'high' in col_lower:
-                        column_mapping[col] = 'High'
-                    elif 'low' in col_lower:
-                        column_mapping[col] = 'Low'
-                    elif 'close' in col_lower:
-                        column_mapping[col] = 'Close'
-                    elif 'volume' in col_lower:
-                        column_mapping[col] = 'Volume'
-
-                if column_mapping:
-                    df = df.rename(columns=column_mapping)
-
             print(f"  Fetched {len(df)} days of historical data")
-            return df
-
-        return pd.DataFrame()
+        return df
 
     except Exception as e:
         print(f"  Error fetching historical data: {e}")
@@ -355,8 +366,8 @@ def fetch_ticker_data(ticker_symbol, ticker_name=None, target_date=None, histori
     Fetch and process data for a specific ticker.
 
     Args:
-        ticker_symbol: Yahoo Finance ticker symbol (e.g., 'SPY', '^GSPC' for SPX)
-        ticker_name: Display name for the ticker (e.g., 'SPX' for '^GSPC')
+        ticker_symbol: Ticker symbol (e.g., 'SPY', 'SPX')
+        ticker_name: Display name for the ticker
         target_date: Target date for single-day fetch (YYYY-MM-DD)
         historical: If True, fetch historical daily data beyond 7-day window
         start_date: Start date for historical fetch (YYYY-MM-DD)
@@ -691,7 +702,7 @@ def main():
         'IWM': ('IWM', None),      # Russell 2000 ETF
         'SPY': ('SPY', None),      # S&P 500 ETF
         'QQQ': ('QQQ', None),      # Nasdaq 100 ETF
-        'SPX': ('^SPX', 'SPX'),    # S&P 500 Index (^SPX on Yahoo)
+        'SPX': ('SPX', 'SPX'),     # S&P 500 Index
     }
     
     # Determine which tickers to fetch

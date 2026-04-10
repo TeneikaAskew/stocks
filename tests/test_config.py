@@ -15,6 +15,7 @@ from lib.config import (
     StratConfig,
     SignalConfig,
     AppConfig,
+    ConfigValidationError,
     get_position_size,
     get_signal_strength_label,
     load_config,
@@ -1299,3 +1300,168 @@ class TestEdgeCases:
         assert get_position_size(5, cfg) == 0.15
         assert get_position_size(6, cfg) == 0.50
         assert get_position_size(7, cfg) == 0.90
+
+
+# =========================================================================
+# 11. Config validation (AppConfig.validate)
+# =========================================================================
+
+class TestConfigValidation:
+    """Test that AppConfig.validate() catches invalid values."""
+
+    def test_default_config_passes_validation(self):
+        app = AppConfig()
+        app.validate()  # should not raise
+
+    def test_invalid_max_daily_trades_zero(self):
+        app = AppConfig()
+        app.risk.max_daily_trades = 0
+        with pytest.raises(ConfigValidationError, match="max_daily_trades"):
+            app.validate()
+
+    def test_invalid_max_daily_trades_too_high(self):
+        app = AppConfig()
+        app.risk.max_daily_trades = 100
+        with pytest.raises(ConfigValidationError, match="max_daily_trades"):
+            app.validate()
+
+    def test_invalid_daily_loss_limit_positive(self):
+        app = AppConfig()
+        app.risk.daily_loss_limit = 0.05
+        with pytest.raises(ConfigValidationError, match="daily_loss_limit"):
+            app.validate()
+
+    def test_invalid_daily_loss_limit_below_minus_one(self):
+        app = AppConfig()
+        app.risk.daily_loss_limit = -1.5
+        with pytest.raises(ConfigValidationError, match="daily_loss_limit"):
+            app.validate()
+
+    def test_invalid_daily_profit_target_negative(self):
+        app = AppConfig()
+        app.risk.daily_profit_target = -0.01
+        with pytest.raises(ConfigValidationError, match="daily_profit_target"):
+            app.validate()
+
+    def test_invalid_score_thresholds_not_increasing(self):
+        app = AppConfig()
+        app.risk.score_thresholds = (6, 5, 4)
+        with pytest.raises(ConfigValidationError, match="score_thresholds"):
+            app.validate()
+
+    def test_invalid_exit_target_zero(self):
+        app = AppConfig()
+        app.exit.call_target = 0.0
+        with pytest.raises(ConfigValidationError, match="exit.call_target"):
+            app.validate()
+
+    def test_invalid_exit_target_too_large(self):
+        app = AppConfig()
+        app.exit.put_target = 0.20
+        with pytest.raises(ConfigValidationError, match="exit.put_target"):
+            app.validate()
+
+    def test_invalid_exit_stop_zero(self):
+        app = AppConfig()
+        app.exit.call_stop = 0.0
+        with pytest.raises(ConfigValidationError, match="exit.call_stop"):
+            app.validate()
+
+    def test_invalid_time_stop_zero(self):
+        app = AppConfig()
+        app.exit.call_time_stop = 0
+        with pytest.raises(ConfigValidationError, match="exit.call_time_stop"):
+            app.validate()
+
+    def test_invalid_time_stop_too_large(self):
+        app = AppConfig()
+        app.exit.put_time_stop = 600
+        with pytest.raises(ConfigValidationError, match="exit.put_time_stop"):
+            app.validate()
+
+    def test_invalid_min_conditions_zero(self):
+        app = AppConfig()
+        app.signal.min_conditions = 0
+        with pytest.raises(ConfigValidationError, match="min_conditions"):
+            app.validate()
+
+    def test_invalid_min_conditions_too_high(self):
+        app = AppConfig()
+        app.signal.min_conditions = 10
+        with pytest.raises(ConfigValidationError, match="min_conditions"):
+            app.validate()
+
+    def test_invalid_call_rsi_range_not_increasing(self):
+        app = AppConfig()
+        app.signal.call_rsi_range = (60.0, 40.0)
+        with pytest.raises(ConfigValidationError, match="call_rsi_range"):
+            app.validate()
+
+    def test_invalid_put_rsi_range_out_of_bounds(self):
+        app = AppConfig()
+        app.signal.put_rsi_range = (50.0, 110.0)
+        with pytest.raises(ConfigValidationError, match="put_rsi_range"):
+            app.validate()
+
+    def test_invalid_rsi_period_too_small(self):
+        app = AppConfig()
+        app.indicator.rsi_period = 1
+        with pytest.raises(ConfigValidationError, match="rsi_period"):
+            app.validate()
+
+    def test_invalid_rsi_period_too_large(self):
+        app = AppConfig()
+        app.indicator.rsi_period = 200
+        with pytest.raises(ConfigValidationError, match="rsi_period"):
+            app.validate()
+
+    def test_invalid_macd_fast_not_less_than_slow(self):
+        app = AppConfig()
+        app.indicator.macd_fast = 30
+        app.indicator.macd_slow = 20
+        with pytest.raises(ConfigValidationError, match="macd_fast"):
+            app.validate()
+
+    def test_invalid_ftfc_threshold_above_one(self):
+        app = AppConfig()
+        app.strat.ftfc_threshold = 1.5
+        with pytest.raises(ConfigValidationError, match="ftfc_threshold"):
+            app.validate()
+
+    def test_invalid_ftfc_threshold_negative(self):
+        app = AppConfig()
+        app.strat.ftfc_threshold = -0.1
+        with pytest.raises(ConfigValidationError, match="ftfc_threshold"):
+            app.validate()
+
+    def test_multiple_errors_reported(self):
+        """When multiple fields are invalid, all are reported."""
+        app = AppConfig()
+        app.risk.max_daily_trades = 0
+        app.exit.call_target = 0.0
+        app.signal.min_conditions = 0
+        with pytest.raises(ConfigValidationError, match="3 error"):
+            app.validate()
+
+    def test_boundary_values_pass(self):
+        """Values at exact boundaries should pass."""
+        app = AppConfig()
+        app.risk.max_daily_trades = 1
+        app.risk.daily_loss_limit = -1.0
+        app.risk.daily_profit_target = 0.0
+        app.exit.call_target = 0.10
+        app.exit.call_stop = 0.10
+        app.exit.call_time_stop = 480
+        app.signal.min_conditions = 8
+        app.indicator.rsi_period = 2
+        app.strat.ftfc_threshold = 0.0
+        app.validate()  # should not raise
+
+    def test_load_config_rejects_invalid_json(self, tmp_path):
+        """load_config should raise ConfigValidationError for bad values."""
+        data = {
+            'risk_parameters': {'max_daily_trades': 0},
+        }
+        path = _write_config(tmp_path, data)
+        with pytest.raises(ConfigValidationError, match="max_daily_trades"):
+            load_config(path)

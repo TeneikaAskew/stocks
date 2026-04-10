@@ -80,6 +80,56 @@ class IndicatorConfig:
 
 
 # ---------------------------------------------------------------------------
+# AlphaVantage API
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AlphaVantageConfig:
+    """AlphaVantage API rate limits, key management, and settings.
+
+    Current plan: 150 RPM premium.
+    Scripts should read AV_RPM from here rather than hardcoding a value.
+
+    API keys are loaded ONLY from environment variables — never hardcoded.
+    Supports multi-key rotation via comma-separated ALPHA_VANTAGE_API_KEYS,
+    or single key via ALPHA_VANTAGE_API_KEY.
+    """
+    rpm: int = 150                          # requests per minute (plan limit)
+
+    @property
+    def delay_between_calls(self) -> float:
+        """Minimum seconds to wait between API calls to stay within RPM."""
+        return 60.0 / self.rpm
+
+    @property
+    def batch_size(self) -> int:
+        """How many calls to make per 60-second window before a forced wait."""
+        return self.rpm
+
+    @staticmethod
+    def get_api_keys() -> List[str]:
+        """Load AV API keys from environment variables.
+
+        Checks ALPHA_VANTAGE_API_KEYS (comma-separated) first, then
+        falls back to single ALPHA_VANTAGE_API_KEY. Raises KeyError
+        if neither is set.
+        """
+        import os
+        multi = os.environ.get('ALPHA_VANTAGE_API_KEYS', '').strip()
+        if multi:
+            keys = [k.strip() for k in multi.split(',') if k.strip()]
+            if keys:
+                return keys
+        single = os.environ.get('ALPHA_VANTAGE_API_KEY', '').strip()
+        if single:
+            return [single]
+        raise KeyError(
+            "No AlphaVantage API key found. "
+            "Set ALPHA_VANTAGE_API_KEY or ALPHA_VANTAGE_API_KEYS in your environment."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Market / environment
 # ---------------------------------------------------------------------------
 
@@ -228,6 +278,10 @@ class SignalConfig:
 # Aggregate config container
 # ---------------------------------------------------------------------------
 
+class ConfigValidationError(ValueError):
+    """Raised when config values fail validation checks."""
+
+
 @dataclass
 class AppConfig:
     """Top-level container for all configuration."""
@@ -240,6 +294,60 @@ class AppConfig:
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     walk_forward: WalkForwardConfig = field(default_factory=WalkForwardConfig)
+
+    def validate(self) -> None:
+        """Run range checks on all config values. Raises ConfigValidationError."""
+        errors = []
+
+        # Risk
+        if not (1 <= self.risk.max_daily_trades <= 50):
+            errors.append(f"risk.max_daily_trades={self.risk.max_daily_trades}, expected 1-50")
+        if not (-1.0 <= self.risk.daily_loss_limit <= 0.0):
+            errors.append(f"risk.daily_loss_limit={self.risk.daily_loss_limit}, expected [-1.0, 0.0]")
+        if not (0.0 <= self.risk.daily_profit_target <= 1.0):
+            errors.append(f"risk.daily_profit_target={self.risk.daily_profit_target}, expected [0.0, 1.0]")
+        t = self.risk.score_thresholds
+        if len(t) != 3 or not (t[0] <= t[1] <= t[2]):
+            errors.append(f"risk.score_thresholds={t}, must be 3 increasing values")
+
+        # Exit
+        for attr in ['call_target', 'put_target']:
+            v = getattr(self.exit, attr)
+            if not (0 < v <= 0.10):
+                errors.append(f"exit.{attr}={v}, expected (0, 0.10]")
+        for attr in ['call_stop', 'put_stop']:
+            v = getattr(self.exit, attr)
+            if not (0 < v <= 0.10):
+                errors.append(f"exit.{attr}={v}, expected (0, 0.10]")
+        for attr in ['call_time_stop', 'put_time_stop']:
+            v = getattr(self.exit, attr)
+            if not (1 <= v <= 480):
+                errors.append(f"exit.{attr}={v}, expected 1-480 minutes")
+
+        # Signal
+        if not (1 <= self.signal.min_conditions <= 8):
+            errors.append(f"signal.min_conditions={self.signal.min_conditions}, expected 1-8")
+        cr = self.signal.call_rsi_range
+        if not (0 <= cr[0] < cr[1] <= 100):
+            errors.append(f"signal.call_rsi_range={cr}, must be increasing pair in [0, 100]")
+        pr = self.signal.put_rsi_range
+        if not (0 <= pr[0] < pr[1] <= 100):
+            errors.append(f"signal.put_rsi_range={pr}, must be increasing pair in [0, 100]")
+
+        # Indicator
+        if not (2 <= self.indicator.rsi_period <= 100):
+            errors.append(f"indicator.rsi_period={self.indicator.rsi_period}, expected 2-100")
+        if not (2 <= self.indicator.macd_fast < self.indicator.macd_slow):
+            errors.append(f"indicator.macd_fast={self.indicator.macd_fast} must be < macd_slow={self.indicator.macd_slow}")
+
+        # Strat
+        if not (0.0 <= self.strat.ftfc_threshold <= 1.0):
+            errors.append(f"strat.ftfc_threshold={self.strat.ftfc_threshold}, expected [0, 1]")
+
+        if errors:
+            raise ConfigValidationError(
+                f"Config validation failed ({len(errors)} error(s)):\n  " + "\n  ".join(errors)
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +595,7 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
         if overrides:
             _apply_ticker_overrides(app, overrides)
 
+    app.validate()
     return app
 
 

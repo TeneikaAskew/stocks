@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Cloud Run Job: Fetch ETF options intraday snapshots → Cloud SQL + GCS.
+Cloud Run Job: Fetch ETF options snapshots → Cloud SQL + GCS.
 
-Replaces the GitHub Actions workflow fetch_etf_options.yml.
-Called 9 times per day by Cloud Scheduler during market hours.
+Uses AlphaVantage HISTORICAL_OPTIONS for options chain data.
+Called by Cloud Scheduler after market close.
 
 Usage:
     python -m gcp.fetchers.fetch_etf_options [--date YYYY-MM-DD] [--tickers IWM SPY QQQ]
@@ -13,26 +13,28 @@ import argparse
 import logging
 import os
 import sys
+import time as time_module
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 import numpy as np
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from gcp.gcs_utils import upload_dataframe_as_parquet
+from lib.config import AlphaVantageConfig
 
+from lib.logging_config import setup_logging
+setup_logging()
 log = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s  %(levelname)-7s  %(message)s',
-    datefmt='%H:%M:%S',
-)
 
 TICKERS = ['IWM', 'SPY', 'QQQ', 'SPX']
 RISK_FREE_RATE = 0.045
+AV_BASE_URL = 'https://www.alphavantage.co/query'
+_av_cfg = AlphaVantageConfig()
 
 
 def get_market_session() -> str:
@@ -89,32 +91,59 @@ def calculate_greeks(row: pd.Series, underlying_price: float, risk_free_rate: fl
         return {'delta': None, 'gamma': None, 'theta': None, 'vega': None, 'rho': None}
 
 
-def fetch_options_for_ticker(ticker: str) -> pd.DataFrame:
-    """Fetch the full options chain for a single ETF ticker."""
-    from yahooquery import Ticker
+def fetch_options_for_ticker(ticker: str, fetch_date: str, api_key: str) -> pd.DataFrame:
+    """Fetch the full options chain for a single ETF ticker via AV HISTORICAL_OPTIONS."""
+    if not api_key:
+        log.warning("    No AV API key — cannot fetch options for %s", ticker)
+        return pd.DataFrame()
 
-    symbol = '^SPX' if ticker == 'SPX' else ticker
+    params = {
+        'function': 'HISTORICAL_OPTIONS',
+        'symbol': ticker,
+        'date': fetch_date,
+        'apikey': api_key,
+        'datatype': 'json',
+    }
     try:
-        t = Ticker(symbol)
-        chain = t.option_chain
-        if isinstance(chain, str) or chain is None:
-            return pd.DataFrame()
-        if isinstance(chain, dict):
+        resp = requests.get(AV_BASE_URL, params=params, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get('message') != 'success' or data.get('endpoint') != 'Historical Options':
+            log.warning("    AV options: unexpected response for %s: %s",
+                        ticker, data.get('message', data.get('Information', '')))
             return pd.DataFrame()
 
-        # Get underlying price
-        try:
-            price_info = t.price
-            underlying_price = float(
-                price_info[symbol].get('regularMarketPrice', 0) or
-                price_info[symbol].get('postMarketPrice', 0) or 0
-            )
-        except Exception:
-            underlying_price = 0.0
+        records = data.get('data', [])
+        if not records:
+            log.info("    AV options: no contracts for %s %s", ticker, fetch_date)
+            return pd.DataFrame()
 
-        df = chain.reset_index()
+        df = pd.DataFrame(records)
+
+        # Coerce numeric columns
+        numeric = ['strike', 'last', 'mark', 'bid', 'ask', 'volume', 'open_interest',
+                   'implied_volatility', 'delta', 'gamma', 'theta', 'vega', 'rho']
+        for col in numeric:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Normalize option_type
+        if 'type' in df.columns:
+            df['optionType'] = df['type'].str.lower().map({'call': 'calls', 'put': 'puts'})
+        # Map AV field names
+        if 'contractID' in df.columns:
+            df['contractSymbol'] = df['contractID']
+        if 'last' in df.columns:
+            df['lastPrice'] = df['last']
+        if 'implied_volatility' in df.columns:
+            df['impliedVolatility'] = df['implied_volatility']
+        if 'open_interest' in df.columns:
+            df['openInterest'] = df['open_interest']
+
         df['ticker'] = ticker
-        df['underlying_price'] = underlying_price
+        df['underlying_price'] = 0.0  # AV doesn't provide underlying in options endpoint
+        df['data_source'] = 'alphavantage'
         return df
 
     except Exception as e:
@@ -123,8 +152,12 @@ def fetch_options_for_ticker(ticker: str) -> pd.DataFrame:
 
 
 def enrich_with_greeks(df: pd.DataFrame) -> pd.DataFrame:
-    """Add Greeks columns to the options DataFrame."""
+    """Add Greeks columns to the options DataFrame if not already present from AV."""
     if df.empty:
+        return df
+
+    # AV HISTORICAL_OPTIONS already provides greeks — skip if present and non-null
+    if 'delta' in df.columns and df['delta'].notna().any():
         return df
 
     greek_rows = []
@@ -162,10 +195,10 @@ def normalize_for_sql(df: pd.DataFrame, snapshot_ts: pd.Timestamp, market_sessio
     keep = [
         'ticker', 'snapshot_ts', 'snapshot_date', 'market_session',
         'contract_symbol', 'option_type', 'expiration', 'strike', 'in_the_money',
-        'bid', 'ask', 'last_price', 'change', 'percent_change',
+        'bid', 'ask', 'mark', 'last_price', 'change', 'percent_change',
         'volume', 'open_interest', 'implied_volatility',
         'delta', 'gamma', 'theta', 'vega', 'rho',
-        'underlying_price',
+        'underlying_price', 'data_source',
     ]
     return df[[c for c in keep if c in df.columns]].dropna(
         subset=['ticker', 'snapshot_ts', 'option_type', 'expiration', 'strike']
@@ -180,24 +213,32 @@ def main():
     args = parser.parse_args()
 
     snapshot_ts = pd.Timestamp.now(tz='UTC')
-    snap_date = args.date or snapshot_ts.strftime('%Y-%m-%d')
+    snap_date = args.date or date.today().strftime('%Y-%m-%d')
     tickers = args.tickers or TICKERS
     bucket = os.environ.get('GCS_BUCKET', '')
+    api_key = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     market_session = get_market_session()
 
-    log.info("ETF Options Fetch Job")
-    log.info("  Snapshot  : %s  Session: %s", snapshot_ts.strftime('%H:%M UTC'), market_session)
+    log.info("ETF Options Fetch Job (AlphaVantage)")
+    log.info("  Date      : %s  Session: %s", snap_date, market_session)
     log.info("  Tickers   : %s", tickers)
     log.info("  SQL       : %s", 'yes' if is_cloud_sql_configured() else 'NO')
     log.info("  GCS       : %s", bucket or 'disabled')
+    log.info("  AV key    : %s", 'set' if api_key else 'MISSING')
+
+    if not api_key:
+        log.error("ALPHA_VANTAGE_API_KEY not set — cannot fetch options")
+        sys.exit(1)
 
     all_frames = []
     errors = []
 
-    for ticker in tickers:
+    for i, ticker in enumerate(tickers):
+        if i > 0:
+            time_module.sleep(_av_cfg.delay_between_calls)
         try:
             log.info("  Fetching %s...", ticker)
-            df = fetch_options_for_ticker(ticker)
+            df = fetch_options_for_ticker(ticker, snap_date, api_key)
             if df.empty:
                 log.warning("    No data for %s", ticker)
                 continue
