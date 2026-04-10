@@ -2,18 +2,35 @@
 Live market data router.
 GET /api/live/quote/{ticker} - Alpha Vantage GLOBAL_QUOTE (real-time quote)
 GET /api/live/history/{ticker} - Alpha Vantage TIME_SERIES_INTRADAY 1min (last 100 bars for indicator calculation)
+GET /api/live/avg-volume/{ticker} - 20-day average daily volume (for RVOL denominator)
 GET /api/live/status - market open/closed status based on Eastern Time
 """
+import logging
 import os
+import sys
 from datetime import datetime, time, date
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException
 from zoneinfo import ZoneInfo
 
+# Project root so we can import gcp.database alongside the other routers.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    _CLOUD_SQL: bool = is_cloud_sql_configured()
+except Exception:
+    _CLOUD_SQL = False
+    query_to_dataframe = None  # type: ignore[assignment]
+
+log = logging.getLogger(__name__)
 router = APIRouter()
 
-AV_API_KEY = os.environ.get("AV_API_KEY", "")
+AV_API_KEY = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
 AV_BASE = "https://www.alphavantage.co/query"
 
 ET_TZ = ZoneInfo("America/New_York")
@@ -238,4 +255,91 @@ async def get_live_history(ticker: str):
         "market_session": session,
         "market_open": is_open,
         "bars": bars,
+    }
+
+
+@router.get("/api/live/avg-volume/{ticker}")
+async def get_avg_volume(ticker: str):
+    """Return the 20-day average daily volume for RVOL calculation.
+
+    Strategy: Cloud SQL `market_data_daily` if configured, otherwise fall back
+    to AlphaVantage TIME_SERIES_DAILY (compact = last 100 days).
+    """
+    ticker_upper = ticker.upper()
+
+    # ── Cloud SQL primary ────────────────────────────────────────────────────
+    if _CLOUD_SQL and query_to_dataframe is not None:
+        try:
+            df = query_to_dataframe(
+                """
+                SELECT date, volume
+                FROM market_data_daily
+                WHERE ticker = :ticker AND volume IS NOT NULL
+                ORDER BY date DESC LIMIT 20
+                """,
+                {"ticker": ticker_upper},
+            )
+            if not df.empty and len(df) >= 5:
+                avg_vol = float(df["volume"].mean())
+                last_date = df.iloc[0]["date"]
+                last_str = last_date.strftime("%Y-%m-%d") if hasattr(last_date, "strftime") else str(last_date)
+                return {
+                    "ticker": ticker_upper,
+                    "avg_volume_20d": avg_vol,
+                    "sample_size": int(len(df)),
+                    "last_date": last_str,
+                    "source": "cloud_sql",
+                }
+        except Exception as exc:
+            log.warning("avg-volume Cloud SQL lookup failed for %s: %s", ticker_upper, exc)
+
+    # ── AlphaVantage fallback ────────────────────────────────────────────────
+    if not AV_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="No Cloud SQL history and Alpha Vantage API key not configured",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(AV_BASE, params={
+                "function": "TIME_SERIES_DAILY",
+                "symbol": ticker_upper,
+                "outputsize": "compact",
+                "apikey": AV_API_KEY,
+            })
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=503, detail="Alpha Vantage request timed out")
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Alpha Vantage request failed: {exc}")
+
+    if "Note" in data or "Information" in data:
+        raise HTTPException(status_code=429, detail="Alpha Vantage rate limit")
+    if "Error Message" in data:
+        raise HTTPException(status_code=400, detail=f"Alpha Vantage error: {data['Error Message']}")
+
+    series = data.get("Time Series (Daily)", {})
+    if not series:
+        raise HTTPException(status_code=404, detail=f"No daily history for {ticker_upper}")
+
+    # Take the 20 most recent trading days
+    sorted_dates = sorted(series.keys(), reverse=True)[:20]
+    volumes = []
+    for d in sorted_dates:
+        try:
+            volumes.append(float(series[d]["5. volume"]))
+        except (KeyError, ValueError):
+            continue
+
+    if not volumes:
+        raise HTTPException(status_code=502, detail="No usable volume rows in AV response")
+
+    return {
+        "ticker": ticker_upper,
+        "avg_volume_20d": sum(volumes) / len(volumes),
+        "sample_size": len(volumes),
+        "last_date": sorted_dates[0] if sorted_dates else None,
+        "source": "alphavantage",
     }
