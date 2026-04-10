@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-03-01 (session 6)
+**Last Updated**: 2026-04-10 (session 7)
 
 ---
 
@@ -442,6 +442,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 - 2026-02-23: chore(devcontainer) — forwardPorts [5173, 8000] with labels for Codespace auto-forwarding
 - 2026-03-01: feat(platform) — add markdown rendering (marked) for ReportsPage tables and InsightsPage chat bubbles; prose-report CSS styles
 - 2026-03-01: chore(workflows) — remove yfinance/yahooquery from GitHub Actions pip installs (analyze-market-data, fetch-earnings-options, update-economic-events-calendar)
+- 2026-04-10: fix(platform) — header market-session badge + ticker price now driven by live /api/live/status and /api/live/quote via shared useLiveStatus/useLiveQuote hooks; dead marketStore deleted (badge was permanently stuck on "Market Closed")
 
 ---
 
