@@ -1,30 +1,46 @@
 name: Fetch Daily Alpha Vantage Options Data
 
+# Writes AlphaVantage HISTORICAL_OPTIONS to Cloud SQL (etf_options_snapshots
+# table, data_source='alphavantage') and to GCS (raw parquet copies).
+#
+# Required repository secrets:
+#   ALPHA_VANTAGE_API_KEY        AlphaVantage API key (premium plan, 150 RPM)
+#   GCP_SA_KEY                   JSON of a service account with roles:
+#                                 - Cloud SQL Client
+#                                 - Storage Object Admin (GCS bucket)
+#   CLOUD_SQL_CONNECTION_NAME    e.g. project:region:instance
+#   DB_USER                      PostgreSQL user
+#   DB_PASS                      PostgreSQL password
+#   DB_NAME                      PostgreSQL database name
+#   GCS_BUCKET                   GCS bucket name (no gs:// prefix)
+#
+# Ingests yesterday's EOD chain by default; date range can be overridden
+# via workflow_dispatch for manual backfills.
+
 on:
   schedule:
-    # Run at 9:00 PM EDT (1:00 AM UTC during EDT, 2:00 AM UTC during EST)
-    # Monday through Friday only (1-5)
+    # 01:00 UTC Mon–Fri (≈ 21:00 EDT / 20:00 EST) — after AV has published EOD.
     - cron: '0 1 * * 1-5'
-  workflow_dispatch:  # Allow manual triggering
+  workflow_dispatch:
     inputs:
       start_date:
-        description: 'Start date (YYYY-MM-DD). Leave empty for yesterday.'
+        description: 'Backfill start (YYYY-MM-DD). Empty = yesterday.'
         required: false
         default: ''
         type: string
       end_date:
-        description: 'End date (YYYY-MM-DD). Leave empty for today.'
+        description: 'Backfill end (YYYY-MM-DD). Empty = yesterday.'
         required: false
         default: ''
         type: string
-      symbols:
-        description: 'Symbols to fetch (SPY IWM QQQ or ALL)'
+      tickers:
+        description: 'Space-separated tickers or ALL'
         required: false
         default: 'ALL'
         type: string
 
 permissions:
-  contents: write
+  contents: read
   issues: write
   pull-requests: write
   actions: read
@@ -33,209 +49,78 @@ jobs:
   fetch-options-data:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       issues: write
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        persist-credentials: true
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
 
-    - name: Cache pip packages
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-av-options-${{ hashFiles('requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-av-options-
-          ${{ runner.os }}-pip-
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-av-options-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-av-options-
+            ${{ runner.os }}-pip-
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install 'cloud-sql-python-connector[pg8000]' google-cloud-storage
 
-    - name: Determine date range
-      id: dates
-      run: |
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          # Manual trigger - use provided dates or defaults
-          if [ -n "${{ github.event.inputs.start_date }}" ]; then
-            START_DATE="${{ github.event.inputs.start_date }}"
-          else
-            START_DATE=$(date -d "yesterday" +'%Y-%m-%d')
+      - name: Write GCP service account key
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          if [ -z "$GCP_SA_KEY" ]; then
+            echo "::error::GCP_SA_KEY secret is not set. Configure it in repo settings."
+            exit 1
           fi
+          echo "$GCP_SA_KEY" > "$RUNNER_TEMP/gcp-key.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-key.json" >> "$GITHUB_ENV"
 
-          if [ -n "${{ github.event.inputs.end_date }}" ]; then
-            END_DATE="${{ github.event.inputs.end_date }}"
-          else
-            END_DATE=$(date +'%Y-%m-%d')
+      - name: Resolve backfill date range
+        id: dates
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            START="${{ github.event.inputs.start_date }}"
+            END="${{ github.event.inputs.end_date }}"
           fi
-        else
-          # Scheduled run - fetch previous day to today
-          START_DATE=$(date -d "yesterday" +'%Y-%m-%d')
-          END_DATE=$(date +'%Y-%m-%d')
-        fi
+          START="${START:-$(date -u -d 'yesterday' +%Y-%m-%d)}"
+          END="${END:-$(date -u -d 'yesterday' +%Y-%m-%d)}"
+          echo "START_DATE=$START" >> $GITHUB_OUTPUT
+          echo "END_DATE=$END" >> $GITHUB_OUTPUT
+          echo "Fetching AV options $START → $END"
 
-        echo "START_DATE=$START_DATE" >> $GITHUB_OUTPUT
-        echo "END_DATE=$END_DATE" >> $GITHUB_OUTPUT
-        echo "Fetching options data from $START_DATE to $END_DATE"
-
-    - name: Determine symbols to fetch
-      id: symbols
-      run: |
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.symbols }}" ]; then
-          SYMBOLS="${{ github.event.inputs.symbols }}"
-        else
-          SYMBOLS="ALL"
-        fi
-        echo "SYMBOLS=$SYMBOLS" >> $GITHUB_OUTPUT
-        echo "Symbols: $SYMBOLS"
-
-    - name: Create .env file with API keys
-      run: |
-        echo "ALPHA_VANTAGE_API_KEY=${{ secrets.ALPHA_VANTAGE_API_KEY }}" > .env
-
-    - name: Fetch SPY options data
-      if: steps.symbols.outputs.SYMBOLS == 'ALL' || contains(steps.symbols.outputs.SYMBOLS, 'SPY')
-      continue-on-error: true
-      id: fetch_spy
-      run: |
-        echo "Fetching SPY options data..."
-        python scripts/fetch_alphavantage_options.py \
-          --symbol SPY \
-          --start-date ${{ steps.dates.outputs.START_DATE }} \
-          --end-date ${{ steps.dates.outputs.END_DATE }} \
-          --delay 1
-
-    - name: Fetch IWM options data
-      if: steps.symbols.outputs.SYMBOLS == 'ALL' || contains(steps.symbols.outputs.SYMBOLS, 'IWM')
-      continue-on-error: true
-      id: fetch_iwm
-      run: |
-        echo "Fetching IWM options data..."
-        python scripts/fetch_alphavantage_options.py \
-          --symbol IWM \
-          --start-date ${{ steps.dates.outputs.START_DATE }} \
-          --end-date ${{ steps.dates.outputs.END_DATE }} \
-          --delay 1
-
-    - name: Fetch QQQ options data
-      if: steps.symbols.outputs.SYMBOLS == 'ALL' || contains(steps.symbols.outputs.SYMBOLS, 'QQQ')
-      continue-on-error: true
-      id: fetch_qqq
-      run: |
-        echo "Fetching QQQ options data..."
-        python scripts/fetch_alphavantage_options.py \
-          --symbol QQQ \
-          --start-date ${{ steps.dates.outputs.START_DATE }} \
-          --end-date ${{ steps.dates.outputs.END_DATE }} \
-          --delay 1
-
-    - name: Check for failures
-      id: check_failures
-      run: |
-        FAILED=false
-
-        if [ "${{ steps.fetch_spy.outcome }}" = "failure" ]; then
-          echo "❌ SPY fetch failed"
-          FAILED=true
-        fi
-
-        if [ "${{ steps.fetch_iwm.outcome }}" = "failure" ]; then
-          echo "❌ IWM fetch failed"
-          FAILED=true
-        fi
-
-        if [ "${{ steps.fetch_qqq.outcome }}" = "failure" ]; then
-          echo "❌ QQQ fetch failed"
-          FAILED=true
-        fi
-
-        if [ "$FAILED" = "true" ]; then
-          echo "FAILED=true" >> $GITHUB_OUTPUT
-          echo "Some fetches failed, but continuing to commit successful ones"
-        else
-          echo "FAILED=false" >> $GITHUB_OUTPUT
-          echo "✓ All fetches succeeded"
-        fi
-
-    - name: Commit and push data
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-
-        # Add all Alpha Vantage options data files
-        git add data/*/options/*_av_options_*.parquet 2>/dev/null || true
-        git add data/*/options/*_av_options_*.json 2>/dev/null || true
-
-        # Check if there are changes to commit
-        if git diff --staged --quiet; then
-          echo "No changes to commit"
-        else
-          SYMBOLS="${{ steps.symbols.outputs.SYMBOLS }}"
-          COMMIT_MSG="Update Alpha Vantage options data - ${{ steps.dates.outputs.START_DATE }} to ${{ steps.dates.outputs.END_DATE }}"
-          if [ "$SYMBOLS" != "ALL" ]; then
-            COMMIT_MSG="$COMMIT_MSG ($SYMBOLS)"
-          fi
-
-          git commit -m "$COMMIT_MSG"
-
-          # Pull-rebase-push with retry logic
-          MAX_RETRIES=8
-          RETRY_COUNT=0
-
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            echo "Push attempt $((RETRY_COUNT + 1)) of $MAX_RETRIES..."
-
-            if git push origin main; then
-              echo "✓ Successfully pushed changes"
-              exit 0
+      - name: Fetch AlphaVantage options → Cloud SQL + GCS
+        env:
+          AV_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+        run: |
+          for var in AV_API_KEY CLOUD_SQL_CONNECTION_NAME DB_USER DB_PASS DB_NAME GCS_BUCKET; do
+            if [ -z "${!var}" ]; then
+              echo "::error::$var secret is not set"
+              exit 1
             fi
-
-            echo "Push failed, pulling latest changes with rebase..."
-
-            if git pull --rebase origin main; then
-              echo "✓ Rebase succeeded, will retry push"
-            else
-              echo "⚠️ Rebase conflict detected, attempting to resolve..."
-              git checkout --ours data/
-              git add data/
-
-              if git rebase --continue; then
-                echo "✓ Conflict resolution succeeded"
-              else
-                git rebase --abort
-                echo "Falling back to merge strategy..."
-                git pull --no-rebase origin main -X ours || echo "✗ Merge also failed"
-              fi
-            fi
-
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-            BASE_WAIT=$((2 ** RETRY_COUNT))
-            JITTER=$((RANDOM % 3))
-            WAIT_TIME=$((BASE_WAIT + JITTER))
-            echo "Waiting ${WAIT_TIME}s before retry..."
-            sleep $WAIT_TIME
           done
 
-          echo "✗ Failed to push after $MAX_RETRIES attempts"
-          exit 1
-        fi
+          python -m gcp.fetchers.fetch_av_historical_options \
+            --tickers "${{ github.event.inputs.tickers || 'ALL' }}" \
+            --start-date "${{ steps.dates.outputs.START_DATE }}" \
+            --end-date   "${{ steps.dates.outputs.END_DATE }}"
 
-    - name: Fail if any fetch failed
-      if: steps.check_failures.outputs.FAILED == 'true'
-      run: |
-        echo "One or more symbol fetches failed"
-        exit 1
-
-  # Handle workflow failures
   handle-failure:
     needs: fetch-options-data
     if: failure()
