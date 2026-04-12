@@ -460,6 +460,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 - 2026-04-12: data(backfill) — 10-year AV options backfill (2016-04-10 → 2026-04-11) for SPY/IWM/QQQ/SPX launched as Cloud Run Job. SPY has near-complete coverage 2015 → 2026 (internal gap 2021-10 → 2023-04). IWM through 2024-09, QQQ through 2024-05, SPX starting from 2016-04. Job resumes automatically via `--skip-existing`.
 - 2026-04-12: docs — INFRASTRUCTURE_NOTES.md created: documents deferred Cloud SQL tier upgrade (db-g1-small → db-custom-2-4096), reasoning, re-evaluation triggers, short-term mitigations (covering index, 12h TTL cache, widening-range scan)
 - 2026-04-12: feat(gcp) — new `earnings_calendar` Cloud SQL table (42 cols) with dual-source persistence from Unusual Whales + Earnings Whispers; fetch_earnings_calendar.py gains EW cookie-based auth (mirrors GAS 04_Code.js login flow), 9 strategy endpoints, Cloud SQL upsert; deploy.sh gains fetch-earnings-calendar Cloud Run Job + earnings-calendar-daily scheduler trigger; GAS tracking columns (strike_hit, day0-5_check, hit_rsi, ohlc_volume, etc.) present as NULLable for future backfill
+- 2026-04-12: feat(fetchers) — fetch_earnings_options.py resolves tickers from earnings_calendar SQL table (7-day lookahead) instead of GCS/local CSVs; CSVs kept as fallback
 
 ---
 

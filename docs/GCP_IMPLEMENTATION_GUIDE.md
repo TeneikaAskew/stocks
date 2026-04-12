@@ -1474,9 +1474,15 @@ FROM trades
 GROUP BY 1 ORDER BY 1 DESC LIMIT 8;
 ```
 
-### Upload Strategy CSVs to GCS
+### Earnings Options Ticker Resolution
 
-The `fetch-earnings-options` job reads active tickers from strategy CSVs in GCS:
+The `fetch-earnings-options` job resolves active tickers in priority order:
+
+1. **Cloud SQL `earnings_calendar` table** (primary) — tickers with `earnings_date` in the next 7 days. Populated by the `fetch-earnings-calendar` job at 7:15 AM ET.
+2. **GCS strategy CSVs** (fallback) — `sheets/*.csv` in the GCS bucket.
+3. **Local CSVs** (fallback) — `google-apps-script/data/*.csv`.
+
+To manually upload strategy CSVs to GCS (only needed if Cloud SQL path is unavailable):
 
 ```bash
 for f in google-apps-script/data/*.csv; do
