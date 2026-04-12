@@ -100,25 +100,32 @@ def _safe_num(val):
         return None
 
 
-# ── AV date override helper ─────────────────────────────────────────────────
+# ── AV date attach helper ───────────────────────────────────────────────────
 
-def _apply_av_date_override(df: pd.DataFrame, av_dates: dict) -> int:
-    """Override each row's date/time with AV's value when ticker matches.
+def _attach_av_date(df: pd.DataFrame, av_dates: dict) -> int:
+    """Attach AV's date-of-truth as a separate column without mutating the
+    source-reported earnings_date.
 
-    Mutates df in place. Returns the number of rows whose date was changed.
+    Adds an `av_earnings_date` column populated only for tickers that also
+    appear in the AV fetch. EW/UW keep their own dates for traceability —
+    consumers can compare the two and flag discrepancies downstream.
+
+    Returns the number of rows that got an AV date attached.
     """
-    if df.empty or not av_dates:
+    if df.empty:
+        df['av_earnings_date'] = None
         return 0
+
     count = 0
+    av_col = []
     for idx in df.index:
         ticker = df.at[idx, 'ticker']
         if ticker in av_dates:
-            av_date, av_time = av_dates[ticker]
-            if df.at[idx, 'date'] != av_date:
-                df.at[idx, 'date'] = av_date
-                count += 1
-            # Always align time to AV (keeps vocabulary consistent)
-            df.at[idx, 'time'] = av_time
+            av_col.append(av_dates[ticker][0])
+            count += 1
+        else:
+            av_col.append(None)
+    df['av_earnings_date'] = av_col
     return count
 
 
@@ -510,6 +517,13 @@ def persist_to_cloud_sql(df: pd.DataFrame) -> int:
             lambda x: x.date() if pd.notna(x) else None
         )
 
+    # Convert av_earnings_date to date type (NULL-safe)
+    if 'av_earnings_date' in db_df.columns:
+        db_df['av_earnings_date'] = pd.to_datetime(db_df['av_earnings_date'], errors='coerce')
+        db_df['av_earnings_date'] = db_df['av_earnings_date'].apply(
+            lambda x: x.date() if pd.notna(x) else None
+        )
+
     # Replace NaN/NaT with None across all columns so PostgreSQL gets NULL
     import numpy as np
     db_df = db_df.replace({np.nan: None, float('nan'): None})
@@ -804,13 +818,15 @@ def main():
         days_ahead = args.days
         print(f"Fetching earnings for next {days_ahead} days")
 
-    # ── AlphaVantage (FIRST — source of truth for dates) ──
+    # ── AlphaVantage (FIRST — used as date-of-truth reference, NOT override) ──
     av_dates: dict = {}  # ticker → (date, time)
     if args.source in ("all", "av"):
         av_df = fetch_alphavantage_earnings(horizon=args.av_horizon)
         if not av_df.empty:
+            # AV rows: their av_earnings_date equals their own earnings_date
+            av_df['av_earnings_date'] = av_df['date']
             frames.append(av_df)
-            # Build override lookup
+            # Build lookup for attaching AV dates to EW/UW rows
             for _, row in av_df.iterrows():
                 av_dates[row['ticker']] = (row['date'], row['time'])
             print(f"AV date-truth lookup built: {len(av_dates)} tickers")
@@ -819,18 +835,16 @@ def main():
     if args.source in ("all", "uw"):
         uw_df = fetcher.fetch_unusual_whales_earnings(days_ahead=days_ahead)
         if not uw_df.empty:
-            if av_dates:
-                overrides = _apply_av_date_override(uw_df, av_dates)
-                print(f"UW: applied AV date override to {overrides} rows")
+            attached = _attach_av_date(uw_df, av_dates)
+            print(f"UW: tagged {attached} rows with av_earnings_date (dates preserved)")
             frames.append(uw_df)
 
     # ── Earnings Whispers ──
     if args.source in ("all", "ew"):
         ew_df = fetch_earnings_whispers()
         if not ew_df.empty:
-            if av_dates:
-                overrides = _apply_av_date_override(ew_df, av_dates)
-                print(f"EW: applied AV date override to {overrides} rows")
+            attached = _attach_av_date(ew_df, av_dates)
+            print(f"EW: tagged {attached} rows with av_earnings_date (dates preserved)")
             frames.append(ew_df)
 
     if not frames:
