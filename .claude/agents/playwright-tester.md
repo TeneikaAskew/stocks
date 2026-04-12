@@ -35,8 +35,17 @@ The project contains four static web applications tested by Playwright:
 | Success Report Site | `success-report-site/` | 8102 | `index.html` |
 | Chart Viewer | `chart-viewer/` | 8103 | `index.html` |
 | Trading Dashboard | `website/` | 8104 | `trading-dashboard.html` |
+| Platform (React) | `platform/` | 5173 + 8000 | Vite dev server + FastAPI |
 
-Tests are in `tests/test_e2e.py`. Each test class maps to one app. The session-scoped `servers` fixture starts a Python `http.server` for each app.
+**Static apps** (ports 8101-8104) are tested in `tests/test_e2e.py`. Each test class maps to one app. The session-scoped `servers` fixture starts a Python `http.server` for each app.
+
+**Platform app** (port 5173) uses a separate Playwright setup:
+- Tests: `platform/tests/phase1-charts.spec.ts`
+- Config: `platform/playwright.config.ts`
+- Run: `cd platform && npx playwright test`
+- Requires both servers running:
+  - Frontend: `cd platform && npm run dev`
+  - Backend: `cd platform && set -a && source ../.env && set +a && uvicorn api.main:app --port 8000 --reload`
 
 ## Running Tests
 
@@ -113,10 +122,18 @@ def test_no_fatal_js_errors(self, page, servers):
 
 ## Installation
 
-If Playwright is not installed:
+**Important:** Chromium is NOT reliably installed in this environment. Always check before running tests.
+
+For static app E2E tests (pytest):
 ```bash
 pip install playwright pytest-playwright
 playwright install chromium
+# Or use: make install-playwright
+```
+
+For platform E2E tests (Node.js Playwright):
+```bash
+cd platform && npx playwright install chromium
 ```
 
 ## Key Files

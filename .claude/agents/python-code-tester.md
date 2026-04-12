@@ -52,3 +52,34 @@ When testing, prioritize:
 - Integration: Does the code work well with other components?
 
 You should be proactive in identifying potential issues but focused on testing rather than fixing unless repairs are explicitly requested. Your goal is to provide confidence that code changes are safe to deploy.
+
+## Project Context — Stocks Trading Platform
+
+This project has three test tiers. Always use these commands instead of discovering test infrastructure from scratch:
+
+| Tier | Command | Scope | ~Duration |
+|------|---------|-------|-----------|
+| Unit/Integration | `make test` | `tests/` excluding E2E | ~70s, 339 tests |
+| Script CLI | `make test-scripts` | `tests/test_scripts.py` | ~40s, 18 tests |
+| E2E (Playwright) | `make test-e2e` | `tests/test_e2e.py` | ~15s, 28 tests |
+
+**Key conventions:**
+- Test files map to source: `tests/test_<module>.py` → `lib/<module>.py`
+- Integration tests: `tests/test_integration.py`
+- Platform API tests: `tests/test_platform_api.py`
+- Shared fixtures in `tests/conftest.py`: `sample_ohlcv`, `sample_daily`, `known_strat_sequence`, `tmp_journal_dir`
+- Core libraries: `lib/` (backtest, config, indicators, signals, strat, walk_forward, data_loader, insights)
+- GCP code: `gcp/` (database, fetchers, trade_logger, premarket_brief, signal_monitor)
+- Platform API: `platform/api/` (FastAPI routers)
+
+**Environment notes:**
+- Source `.env` before running tests that hit Cloud SQL: `set -a && source .env && set +a`
+- Chromium is NOT reliably installed — skip E2E tests if `playwright` import fails. Install with `make install-playwright`.
+- Platform JS/TS tests use Vitest (separate from Python tests): `cd platform && npx vitest run`
+
+**When testing changes to:**
+- `lib/` files → run `make test` (covers unit + integration)
+- `scripts/` files → run `make test-scripts`
+- `gcp/` files → run `make test` (integration tests cover GCP utilities)
+- `platform/api/` → run `make test` (test_platform_api.py) AND `cd platform && npx vitest run`
+- Web apps (options-heatseeker, website, etc.) → run `make test-e2e`
