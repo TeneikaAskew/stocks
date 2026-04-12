@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-04-10 (session 7)
+**Last Updated**: 2026-04-12 (session 8)
 
 ---
 
@@ -218,17 +218,18 @@
   - `us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest`
 - **Note:** `gcp/deploy.sh build` updated to use a minimal temp build context (86 files / ~1.3 MB) instead of the full repo (4 GB). Copies only `lib/`, `gcp/`, `scripts/`, `alert_config.json`, `requirements-gcp.txt`.
 
-### Cloud Run Jobs (7 jobs) ✅ 2026-02-23
+### Cloud Run Jobs (8 jobs) ✅ 2026-02-23 (updated 2026-04-12)
 - [x] `fetch-market-data` — deployed
 - [x] `fetch-etf-options` — deployed
 - [x] `fetch-earnings-options` — deployed
 - [x] `fetch-alphavantage-intraday` — deployed
-- [x] `premarket-brief` — deployed
-- [x] `signal-monitor` — deployed as Job (8h timeout; exits at market close)
+- [x] `premarket-brief` — deployed; now writes to `premarket_analysis` (32 cols) + queries `economic_events`
+- [x] `signal-monitor` — deployed; now writes to `signal_alerts` + `trades` via TradeLogger
 - [x] `weekend-review` — deployed
+- [x] `fetch-economic-events` — **new** (2026-04-12): FRED releases → `economic_events` table
 - **Note:** `signal-monitor` converted from Cloud Run Service → Job (no HTTP server needed for polling loop)
 
-### Cloud Scheduler Triggers (22 triggers) ✅ 2026-02-23
+### Cloud Scheduler Triggers (23 triggers) ✅ 2026-02-23 (updated 2026-04-12)
 - [x] `premarket-brief-daily` — `30 8 * * 1-5` ET
 - [x] `signal-monitor-daily` — `25 9 * * 1-5` ET (new — was missing)
 - [x] `weekend-review-weekly` — `0 9 * * 6` ET
@@ -236,6 +237,7 @@
 - [x] `etf-options-0930` through `etf-options-1605` — 9 triggers
 - [x] `earnings-opts-0900` through `earnings-opts-1630` — 6 triggers
 - [x] `av-intraday-monthly` — `0 21 1 * *` ET
+- [x] `economic-events-daily` — `0 7 * * 1-5` ET (**new** 2026-04-12)
 - [ ] Test manual trigger on each job
 
 ### Monitoring
@@ -444,6 +446,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 - 2026-03-01: chore(workflows) — remove yfinance/yahooquery from GitHub Actions pip installs (analyze-market-data, fetch-earnings-options, update-economic-events-calendar)
 - 2026-04-10: fix(platform) — header market-session badge + ticker price now driven by live /api/live/status and /api/live/quote via shared useLiveStatus/useLiveQuote hooks; dead marketStore deleted (badge was permanently stuck on "Market Closed")
 - 2026-04-10: feat(platform) — PlaybookPage auto-evaluates each card's condition strings against a live MarketSnapshot (RSI/VWAP/EMA/StochRSI/RVOL/ORB/prev-day levels/minutes-since-open) via new lib/playbookEvaluator.ts regex mapper; cards light up in direction color (green CALL / red PUT), counter reads metCount/total with "N subjective" suffix for unevaluable conditions, progress bar and border intensify as live market satisfies the setup
+- 2026-04-12: feat(gcp) — Cloud Run jobs now write to ALL Cloud SQL tables: premarket_brief → premarket_analysis (32 cols with key levels, vol regime, MACD cross); signal_monitor → signal_alerts + trades; new fetch_economic_events fetcher → economic_events (FRED API + JSON); premarket brief rewritten as rich 3-embed Discord message (overview, ticker analysis, economic calendar); options dates endpoint uses widening-range scan with 12h TTL cache; schema.sql gains 14 new columns on premarket_analysis; deploy.sh gains fetch-economic-events job + economic-events-daily scheduler trigger
 
 ---
 

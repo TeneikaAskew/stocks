@@ -829,8 +829,9 @@ CMD ["python", "-m", "gcp.premarket_brief"]   # overridden per-job at deploy tim
 | `fetch-etf-options` | `gcp.fetchers.fetch_etf_options` | 1 Gi | 1 | 300s | 2 |
 | `fetch-earnings-options` | `gcp.fetchers.fetch_earnings_options` | 1 Gi | 1 | 300s | 2 |
 | `fetch-alphavantage-intraday` | `gcp.fetchers.fetch_alphavantage_intraday` | 2 Gi | 1 | 3600s | 1 |
+| `fetch-economic-events` | `gcp.fetchers.fetch_economic_events` | 512 Mi | 1 | 300s | 1 |
 
-### Cloud Scheduler Triggers (21 total)
+### Cloud Scheduler Triggers (23 total)
 
 | Trigger Name | Cron (ET) | Target Job |
 |-------------|-----------|------------|
@@ -853,6 +854,7 @@ CMD ["python", "-m", "gcp.premarket_brief"]   # overridden per-job at deploy tim
 | `earnings-options-close-1` | `50 15 * * 1-5` | fetch-earnings-options |
 | `earnings-options-close-2` | `30 16 * * 1-5` | fetch-earnings-options |
 | `alphavantage-intraday-monthly` | `0 21 1 * *` | fetch-alphavantage-intraday |
+| `economic-events-daily` | `0 7 * * 1-5` | fetch-economic-events |
 | `analyze-market-data-daily` | `0 18 * * 1-5` | (future) |
 | `run-pipeline-daily` | `30 18 * * 1-5` | (future) |
 
@@ -865,19 +867,26 @@ Cloud Run Job: premarket-brief
     ↓
 For each ticker [SPY, IWM, QQQ]:
   ├─ DataLoader.load_daily(ticker)          → Cloud SQL market_data_daily
-  ├─ add_all_indicators()                   → RSI, EMA, consecutive, etc.
+  ├─ add_all_indicators()                   → RSI, EMA, BB, MACD, StochRSI, etc.
   ├─ StratClassifier.classify_series()      → candle labels
   ├─ StratClassifier.detect_combos()        → strat_combo, strat_setup
   ├─ DataLoader.build_multi_timeframe()     → {D, W, M} aggregated DataFrames
   ├─ StratClassifier.calculate_ftfc()       → ftfc_score, direction
   ├─ check_call/put_conditions()            → premarket signal status
-  └─ Compile: price, RSI, strat, FTFC, signal_status, prev H/L
+  └─ Compile: price, change_pct, key levels (SMA200, BB, EMA9/20, ATR14),
+              RSI, StochRSI, MACD cross, vol regime, strat, FTFC, signal_status,
+              prev day OHLC, RVOL
     ↓
-Format Discord embed (per-ticker sections)
+Query economic_events table (today + 5 days ahead, high/medium importance)
+    ↓
+Format 3-embed Discord message:
+  1. Market Overview — price, change %, SMA200 position, RVOL, vol regime, FTFC
+  2. Ticker Analysis — key levels, momentum, strat/FTFC (3 inline fields/ticker)
+  3. Economic Calendar — today's events + week ahead
     ↓
 POST to DISCORD_WEBHOOK_URL
     ↓
-INSERT premarket_analysis row → Cloud SQL
+UPSERT premarket_analysis → Cloud SQL (32 columns incl. enriched levels)
 ```
 
 ### Data Flow: Real-Time Signal Monitor
@@ -901,6 +910,8 @@ For each ticker [SPY, IWM, QQQ]:
        ├─ fire_discord_alert() with:
        │    direction, price, total score, strength label
        │    base/strat breakdown, conditions, target, stop, RSI, RVOL, ORB
+       ├─ UPSERT signal_alerts → Cloud SQL (ticker, alert_ts, direction,
+       │    scores, price, target, RSI, RVOL, ORB levels, conditions_met JSONB)
        └─ trade_logger.log_trade() → Cloud SQL trades + Parquet backup
     ↓
 Sleep 60 seconds
@@ -945,6 +956,23 @@ For each symbol [SPY, IWM, QQQ]:
        ├─ Localize timestamps: America/New_York → UTC
        ├─ BULK INSERT market_data_intraday   → Cloud SQL
        └─ Upload parquet                    → GCS raw/{ticker}/intraday/{ticker}_av_1min_YYYYMM.parquet
+```
+
+### Data Flow: Economic Events (daily)
+
+```
+Cloud Scheduler (7:00 AM ET weekdays)
+    ↓
+Cloud Run Job: fetch-economic-events --source fred
+    ↓
+├─ FRED releases/dates API → upcoming release dates (30 days ahead)
+│    Classifies importance via EVENT_IMPORTANCE lookup table
+│    (CPI/FOMC/NFP/GDP/PCE = high; Retail Sales/ISM/PPI = medium; etc.)
+├─ (optional) Load market_events.json for hardcoded calendar events
+└─ Deduplicate on (event_date, event_name)
+    ↓
+UPSERT economic_events → Cloud SQL
+    (ON CONFLICT (event_date, event_name) DO UPDATE)
 ```
 
 ---
