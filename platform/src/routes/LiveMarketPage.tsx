@@ -2,8 +2,10 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTickerStore } from '@/stores/tickerStore';
 import { useReviewDateStore } from '@/stores/reviewDateStore';
+import { useLiveStatus } from '@/hooks/useLiveStatus';
+import { useLiveQuote, type LiveQuote } from '@/hooks/useLiveQuote';
+import { useLiveHistory, useAvgVolume } from '@/hooks/useLiveHistory';
 import { MetricCard } from '@/components/shared/MetricCard';
-import { DateSelector } from '@/components/shared/DateSelector';
 import { computeIndicators, computeSignals } from '@/lib/indicators';
 import type { Bar } from '@/lib/indicators';
 import {
@@ -16,66 +18,7 @@ import {
   Circle,
 } from 'lucide-react';
 
-interface Quote {
-  ticker: string;
-  price: number;
-  open: number;
-  high: number;
-  low: number;
-  volume: number;
-  change: number;
-  change_pct: number;
-  prev_close: number;
-  last_updated: string;
-}
-
-interface HistoryResponse {
-  ticker: string;
-  bars: Bar[];
-}
-
-interface MarketStatus {
-  is_open: boolean;
-  session: string;
-  current_time_et: string;
-}
-
-function useMarketStatus() {
-  return useQuery<MarketStatus>({
-    queryKey: ['market-status'],
-    queryFn: () => fetch('/api/live/status').then(r => r.json()),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  });
-}
-
-function useLiveQuote(ticker: string, enabled: boolean) {
-  return useQuery<Quote>({
-    queryKey: ['live-quote', ticker],
-    queryFn: async () => {
-      const r = await fetch(`/api/live/quote/${ticker}`);
-      if (!r.ok) throw new Error('Quote fetch failed');
-      return r.json();
-    },
-    enabled,
-    refetchInterval: 15_000,
-    staleTime: 10_000,
-  });
-}
-
-function useLiveHistory(ticker: string, enabled: boolean) {
-  return useQuery<HistoryResponse>({
-    queryKey: ['live-history', ticker],
-    queryFn: async () => {
-      const r = await fetch(`/api/live/history/${ticker}`);
-      if (!r.ok) throw new Error('History fetch failed');
-      return r.json();
-    },
-    enabled,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  });
-}
+type Quote = LiveQuote;
 
 interface HistoricalData {
   candlestick: Array<{ time: number; open: number; high: number; low: number; close: number }>;
@@ -198,10 +141,11 @@ export default function LiveMarketPage() {
 
   const livePolling = polling && !isReview;
 
-  const { data: status } = useMarketStatus();
+  const { data: status } = useLiveStatus();
   const { data: liveQuote, isError: quoteError, dataUpdatedAt } = useLiveQuote(activeTicker, livePolling);
   const { data: liveHistory } = useLiveHistory(activeTicker, livePolling);
   const { data: histDay } = useHistoricalDay(activeTicker, reviewDate);
+  const { data: avgVolData } = useAvgVolume(activeTicker);
 
   // Bars: live → last 100 1-min bars; review → bars from historical day, sliced to review time
   const bars: Bar[] = useMemo(() => {
@@ -245,10 +189,10 @@ export default function LiveMarketPage() {
   const indicators = computeIndicators(bars);
   const signals = computeSignals(
     quote?.price ?? null,
-    null,
+    indicators.vwap,
     indicators,
     quote?.volume ?? null,
-    null,
+    avgVolData?.avg_volume_20d ?? null,
   );
 
   // Sound alert on signal (disabled in review mode)
@@ -286,10 +230,7 @@ export default function LiveMarketPage() {
 
   return (
     <div className="space-y-4">
-      {/* Date selector */}
-      <DateSelector />
-
-      {/* Top bar */}
+      {/* Top bar (DateSelector is in Header) */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-1.5">
           <Circle size={8} className={`fill-current ${isReview ? 'text-amber-400' : sessionColor}`} />

@@ -1,5 +1,6 @@
 """Signals router — reads historical signals parquets from data/signals/"""
 from pathlib import Path
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 import pandas as pd
 
@@ -26,8 +27,14 @@ async def get_signals(
     limit: int = Query(default=5000, le=50000),
     direction: str = Query(default="", description="CALL or PUT filter"),
     min_score: int = Query(default=0, ge=0),
+    end_date: Optional[str] = Query(default=None, description="YYYY-MM-DD cutoff; returns signals at or before this date"),
+    end_time: Optional[str] = Query(default=None, description="HH:MM (24h ET); combined with end_date for minute-precision cutoff"),
 ):
-    """Return historical signals for a ticker from the signals parquet."""
+    """Return historical signals for a ticker from the signals parquet.
+
+    Supports point-in-time review via `end_date` (+ optional `end_time`).
+    Cutoff semantics: signals where `entry_time <= cutoff` are included.
+    """
     ticker_upper = ticker.upper()
     path = _find_signals_file(ticker)
 
@@ -41,6 +48,16 @@ async def get_signals(
         df = pd.read_parquet(path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading signals: {e}")
+
+    # Point-in-time filter on entry_time (datetime64 column)
+    if end_date:
+        try:
+            cutoff_str = f"{end_date} {end_time}:00" if end_time else f"{end_date} 23:59:59"
+            cutoff_ts = pd.Timestamp(cutoff_str)
+            if "entry_time" in df.columns:
+                df = df[df["entry_time"] <= cutoff_ts]
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid end_date/end_time: {e}")
 
     # Rename columns to match frontend expectations
     rename_map = {
