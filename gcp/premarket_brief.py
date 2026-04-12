@@ -467,29 +467,33 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         'intraday': '\U0001f552',
     }
 
+    def _valid_num(v):
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if (f != f) else f  # NaN check (NaN != NaN)
+        except (ValueError, TypeError):
+            return None
+
     def _row_line(r):
         t_icon = time_icon.get(r.get('time'), '\u2754')
         ticker = r['ticker']
         extras = []
         if r.get('strategy'):
             extras.append(r['strategy'])
-        if r.get('strike'):
-            try:
-                extras.append(f'K=${float(r["strike"]):.0f}')
-            except (ValueError, TypeError):
-                pass
-        if r.get('score'):
-            try:
-                extras.append(f'\u2605{float(r["score"]):.0f}')
-            except (ValueError, TypeError):
-                pass
-        if not extras and r.get('eps_estimate') is not None:
-            try:
-                extras.append(f'EPS {float(r["eps_estimate"]):.2f}')
-            except (ValueError, TypeError):
-                pass
+        strike = _valid_num(r.get('strike'))
+        if strike is not None:
+            extras.append(f'K=${strike:.0f}')
+        score = _valid_num(r.get('score'))
+        if score is not None:
+            extras.append(f'\u2605{score:.0f}')
+        if not extras:
+            eps = _valid_num(r.get('eps_estimate'))
+            if eps is not None:
+                extras.append(f'EPS {eps:.2f}')
         if not extras and r.get('sector'):
-            extras.append(r['sector'][:20])
+            extras.append(str(r['sector'])[:20])
         extra_str = f' — {" | ".join(extras)}' if extras else ''
         return f'{t_icon} **{ticker}**{extra_str}'
 
