@@ -254,8 +254,14 @@ CREATE TABLE IF NOT EXISTS earnings_calendar (
     score               DOUBLE PRECISION,
 
     -- Source tracking
-    data_source         VARCHAR(30) NOT NULL,  -- 'unusual_whales' | 'earnings_whispers'
+    data_source         VARCHAR(30) NOT NULL,  -- 'alphavantage' | 'unusual_whales' | 'earnings_whispers'
     fetched_at          TIMESTAMPTZ,
+
+    -- AlphaVantage date-of-truth (from SEC filings). Original source-reported
+    -- earnings_date is preserved; this column adds AV's date for cross-reference.
+    -- For AV rows this equals earnings_date. For EW/UW rows it is populated when
+    -- the same ticker exists in the AV fetch, else NULL.
+    av_earnings_date    DATE,
 
     -- Hit / performance tracking (backfilled post-earnings)
     strike_hit          JSONB,                 -- array of 6 price ratios (day 0-5)
