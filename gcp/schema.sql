@@ -227,6 +227,91 @@ CREATE INDEX IF NOT EXISTS idx_earnings_options_symbol_date
 
 
 -- ─────────────────────────────────────────────────────────
+-- EARNINGS CALENDAR (strategy-level, one row per ticker/date/strategy)
+-- Separate from earnings_options_snapshots which stores per-contract
+-- options chain data at a different granularity.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS earnings_calendar (
+    id                  BIGSERIAL PRIMARY KEY,
+
+    -- Calendar / identity
+    ticker              VARCHAR(10)  NOT NULL,
+    earnings_date       DATE         NOT NULL,
+    company_name        VARCHAR(200),
+    earnings_time       VARCHAR(30),           -- 'premarket', 'postmarket', etc.
+    eps_estimate        DOUBLE PRECISION,
+    market_cap          DOUBLE PRECISION,
+    sector              VARCHAR(100),
+    has_options         BOOLEAN,
+    expected_move       DOUBLE PRECISION,
+
+    -- Strategy pick (EW-specific; empty string for UW rows)
+    strategy            VARCHAR(50) NOT NULL DEFAULT '',
+    strike              DOUBLE PRECISION,
+    expiration          DATE,
+    premium             DOUBLE PRECISION,
+    score               DOUBLE PRECISION,
+
+    -- Source tracking
+    data_source         VARCHAR(30) NOT NULL,  -- 'unusual_whales' | 'earnings_whispers'
+    fetched_at          TIMESTAMPTZ,
+
+    -- Hit / performance tracking (backfilled post-earnings)
+    strike_hit          JSONB,                 -- array of 6 price ratios (day 0-5)
+    hit_date            DATE,
+    max_favorable       JSONB,                 -- per-day max favorable moves
+    min_unfavorable     JSONB,                 -- per-day min unfavorable moves
+
+    -- Daily price checks (stock price at each day post-earnings)
+    day0_check          DOUBLE PRECISION,
+    day1_check          DOUBLE PRECISION,
+    day2_check          DOUBLE PRECISION,
+    day3_check          DOUBLE PRECISION,
+    day4_check          DOUBLE PRECISION,
+    day5_check          DOUBLE PRECISION,
+
+    -- Result
+    exp_result          DOUBLE PRECISION,      -- price at expiration
+    risk_reward         DOUBLE PRECISION,
+
+    -- Technical indicators at hit (JSONB arrays, one value per day 0-5)
+    hit_rsi             JSONB,
+    hit_sma20           JSONB,
+    hit_sma50           JSONB,
+    hit_ema9            JSONB,
+    hit_ema21           JSONB,
+    hit_vwap            JSONB,
+    hit_rvol            JSONB,
+    hit_atr             JSONB,
+    hit_price_vs_sma20  JSONB,
+    hit_price_vs_vwap   JSONB,
+
+    -- Daily OHLC + volume (JSONB array of {o, h, l, c, v} objects)
+    ohlc_volume         JSONB,
+
+    -- Metadata
+    inserted_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_earnings_calendar
+        UNIQUE (ticker, earnings_date, strategy, data_source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_calendar_ticker_date
+    ON earnings_calendar (ticker, earnings_date DESC);
+CREATE INDEX IF NOT EXISTS idx_earnings_calendar_date
+    ON earnings_calendar (earnings_date DESC);
+CREATE INDEX IF NOT EXISTS idx_earnings_calendar_source
+    ON earnings_calendar (data_source, earnings_date DESC);
+
+DROP TRIGGER IF EXISTS trg_earnings_calendar_updated ON earnings_calendar;
+CREATE TRIGGER trg_earnings_calendar_updated
+    BEFORE UPDATE ON earnings_calendar
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- ─────────────────────────────────────────────────────────
 -- SIGNALS & TRADES
 -- ─────────────────────────────────────────────────────────
 

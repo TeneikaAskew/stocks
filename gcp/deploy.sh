@@ -221,12 +221,35 @@ deploy_fetch_economic_events() {
         --quiet
 }
 
+deploy_fetch_earnings_calendar() {
+    echo "Deploying fetch-earnings-calendar job..."
+    local ew_user ew_pass ew_env
+    ew_user="$(_secret ew-user 2>/dev/null || true)"
+    ew_pass="$(_secret ew-pass 2>/dev/null || true)"
+    ew_env="$(_env_string)${ew_user:+,EW_USER=${ew_user}}${ew_pass:+,EW_PASS=${ew_pass}}"
+
+    gcloud run jobs create fetch-earnings-calendar \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 300 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
+        --set-env-vars "${ew_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-earnings-calendar \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
+        --set-env-vars "${ew_env}" \
+        --quiet
+}
+
 deploy_fetchers() {
     deploy_fetch_market_data
     deploy_fetch_etf_options
     deploy_fetch_earnings_options
     deploy_fetch_alphavantage
     deploy_fetch_economic_events
+    deploy_fetch_earnings_calendar
 }
 
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
@@ -282,6 +305,9 @@ deploy_schedulers() {
 
     # Economic events — 7 AM ET weekdays (before pre-market brief)
     _schedule "economic-events-daily"  "0 7 * * 1-5"  "fetch-economic-events"
+
+    # Earnings calendar (UW + EW) — 7:15 AM ET weekdays
+    _schedule "earnings-calendar-daily"  "15 7 * * 1-5"  "fetch-earnings-calendar"
 
     echo "All schedulers configured."
 }
