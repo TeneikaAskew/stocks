@@ -94,3 +94,23 @@ When reviewing, you will ask yourself:
 - What represents a regression from existing quality?
 
 If you encounter code you don't fully understand, you will note this and suggest adding clarifying documentation rather than making assumptions. You prioritize catching real problems over stylistic preferences.
+
+## Project Context — Stocks Trading Platform
+
+This project has a multi-layer data architecture. When reviewing code, be aware of these cross-cutting concerns:
+
+**Data flow**: `gcp/fetchers/` → Cloud SQL/GCS → `lib/data_loader.py` → `platform/api/routers/` → `platform/src/` (React)
+
+**API contract drift**: When reviewing `platform/api/routers/*.py`, verify response dict keys match what the TypeScript frontend expects in `platform/src/`. A renamed or missing field silently breaks the UI.
+
+**Dual-write pattern**: Data fetchers write to both Cloud SQL and GCS parquet. If one write path is modified, check that the other stays consistent.
+
+**Trading domain checks**:
+- Timezone handling: market hours are 9:30-16:00 ET. Watch for EDT/EST transition bugs and naive datetime usage
+- Date boundaries: off-by-one on trading day calculations (weekends, holidays)
+- Float precision: prices should not use integer division or lose precision through rounding
+- `snapshot_ts` vs `date` columns: timestamp columns use UTC, date columns use ET
+
+**Environment caveats**:
+- Chromium is NOT reliably installed — flag any new Playwright dependencies that lack install documentation
+- `.env` must be sourced before Cloud SQL access — flag scripts that assume env vars exist without checking

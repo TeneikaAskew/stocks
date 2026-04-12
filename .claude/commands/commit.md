@@ -126,12 +126,29 @@ List every modified, added, and deleted file. Do not proceed until you have a co
 
 ---
 
+## Phase 3.5: Update Changelog
+
+**MANDATORY** — Every commit must be reflected in the changelog.
+
+8b. **Append to current changelog** at `docs/changelog/`:
+   - Check `docs/changelog/` for the most recent `CHANGELOG_*.md` file
+   - If no file covers the current week, create one: `CHANGELOG_YYYY-MM-DD_to_YYYY-MM-DD.md` (Monday to Sunday)
+   - If `docs/changelog/` does not exist, create it: `mkdir -p docs/changelog`
+   - For each commit group, add a brief entry under the appropriate section:
+     - If an existing section covers this area, append to it
+     - If it's a new area, add a new section with: **Date**, **Commit(s)**, **Files**, **What Changed**, **Why**, **Benefit**
+   - Follow the format of existing changelogs (use the most recent `CHANGELOG_*.md` as template)
+   - Update the file header line count and summary table if present
+   - Include the changelog file in the same commit as the code it documents (or as a separate `docs` commit if the code was already committed)
+
+---
+
 ## Phase 4: Status Tracker Update
 
 9. After all commits are done, read `docs/GCP_IMPLEMENTATION_STATUS.md` and:
    - Update the **Last Updated** date at the top to today
    - Update the **Test Results** table row with current pass/fail counts and date (run `make test` if you don't have a recent result)
-   - Add a **Change Log** entry if one exists, or append to the Notes section:
+   - Add a one-line entry to the Change Log section:
      ```
      - YYYY-MM-DD: <one-line summary of what this session changed>
      ```

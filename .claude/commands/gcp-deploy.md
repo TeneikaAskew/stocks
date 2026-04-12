@@ -65,9 +65,25 @@ feat(gcp): <short description of what changed>
 
 Stage files selectively — do not use `git add -A`. Only add files that are actually part of the GCP implementation work.
 
+### Step 5.5 — Pre-Deploy Validation
+
+Before submitting the build, run these checks:
+
+1. **Data validation** (if any fetcher or data_loader files changed):
+   ```bash
+   set -a && source .env && set +a && python scripts/validate_market_data.py 2>&1
+   ```
+   If critical data is missing or stale, warn before proceeding. Do NOT block the deploy for stale data caused by market closures.
+
+2. **Platform build** (if any `platform/` files changed):
+   ```bash
+   cd platform && npm run build 2>&1; echo "EXIT:$?"
+   ```
+   If the frontend build fails, STOP and report the error. Do NOT deploy a broken frontend.
+
 ### Step 6 — Submit Build to Cloud Build
 
-After a successful commit, run the deploy build command:
+After a successful commit and pre-deploy validation, run the deploy build command:
 
 ```bash
 ./gcp/deploy.sh build
@@ -76,6 +92,13 @@ After a successful commit, run the deploy build command:
 This submits the Docker image to Cloud Build using the project `adept-mountain-474619-d4`. Report the build URL and status when complete.
 
 If the build fails, report the Cloud Build log URL and the error output. Do NOT force-push or attempt destructive git operations.
+
+### Rollback Guidance
+
+If the new deployment causes issues:
+1. List recent revisions: `gcloud run revisions list --service=trading-pipeline --project=adept-mountain-474619-d4 --region=us-east1`
+2. Route traffic to previous revision: `gcloud run services update-traffic trading-pipeline --to-revisions=<previous-revision>=100 --project=adept-mountain-474619-d4 --region=us-east1`
+3. Investigate logs: `gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=trading-pipeline" --limit=50 --project=adept-mountain-474619-d4`
 
 ## Summary Report
 
