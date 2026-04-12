@@ -272,7 +272,7 @@ def migrate_market_data_intraday(data_dir: Path, dry_run: bool):
 
 # ── AV historical options ─────────────────────────────────────────────────────
 
-AV_OPTIONS_TICKERS = ['spy', 'iwm', 'qqq']
+AV_OPTIONS_TICKERS = ['spy', 'iwm', 'qqq', 'spx']
 
 
 def _normalize_av_options(df: pd.DataFrame, ticker: str) -> pd.DataFrame:

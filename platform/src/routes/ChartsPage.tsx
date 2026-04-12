@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useTickerStore } from '@/stores/tickerStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useTradeStore } from '@/stores/tradeStore';
+import { useReviewDateStore } from '@/stores/reviewDateStore';
 import { useMarketData, useAvailableDates, useReferenceLevels } from '@/hooks/useMarketData';
 import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 import { CandlestickChart } from '@/components/charts/CandlestickChart';
@@ -63,8 +64,10 @@ export default function ChartsPage() {
   const { activeTicker } = useTickerStore();
   const { timeframe, setTimeframe } = useSettingsStore();
   const { trades, addTrade, updateTrade, removeTrade } = useTradeStore();
+  const { reviewDate, reviewTime } = useReviewDateStore();
+  const isReview = reviewDate !== null;
 
-  const [selectedDate, setSelectedDate] = useState('');
+  const [localSelectedDate, setLocalSelectedDate] = useState('');
   const [showVolume, setShowVolume] = useState(true);
   const [rthOnly, setRthOnly] = useState(true);
   const [showRefLevels, setShowRefLevels] = useState(false);
@@ -93,26 +96,59 @@ export default function ChartsPage() {
   const minDate = dates.length > 0 ? toInputFormat(dates[dates.length - 1]) : '';
   const maxDate = dates.length > 0 ? toInputFormat(dates[0]) : '';
 
-  // Auto-select first date
-  if (!selectedDate && dates.length > 0) {
-    setSelectedDate(dates[0]);
+  // Auto-select first date (for local state)
+  if (!localSelectedDate && dates.length > 0) {
+    setLocalSelectedDate(dates[0]);
   }
 
-  // Fetch data
+  // Effective date: override with reviewDate when in review mode, snapping to nearest earlier trading day
+  const { selectedDate, snappedFromReview } = useMemo(() => {
+    if (!isReview || !reviewDate || dates.length === 0) {
+      return { selectedDate: localSelectedDate, snappedFromReview: false };
+    }
+    const target = toApiFormat(reviewDate);
+    // dates is sorted DESC; find the first date <= target
+    const exact = dates.includes(target);
+    if (exact) return { selectedDate: target, snappedFromReview: false };
+    // Snap to nearest earlier trading day
+    const snapped = dates.find(d => d <= target);
+    return {
+      selectedDate: snapped ?? dates[dates.length - 1],
+      snappedFromReview: snapped !== undefined && snapped !== target,
+    };
+  }, [isReview, reviewDate, dates, localSelectedDate]);
+
+  // Fetch data — pass end_time only in review mode
   const { data: marketData, isLoading, error } = useMarketData(
     activeTicker,
     selectedDate,
-    timeframe
+    timeframe,
+    isReview ? reviewTime : null
   );
 
   // Reference levels (prev day OHLC)
   const { data: refLevels } = useReferenceLevels(activeTicker, selectedDate);
 
-  // Trades for current date/ticker
-  const currentTrades = useMemo(
-    () => trades.filter((t) => t.ticker === activeTicker),
-    [trades, activeTicker]
-  );
+  // Trades for current date/ticker — filter out trades after reviewTs in review mode
+  const reviewCutoffTs = useMemo(() => {
+    if (!isReview || !reviewDate) return null;
+    const [y, m, d] = reviewDate.split('-').map(Number);
+    const [hh, mm] = (reviewTime ?? '23:59').split(':').map(Number);
+    return Math.floor(Date.UTC(y, m - 1, d, hh, mm) / 1000);
+  }, [isReview, reviewDate, reviewTime]);
+
+  const currentTrades = useMemo(() => {
+    let filtered = trades.filter((t) => t.ticker === activeTicker);
+    if (reviewCutoffTs !== null) {
+      filtered = filtered.filter(t => (t.exitTime ?? t.entryTime) <= reviewCutoffTs);
+    }
+    return filtered;
+  }, [trades, activeTicker, reviewCutoffTs]);
+
+  const hiddenTradesCount = useMemo(() => {
+    if (reviewCutoffTs === null) return 0;
+    return trades.filter(t => t.ticker === activeTicker && (t.exitTime ?? t.entryTime) > reviewCutoffTs).length;
+  }, [trades, activeTicker, reviewCutoffTs]);
   const stats = useTradeAnalytics(currentTrades);
 
   // Build chart markers from trades
@@ -328,18 +364,30 @@ export default function ChartsPage() {
       <div className="flex flex-1 flex-col">
         {/* Toolbar */}
         <div className="mb-3 flex flex-wrap items-center gap-3">
-          {/* Date picker */}
+          {/* Date picker — disabled when in historical review mode */}
           <input
             type="date"
             value={toInputFormat(selectedDate)}
             min={minDate}
             max={maxDate}
+            disabled={isReview}
             onChange={(e) => {
               const picked = toApiFormat(e.target.value);
-              if (picked) setSelectedDate(picked);
+              if (picked) setLocalSelectedDate(picked);
             }}
-            className="rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)]"
+            className="rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+            title={isReview ? 'Controlled by global historical mode — clear review mode to edit' : undefined}
           />
+          {snappedFromReview && (
+            <span className="text-xs text-amber-400" title={`${reviewDate} was not a trading day`}>
+              ⓘ Snapped to {toInputFormat(selectedDate)}
+            </span>
+          )}
+          {hiddenTradesCount > 0 && (
+            <span className="text-xs text-amber-400" title="Trades after review cutoff are hidden">
+              {hiddenTradesCount} trade{hiddenTradesCount > 1 ? 's' : ''} hidden
+            </span>
+          )}
 
           {/* Timeframe buttons */}
           <div className="flex rounded border border-[var(--color-border)]">

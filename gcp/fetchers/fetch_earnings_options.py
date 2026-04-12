@@ -5,8 +5,11 @@ Cloud Run Job: Fetch earnings options snapshots → Cloud SQL + GCS.
 Replaces the GitHub Actions workflow fetch-earnings-options.yml.
 Scheduled 6 times per day by Cloud Scheduler during market hours.
 
-Strategy tickers are read from GCS-hosted CSV files (mirroring the
-google-apps-script/data/ CSVs that the Google Sheets sync populates).
+Active tickers are resolved in priority order:
+  1. CLI --symbols override
+  2. Cloud SQL earnings_calendar table (tickers with earnings in next 7 days)
+  3. GCS-hosted strategy CSV files (fallback)
+  4. Local google-apps-script/data/ CSVs (fallback)
 
 Usage:
     python -m gcp.fetchers.fetch_earnings_options [--date YYYY-MM-DD] [--limit 10]
@@ -87,6 +90,31 @@ def load_active_tickers_from_local(snap_date: str) -> list:
             log.warning("  Could not read %s: %s", csv_name, e)
 
     return sorted(tickers)
+
+
+def load_active_tickers_from_sql(snap_date: str, lookahead_days: int = 7) -> list:
+    """Load tickers with upcoming earnings from Cloud SQL earnings_calendar.
+
+    Returns tickers whose earnings_date falls between snap_date and
+    snap_date + lookahead_days.  This replaces the CSV-based approach
+    as the primary ticker source when Cloud SQL is available.
+    """
+    try:
+        from gcp.database import query_to_dataframe
+    except ImportError:
+        return []
+
+    end_date = (pd.to_datetime(snap_date) + pd.Timedelta(days=lookahead_days)).strftime('%Y-%m-%d')
+    sql = """
+        SELECT DISTINCT ticker
+        FROM earnings_calendar
+        WHERE earnings_date BETWEEN :start AND :end
+        ORDER BY ticker
+    """
+    df = query_to_dataframe(sql, {'start': snap_date, 'end': end_date})
+    if df.empty:
+        return []
+    return df['ticker'].tolist()
 
 
 def calculate_greeks(row: pd.Series, underlying_price: float) -> dict:
@@ -238,9 +266,16 @@ def main():
         log.error("ALPHA_VANTAGE_API_KEY not set — cannot fetch options")
         sys.exit(1)
 
-    # Resolve tickers
+    # Resolve tickers: SQL > GCS CSVs > local CSVs
     if args.symbols:
         tickers = [s.upper() for s in args.symbols]
+    elif is_cloud_sql_configured():
+        tickers = load_active_tickers_from_sql(snap_date)
+        log.info("  Loaded %d tickers from earnings_calendar (SQL)", len(tickers))
+        if not tickers and bucket:
+            log.info("  SQL returned 0 — falling back to GCS CSVs")
+            tickers = load_active_tickers_from_gcs(bucket, snap_date)
+            log.info("  Loaded %d tickers from GCS strategy CSVs", len(tickers))
     elif bucket:
         tickers = load_active_tickers_from_gcs(bucket, snap_date)
         log.info("  Loaded %d tickers from GCS strategy CSVs", len(tickers))

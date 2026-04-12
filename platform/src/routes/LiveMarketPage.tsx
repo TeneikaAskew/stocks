@@ -1,6 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTickerStore } from '@/stores/tickerStore';
+import { useReviewDateStore } from '@/stores/reviewDateStore';
+import { useLiveStatus } from '@/hooks/useLiveStatus';
+import { useLiveQuote, type LiveQuote } from '@/hooks/useLiveQuote';
+import { useLiveHistory, useAvgVolume } from '@/hooks/useLiveHistory';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { computeIndicators, computeSignals } from '@/lib/indicators';
 import type { Bar } from '@/lib/indicators';
@@ -14,64 +18,24 @@ import {
   Circle,
 } from 'lucide-react';
 
-interface Quote {
-  ticker: string;
-  price: number;
-  open: number;
-  high: number;
-  low: number;
-  volume: number;
-  change: number;
-  change_pct: number;
-  prev_close: number;
-  last_updated: string;
+type Quote = LiveQuote;
+
+interface HistoricalData {
+  candlestick: Array<{ time: number; open: number; high: number; low: number; close: number }>;
+  volume: Array<{ time: number; value: number }>;
 }
 
-interface HistoryResponse {
-  ticker: string;
-  bars: Bar[];
-}
-
-interface MarketStatus {
-  is_open: boolean;
-  session: string;
-  current_time_et: string;
-}
-
-function useMarketStatus() {
-  return useQuery<MarketStatus>({
-    queryKey: ['market-status'],
-    queryFn: () => fetch('/api/live/status').then(r => r.json()),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  });
-}
-
-function useLiveQuote(ticker: string, enabled: boolean) {
-  return useQuery<Quote>({
-    queryKey: ['live-quote', ticker],
+function useHistoricalDay(ticker: string, date: string | null) {
+  return useQuery<HistoricalData>({
+    queryKey: ['hist-day', ticker, date],
     queryFn: async () => {
-      const r = await fetch(`/api/live/quote/${ticker}`);
-      if (!r.ok) throw new Error('Quote fetch failed');
+      const compact = date!.replace(/-/g, '');
+      const r = await fetch(`/api/market/data/${ticker}/${compact}?timeframe=1`);
+      if (!r.ok) throw new Error('Historical fetch failed');
       return r.json();
     },
-    enabled,
-    refetchInterval: 15_000,
-    staleTime: 10_000,
-  });
-}
-
-function useLiveHistory(ticker: string, enabled: boolean) {
-  return useQuery<HistoryResponse>({
-    queryKey: ['live-history', ticker],
-    queryFn: async () => {
-      const r = await fetch(`/api/live/history/${ticker}`);
-      if (!r.ok) throw new Error('History fetch failed');
-      return r.json();
-    },
-    enabled,
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    enabled: date !== null,
+    staleTime: 3_600_000,
   });
 }
 
@@ -155,31 +119,85 @@ function SignalCard({ direction, strength, conditions, fired }: {
   );
 }
 
+function reviewTimestamp(date: string, time: string | null): number | null {
+  if (!date) return null;
+  const t = time ?? '23:59';
+  const [y, m, d] = date.split('-').map(Number);
+  const [hh, mm] = t.split(':').map(Number);
+  return Math.floor(Date.UTC(y, m - 1, d, hh, mm) / 1000);
+}
+
 export default function LiveMarketPage() {
   const { activeTicker } = useTickerStore();
+  const { reviewDate, reviewTime } = useReviewDateStore();
+  const isReview = reviewDate !== null;
+  const reviewTs = isReview ? reviewTimestamp(reviewDate, reviewTime) : null;
+
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [polling, setPolling] = useState(true);
   const [lastFired, setLastFired] = useState<{ direction: string; time: string } | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const lastFiredRef = useRef<{ direction: string; ts: number } | null>(null);
 
-  const { data: status } = useMarketStatus();
-  const { data: quote, isError: quoteError, dataUpdatedAt } = useLiveQuote(activeTicker, polling);
-  const { data: history } = useLiveHistory(activeTicker, polling);
+  const livePolling = polling && !isReview;
 
-  const bars: Bar[] = history?.bars ?? [];
+  const { data: status } = useLiveStatus();
+  const { data: liveQuote, isError: quoteError, dataUpdatedAt } = useLiveQuote(activeTicker, livePolling);
+  const { data: liveHistory } = useLiveHistory(activeTicker, livePolling);
+  const { data: histDay } = useHistoricalDay(activeTicker, reviewDate);
+  const { data: avgVolData } = useAvgVolume(activeTicker);
+
+  // Bars: live → last 100 1-min bars; review → bars from historical day, sliced to review time
+  const bars: Bar[] = useMemo(() => {
+    if (isReview) {
+      const all = (histDay?.candlestick ?? []).map((c, i) => ({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: histDay?.volume[i]?.value ?? 0,
+      }));
+      return reviewTs !== null ? all.filter(b => b.time <= reviewTs) : all;
+    }
+    return liveHistory?.bars ?? [];
+  }, [isReview, histDay, liveHistory, reviewTs]);
+
+  // Quote: live → live quote; review → synthetic quote from historical bars
+  const quote: Quote | undefined = useMemo(() => {
+    if (!isReview) return liveQuote;
+    if (bars.length === 0) return undefined;
+    const first = bars[0];
+    const last = bars[bars.length - 1];
+    const high = Math.max(...bars.map(b => b.high));
+    const low = Math.min(...bars.map(b => b.low));
+    const volume = bars.reduce((s, b) => s + b.volume, 0);
+    return {
+      ticker: activeTicker,
+      price: last.close,
+      open: first.open,
+      high,
+      low,
+      volume,
+      change: last.close - first.open,
+      change_pct: ((last.close - first.open) / first.open) * 100,
+      prev_close: first.open,
+      last_updated: reviewTime ? `${reviewDate} ${reviewTime} ET` : (reviewDate ?? ''),
+    };
+  }, [isReview, bars, liveQuote, activeTicker, reviewDate, reviewTime]);
+
   const indicators = computeIndicators(bars);
   const signals = computeSignals(
     quote?.price ?? null,
-    null,
+    indicators.vwap,
     indicators,
     quote?.volume ?? null,
-    null,
+    avgVolData?.avg_volume_20d ?? null,
   );
 
-  // Sound alert on signal
+  // Sound alert on signal (disabled in review mode)
   useEffect(() => {
-    if (!soundEnabled) return;
+    if (!soundEnabled || isReview) return;
     const callFired = signals.call.fired;
     const putFired = signals.put.fired;
     if (!callFired && !putFired) return;
@@ -190,7 +208,7 @@ export default function LiveMarketPage() {
     setLastFired({ direction: dir, time: new Date().toLocaleTimeString() });
     if (!audioCtxRef.current) audioCtxRef.current = new AudioContext();
     playAlert(audioCtxRef.current, callFired);
-  }, [signals.call.fired, signals.put.fired, soundEnabled]);
+  }, [signals.call.fired, signals.put.fired, soundEnabled, isReview]);
 
   const toggleSound = () => {
     if (!soundEnabled && !audioCtxRef.current) {
@@ -212,26 +230,32 @@ export default function LiveMarketPage() {
 
   return (
     <div className="space-y-4">
-      {/* Top bar */}
+      {/* Top bar (DateSelector is in Header) */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-1.5">
-          <Circle size={8} className={`fill-current ${sessionColor}`} />
-          <span className="text-xs text-[var(--color-text-secondary)]">{sessionLabel}</span>
-          {status && (
+          <Circle size={8} className={`fill-current ${isReview ? 'text-amber-400' : sessionColor}`} />
+          <span className="text-xs text-[var(--color-text-secondary)]">
+            {isReview
+              ? `Historical: ${reviewDate}${reviewTime ? ` @ ${reviewTime} ET` : ''}`
+              : sessionLabel}
+          </span>
+          {status && !isReview && (
             <span className="text-xs text-[var(--color-text-muted)]">{status.current_time_et} ET</span>
           )}
         </div>
 
         <button
           onClick={() => setPolling(p => !p)}
-          className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium ${
-            polling
+          disabled={isReview}
+          className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium disabled:opacity-40 disabled:cursor-not-allowed ${
+            livePolling
               ? 'bg-[var(--color-accent-blue)] text-white'
               : 'bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]'
           }`}
+          title={isReview ? 'Disabled in historical view' : undefined}
         >
-          <RefreshCw size={12} className={polling ? 'animate-spin' : ''} />
-          {polling ? 'Live (15s)' : 'Paused'}
+          <RefreshCw size={12} className={livePolling ? 'animate-spin' : ''} />
+          {isReview ? 'Historical' : livePolling ? 'Live (15s)' : 'Paused'}
         </button>
 
         <button
@@ -311,9 +335,9 @@ export default function LiveMarketPage() {
         <MetricCard label="ATR (14)" value={indicators.atr !== null ? `$${indicators.atr.toFixed(2)}` : '--'} />
       </div>
 
-      {bars.length === 0 && polling && (
+      {bars.length === 0 && (polling || isReview) && (
         <div className="text-center text-xs text-[var(--color-text-muted)]">
-          Loading historical bars for indicators…
+          {isReview ? `Loading ${reviewDate} intraday bars…` : 'Loading historical bars for indicators…'}
         </div>
       )}
 

@@ -3,11 +3,13 @@ Trading Platform API - FastAPI backend
 Thin wrapper around existing lib/ modules
 """
 import logging
+import os
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
+import httpx
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
-from api.routers import live, options, playbook, backtest, signals, insights, journal
+from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +51,57 @@ app.include_router(backtest.router, prefix="")
 app.include_router(signals.router, prefix="")
 app.include_router(insights.router, prefix="")
 app.include_router(journal.router, prefix="")
+app.include_router(dashboard.router, prefix="")
 
 data_loader = DataLoader()
+
+# ── AlphaVantage helper for reference levels ─────────────────────────────────
+AV_API_KEY = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
+AV_BASE = "https://www.alphavantage.co/query"
+# Cloud SQL data older than this is considered stale and we prefer AV
+MAX_CLOUD_SQL_STALENESS_DAYS = 3
+
+
+def _fetch_av_daily_reference(ticker: str, before_date: str) -> Optional[dict]:
+    """Fetch most recent daily OHLC from AlphaVantage strictly before before_date.
+
+    Args:
+        ticker: symbol (e.g. 'IWM')
+        before_date: YYYY-MM-DD string; returns the trading day immediately before this
+
+    Returns: {"date": "YYYYMMDD", "open": ..., "high": ..., "low": ..., "close": ...} or None
+    """
+    if not AV_API_KEY:
+        return None
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            r = client.get(AV_BASE, params={
+                "function": "TIME_SERIES_DAILY",
+                "symbol": ticker,
+                "outputsize": "compact",  # last 100 days is plenty
+                "apikey": AV_API_KEY,
+            })
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            series = data.get("Time Series (Daily)", {})
+            if not series:
+                return None
+            # Find most recent date strictly before before_date
+            dates_sorted = sorted(series.keys(), reverse=True)
+            for d in dates_sorted:
+                if d < before_date:
+                    bar = series[d]
+                    return {
+                        "date": d.replace("-", ""),
+                        "open": float(bar["1. open"]),
+                        "high": float(bar["2. high"]),
+                        "low": float(bar["3. low"]),
+                        "close": float(bar["4. close"]),
+                    }
+    except Exception as e:
+        logger.warning("AV daily reference fetch failed: %s", e)
+    return None
 
 # ── App-level API routes ─────────────────────────────────────────────────────
 
@@ -127,11 +178,14 @@ async def get_market_data(
     ticker: str,
     date: str,
     timeframe: int = Query(default=1, description="Timeframe in minutes: 1, 5, 15, 30, 60"),
+    end_time: Optional[str] = Query(default=None, description="HH:MM (24h ET) cutoff; returns bars with open_time <= end_time"),
 ):
     """Load intraday OHLCV data for a specific ticker and date.
 
     date format: YYYYMMDD (e.g., 20260220) or YYYYMM (e.g., 202602)
     Returns candlestick + volume arrays ready for TradingView Lightweight Charts.
+    If `end_time` is provided (HH:MM ET), only bars whose open-time is at or before
+    that time are returned — used by historical review mode.
     """
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
@@ -194,6 +248,18 @@ async def get_market_data(
     if timeframe > 1:
         df = _aggregate_timeframe(df, timeframe)
 
+    # Apply end_time cutoff — bars with open-time at or before the target
+    if end_time:
+        try:
+            parts = end_time.split(":")
+            cutoff = datetime.strptime(f"{parts[0]}:{parts[1]}", "%H:%M").time()
+            df = df[df.index.time <= cutoff]
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid end_time format (expected HH:MM): {e}")
+
+    if df.empty:
+        raise HTTPException(status_code=404, detail=f"No data for {ticker_upper} on {date} at or before end_time={end_time}")
+
     # Convert to chart format
     # Timestamps as Unix seconds (naive ET — what the chart expects)
     times = (df.index.astype('int64') // 1_000_000_000).tolist()
@@ -221,14 +287,38 @@ async def get_market_data(
 async def get_reference_levels(ticker: str, date: str):
     """Get previous day OHLC reference levels for support/resistance.
 
+    Strategy:
+      1. AlphaVantage TIME_SERIES_DAILY when requested date is within the last ~30 days
+         (AV is always real-time; avoids stale Cloud SQL issues)
+      2. Cloud SQL market_data_daily for historical requests (fast, has indicators)
+      3. Local parquet fallback (minute bars aggregated)
+
     Returns the OHLC of the trading day immediately before the requested date.
-    Cloud SQL primary (market_data_daily), local parquet fallback.
     """
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
     date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}" if len(date) == 8 else date
 
-    # ── Cloud SQL primary ────────────────────────────────────────────────────
+    # Determine if request is "recent" (within last 30 days) — prefer AV for freshness
+    try:
+        requested_dt = datetime.strptime(date_str, "%Y-%m-%d").date()
+        days_ago = (datetime.now().date() - requested_dt).days
+        is_recent = days_ago < 30
+    except ValueError:
+        is_recent = False
+
+    # ── AlphaVantage primary for recent dates ────────────────────────────────
+    if is_recent:
+        av_result = _fetch_av_daily_reference(ticker_upper, date_str)
+        if av_result:
+            return {
+                "ticker": ticker_upper,
+                "source": "alphavantage",
+                **av_result,
+            }
+        logger.info("AV reference unavailable for %s, falling back to Cloud SQL", ticker_upper)
+
+    # ── Cloud SQL for historical (or AV fallback) ────────────────────────────
     if _CLOUD_SQL:
         try:
             df = query_to_dataframe(
@@ -242,9 +332,20 @@ async def get_reference_levels(ticker: str, date: str):
             )
             if not df.empty:
                 row = df.iloc[0]
+                ref_date = row["date"]
+                ref_date_str = ref_date.strftime("%Y-%m-%d") if hasattr(ref_date, "strftime") else str(ref_date)
+                # Check if Cloud SQL data is stale relative to the request
+                try:
+                    ref_dt = datetime.strptime(ref_date_str, "%Y-%m-%d").date()
+                    staleness_days = (requested_dt - ref_dt).days if is_recent else 0
+                except Exception:
+                    staleness_days = 0
+
                 return {
                     "ticker": ticker_upper,
-                    "date": row["date"].strftime("%Y%m%d") if hasattr(row["date"], "strftime") else str(row["date"]).replace("-", ""),
+                    "source": "cloud_sql",
+                    "stale_days": staleness_days if staleness_days > MAX_CLOUD_SQL_STALENESS_DAYS else 0,
+                    "date": ref_date_str.replace("-", ""),
                     "open": float(row["open"]),
                     "high": float(row["high"]),
                     "low": float(row["low"]),

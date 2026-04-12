@@ -20,6 +20,8 @@ interface OptionsResponse {
   ticker: string;
   date: string;
   options: OptionRecord[];
+  snapshot_timestamp?: string;
+  metadata?: { source?: string; data_source?: string; row_count?: number };
 }
 
 interface AvailableDatesResponse {
@@ -27,15 +29,27 @@ interface AvailableDatesResponse {
   dates: string[];
 }
 
+async function parseApiError(r: Response, fallback: string): Promise<string> {
+  try {
+    const body = await r.json();
+    if (typeof body?.detail === 'string') return body.detail;
+    if (Array.isArray(body?.detail)) return body.detail.map((d: { msg?: string }) => d.msg ?? '').join('; ');
+  } catch {
+    // body wasn't JSON
+  }
+  return `${fallback} (HTTP ${r.status})`;
+}
+
 function useOptionsDates(ticker: string) {
   return useQuery<AvailableDatesResponse>({
     queryKey: ['options-dates', ticker],
     queryFn: async () => {
       const r = await fetch(`/api/options/dates/${ticker}`);
-      if (!r.ok) throw new Error('Failed to fetch options dates');
+      if (!r.ok) throw new Error(await parseApiError(r, 'Failed to fetch options dates'));
       return r.json();
     },
     staleTime: 300_000,
+    retry: false,
   });
 }
 
@@ -44,11 +58,12 @@ function useOptionsData(ticker: string, date: string, enabled: boolean) {
     queryKey: ['options', ticker, date],
     queryFn: async () => {
       const r = await fetch(`/api/options/${ticker}/${date}`);
-      if (!r.ok) throw new Error('Failed to fetch options data');
+      if (!r.ok) throw new Error(await parseApiError(r, 'Failed to fetch options data'));
       return r.json();
     },
     enabled: enabled && !!ticker && !!date,
     staleTime: 3_600_000, // 1 hour
+    retry: false,
   });
 }
 
@@ -241,15 +256,21 @@ export default function OptionsFlowPage() {
   const [dateIdx, setDateIdx] = useState(0);
   const [spotOverride, setSpotOverride] = useState<string>('');
 
-  const { data: datesData } = useOptionsDates(activeTicker);
+  const {
+    data: datesData,
+    isLoading: datesLoading,
+    isError: datesError,
+    error: datesErrorObj,
+  } = useOptionsDates(activeTicker);
   const dates = datesData?.dates ?? [];
   const selectedDate = dates[dateIdx] ?? '';
 
-  const { data: optionsData, isLoading, isError } = useOptionsData(
-    activeTicker,
-    selectedDate,
-    dates.length > 0
-  );
+  const {
+    data: optionsData,
+    isLoading,
+    isError,
+    error: optionsErrorObj,
+  } = useOptionsData(activeTicker, selectedDate, dates.length > 0);
 
   // Reset to first date when ticker changes
   useEffect(() => setDateIdx(0), [activeTicker]);
@@ -357,17 +378,34 @@ export default function OptionsFlowPage() {
         </div>
       </div>
 
-      {/* Error / loading */}
-      {isError && (
-        <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400">
-          <AlertTriangle size={16} />
-          Options data unavailable — API key not configured or no data for this date.
+      {/* Error surfacing — show the real message from the API when present */}
+      {datesError && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <div>
+            <div className="font-semibold">No options dates available for {activeTicker}</div>
+            <div className="mt-1 text-xs text-amber-300/90">
+              {(datesErrorObj as Error | undefined)?.message ?? 'Unknown error'}
+            </div>
+          </div>
         </div>
       )}
 
-      {isLoading && (
+      {isError && !datesError && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <div>
+            <div className="font-semibold">Options chain unavailable</div>
+            <div className="mt-1 text-xs text-amber-300/90">
+              {(optionsErrorObj as Error | undefined)?.message ?? 'Unknown error'}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(datesLoading || isLoading) && (
         <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-8 text-center text-sm text-[var(--color-text-muted)]">
-          Loading options chain…
+          {datesLoading ? 'Loading available dates…' : 'Loading options chain…'}
         </div>
       )}
 
@@ -438,9 +476,19 @@ export default function OptionsFlowPage() {
         </div>
       )}
 
-      {!isLoading && !isError && options.length === 0 && selectedDate && (
+      {!isLoading && !isError && !datesError && options.length === 0 && selectedDate && (
         <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-8 text-center text-sm text-[var(--color-text-muted)]">
-          No options data returned for {activeTicker} on {selectedDate}
+          <div className="font-semibold">No options data returned for {activeTicker} on {selectedDate}</div>
+          <div className="mt-2 text-xs">
+            Try navigating to a different date using the chevrons above.
+          </div>
+        </div>
+      )}
+
+      {/* Source footer */}
+      {optionsData && options.length > 0 && (
+        <div className="text-right text-[10px] text-[var(--color-text-muted)]">
+          Source: AlphaVantage EOD · Cloud SQL · {options.length} contracts · snapshot {optionsData.snapshot_timestamp?.slice(0, 10) ?? selectedDate}
         </div>
       )}
     </div>

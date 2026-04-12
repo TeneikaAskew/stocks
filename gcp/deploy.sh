@@ -201,11 +201,55 @@ deploy_fetch_alphavantage() {
         --quiet
 }
 
+deploy_fetch_economic_events() {
+    echo "Deploying fetch-economic-events job..."
+    local fred_key fred_env
+    fred_key="$(gcloud secrets versions access latest --secret=fred-api-key 2>/dev/null || true)"
+    fred_env="$(_env_string)${fred_key:+,FRED_API_KEY=${fred_key}}"
+
+    gcloud run jobs create fetch-economic-events \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_economic_events,--source,fred" \
+        --set-env-vars "${fred_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-economic-events \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_economic_events,--source,fred" \
+        --set-env-vars "${fred_env}" \
+        --quiet
+}
+
+deploy_fetch_earnings_calendar() {
+    echo "Deploying fetch-earnings-calendar job..."
+    local ew_user ew_pass ew_env
+    ew_user="$(_secret ew-user 2>/dev/null || true)"
+    ew_pass="$(_secret ew-pass 2>/dev/null || true)"
+    ew_env="$(_env_string)${ew_user:+,EW_USER=${ew_user}}${ew_pass:+,EW_PASS=${ew_pass}}"
+
+    gcloud run jobs create fetch-earnings-calendar \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 300 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
+        --set-env-vars "${ew_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-earnings-calendar \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
+        --set-env-vars "${ew_env}" \
+        --quiet
+}
+
 deploy_fetchers() {
     deploy_fetch_market_data
     deploy_fetch_etf_options
     deploy_fetch_earnings_options
     deploy_fetch_alphavantage
+    deploy_fetch_economic_events
+    deploy_fetch_earnings_calendar
 }
 
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
@@ -228,8 +272,10 @@ _schedule() {
 deploy_schedulers() {
     echo "Creating Cloud Scheduler triggers..."
 
-    # Pre-market brief — 8:30 AM ET weekdays
+    # Pre-market brief — 8:30 AM ET weekdays (today's earnings)
     _schedule "premarket-brief-daily"    "30 8 * * 1-5"   "premarket-brief"
+    # Pre-market brief — 9:00 AM ET Sundays (week-ahead earnings digest)
+    _schedule "premarket-brief-sunday"   "0 9 * * 0"      "premarket-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
     # Weekend review — Saturday 9 AM ET
@@ -258,6 +304,12 @@ deploy_schedulers() {
 
     # AlphaVantage monthly intraday — 1st of each month 9 PM ET
     _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
+
+    # Economic events — 7 AM ET weekdays (before pre-market brief)
+    _schedule "economic-events-daily"  "0 7 * * 1-5"  "fetch-economic-events"
+
+    # Earnings calendar (UW + EW) — 7:15 AM ET weekdays
+    _schedule "earnings-calendar-daily"  "15 7 * * 1-5"  "fetch-earnings-calendar"
 
     echo "All schedulers configured."
 }

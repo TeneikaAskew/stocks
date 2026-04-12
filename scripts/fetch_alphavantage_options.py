@@ -2,8 +2,16 @@
 """
 Fetch historical options chain data from Alpha Vantage API for a given symbol.
 
-This script fetches options chain data including Greeks (delta, gamma, theta, vega, rho)
-for all available strikes and expirations on specific dates.
+IMPORTANT: This script writes to LOCAL PARQUET FILES only.
+The production daily ingest uses `gcp.fetchers.fetch_av_historical_options`,
+invoked by `.github/workflows/fetch-alphavantage-options-daily.yml`, which
+writes directly to Cloud SQL + GCS.
+
+Use this script only for:
+  - Ad-hoc local downloads (e.g. one-off research)
+  - Re-populating local parquets after a fresh clone
+
+Do NOT wire this script into a scheduled workflow.
 
 API Documentation: https://www.alphavantage.co/documentation/#options
 """
