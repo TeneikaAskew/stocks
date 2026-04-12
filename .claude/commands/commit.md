@@ -51,6 +51,10 @@ List every modified, added, and deleted file. Do not proceed until you have a co
 | `scripts/generate_backtest_report.py` | `BACKTEST_RESULTS.md` | Report format changes |
 | `website/` or `chart-viewer/` or `options-heatseeker/` or `success-report-site/` | `google-apps-script/WEB_APP_ISSUES_ANALYSIS.md` | UI/UX changes, new features |
 | `google-apps-script/` | `google-apps-script/CODE_STRUCTURE.md` | New scripts, API changes |
+| `platform/api/` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (Platform API) | New routers, endpoint changes, response shape changes |
+| `platform/src/` | (no primary doc) | N/A |
+| `tradingview-pine-scripts/` | `tradingview-pine-scripts/README.md` | New indicators, version upgrades, parameter changes |
+| `.claude/agents/` or `.claude/commands/` | (no primary doc) | N/A |
 | `tests/` | `docs/GCP_IMPLEMENTATION_STATUS.md` (Test Results table) | After every test run |
 | **Any commit** | `docs/GCP_IMPLEMENTATION_STATUS.md` | Every commit — update Last Updated date + add one-line entry to a running change log |
 
@@ -79,9 +83,14 @@ List every modified, added, and deleted file. Do not proceed until you have a co
    | `feat(indicators)` | `lib/indicators.py` changes |
    | `feat(scripts)` | `scripts/` CLI scripts |
    | `feat(analysis)` | `scripts/analysis/` + `reports/phase*.md` together |
-   | `feat(web)` | Web app directories |
+   | `feat(web)` | Web app directories (options-heatseeker, chart-viewer, website, success-report-site) |
+   | `feat(platform-api)` | `platform/api/` changes (FastAPI routers, endpoints) |
+   | `feat(platform-ui)` | `platform/src/` changes (React components, hooks, routes) |
+   | `feat(platform)` | Cross-cutting platform changes spanning both `platform/api/` and `platform/src/` |
+   | `feat(pine)` | `tradingview-pine-scripts/` indicator changes |
    | `feat(workflows)` | `.github/workflows/` changes + docs |
    | `feat(config)` | `alert_config.json`, `lib/config.py` together |
+   | `chore(agents)` | `.claude/agents/` or `.claude/commands/` changes |
    | `chore(deps)` | `requirements.txt` alone (unless paired with feature) |
    | `docs` | Standalone doc-only changes with no corresponding code change |
 
@@ -102,6 +111,9 @@ List every modified, added, and deleted file. Do not proceed until you have a co
    ```
 
    - Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`
+   - **Imperative mood required**: First word MUST be an imperative verb (add, fix, update, remove, refactor, implement, improve, simplify, extract, rename) — NOT past tense ("added", "fixed") or gerund ("updating", "removing")
+   - Subject line must NOT end with a period
+   - Body lines wrap at 72 characters
    - NEVER include `Co-Authored-By:`, email addresses, or AI attribution
    - NEVER use the 🤖 emoji
 
