@@ -830,8 +830,9 @@ CMD ["python", "-m", "gcp.premarket_brief"]   # overridden per-job at deploy tim
 | `fetch-earnings-options` | `gcp.fetchers.fetch_earnings_options` | 1 Gi | 1 | 300s | 2 |
 | `fetch-alphavantage-intraday` | `gcp.fetchers.fetch_alphavantage_intraday` | 2 Gi | 1 | 3600s | 1 |
 | `fetch-economic-events` | `gcp.fetchers.fetch_economic_events` | 512 Mi | 1 | 300s | 1 |
+| `fetch-earnings-calendar` | `scripts/fetch_earnings_calendar.py` | 512 Mi | 1 | 300s | 1 |
 
-### Cloud Scheduler Triggers (23 total)
+### Cloud Scheduler Triggers (24 total)
 
 | Trigger Name | Cron (ET) | Target Job |
 |-------------|-----------|------------|
@@ -855,6 +856,7 @@ CMD ["python", "-m", "gcp.premarket_brief"]   # overridden per-job at deploy tim
 | `earnings-options-close-2` | `30 16 * * 1-5` | fetch-earnings-options |
 | `alphavantage-intraday-monthly` | `0 21 1 * *` | fetch-alphavantage-intraday |
 | `economic-events-daily` | `0 7 * * 1-5` | fetch-economic-events |
+| `earnings-calendar-daily` | `15 7 * * 1-5` | fetch-earnings-calendar |
 | `analyze-market-data-daily` | `0 18 * * 1-5` | (future) |
 | `run-pipeline-daily` | `30 18 * * 1-5` | (future) |
 
@@ -975,6 +977,32 @@ UPSERT economic_events → Cloud SQL
     (ON CONFLICT (event_date, event_name) DO UPDATE)
 ```
 
+### Data Flow: Earnings Calendar (daily)
+
+```
+Cloud Scheduler (7:15 AM ET weekdays)
+    ↓
+Cloud Run Job: fetch-earnings-calendar --source all --days 30
+    ↓
+Source 1: Unusual Whales API (public, no auth)
+  └─ GET upcoming_earnings_v2?formats=table
+     → ticker, date, company, time, EPS est, sector, market cap, expected move
+    ↓
+Source 2: Earnings Whispers (cookie-based auth)
+  ├─ 3-step login: GET /login → extract CSRF → POST credentials → follow redirect
+  └─ GET 9 strategy endpoints (/api/getlongcalls, /api/getbullcallspread, etc.)
+     → ticker, date, company, strategy, strike, expiration, premium, score
+    ↓
+Merge + deduplicate on (ticker, date), EW preferred over UW
+    ↓
+Save to data/earnings/earnings_calendar.json
+    ↓
+UPSERT earnings_calendar → Cloud SQL (42 columns)
+    (ON CONFLICT (ticker, earnings_date, strategy, data_source) DO UPDATE)
+    GAS tracking columns (strike_hit, day0-5_check, hit_rsi, etc.) are NULL
+    initially and backfilled post-earnings by a separate process.
+```
+
 ---
 
 ## 11. Cloud SQL Schema
@@ -995,6 +1023,7 @@ UPSERT economic_events → Cloud SQL
 | `trades` | Logged trades (entry/exit) | `(ticker, entry_time)` | ~10/week |
 | `premarket_analysis` | Daily pre-market brief data | `(analysis_date, ticker)` | 4/day |
 | `economic_events` | Economic calendar | `(event_date, event_name)` | ~20/week |
+| `earnings_calendar` | Earnings picks + tracking | `(ticker, earnings_date, strategy, data_source)` | ~600/fetch |
 
 ### market_data_daily Columns
 
