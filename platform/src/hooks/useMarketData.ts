@@ -30,13 +30,13 @@ interface DatesResponse {
   months: string[];
 }
 
-export function useMarketData(ticker: string, date: string, timeframe: Timeframe) {
+export function useMarketData(ticker: string, date: string, timeframe: Timeframe, endTime?: string | null) {
   return useQuery<MarketDataResponse>({
-    queryKey: ['market-data', ticker, date, timeframe],
+    queryKey: ['market-data', ticker, date, timeframe, endTime ?? 'eod'],
     queryFn: async () => {
-      const res = await fetch(
-        `/api/market/data/${ticker}/${date}?timeframe=${timeframe}`
-      );
+      const params = new URLSearchParams({ timeframe });
+      if (endTime) params.set('end_time', endTime);
+      const res = await fetch(`/api/market/data/${ticker}/${date}?${params.toString()}`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail || 'Failed to load market data');

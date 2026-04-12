@@ -2,8 +2,10 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTickerStore } from '@/stores/tickerStore';
 import { useReviewDateStore } from '@/stores/reviewDateStore';
+import { useLiveStatus } from '@/hooks/useLiveStatus';
+import { useLiveQuote, type LiveQuote } from '@/hooks/useLiveQuote';
+import { sessionLabel, sessionColor } from '@/lib/marketSession';
 import { MetricCard } from '@/components/shared/MetricCard';
-import { DateSelector } from '@/components/shared/DateSelector';
 import {
   TrendingUp, TrendingDown, Minus, Activity, BookOpen,
   AlertTriangle, Database, ArrowUpRight, ArrowDownRight,
@@ -12,13 +14,8 @@ import {
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface HealthResponse { cloud_sql: boolean; data_dir_exists: boolean }
-interface StatusResponse { is_open: boolean; session: string; next_open: string | null; current_time_et: string }
-interface QuoteResponse {
-  ticker: string; price: number; open: number; high: number; low: number;
-  volume: number; change: number; change_pct: number; prev_close: number;
-  last_updated: string; market_session: string; market_open: boolean;
-}
-interface ReferenceResponse { ticker: string; date: string; open: number; high: number; low: number; close: number }
+type QuoteResponse = LiveQuote;
+interface ReferenceResponse { ticker: string; date: string; source?: string; stale_days?: number; open: number; high: number; low: number; close: number }
 interface MarketDataResponse {
   ticker: string; date: string; count: number;
   candlestick: Array<{ time: number; open: number; high: number; low: number; close: number }>;
@@ -30,7 +27,8 @@ interface BriefResponse {
   ftfc_score?: number; ftfc_direction?: string; signal_status?: string;
   consecutive_up?: number; consecutive_down?: number;
   daily_indicators: {
-    date?: string; close?: number; rsi_14?: number; ema_9?: number; ema_20?: number;
+    date?: string; stale_days?: number;
+    close?: number; rsi_14?: number; ema_9?: number; ema_20?: number;
     sma_200?: number; macd?: number; atr?: number; rvol?: number;
     strat_candle?: string; strat_combo?: string; ftfc_score?: number; ftfc_direction?: string;
     consecutive_up?: number; consecutive_down?: number; price_vs_ema9?: number; price_vs_ema20?: number;
@@ -72,17 +70,6 @@ function pct(v: number | undefined, digits = 1): string {
   return `${v >= 0 ? '+' : ''}${v.toFixed(digits)}%`;
 }
 
-function sessionLabel(session: string): string {
-  const map: Record<string, string> = { regular: 'Market Open', 'pre-market': 'Pre-Market', 'after-hours': 'After Hours', closed: 'Closed' };
-  return map[session] ?? session;
-}
-
-function sessionColor(session: string): string {
-  if (session === 'regular') return 'bg-green-500';
-  if (session === 'pre-market' || session === 'after-hours') return 'bg-amber-500';
-  return 'bg-red-500';
-}
-
 function biasIcon(bias: string) {
   if (bias === 'bullish') return <ArrowUpRight size={28} className="text-green-400" />;
   if (bias === 'bearish') return <ArrowDownRight size={28} className="text-red-400" />;
@@ -97,54 +84,36 @@ function biasBorder(bias: string): string {
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-/** Convert a review date+time (ET) to a Unix timestamp matching the bar format (ET-as-UTC). */
-function reviewTimestamp(date: string, time: string | null): number | null {
-  if (!date) return null;
-  const t = time ?? '23:59';
-  const [y, m, d] = date.split('-').map(Number);
-  const [hh, mm] = t.split(':').map(Number);
-  return Math.floor(Date.UTC(y, m - 1, d, hh, mm) / 1000);
-}
-
 export default function DashboardPage() {
   const { activeTicker } = useTickerStore();
   const { reviewDate, reviewTime } = useReviewDateStore();
   const isReview = reviewDate !== null;
-  const reviewTs = isReview ? reviewTimestamp(reviewDate, reviewTime) : null;
 
   const { data: health } = useFetch<HealthResponse>(['health'], '/api/health', { staleTime: 300_000 });
-  const { data: status } = useFetch<StatusResponse>(['live-status'], '/api/live/status', { refetchInterval: 60_000 });
+  const { data: status } = useLiveStatus();
   const isOpen = !isReview && (status?.is_open ?? false);
 
   // Live quote — only when NOT in review mode
-  const { data: liveQuote } = useFetch<QuoteResponse>(['quote', activeTicker], `/api/live/quote/${activeTicker}`, {
-    staleTime: isOpen ? 10_000 : 300_000,
-    refetchInterval: isOpen ? 15_000 : false,
-    enabled: !isReview,
-  });
+  const { data: liveQuote } = useLiveQuote(activeTicker, !isReview);
 
-  // Historical intraday — only when in review mode, used to derive a synthetic quote
+  // Historical intraday — only when in review mode. Server filters by end_time.
   const reviewDateCompact = reviewDate?.replace(/-/g, '') ?? '';
-  const { data: histData } = useFetch<MarketDataResponse>(['hist', activeTicker, reviewDateCompact], `/api/market/data/${activeTicker}/${reviewDateCompact}?timeframe=1`, {
+  const histUrl = `/api/market/data/${activeTicker}/${reviewDateCompact}?timeframe=1${reviewTime ? `&end_time=${reviewTime}` : ''}`;
+  const { data: histData } = useFetch<MarketDataResponse>(['hist', activeTicker, reviewDateCompact, reviewTime ?? 'eod'], histUrl, {
     staleTime: 3_600_000,
     enabled: isReview,
   });
 
-  // Derive a quote-like object for historical mode: last bar = close, first bar = open, etc.
-  // When a time is set, slice bars to only those at or before the selected minute.
+  // Derive synthetic quote from already-filtered bars (server did the end_time slice)
   const quote: QuoteResponse | undefined = useMemo(() => {
     if (!isReview) return liveQuote;
     if (!histData || histData.candlestick.length === 0) return undefined;
-    const allBars = histData.candlestick;
-    const bars = reviewTs !== null ? allBars.filter(b => b.time <= reviewTs) : allBars;
-    if (bars.length === 0) return undefined;
+    const bars = histData.candlestick;
     const first = bars[0];
     const last = bars[bars.length - 1];
     const high = Math.max(...bars.map(b => b.high));
     const low = Math.min(...bars.map(b => b.low));
-    // Sum volume only for included bars
-    const cutoffIdx = bars.length;
-    const volume = histData.volume.slice(0, cutoffIdx).reduce((sum, v) => sum + v.value, 0);
+    const volume = histData.volume.reduce((sum, v) => sum + v.value, 0);
     const label = reviewTime ? `${reviewDate} ${reviewTime} ET` : (reviewDate ?? '');
     return {
       ticker: activeTicker,
@@ -160,7 +129,7 @@ export default function DashboardPage() {
       market_session: 'closed',
       market_open: false,
     };
-  }, [isReview, liveQuote, histData, activeTicker, reviewDate, reviewTime, reviewTs]);
+  }, [isReview, liveQuote, histData, activeTicker, reviewDate, reviewTime]);
 
   // Reference (prev day) — date depends on mode
   const refDate = isReview ? reviewDateCompact : new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -175,10 +144,19 @@ export default function DashboardPage() {
 
   const { data: btData } = useFetch<BacktestResponse>(['bt', activeTicker], `/api/backtest/results/${activeTicker}`, { staleTime: 3_600_000 });
   const { data: eqData } = useFetch<EquityResponse>(['eq', activeTicker], `/api/backtest/equity/${activeTicker}`, { staleTime: 3_600_000 });
-  const { data: sigData } = useFetch<SignalsResponse>(['sig', activeTicker], `/api/signals/${activeTicker}?limit=20`, { staleTime: 300_000 });
+
+  // Signals URL — server-side filter when in review mode
+  const sigUrl = isReview
+    ? `/api/signals/${activeTicker}?limit=20&end_date=${reviewDate}${reviewTime ? `&end_time=${reviewTime}` : ''}`
+    : `/api/signals/${activeTicker}?limit=20`;
+  const { data: sigData } = useFetch<SignalsResponse>(
+    ['sig', activeTicker, reviewDate ?? 'live', reviewTime ?? 'eod'],
+    sigUrl,
+    { staleTime: 300_000 }
+  );
+
   const { data: pbData } = useFetch<PlaybookResponse>(['pb', activeTicker], `/api/playbook/${activeTicker}`, { staleTime: 3_600_000 });
 
-  const summary = btData?.summary;
   const signals = sigData?.signals ?? [];
   const cards = pbData?.cards ?? [];
   const di = brief?.daily_indicators ?? {};
@@ -191,29 +169,57 @@ export default function DashboardPage() {
     return (candidates.length ? candidates : cards).reduce((best, c) => (c.win_rate > best.win_rate ? c : best));
   }, [cards, brief?.bias]);
 
-  // Profit factor
+  // Filter backtest trades by review date (frontend-only — trades are bounded, already fetched)
+  const filteredTrades = useMemo(() => {
+    const trades = (btData?.trades ?? []) as Array<{ entry_time: string; direction: string; return_pct: number; exit_reason: string }>;
+    if (!isReview) return trades;
+    const cutoff = `${reviewDate} ${reviewTime ?? '23:59'}:59`;
+    return trades.filter(t => t.entry_time <= cutoff);
+  }, [btData?.trades, isReview, reviewDate, reviewTime]);
+
+  // Compute summary from filtered trades (guards for empty / divide-by-zero)
+  const summary = useMemo(() => {
+    if (!isReview) return btData?.summary;
+    if (filteredTrades.length === 0) return null;
+    const wins = filteredTrades.filter(t => t.return_pct > 0);
+    const losses = filteredTrades.filter(t => t.return_pct <= 0);
+    const total = filteredTrades.length;
+    const avg_win_pct = wins.length ? wins.reduce((s, t) => s + t.return_pct, 0) / wins.length : 0;
+    const avg_loss_pct = losses.length ? losses.reduce((s, t) => s + t.return_pct, 0) / losses.length : 0;
+    const avg_return_pct = filteredTrades.reduce((s, t) => s + t.return_pct, 0) / total;
+    const total_return_pct = filteredTrades.reduce((s, t) => s + t.return_pct, 0) * 100;
+    return {
+      total_trades: total,
+      win_count: wins.length,
+      loss_count: losses.length,
+      win_rate: wins.length / total,
+      avg_return_pct,
+      avg_win_pct,
+      avg_loss_pct,
+      total_return_pct,
+    };
+  }, [isReview, btData?.summary, filteredTrades]);
+
+  // Profit factor (guard against divide-by-zero)
   const profitFactor = useMemo(() => {
-    if (!summary) return null;
+    if (!summary || summary.total_trades === 0) return null;
     const grossWin = Math.abs(summary.avg_win_pct * summary.win_count);
     const grossLoss = Math.abs(summary.avg_loss_pct * summary.loss_count);
     return grossLoss > 0 ? grossWin / grossLoss : null;
   }, [summary]);
 
-  // Best/worst trades
+  // Best/worst trades from the filtered set
   const { bestTrades, worstTrades } = useMemo(() => {
-    const trades = (btData?.trades ?? []) as Array<{ entry_time: string; direction: string; return_pct: number; exit_reason: string }>;
-    const sorted = [...trades].sort((a, b) => b.return_pct - a.return_pct);
+    const sorted = [...filteredTrades].sort((a, b) => b.return_pct - a.return_pct);
     return { bestTrades: sorted.slice(0, 5), worstTrades: sorted.slice(-5).reverse() };
-  }, [btData?.trades]);
+  }, [filteredTrades]);
 
   const cloudSqlOk = health?.cloud_sql ?? false;
 
   return (
     <div className="space-y-4">
-      {/* ── Unified control bar: Date selector · Market status · Cloud SQL ── */}
+      {/* ── Control bar: Market status · Cloud SQL (DateSelector is in Header) ── */}
       <div className="flex flex-wrap items-center gap-3">
-        <DateSelector />
-
         {/* Market status pill */}
         <div className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-1.5">
           <span className={`h-2 w-2 rounded-full ${isReview ? 'bg-amber-500' : sessionColor(status?.session ?? 'closed')}`} />
@@ -300,7 +306,14 @@ export default function DashboardPage() {
         {reference && (
           <div className="mt-4 border-t border-[var(--color-border)] pt-3">
             <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-              <span>Previous Day Range</span>
+              <span className="flex items-center gap-2">
+                Previous Day Range
+                {reference.source === 'cloud_sql' && (reference.stale_days ?? 0) > 3 && (
+                  <span className="inline-flex items-center gap-0.5 text-amber-400 normal-case" title="AlphaVantage unavailable — using Cloud SQL fallback which may be outdated">
+                    <AlertTriangle size={10} /> stale
+                  </span>
+                )}
+              </span>
               {quote && (
                 <span>
                   {quote.price > reference.high
@@ -366,6 +379,11 @@ export default function DashboardPage() {
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Daily Bias</h2>
             {brief?.source === 'unavailable' && (
               <span className="ml-auto text-xs text-amber-400">Cloud SQL unavailable</span>
+            )}
+            {!isReview && brief?.source === 'cloud_sql' && (di.stale_days ?? 0) > 3 && (
+              <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-amber-400" title="Cloud SQL market_data_daily backfill needed">
+                <AlertTriangle size={11} /> {di.stale_days}d stale
+              </span>
             )}
           </div>
 
@@ -518,34 +536,62 @@ export default function DashboardPage() {
       </div>
 
       {/* ── SECTION 4: Performance KPIs ──────────────────────────────────── */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <MetricCard
-          label="Win Rate"
-          value={summary ? `${(summary.win_rate * 100).toFixed(1)}%` : '--'}
-          direction={summary ? (summary.win_rate >= 0.5 ? 'up' : summary.win_rate >= 0.4 ? 'neutral' : 'down') : undefined}
-          subtitle={summary ? `${Math.round(summary.win_rate * 10)} in 10 trades win` : undefined}
-        />
-        <MetricCard
-          label="Avg Win / Loss"
-          value={summary ? `+${(summary.avg_win_pct * 100).toFixed(2)}% / ${(summary.avg_loss_pct * 100).toFixed(2)}%` : '--'}
-          direction={summary ? (Math.abs(summary.avg_win_pct) > Math.abs(summary.avg_loss_pct) ? 'up' : 'down') : undefined}
-          subtitle={summary ? `Winners are ${(Math.abs(summary.avg_win_pct / summary.avg_loss_pct)).toFixed(1)}x larger than losers` : undefined}
-        />
-        <MetricCard
-          label="Total Return"
-          value={eqData ? pct(eqData.summary.total_return_pct) : summary ? pct(summary.total_return_pct) : '--'}
-          direction={
-            (eqData?.summary.total_return_pct ?? summary?.total_return_pct ?? 0) >= 0 ? 'up' : 'down'
-          }
-          subtitle={eqData ? `Worst drawdown: ${eqData.summary.max_drawdown_pct.toFixed(1)}%` : undefined}
-        />
-        <MetricCard
-          label="Profit Factor"
-          value={profitFactor ? profitFactor.toFixed(2) : '--'}
-          direction={profitFactor ? (profitFactor >= 1 ? 'up' : 'down') : undefined}
-          subtitle={profitFactor ? `$1 risked → $${profitFactor.toFixed(2)} back` : undefined}
-        />
-      </div>
+      {isReview && filteredTrades.length === 0 ? (
+        <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-4 py-6">
+          <AlertTriangle size={16} className="text-amber-400 shrink-0" />
+          <span className="text-sm text-[var(--color-text-muted)]">
+            No backtest trades before {reviewDate}{reviewTime ? ` ${reviewTime} ET` : ''}. Earliest trade: {(btData?.trades?.[0] as { entry_time?: string } | undefined)?.entry_time ?? 'N/A'}
+          </span>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <MetricCard
+            label="Win Rate"
+            value={summary ? `${(summary.win_rate * 100).toFixed(1)}%` : '--'}
+            direction={summary ? (summary.win_rate >= 0.5 ? 'up' : summary.win_rate >= 0.4 ? 'neutral' : 'down') : undefined}
+            subtitle={summary ? `${Math.round(summary.win_rate * 10)} in 10 trades win${isReview ? ` (${summary.total_trades.toLocaleString()} trades)` : ''}` : undefined}
+          />
+          <MetricCard
+            label="Avg Win / Loss"
+            value={summary ? `+${(summary.avg_win_pct * 100).toFixed(2)}% / ${(summary.avg_loss_pct * 100).toFixed(2)}%` : '--'}
+            direction={summary ? (Math.abs(summary.avg_win_pct) > Math.abs(summary.avg_loss_pct) ? 'up' : 'down') : undefined}
+            subtitle={
+              summary && summary.avg_loss_pct !== 0
+                ? `Winners are ${(Math.abs(summary.avg_win_pct / summary.avg_loss_pct)).toFixed(1)}x larger than losers`
+                : summary ? 'No losses in period' : undefined
+            }
+          />
+          <MetricCard
+            label="Total Return"
+            value={
+              // In review mode use filtered summary (eqData is lifetime, misleading)
+              isReview
+                ? (summary ? pct(summary.total_return_pct) : '--')
+                : (eqData ? pct(eqData.summary.total_return_pct) : summary ? pct(summary.total_return_pct) : '--')
+            }
+            direction={
+              isReview
+                ? ((summary?.total_return_pct ?? 0) >= 0 ? 'up' : 'down')
+                : ((eqData?.summary.total_return_pct ?? summary?.total_return_pct ?? 0) >= 0 ? 'up' : 'down')
+            }
+            subtitle={
+              isReview
+                ? `Filtered sum of ${summary?.total_trades ?? 0} trades`
+                : (eqData ? `Worst drawdown: ${eqData.summary.max_drawdown_pct.toFixed(1)}%` : undefined)
+            }
+          />
+          <MetricCard
+            label="Profit Factor"
+            value={profitFactor !== null ? profitFactor.toFixed(2) : '--'}
+            direction={profitFactor !== null ? (profitFactor >= 1 ? 'up' : 'down') : undefined}
+            subtitle={
+              profitFactor !== null
+                ? `$1 risked → $${profitFactor.toFixed(2)} back`
+                : summary ? 'Insufficient data' : undefined
+            }
+          />
+        </div>
+      )}
 
       {/* ── SECTION 5: Recent Activity ───────────────────────────────────── */}
       <div className="grid gap-4 lg:grid-cols-2">
@@ -590,7 +636,9 @@ export default function DashboardPage() {
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Best / Worst Trades</h2>
           </div>
           {bestTrades.length === 0 ? (
-            <p className="text-xs text-[var(--color-text-muted)]">No backtest trades.</p>
+            <p className="text-xs text-[var(--color-text-muted)]">
+              {isReview ? `No trades before ${reviewDate}${reviewTime ? ` ${reviewTime}` : ''}` : 'No backtest trades.'}
+            </p>
           ) : (
             <div className="space-y-2">
               {/* Best */}

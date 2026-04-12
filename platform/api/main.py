@@ -178,11 +178,14 @@ async def get_market_data(
     ticker: str,
     date: str,
     timeframe: int = Query(default=1, description="Timeframe in minutes: 1, 5, 15, 30, 60"),
+    end_time: Optional[str] = Query(default=None, description="HH:MM (24h ET) cutoff; returns bars with open_time <= end_time"),
 ):
     """Load intraday OHLCV data for a specific ticker and date.
 
     date format: YYYYMMDD (e.g., 20260220) or YYYYMM (e.g., 202602)
     Returns candlestick + volume arrays ready for TradingView Lightweight Charts.
+    If `end_time` is provided (HH:MM ET), only bars whose open-time is at or before
+    that time are returned — used by historical review mode.
     """
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
@@ -244,6 +247,18 @@ async def get_market_data(
     # Aggregate timeframe if > 1 minute
     if timeframe > 1:
         df = _aggregate_timeframe(df, timeframe)
+
+    # Apply end_time cutoff — bars with open-time at or before the target
+    if end_time:
+        try:
+            parts = end_time.split(":")
+            cutoff = datetime.strptime(f"{parts[0]}:{parts[1]}", "%H:%M").time()
+            df = df[df.index.time <= cutoff]
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid end_time format (expected HH:MM): {e}")
+
+    if df.empty:
+        raise HTTPException(status_code=404, detail=f"No data for {ticker_upper} on {date} at or before end_time={end_time}")
 
     # Convert to chart format
     # Timestamps as Unix seconds (naive ET — what the chart expects)
