@@ -445,6 +445,94 @@ def _build_ticker_fields(brief: dict) -> list:
     return fields
 
 
+def _build_earnings_embed(earnings_data: dict) -> dict:
+    """Embed 4: Earnings calendar — today (weekday) or week ahead (Sunday).
+
+    Prefers EW rows (which carry strategy, strike, premium) and falls back
+    to AV/UW. Truncates to stay under Discord's 4096-char description limit.
+    """
+    mode = earnings_data.get('mode', 'daily')
+    rows = earnings_data.get('earnings', [])
+
+    if not rows:
+        return {
+            'title': 'Earnings (Today)' if mode == 'daily' else 'Earnings (Week Ahead)',
+            'description': 'No earnings scheduled',
+            'color': 0x7f8c8d,
+        }
+
+    time_icon = {
+        'premarket': '\u2600\ufe0f',
+        'postmarket': '\U0001f319',
+        'intraday': '\U0001f552',
+    }
+
+    def _row_line(r):
+        t_icon = time_icon.get(r.get('time'), '\u2754')
+        ticker = r['ticker']
+        extras = []
+        if r.get('strategy'):
+            extras.append(r['strategy'])
+        if r.get('strike'):
+            try:
+                extras.append(f'K=${float(r["strike"]):.0f}')
+            except (ValueError, TypeError):
+                pass
+        if r.get('score'):
+            try:
+                extras.append(f'\u2605{float(r["score"]):.0f}')
+            except (ValueError, TypeError):
+                pass
+        if not extras and r.get('eps_estimate') is not None:
+            try:
+                extras.append(f'EPS {float(r["eps_estimate"]):.2f}')
+            except (ValueError, TypeError):
+                pass
+        if not extras and r.get('sector'):
+            extras.append(r['sector'][:20])
+        extra_str = f' — {" | ".join(extras)}' if extras else ''
+        return f'{t_icon} **{ticker}**{extra_str}'
+
+    if mode == 'weekly':
+        from collections import OrderedDict
+        by_date = OrderedDict()
+        for r in rows:
+            by_date.setdefault(r['date'], []).append(r)
+
+        sections = []
+        total_chars = 0
+        for d, day_rows in by_date.items():
+            day_str = d.strftime('%a %m/%d') if hasattr(d, 'strftime') else str(d)
+            header = f'\n**{day_str}** ({len(day_rows)})'
+            lines = [header]
+            for r in day_rows[:8]:
+                lines.append(_row_line(r))
+            if len(day_rows) > 8:
+                lines.append(f'_+{len(day_rows) - 8} more_')
+            section = '\n'.join(lines)
+            if total_chars + len(section) > 3800:
+                sections.append('\n_... truncated_')
+                break
+            sections.append(section)
+            total_chars += len(section)
+
+        total = sum(len(v) for v in by_date.values())
+        title = f'Earnings Week Ahead ({total} total)'
+        description = '\n'.join(sections).strip()
+    else:
+        title = f'Earnings Today ({len(rows)})'
+        lines = [_row_line(r) for r in rows[:20]]
+        if len(rows) > 20:
+            lines.append(f'_+{len(rows) - 20} more_')
+        description = '\n'.join(lines)
+
+    return {
+        'title': title,
+        'description': description[:4090],
+        'color': 0xf39c12,
+    }
+
+
 def _build_calendar_embed(events: dict) -> dict:
     """Embed 3: Economic calendar — today's events + week ahead."""
     today_evts = events.get('today', [])
@@ -488,26 +576,25 @@ def _build_calendar_embed(events: dict) -> dict:
 
 
 def format_discord_message(brief: dict) -> dict:
-    """Format brief as a Discord webhook payload with 3 embeds."""
+    """Format brief as a Discord webhook payload with up to 4 embeds."""
     overview = _build_overview_embed(brief)
     ticker_fields = _build_ticker_fields(brief)
     calendar = _build_calendar_embed(brief.get('events', {}))
+    earnings = _build_earnings_embed(brief.get('earnings', {}))
 
-    # Ticker analysis embed with the per-ticker fields
     ticker_embed = {
         'title': 'Ticker Analysis',
         'fields': ticker_fields,
         'color': overview.get('color', 0x3498db),
     }
 
-    embeds = [overview, ticker_embed, calendar]
+    embeds = [overview, ticker_embed, earnings, calendar]
 
-    # Safety: truncate if total exceeds Discord limit
-    total_chars = sum(len(json.dumps(e)) for e in embeds)
-    if total_chars > MAX_EMBED_CHARS:
-        logger.warning("Discord payload %d chars exceeds %d, dropping calendar",
-                        total_chars, MAX_EMBED_CHARS)
-        embeds = embeds[:2]
+    # Safety: drop lower-priority embeds if over Discord's 6000-char limit
+    while embeds and sum(len(json.dumps(e)) for e in embeds) > MAX_EMBED_CHARS:
+        logger.warning("Discord payload over %d chars, dropping %s",
+                        MAX_EMBED_CHARS, embeds[-1].get('title'))
+        embeds.pop()
 
     return {'embeds': embeds}
 

@@ -272,8 +272,10 @@ _schedule() {
 deploy_schedulers() {
     echo "Creating Cloud Scheduler triggers..."
 
-    # Pre-market brief — 8:30 AM ET weekdays
+    # Pre-market brief — 8:30 AM ET weekdays (today's earnings)
     _schedule "premarket-brief-daily"    "30 8 * * 1-5"   "premarket-brief"
+    # Pre-market brief — 9:00 AM ET Sundays (week-ahead earnings digest)
+    _schedule "premarket-brief-sunday"   "0 9 * * 0"      "premarket-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
     # Weekend review — Saturday 9 AM ET
