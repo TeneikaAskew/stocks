@@ -9,6 +9,7 @@ evaluates signals, and fires Discord alerts when conditions align.
 import os
 import sys
 import json
+import logging
 import time as time_module
 import requests
 from pathlib import Path
@@ -27,6 +28,8 @@ from lib.signals import evaluate_signal
 from lib.strat import StratClassifier
 from lib.config import load_config, get_position_size, get_signal_strength_label
 
+
+logger = logging.getLogger(__name__)
 
 AV_BASE_URL = 'https://www.alphavantage.co/query'
 
@@ -284,6 +287,70 @@ class SignalMonitor:
                 requests.post(self.webhook_url, json=message, timeout=self.monitor_cfg.discord_timeout)
             except Exception as e:
                 print(f"  Discord send failed: {e}")
+
+        # Persist to Cloud SQL
+        self._persist_signal_alert(ticker, sig, total_score, strength, size,
+                                   strat_bonus, latest, target, time_stop)
+
+    def _persist_signal_alert(self, ticker, sig, total_score, strength, size,
+                              strat_bonus, latest, target, time_stop):
+        """Write signal alert row to Cloud SQL signal_alerts table."""
+        try:
+            from gcp.database import is_cloud_sql_configured, upsert_dataframe
+        except ImportError:
+            return
+
+        if not is_cloud_sql_configured():
+            return
+
+        now = datetime.now()
+        row = {
+            'ticker': ticker,
+            'alert_ts': now,
+            'alert_date': now.date(),
+            'direction': sig['direction'],
+            'base_score': sig['base_score'],
+            'strat_bonus': strat_bonus,
+            'total_score': total_score,
+            'strength_label': strength,
+            'position_size': size,
+            'price_at_signal': float(latest.get('Close', latest.get('Last', 0))),
+            'target_price': float(target),
+            'time_stop_minutes': int(time_stop),
+            'rsi': float(latest.get(self.indicator_cfg.rsi_col, 0)),
+            'rvol': float(latest.get('RVOL', 0)),
+            'orb_5m_high': self.orb_levels[ticker].get('5m_high'),
+            'orb_5m_low': self.orb_levels[ticker].get('5m_low'),
+            'orb_15m_high': self.orb_levels[ticker].get('15m_high'),
+            'orb_15m_low': self.orb_levels[ticker].get('15m_low'),
+            'conditions_met': json.dumps(sig['conditions_met']),
+        }
+
+        try:
+            df = pd.DataFrame([row])
+            n = upsert_dataframe(df, 'signal_alerts', ['ticker', 'alert_ts'])
+            logger.info("Upserted %d row(s) to signal_alerts for %s", n, ticker)
+        except Exception as e:
+            logger.warning("signal_alerts upsert failed: %s", e)
+
+        # Also log as a trade entry via TradeLogger
+        try:
+            from gcp.trade_logger import TradeLogger
+            trade_data = {
+                'ticker': ticker,
+                'direction': sig['direction'],
+                'entry_time': now,
+                'entry_price': float(latest.get('Close', latest.get('Last', 0))),
+                'signal_strength': total_score,
+                'total_score': total_score,
+                'position_size': size,
+                'conditions_met': sig['conditions_met'],
+                'trade_date': str(now.date()),
+            }
+            TradeLogger().log_trade(trade_data)
+            logger.info("Trade logged for %s %s", ticker, sig['direction'])
+        except Exception as e:
+            logger.warning("Trade logging failed: %s", e)
 
     def run_loop(self):
         """Main market-hours loop."""

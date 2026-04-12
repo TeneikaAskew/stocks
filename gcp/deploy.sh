@@ -201,11 +201,32 @@ deploy_fetch_alphavantage() {
         --quiet
 }
 
+deploy_fetch_economic_events() {
+    echo "Deploying fetch-economic-events job..."
+    local fred_key fred_env
+    fred_key="$(gcloud secrets versions access latest --secret=fred-api-key 2>/dev/null || true)"
+    fred_env="$(_env_string)${fred_key:+,FRED_API_KEY=${fred_key}}"
+
+    gcloud run jobs create fetch-economic-events \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_economic_events,--source,fred" \
+        --set-env-vars "${fred_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-economic-events \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_economic_events,--source,fred" \
+        --set-env-vars "${fred_env}" \
+        --quiet
+}
+
 deploy_fetchers() {
     deploy_fetch_market_data
     deploy_fetch_etf_options
     deploy_fetch_earnings_options
     deploy_fetch_alphavantage
+    deploy_fetch_economic_events
 }
 
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
@@ -258,6 +279,9 @@ deploy_schedulers() {
 
     # AlphaVantage monthly intraday — 1st of each month 9 PM ET
     _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
+
+    # Economic events — 7 AM ET weekdays (before pre-market brief)
+    _schedule "economic-events-daily"  "0 7 * * 1-5"  "fetch-economic-events"
 
     echo "All schedulers configured."
 }

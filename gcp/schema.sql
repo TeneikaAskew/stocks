@@ -344,6 +344,23 @@ CREATE TABLE IF NOT EXISTS premarket_analysis (
     ftfc_labels       JSONB,
     prev_day_high     DOUBLE PRECISION,
     prev_day_low      DOUBLE PRECISION,
+
+    -- Enriched fields (added 2026-04-12)
+    change_pct        DOUBLE PRECISION,
+    rvol              DOUBLE PRECISION,
+    sma200            DOUBLE PRECISION,
+    bb_upper          DOUBLE PRECISION,
+    bb_lower          DOUBLE PRECISION,
+    ema9              DOUBLE PRECISION,
+    ema20             DOUBLE PRECISION,
+    atr14             DOUBLE PRECISION,
+    volatility_20d    DOUBLE PRECISION,
+    macd_cross        VARCHAR(10),
+    vol_regime        VARCHAR(10),
+    above_sma200      BOOLEAN,
+    stoch_rsi_k       DOUBLE PRECISION,
+    stoch_rsi_d       DOUBLE PRECISION,
+
     analysis_ts       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_premarket_analysis UNIQUE (analysis_date, ticker)
