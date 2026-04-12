@@ -65,6 +65,72 @@ def _macd_cross(macd, macd_signal):
     return 'Bullish' if macd > macd_signal else 'Bearish'
 
 
+# ── Earnings Calendar ───────────────────────────────────────────────────────
+
+def load_earnings_for_brief(today: date, weekly: bool = False) -> dict:
+    """Query earnings_calendar for the premarket brief.
+
+    On weekdays (weekly=False): returns today's earnings only.
+    On Sundays (weekly=True):   returns the upcoming Mon-Fri earnings.
+
+    Priority within a (ticker, date) pair: earnings_whispers > alphavantage > unusual_whales.
+    EW rows carry strategy picks which are the most actionable for trading.
+    """
+    try:
+        from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    except ImportError:
+        return {'mode': 'daily', 'earnings': []}
+
+    if not is_cloud_sql_configured():
+        return {'mode': 'daily', 'earnings': []}
+
+    if weekly:
+        # Sunday → next Mon through Fri
+        days_until_monday = (7 - today.weekday()) % 7 or 7
+        start = today + timedelta(days=days_until_monday)
+        end = start + timedelta(days=4)  # Mon..Fri
+        mode = 'weekly'
+    else:
+        start = end = today
+        mode = 'daily'
+
+    sql = """
+        SELECT DISTINCT ON (ticker, earnings_date)
+               ticker, earnings_date, company_name, earnings_time,
+               eps_estimate, expected_move, sector,
+               strategy, strike, premium, score, data_source
+        FROM earnings_calendar
+        WHERE earnings_date BETWEEN :start AND :end
+        ORDER BY ticker, earnings_date,
+                 CASE data_source
+                     WHEN 'earnings_whispers' THEN 1
+                     WHEN 'alphavantage'      THEN 2
+                     WHEN 'unusual_whales'    THEN 3
+                     ELSE 4
+                 END
+    """
+    df = query_to_dataframe(sql, {'start': start, 'end': end})
+
+    earnings = []
+    for _, row in df.iterrows():
+        earnings.append({
+            'ticker': row['ticker'],
+            'date': row['earnings_date'],
+            'company_name': row.get('company_name') or '',
+            'time': row.get('earnings_time') or 'unknown',
+            'eps_estimate': row.get('eps_estimate'),
+            'expected_move': row.get('expected_move'),
+            'sector': row.get('sector') or '',
+            'strategy': row.get('strategy') or '',
+            'strike': row.get('strike'),
+            'premium': row.get('premium'),
+            'score': row.get('score'),
+            'source': row.get('data_source'),
+        })
+
+    return {'mode': mode, 'start': start, 'end': end, 'earnings': earnings}
+
+
 # ── Economic Events ─────────────────────────────────────────────────────────
 
 def load_economic_events(today: date, days_ahead: int = 5) -> dict:
@@ -235,6 +301,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
 
     # Economic events
     brief['events'] = load_economic_events(date.today())
+
+    # Earnings: weekday → today's; Sunday → upcoming week's
+    today = date.today()
+    is_sunday = today.weekday() == 6
+    brief['earnings'] = load_earnings_for_brief(today, weekly=is_sunday)
 
     return brief
 
