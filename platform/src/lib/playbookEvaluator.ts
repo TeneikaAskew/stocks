@@ -57,9 +57,9 @@ export function evalCondition(raw: string, s: MarketSnapshot): EvalResult {
     return { status: met ? 'met' : 'unmet', detail: `RSI ${ind.rsi.toFixed(1)} in [${lo}, ${hi}]` };
   }
 
-  // "RSI < N", "RSI not overbought (< N)", "RSI > N"
+  // "RSI < N", "RSI not overbought (< N)", "RSI > N" — but NOT StochRSI
   const rsiCmp = c.match(/RSI[^<>]*(<|>)\s*(\d+(?:\.\d+)?)/i);
-  if (rsiCmp && /rsi/i.test(c)) {
+  if (rsiCmp && /rsi/i.test(c) && !lower.includes('stochrsi')) {
     const op = rsiCmp[1] as '<' | '>';
     const n = Number(rsiCmp[2]);
     return cmp(ind.rsi, op, n, (lv) => `RSI ${lv.toFixed(1)} ${op} ${n}`);
