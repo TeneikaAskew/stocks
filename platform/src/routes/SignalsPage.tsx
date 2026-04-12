@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTickerStore } from '@/stores/tickerStore';
+import { useReviewDateStore } from '@/stores/reviewDateStore';
 import {
   useReactTable,
   getCoreRowModel,
@@ -33,11 +34,14 @@ interface SignalsResponse {
   signals: SignalRow[];
 }
 
-function useSignals(ticker: string) {
+function useSignals(ticker: string, endDate: string | null, endTime: string | null) {
   return useQuery<SignalsResponse>({
-    queryKey: ['signals', ticker],
+    queryKey: ['signals', ticker, endDate ?? 'live', endTime ?? 'eod'],
     queryFn: async () => {
-      const r = await fetch(`/api/signals/${ticker}?limit=5000`);
+      const params = new URLSearchParams({ limit: '5000' });
+      if (endDate) params.set('end_date', endDate);
+      if (endTime) params.set('end_time', endTime);
+      const r = await fetch(`/api/signals/${ticker}?${params.toString()}`);
       if (!r.ok) throw new Error('Failed to fetch signals');
       return r.json();
     },
@@ -115,17 +119,30 @@ const columns = [
 // ── Page ──────────────────────────────────────────────────────────────────
 export default function SignalsPage() {
   const { activeTicker } = useTickerStore();
+  const { reviewDate, reviewTime } = useReviewDateStore();
+  const isReview = reviewDate !== null;
+
   const [sorting, setSorting] = useState<SortingState>([{ id: 'time', desc: true }]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [dirFilter, setDirFilter] = useState<'ALL' | 'CALL' | 'PUT'>('ALL');
   const [minScore, setMinScore] = useState(0);
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [localDateFrom, setLocalDateFrom] = useState('');
+  const [localDateTo, setLocalDateTo] = useState('');
 
-  const { data, isLoading, isError } = useSignals(activeTicker);
+  // In review mode, dateTo is controlled by the global store. dateFrom is left alone.
+  const effectiveDateTo = isReview ? (reviewDate ?? '') : localDateTo;
+  const dateFrom = localDateFrom;
+  const dateTo = effectiveDateTo;
+
+  // Server-side filter in review mode (faster than client on 330K rows)
+  const { data, isLoading, isError } = useSignals(
+    activeTicker,
+    isReview ? reviewDate : null,
+    isReview ? reviewTime : null
+  );
   const allSignals = data?.signals ?? [];
 
-  // Client-side filtering
+  // Client-side filtering (still used for direction/score + local date range)
   const filtered = useMemo(() => {
     let rows = allSignals;
     if (dirFilter !== 'ALL') rows = rows.filter(r => r.direction === dirFilter);
@@ -202,7 +219,7 @@ export default function SignalsPage() {
           <input
             type="date"
             value={dateFrom}
-            onChange={e => setDateFrom(e.target.value)}
+            onChange={e => setLocalDateFrom(e.target.value)}
             className="rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-2 py-1 text-xs text-[var(--color-text-primary)]"
           />
         </div>
@@ -211,14 +228,19 @@ export default function SignalsPage() {
           <input
             type="date"
             value={dateTo}
-            onChange={e => setDateTo(e.target.value)}
-            className="rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-2 py-1 text-xs text-[var(--color-text-primary)]"
+            disabled={isReview}
+            onChange={e => setLocalDateTo(e.target.value)}
+            className="rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-2 py-1 text-xs text-[var(--color-text-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+            title={isReview ? 'Set by global historical mode — clear review mode to edit' : undefined}
           />
+          {isReview && (
+            <span className="text-[10px] text-amber-400">global</span>
+          )}
         </div>
 
-        {(dirFilter !== 'ALL' || minScore > 0 || dateFrom || dateTo) && (
+        {(dirFilter !== 'ALL' || minScore > 0 || dateFrom || (!isReview && dateTo)) && (
           <button
-            onClick={() => { setDirFilter('ALL'); setMinScore(0); setDateFrom(''); setDateTo(''); }}
+            onClick={() => { setDirFilter('ALL'); setMinScore(0); setLocalDateFrom(''); setLocalDateTo(''); }}
             className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
           >
             Clear

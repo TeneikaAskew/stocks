@@ -57,6 +57,24 @@ export function calculateATR(highs: number[], lows: number[], closes: number[], 
   return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
 }
 
+/**
+ * Volume-Weighted Average Price across the supplied bars.
+ * Uses typical price (H+L+C)/3 × volume, summed and divided by total volume.
+ * Returns null if bars are empty or total volume is zero.
+ */
+export function calculateVWAP(bars: Bar[]): number | null {
+  if (bars.length === 0) return null;
+  let pvSum = 0;
+  let volSum = 0;
+  for (const b of bars) {
+    const typical = (b.high + b.low + b.close) / 3;
+    pvSum += typical * b.volume;
+    volSum += b.volume;
+  }
+  if (volSum === 0) return null;
+  return pvSum / volSum;
+}
+
 export interface Indicators {
   ema9: number | null;
   ema20: number | null;
@@ -65,6 +83,7 @@ export interface Indicators {
   stochK: number | null;
   stochD: number | null;
   atr: number | null;
+  vwap: number | null;
 }
 
 export interface Bar {
@@ -77,7 +96,9 @@ export interface Bar {
 }
 
 export function computeIndicators(bars: Bar[]): Indicators {
-  if (bars.length === 0) return { ema9: null, ema20: null, ema50: null, rsi: null, stochK: null, stochD: null, atr: null };
+  if (bars.length === 0) {
+    return { ema9: null, ema20: null, ema50: null, rsi: null, stochK: null, stochD: null, atr: null, vwap: null };
+  }
   const closes = bars.map(b => b.close);
   const highs = bars.map(b => b.high);
   const lows = bars.map(b => b.low);
@@ -90,6 +111,7 @@ export function computeIndicators(bars: Bar[]): Indicators {
     stochK: stoch.k,
     stochD: stoch.d,
     atr: calculateATR(highs, lows, closes),
+    vwap: calculateVWAP(bars),
   };
 }
 

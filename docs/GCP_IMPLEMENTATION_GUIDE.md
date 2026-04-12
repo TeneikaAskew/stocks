@@ -829,8 +829,10 @@ CMD ["python", "-m", "gcp.premarket_brief"]   # overridden per-job at deploy tim
 | `fetch-etf-options` | `gcp.fetchers.fetch_etf_options` | 1 Gi | 1 | 300s | 2 |
 | `fetch-earnings-options` | `gcp.fetchers.fetch_earnings_options` | 1 Gi | 1 | 300s | 2 |
 | `fetch-alphavantage-intraday` | `gcp.fetchers.fetch_alphavantage_intraday` | 2 Gi | 1 | 3600s | 1 |
+| `fetch-economic-events` | `gcp.fetchers.fetch_economic_events` | 512 Mi | 1 | 300s | 1 |
+| `fetch-earnings-calendar` | `scripts/fetch_earnings_calendar.py` | 512 Mi | 1 | 300s | 1 |
 
-### Cloud Scheduler Triggers (21 total)
+### Cloud Scheduler Triggers (24 total)
 
 | Trigger Name | Cron (ET) | Target Job |
 |-------------|-----------|------------|
@@ -853,6 +855,8 @@ CMD ["python", "-m", "gcp.premarket_brief"]   # overridden per-job at deploy tim
 | `earnings-options-close-1` | `50 15 * * 1-5` | fetch-earnings-options |
 | `earnings-options-close-2` | `30 16 * * 1-5` | fetch-earnings-options |
 | `alphavantage-intraday-monthly` | `0 21 1 * *` | fetch-alphavantage-intraday |
+| `economic-events-daily` | `0 7 * * 1-5` | fetch-economic-events |
+| `earnings-calendar-daily` | `15 7 * * 1-5` | fetch-earnings-calendar |
 | `analyze-market-data-daily` | `0 18 * * 1-5` | (future) |
 | `run-pipeline-daily` | `30 18 * * 1-5` | (future) |
 
@@ -865,19 +869,26 @@ Cloud Run Job: premarket-brief
     ↓
 For each ticker [SPY, IWM, QQQ]:
   ├─ DataLoader.load_daily(ticker)          → Cloud SQL market_data_daily
-  ├─ add_all_indicators()                   → RSI, EMA, consecutive, etc.
+  ├─ add_all_indicators()                   → RSI, EMA, BB, MACD, StochRSI, etc.
   ├─ StratClassifier.classify_series()      → candle labels
   ├─ StratClassifier.detect_combos()        → strat_combo, strat_setup
   ├─ DataLoader.build_multi_timeframe()     → {D, W, M} aggregated DataFrames
   ├─ StratClassifier.calculate_ftfc()       → ftfc_score, direction
   ├─ check_call/put_conditions()            → premarket signal status
-  └─ Compile: price, RSI, strat, FTFC, signal_status, prev H/L
+  └─ Compile: price, change_pct, key levels (SMA200, BB, EMA9/20, ATR14),
+              RSI, StochRSI, MACD cross, vol regime, strat, FTFC, signal_status,
+              prev day OHLC, RVOL
     ↓
-Format Discord embed (per-ticker sections)
+Query economic_events table (today + 5 days ahead, high/medium importance)
+    ↓
+Format 3-embed Discord message:
+  1. Market Overview — price, change %, SMA200 position, RVOL, vol regime, FTFC
+  2. Ticker Analysis — key levels, momentum, strat/FTFC (3 inline fields/ticker)
+  3. Economic Calendar — today's events + week ahead
     ↓
 POST to DISCORD_WEBHOOK_URL
     ↓
-INSERT premarket_analysis row → Cloud SQL
+UPSERT premarket_analysis → Cloud SQL (32 columns incl. enriched levels)
 ```
 
 ### Data Flow: Real-Time Signal Monitor
@@ -901,6 +912,8 @@ For each ticker [SPY, IWM, QQQ]:
        ├─ fire_discord_alert() with:
        │    direction, price, total score, strength label
        │    base/strat breakdown, conditions, target, stop, RSI, RVOL, ORB
+       ├─ UPSERT signal_alerts → Cloud SQL (ticker, alert_ts, direction,
+       │    scores, price, target, RSI, RVOL, ORB levels, conditions_met JSONB)
        └─ trade_logger.log_trade() → Cloud SQL trades + Parquet backup
     ↓
 Sleep 60 seconds
@@ -947,6 +960,60 @@ For each symbol [SPY, IWM, QQQ]:
        └─ Upload parquet                    → GCS raw/{ticker}/intraday/{ticker}_av_1min_YYYYMM.parquet
 ```
 
+### Data Flow: Economic Events (daily)
+
+```
+Cloud Scheduler (7:00 AM ET weekdays)
+    ↓
+Cloud Run Job: fetch-economic-events --source fred
+    ↓
+├─ FRED releases/dates API → upcoming release dates (30 days ahead)
+│    Classifies importance via EVENT_IMPORTANCE lookup table
+│    (CPI/FOMC/NFP/GDP/PCE = high; Retail Sales/ISM/PPI = medium; etc.)
+├─ (optional) Load market_events.json for hardcoded calendar events
+└─ Deduplicate on (event_date, event_name)
+    ↓
+UPSERT economic_events → Cloud SQL
+    (ON CONFLICT (event_date, event_name) DO UPDATE)
+```
+
+### Data Flow: Earnings Calendar (daily, 3 sources)
+
+```
+Cloud Scheduler (7:15 AM ET weekdays)
+    ↓
+Cloud Run Job: fetch-earnings-calendar --source all --days 30
+    ↓
+Source 1 (FIRST — date truth): AlphaVantage EARNINGS_CALENDAR
+  ├─ GET /query?function=EARNINGS_CALENDAR&horizon=3month (CSV response)
+  ├─ Columns: symbol, name, reportDate, fiscalDateEnding, estimate, timeOfTheDay
+  └─ Builds ticker → (date, time) override map used by UW + EW
+    ↓
+Source 2: Unusual Whales API (public, no auth)
+  ├─ GET upcoming_earnings_v2?formats=table
+  ├─ → ticker, date, company, time, EPS est, sector, market cap, expected move
+  └─ Apply AV date override: if ticker in AV map, replace date/time with AV values
+    ↓
+Source 3: Earnings Whispers (cookie-based auth)
+  ├─ 3-step login: GET /login → extract CSRF → POST credentials → follow redirect
+  ├─ GET 9 strategy endpoints (/api/getlongcalls, /api/getbullcallspread, etc.)
+  ├─ → ticker, date, company, strategy, strike, expiration, premium, score
+  └─ Apply AV date override: if ticker in AV map, replace date/time with AV values
+    ↓
+Normalize earnings_time to {premarket, intraday, postmarket, unknown}
+  (EW returns 1/2/3; UW returns premarket/postmarket/unknown; AV returns similar)
+    ↓
+Dedupe by priority: EarningsWhispers > AlphaVantage > UnusualWhales
+    ↓
+Save to data/earnings/earnings_calendar.json
+    ↓
+UPSERT earnings_calendar → Cloud SQL (42 columns)
+    (ON CONFLICT (ticker, earnings_date, strategy, data_source) DO UPDATE)
+    data_source ∈ {alphavantage, earnings_whispers, unusual_whales}
+    GAS tracking columns (strike_hit, day0-5_check, hit_rsi, etc.) are NULL
+    initially and backfilled post-earnings by a separate process.
+```
+
 ---
 
 ## 11. Cloud SQL Schema
@@ -967,6 +1034,7 @@ For each symbol [SPY, IWM, QQQ]:
 | `trades` | Logged trades (entry/exit) | `(ticker, entry_time)` | ~10/week |
 | `premarket_analysis` | Daily pre-market brief data | `(analysis_date, ticker)` | 4/day |
 | `economic_events` | Economic calendar | `(event_date, event_name)` | ~20/week |
+| `earnings_calendar` | Earnings picks + tracking | `(ticker, earnings_date, strategy, data_source)` | ~600/fetch |
 
 ### market_data_daily Columns
 
@@ -1417,9 +1485,15 @@ FROM trades
 GROUP BY 1 ORDER BY 1 DESC LIMIT 8;
 ```
 
-### Upload Strategy CSVs to GCS
+### Earnings Options Ticker Resolution
 
-The `fetch-earnings-options` job reads active tickers from strategy CSVs in GCS:
+The `fetch-earnings-options` job resolves active tickers in priority order:
+
+1. **Cloud SQL `earnings_calendar` table** (primary) — tickers with `earnings_date` in the next 7 days. Populated by the `fetch-earnings-calendar` job at 7:15 AM ET.
+2. **GCS strategy CSVs** (fallback) — `sheets/*.csv` in the GCS bucket.
+3. **Local CSVs** (fallback) — `google-apps-script/data/*.csv`.
+
+To manually upload strategy CSVs to GCS (only needed if Cloud SQL path is unavailable):
 
 ```bash
 for f in google-apps-script/data/*.csv; do

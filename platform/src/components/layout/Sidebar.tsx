@@ -12,6 +12,7 @@ import {
   Search,
   NotebookPen,
   BrainCircuit,
+  HelpCircle,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
@@ -28,6 +29,7 @@ const navItems = [
   { path: '/signals', label: 'Signals', icon: Search },
   { path: '/journal', label: 'Journal', icon: NotebookPen },
   { path: '/insights', label: 'AI Insights', icon: BrainCircuit },
+  { path: '/help', label: 'Help & Glossary', icon: HelpCircle },
 ];
 
 export function Sidebar() {

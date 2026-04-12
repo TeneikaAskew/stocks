@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-03-01 (session 6)
+**Last Updated**: 2026-04-12 (session 8)
 
 ---
 
@@ -62,7 +62,8 @@
   - [x] `trades` table
   - [x] `premarket_analysis` table
   - [x] `economic_events` table
-  - [x] All indexes created (6 indexes)
+  - [x] All indexes created (7 indexes)
+    - [x] `idx_etf_options_ticker_source_date (ticker, data_source, snapshot_date DESC)` — covering index for Options Flow reader (created 2026-04-12)
 - **Note:** `gcp/schema.sql` patched — removed `id BIGSERIAL PRIMARY KEY` from `market_data_intraday`; PK is now `(ticker, interval, ts)` (required for PostgreSQL LIST partitioning).
 
 ### Secret Manager
@@ -144,6 +145,10 @@
   - [x] Fetches EOD options chains with real Greeks (delta, gamma, theta, vega)
   - [x] Respects centralized AV rate limit (150 RPM)
   - [x] Upserts to `etf_options_snapshots` with `data_source='alphavantage'`
+  - [x] Tickers: SPY, IWM, QQQ, SPX (SPX confirmed working 2026-04-12)
+  - [x] `--start-date` / `--end-date` for range backfills
+  - [x] `--skip-existing` flag (auto-enabled in range mode) — checks Cloud SQL before calling AV
+  - [x] Deployed as Cloud Run Job `fetch-av-options-backfill` (12h timeout) for multi-year backfills
 
 ### Infrastructure Scripts
 - [x] `gcp/setup_cloud_sql.sh` — One-shot provisioning
@@ -193,8 +198,10 @@
   - Indicator columns: `sma_200, ema_20, macd, macd_signal, macd_histogram, bb_upper, bb_lower, bb_width, bb_pct, price_vs_ema20`
 - [x] `etf_options_snapshots` — IWM 1,346,868 rows ✅ exact match
 - [x] `etf_options_snapshots` — QQQ 2,840,359 rows ✅ exact match
-- [~] `etf_options_snapshots` — ^SPX ~5.2M rows (target ~6.8M) — migration in progress
-- [~] `etf_options_snapshots` — SPY ~460K rows (target ~3.1M) — migration in progress
+- [~] `etf_options_snapshots` — ^SPX ~5.2M rows (Yahoo, data_source=NULL) — to be deleted after AV backfill completes
+- [x] `etf_options_snapshots` — SPY AV: 2015-01-02 → 2026-04-09 (internal gap 2021-10 → 2023-04, filling via Cloud Run Job)
+- [~] `etf_options_snapshots` — SPX AV: backfill in progress (Cloud Run Job, 10yr range 2016 → 2026)
+- [~] `etf_options_snapshots` — Yahoo rows (~23M, data_source IS NULL) — orphaned, no consumers, pending deletion
 - [ ] `earnings_options_snapshots` — not yet migrated
 - [ ] `trades` — not yet migrated
 
@@ -218,17 +225,18 @@
   - `us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system:latest`
 - **Note:** `gcp/deploy.sh build` updated to use a minimal temp build context (86 files / ~1.3 MB) instead of the full repo (4 GB). Copies only `lib/`, `gcp/`, `scripts/`, `alert_config.json`, `requirements-gcp.txt`.
 
-### Cloud Run Jobs (7 jobs) ✅ 2026-02-23
+### Cloud Run Jobs (8 jobs) ✅ 2026-02-23 (updated 2026-04-12)
 - [x] `fetch-market-data` — deployed
 - [x] `fetch-etf-options` — deployed
 - [x] `fetch-earnings-options` — deployed
 - [x] `fetch-alphavantage-intraday` — deployed
-- [x] `premarket-brief` — deployed
-- [x] `signal-monitor` — deployed as Job (8h timeout; exits at market close)
+- [x] `premarket-brief` — deployed; now writes to `premarket_analysis` (32 cols) + queries `economic_events`
+- [x] `signal-monitor` — deployed; now writes to `signal_alerts` + `trades` via TradeLogger
 - [x] `weekend-review` — deployed
+- [x] `fetch-economic-events` — **new** (2026-04-12): FRED releases → `economic_events` table
 - **Note:** `signal-monitor` converted from Cloud Run Service → Job (no HTTP server needed for polling loop)
 
-### Cloud Scheduler Triggers (22 triggers) ✅ 2026-02-23
+### Cloud Scheduler Triggers (23 triggers) ✅ 2026-02-23 (updated 2026-04-12)
 - [x] `premarket-brief-daily` — `30 8 * * 1-5` ET
 - [x] `signal-monitor-daily` — `25 9 * * 1-5` ET (new — was missing)
 - [x] `weekend-review-weekly` — `0 9 * * 6` ET
@@ -236,6 +244,7 @@
 - [x] `etf-options-0930` through `etf-options-1605` — 9 triggers
 - [x] `earnings-opts-0900` through `earnings-opts-1630` — 6 triggers
 - [x] `av-intraday-monthly` — `0 21 1 * *` ET
+- [x] `economic-events-daily` — `0 7 * * 1-5` ET (**new** 2026-04-12)
 - [ ] Test manual trigger on each job
 
 ### Monitoring
@@ -442,6 +451,17 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 - 2026-02-23: chore(devcontainer) — forwardPorts [5173, 8000] with labels for Codespace auto-forwarding
 - 2026-03-01: feat(platform) — add markdown rendering (marked) for ReportsPage tables and InsightsPage chat bubbles; prose-report CSS styles
 - 2026-03-01: chore(workflows) — remove yfinance/yahooquery from GitHub Actions pip installs (analyze-market-data, fetch-earnings-options, update-economic-events-calendar)
+- 2026-04-10: fix(platform) — header market-session badge + ticker price now driven by live /api/live/status and /api/live/quote via shared useLiveStatus/useLiveQuote hooks; dead marketStore deleted (badge was permanently stuck on "Market Closed")
+- 2026-04-10: feat(platform) — PlaybookPage auto-evaluates each card's condition strings against a live MarketSnapshot (RSI/VWAP/EMA/StochRSI/RVOL/ORB/prev-day levels/minutes-since-open) via new lib/playbookEvaluator.ts regex mapper; cards light up in direction color (green CALL / red PUT), counter reads metCount/total with "N subjective" suffix for unevaluable conditions, progress bar and border intensify as live market satisfies the setup
+- 2026-04-12: feat(gcp) — Cloud Run jobs now write to ALL Cloud SQL tables: premarket_brief → premarket_analysis (32 cols with key levels, vol regime, MACD cross); signal_monitor → signal_alerts + trades; new fetch_economic_events fetcher → economic_events (FRED API + JSON); premarket brief rewritten as rich 3-embed Discord message (overview, ticker analysis, economic calendar); options dates endpoint uses widening-range scan with 12h TTL cache; schema.sql gains 14 new columns on premarket_analysis; deploy.sh gains fetch-economic-events job + economic-events-daily scheduler trigger
+- 2026-04-12: fix(platform) — Options Flow page rewritten from broken live-AV proxy to Cloud SQL reader backed by `etf_options_snapshots WHERE data_source='alphavantage'`. Endpoints: `/api/options/dates/{ticker}` (widening-range scan, 12h TTL cache) and `/api/options/{ticker}/{date}` (full chain, 12h TTL cache). Frontend now surfaces real API error messages, shows "Source: AlphaVantage EOD · Cloud SQL" footer. Added SPX to VALID_TICKERS after confirming AV supports SPX (9,166 contracts/day) + SPXW (19,026). Covering index `idx_etf_options_ticker_source_date(ticker, data_source, snapshot_date DESC)` created.
+- 2026-04-12: fix(workflows) — fetch-alphavantage-options-daily.yml was calling `scripts/fetch_alphavantage_options.py` (local parquets → git commit) instead of `gcp.fetchers.fetch_av_historical_options` (Cloud SQL writer). Fixed: now calls the Cloud SQL writer with `--start-date`/`--end-date` support. Documents 7 required GitHub repo secrets. Old script bannered as local-only.
+- 2026-04-12: feat(fetchers) — `gcp/fetchers/fetch_av_historical_options.py` gains `--start-date`/`--end-date` for range backfills, `--skip-existing` flag (auto-enabled in range mode) that checks Cloud SQL before calling AV, SPX added to TICKERS. Deployed as Cloud Run Job `fetch-av-options-backfill` with 12h timeout for 10-year backfill.
+- 2026-04-12: data(backfill) — 10-year AV options backfill (2016-04-10 → 2026-04-11) for SPY/IWM/QQQ/SPX launched as Cloud Run Job. SPY has near-complete coverage 2015 → 2026 (internal gap 2021-10 → 2023-04). IWM through 2024-09, QQQ through 2024-05, SPX starting from 2016-04. Job resumes automatically via `--skip-existing`.
+- 2026-04-12: docs — INFRASTRUCTURE_NOTES.md created: documents deferred Cloud SQL tier upgrade (db-g1-small → db-custom-2-4096), reasoning, re-evaluation triggers, short-term mitigations (covering index, 12h TTL cache, widening-range scan)
+- 2026-04-12: feat(gcp) — new `earnings_calendar` Cloud SQL table (42 cols) with dual-source persistence from Unusual Whales + Earnings Whispers; fetch_earnings_calendar.py gains EW cookie-based auth (mirrors GAS 04_Code.js login flow), 9 strategy endpoints, Cloud SQL upsert; deploy.sh gains fetch-earnings-calendar Cloud Run Job + earnings-calendar-daily scheduler trigger; GAS tracking columns (strike_hit, day0-5_check, hit_rsi, ohlc_volume, etc.) present as NULLable for future backfill
+- 2026-04-12: feat(fetchers) — fetch_earnings_options.py resolves tickers from earnings_calendar SQL table (7-day lookahead) instead of GCS/local CSVs; CSVs kept as fallback
+- 2026-04-12: feat(scripts) — add AlphaVantage EARNINGS_CALENDAR as 3rd source in fetch_earnings_calendar.py; AV is date-of-truth, overrides EW/UW dates via ticker lookup; normalize_earnings_time() unifies 1/2/3/premarket/postmarket to {premarket, intraday, postmarket, unknown}; Cloud SQL now holds 9,510 rows across 3 sources (8,783 AV, 490 EW, 237 UW) with 557 overlapping (ticker, date) pairs
 
 ---
 

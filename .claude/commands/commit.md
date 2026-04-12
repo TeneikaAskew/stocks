@@ -51,6 +51,10 @@ List every modified, added, and deleted file. Do not proceed until you have a co
 | `scripts/generate_backtest_report.py` | `BACKTEST_RESULTS.md` | Report format changes |
 | `website/` or `chart-viewer/` or `options-heatseeker/` or `success-report-site/` | `google-apps-script/WEB_APP_ISSUES_ANALYSIS.md` | UI/UX changes, new features |
 | `google-apps-script/` | `google-apps-script/CODE_STRUCTURE.md` | New scripts, API changes |
+| `platform/api/` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (Platform API) | New routers, endpoint changes, response shape changes |
+| `platform/src/` | (no primary doc) | N/A |
+| `tradingview-pine-scripts/` | `tradingview-pine-scripts/README.md` | New indicators, version upgrades, parameter changes |
+| `.claude/agents/` or `.claude/commands/` | (no primary doc) | N/A |
 | `tests/` | `docs/GCP_IMPLEMENTATION_STATUS.md` (Test Results table) | After every test run |
 | **Any commit** | `docs/GCP_IMPLEMENTATION_STATUS.md` | Every commit — update Last Updated date + add one-line entry to a running change log |
 
@@ -79,9 +83,14 @@ List every modified, added, and deleted file. Do not proceed until you have a co
    | `feat(indicators)` | `lib/indicators.py` changes |
    | `feat(scripts)` | `scripts/` CLI scripts |
    | `feat(analysis)` | `scripts/analysis/` + `reports/phase*.md` together |
-   | `feat(web)` | Web app directories |
+   | `feat(web)` | Web app directories (options-heatseeker, chart-viewer, website, success-report-site) |
+   | `feat(platform-api)` | `platform/api/` changes (FastAPI routers, endpoints) |
+   | `feat(platform-ui)` | `platform/src/` changes (React components, hooks, routes) |
+   | `feat(platform)` | Cross-cutting platform changes spanning both `platform/api/` and `platform/src/` |
+   | `feat(pine)` | `tradingview-pine-scripts/` indicator changes |
    | `feat(workflows)` | `.github/workflows/` changes + docs |
    | `feat(config)` | `alert_config.json`, `lib/config.py` together |
+   | `chore(agents)` | `.claude/agents/` or `.claude/commands/` changes |
    | `chore(deps)` | `requirements.txt` alone (unless paired with feature) |
    | `docs` | Standalone doc-only changes with no corresponding code change |
 
@@ -102,6 +111,9 @@ List every modified, added, and deleted file. Do not proceed until you have a co
    ```
 
    - Types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`
+   - **Imperative mood required**: First word MUST be an imperative verb (add, fix, update, remove, refactor, implement, improve, simplify, extract, rename) — NOT past tense ("added", "fixed") or gerund ("updating", "removing")
+   - Subject line must NOT end with a period
+   - Body lines wrap at 72 characters
    - NEVER include `Co-Authored-By:`, email addresses, or AI attribution
    - NEVER use the 🤖 emoji
 
@@ -114,12 +126,29 @@ List every modified, added, and deleted file. Do not proceed until you have a co
 
 ---
 
+## Phase 3.5: Update Changelog
+
+**MANDATORY** — Every commit must be reflected in the changelog.
+
+8b. **Append to current changelog** at `docs/changelog/`:
+   - Check `docs/changelog/` for the most recent `CHANGELOG_*.md` file
+   - If no file covers the current week, create one: `CHANGELOG_YYYY-MM-DD_to_YYYY-MM-DD.md` (Monday to Sunday)
+   - If `docs/changelog/` does not exist, create it: `mkdir -p docs/changelog`
+   - For each commit group, add a brief entry under the appropriate section:
+     - If an existing section covers this area, append to it
+     - If it's a new area, add a new section with: **Date**, **Commit(s)**, **Files**, **What Changed**, **Why**, **Benefit**
+   - Follow the format of existing changelogs (use the most recent `CHANGELOG_*.md` as template)
+   - Update the file header line count and summary table if present
+   - Include the changelog file in the same commit as the code it documents (or as a separate `docs` commit if the code was already committed)
+
+---
+
 ## Phase 4: Status Tracker Update
 
 9. After all commits are done, read `docs/GCP_IMPLEMENTATION_STATUS.md` and:
    - Update the **Last Updated** date at the top to today
    - Update the **Test Results** table row with current pass/fail counts and date (run `make test` if you don't have a recent result)
-   - Add a **Change Log** entry if one exists, or append to the Notes section:
+   - Add a one-line entry to the Change Log section:
      ```
      - YYYY-MM-DD: <one-line summary of what this session changed>
      ```

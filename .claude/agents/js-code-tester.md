@@ -77,3 +77,38 @@ Special considerations for JavaScript/TypeScript:
 - Check for proper error handling in async code
 - Verify proper cleanup in tests (timers, event listeners, subscriptions)
 - Consider testing with different Node.js versions if relevant
+
+## Project Context — Stocks Trading Platform
+
+The main JS/TS codebase lives in `platform/` — a Vite 7 + React 19 + TypeScript + Tailwind CSS 4 application.
+
+**Test commands** (always use these first):
+
+| Command | Purpose |
+|---------|---------|
+| `cd platform && npx vitest run` | Run all Vitest unit/component tests |
+| `cd platform && npx vitest` | Watch mode (re-runs on file change) |
+| `cd platform && npx vitest run src/utils/` | Run tests for a specific directory |
+| `cd platform && npx eslint .` | Lint check |
+| `cd platform && npx tsc -b` | TypeScript type check |
+| `cd platform && npx playwright test` | Platform E2E tests (separate from root E2E) |
+
+**Stack:** Vite 7, React 19, TypeScript, Tailwind CSS 4, TanStack Query, Recharts, Vitest
+
+**Architecture:**
+- 10 routes: `/` Dashboard, `/live`, `/charts`, `/options`, `/playbook`, `/backtest`, `/reports`, `/signals`, `/journal`, `/insights`
+- 7 FastAPI routers (Python backend on port 8000): live, options, playbook, backtest, signals, insights, journal
+- Vite dev server on port 5173 proxies `/api` to `:8000`
+- Source files: `platform/src/` (routes, components, hooks, utils)
+- Test files: `platform/src/**/*.test.ts` or `platform/src/**/*.test.tsx`
+- Platform E2E: `platform/tests/phase1-charts.spec.ts`
+
+**Environment setup for integration tests:**
+- FastAPI backend must be running: `cd platform && set -a && source ../.env && set +a && uvicorn api.main:app --port 8000`
+- Or use production mode: `cd platform && npm run build && uvicorn api.main:app --port 8000`
+
+**When testing changes to:**
+- `platform/src/routes/` → run Vitest + type check
+- `platform/src/components/` → run Vitest for affected components
+- `platform/src/hooks/` or `platform/src/utils/` → run Vitest for that directory
+- `platform/api/` (Python) → use python-code-tester agent instead, or run `make test`
