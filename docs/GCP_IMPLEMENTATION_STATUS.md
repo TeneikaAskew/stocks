@@ -461,6 +461,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 - 2026-04-12: docs — INFRASTRUCTURE_NOTES.md created: documents deferred Cloud SQL tier upgrade (db-g1-small → db-custom-2-4096), reasoning, re-evaluation triggers, short-term mitigations (covering index, 12h TTL cache, widening-range scan)
 - 2026-04-12: feat(gcp) — new `earnings_calendar` Cloud SQL table (42 cols) with dual-source persistence from Unusual Whales + Earnings Whispers; fetch_earnings_calendar.py gains EW cookie-based auth (mirrors GAS 04_Code.js login flow), 9 strategy endpoints, Cloud SQL upsert; deploy.sh gains fetch-earnings-calendar Cloud Run Job + earnings-calendar-daily scheduler trigger; GAS tracking columns (strike_hit, day0-5_check, hit_rsi, ohlc_volume, etc.) present as NULLable for future backfill
 - 2026-04-12: feat(fetchers) — fetch_earnings_options.py resolves tickers from earnings_calendar SQL table (7-day lookahead) instead of GCS/local CSVs; CSVs kept as fallback
+- 2026-04-12: feat(scripts) — add AlphaVantage EARNINGS_CALENDAR as 3rd source in fetch_earnings_calendar.py; AV is date-of-truth, overrides EW/UW dates via ticker lookup; normalize_earnings_time() unifies 1/2/3/premarket/postmarket to {premarket, intraday, postmarket, unknown}; Cloud SQL now holds 9,510 rows across 3 sources (8,783 AV, 490 EW, 237 UW) with 557 overlapping (ticker, date) pairs
 
 ---
 

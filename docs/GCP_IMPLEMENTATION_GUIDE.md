@@ -977,28 +977,39 @@ UPSERT economic_events → Cloud SQL
     (ON CONFLICT (event_date, event_name) DO UPDATE)
 ```
 
-### Data Flow: Earnings Calendar (daily)
+### Data Flow: Earnings Calendar (daily, 3 sources)
 
 ```
 Cloud Scheduler (7:15 AM ET weekdays)
     ↓
 Cloud Run Job: fetch-earnings-calendar --source all --days 30
     ↓
-Source 1: Unusual Whales API (public, no auth)
-  └─ GET upcoming_earnings_v2?formats=table
-     → ticker, date, company, time, EPS est, sector, market cap, expected move
+Source 1 (FIRST — date truth): AlphaVantage EARNINGS_CALENDAR
+  ├─ GET /query?function=EARNINGS_CALENDAR&horizon=3month (CSV response)
+  ├─ Columns: symbol, name, reportDate, fiscalDateEnding, estimate, timeOfTheDay
+  └─ Builds ticker → (date, time) override map used by UW + EW
     ↓
-Source 2: Earnings Whispers (cookie-based auth)
+Source 2: Unusual Whales API (public, no auth)
+  ├─ GET upcoming_earnings_v2?formats=table
+  ├─ → ticker, date, company, time, EPS est, sector, market cap, expected move
+  └─ Apply AV date override: if ticker in AV map, replace date/time with AV values
+    ↓
+Source 3: Earnings Whispers (cookie-based auth)
   ├─ 3-step login: GET /login → extract CSRF → POST credentials → follow redirect
-  └─ GET 9 strategy endpoints (/api/getlongcalls, /api/getbullcallspread, etc.)
-     → ticker, date, company, strategy, strike, expiration, premium, score
+  ├─ GET 9 strategy endpoints (/api/getlongcalls, /api/getbullcallspread, etc.)
+  ├─ → ticker, date, company, strategy, strike, expiration, premium, score
+  └─ Apply AV date override: if ticker in AV map, replace date/time with AV values
     ↓
-Merge + deduplicate on (ticker, date), EW preferred over UW
+Normalize earnings_time to {premarket, intraday, postmarket, unknown}
+  (EW returns 1/2/3; UW returns premarket/postmarket/unknown; AV returns similar)
+    ↓
+Dedupe by priority: EarningsWhispers > AlphaVantage > UnusualWhales
     ↓
 Save to data/earnings/earnings_calendar.json
     ↓
 UPSERT earnings_calendar → Cloud SQL (42 columns)
     (ON CONFLICT (ticker, earnings_date, strategy, data_source) DO UPDATE)
+    data_source ∈ {alphavantage, earnings_whispers, unusual_whales}
     GAS tracking columns (strike_hit, day0-5_check, hit_rsi, etc.) are NULL
     initially and backfilled post-earnings by a separate process.
 ```
