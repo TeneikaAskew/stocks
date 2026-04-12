@@ -53,6 +53,161 @@ EW_STRATEGY_ENDPOINTS = {
 EW_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 
+# ── Shared normalization ────────────────────────────────────────────────────
+
+def normalize_earnings_time(val) -> str:
+    """Normalize earnings release time to a consistent vocabulary.
+
+    Earnings Whispers uses numeric codes (1=before open, 2=intraday, 3=after close).
+    Unusual Whales uses lowercase strings ('premarket', 'postmarket').
+    GAS `15_SuccessReport.js` lines 1560-1561 confirm: releaseTime 1→beforeOpen,
+    3→afterClose. Value 2 is rare and unmapped in GAS — we treat it as 'intraday'.
+
+    Returns one of: 'premarket', 'intraday', 'postmarket', 'unknown'
+    """
+    if val is None:
+        return 'unknown'
+    s = str(val).strip().lower()
+    if s in ('', 'none', 'null', 'nan', 'unknown'):
+        return 'unknown'
+    # EW numeric codes
+    if s == '1' or s == '1.0':
+        return 'premarket'
+    if s == '2' or s == '2.0':
+        return 'intraday'
+    if s == '3' or s == '3.0':
+        return 'postmarket'
+    # UW / already-normalized strings
+    if s in ('premarket', 'pre-market', 'bmo', 'before open', 'beforeopen'):
+        return 'premarket'
+    if s in ('postmarket', 'post-market', 'amc', 'after close', 'afterclose'):
+        return 'postmarket'
+    if s in ('intraday', 'during', 'duringmarket'):
+        return 'intraday'
+    return 'unknown'
+
+
+# ── Shared numeric helper ───────────────────────────────────────────────────
+
+def _safe_num(val):
+    """Return float(val) or None if conversion fails / empty."""
+    if val is None or val == '' or (isinstance(val, float) and pd.isna(val)):
+        return None
+    try:
+        f = float(val)
+        return None if pd.isna(f) else f
+    except (ValueError, TypeError):
+        return None
+
+
+# ── AV date override helper ─────────────────────────────────────────────────
+
+def _apply_av_date_override(df: pd.DataFrame, av_dates: dict) -> int:
+    """Override each row's date/time with AV's value when ticker matches.
+
+    Mutates df in place. Returns the number of rows whose date was changed.
+    """
+    if df.empty or not av_dates:
+        return 0
+    count = 0
+    for idx in df.index:
+        ticker = df.at[idx, 'ticker']
+        if ticker in av_dates:
+            av_date, av_time = av_dates[ticker]
+            if df.at[idx, 'date'] != av_date:
+                df.at[idx, 'date'] = av_date
+                count += 1
+            # Always align time to AV (keeps vocabulary consistent)
+            df.at[idx, 'time'] = av_time
+    return count
+
+
+# ── AlphaVantage earnings calendar (source of truth for dates) ──────────────
+
+def fetch_alphavantage_earnings(horizon: str = '3month') -> pd.DataFrame:
+    """Fetch AlphaVantage EARNINGS_CALENDAR (CSV) as the date-of-truth source.
+
+    AV pulls from SEC filings so its reportDate is authoritative. We use this
+    to override EW and UW dates when they disagree. Returns a DataFrame with
+    the common earnings_calendar schema.
+    """
+    api_key = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
+    if not api_key:
+        logger.info("AV_API_KEY / ALPHA_VANTAGE_API_KEY not set — skipping AV earnings")
+        return pd.DataFrame()
+
+    url = 'https://www.alphavantage.co/query'
+    params = {'function': 'EARNINGS_CALENDAR', 'horizon': horizon, 'apikey': api_key}
+    logger.info("Fetching AV earnings calendar (horizon=%s)...", horizon)
+
+    try:
+        r = requests.get(url, params=params, timeout=30)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        logger.warning("AV request failed: %s", e)
+        return pd.DataFrame()
+
+    text = (r.text or '').strip()
+    if not text:
+        logger.warning("AV earnings returned empty body")
+        return pd.DataFrame()
+
+    # AV returns JSON error envelopes or "Information"/"Error Message" strings
+    # when rate-limited or key invalid, instead of CSV
+    lower_head = text[:200].lower()
+    if text.startswith('{') or 'error message' in lower_head or 'information' in lower_head or 'rate limit' in lower_head:
+        logger.warning("AV earnings returned non-CSV response: %s", text[:200])
+        return pd.DataFrame()
+
+    from io import StringIO
+    try:
+        df = pd.read_csv(StringIO(text))
+    except Exception as e:
+        logger.warning("AV CSV parse failed: %s", e)
+        return pd.DataFrame()
+
+    if df.empty or 'symbol' not in df.columns or 'reportDate' not in df.columns:
+        logger.warning("AV CSV missing expected columns, got: %s", list(df.columns))
+        return pd.DataFrame()
+
+    logger.info("AV returned %d earnings announcements", len(df))
+
+    records = []
+    for _, row in df.iterrows():
+        try:
+            rd = pd.to_datetime(row['reportDate'], errors='coerce')
+            if pd.isna(rd):
+                continue
+            ticker = str(row.get('symbol', '')).upper().strip()
+            if not ticker or len(ticker) > 10:
+                continue
+            records.append({
+                'date': rd.strftime('%Y-%m-%d'),
+                'ticker': ticker,
+                'company_name': str(row.get('name', '') or ''),
+                'time': normalize_earnings_time(row.get('timeOfTheDay')),
+                'eps_estimate': _safe_num(row.get('estimate')),
+                'market_cap': None,
+                'sector': '',
+                'has_options': None,
+                'expected_move': None,
+                'source': 'AlphaVantage',
+                'strategy': '',
+                'fetched_at': datetime.now().isoformat(),
+            })
+        except Exception as e:
+            logger.debug("Skipping AV row: %s", e)
+            continue
+
+    result = pd.DataFrame(records)
+    if not result.empty:
+        result = result.drop_duplicates(subset=['ticker', 'date'], keep='last')
+        result = result.sort_values('date').reset_index(drop=True)
+        logger.info("AV total: %d records across %d unique tickers",
+                     len(result), result['ticker'].nunique())
+    return result
+
+
 # ── Earnings Whispers auth + fetch ───────────────────────────────────────────
 
 def _ew_extract_csrf(html: str) -> str:
@@ -261,20 +416,13 @@ def fetch_earnings_whispers(user: str = None, password: str = None) -> pd.DataFr
         if not ticker or len(ticker) > 10:
             continue
 
-        # Safely extract numeric fields
-        def _safe_num(val):
-            if val is None or val == '':
-                return None
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                return None
-
         records.append({
             'date': ed.strftime('%Y-%m-%d'),
             'ticker': ticker,
             'company_name': str(row.get('company', '') or ''),
-            'time': str(row.get('earningsTime') or row.get('releaseTime') or ''),
+            'time': normalize_earnings_time(
+                row.get('earningsTime') or row.get('releaseTime')
+            ),
             'eps_estimate': None,
             'market_cap': None,
             'sector': '',
@@ -333,6 +481,7 @@ def persist_to_cloud_sql(df: pd.DataFrame) -> int:
     source_map = {
         'UnusualWhales': 'unusual_whales',
         'EarningsWhispers': 'earnings_whispers',
+        'AlphaVantage': 'alphavantage',
     }
     if 'source' in db_df.columns:
         db_df['data_source'] = db_df['source'].map(source_map).fillna(db_df['source'])
@@ -458,7 +607,7 @@ class EarningsCalendarFetcher:
                         "date": earnings_date.strftime("%Y-%m-%d"),
                         "ticker": item.get("symbol", ""),
                         "company_name": item.get("full_name", ""),
-                        "time": item.get("report_time", ""),  # premarket, postmarket
+                        "time": normalize_earnings_time(item.get("report_time")),
                         "eps_estimate": item.get("eps_mean_est"),
                         "market_cap": item.get("marketcap"),
                         "sector": item.get("sector", ""),
@@ -609,7 +758,7 @@ def main():
     )
 
     parser = argparse.ArgumentParser(
-        description="Fetch upcoming earnings calendar from Unusual Whales + Earnings Whispers"
+        description="Fetch upcoming earnings calendar from AlphaVantage + Unusual Whales + Earnings Whispers"
     )
     parser.add_argument(
         "--days",
@@ -629,9 +778,15 @@ def main():
     )
     parser.add_argument(
         "--source",
-        choices=["all", "uw", "ew"],
+        choices=["all", "uw", "ew", "av"],
         default="all",
-        help="Data source: all (default), uw (Unusual Whales only), ew (Earnings Whispers only)",
+        help="Data source: all (default), uw (Unusual Whales), ew (Earnings Whispers), av (AlphaVantage — date truth)",
+    )
+    parser.add_argument(
+        "--av-horizon",
+        choices=["3month", "6month", "12month"],
+        default="3month",
+        help="AlphaVantage earnings horizon (default: 3month)",
     )
 
     args = parser.parse_args()
@@ -649,16 +804,33 @@ def main():
         days_ahead = args.days
         print(f"Fetching earnings for next {days_ahead} days")
 
+    # ── AlphaVantage (FIRST — source of truth for dates) ──
+    av_dates: dict = {}  # ticker → (date, time)
+    if args.source in ("all", "av"):
+        av_df = fetch_alphavantage_earnings(horizon=args.av_horizon)
+        if not av_df.empty:
+            frames.append(av_df)
+            # Build override lookup
+            for _, row in av_df.iterrows():
+                av_dates[row['ticker']] = (row['date'], row['time'])
+            print(f"AV date-truth lookup built: {len(av_dates)} tickers")
+
     # ── Unusual Whales ──
     if args.source in ("all", "uw"):
         uw_df = fetcher.fetch_unusual_whales_earnings(days_ahead=days_ahead)
         if not uw_df.empty:
+            if av_dates:
+                overrides = _apply_av_date_override(uw_df, av_dates)
+                print(f"UW: applied AV date override to {overrides} rows")
             frames.append(uw_df)
 
     # ── Earnings Whispers ──
     if args.source in ("all", "ew"):
         ew_df = fetch_earnings_whispers()
         if not ew_df.empty:
+            if av_dates:
+                overrides = _apply_av_date_override(ew_df, av_dates)
+                print(f"EW: applied AV date override to {overrides} rows")
             frames.append(ew_df)
 
     if not frames:
@@ -667,11 +839,13 @@ def main():
 
     earnings_df = pd.concat(frames, ignore_index=True)
 
-    # Deduplicate: prefer Earnings Whispers rows (they have strategy details)
-    earnings_df = earnings_df.sort_values('source', ascending=False)  # EW before UW
+    # Deduplicate: prefer Earnings Whispers (has strategies) > AlphaVantage > UW
+    source_priority = {'EarningsWhispers': 0, 'AlphaVantage': 1, 'UnusualWhales': 2}
+    earnings_df['_priority'] = earnings_df['source'].map(source_priority).fillna(99)
+    earnings_df = earnings_df.sort_values('_priority')
     earnings_df = earnings_df.drop_duplicates(
         subset=['ticker', 'date'], keep='first'
-    ).sort_values('date').reset_index(drop=True)
+    ).drop(columns=['_priority']).sort_values('date').reset_index(drop=True)
 
     # Filter by date range if specified
     if args.start_date and args.end_date:
