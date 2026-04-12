@@ -50,13 +50,16 @@ except Exception as _exc:  # pragma: no cover - import-time guard
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-VALID_TICKERS = {"SPY", "IWM", "QQQ"}
+VALID_TICKERS = {"SPY", "IWM", "QQQ", "SPX"}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-# (ticker, date_str) → response dict; 1h TTL, max 256 distinct (ticker, date) pairs.
-_CHAIN_CACHE: TTLCache = TTLCache(maxsize=256, ttl=3600)
-# ticker → list[date_str]; 5 min TTL so new daily ingests surface quickly.
-_DATES_CACHE: TTLCache = TTLCache(maxsize=16, ttl=300)
+# (ticker, date_str) → response dict; 12h TTL (EOD rows are immutable).
+_CHAIN_CACHE: TTLCache = TTLCache(maxsize=512, ttl=43200)
+# ticker → list[date_str]; 12h TTL. Dates list only changes once per day when
+# the scheduled AV fetcher runs, so long TTL avoids re-running the distinct
+# scan on cold caches (which is expensive on db-g1-small without the composite
+# (ticker, data_source, snapshot_date) index in place).
+_DATES_CACHE: TTLCache = TTLCache(maxsize=16, ttl=43200)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -153,10 +156,24 @@ def _df_to_contracts(df: pd.DataFrame) -> list[dict]:
 
 # ── endpoints ────────────────────────────────────────────────────────────────
 
+# Widening range schedule used by the dates endpoint. The first query tries a
+# 60-day window, then 1y, 3y, 10y, unlimited — stopping as soon as we have a
+# reasonable number of dates. This keeps the index scan bounded on large tables
+# (critical without the composite (ticker, data_source, snapshot_date) index)
+# while still returning the full history if the table is small.
+_DATES_WINDOW_DAYS = (60, 365, 1100, 3650, None)
+_DATES_MIN_RESULTS = 40  # ≈ 2 months of weekdays
+
+
 @router.get("/api/options/dates/{ticker}")
 async def get_options_dates(ticker: str):
     """Return up to 1000 most-recent snapshot dates that have AlphaVantage data
     in Cloud SQL for the given ticker (newest first).
+
+    Uses a widening-range scan: tries a 60-day window first, expanding to 1y,
+    3y, 10y, and then unbounded if fewer than 40 dates are found. This keeps
+    cold queries bounded when the covering index on (ticker, data_source,
+    snapshot_date) isn't yet in place.
     """
     ticker_upper = _validate_ticker(ticker)
     _require_cloud_sql()
@@ -165,17 +182,41 @@ async def get_options_dates(ticker: str):
     if cached is not None:
         return {"ticker": ticker_upper, "dates": cached, "source": "cloud_sql", "cached": True}
 
-    sql = """
-        SELECT DISTINCT snapshot_date
-        FROM   etf_options_snapshots
-        WHERE  ticker = :ticker
-          AND  data_source = 'alphavantage'
-        ORDER  BY snapshot_date DESC
-        LIMIT  1000
-    """
-    df = query_to_dataframe(sql, {"ticker": ticker_upper})
+    dates: list[str] = []
+    window_used: str | None = None
+    for days in _DATES_WINDOW_DAYS:
+        if days is None:
+            sql = """
+                SELECT DISTINCT snapshot_date
+                FROM   etf_options_snapshots
+                WHERE  ticker = :ticker
+                  AND  data_source = 'alphavantage'
+                ORDER  BY snapshot_date DESC
+                LIMIT  1000
+            """
+            params = {"ticker": ticker_upper}
+            window_used = "unbounded"
+        else:
+            sql = """
+                SELECT DISTINCT snapshot_date
+                FROM   etf_options_snapshots
+                WHERE  ticker = :ticker
+                  AND  data_source = 'alphavantage'
+                  AND  snapshot_date >= CURRENT_DATE - make_interval(days => :days)
+                ORDER  BY snapshot_date DESC
+                LIMIT  1000
+            """
+            params = {"ticker": ticker_upper, "days": days}
+            window_used = f"{days}d"
 
-    if df.empty:
+        df = query_to_dataframe(sql, params)
+        if not df.empty:
+            dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
+                     for d in df["snapshot_date"].tolist()]
+        if len(dates) >= _DATES_MIN_RESULTS or days is None:
+            break
+
+    if not dates:
         raise HTTPException(
             status_code=404,
             detail=(
@@ -185,10 +226,14 @@ async def get_options_dates(ticker: str):
             ),
         )
 
-    dates = [d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)
-             for d in df["snapshot_date"].tolist()]
     _DATES_CACHE[ticker_upper] = dates
-    return {"ticker": ticker_upper, "dates": dates, "source": "cloud_sql", "cached": False}
+    return {
+        "ticker": ticker_upper,
+        "dates": dates,
+        "source": "cloud_sql",
+        "window": window_used,
+        "cached": False,
+    }
 
 
 @router.get("/api/options/{ticker}/{date_str}")
