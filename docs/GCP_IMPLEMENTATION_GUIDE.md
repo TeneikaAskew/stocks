@@ -1417,12 +1417,12 @@ When not set: all data access uses local Parquet files (no changes required for 
 
 Once GCP jobs are validated with 1 week of parallel operation, disable the equivalent workflows:
 
-| Cloud Run Job | GitHub Action to Disable | Command |
-|--------------|--------------------------|---------|
-| `fetch-market-data` | `fetch-market-data.yml` | `gh workflow disable fetch-market-data.yml` |
-| `fetch-etf-options` | `fetch_etf_options.yml` | `gh workflow disable fetch_etf_options.yml` |
-| `fetch-earnings-options` | `fetch-earnings-options.yml` | `gh workflow disable fetch-earnings-options.yml` |
-| `fetch-alphavantage-intraday` | `fetch-alphavantage-intraday-monthly.yml` | `gh workflow disable fetch-alphavantage-intraday-monthly.yml` |
+| Cloud Run Job | GitHub Action to Disable | Status |
+|--------------|--------------------------|--------|
+| `fetch-market-data` | `fetch-market-data.yml` | ✅ Disabled 2026-04-13 (renamed `.disabled`) |
+| `fetch-etf-options` | `fetch_etf_options.yml` | ⏳ Pending |
+| `fetch-earnings-options` | `fetch-earnings-options.yml` | ⏳ Pending |
+| `fetch-alphavantage-intraday` | `fetch-alphavantage-intraday-monthly.yml` | ⏳ Pending |
 
 ```bash
 # Disable (keeps file, stops running)
