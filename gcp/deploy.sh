@@ -73,6 +73,12 @@ _env_string() {
     env="${env},DB_PASS=$(_secret db-trading-pass)"
     env="${env},DB_NAME=trading"
     env="${env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+    local av_key
+    av_key="$(_secret av-api-key 2>/dev/null || true)"
+    [ -n "$av_key" ] && env="${env},AV_API_KEY=${av_key},ALPHA_VANTAGE_API_KEY=${av_key}"
+    local fred_key
+    fred_key="$(_secret fred-api-key 2>/dev/null || true)"
+    [ -n "$fred_key" ] && env="${env},FRED_API_KEY=${fred_key}"
     local webhook
     webhook="$(_secret discord-webhook 2>/dev/null || true)"
     [ -n "$webhook" ] && env="${env},DISCORD_WEBHOOK_URL=${webhook}"
