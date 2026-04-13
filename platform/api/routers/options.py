@@ -125,11 +125,10 @@ def _df_to_contracts(df: pd.DataFrame) -> list[dict]:
     # Drop rows with missing core fields the frontend requires.
     df = df.dropna(subset=["option_type", "strike", "expiration"])
 
-    # Replace pandas NaN with None for JSON serialization.
-    df = df.where(pd.notnull(df), None)
-
     # Plural → singular for `type` field.
     type_map = {"calls": "call", "puts": "put"}
+
+    import math
 
     records: list[dict] = []
     for row in df.to_dict(orient="records"):
@@ -139,6 +138,11 @@ def _df_to_contracts(df: pd.DataFrame) -> list[dict]:
                 continue
             key = _COLUMN_ALIAS.get(col, col)
             val = row[col]
+            # NaN → None at the value level. df.where(pd.notnull(df), None)
+            # doesn't work for float columns because pandas re-coerces None
+            # back to NaN. Must handle it on the dict that goes to json.dumps.
+            if isinstance(val, float) and math.isnan(val):
+                val = None
             if col == "option_type":
                 # Frontend expects `type` (singular value 'call'/'put').
                 out["type"] = type_map.get(str(val).lower() if val else "", val)
