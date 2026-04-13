@@ -3,6 +3,59 @@
 ## Overview
 This repository contains tools for analyzing stock market data (IWM, SPY, QQQ, SPX), calculating technical indicators, generating trading signals, backtesting strategies, and fetching real-time market data. The system implements a **contrarian mean-reversion strategy** with **The Strat** candle classification and **Full Timeframe Continuity (FTFC)** filtering.
 
+A unified React/FastAPI **Platform** lives under [`platform/`](platform/) and reads all data from Cloud SQL + GCS on demand (no pre-pull required).
+
+## Platform Quickstart
+
+Run both the FastAPI backend (port 8000) and the Vite dev server (port 5173) with a single command:
+
+```bash
+make dev
+```
+
+This starts both servers in parallel with interleaved logs prefixed `[api]` and `[web]`. `.env` is sourced automatically. Press `Ctrl+C` to stop both cleanly.
+
+### Individual targets
+
+| Command | What it does |
+|---|---|
+| `make dev` | Start FastAPI + Vite together (recommended) |
+| `make api` | Start only the FastAPI backend on port 8000 |
+| `make web` | Start only the Vite dev server on port 5173 |
+| `make stop` | Kill any running dev servers |
+
+### Requirements
+
+- Python deps: `make install`
+- Node deps: `cd platform && npm install` (once per fresh codespace)
+- `.env` at project root with `GOOGLE_APPLICATION_CREDENTIALS` pointing to `.gcp-key.json`
+- `.gcp-key.json` at project root for Cloud SQL + GCS auth
+
+### Where data comes from
+
+**No data is stored in git.** The platform reads everything on demand:
+- **Cloud SQL** (`adept-mountain-474619-d4:us-east1:trading-db`) — market_data_daily, market_data_intraday, etf_options_snapshots, journal_entries, premarket_analysis
+- **GCS** (`gs://adept-mountain-474619-d4-trading-data/raw/`) — backtest CSVs, signals parquets, phase reports, historical parquets
+
+The API caches GCS reads in memory with a TTL (1h for backtest/signals, 24h for markdown reports). First request per resource is slower; subsequent requests are <50ms. See [data/README.md](data/README.md) for the full philosophy.
+
+### Accessing the platform
+
+Once `make dev` is running, VS Code's **Ports** tab (bottom panel) will auto-forward:
+- **Vite**: `https://<codespace>-5173.app.github.dev` — the UI
+- **API**: `https://<codespace>-8000.app.github.dev` — FastAPI with `/docs` endpoint
+
+Routes available at the Vite URL: `/` Dashboard, `/live` Live Market, `/charts`, `/options` Options Flow, `/playbook`, `/backtest`, `/reports`, `/signals`, `/journal`, `/insights`.
+
+### Troubleshooting
+
+- **"Failed to fetch dynamically imported module"** — Vite isn't running. Run `make dev`.
+- **Ports don't appear in VS Code Ports tab** — ports opened by a different terminal session may not be auto-detected. Click "Forward a Port" in the Ports tab and enter `5173` / `8000`.
+- **API returns 500 "GCS auth failed"** — Check `.gcp-key.json` exists at project root or run `gcloud auth application-default login`.
+- **Dev server crashed after restart** — Codespace sleep kills both processes. Just `make dev` again.
+
+---
+
 ## Main Components
 
 ### 1. IWM Analysis (`iwm_analysis.py`)
