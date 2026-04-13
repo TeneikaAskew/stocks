@@ -73,8 +73,17 @@ def load_earnings_for_brief(today: date, weekly: bool = False) -> dict:
     On weekdays (weekly=False): returns today's earnings only.
     On Sundays (weekly=True):   returns the upcoming Mon-Fri earnings.
 
-    Priority within a (ticker, date) pair: earnings_whispers > alphavantage > unusual_whales.
-    EW rows carry strategy picks which are the most actionable for trading.
+    Tickers are tiered by source coverage so the most-confirmed names always
+    appear first within each day (vs alphabetical order getting truncated):
+        Tier 1: AV + UW + EW   (all three sources — top confirmed + strategy)
+        Tier 2: AV + UW        (top market-movers per UW, no EW strategy)
+        Tier 3: AV + EW        (strategy pick without UW validation)
+        Tier 4: AV + (EW or UW alone without AV — edge case)
+        Tier 5: EW-only or UW-only
+        Tier 6: AV-only        (long-tail small caps)
+
+    Within each tier, display row prefers EW > AV > UW so strategy details
+    (strike/premium/score) surface when available.
     """
     try:
         from gcp.database import is_cloud_sql_configured, query_to_dataframe
@@ -94,39 +103,73 @@ def load_earnings_for_brief(today: date, weekly: bool = False) -> dict:
         start = end = today
         mode = 'daily'
 
+    # Pull all rows, then dedupe + tier in Python
     sql = """
-        SELECT DISTINCT ON (ticker, earnings_date)
-               ticker, earnings_date, company_name, earnings_time,
+        SELECT ticker, earnings_date, company_name, earnings_time,
                eps_estimate, expected_move, sector,
                strategy, strike, premium, score, data_source
         FROM earnings_calendar
         WHERE earnings_date BETWEEN :start AND :end
-        ORDER BY ticker, earnings_date,
-                 CASE data_source
-                     WHEN 'earnings_whispers' THEN 1
-                     WHEN 'alphavantage'      THEN 2
-                     WHEN 'unusual_whales'    THEN 3
-                     ELSE 4
-                 END
+        ORDER BY ticker, earnings_date
     """
     df = query_to_dataframe(sql, {'start': start, 'end': end})
 
-    earnings = []
+    if df.empty:
+        return {'mode': mode, 'start': start, 'end': end, 'earnings': []}
+
+    # Group by (ticker, earnings_date) — collect all sources per group
+    from collections import defaultdict
+    groups: dict = defaultdict(lambda: {'sources': set(), 'rows': []})
     for _, row in df.iterrows():
+        key = (row['ticker'], row['earnings_date'])
+        groups[key]['sources'].add(row['data_source'])
+        groups[key]['rows'].append(row)
+
+    # Row priority within a group: EW carries strategy info, prefer it
+    row_prio = {'earnings_whispers': 0, 'alphavantage': 1, 'unusual_whales': 2}
+
+    def _tier(sources: set) -> int:
+        has_av = 'alphavantage' in sources
+        has_uw = 'unusual_whales' in sources
+        has_ew = 'earnings_whispers' in sources
+        if has_av and has_uw and has_ew:
+            return 1
+        if has_av and has_uw:
+            return 2
+        if has_av and has_ew:
+            return 3
+        if has_uw and has_ew:   # rare: both minor sources agree, no AV
+            return 4
+        if has_uw:
+            return 5
+        if has_ew:
+            return 5
+        return 6   # AV only (long tail)
+
+    earnings = []
+    for (ticker, earnings_date), group in groups.items():
+        best = min(group['rows'], key=lambda r: row_prio.get(r['data_source'], 99))
         earnings.append({
-            'ticker': row['ticker'],
-            'date': row['earnings_date'],
-            'company_name': row.get('company_name') or '',
-            'time': row.get('earnings_time') or 'unknown',
-            'eps_estimate': row.get('eps_estimate'),
-            'expected_move': row.get('expected_move'),
-            'sector': row.get('sector') or '',
-            'strategy': row.get('strategy') or '',
-            'strike': row.get('strike'),
-            'premium': row.get('premium'),
-            'score': row.get('score'),
-            'source': row.get('data_source'),
+            'ticker': ticker,
+            'date': earnings_date,
+            'company_name': best.get('company_name') or '',
+            'time': best.get('earnings_time') or 'unknown',
+            'eps_estimate': best.get('eps_estimate'),
+            'expected_move': best.get('expected_move'),
+            'sector': best.get('sector') or '',
+            'strategy': best.get('strategy') or '',
+            'strike': best.get('strike'),
+            'premium': best.get('premium'),
+            'score': best.get('score'),
+            'source': best.get('data_source'),
+            'sources': sorted(group['sources']),
+            'tier': _tier(group['sources']),
         })
+
+    # Sort by date FIRST (so weekly grouping stays chronological), then by
+    # tier, then alphabetically — this lets each day's rendering show top
+    # tier tickers first.
+    earnings.sort(key=lambda r: (r['date'], r['tier'], r['ticker']))
 
     return {'mode': mode, 'start': start, 'end': end, 'earnings': earnings}
 
@@ -144,14 +187,30 @@ def load_economic_events(today: date, days_ahead: int = 5) -> dict:
         return {'today': [], 'week': []}
 
     end_date = today + timedelta(days=days_ahead)
+    # Filter at SQL level:
+    #   1. Mon-Fri only (DOW 1-5) — weekend rows are FRED metadata artifacts
+    #   2. High + medium impact only (ForexFactory's red + orange folders)
     sql = """
         SELECT event_date, event_time, event_name, importance, actual, forecast, previous
         FROM economic_events
         WHERE event_date BETWEEN :start AND :end
           AND importance IN ('high', 'medium')
-        ORDER BY event_date, importance DESC, event_time
+          AND EXTRACT(DOW FROM event_date) NOT IN (0, 6)
+        ORDER BY event_date, importance DESC, event_time NULLS LAST
     """
     df = query_to_dataframe(sql, {'start': today, 'end': end_date})
+
+    # Quality filter: for each date, if any row has a release time (from
+    # ForexFactory), drop all TBD rows for that date (FRED duplicates without
+    # times are lower quality). Only fall through to TBD rows when FF has
+    # no coverage for that day.
+    dates_with_times = set(
+        df[df['event_time'].notna()]['event_date'].unique()
+    )
+    df = df[
+        df['event_time'].notna()
+        | ~df['event_date'].isin(dates_with_times)
+    ].reset_index(drop=True)
 
     today_events, week_events = [], []
     for _, row in df.iterrows():
@@ -299,13 +358,13 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'ftfc_labels': {k: v for k, v in ftfc_labels.items()},
         }
 
-    # Economic events
-    brief['events'] = load_economic_events(date.today())
-
     # Earnings: weekday → today's; Sunday → upcoming week's
     today = date.today()
     is_sunday = today.weekday() == 6
     brief['earnings'] = load_earnings_for_brief(today, weekly=is_sunday)
+
+    # Economic events: Sunday brief needs a full week lookahead, weekday needs ~5 days
+    brief['events'] = load_economic_events(today, days_ahead=7 if is_sunday else 5)
 
     return brief
 
@@ -479,6 +538,16 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
     def _row_line(r):
         t_icon = time_icon.get(r.get('time'), '\u2754')
         ticker = r['ticker']
+        # Tier badge: green dot for confirmed (tier 1-3), no badge for long tail
+        tier = r.get('tier', 6)
+        if tier == 1:
+            badge = '\U0001f7e2 '   # green circle: all 3 sources
+        elif tier == 2:
+            badge = '\U0001f535 '   # blue circle: AV + UW (top market-movers)
+        elif tier == 3:
+            badge = '\U0001f7e1 '   # yellow circle: AV + EW (strategy pick)
+        else:
+            badge = ''
         extras = []
         if r.get('strategy'):
             extras.append(r['strategy'])
@@ -488,6 +557,10 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         score = _valid_num(r.get('score'))
         if score is not None:
             extras.append(f'\u2605{score:.0f}')
+        # Expected move for UW-flagged tickers (tier 1 or 2)
+        em = _valid_num(r.get('expected_move'))
+        if em is not None and tier in (1, 2):
+            extras.append(f'EM ${em:.2f}')
         if not extras:
             eps = _valid_num(r.get('eps_estimate'))
             if eps is not None:
@@ -495,7 +568,10 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         if not extras and r.get('sector'):
             extras.append(str(r['sector'])[:20])
         extra_str = f' — {" | ".join(extras)}' if extras else ''
-        return f'{t_icon} **{ticker}**{extra_str}'
+        return f'{badge}{t_icon} **{ticker}**{extra_str}'
+
+    def _confirmed_count(day_rows):
+        return sum(1 for r in day_rows if r.get('tier', 6) <= 3)
 
     if mode == 'weekly':
         from collections import OrderedDict
@@ -505,14 +581,21 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
 
         sections = []
         total_chars = 0
+        PER_DAY = 10          # show top 10 per day
         for d, day_rows in by_date.items():
             day_str = d.strftime('%a %m/%d') if hasattr(d, 'strftime') else str(d)
-            header = f'\n**{day_str}** ({len(day_rows)})'
+            conf = _confirmed_count(day_rows)
+            # Already sorted by (date, tier, ticker) from the loader
+            header = f'\n**{day_str}** — {conf} confirmed / {len(day_rows)} total'
             lines = [header]
-            for r in day_rows[:8]:
+            for r in day_rows[:PER_DAY]:
                 lines.append(_row_line(r))
-            if len(day_rows) > 8:
-                lines.append(f'_+{len(day_rows) - 8} more_')
+            if len(day_rows) > PER_DAY:
+                hidden_conf = max(0, conf - sum(1 for r in day_rows[:PER_DAY] if r.get('tier', 6) <= 3))
+                if hidden_conf > 0:
+                    lines.append(f'_+{len(day_rows) - PER_DAY} more ({hidden_conf} confirmed)_')
+                else:
+                    lines.append(f'_+{len(day_rows) - PER_DAY} more_')
             section = '\n'.join(lines)
             if total_chars + len(section) > 3800:
                 sections.append('\n_... truncated_')
@@ -521,13 +604,20 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
             total_chars += len(section)
 
         total = sum(len(v) for v in by_date.values())
-        title = f'Earnings Week Ahead ({total} total)'
+        total_confirmed = sum(_confirmed_count(v) for v in by_date.values())
+        title = f'Earnings Week Ahead — {total_confirmed} confirmed / {total} total'
         description = '\n'.join(sections).strip()
     else:
-        title = f'Earnings Today ({len(rows)})'
+        confirmed = _confirmed_count(rows)
+        title = f'Earnings Today — {confirmed} confirmed / {len(rows)} total'
+        # Daily: show top 20 (already tier-sorted)
         lines = [_row_line(r) for r in rows[:20]]
         if len(rows) > 20:
-            lines.append(f'_+{len(rows) - 20} more_')
+            hidden_conf = max(0, confirmed - sum(1 for r in rows[:20] if r.get('tier', 6) <= 3))
+            if hidden_conf > 0:
+                lines.append(f'_+{len(rows) - 20} more ({hidden_conf} confirmed)_')
+            else:
+                lines.append(f'_+{len(rows) - 20} more_')
         description = '\n'.join(lines)
 
     return {
@@ -537,22 +627,76 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
     }
 
 
-def _build_calendar_embed(events: dict) -> dict:
-    """Embed 3: Economic calendar — today's events + week ahead."""
+def _build_calendar_embed(events: dict, mode: str = 'daily') -> dict:
+    """Embed 3: Economic calendar.
+
+    In daily mode: today's events in description, rest-of-week in a field.
+    In weekly mode (Sunday brief): week-ahead events grouped by day in
+    the description (no "today" section since today is Sunday).
+    """
     today_evts = events.get('today', [])
     week_evts = events.get('week', [])
 
-    # Today's events
+    def _ev_line(ev, with_day=False):
+        # Red = high impact, orange = medium (matches ForexFactory's folder colors)
+        icon = '\U0001f534' if ev['importance'] == 'high' else '\U0001f7e0'
+        time_str = ev['time'] or 'TBD'
+        if with_day:
+            d = ev['date']
+            day_str = d.strftime('%a %m/%d') if hasattr(d, 'strftime') else str(d)
+            prefix = f'{day_str} {time_str}'.strip()
+        else:
+            prefix = time_str
+        line = f'{icon} **{prefix}** {ev["name"]}'
+        # Surface forecast + previous (ForexFactory provides these).
+        # Labels use Exp/Prev for clarity (vs FF's terse F/P).
+        parts = []
+        if ev.get('forecast'):
+            parts.append(f'Exp={ev["forecast"]}')
+        if ev.get('previous'):
+            parts.append(f'Prev={ev["previous"]}')
+        if parts:
+            line += f' ({", ".join(parts)})'
+        return line
+
+    if mode == 'weekly':
+        # Group week events by day
+        if not week_evts and not today_evts:
+            description = 'No major events this week'
+        else:
+            from collections import OrderedDict
+            by_date = OrderedDict()
+            for ev in week_evts:
+                by_date.setdefault(ev['date'], []).append(ev)
+
+            sections = []
+            total_chars = 0
+            for d, day_evts in by_date.items():
+                day_str = d.strftime('%a %m/%d') if hasattr(d, 'strftime') else str(d)
+                header = f'\n**{day_str}** ({len(day_evts)})'
+                lines = [header]
+                for ev in day_evts[:6]:
+                    lines.append(_ev_line(ev, with_day=False))
+                if len(day_evts) > 6:
+                    lines.append(f'_+{len(day_evts) - 6} more_')
+                section = '\n'.join(lines)
+                if total_chars + len(section) > 3800:
+                    sections.append('\n_... truncated_')
+                    break
+                sections.append(section)
+                total_chars += len(section)
+            description = '\n'.join(sections).strip()
+
+        total = len(week_evts)
+        return {
+            'title': f'Economic Calendar — Week Ahead ({total})',
+            'description': description,
+            'color': 0x95a5a6,
+        }
+
+    # Daily mode
     if today_evts:
-        today_lines = []
-        for ev in today_evts[:8]:
-            icon = '\U0001f534' if ev['importance'] == 'high' else '\U0001f7e1'
-            time_str = ev['time'] or 'TBD'
-            line = f'{icon} **{time_str}** {ev["name"]}'
-            if ev.get('forecast'):
-                line += f' (Fcst: {ev["forecast"]})'
-            today_lines.append(line)
-        today_text = '\n'.join(today_lines)
+        today_text = '\n'.join(_ev_line(ev) for ev in today_evts[:8])
     else:
         today_text = 'No major events today'
 
@@ -562,14 +706,9 @@ def _build_calendar_embed(events: dict) -> dict:
         'color': 0x95a5a6,
     }
 
-    # Week ahead field
+    # Week ahead compact field (up to 6 entries)
     if week_evts:
-        week_lines = []
-        for ev in week_evts[:6]:
-            icon = '\U0001f534' if ev['importance'] == 'high' else '\U0001f7e1'
-            d = ev['date']
-            day_str = d.strftime('%a %m/%d') if hasattr(d, 'strftime') else str(d)
-            week_lines.append(f'{icon} {day_str} — {ev["name"]}')
+        week_lines = [_ev_line(ev, with_day=True) for ev in week_evts[:6]]
         embed['fields'] = [{
             'name': 'This Week',
             'value': '\n'.join(week_lines),
@@ -583,7 +722,8 @@ def format_discord_message(brief: dict) -> dict:
     """Format brief as a Discord webhook payload with up to 4 embeds."""
     overview = _build_overview_embed(brief)
     ticker_fields = _build_ticker_fields(brief)
-    calendar = _build_calendar_embed(brief.get('events', {}))
+    mode = brief.get('earnings', {}).get('mode', 'daily')
+    calendar = _build_calendar_embed(brief.get('events', {}), mode=mode)
     earnings = _build_earnings_embed(brief.get('earnings', {}))
 
     ticker_embed = {

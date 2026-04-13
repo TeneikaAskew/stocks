@@ -139,10 +139,112 @@ def load_events_from_json(json_path: str = None) -> pd.DataFrame:
     return df
 
 
-def fetch_fred_releases(days_ahead: int = 30) -> pd.DataFrame:
+def fetch_forexfactory_events(countries: tuple = ('USD',),
+                                min_impact: str = 'medium') -> pd.DataFrame:
+    """Fetch this week's economic calendar from the ForexFactory feed.
+
+    Uses the free FairEconomyMedia JSON mirror that ForexFactory itself uses.
+    No authentication required.
+
+    Unlike FRED, this source provides:
+      - Release TIME (not just date)
+      - Impact classification (High/Medium/Low)
+      - Forecast, Previous values (analyst consensus + prior period)
+
+    Args:
+        countries: tuple of currency codes to include (default: USD only)
+        min_impact: 'high' | 'medium' | 'low' — minimum impact to include
+    """
+    try:
+        import requests as req
+    except ImportError:
+        logger.warning("requests not available")
+        return pd.DataFrame()
+
+    impact_rank = {'high': 3, 'medium': 2, 'low': 1}
+    min_rank = impact_rank.get(min_impact.lower(), 2)
+
+    urls = [
+        'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
+        'https://nfs.faireconomy.media/ff_calendar_nextweek.json',
+    ]
+
+    all_events = []
+    for url in urls:
+        try:
+            resp = req.get(
+                url,
+                timeout=30,
+                headers={'User-Agent': 'Mozilla/5.0 (compatible; trading-system/1.0)'},
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            all_events.extend(batch)
+            logger.info("ForexFactory: %d events from %s", len(batch), url.split('/')[-1])
+        except Exception as e:
+            logger.warning("ForexFactory fetch failed for %s: %s", url, e)
+
+    if not all_events:
+        return pd.DataFrame()
+
+    rows = []
+    for e in all_events:
+        country = e.get('country', '')
+        if countries and country not in countries:
+            continue
+
+        impact_raw = (e.get('impact') or '').lower()
+        if impact_rank.get(impact_raw, 0) < min_rank:
+            continue
+
+        # Parse the datetime (e.g. "2026-04-14T08:30:00-04:00")
+        date_str = e.get('date', '')
+        if not date_str:
+            continue
+        try:
+            dt = pd.to_datetime(date_str)
+            if pd.isna(dt):
+                continue
+        except Exception:
+            continue
+
+        title = (e.get('title') or '').strip()
+        if not title:
+            continue
+
+        # Skip weekend events — not useful for the premarket brief
+        if dt.date().weekday() >= 5:
+            continue
+
+        rows.append({
+            'event_date': dt.date(),
+            'event_time': dt.time().replace(microsecond=0),
+            'event_name': title[:200],
+            'country': country[:10],
+            'importance': impact_raw,
+            'actual': None,
+            'forecast': (e.get('forecast') or '')[:50] or None,
+            'previous': (e.get('previous') or '')[:50] or None,
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    df = df.drop_duplicates(subset=['event_date', 'event_name'], keep='last')
+    df = df.sort_values(['event_date', 'event_time']).reset_index(drop=True)
+    logger.info("ForexFactory: %d %s+ impact events after filtering",
+                 len(df), min_impact)
+    return df
+
+
+def fetch_fred_releases(days_ahead: int = 90) -> pd.DataFrame:
     """Fetch upcoming FRED release dates via the FRED releases API.
 
-    Requires FRED_API_KEY environment variable.
+    Requires FRED_API_KEY environment variable. Uses the FRED /releases/dates
+    endpoint, paginating through all results in the date window, then filters
+    to only the high-impact release types (CPI, FOMC, NFP, GDP, PCE, PPI,
+    Retail Sales, ISM/PMI, Housing Starts, Jobless Claims).
+
     Returns a DataFrame matching the economic_events schema.
     """
     api_key = os.environ.get('FRED_API_KEY')
@@ -159,47 +261,124 @@ def fetch_fred_releases(days_ahead: int = 30) -> pd.DataFrame:
     today = date.today()
     end = today + timedelta(days=days_ahead)
 
-    # Use FRED releases/dates endpoint for upcoming releases
-    url = 'https://api.stlouisfed.org/fred/releases/dates'
-    params = {
-        'api_key': api_key,
-        'file_type': 'json',
-        'realtime_start': today.isoformat(),
-        'realtime_end': end.isoformat(),
-        'include_release_dates_with_no_data': 'false',
+    # Keywords to match high/medium-impact FRED release names
+    IMPACT_KEYWORDS = {
+        'high': [
+            'Consumer Price Index',       # CPI
+            'Employment Situation',        # NFP
+            'FOMC',                        # Fed decisions
+            'Gross Domestic Product',      # GDP
+            'Personal Income and Outlays', # PCE
+            'Producer Price Index',        # PPI
+        ],
+        'medium': [
+            'Retail Trade',                # Retail Sales
+            'Industrial Production',
+            'New Residential Construction',# Housing Starts
+            'Unemployment Insurance',      # Jobless Claims
+            'Durable Goods',
+            'ISM',                         # Manufacturing / Services PMI
+            'Consumer Sentiment',          # Michigan
+            'Consumer Confidence',
+            'New Home Sales',
+            'Existing Home Sales',
+            'Trade Balance',
+            'Advance Monthly Sales for Retail',
+            'Personal Consumption Expenditures',
+            'Advance Economic Indicators',
+        ],
     }
 
-    try:
-        resp = req.get(url, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        logger.warning("FRED releases/dates request failed: %s", e)
+    # Paginate through all release dates in the window
+    url = 'https://api.stlouisfed.org/fred/releases/dates'
+    all_releases = []
+    offset = 0
+    limit = 1000  # FRED max
+
+    while True:
+        params = {
+            'api_key': api_key,
+            'file_type': 'json',
+            'realtime_start': today.isoformat(),
+            'realtime_end': end.isoformat(),
+            'include_release_dates_with_no_data': 'true',
+            'limit': limit,
+            'offset': offset,
+            'sort_order': 'asc',
+            'order_by': 'release_date',
+        }
+        try:
+            resp = req.get(url, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.warning("FRED releases/dates request failed: %s", e)
+            break
+
+        batch = data.get('release_dates', [])
+        if not batch:
+            break
+        all_releases.extend(batch)
+        if len(batch) < limit:
+            break
+        offset += limit
+
+    logger.info("FRED: fetched %d total release dates in window", len(all_releases))
+
+    if not all_releases:
         return pd.DataFrame()
 
-    releases = data.get('release_dates', [])
-    if not releases:
-        return pd.DataFrame()
+    def _classify(name: str):
+        if not name:
+            return None
+        for kw in IMPACT_KEYWORDS['high']:
+            if kw in name:
+                return 'high'
+        for kw in IMPACT_KEYWORDS['medium']:
+            if kw in name:
+                return 'medium'
+        return None  # low/unrelated — skip
+
+    # Skip FRED metadata entries that appear every day — they're not real events
+    # (FRED tags every Federal Reserve release day as "FOMC Press Release")
+    FRED_NAME_BLACKLIST = {
+        'FOMC Press Release',  # appears every weekday as FRED metadata
+    }
 
     rows = []
-    for rel in releases:
+    for rel in all_releases:
         name = rel.get('release_name', '')
-        if not name:
+        importance = _classify(name)
+        if importance is None:
+            continue
+        if name in FRED_NAME_BLACKLIST:
+            continue
+        try:
+            ev_date = pd.to_datetime(rel['date']).date()
+        except Exception:
+            continue
+        if ev_date > end:
+            continue
+        # Skip weekend artifacts — US economic data doesn't release on Sat/Sun
+        if ev_date.weekday() >= 5:
             continue
         rows.append({
-            'event_date': pd.to_datetime(rel['date']).date(),
+            'event_date': ev_date,
             'event_time': None,
             'event_name': name[:200],
             'country': 'US',
-            'importance': EVENT_IMPORTANCE.get(name, 'low'),
+            'importance': importance,
             'actual': None,
             'forecast': None,
             'previous': None,
         })
 
     df = pd.DataFrame(rows)
+    if df.empty:
+        return df
     df = df.drop_duplicates(subset=['event_date', 'event_name'], keep='last')
-    logger.info("Fetched %d upcoming FRED releases", len(df))
+    df = df.sort_values('event_date').reset_index(drop=True)
+    logger.info("FRED: %d high/medium-impact events after filtering", len(df))
     return df
 
 
@@ -222,8 +401,9 @@ def main():
     setup_logging()
     parser = argparse.ArgumentParser(description='Fetch economic events → Cloud SQL')
     parser.add_argument(
-        '--source', choices=['json', 'fred', 'all'], default='all',
-        help='Data source: json (local file), fred (API), or all (default)',
+        '--source', choices=['json', 'fred', 'forexfactory', 'ff', 'all'], default='all',
+        help='Data source: json, fred, forexfactory/ff, or all (default). '
+             'ForexFactory provides release times + forecast/previous values.',
     )
     parser.add_argument(
         '--json-path', type=str, default=None,
@@ -233,26 +413,44 @@ def main():
         '--days-ahead', type=int, default=30,
         help='Days ahead to fetch FRED releases (default: 30)',
     )
+    parser.add_argument(
+        '--min-impact', choices=['low', 'medium', 'high'], default='medium',
+        help='Minimum impact level for ForexFactory events (default: medium)',
+    )
+    parser.add_argument(
+        '--countries', type=str, default='USD',
+        help='Comma-separated country codes for ForexFactory (default: USD)',
+    )
     args = parser.parse_args()
 
     frames = []
+    countries = tuple(c.strip() for c in args.countries.split(',') if c.strip())
 
-    if args.source in ('json', 'all'):
-        df_json = load_events_from_json(args.json_path)
-        if not df_json.empty:
-            frames.append(df_json)
+    # ForexFactory is the preferred source — has times + forecasts
+    if args.source in ('forexfactory', 'ff', 'all'):
+        df_ff = fetch_forexfactory_events(countries=countries, min_impact=args.min_impact)
+        if not df_ff.empty:
+            frames.append(df_ff)
 
     if args.source in ('fred', 'all'):
         df_fred = fetch_fred_releases(args.days_ahead)
         if not df_fred.empty:
             frames.append(df_fred)
 
+    if args.source in ('json', 'all'):
+        df_json = load_events_from_json(args.json_path)
+        if not df_json.empty:
+            frames.append(df_json)
+
     if not frames:
         logger.warning("No events loaded from any source")
         return
 
+    # Priority: ForexFactory > FRED > JSON.  When the same (event_date, event_name)
+    # exists in multiple sources, keep the ForexFactory row (first in concat order)
+    # because it has release times + forecast/previous values.
     combined = pd.concat(frames, ignore_index=True)
-    combined = combined.drop_duplicates(subset=['event_date', 'event_name'], keep='last')
+    combined = combined.drop_duplicates(subset=['event_date', 'event_name'], keep='first')
     logger.info("Total events to persist: %d", len(combined))
 
     n = persist_to_cloud_sql(combined)
