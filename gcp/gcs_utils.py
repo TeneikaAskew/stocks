@@ -77,6 +77,19 @@ def download_parquet_from_gcs(bucket: str, blob_path: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def download_text_from_gcs(bucket: str, blob_path: str) -> str:
+    """Download a text blob (e.g. Markdown, JSON, plain text) from GCS.
+
+    Returns empty string on error (consistent with the other download helpers).
+    """
+    try:
+        from google.cloud import storage as gcs
+        return gcs.Client().bucket(bucket).blob(blob_path).download_as_text()
+    except Exception as e:
+        log.warning("  GCS text download failed (%s): %s", blob_path, e)
+        return ''
+
+
 def list_blobs(bucket: str, prefix: str) -> list:
     """Return a list of blob names under a GCS prefix."""
     try:

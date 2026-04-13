@@ -1,20 +1,49 @@
 """
-Playbook and reports router.
-GET /api/playbook/{ticker} - Read phase6_playbook_{ticker}.md from reports/, parse into structured JSON
-GET /api/reports/list/{ticker} - List available report phases for ticker
-GET /api/reports/{ticker}/{phase} - Read a specific phase report as markdown text
+Playbook and reports router — reads markdown directly from GCS with TTL caching.
+
+Endpoints
+---------
+GET /api/playbook/{ticker}
+    Read phase6_playbook_{ticker}.md from GCS and parse into structured JSON cards.
+
+GET /api/reports/list/{ticker}
+    List available phase report files for a ticker (globs GCS).
+
+GET /api/reports/{ticker}/{phase}
+    Return the raw markdown of a specific phase report as plain text.
+
+Data source
+-----------
+gs://adept-mountain-474619-d4-trading-data/raw/reports/
+
+All three endpoints cache with a 24h TTL because markdown files change rarely.
 """
+import logging
 import re
+import sys
 from pathlib import Path
 
+from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
+from google.api_core import exceptions as gapi_exc
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from api import gcs_reader  # noqa: E402
+
+log = logging.getLogger(__name__)
 router = APIRouter()
 
-# 4 levels up: routers/ -> api/ -> platform/ -> stocks/
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-REPORTS_DIR = PROJECT_ROOT / "reports"
+GCS_PREFIX = "reports/"
+KNOWN_TICKERS = ("spy", "qqq", "iwm", "spx")
+
+# Caches — markdown changes rarely so 24h is generous
+_PLAYBOOK_CACHE: TTLCache = TTLCache(maxsize=16, ttl=86400)      # parsed playbook JSON
+_LIST_CACHE: TTLCache = TTLCache(maxsize=16, ttl=86400)          # list-reports response
+_REPORT_TEXT_CACHE: TTLCache = TTLCache(maxsize=64, ttl=86400)   # raw markdown text
 
 # Phases that may exist for any given ticker
 VALID_PHASES = {
@@ -35,8 +64,7 @@ def _parse_playbook_markdown(content: str, ticker: str) -> dict:
     """
     cards = []
 
-    # Split on ### card headings (e.g. "### IWM CARD 1: Bullish Continuation")
-    # Also support ## headings for files that use double-hash
+    # Split on ### card headings (also support ##)
     sections = re.split(r"\n(?=###? )", content)
 
     for i, section in enumerate(sections):
@@ -53,22 +81,20 @@ def _parse_playbook_markdown(content: str, ticker: str) -> dict:
         lower_name = name.lower()
         if any(skip in lower_name for skip in ("overview", "summary", "introduction", "table of contents", "phase 6", "playbook")):
             continue
-        # Skip if name is just the ticker or document title
         if lower_name in (ticker.lower(), ""):
             continue
 
         body = "\n".join(lines[1:])
 
-        # --- Direction: look for "-> CALL ENTRY" or "-> PUT ENTRY" ---
+        # --- Direction ---
         direction = "NEUTRAL"
         if re.search(r"->\s*CALL\s*ENTRY", body, re.I):
             direction = "CALL"
         elif re.search(r"->\s*PUT\s*ENTRY", body, re.I):
             direction = "PUT"
 
-        # --- Description: first bold line or "WHAT YOU SEE ON THE CHART" content ---
+        # --- Description ---
         description = ""
-        # Try to extract from **WHAT YOU SEE ON THE CHART:** section
         chart_match = re.search(
             r"\*\*WHAT YOU SEE ON THE CHART:?\*\*\s*\n((?:\s+\*.*\n?)+)", body
         )
@@ -76,39 +102,33 @@ def _parse_playbook_markdown(content: str, ticker: str) -> dict:
             bullets = re.findall(r"\*\s+(.+)", chart_match.group(1))
             description = "; ".join(b.strip() for b in bullets[:3])
         if not description:
-            # Fall back to first non-empty, non-heading, non-list line
             for line in body.splitlines():
                 stripped = line.strip()
                 if stripped and not stripped.startswith(("#", "-", "*", "|", ">", "[")):
                     description = stripped.lstrip("*").strip()
                     break
 
-        # --- Conditions: bullets under **WHAT TO CHECK:** ---
+        # --- Conditions ---
         conditions: list[str] = []
         in_check = False
         for line in body.splitlines():
             stripped = line.strip()
-            # Detect the "WHAT TO CHECK" section header
             if re.search(r"\*\*WHAT TO CHECK:?\*\*", stripped, re.I):
                 in_check = True
                 continue
-            # Stop at next bold section header
             if in_check and re.match(r"\*\*[A-Z]", stripped) and stripped.endswith("**"):
                 in_check = False
             if in_check:
-                # Match "- [ ] condition text" or "- condition text"
                 m = re.match(r"[-*]\s+(?:\[.\]\s+)?(.+)", stripped)
                 if m:
                     conditions.append(m.group(1).strip())
 
-        # Fall back: any - [ ] bullets in the whole section
         if not conditions:
             for line in body.splitlines():
                 m = re.match(r"\s*[-*]\s+\[.\]\s+(.+)", line)
                 if m:
                     conditions.append(m.group(1).strip())
 
-        # Fall back: any bulleted list items
         if not conditions:
             for line in body.splitlines():
                 stripped = line.strip()
@@ -117,20 +137,18 @@ def _parse_playbook_markdown(content: str, ticker: str) -> dict:
                     conditions.append(m.group(1).strip())
             conditions = conditions[:10]
 
-        # --- Win rate: "Historical win rate: XX.X%" ---
+        # --- Win rate ---
         win_rate: float | None = None
         wr_match = re.search(r"(?:historical\s+)?win[\s_-]?rate[:\s]+([0-9]+(?:\.[0-9]+)?)\s*%", body, re.I)
         if wr_match:
-            val = float(wr_match.group(1))
-            win_rate = val  # keep as percentage (47.9, not 0.479)
+            win_rate = float(wr_match.group(1))
 
-        # --- Avg return: "Avg return: X.X bps" (bps) or "X.X%" ---
+        # --- Avg return ---
         avg_return: float | None = None
         ar_match = re.search(r"avg(?:erage)?\s+return[:\s]+([+-]?[0-9]+(?:\.[0-9]+)?)\s*(bps|%)?", body, re.I)
         if ar_match:
             val = float(ar_match.group(1))
             unit = (ar_match.group(2) or "").lower()
-            # Convert bps to percent for display (100 bps = 0.1%)
             avg_return = val / 100 if unit == "bps" else val
 
         cards.append({
@@ -149,109 +167,134 @@ def _parse_playbook_markdown(content: str, ticker: str) -> dict:
     }
 
 
+def _download_markdown(blob_path_relative: str) -> str:
+    """Download a markdown file from GCS. Returns text, raises HTTPException on failure."""
+    try:
+        return gcs_reader.download_text(blob_path_relative)
+    except gapi_exc.NotFound:
+        raise HTTPException(status_code=404, detail=f"Report not found in GCS: {blob_path_relative}")
+    except Exception as exc:
+        log.error("GCS text download failed for %s: %s", blob_path_relative, exc)
+        raise HTTPException(status_code=502, detail=f"Failed to download report from GCS: {exc}")
+
+
 @router.get("/api/playbook/{ticker}")
 async def get_playbook(ticker: str):
-    """Read phase6_playbook_{ticker}.md and return structured setup cards."""
+    """Read phase6_playbook_{ticker}.md from GCS and return structured setup cards."""
     ticker_lower = ticker.lower()
+    ticker_upper = ticker.upper()
 
-    playbook_path = REPORTS_DIR / f"phase6_playbook_{ticker_lower}.md"
-    if not playbook_path.exists():
+    if ticker_upper in _PLAYBOOK_CACHE:
+        return _PLAYBOOK_CACHE[ticker_upper]
+
+    blob_path = f"{GCS_PREFIX}phase6_playbook_{ticker_lower}.md"
+    content = _download_markdown(blob_path)
+    if not content:
         raise HTTPException(
             status_code=404,
-            detail=f"Playbook not found for ticker '{ticker.upper()}' at {playbook_path}",
+            detail=f"Playbook not found for ticker '{ticker_upper}' at gs://.../raw/{blob_path}",
         )
 
-    try:
-        content = playbook_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read playbook: {exc}")
-
-    return _parse_playbook_markdown(content, ticker)
+    result = _parse_playbook_markdown(content, ticker)
+    _PLAYBOOK_CACHE[ticker_upper] = result
+    return result
 
 
 @router.get("/api/reports/list/{ticker}")
 async def list_reports(ticker: str):
-    """List available phase report files for a given ticker."""
+    """List available phase report files for a given ticker (from GCS)."""
     ticker_lower = ticker.lower()
     ticker_upper = ticker.upper()
 
-    if not REPORTS_DIR.is_dir():
-        raise HTTPException(status_code=404, detail="Reports directory not found")
+    if ticker_upper in _LIST_CACHE:
+        return _LIST_CACHE[ticker_upper]
 
-    available = []
-    for path in sorted(REPORTS_DIR.glob(f"phase*_{ticker_lower}.md")):
-        # Extract phase token from filename like "phase1_strat_mining_iwm.md"
-        stem = path.stem  # e.g. "phase1_strat_mining_iwm"
-        # Remove the trailing _{ticker}
+    # 1) ticker-specific reports: phase*_{ticker_lower}.md
+    ticker_specific = gcs_reader.list_matching_blobs(
+        GCS_PREFIX, rf"^phase.*_{re.escape(ticker_lower)}\.md$"
+    )
+
+    # 2) combined / multi-ticker reports: phase*.md that don't end with another ticker
+    all_phases = gcs_reader.list_matching_blobs(GCS_PREFIX, r"^phase.*\.md$")
+
+    available: list[dict] = []
+    seen = set()
+
+    for blob_name in ticker_specific:
+        filename = blob_name.rsplit("/", 1)[-1]
+        stem = filename.rsplit(".", 1)[0]
         without_ticker = stem[: -(len(ticker_lower) + 1)] if stem.endswith(f"_{ticker_lower}") else stem
         available.append({
-            "filename": path.name,
+            "filename": filename,
             "phase": without_ticker,
-            "path": str(path),
+            "path": f"gs://{gcs_reader.BUCKET}/{blob_name}",
         })
+        seen.add(filename)
 
-    # Also include combined reports that don't have a ticker suffix
-    for path in sorted(REPORTS_DIR.glob("phase*.md")):
-        stem = path.stem
-        # Skip files that are ticker-specific (already added above)
-        if stem.endswith(f"_{ticker_lower}"):
+    for blob_name in all_phases:
+        filename = blob_name.rsplit("/", 1)[-1]
+        if filename in seen:
             continue
+        stem = filename.rsplit(".", 1)[0]
         # Skip files that end with another known ticker
-        if any(stem.endswith(f"_{t}") for t in ("spy", "qqq", "iwm") if t != ticker_lower):
+        if any(stem.endswith(f"_{t}") for t in KNOWN_TICKERS if t != ticker_lower):
             continue
         available.append({
-            "filename": path.name,
+            "filename": filename,
             "phase": stem,
-            "path": str(path),
+            "path": f"gs://{gcs_reader.BUCKET}/{blob_name}",
         })
 
     if not available:
         raise HTTPException(
             status_code=404,
-            detail=f"No reports found for ticker '{ticker_upper}'",
+            detail=f"No reports found for ticker '{ticker_upper}' in GCS",
         )
 
-    return {
-        "ticker": ticker_upper,
-        "reports": available,
-    }
+    resp = {"ticker": ticker_upper, "reports": available}
+    _LIST_CACHE[ticker_upper] = resp
+    return resp
 
 
 @router.get("/api/reports/{ticker}/{phase}", response_class=PlainTextResponse)
 async def get_report(ticker: str, phase: str):
-    """Return the raw markdown text of a specific phase report for a ticker.
-
-    phase examples: phase1, phase2, phase3, phase4, phase5, phase6, phase5d
-    Also accepts the full filename stem, e.g. phase1_strat_mining
-    """
+    """Return the raw markdown text of a specific phase report for a ticker from GCS."""
     ticker_lower = ticker.lower()
     ticker_upper = ticker.upper()
     phase_lower = phase.lower()
 
-    # Try exact ticker-specific file first, e.g. phase1_strat_mining_iwm.md
-    candidates = list(REPORTS_DIR.glob(f"{phase_lower}*_{ticker_lower}.md"))
+    cache_key = (ticker_upper, phase_lower)
+    if cache_key in _REPORT_TEXT_CACHE:
+        return _REPORT_TEXT_CACHE[cache_key]
 
-    # Fall back to combined reports, e.g. phase4_setup_comparison.md
+    # Try ticker-specific file first
+    candidates = gcs_reader.list_matching_blobs(
+        GCS_PREFIX, rf"^{re.escape(phase_lower)}.*_{re.escape(ticker_lower)}\.md$"
+    )
+
+    # Fall back to combined reports that don't end with another ticker
     if not candidates:
-        candidates = list(REPORTS_DIR.glob(f"{phase_lower}*.md"))
-        # Filter out other tickers
+        all_phase = gcs_reader.list_matching_blobs(GCS_PREFIX, rf"^{re.escape(phase_lower)}.*\.md$")
         candidates = [
-            p for p in candidates
-            if not any(p.stem.endswith(f"_{t}") for t in ("spy", "qqq", "iwm") if t != ticker_lower)
+            b for b in all_phase
+            if not any(b.rsplit(".", 1)[0].endswith(f"_{t}") for t in KNOWN_TICKERS if t != ticker_lower)
         ]
 
     if not candidates:
         raise HTTPException(
             status_code=404,
-            detail=f"No report found for ticker '{ticker_upper}' phase '{phase}'",
+            detail=f"No report found for ticker '{ticker_upper}' phase '{phase}' in GCS",
         )
 
-    # Use the most specific (longest filename) match
-    report_path = max(candidates, key=lambda p: len(p.stem))
+    # Most specific (longest filename) match
+    blob_name = max(candidates, key=lambda b: len(b.rsplit("/", 1)[-1]))
+    # blob_name already includes the BASE_PREFIX (e.g. "raw/reports/phase1_strat_mining_iwm.md")
+    # Strip it to get the path relative to BASE_PREFIX, which is what download_text expects
+    if blob_name.startswith(gcs_reader.BASE_PREFIX):
+        blob_path_relative = blob_name[len(gcs_reader.BASE_PREFIX):]
+    else:
+        blob_path_relative = blob_name
 
-    try:
-        content = report_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read report: {exc}")
-
+    content = _download_markdown(blob_path_relative)
+    _REPORT_TEXT_CACHE[cache_key] = content
     return content
