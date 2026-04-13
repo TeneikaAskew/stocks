@@ -227,6 +227,29 @@ CREATE INDEX IF NOT EXISTS idx_earnings_options_symbol_date
 
 
 -- ─────────────────────────────────────────────────────────
+-- ARCHIVE TABLES (Yahoo Finance legacy data)
+-- ─────────────────────────────────────────────────────────
+-- Yahoo data was moved here when the system cut over to AlphaVantage.
+-- Production tables should only contain data_source = 'alphavantage'.
+-- Archive tables preserve legacy rows (data_source IS NULL or in
+-- yfinance/yahoo/yahooquery) for forensics and historical comparison.
+-- Structure mirrors the source table via CREATE TABLE ... (LIKE src INCLUDING ...).
+-- Populated + maintained by scripts/archive_yahoo_data.py.
+
+CREATE TABLE IF NOT EXISTS archive_yahoo_market_data_daily
+    (LIKE market_data_daily INCLUDING ALL);
+
+CREATE TABLE IF NOT EXISTS archive_yahoo_market_data_intraday
+    (LIKE market_data_intraday INCLUDING DEFAULTS INCLUDING CONSTRAINTS);
+
+CREATE TABLE IF NOT EXISTS archive_yahoo_etf_options_snapshots
+    (LIKE etf_options_snapshots INCLUDING ALL);
+
+CREATE TABLE IF NOT EXISTS archive_yahoo_earnings_options_snapshots
+    (LIKE earnings_options_snapshots INCLUDING ALL);
+
+
+-- ─────────────────────────────────────────────────────────
 -- EARNINGS CALENDAR (strategy-level, one row per ticker/date/strategy)
 -- Separate from earnings_options_snapshots which stores per-contract
 -- options chain data at a different granularity.

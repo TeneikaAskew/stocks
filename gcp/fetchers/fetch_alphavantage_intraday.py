@@ -24,7 +24,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from gcp.database import bulk_insert_dataframe, execute_sql, is_cloud_sql_configured
+from gcp.database import bulk_insert_dataframe, execute_sql, is_cloud_sql_configured, upsert_dataframe
 from gcp.gcs_utils import upload_dataframe_as_parquet, parquet_exists_in_gcs
 
 from lib.logging_config import setup_logging
@@ -167,9 +167,14 @@ def process_symbol(
 
         log.info("    %s: %d bars", month_str, len(df))
 
-        # Write to Cloud SQL
+        # Write to Cloud SQL — upsert so re-runs are safe (overwrites
+        # existing rows instead of failing on duplicate primary key).
         if is_cloud_sql_configured():
-            bulk_insert_dataframe(df, 'market_data_intraday', chunksize=5000)
+            upsert_dataframe(
+                df, 'market_data_intraday',
+                conflict_cols=['ticker', 'interval', 'ts'],
+                chunksize=5000,
+            )
             inserted_total += len(df)
 
         # Backup to GCS

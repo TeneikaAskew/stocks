@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-04-12 (session 8)
+**Last Updated**: 2026-04-13 (session 9)
 
 ---
 
@@ -462,6 +462,9 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 - 2026-04-12: feat(gcp) — new `earnings_calendar` Cloud SQL table (42 cols) with dual-source persistence from Unusual Whales + Earnings Whispers; fetch_earnings_calendar.py gains EW cookie-based auth (mirrors GAS 04_Code.js login flow), 9 strategy endpoints, Cloud SQL upsert; deploy.sh gains fetch-earnings-calendar Cloud Run Job + earnings-calendar-daily scheduler trigger; GAS tracking columns (strike_hit, day0-5_check, hit_rsi, ohlc_volume, etc.) present as NULLable for future backfill
 - 2026-04-12: feat(fetchers) — fetch_earnings_options.py resolves tickers from earnings_calendar SQL table (7-day lookahead) instead of GCS/local CSVs; CSVs kept as fallback
 - 2026-04-12: feat(scripts) — add AlphaVantage EARNINGS_CALENDAR as 3rd source in fetch_earnings_calendar.py; AV is date-of-truth, overrides EW/UW dates via ticker lookup; normalize_earnings_time() unifies 1/2/3/premarket/postmarket to {premarket, intraday, postmarket, unknown}; Cloud SQL now holds 9,510 rows across 3 sources (8,783 AV, 490 EW, 237 UW) with 557 overlapping (ticker, date) pairs
+- 2026-04-13: feat(gcp) — add `archive_yahoo_*` tables (schema.sql) + `scripts/archive_yahoo_data.py` for chunked Yahoo→archive→delete with resume-safe dedup. Intraday Yahoo cleanup complete (51,471 rows archived, 0 in prod). Recovered 73K AV rows lost to a ctid-partition bug (script now uses PK-based batching). `fetch_alphavantage_intraday.py` switched from `bulk_insert_dataframe` → `upsert_dataframe` so re-runs are safe. `etf_options_snapshots` Yahoo cleanup (~24M rows) pending the running `fetch-av-options-backfill` Cloud Run Job completion.
+- 2026-04-13: feat(fetchers) — `fetch_economic_events.py` adds ForexFactory source (https://nfs.faireconomy.media/ff_calendar_thisweek.json) for release times + forecast/previous values. FRED fallback for coverage; FOMC Press Release metadata blacklisted. Brief filters to Mon–Fri only, prefers rows with times when available.
+- 2026-04-13: feat(premarket) — earnings embed tier sort (AV+UW+EW first, then AV+UW, then AV+EW, then long tail). Tier 1-3 get 🟢🔵🟡 badges. Day headers show "N confirmed / M total". Truncation shows hidden confirmed count ("+111 more (2 confirmed)"). Weekly mode (Sunday brief) groups economic events by day in the calendar embed description. Labels renamed F/P → Exp=/Prev= for clarity.
 
 ---
 

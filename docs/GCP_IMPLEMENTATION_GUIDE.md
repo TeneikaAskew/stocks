@@ -1035,6 +1035,26 @@ UPSERT earnings_calendar → Cloud SQL (42 columns)
 | `premarket_analysis` | Daily pre-market brief data | `(analysis_date, ticker)` | 4/day |
 | `economic_events` | Economic calendar | `(event_date, event_name)` | ~20/week |
 | `earnings_calendar` | Earnings picks + tracking | `(ticker, earnings_date, strategy, data_source)` | ~600/fetch |
+| `archive_yahoo_market_data_daily` | Legacy Yahoo daily (read-only archive) | same as source | ~0 (was clean) |
+| `archive_yahoo_market_data_intraday` | Legacy Yahoo 1-min bars | same as source | ~51K |
+| `archive_yahoo_etf_options_snapshots` | Legacy Yahoo options chains | same as source | ~24M (pending) |
+| `archive_yahoo_earnings_options_snapshots` | Legacy Yahoo earnings options | same as source | ~0 (was clean) |
+
+### Archive tables
+
+Yahoo Finance legacy data was archived out of production tables when the
+system cut over to AlphaVantage as sole source. Production tables only
+contain `data_source = 'alphavantage'`. The archive tables are populated
+and maintained by `scripts/archive_yahoo_data.py`, which implements:
+
+- Chunked copy (prod → archive) in 500K-row batches
+- Chunked DELETE (from prod) using primary-key batching — **NOT** `ctid`,
+  which is partition-local and can silently cross-delete on partitioned
+  tables like `market_data_intraday`
+- Backfill pre-flight check: aborts on `etf_options_snapshots` if the
+  `fetch-av-options-backfill` Cloud Run Job has running executions
+- Resume-safe dedup via `NOT EXISTS` against archive
+- `--dry-run` preview mode and per-table `--confirm` gate
 
 ### market_data_daily Columns
 
