@@ -112,7 +112,7 @@ async def health_check():
         "status": "ok",
         "project_root": str(PROJECT_ROOT),
         "cloud_sql": _CLOUD_SQL,
-        "data_dir_exists": (PROJECT_ROOT / "data").is_dir(),
+        "gcs_bucket": "adept-mountain-474619-d4-trading-data",
         "lib_dir_exists": (PROJECT_ROOT / "lib").is_dir(),
     }
 
@@ -148,26 +148,37 @@ async def get_available_dates(ticker: str):
         except Exception as e:
             logger.warning("Cloud SQL dates query failed, falling back to local: %s", e)
 
-    # ── Local parquet fallback ───────────────────────────────────────────────
-    minute_dir = PROJECT_ROOT / "data" / ticker_lower / "minute"
-    dates = []
-    if minute_dir.is_dir():
-        for f in minute_dir.glob(f"{ticker_lower}_minute_*.parquet"):
-            date_part = f.stem.split("_")[-1]
+    # ── GCS fallback ─────────────────────────────────────────────────────────
+    from api import gcs_reader
+    dates: list[str] = []
+    months: list[str] = []
+    try:
+        # Daily minute parquets
+        minute_blobs = gcs_reader.list_matching_blobs(
+            f"data/{ticker_lower}/minute/",
+            rf"^{ticker_lower}_minute_(\d{{8}})\.parquet$",
+        )
+        for blob_name in minute_blobs:
+            filename = blob_name.rsplit("/", 1)[-1]
+            date_part = filename.rsplit("_", 1)[-1].replace(".parquet", "")
             if len(date_part) == 8 and date_part.isdigit():
                 dates.append(date_part)
-
-    intraday_dir = PROJECT_ROOT / "data" / ticker_lower / "intraday"
-    months = []
-    if intraday_dir.is_dir():
-        for f in intraday_dir.glob(f"{ticker_lower}_av_1min_*.parquet"):
-            month_part = f.stem.split("_")[-1]
+        # Monthly intraday parquets
+        intraday_blobs = gcs_reader.list_matching_blobs(
+            f"data/{ticker_lower}/intraday/",
+            rf"^{ticker_lower}_av_1min_(\d{{6}})\.parquet$",
+        )
+        for blob_name in intraday_blobs:
+            filename = blob_name.rsplit("/", 1)[-1]
+            month_part = filename.rsplit("_", 1)[-1].replace(".parquet", "")
             if len(month_part) == 6 and month_part.isdigit():
                 months.append(month_part)
+    except Exception as e:
+        logger.warning("GCS dates list failed for %s: %s", ticker_upper, e)
 
     return {
         "ticker": ticker_upper,
-        "source": "local",
+        "source": "gcs",
         "dates": sorted(set(dates), reverse=True),
         "months": sorted(set(months), reverse=True),
     }
@@ -354,14 +365,21 @@ async def get_reference_levels(ticker: str, date: str):
         except Exception as e:
             logger.warning("Cloud SQL reference query failed: %s", e)
 
-    # ── Local parquet fallback ───────────────────────────────────────────────
-    minute_dir = PROJECT_ROOT / "data" / ticker_lower / "minute"
+    # ── GCS fallback ─────────────────────────────────────────────────────────
+    from api import gcs_reader
     all_dates: list[str] = []
-    if minute_dir.is_dir():
-        for f in minute_dir.glob(f"{ticker_lower}_minute_*.parquet"):
-            date_part = f.stem.split("_")[-1]
+    try:
+        minute_blobs = gcs_reader.list_matching_blobs(
+            f"data/{ticker_lower}/minute/",
+            rf"^{ticker_lower}_minute_(\d{{8}})\.parquet$",
+        )
+        for blob_name in minute_blobs:
+            filename = blob_name.rsplit("/", 1)[-1]
+            date_part = filename.rsplit("_", 1)[-1].replace(".parquet", "")
             if len(date_part) == 8 and date_part.isdigit():
                 all_dates.append(date_part)
+    except Exception as e:
+        logger.warning("GCS minute list failed for %s: %s", ticker_upper, e)
     all_dates.sort()
 
     if date not in all_dates:
@@ -483,23 +501,33 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
         except Exception as e:
             logger.warning("Cloud SQL intraday load failed for %s/%s: %s", ticker_upper, date, e)
 
-    # ── Local parquet fallback ───────────────────────────────────────────────
+    # ── GCS fallback ─────────────────────────────────────────────────────────
+    from api import gcs_reader
+
+    def _try_gcs_download(blob_path_rel: str) -> pd.DataFrame | None:
+        try:
+            if gcs_reader.blob_exists(blob_path_rel):
+                return gcs_reader.download_parquet(gcs_reader.BASE_PREFIX + blob_path_rel)
+        except Exception as e:
+            logger.warning("GCS download failed for %s: %s", blob_path_rel, e)
+        return None
+
     if len(date) == 8:
-        minute_path = PROJECT_ROOT / "data" / ticker_lower / "minute" / f"{ticker_lower}_minute_{date}.parquet"
-        if minute_path.exists():
-            return pd.read_parquet(minute_path)
+        df = _try_gcs_download(f"data/{ticker_lower}/minute/{ticker_lower}_minute_{date}.parquet")
+        if df is not None and not df.empty:
+            return df
 
     month = date[:6] if len(date) >= 6 else date
-    intraday_path = PROJECT_ROOT / "data" / ticker_lower / "intraday" / f"{ticker_lower}_av_1min_{month}.parquet"
-    if intraday_path.exists():
-        return pd.read_parquet(intraday_path)
+    df = _try_gcs_download(f"data/{ticker_lower}/intraday/{ticker_lower}_av_1min_{month}.parquet")
+    if df is not None and not df.empty:
+        return df
 
     year = date[:4]
-    yearly_path = PROJECT_ROOT / "data" / ticker_lower / f"{ticker_lower}_{year}.parquet"
-    if yearly_path.exists():
-        return pd.read_parquet(yearly_path)
+    df = _try_gcs_download(f"data/{ticker_lower}/{ticker_lower}_{year}.parquet")
+    if df is not None and not df.empty:
+        return df
 
-    raise FileNotFoundError(f"No data file found for {ticker_lower} date={date}")
+    raise FileNotFoundError(f"No data found in Cloud SQL or GCS for {ticker_lower} date={date}")
 
 
 def _aggregate_timeframe(df: pd.DataFrame, minutes: int) -> pd.DataFrame:

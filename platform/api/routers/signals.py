@@ -1,24 +1,65 @@
-"""Signals router — reads historical signals parquets from data/signals/"""
+"""Signals router — reads historical signals parquets directly from GCS with TTL caching.
+
+Data source
+-----------
+gs://adept-mountain-474619-d4-trading-data/raw/data/signals/historical_{ticker}_*_signals.parquet
+
+The parquets are large (hundreds of MB each), so we cache the raw DataFrame per
+ticker with a 1h TTL. Filtering (direction, min_score, point-in-time) is then
+cheap and happens in-memory on every request.
+"""
+import logging
+import re
+import sys
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
-import pandas as pd
 
-router = APIRouter()
+import pandas as pd
+from cachetools import TTLCache
+from fastapi import APIRouter, HTTPException, Query
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-SIGNALS_DIR = PROJECT_ROOT / "data" / "signals"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from api import gcs_reader  # noqa: E402
+
+log = logging.getLogger(__name__)
+router = APIRouter()
+
+GCS_PREFIX = "data/signals/"
+
+# Cache the raw DataFrame per ticker for 1h. Four tickers × one parquet each → 4 entries max.
+_DF_CACHE: TTLCache = TTLCache(maxsize=8, ttl=3600)
 
 
-def _find_signals_file(ticker: str) -> Path | None:
-    """Find the most recent signals parquet for a ticker."""
-    ticker_lower = ticker.lower()
-    files = sorted(
-        SIGNALS_DIR.glob(f"historical_{ticker_lower}_*_signals.parquet"),
-        key=lambda f: f.stat().st_mtime,
-        reverse=True,
-    )
-    return files[0] if files else None
+def _pattern(ticker_lower: str) -> str:
+    return rf"^historical_{re.escape(ticker_lower)}_\d{{8}}_\d{{8}}_signals\.parquet$"
+
+
+def _load_ticker_df(ticker_upper: str) -> tuple[str, pd.DataFrame]:
+    """Return (filename, dataframe) for the most recent signals parquet, using cache."""
+    if ticker_upper in _DF_CACHE:
+        return _DF_CACHE[ticker_upper]
+
+    ticker_lower = ticker_upper.lower()
+    blobs = gcs_reader.list_matching_blobs(GCS_PREFIX, _pattern(ticker_lower))
+    if not blobs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No signals parquet found in GCS for {ticker_upper}. Run the signals generation pipeline first.",
+        )
+
+    blob_name = blobs[0]
+    filename = blob_name.rsplit("/", 1)[-1]
+    try:
+        df = gcs_reader.download_parquet(blob_name)
+    except Exception as exc:
+        log.error("Failed to download %s: %s", blob_name, exc)
+        raise HTTPException(status_code=502, detail=f"Failed to download signals parquet from GCS: {exc}")
+
+    _DF_CACHE[ticker_upper] = (filename, df)
+    return filename, df
 
 
 @router.get("/api/signals/{ticker}")
@@ -30,24 +71,16 @@ async def get_signals(
     end_date: Optional[str] = Query(default=None, description="YYYY-MM-DD cutoff; returns signals at or before this date"),
     end_time: Optional[str] = Query(default=None, description="HH:MM (24h ET); combined with end_date for minute-precision cutoff"),
 ):
-    """Return historical signals for a ticker from the signals parquet.
+    """Return historical signals for a ticker from GCS signals parquet.
 
     Supports point-in-time review via `end_date` (+ optional `end_time`).
     Cutoff semantics: signals where `entry_time <= cutoff` are included.
     """
     ticker_upper = ticker.upper()
-    path = _find_signals_file(ticker)
+    filename, df = _load_ticker_df(ticker_upper)
 
-    if path is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No signals file found for {ticker_upper}. Run the signals generation pipeline first.",
-        )
-
-    try:
-        df = pd.read_parquet(path)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading signals: {e}")
+    # Copy so filters don't mutate the cached frame
+    df = df.copy()
 
     # Point-in-time filter on entry_time (datetime64 column)
     if end_date:
@@ -105,6 +138,6 @@ async def get_signals(
         "ticker": ticker_upper,
         "count": total_count,
         "returned": len(records),
-        "file": path.name,
+        "file": filename,
         "signals": records,
     }
