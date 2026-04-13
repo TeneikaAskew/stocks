@@ -47,6 +47,8 @@ interface BriefResponse {
     strat_candle?: string; strat_combo?: string; ftfc_score?: number; ftfc_direction?: string;
     consecutive_up?: number; consecutive_down?: number; price_vs_ema9?: number; price_vs_ema20?: number;
   };
+  // Present only when the API overlaid live quote data on top of the daily snapshot
+  live?: { price: number; session: string; updated_at: string; source: string };
 }
 interface BacktestSummary {
   total_trades: number; win_count: number; loss_count: number; win_rate: number;
@@ -149,11 +151,13 @@ export default function DashboardPage() {
   const refDate = isReview ? reviewDateCompact : new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const { data: reference } = useFetch<ReferenceResponse>(['reference', activeTicker, refDate], `/api/market/reference/${activeTicker}/${refDate}`, { staleTime: 3_600_000 });
 
-  // Dashboard brief — pass ?date= in review mode
+  // Dashboard brief — pass ?date= in review mode. When the market is open the
+  // API overlays live quote data on top of the daily snapshot, so refetch
+  // every 15s to keep the bias card in sync with the tape.
   const briefUrl = isReview ? `/api/dashboard/brief/${activeTicker}?date=${reviewDate}` : `/api/dashboard/brief/${activeTicker}`;
   const { data: brief } = useFetch<BriefResponse>(['brief', activeTicker, reviewDate ?? 'live'], briefUrl, {
-    staleTime: 300_000,
-    refetchInterval: isOpen ? 300_000 : false,
+    staleTime: isOpen ? 10_000 : 300_000,
+    refetchInterval: isOpen ? 15_000 : false,
   });
 
   // ── Market Overview: intraday bars for the last ~2 trading days ──
@@ -748,7 +752,16 @@ export default function DashboardPage() {
             {brief?.source === 'unavailable' && (
               <span className="ml-auto text-xs text-amber-400">Cloud SQL unavailable</span>
             )}
-            {!isReview && brief?.source === 'cloud_sql' && (di.stale_days ?? 0) > 3 && (
+            {!isReview && brief?.live && (
+              <span className="ml-auto inline-flex items-center gap-1.5 text-[10px] font-semibold text-green-400" title={`Live overlay from ${brief.live.source}`}>
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75"></span>
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500"></span>
+                </span>
+                LIVE
+              </span>
+            )}
+            {!isReview && !brief?.live && brief?.source === 'cloud_sql' && (di.stale_days ?? 0) >= 1 && (
               <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-amber-400" title="Cloud SQL market_data_daily backfill needed">
                 <AlertTriangle size={11} /> {di.stale_days}d stale
               </span>
@@ -769,7 +782,9 @@ export default function DashboardPage() {
                     {brief.bias.toUpperCase()}
                   </p>
                   <p className="text-[10px] text-[var(--color-text-muted)]">
-                    {di.date ? `Based on ${di.date} daily close` : ''}
+                    {brief.live
+                      ? `Live ${brief.live.session} — $${brief.live.price.toFixed(2)}`
+                      : di.date ? `Based on ${di.date} daily close` : ''}
                   </p>
                 </div>
               </div>

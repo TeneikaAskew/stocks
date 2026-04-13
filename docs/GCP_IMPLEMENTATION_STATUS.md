@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-04-13 (session 9)
+**Last Updated**: 2026-04-13 (session 10)
 
 ---
 
@@ -394,9 +394,16 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 
 | Suite | Status | Tests | Date |
 |-------|--------|-------|------|
-| Unit/Integration (`make test`) | ✅ PASS | 363/363 | 2026-03-01 |
+| Unit/Integration (`make test`) | ⚠️ 1 pre-existing failure | 222/223 | 2026-04-13 |
+| Platform API (`tests/test_platform_api.py`) | ⚠️ 1 pre-existing failure | 30/31 | 2026-04-13 |
 | E2E Playwright (`make test-e2e`) | Not run | 28 | — |
 | Scripts CLI (`make test-scripts`) | ✅ PASS | 18/18 | 2026-02-22 |
+
+Pre-existing failures (unrelated to dashboard work):
+- `test_data_loader.py::TestLoadIntraday::test_returns_empty_when_no_data` — premise
+  invalid now that Cloud SQL has real IWM data.
+- `test_platform_api.py::TestHealth::test_health_returns_ok` — checks for removed
+  `data_dir_exists` field in `/api/health` response.
 
 ---
 
@@ -465,6 +472,10 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 - 2026-04-13: feat(gcp) — add `archive_yahoo_*` tables (schema.sql) + `scripts/archive_yahoo_data.py` for chunked Yahoo→archive→delete with resume-safe dedup. Intraday Yahoo cleanup complete (51,471 rows archived, 0 in prod). Recovered 73K AV rows lost to a ctid-partition bug (script now uses PK-based batching). `fetch_alphavantage_intraday.py` switched from `bulk_insert_dataframe` → `upsert_dataframe` so re-runs are safe. `etf_options_snapshots` Yahoo cleanup (~24M rows) pending the running `fetch-av-options-backfill` Cloud Run Job completion.
 - 2026-04-13: feat(fetchers) — `fetch_economic_events.py` adds ForexFactory source (https://nfs.faireconomy.media/ff_calendar_thisweek.json) for release times + forecast/previous values. FRED fallback for coverage; FOMC Press Release metadata blacklisted. Brief filters to Mon–Fri only, prefers rows with times when available.
 - 2026-04-13: feat(premarket) — earnings embed tier sort (AV+UW+EW first, then AV+UW, then AV+EW, then long tail). Tier 1-3 get 🟢🔵🟡 badges. Day headers show "N confirmed / M total". Truncation shows hidden confirmed count ("+111 more (2 confirmed)"). Weekly mode (Sunday brief) groups economic events by day in the calendar embed description. Labels renamed F/P → Exp=/Prev= for clarity.
+- 2026-04-13: fix(platform) — Daily Bias card on Dashboard now overlays live AlphaVantage quote on top of the Cloud SQL daily snapshot when market is open (recomputes RSI14 / EMA9 / EMA20 / SMA200 with synthetic today bar appended). Frontend polls the brief endpoint every 15s during regular hours and shows a green LIVE pill + "Live regular — $XYZ.XX" subtitle. Stale-days calc converted from calendar days to trading days via shared `_is_market_open` holiday set so Thu→Mon reads "1d stale" not "4d stale".
+- 2026-04-13: fix(gcp) — `gcp/deploy.sh` `_env_string()` now injects `AV_API_KEY` + `ALPHA_VANTAGE_API_KEY` (both names) and `FRED_API_KEY` from Secret Manager into every Cloud Run job. Closes a footgun where a fresh `deploy.sh fetchers` push would create jobs missing the AV key. Existing jobs already had the keys set out-of-band.
+- 2026-04-13: ops — rebuilt `trading-system` container image (digest `78035eb7…` → `10200d2c…`) with the post-AlphaVantage-migration fetch_market_data.py code path. Old image had a yfinance fallback that wrote pandas float `1.0` into INTEGER columns (`consecutive_up`, `consecutive_down`), causing silent daily failures since 2026-04-06. Backfilled IWM/SPY/QQQ rows for 2026-04-06..04-10 via 5 manual `gcloud run jobs execute` calls (Cloud SQL now current through Friday 04-10).
+- 2026-04-13: chore(workflows) — `.github/workflows/fetch-market-data.yml` renamed to `.disabled`. `fetch-market-data` Cloud Run Job is now sole source of truth for `market_data_daily`.
 
 ---
 

@@ -4,7 +4,7 @@ GET /api/dashboard/brief/{ticker} - Daily bias / strat status from Cloud SQL
 """
 import sys
 import logging
-from datetime import datetime
+from datetime import datetime, date as _date_cls, timedelta
 from pathlib import Path
 
 from typing import Optional
@@ -26,6 +26,49 @@ try:
         _query_fn = query_to_dataframe
 except Exception:
     pass
+
+# Reuse the same holiday calendar / market-open logic as the live router so
+# both endpoints agree on what "stale" and "open" mean.
+try:
+    from platform.api.routers.live import (  # type: ignore[import-not-found]
+        _is_market_open,
+        get_live_quote,
+        ET_TZ,
+        MARKET_HOLIDAYS_2026,
+    )
+except Exception:  # pragma: no cover - import path differs when launched as `api.main`
+    try:
+        from api.routers.live import (  # type: ignore[no-redef]
+            _is_market_open,
+            get_live_quote,
+            ET_TZ,
+            MARKET_HOLIDAYS_2026,
+        )
+    except Exception:
+        _is_market_open = None  # type: ignore[assignment]
+        get_live_quote = None  # type: ignore[assignment]
+        ET_TZ = None  # type: ignore[assignment]
+        MARKET_HOLIDAYS_2026 = set()  # type: ignore[assignment]
+
+
+def _trading_days_between(start: _date_cls, end: _date_cls) -> int:
+    """Count trading days strictly between `start` and `end` (both exclusive).
+
+    Returns 0 when end <= start. Skips Sat/Sun and US market holidays. Used
+    for staleness, so on Monday morning with Thursday's close as the most
+    recent row this returns 1 (only Friday's bar is missing), not 4 calendar
+    days. The end day is excluded because today's bar doesn't exist yet at
+    market open.
+    """
+    if end <= start:
+        return 0
+    count = 0
+    cur = start + timedelta(days=1)
+    while cur < end:
+        if cur.weekday() < 5 and cur not in MARKET_HOLIDAYS_2026:
+            count += 1
+        cur += timedelta(days=1)
+    return count
 
 
 @router.get("/api/dashboard/brief/{ticker}")
@@ -109,7 +152,8 @@ async def dashboard_brief(
         if not df.empty:
             row = df.iloc[0]
             _f = lambda v, d=2: round(float(v), d) if v is not None else None
-            # Detect staleness: how many days between the latest row and "today" (or requested date)
+            # Detect staleness in TRADING days, not calendar days — Thursday → Monday
+            # is 1 stale trading day (only Friday is missing), not 4 calendar days.
             try:
                 row_date = row.get("date")
                 if hasattr(row_date, "strftime"):
@@ -117,7 +161,7 @@ async def dashboard_brief(
                 else:
                     row_d = datetime.strptime(str(row_date), "%Y-%m-%d").date()
                 ref_today = datetime.strptime(date, "%Y-%m-%d").date() if date else datetime.now().date()
-                stale_days = (ref_today - row_d).days
+                stale_days = _trading_days_between(row_d, ref_today)
             except Exception:
                 stale_days = 0
             daily = {
@@ -143,6 +187,27 @@ async def dashboard_brief(
             }
     except Exception as e:
         logger.warning("market_data_daily query failed: %s", e)
+
+    # ── Live overlay ────────────────────────────────────────────────────────
+    # When the market is open AND the caller is asking for "today" (no ?date=),
+    # overlay live quote on top of the cached daily snapshot. Recompute RSI14,
+    # EMA9, EMA20, SMA200 with a synthetic today-bar appended so the card
+    # reflects the live tape instead of yesterday's close.
+    live_meta: dict = {}
+    if (
+        daily
+        and date is None
+        and _is_market_open is not None
+        and get_live_quote is not None
+        and ET_TZ is not None
+    ):
+        try:
+            now_et = datetime.now(ET_TZ)
+            is_open, session = _is_market_open(now_et)
+            if is_open:
+                live_meta = await _apply_live_overlay(ticker, daily)
+        except Exception as e:
+            logger.warning("live overlay failed for %s: %s", ticker, e)
 
     # Derive bias direction from premarket first, then daily indicators
     ftfc_dir = premarket.get("ftfc_direction") or daily.get("ftfc_direction")
@@ -171,4 +236,73 @@ async def dashboard_brief(
         "has_premarket": bool(premarket),
         **premarket,
         "daily_indicators": daily,
+        **({"live": live_meta} if live_meta else {}),
+    }
+
+
+async def _apply_live_overlay(ticker: str, daily: dict) -> dict:
+    """Refresh ``daily`` in place with live-quote-driven indicators.
+
+    Pulls the last 250 daily closes from Cloud SQL, appends a synthetic bar
+    built from the live quote, and recomputes RSI14 / EMA9 / EMA20 / SMA200.
+    Mutates ``daily`` and returns a small ``live`` metadata block describing
+    what was overlaid (price, timestamp, source).
+
+    Silently no-ops on any failure — caller catches and logs.
+    """
+    if _query_fn is None or get_live_quote is None:
+        return {}
+
+    # 1. Pull recent daily history (chronological, oldest first)
+    hist = _query_fn(
+        "SELECT date, close FROM market_data_daily "
+        "WHERE ticker = :ticker ORDER BY date DESC LIMIT 250",
+        {"ticker": ticker},
+    )
+    if hist.empty or len(hist) < 30:
+        return {}
+    hist = hist.iloc[::-1].reset_index(drop=True)
+
+    # 2. Fetch live quote (the live router function returns a dict)
+    quote = await get_live_quote(ticker)
+    live_price = float(quote.get("price") or 0.0)
+    if live_price <= 0:
+        return {}
+
+    # 3. Append (or replace) today's row in the close series
+    import pandas as pd
+    from lib.indicators import calculate_rsi, calculate_ema, calculate_sma
+
+    today = datetime.now(ET_TZ).date() if ET_TZ else datetime.now().date()
+    closes = hist["close"].astype(float).tolist()
+    last_date = hist["date"].iloc[-1]
+    last_d = last_date if hasattr(last_date, "year") else datetime.strptime(str(last_date), "%Y-%m-%d").date()
+    if last_d == today:
+        closes[-1] = live_price
+    else:
+        closes.append(live_price)
+    series = pd.Series(closes)
+
+    # 4. Recompute the indicators the bias card actually displays
+    rsi14 = float(calculate_rsi(series, 14).iloc[-1])
+    ema9 = float(calculate_ema(series, 9).iloc[-1])
+    ema20 = float(calculate_ema(series, 20).iloc[-1])
+    sma200 = float(calculate_sma(series, 200).iloc[-1]) if len(series) >= 200 else None
+
+    # 5. Mutate daily so the existing field-to-UI mapping just works
+    daily["close"] = round(live_price, 2)
+    daily["rsi_14"] = round(rsi14, 1)
+    daily["ema_9"] = round(ema9, 2)
+    daily["ema_20"] = round(ema20, 2)
+    if sma200 is not None:
+        daily["sma_200"] = round(sma200, 2)
+    daily["price_vs_ema9"] = round((live_price - ema9) / ema9 * 100.0, 3) if ema9 else None
+    daily["price_vs_ema20"] = round((live_price - ema20) / ema20 * 100.0, 3) if ema20 else None
+    daily["stale_days"] = 0  # live data is by definition not stale
+
+    return {
+        "price": round(live_price, 2),
+        "session": quote.get("market_session", "regular"),
+        "updated_at": quote.get("last_updated", ""),
+        "source": "alphavantage_global_quote",
     }
