@@ -142,11 +142,17 @@ def process_ticker(ticker: str, fetch_date: str, bucket: str, api_key: str,
 
     log.info("    %d contracts received", len(df))
 
+    # Dedupe on the unique constraint so ON CONFLICT DO UPDATE never tries to
+    # update the same row twice in one batch (AV occasionally returns duplicate
+    # contracts within the same response — dates 2017-09-15, 2020-06-22 etc.).
+    conflict_cols = ['ticker', 'snapshot_ts', 'option_type', 'expiration', 'strike']
+    before = len(df)
+    df = df.drop_duplicates(subset=conflict_cols, keep='last')
+    if len(df) < before:
+        log.info("    deduped %d → %d rows", before, len(df))
+
     if is_cloud_sql_configured():
-        upsert_dataframe(
-            df, 'etf_options_snapshots',
-            ['ticker', 'snapshot_ts', 'option_type', 'expiration', 'strike'],
-        )
+        upsert_dataframe(df, 'etf_options_snapshots', conflict_cols)
         log.info("    ✓ upserted to Cloud SQL")
 
     if bucket:
