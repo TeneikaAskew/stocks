@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTickerStore } from '@/stores/tickerStore';
 import { useReviewDateStore } from '@/stores/reviewDateStore';
@@ -8,16 +8,28 @@ import { useLiveHistory, useAvgVolume } from '@/hooks/useLiveHistory';
 import { buildSnapshot, evalConditions, type EvalResult } from '@/lib/playbookEvaluator';
 import { to12h } from '@/lib/time';
 import { MetricCard } from '@/components/shared/MetricCard';
+import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
 import {
   TrendingUp, TrendingDown, Minus, Activity, BookOpen,
-  AlertTriangle, Database, CheckCircle, Circle, HelpCircle,
+  AlertTriangle, Database, CheckCircle, Circle, HelpCircle, ChevronDown,
 } from 'lucide-react';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface HealthResponse { cloud_sql: boolean; data_dir_exists: boolean }
 type QuoteResponse = LiveQuote;
-interface ReferenceResponse { ticker: string; date: string; source?: string; stale_days?: number; open: number; high: number; low: number; close: number }
+interface WeekRange { high: number; low: number; avg_close?: number; avg_rsi_14?: number | null; start_date: string; end_date: string; sessions: number }
+interface ReferenceResponse {
+  ticker: string;
+  date: string;
+  source?: string;
+  stale_days?: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  week?: WeekRange | null;
+}
 interface MarketDataResponse {
   ticker: string; date: string; count: number;
   candlestick: Array<{ time: number; open: number; high: number; low: number; close: number }>;
@@ -143,6 +155,168 @@ export default function DashboardPage() {
     staleTime: 300_000,
     refetchInterval: isOpen ? 300_000 : false,
   });
+
+  // ── Market Overview: intraday bars for the last ~2 trading days ──
+  // Uses the YYYYMM form of /api/market/data which returns the whole month of
+  // bars in one call; we filter to regular-session hours and slice to the last 2
+  // trading days client-side.
+  //
+  // IMPORTANT: AlphaVantage intraday bars are stored in Cloud SQL with ET times
+  // labeled as UTC (e.g. an ET 09:30 bar has unix seconds corresponding to
+  // 09:30 UTC). That's why we use `getUTCHours()` / `getUTCDate()` below — the
+  // UTC components give us the ET wall-clock time the user expects.
+  const [timeframe, setTimeframe] = useState<1 | 5 | 15 | 30 | 60>(60);
+  const [tfOpen, setTfOpen] = useState(false);
+
+  const monthCode = useMemo(() => {
+    const refSource = isReview ? reviewDate : brief?.daily_indicators?.date;
+    if (!refSource) return null;
+    return refSource.replace(/-/g, '').slice(0, 6); // YYYYMM
+  }, [isReview, reviewDate, brief?.daily_indicators?.date]);
+
+  const hourlyUrl = monthCode ? `/api/market/data/${activeTicker}/${monthCode}?timeframe=${timeframe}` : '';
+  const { data: hourlyData } = useFetch<MarketDataResponse>(
+    ['hourly', activeTicker, monthCode ?? 'none', String(timeframe)],
+    hourlyUrl,
+    { staleTime: 3_600_000, enabled: !!monthCode },
+  );
+
+  // Transform bars into PriceAreaChart points:
+  //   1) Filter to ET 04:00-16:00 (pre-market + regular hours, matches NVDA reference)
+  //   2) Slice to the last 2 distinct ET calendar days
+  //   3) Format labels using UTC components (= ET wall-clock)
+  const pricePoints = useMemo<PricePoint[]>(() => {
+    const bars = hourlyData?.candlestick ?? [];
+    if (!bars.length) return [];
+
+    // 1) filter by time-of-day (ET 04:00 inclusive → 16:00 inclusive)
+    const inSession = bars.filter((b) => {
+      const d = new Date(b.time * 1000);
+      const h = d.getUTCHours();
+      return h >= 4 && h <= 16;
+    });
+
+    // 2) slice to the last 2 distinct ET calendar days (YYYY-MM-DD from UTC)
+    const dayKey = (t: number) => {
+      const d = new Date(t * 1000);
+      return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`;
+    };
+    const uniqueDays: string[] = [];
+    for (let i = inSession.length - 1; i >= 0 && uniqueDays.length < 2; i--) {
+      const key = dayKey(inSession[i].time);
+      if (!uniqueDays.includes(key)) uniqueDays.push(key);
+    }
+    const lastTwoDays = inSession.filter((b) => uniqueDays.includes(dayKey(b.time)));
+
+    // 3) format labels
+    return lastTwoDays.map((b) => {
+      const d = new Date(b.time * 1000);
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mi = String(d.getUTCMinutes()).padStart(2, '0');
+      return {
+        time: b.time,
+        price: b.close,
+        label: `${mm}/${dd} ${hh}:${mi}`,
+      };
+    });
+  }, [hourlyData]);
+
+  // Session boundary = first bar of the most recent ET day
+  const sessionBoundary = useMemo<{ time: number; label: string } | null>(() => {
+    if (pricePoints.length < 2) return null;
+    const dayKey = (t: number) => {
+      const d = new Date(t * 1000);
+      return `${d.getUTCFullYear()}-${d.getUTCMonth() + 1}-${d.getUTCDate()}`;
+    };
+    const lastDayKey = dayKey(pricePoints[pricePoints.length - 1].time);
+    const boundary = pricePoints.find((p) => dayKey(p.time) === lastDayKey);
+    if (!boundary || boundary.time === pricePoints[0].time) return null;
+    const d = new Date(boundary.time * 1000);
+    const label = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+      .toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    return { time: boundary.time, label };
+  }, [pricePoints]);
+
+  // ── 4 KPI cards (match NVDA reference: prev close, latest close, 2-day change, RSI) ──
+  const kpiCards = useMemo(() => {
+    const prevClose = reference?.close;
+    const prevDateStr = reference?.date;
+    const latestClose = brief?.daily_indicators?.close;
+    const latestDateStr = brief?.daily_indicators?.date;
+    const rsi = brief?.daily_indicators?.rsi_14;
+    if (!prevClose || !latestClose || !prevDateStr || !latestDateStr) return null;
+
+    const fmtCardDate = (dateStr: string) => {
+      // Accept YYYYMMDD or YYYY-MM-DD
+      const clean = dateStr.replace(/-/g, '');
+      const year = clean.slice(0, 4);
+      const month = clean.slice(4, 6);
+      const day = clean.slice(6, 8);
+      const dt = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+      return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }).toUpperCase();
+    };
+
+    const changeAbs = latestClose - prevClose;
+    const changePct = (changeAbs / prevClose) * 100;
+
+    const wkAvgClose = reference?.week?.avg_close;
+    const wkAvgRsi = reference?.week?.avg_rsi_14 ?? undefined;
+    const wkSessions = reference?.week?.sessions;
+    const vsWeek = (v: number): string => {
+      if (!wkAvgClose) return 'Regular market close';
+      const p = ((v - wkAvgClose) / wkAvgClose) * 100;
+      const label = wkSessions ? `prev ${wkSessions}d avg` : 'prev wk avg';
+      return `${p >= 0 ? '+' : ''}${p.toFixed(2)}% vs ${label}`;
+    };
+
+    const rsiZone = (v: number | undefined): string => {
+      if (v === undefined) return '—';
+      if (v < 30) return 'Oversold zone';
+      if (v < 45) return 'Weak';
+      if (v < 55) return 'Neutral zone';
+      if (v < 70) return 'Strong';
+      return 'Overbought zone';
+    };
+    const rsiTone = (v: number | undefined): 'bull' | 'bear' | 'warn' | 'default' => {
+      if (v === undefined) return 'default';
+      if (v < 30) return 'bull';          // oversold → likely to bounce
+      if (v > 70) return 'bear';          // overbought → likely to fade
+      return 'warn';                       // mid-range
+    };
+
+    return {
+      prev: {
+        label: `${fmtCardDate(prevDateStr)} CLOSE`,
+        value: `$${prevClose.toFixed(2)}`,
+        subtitle: vsWeek(prevClose),
+      },
+      latest: {
+        label: `${fmtCardDate(latestDateStr)} CLOSE`,
+        value: `$${latestClose.toFixed(2)}`,
+        subtitle: vsWeek(latestClose),
+      },
+      change: {
+        label: '2-DAY CHANGE',
+        value: `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`,
+        subtitle: `${changeAbs >= 0 ? '+' : ''}$${changeAbs.toFixed(2)} per share`,
+        tone: (changePct >= 0 ? 'bull' : 'bear') as 'bull' | 'bear',
+        direction: (changePct >= 0 ? 'up' : 'down') as 'up' | 'down',
+      },
+      rsi: {
+        label: 'RSI (14) LATEST',
+        value: rsi !== undefined ? rsi.toFixed(1) : '—',
+        subtitle: (() => {
+          const zone = rsiZone(rsi);
+          if (rsi === undefined || wkAvgRsi === undefined || !wkSessions) return zone;
+          const p = ((rsi - wkAvgRsi) / wkAvgRsi) * 100;
+          return `${zone} · ${p >= 0 ? '+' : ''}${p.toFixed(1)}% vs ${wkSessions}d avg`;
+        })(),
+        tone: rsiTone(rsi),
+      },
+    };
+  }, [reference, brief]);
 
   const { data: btData } = useFetch<BacktestResponse>(['bt', activeTicker], `/api/backtest/results/${activeTicker}`, { staleTime: 3_600_000 });
   const { data: eqData } = useFetch<EquityResponse>(['eq', activeTicker], `/api/backtest/equity/${activeTicker}`, { staleTime: 3_600_000 });
@@ -418,7 +592,151 @@ export default function DashboardPage() {
             </div>
           </div>
         )}
+
+        {/* Previous Week Range — matching visual style under the Day Range */}
+        {reference?.week && (
+          <div className="mt-4 pt-3">
+            <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+              <span>
+                Previous Week Range ({reference.week.sessions} sessions)
+              </span>
+              {quote && (
+                <span>
+                  {quote.price > reference.week.high
+                    ? <span className="text-green-400">Above week high</span>
+                    : quote.price < reference.week.low
+                    ? <span className="text-amber-400">Below week low</span>
+                    : `${((quote.price - reference.week.low) / (reference.week.high - reference.week.low) * 100).toFixed(0)}% of range`}
+                </span>
+              )}
+            </div>
+
+            <div className="relative h-8">
+              {/* Full range line — slightly dimmer than the day bar to distinguish */}
+              <div className="absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 bg-gradient-to-r from-amber-400 via-[var(--color-brand)] to-green-400 opacity-40" />
+
+              {/* Low marker */}
+              <div className="absolute left-0 top-0 flex flex-col items-center">
+                <div className="h-full w-0.5 bg-amber-400" />
+                <span className="mt-0 font-mono text-[10px] text-amber-400 whitespace-nowrap">L ${reference.week.low.toFixed(2)}</span>
+              </div>
+
+              {/* High marker */}
+              <div className="absolute right-0 top-0 flex flex-col items-center">
+                <div className="h-full w-0.5 bg-green-400" />
+                <span className="font-mono text-[10px] text-green-400 whitespace-nowrap">H ${reference.week.high.toFixed(2)}</span>
+              </div>
+
+              {/* Current price marker (circle on line) */}
+              {quote && (() => {
+                const w = reference.week!;
+                const pct = Math.max(0, Math.min(100, ((quote.price - w.low) / (w.high - w.low)) * 100));
+                return (
+                  <div
+                    className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--color-text-primary)] border-2 border-[var(--color-bg-secondary)] shadow-lg"
+                    style={{ left: `${pct}%` }}
+                    title={`Current: $${quote.price.toFixed(2)}`}
+                  />
+                );
+              })()}
+            </div>
+
+            {/* Date range footer */}
+            <div className="mt-1 flex justify-between text-[10px] text-[var(--color-text-muted)]">
+              <span>{reference.week.start_date}</span>
+              <span>{reference.week.end_date}</span>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* ── SECTION 2B: 4 daily KPI cards (matches NVDA reference) ────────── */}
+      {kpiCards && (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <MetricCard
+            label={kpiCards.prev.label}
+            value={kpiCards.prev.value}
+            subtitle={kpiCards.prev.subtitle}
+          />
+          <MetricCard
+            label={kpiCards.latest.label}
+            value={kpiCards.latest.value}
+            subtitle={kpiCards.latest.subtitle}
+          />
+          <MetricCard
+            label={kpiCards.change.label}
+            value={kpiCards.change.value}
+            subtitle={kpiCards.change.subtitle}
+            tone={kpiCards.change.tone}
+            direction={kpiCards.change.direction}
+          />
+          <MetricCard
+            label={kpiCards.rsi.label}
+            value={kpiCards.rsi.value}
+            subtitle={kpiCards.rsi.subtitle}
+            tone={kpiCards.rsi.tone}
+          />
+        </div>
+      )}
+
+      {/* ── SECTION 2C: Price chart card with timeframe dropdown ───────────── */}
+      {pricePoints.length > 0 && (
+        <div className="rounded-xl bg-[var(--surface-2)] p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="label-micro">Price</h2>
+
+            {/* Timeframe dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setTfOpen((v) => !v)}
+                onBlur={() => setTimeout(() => setTfOpen(false), 120)}
+                className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[10px] font-medium transition-colors"
+                style={{
+                  background: 'rgba(139, 206, 255, 0.08)',
+                  color: '#8bceff',
+                  border: '1px solid rgba(139, 206, 255, 0.20)',
+                }}
+              >
+                {timeframe}min bars
+                <ChevronDown size={12} className={tfOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
+              </button>
+              {tfOpen && (
+                <div
+                  className="absolute right-0 top-full z-20 mt-1 min-w-[120px] overflow-hidden rounded-lg py-1 text-[11px]"
+                  style={{
+                    background: 'rgba(10, 12, 16, 0.97)',
+                    border: '1px solid rgba(139, 206, 255, 0.20)',
+                    backdropFilter: 'blur(8px)',
+                  }}
+                >
+                  {([1, 5, 15, 30, 60] as const).map((tf) => (
+                    <button
+                      key={tf}
+                      type="button"
+                      onMouseDown={(e) => { e.preventDefault(); setTimeframe(tf); setTfOpen(false); }}
+                      className={`block w-full px-3 py-1.5 text-left transition-colors ${
+                        tf === timeframe
+                          ? 'font-semibold'
+                          : 'text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)]'
+                      }`}
+                      style={tf === timeframe ? { color: '#8bceff', background: 'rgba(139, 206, 255, 0.08)' } : undefined}
+                    >
+                      {tf}min bars
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <PriceAreaChart
+            data={pricePoints}
+            seriesLabel={`${activeTicker} close price`}
+            sessionBoundary={sessionBoundary}
+            height={280}
+          />
+        </div>
+      )}
 
       {/* ── SECTION 3: Strategy Readiness ────────────────────────────────── */}
       <div className="grid gap-4 lg:grid-cols-2">
