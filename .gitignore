@@ -113,3 +113,8 @@ nul
 # AlphaVantage no-data markers (local cache indicators)
 *.nodata
 *with_indicators.parquet
+
+# Reports directory — stored in GCS (gs://adept-mountain-474619-d4-trading-data/raw/reports/)
+# Keep the README stub tracked so contributors see where the files live.
+reports/
+!reports/README.md
