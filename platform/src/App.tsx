@@ -9,7 +9,6 @@ const LiveMarketPage = lazy(() => import('@/routes/LiveMarketPage'));
 const ChartsPage = lazy(() => import('@/routes/ChartsPage'));
 const OptionsFlowPage = lazy(() => import('@/routes/OptionsFlowPage'));
 const PlaybookPage = lazy(() => import('@/routes/PlaybookPage'));
-const BacktestPage = lazy(() => import('@/routes/BacktestPage'));
 const ReportsPage = lazy(() => import('@/routes/ReportsPage'));
 const SignalsPage = lazy(() => import('@/routes/SignalsPage'));
 const JournalPage = lazy(() => import('@/routes/JournalPage'));
@@ -42,7 +41,6 @@ const router = createBrowserRouter([
       { path: '/charts', element: <Suspense fallback={<PageLoader />}><ChartsPage /></Suspense> },
       { path: '/options', element: <Suspense fallback={<PageLoader />}><OptionsFlowPage /></Suspense> },
       { path: '/playbook', element: <Suspense fallback={<PageLoader />}><PlaybookPage /></Suspense> },
-      { path: '/backtest', element: <Suspense fallback={<PageLoader />}><BacktestPage /></Suspense> },
       { path: '/reports', element: <Suspense fallback={<PageLoader />}><ReportsPage /></Suspense> },
       { path: '/signals', element: <Suspense fallback={<PageLoader />}><SignalsPage /></Suspense> },
       { path: '/journal', element: <Suspense fallback={<PageLoader />}><JournalPage /></Suspense> },

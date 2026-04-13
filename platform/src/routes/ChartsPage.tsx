@@ -8,6 +8,7 @@ import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
 import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
+import BacktesterSection from '@/components/backtest/BacktesterSection';
 import type { Timeframe, TradeEntry, TradeDirection } from '@/types';
 import type { CandlestickBar } from '@/hooks/useMarketData';
 import type { SeriesMarker, Time, LineWidth } from 'lightweight-charts';
@@ -359,7 +360,8 @@ export default function ChartsPage() {
   const drawingActive = drawingStep !== 'idle' && drawingStep !== 'option-type';
 
   return (
-    <div className="flex h-full gap-4">
+    <div className="flex flex-col gap-6">
+    <div className="flex gap-4">
       {/* Main chart area */}
       <div className="flex flex-1 flex-col">
         {/* Toolbar */}
@@ -397,7 +399,7 @@ export default function ChartsPage() {
                 onClick={() => setTimeframe(tf.value)}
                 className={`px-3 py-1.5 text-xs font-medium transition-colors ${
                   timeframe === tf.value
-                    ? 'bg-[var(--color-accent-blue)] text-white'
+                    ? 'bg-[var(--color-accent-blue)] text-[var(--on-brand)]'
                     : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'
                 }`}
               >
@@ -465,7 +467,7 @@ export default function ChartsPage() {
           {drawingStep === 'idle' ? (
             <button
               onClick={() => setDrawingStep('entry')}
-              className="flex items-center gap-1 rounded bg-[var(--color-accent-blue)] px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600"
+              className="flex items-center gap-1 rounded bg-[var(--color-accent-blue)] px-3 py-1.5 text-xs font-medium text-[var(--on-brand)] hover:bg-blue-600"
             >
               <Crosshair size={14} />
               Mark Entry
@@ -576,7 +578,7 @@ export default function ChartsPage() {
       </div>
 
       {/* Side panel */}
-      <div className="w-72 shrink-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
+      <div className="w-72 shrink-0 rounded-xl bg-[var(--surface-2)]">
         {/* Tabs */}
         <div className="flex border-b border-[var(--color-border)]">
           <button
@@ -633,6 +635,10 @@ export default function ChartsPage() {
           )}
         </div>
       </div>
+    </div>
+
+    {/* Backtester section (merged from former /backtest page) */}
+    <BacktesterSection ticker={activeTicker} />
     </div>
   );
 }

@@ -307,7 +307,7 @@ export default function OptionsFlowPage() {
   const displayMetricGex = metric === 'gex' ? totalGex : totalVex;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         {/* Metric toggle */}
@@ -318,7 +318,7 @@ export default function OptionsFlowPage() {
               onClick={() => setMetric(m)}
               className={`px-3 py-1.5 text-xs font-medium ${
                 metric === m
-                  ? 'bg-[var(--color-accent-blue)] text-white'
+                  ? 'bg-[var(--color-accent-blue)] text-[var(--on-brand)]'
                   : 'bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]'
               }`}
             >
@@ -335,7 +335,7 @@ export default function OptionsFlowPage() {
               onClick={() => setFilter(f)}
               className={`px-3 py-1.5 text-xs font-medium capitalize ${
                 filter === f
-                  ? 'bg-[var(--color-accent-blue)] text-white'
+                  ? 'bg-[var(--color-accent-blue)] text-[var(--on-brand)]'
                   : 'bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]'
               }`}
             >
@@ -404,7 +404,7 @@ export default function OptionsFlowPage() {
       )}
 
       {(datesLoading || isLoading) && (
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-8 text-center text-sm text-[var(--color-text-muted)]">
+        <div className="rounded-xl bg-[var(--surface-2)] p-8 text-center text-sm text-[var(--color-text-muted)]">
           {datesLoading ? 'Loading available dates…' : 'Loading options chain…'}
         </div>
       )}
@@ -456,7 +456,7 @@ export default function OptionsFlowPage() {
 
       {/* Heatmap */}
       {focusedGex.length > 0 && spotPrice > 0 && (
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-3">
+        <div className="rounded-xl bg-[var(--surface-2)] p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs text-[var(--color-text-muted)]">
               {metric.toUpperCase()} by Strike — {filter === 'net' ? 'Net' : filter === 'calls' ? 'Calls Only' : 'Puts Only'} — ±15% range ({focusedGex.length} strikes)
@@ -477,7 +477,7 @@ export default function OptionsFlowPage() {
       )}
 
       {!isLoading && !isError && !datesError && options.length === 0 && selectedDate && (
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-8 text-center text-sm text-[var(--color-text-muted)]">
+        <div className="rounded-xl bg-[var(--surface-2)] p-8 text-center text-sm text-[var(--color-text-muted)]">
           <div className="font-semibold">No options data returned for {activeTicker} on {selectedDate}</div>
           <div className="mt-2 text-xs">
             Try navigating to a different date using the chevrons above.

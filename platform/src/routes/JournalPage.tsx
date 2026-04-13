@@ -216,7 +216,7 @@ export default function JournalPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
@@ -249,7 +249,7 @@ export default function JournalPage() {
           )}
           <button
             onClick={() => setShowForm(s => !s)}
-            className="flex items-center gap-1.5 rounded bg-[var(--color-accent-blue)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
+            className="flex items-center gap-1.5 rounded bg-[var(--color-accent-blue)] px-3 py-1.5 text-xs font-medium text-[var(--on-brand)] hover:opacity-90"
           >
             <PlusCircle size={13} /> Add Trade
           </button>
@@ -277,7 +277,7 @@ export default function JournalPage() {
             { label: 'Avg Return', value: avgReturn !== null ? `${avgReturn >= 0 ? '+' : ''}${avgReturn.toFixed(2)}%` : '--' },
             { label: 'Avg Win', value: wins.length > 0 ? `+${(wins.reduce((a, b) => a + b, 0) / wins.length).toFixed(2)}%` : '--' },
           ].map(({ label, value }) => (
-            <div key={label} className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-3">
+            <div key={label} className="rounded-xl bg-[var(--surface-2)] p-3">
               <div className="text-xs text-[var(--color-text-muted)]">{label}</div>
               <div className="mt-0.5 text-lg font-bold text-[var(--color-text-primary)]">{value}</div>
             </div>
@@ -287,7 +287,7 @@ export default function JournalPage() {
 
       {/* Add Trade Form */}
       {showForm && (
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4">
+        <div className="rounded-xl bg-[var(--surface-2)] p-4">
           <h3 className="mb-3 text-sm font-semibold text-[var(--color-text-primary)]">
             New Trade — {activeTicker}
           </h3>
@@ -376,7 +376,7 @@ export default function JournalPage() {
             </button>
             <button onClick={handleAdd}
               disabled={!form.entryPrice || !form.exitPrice || addTrade.isPending}
-              className="rounded bg-[var(--color-accent-blue)] px-4 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
+              className="rounded bg-[var(--color-accent-blue)] px-4 py-1.5 text-xs font-medium text-[var(--on-brand)] hover:opacity-90 disabled:opacity-40"
             >
               {addTrade.isPending ? 'Saving…' : 'Save Trade'}
             </button>
@@ -386,14 +386,14 @@ export default function JournalPage() {
 
       {/* Trade table */}
       {isLoading && entries.length === 0 ? (
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-8 text-center text-sm text-[var(--color-text-muted)]">
+        <div className="rounded-xl bg-[var(--surface-2)] p-8 text-center text-sm text-[var(--color-text-muted)]">
           Loading journal…
         </div>
       ) : entries.length === 0 && !showForm ? (
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-10 text-center">
+        <div className="rounded-xl bg-[var(--surface-2)] p-10 text-center">
           <p className="text-sm text-[var(--color-text-muted)]">No trades logged for {activeTicker} yet.</p>
           <button onClick={() => setShowForm(true)}
-            className="mx-auto mt-3 flex items-center gap-1.5 rounded bg-[var(--color-accent-blue)] px-4 py-2 text-xs font-medium text-white hover:opacity-90"
+            className="mx-auto mt-3 flex items-center gap-1.5 rounded bg-[var(--color-accent-blue)] px-4 py-2 text-xs font-medium text-[var(--on-brand)] hover:opacity-90"
           >
             <PlusCircle size={13} /> Log Your First Trade
           </button>

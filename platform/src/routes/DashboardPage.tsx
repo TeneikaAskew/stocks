@@ -4,11 +4,13 @@ import { useTickerStore } from '@/stores/tickerStore';
 import { useReviewDateStore } from '@/stores/reviewDateStore';
 import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote, type LiveQuote } from '@/hooks/useLiveQuote';
-import { sessionLabel, sessionColor } from '@/lib/marketSession';
+import { useLiveHistory, useAvgVolume } from '@/hooks/useLiveHistory';
+import { buildSnapshot, evalConditions, type EvalResult } from '@/lib/playbookEvaluator';
+import { to12h } from '@/lib/time';
 import { MetricCard } from '@/components/shared/MetricCard';
 import {
   TrendingUp, TrendingDown, Minus, Activity, BookOpen,
-  AlertTriangle, Database, ArrowUpRight, ArrowDownRight,
+  AlertTriangle, Database, CheckCircle, Circle, HelpCircle,
 } from 'lucide-react';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -71,8 +73,8 @@ function pct(v: number | undefined, digits = 1): string {
 }
 
 function biasIcon(bias: string) {
-  if (bias === 'bullish') return <ArrowUpRight size={28} className="text-green-400" />;
-  if (bias === 'bearish') return <ArrowDownRight size={28} className="text-red-400" />;
+  if (bias === 'bullish') return <TrendingUp size={28} className="text-green-400" />;
+  if (bias === 'bearish') return <TrendingDown size={28} className="text-red-400" />;
   return <Minus size={28} className="text-[var(--color-text-muted)]" />;
 }
 
@@ -161,6 +163,24 @@ export default function DashboardPage() {
   const cards = pbData?.cards ?? [];
   const di = brief?.daily_indicators ?? {};
 
+  // Live data for condition evaluation (only in live mode)
+  const isMarketOpenish = !isReview && (!!status?.is_open || status?.session === 'pre-market' || status?.session === 'after-hours');
+  const { data: liveHistory } = useLiveHistory(activeTicker, isMarketOpenish);
+  const { data: avgVol } = useAvgVolume(activeTicker);
+
+  const snapshot = useMemo(
+    () =>
+      isReview
+        ? null
+        : buildSnapshot({
+            bars: liveHistory?.bars,
+            quote: liveQuote,
+            avgVolume20d: avgVol?.avg_volume_20d ?? null,
+            reference,
+          }),
+    [isReview, liveHistory, liveQuote, avgVol, reference],
+  );
+
   // Top playbook match: pick card matching bias with best win_rate
   const topCard = useMemo(() => {
     if (!cards.length) return null;
@@ -168,6 +188,12 @@ export default function DashboardPage() {
     const candidates = biasDir ? cards.filter(c => c.direction === biasDir) : cards;
     return (candidates.length ? candidates : cards).reduce((best, c) => (c.win_rate > best.win_rate ? c : best));
   }, [cards, brief?.bias]);
+
+  const topCardResults = useMemo<EvalResult[]>(() => {
+    if (!topCard) return [];
+    if (!snapshot) return topCard.conditions.map(() => ({ status: 'unknown', reason: 'no live data' }));
+    return evalConditions(topCard.conditions, snapshot);
+  }, [topCard, snapshot]);
 
   // Filter backtest trades by review date (frontend-only — trades are bounded, already fetched)
   const filteredTrades = useMemo(() => {
@@ -216,31 +242,55 @@ export default function DashboardPage() {
 
   const cloudSqlOk = health?.cloud_sql ?? false;
 
-  return (
-    <div className="space-y-4">
-      {/* ── Control bar: Market status · Cloud SQL (DateSelector is in Header) ── */}
-      <div className="flex flex-wrap items-center gap-3">
-        {/* Market status pill */}
-        <div className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-1.5">
-          <span className={`h-2 w-2 rounded-full ${isReview ? 'bg-amber-500' : sessionColor(status?.session ?? 'closed')}`} />
-          <span className="text-xs font-medium text-[var(--color-text-primary)]">
-            {isReview
-              ? `As of ${reviewDate}${reviewTime ? ` ${reviewTime}` : ''}`
-              : sessionLabel(status?.session ?? 'closed')}
-          </span>
-          {status && !isReview && (
-            <span className="text-xs text-[var(--color-text-muted)]">
-              · {status.current_time_et} ET
-            </span>
-          )}
-        </div>
+  // Market status pill — top-right of page header. Replaces the earlier
+  // "Live Data via Alpha Vantage" pill per user request: the indicator should
+  // clearly communicate whether the market (and therefore the data stream)
+  // is live, pre/after-hours, or closed.
+  const marketStatus = isReview
+    ? { label: `Review ${reviewDate}`, dot: 'bg-[var(--warn)]', text: 'text-[var(--warn)]', pulse: false }
+    : isOpen
+      ? { label: 'Market Open', dot: 'bg-[var(--bull)]', text: 'text-[var(--bull)]', pulse: true }
+      : status?.session === 'pre-market'
+        ? { label: 'Pre-Market', dot: 'bg-[var(--warn)]', text: 'text-[var(--warn)]', pulse: true }
+        : status?.session === 'after-hours'
+          ? { label: 'After Hours', dot: 'bg-[var(--warn)]', text: 'text-[var(--warn)]', pulse: true }
+          : { label: 'Market Closed', dot: 'bg-[var(--bear)]', text: 'text-[var(--bear)]', pulse: false };
 
-        {/* Cloud SQL status pill */}
-        <div className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-1.5">
-          <Database size={12} className={cloudSqlOk ? 'text-green-400' : 'text-amber-400'} />
-          <span className={`text-xs font-medium ${cloudSqlOk ? 'text-green-400' : 'text-amber-400'}`}>
-            {cloudSqlOk ? 'Cloud SQL' : 'Cloud SQL Disconnected'}
-          </span>
+  return (
+    <div className="space-y-6">
+      {/* ── Page header: Ticker + metadata (left) · Market status + Cloud SQL (right) ── */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-4xl font-bold tracking-tight text-[var(--color-brand)]">{activeTicker}</h1>
+          <p className="label-micro mt-2">
+            Dashboard · {
+              (isReview && reviewDate
+                ? new Date(`${reviewDate}T00:00:00`)
+                : new Date()
+              ).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase()
+            }
+            {isReview && reviewTime && ` · ${reviewTime} ET`}
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-2">
+          {/* Market status pill — with time when live */}
+          <div className="inline-flex items-center gap-2 rounded-full bg-[var(--surface-2)] px-3 py-1.5">
+            <span className={`h-1.5 w-1.5 rounded-full ${marketStatus.dot} ${marketStatus.pulse ? 'animate-pulse' : ''}`} />
+            <span className={`text-xs font-medium ${marketStatus.text}`}>{marketStatus.label}</span>
+            {status && !isReview && (
+              <span className="text-xs text-[var(--on-surface-muted)]">
+                · {to12h(status.current_time_et)} ET
+              </span>
+            )}
+          </div>
+
+          {/* Cloud SQL status pill — stacked under the market status */}
+          <div className="inline-flex items-center gap-1.5 rounded-full bg-[var(--surface-2)] px-3 py-1.5">
+            <Database size={12} className={cloudSqlOk ? 'text-[var(--color-brand)]' : 'text-amber-400'} />
+            <span className={`text-xs font-medium ${cloudSqlOk ? 'text-[var(--color-brand)]' : 'text-amber-400'}`}>
+              {cloudSqlOk ? 'Cloud SQL' : 'Cloud SQL Disconnected'}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -263,12 +313,12 @@ export default function DashboardPage() {
       )}
 
       {/* ── SECTION 2: Price + Key Levels ────────────────────────────────── */}
-      <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4">
+      <div className="rounded-xl bg-[var(--surface-2)] p-6">
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
           {/* Ticker + price */}
           <div>
-            <h2 className="text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider">{activeTicker}</h2>
-            <p className="font-mono text-4xl font-bold text-[var(--color-text-primary)] leading-tight">
+            <h2 className="label-micro">{activeTicker}</h2>
+            <p className="font-mono text-4xl font-bold text-[var(--color-text-primary)] leading-tight mt-1">
               ${quote?.price?.toFixed(2) ?? '--'}
             </p>
           </div>
@@ -373,7 +423,7 @@ export default function DashboardPage() {
       {/* ── SECTION 3: Strategy Readiness ────────────────────────────────── */}
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Card A: Daily Bias */}
-        <div className={`rounded-lg border-2 ${biasBorder(brief?.bias ?? 'neutral')} bg-[var(--color-bg-secondary)] p-4`}>
+        <div className={`rounded-lg border-2 ${biasBorder(brief?.bias ?? 'neutral')} bg-[var(--color-bg-secondary)] p-6`}>
           <div className="flex items-center gap-2 mb-3">
             <Activity size={14} className="text-[var(--color-accent-blue)]" />
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Daily Bias</h2>
@@ -477,7 +527,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Card B: Top Playbook Match */}
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4">
+        <div className="rounded-xl bg-[var(--surface-2)] p-6">
           <div className="flex items-center gap-2 mb-3">
             <BookOpen size={14} className="text-[var(--color-accent-blue)]" />
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Top Setup</h2>
@@ -520,12 +570,25 @@ export default function DashboardPage() {
               {topCard.conditions.length > 0 && (
                 <div className="space-y-1 mt-1">
                   <p className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider">Conditions</p>
-                  {topCard.conditions.slice(0, 5).map((c, i) => (
-                    <div key={i} className="flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]">
-                      <span className="h-1 w-1 rounded-full bg-[var(--color-accent-blue)]" />
-                      {c}
-                    </div>
-                  ))}
+                  {topCard.conditions.slice(0, 5).map((c, i) => {
+                    const result = topCardResults[i] ?? { status: 'unknown' as const, reason: '' };
+                    const isMet = result.status === 'met';
+                    const isUnknown = result.status === 'unknown';
+                    return (
+                      <div key={i} className="flex items-start gap-1.5 text-[11px]">
+                        {isMet ? (
+                          <CheckCircle size={12} className="mt-0.5 shrink-0 text-[var(--color-accent-blue)]" />
+                        ) : isUnknown ? (
+                          <HelpCircle size={12} className="mt-0.5 shrink-0 text-[var(--color-text-muted)] opacity-60" />
+                        ) : (
+                          <Circle size={12} className="mt-0.5 shrink-0 text-[var(--color-text-muted)]" />
+                        )}
+                        <span className={isMet ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'}>
+                          {c}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -537,7 +600,7 @@ export default function DashboardPage() {
 
       {/* ── SECTION 4: Performance KPIs ──────────────────────────────────── */}
       {isReview && filteredTrades.length === 0 ? (
-        <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-4 py-6">
+        <div className="flex items-center gap-2 rounded-xl bg-[var(--surface-2)] px-4 py-6">
           <AlertTriangle size={16} className="text-amber-400 shrink-0" />
           <span className="text-sm text-[var(--color-text-muted)]">
             No backtest trades before {reviewDate}{reviewTime ? ` ${reviewTime} ET` : ''}. Earliest trade: {(btData?.trades?.[0] as { entry_time?: string } | undefined)?.entry_time ?? 'N/A'}
@@ -596,7 +659,7 @@ export default function DashboardPage() {
       {/* ── SECTION 5: Recent Activity ───────────────────────────────────── */}
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Panel A: Latest Signals */}
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4">
+        <div className="rounded-xl bg-[var(--surface-2)] p-6">
           <div className="mb-3 flex items-center gap-2">
             <Activity size={14} className="text-[var(--color-accent-blue)]" />
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Latest Signals</h2>
@@ -630,7 +693,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Panel B: Best / Worst Trades */}
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4">
+        <div className="rounded-xl bg-[var(--surface-2)] p-6">
           <div className="mb-3 flex items-center gap-2">
             <BookOpen size={14} className="text-[var(--color-accent-blue)]" />
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Best / Worst Trades</h2>

@@ -8,6 +8,7 @@ import { useLiveHistory, useAvgVolume } from '@/hooks/useLiveHistory';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { computeIndicators, computeSignals } from '@/lib/indicators';
 import type { Bar } from '@/lib/indicators';
+import { to12h } from '@/lib/time';
 import {
   Activity,
   TrendingUp,
@@ -39,16 +40,25 @@ function useHistoricalDay(ticker: string, date: string | null) {
   });
 }
 
-function ConditionRow({ label, met, current, threshold, operator }: {
-  label: string; met: boolean; current: number | null; threshold: number | null; operator: string;
+function ConditionRow({ label, met, current, threshold, operator, direction }: {
+  label: string;
+  met: boolean;
+  current: number | null;
+  threshold: number | null;
+  operator: string;
+  direction: 'CALL' | 'PUT';
 }) {
+  const isCall = direction === 'CALL';
+  const metBg = isCall ? 'bg-green-500/10' : 'bg-red-500/10';
+  const metDot = isCall ? 'bg-green-400' : 'bg-red-400';
+  const metText = isCall ? 'text-green-400' : 'text-red-400';
   return (
-    <div className={`flex items-center justify-between rounded px-2 py-1 text-xs ${met ? 'bg-green-500/10' : 'bg-[var(--color-bg-tertiary)]'}`}>
+    <div className={`flex items-center justify-between rounded px-2 py-1 text-xs ${met ? metBg : 'bg-[var(--color-bg-tertiary)]'}`}>
       <div className="flex items-center gap-2">
-        <span className={`h-2 w-2 rounded-full ${met ? 'bg-green-400' : 'bg-[var(--color-text-muted)]'}`} />
+        <span className={`h-2 w-2 rounded-full ${met ? metDot : 'bg-[var(--color-text-muted)]'}`} />
         <span className={met ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'}>{label}</span>
       </div>
-      <span className={`font-mono text-[10px] ${met ? 'text-green-400' : 'text-[var(--color-text-muted)]'}`}>
+      <span className={`font-mono text-[10px] ${met ? metText : 'text-[var(--color-text-muted)]'}`}>
         {current !== null ? current.toFixed(2) : '--'} {operator} {threshold !== null ? threshold.toFixed(2) : '--'}
       </span>
     </div>
@@ -112,6 +122,7 @@ function SignalCard({ direction, strength, conditions, fired }: {
             current={c.current}
             threshold={c.threshold}
             operator={c.operator}
+            direction={direction}
           />
         ))}
       </div>
@@ -240,17 +251,17 @@ export default function LiveMarketPage() {
               : sessionLabel}
           </span>
           {status && !isReview && (
-            <span className="text-xs text-[var(--color-text-muted)]">{status.current_time_et} ET</span>
+            <span className="text-xs text-[var(--color-text-muted)]">{to12h(status.current_time_et)} ET</span>
           )}
         </div>
 
         <button
           onClick={() => setPolling(p => !p)}
           disabled={isReview}
-          className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium disabled:opacity-40 disabled:cursor-not-allowed ${
+          className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed ${
             livePolling
-              ? 'bg-[var(--color-accent-blue)] text-white'
-              : 'bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]'
+              ? 'bg-[var(--brand)] text-[var(--on-brand)]'
+              : 'bg-[var(--surface-2)] text-[var(--on-surface-variant)]'
           }`}
           title={isReview ? 'Disabled in historical view' : undefined}
         >
@@ -278,7 +289,7 @@ export default function LiveMarketPage() {
           Live data unavailable — API key not configured or rate limited. Indicators will populate once history loads.
         </div>
       ) : quote ? (
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4">
+        <div className="rounded-xl bg-[var(--surface-2)] p-4">
           <div className="flex flex-wrap items-center gap-6">
             <div>
               <div className="text-xs text-[var(--color-text-muted)]">{activeTicker}</div>
@@ -310,7 +321,7 @@ export default function LiveMarketPage() {
           </div>
         </div>
       ) : polling ? (
-        <div className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4 text-sm text-[var(--color-text-muted)]">
+        <div className="flex items-center gap-2 rounded-xl bg-[var(--surface-2)] p-4 text-sm text-[var(--color-text-muted)]">
           <Activity size={16} className="animate-pulse" />
           Fetching live quote…
         </div>

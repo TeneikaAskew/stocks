@@ -27,7 +27,7 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       onClick={(e) => e.target === overlayRef.current && onClose()}
     >
-      <div className="w-full max-w-lg rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] shadow-xl">
+      <div className="w-full max-w-lg rounded-xl bg-[var(--surface-2)] shadow-xl">
         <div className="flex items-center justify-between border-b border-[var(--color-border)] p-4">
           <h2 className="text-lg font-semibold">{title}</h2>
           <button
