@@ -294,6 +294,48 @@ async def get_market_data(
     }
 
 
+def _fetch_week_range(ticker_upper: str, before_date: str) -> Optional[dict]:
+    """Fetch the last 5 trading days BEFORE `before_date` and return the
+    overall high/low/start/end across that window. Prefers Cloud SQL
+    `market_data_daily`. Returns None on failure.
+
+    `before_date` format: "YYYY-MM-DD" (exclusive upper bound).
+    """
+    if not _CLOUD_SQL:
+        return None
+    try:
+        df = query_to_dataframe(
+            """
+            SELECT date, high, low, close, rsi_14
+            FROM market_data_daily
+            WHERE ticker = :ticker AND date < :dt
+            ORDER BY date DESC LIMIT 5
+            """,
+            {"ticker": ticker_upper, "dt": before_date},
+        )
+        if df.empty or len(df) < 2:
+            return None
+        # Ensure ascending order for start/end date labels
+        df = df.sort_values("date")
+        start_raw = df["date"].iloc[0]
+        end_raw = df["date"].iloc[-1]
+        start_str = start_raw.strftime("%Y-%m-%d") if hasattr(start_raw, "strftime") else str(start_raw)
+        end_str = end_raw.strftime("%Y-%m-%d") if hasattr(end_raw, "strftime") else str(end_raw)
+        rsi_series = df["rsi_14"].dropna() if "rsi_14" in df.columns else None
+        return {
+            "high": float(df["high"].max()),
+            "low": float(df["low"].min()),
+            "avg_close": float(df["close"].mean()),
+            "avg_rsi_14": float(rsi_series.mean()) if rsi_series is not None and not rsi_series.empty else None,
+            "start_date": start_str,
+            "end_date": end_str,
+            "sessions": int(len(df)),
+        }
+    except Exception as e:
+        logger.warning("Week range query failed for %s: %s", ticker_upper, e)
+        return None
+
+
 @app.get("/api/market/reference/{ticker}/{date}")
 async def get_reference_levels(ticker: str, date: str):
     """Get previous day OHLC reference levels for support/resistance.
@@ -304,7 +346,8 @@ async def get_reference_levels(ticker: str, date: str):
       2. Cloud SQL market_data_daily for historical requests (fast, has indicators)
       3. Local parquet fallback (minute bars aggregated)
 
-    Returns the OHLC of the trading day immediately before the requested date.
+    Returns the OHLC of the trading day immediately before the requested date,
+    plus a `week` block containing the high/low across the previous 5 trading days.
     """
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
@@ -322,9 +365,13 @@ async def get_reference_levels(ticker: str, date: str):
     if is_recent:
         av_result = _fetch_av_daily_reference(ticker_upper, date_str)
         if av_result:
+            # Week range always comes from Cloud SQL (AV daily doesn't give us
+            # a tidy 5-row window with one call). Best-effort — None if CSQL down.
+            week = _fetch_week_range(ticker_upper, date_str)
             return {
                 "ticker": ticker_upper,
                 "source": "alphavantage",
+                "week": week,
                 **av_result,
             }
         logger.info("AV reference unavailable for %s, falling back to Cloud SQL", ticker_upper)
@@ -361,6 +408,7 @@ async def get_reference_levels(ticker: str, date: str):
                     "high": float(row["high"]),
                     "low": float(row["low"]),
                     "close": float(row["close"]),
+                    "week": _fetch_week_range(ticker_upper, date_str),
                 }
         except Exception as e:
             logger.warning("Cloud SQL reference query failed: %s", e)
@@ -430,6 +478,7 @@ async def get_reference_levels(ticker: str, date: str):
         "high": float(df['high'].max()),
         "low": float(df['low'].min()),
         "close": float(df['close'].iloc[-1]),
+        "week": _fetch_week_range(ticker_upper, date_str),
     }
 
 
