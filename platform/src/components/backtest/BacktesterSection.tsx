@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useTickerStore } from '@/stores/tickerStore';
 import { MetricCard } from '@/components/shared/MetricCard';
+import { chartTheme } from '@/lib/chartTheme';
 import {
   AreaChart,
   Area,
@@ -30,7 +30,7 @@ interface BacktestRun {
   modified: string;
   row_count: number;
   trade_count: number;
-  win_rate: number | null;        // 0-1 fraction
+  win_rate: number | null;
   avg_return_pct: number | null;
   has_equity_curve: boolean;
 }
@@ -59,7 +59,7 @@ interface BacktestSummary {
   total_trades: number;
   win_count: number;
   loss_count: number;
-  win_rate: number;           // 0-1 fraction
+  win_rate: number;
   avg_return_pct: number;
   avg_win_pct: number | null;
   avg_loss_pct: number | null;
@@ -142,7 +142,7 @@ function EquityCurve({ equity }: { equity: EquityResponse }) {
   const { total_return_pct, max_drawdown_pct, peak_value } = equity.summary;
 
   return (
-    <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4">
+    <div className="rounded-xl bg-[var(--surface-2)] p-4">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-sm font-medium text-[var(--color-text-primary)]">Equity Curve</h3>
         <div className="flex gap-4 text-xs">
@@ -158,31 +158,31 @@ function EquityCurve({ equity }: { equity: EquityResponse }) {
         <AreaChart data={chartData}>
           <defs>
             <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.25} />
-              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+              <stop offset="5%" stopColor={chartTheme.brand} stopOpacity={0.25} />
+              <stop offset="95%" stopColor={chartTheme.brand} stopOpacity={0} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#1a1a24" />
+          <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} />
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 9, fill: '#6b7280' }}
+            tick={{ fontSize: chartTheme.axisSize, fill: chartTheme.axis }}
             tickFormatter={d => String(d).slice(5)}
             interval="preserveStartEnd"
           />
           <YAxis
-            tick={{ fontSize: 9, fill: '#6b7280' }}
+            tick={{ fontSize: chartTheme.axisSize, fill: chartTheme.axis }}
             tickFormatter={v => `$${Number(v).toFixed(0)}`}
           />
           <Tooltip
-            contentStyle={{ background: '#0f0f1a', border: '1px solid #2a2a3a', fontSize: 11 }}
+            contentStyle={{ background: '#0f0f1a', border: `1px solid ${chartTheme.border}`, fontSize: 11 }}
             labelStyle={{ color: '#9898b0' }}
             formatter={(v) => [`$${(Number(v) || 0).toFixed(2)}`, 'Value' as const]}
           />
-          <ReferenceLine y={peak_value} stroke="#f59e0b" strokeDasharray="4 2" strokeWidth={1} />
+          <ReferenceLine y={peak_value} stroke={chartTheme.warn} strokeDasharray="4 2" strokeWidth={1} />
           <Area
             type="monotone"
             dataKey="value"
-            stroke="#3b82f6"
+            stroke={chartTheme.brand}
             strokeWidth={1.5}
             fill="url(#eqGrad)"
             dot={false}
@@ -294,22 +294,20 @@ function TradeTable({ trades }: { trades: TradeRow[] }) {
   );
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────
+// ── Section ────────────────────────────────────────────────────────────────
 
-export default function BacktestPage() {
-  const { activeTicker } = useTickerStore();
-
-  const { data: listData, isLoading: listLoading, isError: listError } = useBacktestList(activeTicker);
+export default function BacktesterSection({ ticker }: { ticker: string }) {
+  const { data: listData, isLoading: listLoading, isError: listError } = useBacktestList(ticker);
   const runs = listData?.runs ?? [];
   const hasData = runs.length > 0;
   const latestRun = runs[0];
 
   const { data: results, isLoading: resultsLoading, isError: resultsError } = useBacktestResults(
-    activeTicker,
+    ticker,
     !listLoading,
   );
   const { data: equity } = useEquity(
-    activeTicker,
+    ticker,
     hasData && (latestRun?.has_equity_curve ?? false),
   );
 
@@ -318,9 +316,9 @@ export default function BacktestPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-xl font-bold text-[var(--color-text-primary)]">
-          {activeTicker} Backtester
-        </h1>
+        <h2 className="text-lg font-bold text-[var(--color-text-primary)]">
+          {ticker} Backtester
+        </h2>
         <p className="text-xs text-[var(--color-text-muted)]">
           {hasData
             ? `${runs.length} backtest run${runs.length > 1 ? 's' : ''} — most recent: ${latestRun?.timestamp ?? ''}`
@@ -331,13 +329,13 @@ export default function BacktestPage() {
       {(listError || resultsError) && (
         <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400">
           <AlertTriangle size={16} />
-          No backtest results for {activeTicker}. Run{' '}
-          <code className="font-mono">scripts/run_backtest.py --ticker {activeTicker}</code> first.
+          No backtest results for {ticker}. Run{' '}
+          <code className="font-mono">scripts/run_backtest.py --ticker {ticker}</code> first.
         </div>
       )}
 
       {(resultsLoading || listLoading) && !listError && !resultsError && (
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-8 text-center text-sm text-[var(--color-text-muted)]">
+        <div className="rounded-xl bg-[var(--surface-2)] p-8 text-center text-sm text-[var(--color-text-muted)]">
           Loading backtest data…
         </div>
       )}

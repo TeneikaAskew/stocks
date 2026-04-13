@@ -131,7 +131,7 @@ export default function ReportsPage() {
       </div>
 
       {/* Content */}
-      <div className="min-w-0 flex-1 overflow-y-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
+      <div className="min-w-0 flex-1 overflow-y-auto rounded-xl bg-[var(--surface-2)]">
         {activePhase ? (
           <ReportViewer ticker={activeTicker} phase={activePhase} />
         ) : (

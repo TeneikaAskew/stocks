@@ -166,7 +166,7 @@ export default function SignalsPage() {
   const displayRows = table.getRowModel().rows.slice(0, 500);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div>
         <h1 className="text-xl font-bold text-[var(--color-text-primary)]">
           {activeTicker} Signal Explorer
@@ -177,7 +177,7 @@ export default function SignalsPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2">
+      <div className="flex flex-wrap items-center gap-3 rounded-xl bg-[var(--surface-2)] px-3 py-2">
         <Filter size={14} className="text-[var(--color-text-muted)]" />
 
         {/* Direction */}
@@ -188,7 +188,7 @@ export default function SignalsPage() {
               onClick={() => setDirFilter(d)}
               className={`px-2.5 py-1 text-xs font-medium ${
                 dirFilter === d
-                  ? 'bg-[var(--color-accent-blue)] text-white'
+                  ? 'bg-[var(--color-accent-blue)] text-[var(--on-brand)]'
                   : 'bg-transparent text-[var(--color-text-secondary)]'
               }`}
             >
@@ -256,7 +256,7 @@ export default function SignalsPage() {
       )}
 
       {isLoading && (
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-8 text-center text-sm text-[var(--color-text-muted)]">
+        <div className="rounded-xl bg-[var(--surface-2)] p-8 text-center text-sm text-[var(--color-text-muted)]">
           Loading signals…
         </div>
       )}

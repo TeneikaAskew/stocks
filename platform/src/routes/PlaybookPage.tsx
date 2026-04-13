@@ -4,11 +4,9 @@ import { useTickerStore } from '@/stores/tickerStore';
 import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote } from '@/hooks/useLiveQuote';
 import { useLiveHistory, useAvgVolume } from '@/hooks/useLiveHistory';
-import { computeIndicators, calculateStochRSI } from '@/lib/indicators';
 import {
   evalConditions,
-  computeORB,
-  minutesSinceOpen,
+  buildSnapshot,
   type MarketSnapshot,
   type EvalResult,
 } from '@/lib/playbookEvaluator';
@@ -251,37 +249,16 @@ export default function PlaybookPage() {
   const { data: avgVol } = useAvgVolume(activeTicker);
   const { data: reference } = useReference(activeTicker);
 
-  const snapshot = useMemo<MarketSnapshot | null>(() => {
-    const bars = history?.bars;
-    if (!bars || bars.length === 0) return null;
-
-    const indicators = computeIndicators(bars);
-
-    // Previous-bar StochK for "turning up/down" conditions
-    const closes = bars.map(b => b.close);
-    const prevStoch =
-      closes.length > 2
-        ? calculateStochRSI(closes.slice(0, -1))
-        : { k: null, d: null };
-
-    const lastBar = bars[bars.length - 1];
-    const orb = computeORB(bars);
-
-    return {
-      price: quote?.price ?? lastBar?.close ?? null,
-      prevClose: reference?.close ?? null,
-      prevHigh: reference?.high ?? null,
-      prevLow: reference?.low ?? null,
-      volumeToday: quote?.volume ?? null,
-      avgVolume20d: avgVol?.avg_volume_20d ?? null,
-      orbHigh: orb.high,
-      orbLow: orb.low,
-      lastBar: lastBar ?? null,
-      minutesSinceOpen: minutesSinceOpen(lastBar ?? null),
-      stochKPrev: prevStoch.k,
-      indicators,
-    };
-  }, [history, quote, avgVol, reference]);
+  const snapshot = useMemo<MarketSnapshot | null>(
+    () =>
+      buildSnapshot({
+        bars: history?.bars,
+        quote,
+        avgVolume20d: avgVol?.avg_volume_20d ?? null,
+        reference: reference ?? undefined,
+      }),
+    [history, quote, avgVol, reference],
+  );
 
   const cards = data?.cards ?? [];
   const hasLiveData = snapshot !== null;
@@ -296,7 +273,7 @@ export default function PlaybookPage() {
   }, [cards, snapshot]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-[var(--color-text-primary)]">
@@ -323,13 +300,13 @@ export default function PlaybookPage() {
       )}
 
       {isLoading && (
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-8 text-center text-sm text-[var(--color-text-muted)]">
+        <div className="rounded-xl bg-[var(--surface-2)] p-8 text-center text-sm text-[var(--color-text-muted)]">
           Loading playbook…
         </div>
       )}
 
       {!isLoading && !isError && cards.length === 0 && (
-        <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-8 text-center text-sm text-[var(--color-text-muted)]">
+        <div className="rounded-xl bg-[var(--surface-2)] p-8 text-center text-sm text-[var(--color-text-muted)]">
           No playbook cards found for {activeTicker}.
           Generate a playbook by running <code className="font-mono">scripts/run_pipeline.py</code>.
         </div>

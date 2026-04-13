@@ -84,7 +84,7 @@ export default function HelpPage() {
   });
 
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-6 max-w-3xl">
       <div>
         <h1 className="text-xl font-bold text-[var(--color-text-primary)]">Help & Glossary</h1>
         <p className="text-xs text-[var(--color-text-muted)] mt-1">
@@ -100,7 +100,7 @@ export default function HelpPage() {
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search terms..."
-          className="w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] py-2 pl-9 pr-3 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-blue)] focus:outline-none"
+          className="w-full rounded-xl bg-[var(--surface-2)] py-2 pl-9 pr-3 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-blue)] focus:outline-none"
         />
       </div>
 
@@ -110,7 +110,7 @@ export default function HelpPage() {
           onClick={() => setActiveCategory(null)}
           className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
             !activeCategory
-              ? 'bg-[var(--color-accent-blue)] text-white'
+              ? 'bg-[var(--color-accent-blue)] text-[var(--on-brand)]'
               : 'border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'
           }`}
         >
@@ -124,7 +124,7 @@ export default function HelpPage() {
               onClick={() => setActiveCategory(activeCategory === cat ? null : cat)}
               className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                 activeCategory === cat
-                  ? 'bg-[var(--color-accent-blue)] text-white'
+                  ? 'bg-[var(--color-accent-blue)] text-[var(--on-brand)]'
                   : 'border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'
               }`}
             >
@@ -143,7 +143,7 @@ export default function HelpPage() {
             <button
               key={entry.term}
               onClick={() => setExpanded(expanded === entry.term ? null : entry.term)}
-              className="w-full text-left rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-4 py-3 transition-colors hover:bg-[var(--color-bg-tertiary)]"
+              className="w-full text-left rounded-xl bg-[var(--surface-2)] px-4 py-3 transition-colors hover:bg-[var(--color-bg-tertiary)]"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">

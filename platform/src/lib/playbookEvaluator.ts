@@ -1,4 +1,5 @@
 import type { Bar, Indicators } from './indicators';
+import { computeIndicators, calculateStochRSI } from './indicators';
 
 /**
  * Snapshot of live market state used to evaluate playbook condition strings.
@@ -217,6 +218,43 @@ export function computeORB(bars: Bar[]): { high: number | null; low: number | nu
   return {
     high: Math.max(...orbBars.map(b => b.high)),
     low: Math.min(...orbBars.map(b => b.low)),
+  };
+}
+
+/**
+ * Build a MarketSnapshot from the live data hooks' responses. Returns null if
+ * there are no bars to evaluate against.
+ */
+export function buildSnapshot(params: {
+  bars: Bar[] | undefined;
+  quote: { price?: number | null; volume?: number | null } | undefined;
+  avgVolume20d: number | null | undefined;
+  reference: { high?: number | null; low?: number | null; close?: number | null } | undefined;
+}): MarketSnapshot | null {
+  const bars = params.bars;
+  if (!bars || bars.length === 0) return null;
+
+  const indicators = computeIndicators(bars);
+  const closes = bars.map(b => b.close);
+  const prevStoch =
+    closes.length > 2 ? calculateStochRSI(closes.slice(0, -1)) : { k: null, d: null };
+
+  const lastBar = bars[bars.length - 1];
+  const orb = computeORB(bars);
+
+  return {
+    price: params.quote?.price ?? lastBar?.close ?? null,
+    prevClose: params.reference?.close ?? null,
+    prevHigh: params.reference?.high ?? null,
+    prevLow: params.reference?.low ?? null,
+    volumeToday: params.quote?.volume ?? null,
+    avgVolume20d: params.avgVolume20d ?? null,
+    orbHigh: orb.high,
+    orbLow: orb.low,
+    lastBar: lastBar ?? null,
+    minutesSinceOpen: minutesSinceOpen(lastBar ?? null),
+    stochKPrev: prevStoch.k,
+    indicators,
   };
 }
 

@@ -69,7 +69,7 @@ function MessageBubble({ msg }: { msg: Message }) {
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       {isUser ? (
         <div
-          className="max-w-[85%] rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-[var(--color-accent-blue)] text-white"
+          className="max-w-[85%] rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-[var(--color-accent-blue)] text-[var(--on-brand)]"
           style={{ whiteSpace: 'pre-wrap' }}
         >
           {msg.content}
@@ -192,30 +192,40 @@ export default function InsightsPage() {
   const cfg = MODE_CONFIG[mode];
 
   return (
-    <div className="flex h-full flex-col gap-3" style={{ maxHeight: 'calc(100vh - 120px)' }}>
+    <div className="flex h-full flex-col gap-4" style={{ maxHeight: 'calc(100vh - 120px)' }}>
+      {/* Page header */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="label-micro">AI Insights · Vertex AI Gemini</p>
+          <h1 className="mt-1 text-2xl font-bold text-[var(--color-text-primary)]">
+            {activeTicker} Intelligence
+          </h1>
+          <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">
+            Grounded in your live data, trades, and market structure
+          </p>
+        </div>
+      </div>
+
       {/* Mode selector */}
       <div className="flex flex-wrap items-center gap-2">
         {(Object.entries(MODE_CONFIG) as [Mode, typeof MODE_CONFIG[Mode]][]).map(([m, c]) => (
           <button
             key={m}
             onClick={() => setMode(m)}
-            className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium ${
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
               mode === m
-                ? 'bg-[var(--color-accent-blue)] text-white'
-                : 'border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]'
+                ? 'bg-[var(--color-brand)] text-[var(--on-brand)]'
+                : 'border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] hover:border-[var(--color-brand)] hover:text-[var(--color-text-primary)]'
             }`}
           >
             {c.icon}
             {c.label}
           </button>
         ))}
-        <span className="ml-auto text-xs text-[var(--color-text-muted)]">
-          Vertex AI Gemini · {activeTicker}
-        </span>
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4">
+      <div className="flex-1 overflow-y-auto rounded-xl bg-[var(--surface-2)] p-6">
         {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-4">
             <div className="text-center">
@@ -258,12 +268,12 @@ export default function InsightsPage() {
           onKeyDown={handleKeyDown}
           placeholder={cfg.placeholder}
           rows={2}
-          className="flex-1 resize-none rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-blue)] focus:outline-none"
+          className="flex-1 resize-none rounded-xl bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-blue)] focus:outline-none"
         />
         <button
           onClick={() => sendMessage(input)}
           disabled={!input.trim() || isStreaming}
-          className="flex items-center gap-2 rounded-lg bg-[var(--color-accent-blue)] px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+          className="flex items-center gap-2 rounded-lg bg-[var(--color-accent-blue)] px-4 py-2 text-sm font-medium text-[var(--on-brand)] disabled:opacity-40"
         >
           {isStreaming ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
         </button>

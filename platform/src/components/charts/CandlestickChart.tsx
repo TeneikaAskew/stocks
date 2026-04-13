@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { chartTheme } from '@/lib/chartTheme';
 import {
   createChart,
   createSeriesMarkers,
@@ -78,32 +79,33 @@ export function CandlestickChart({
 
     const chart = createChart(containerRef.current, {
       layout: {
-        background: { color: '#0a0a0f' },
-        textColor: '#9898b0',
+        background: { color: chartTheme.bg },
+        textColor: chartTheme.axis,
+        fontSize: chartTheme.axisSize,
       },
       grid: {
-        vertLines: { color: '#1a1a24' },
-        horzLines: { color: '#1a1a24' },
+        vertLines: { color: chartTheme.grid },
+        horzLines: { color: chartTheme.grid },
       },
       crosshair: { mode: CrosshairMode.Normal },
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
-        borderColor: '#2a2a3a',
+        borderColor: chartTheme.border,
       },
-      rightPriceScale: { borderColor: '#2a2a3a' },
+      rightPriceScale: { borderColor: chartTheme.border },
       width: containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
     });
 
     // v5 API: chart.addSeries(SeriesDefinition, options)
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#089981',
-      downColor: '#f23645',
-      borderUpColor: '#089981',
-      borderDownColor: '#f23645',
-      wickUpColor: '#089981',
-      wickDownColor: '#f23645',
+      upColor: chartTheme.bull,
+      downColor: chartTheme.bear,
+      borderUpColor: chartTheme.bull,
+      borderDownColor: chartTheme.bear,
+      wickUpColor: chartTheme.bull,
+      wickDownColor: chartTheme.bear,
     });
 
     const volumeSeries = chart.addSeries(HistogramSeries, {

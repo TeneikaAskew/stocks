@@ -68,4 +68,6 @@ export interface MetricCardData {
   /** @deprecated Use direction instead */
   change?: number;
   changeLabel?: string;
+  /** Accent tone for a subtle left-border highlight. Defaults to neutral (no accent). */
+  tone?: 'default' | 'brand' | 'bull' | 'bear' | 'warn';
 }

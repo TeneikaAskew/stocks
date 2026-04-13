@@ -1,29 +1,131 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap');
 @import "tailwindcss";
 
-/* Custom dark theme tokens */
+/* ─────────────────────────────────────────────────────────────────────────
+   Obsidian Analyst Design System — see docs/DESIGN_SYSTEM.md
+   Surfaces follow the "no line" rule: separation comes from tonal shifts
+   between surface-container-* levels, not 1px borders.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Dark theme (default) */
 :root {
-  --color-bg-primary: #0a0a0f;
-  --color-bg-secondary: #111118;
-  --color-bg-tertiary: #1a1a24;
-  --color-bg-hover: #22222e;
-  --color-border: #2a2a3a;
-  --color-border-active: #3a3a5a;
-  --color-text-primary: #e8e8f0;
-  --color-text-secondary: #9898b0;
-  --color-text-muted: #686880;
-  --color-accent-green: #22c55e;
-  --color-accent-red: #ef4444;
-  --color-accent-blue: #3b82f6;
-  --color-accent-amber: #f59e0b;
+  /* ── Surfaces (tonal layering) ───────────────────────────────────────── */
+  --surface-0: #111318;           /* Base canvas */
+  --surface-1: #1a1c20;           /* Sidebar, header, secondary panels */
+  --surface-2: #282a2e;           /* Cards, KPI panels */
+  --surface-3: #333539;           /* Hover / emphasis */
+  --surface-lowest: #0c0e12;      /* Input fields */
+
+  /* ── Text ────────────────────────────────────────────────────────────── */
+  --on-surface: #e2e2e8;          /* High-value data: tickers, prices */
+  --on-surface-variant: #bdc8d2;  /* Secondary: metadata, labels */
+  --on-surface-muted: #6e7781;    /* Tertiary: hints, disabled */
+  --on-surface-label: #5a6670;    /* Uppercase micro-labels */
+
+  /* ── Borders (ghost borders only — 20% opacity) ──────────────────────── */
+  --outline: rgba(139, 206, 255, 0.20);        /* Focus/active — primary tint */
+  --outline-variant: rgba(62, 72, 81, 0.35);   /* Passive — felt, not seen */
+
+  /* ── Brand (primary accent) ──────────────────────────────────────────── */
+  --brand: #8bceff;
+  --brand-container: #00b2ff;
+  --brand-glow: #60b8ff;
+  --on-brand: #000000;
+
+  /* ── Directional (strictly semantic — market indicators only) ────────── */
+  --bull: #22c55e;
+  --bear: #ef4444;
+  --warn: #ffb86b;
+
+  /* ── Chart theme ─────────────────────────────────────────────────────── */
+  --chart-grid: #1f2127;
+  --chart-axis: #6e7781;
+  --chart-bg: #111318;
+
+  /* ── Back-compat aliases — keep existing code working ────────────────── */
+  --color-bg-primary: var(--surface-0);
+  --color-bg-secondary: var(--surface-1);
+  --color-bg-tertiary: var(--surface-2);
+  --color-bg-hover: var(--surface-3);
+  --color-border: var(--outline-variant);
+  --color-border-active: var(--outline);
+  --color-border-subtle: var(--chart-grid);
+  --color-border-strong: var(--outline-variant);
+  --color-text-primary: var(--on-surface);
+  --color-text-secondary: var(--on-surface-variant);
+  --color-text-muted: var(--on-surface-muted);
+  --color-text-label: var(--on-surface-label);
+  --color-brand: var(--brand);
+  --color-brand-soft: var(--brand-container);
+  --color-brand-glow: var(--brand-glow);
+  --color-bull: var(--bull);
+  --color-bear: var(--bear);
+  --color-warn: var(--warn);
+  --color-accent-blue: var(--brand);
+  --color-accent-green: var(--bull);
+  --color-accent-red: var(--bear);
+  --color-accent-amber: var(--warn);
+}
+
+/* Light theme — applied via <html data-theme="light"> */
+[data-theme="light"] {
+  --surface-0: #f8f9fb;
+  --surface-1: #f0f2f6;
+  --surface-2: #e4e7ee;
+  --surface-3: #d8dde6;
+  --surface-lowest: #ffffff;
+
+  --on-surface: #1a1c20;
+  --on-surface-variant: #485661;
+  --on-surface-muted: #6e7781;
+  --on-surface-label: #7a8690;
+
+  --outline: rgba(0, 114, 198, 0.25);
+  --outline-variant: rgba(120, 134, 148, 0.25);
+
+  --brand: #0072c6;
+  --brand-container: #004f8a;
+  --brand-glow: #3b9fde;
+  --on-brand: #ffffff;
+
+  --bull: #16a34a;
+  --bear: #dc2626;
+  --warn: #d97706;
+
+  --chart-grid: #e4e7ee;
+  --chart-axis: #6e7781;
+  --chart-bg: #f8f9fb;
 }
 
 body {
   margin: 0;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: var(--color-bg-primary);
-  color: var(--color-text-primary);
+  font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--surface-0);
+  color: var(--on-surface);
   -webkit-font-smoothing: antialiased;
-  color-scheme: dark; /* makes native form controls render in dark mode */
+  color-scheme: dark light;
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+[data-theme="light"] body {
+  color-scheme: light;
+}
+
+/* Single-font system: Montserrat everywhere.
+   Tabular numerics give aligned price columns without needing a separate
+   monospace font. Override Tailwind's `font-mono` utility to map here too,
+   so all existing `font-mono` usages (prices, tables, code) stay aligned. */
+.font-display,
+.font-mono,
+code,
+pre,
+kbd,
+samp,
+.font-tabular {
+  font-family: 'Montserrat', sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' on, 'lnum' on;
+  letter-spacing: -0.01em;
 }
 
 /* Make datetime/date/time picker indicators visible on dark backgrounds */
@@ -94,7 +196,9 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
   font-weight: 600;
 }
 .prose-report code {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-family: 'Montserrat', sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' on, 'lnum' on;
   font-size: 0.75rem;
   background: var(--color-bg-tertiary);
   padding: 0.1rem 0.35rem;
@@ -160,3 +264,90 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
 }
 .prose-report > *:first-child { margin-top: 0; }
 .prose-report > *:last-child { margin-bottom: 0; }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Obsidian Analyst typography utilities
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Micro-label: uppercase tiny caption above KPI values */
+.label-micro {
+  font-size: 11px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--on-surface-label);
+  font-weight: 500;
+}
+
+/* Display-sm: KPI card value (matches NVDA reference "$175.31") */
+.metric-value {
+  font-family: 'Montserrat', sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' on, 'lnum' on;
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  color: var(--on-surface);
+}
+
+/* Display-lg: hero numerics (ticker page headers) */
+.display-lg {
+  font-family: 'Montserrat', sans-serif;
+  font-size: 3rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--on-surface);
+}
+
+/* Headline-sm: card titles */
+.headline-sm {
+  font-family: 'Montserrat', sans-serif;
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--on-surface);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Surface utilities — use tonal shifts, not borders
+   ───────────────────────────────────────────────────────────────────────── */
+.surface-1 { background: var(--surface-1); }
+.surface-2 { background: var(--surface-2); }
+.surface-3 { background: var(--surface-3); }
+
+/* Clean card: tonal shift only, no border */
+.card-clean {
+  background: var(--surface-2);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+/* Card with ghost border (interactive elements) */
+.card-interactive {
+  background: var(--surface-2);
+  border: 1px solid var(--outline-variant);
+  border-radius: 12px;
+  padding: 24px;
+  transition: background-color 180ms ease, border-color 180ms ease;
+}
+.card-interactive:hover {
+  background: var(--surface-3);
+  border-color: var(--outline);
+}
+
+/* Glass pill — for "Live Data" indicators and status tags */
+.pill-glass {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.3125rem 0.75rem;
+  border-radius: 9999px;
+  background: color-mix(in oklab, var(--surface-2) 60%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--outline-variant);
+  font-size: 11px;
+  color: var(--on-surface-variant);
+}
