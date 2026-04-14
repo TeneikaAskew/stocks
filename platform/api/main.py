@@ -13,14 +13,31 @@ import httpx
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+
+
+# ── Suppress noisy local probes from uvicorn's log ──────────────────────────
+# VS Code's port forwarder and the GitHub Codespaces tunnel agent periodically
+# probe localhost:8000 to confirm the service is alive. They sometimes attempt
+# a TLS handshake first; the TLS bytes hit our HTTP-only socket and uvicorn
+# emits "Invalid HTTP request received" warnings. They're harmless but spammy.
+class _SuppressInvalidHttpFilter(logging.Filter):
+    """Drop uvicorn warnings about malformed bytes from local health probes."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "Invalid HTTP request received" in msg:
+            return False
+        return True
+
+logging.getLogger("uvicorn.error").addFilter(_SuppressInvalidHttpFilter())
 
 # Add project root to path so we can import lib/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
-from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard
+from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, health
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +69,7 @@ app.include_router(signals.router, prefix="")
 app.include_router(insights.router, prefix="")
 app.include_router(journal.router, prefix="")
 app.include_router(dashboard.router, prefix="")
+app.include_router(health.router, prefix="")
 
 data_loader = DataLoader()
 
@@ -104,6 +122,13 @@ def _fetch_av_daily_reference(ticker: str, before_date: str) -> Optional[dict]:
     return None
 
 # ── App-level API routes ─────────────────────────────────────────────────────
+
+
+@app.head("/")
+async def head_root():
+    """Liveness probe handler — returns 204 to VS Code's port forwarder
+    and the GitHub Codespaces tunnel agent without a 405 spam in the log."""
+    return Response(status_code=204)
 
 
 @app.get("/api/health")
@@ -294,17 +319,38 @@ async def get_market_data(
     }
 
 
-def _fetch_week_range(ticker_upper: str, before_date: str) -> Optional[dict]:
-    """Fetch the last 5 trading days BEFORE `before_date` and return the
-    overall high/low/start/end across that window. Prefers Cloud SQL
-    `market_data_daily`. Returns None on failure.
+def _fetch_week_range(
+    ticker_upper: str,
+    before_date: str,
+    ref_date: Optional[str] = None,
+) -> Optional[dict]:
+    """Fetch the 5-session window of daily bars and return:
 
-    `before_date` format: "YYYY-MM-DD" (exclusive upper bound).
+      * high/low across the 5-session window
+      * avg_close + avg_rsi_14 (for the "vs 5d avg" KPI subtitles)
+      * start_date / end_date / sessions (for the visual range bar footer)
+      * prev_session_close + prev_session_date — the close of the trading day
+        immediately BEFORE `ref_date`. Used by the Dashboard's 2-day change
+        KPI: `(reference.close − prev_session_close) / prev_session_close`.
+
+    Args:
+        before_date: YYYY-MM-DD, the requested API date (exclusive upper bound).
+            Used as a fallback when ref_date is None.
+        ref_date: YYYY-MM-DD, the actual most-recent closed trading day for the
+            ticker (resolved upstream — possibly from AV which is fresher than
+            Cloud SQL). When provided, prev_session_close is computed as the
+            most recent CSQL row STRICTLY BEFORE ref_date. This handles the
+            case where AV has a row that Cloud SQL hasn't backfilled yet.
+
+    Prefers Cloud SQL `market_data_daily`. Returns None on failure.
     """
     if not _CLOUD_SQL:
         return None
     try:
-        df = query_to_dataframe(
+        # 5-session window query — uses the requested-date upper bound.
+        # Always returns 5 rows because we want to show the last 5 trading
+        # days regardless of whether the absolute latest day is in CSQL yet.
+        window_df = query_to_dataframe(
             """
             SELECT date, high, low, close, rsi_14
             FROM market_data_daily
@@ -313,23 +359,54 @@ def _fetch_week_range(ticker_upper: str, before_date: str) -> Optional[dict]:
             """,
             {"ticker": ticker_upper, "dt": before_date},
         )
-        if df.empty or len(df) < 2:
+        if window_df.empty:
             return None
-        # Ensure ascending order for start/end date labels
-        df = df.sort_values("date")
-        start_raw = df["date"].iloc[0]
-        end_raw = df["date"].iloc[-1]
+        window = window_df.sort_values("date").reset_index(drop=True)
+
+        start_raw = window["date"].iloc[0]
+        end_raw = window["date"].iloc[-1]
         start_str = start_raw.strftime("%Y-%m-%d") if hasattr(start_raw, "strftime") else str(start_raw)
         end_str = end_raw.strftime("%Y-%m-%d") if hasattr(end_raw, "strftime") else str(end_raw)
-        rsi_series = df["rsi_14"].dropna() if "rsi_14" in df.columns else None
+        rsi_series = window["rsi_14"].dropna() if "rsi_14" in window.columns else None
+
+        # prev_session_close — the close of the day BEFORE the actual reference
+        # date. When ref_date is supplied (e.g. from AV), use that for the
+        # exclusive bound so we don't accidentally pick a CSQL row that's older
+        # than the real previous session. Without ref_date we fall back to the
+        # second-to-last row in the window (legacy behavior).
+        prev_session_close = None
+        prev_session_date = None
+        if ref_date:
+            prev_df = query_to_dataframe(
+                """
+                SELECT date, close
+                FROM market_data_daily
+                WHERE ticker = :ticker AND date < :dt
+                ORDER BY date DESC LIMIT 1
+                """,
+                {"ticker": ticker_upper, "dt": ref_date},
+            )
+            if not prev_df.empty:
+                prow = prev_df.iloc[0]
+                prev_session_close = float(prow["close"])
+                pd_raw = prow["date"]
+                prev_session_date = pd_raw.strftime("%Y-%m-%d") if hasattr(pd_raw, "strftime") else str(pd_raw)
+        elif len(window) >= 2:
+            prev_row = window.iloc[-2]
+            prev_session_close = float(prev_row["close"])
+            pd_raw = prev_row["date"]
+            prev_session_date = pd_raw.strftime("%Y-%m-%d") if hasattr(pd_raw, "strftime") else str(pd_raw)
+
         return {
-            "high": float(df["high"].max()),
-            "low": float(df["low"].min()),
-            "avg_close": float(df["close"].mean()),
+            "high": float(window["high"].max()),
+            "low": float(window["low"].min()),
+            "avg_close": float(window["close"].mean()),
             "avg_rsi_14": float(rsi_series.mean()) if rsi_series is not None and not rsi_series.empty else None,
             "start_date": start_str,
             "end_date": end_str,
-            "sessions": int(len(df)),
+            "sessions": int(len(window)),
+            "prev_session_close": prev_session_close,
+            "prev_session_date": prev_session_date,
         }
     except Exception as e:
         logger.warning("Week range query failed for %s: %s", ticker_upper, e)
@@ -365,9 +442,12 @@ async def get_reference_levels(ticker: str, date: str):
     if is_recent:
         av_result = _fetch_av_daily_reference(ticker_upper, date_str)
         if av_result:
-            # Week range always comes from Cloud SQL (AV daily doesn't give us
-            # a tidy 5-row window with one call). Best-effort — None if CSQL down.
-            week = _fetch_week_range(ticker_upper, date_str)
+            # Week range comes from Cloud SQL but the prev_session lookup must
+            # use AV's resolved date as its upper bound — Cloud SQL may not
+            # have backfilled the absolute latest day yet, so without this
+            # bound the prev_session would jump back two days instead of one.
+            av_ref_date_str = f"{av_result['date'][:4]}-{av_result['date'][4:6]}-{av_result['date'][6:8]}"
+            week = _fetch_week_range(ticker_upper, date_str, ref_date=av_ref_date_str)
             return {
                 "ticker": ticker_upper,
                 "source": "alphavantage",
@@ -408,7 +488,7 @@ async def get_reference_levels(ticker: str, date: str):
                     "high": float(row["high"]),
                     "low": float(row["low"]),
                     "close": float(row["close"]),
-                    "week": _fetch_week_range(ticker_upper, date_str),
+                    "week": _fetch_week_range(ticker_upper, date_str, ref_date=ref_date_str),
                 }
         except Exception as e:
             logger.warning("Cloud SQL reference query failed: %s", e)
@@ -471,6 +551,7 @@ async def get_reference_levels(ticker: str, date: str):
     if df.empty:
         raise HTTPException(status_code=404, detail=f"No RTH data for {ticker} on {prev_date}")
 
+    prev_date_str = f"{prev_date[:4]}-{prev_date[4:6]}-{prev_date[6:8]}"
     return {
         "ticker": ticker_upper,
         "date": prev_date,
@@ -478,7 +559,7 @@ async def get_reference_levels(ticker: str, date: str):
         "high": float(df['high'].max()),
         "low": float(df['low'].min()),
         "close": float(df['close'].iloc[-1]),
-        "week": _fetch_week_range(ticker_upper, date_str),
+        "week": _fetch_week_range(ticker_upper, date_str, ref_date=prev_date_str),
     }
 
 

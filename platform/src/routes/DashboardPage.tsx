@@ -9,6 +9,7 @@ import { buildSnapshot, evalConditions, type EvalResult } from '@/lib/playbookEv
 import { to12h } from '@/lib/time';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
+import { DataPipelineStatus } from '@/components/dashboard/DataPipelineStatus';
 import {
   TrendingUp, TrendingDown, Minus, Activity, BookOpen,
   AlertTriangle, Database, CheckCircle, Circle, HelpCircle, ChevronDown,
@@ -18,7 +19,17 @@ import {
 
 interface HealthResponse { cloud_sql: boolean; data_dir_exists: boolean }
 type QuoteResponse = LiveQuote;
-interface WeekRange { high: number; low: number; avg_close?: number; avg_rsi_14?: number | null; start_date: string; end_date: string; sessions: number }
+interface WeekRange {
+  high: number;
+  low: number;
+  avg_close?: number;
+  avg_rsi_14?: number | null;
+  start_date: string;
+  end_date: string;
+  sessions: number;
+  prev_session_close?: number | null;
+  prev_session_date?: string | null;
+}
 interface ReferenceResponse {
   ticker: string;
   date: string;
@@ -244,13 +255,24 @@ export default function DashboardPage() {
   }, [pricePoints]);
 
   // ── 4 KPI cards (match NVDA reference: prev close, latest close, 2-day change, RSI) ──
+  //
+  // Date sourcing — important:
+  //   * `reference.close` / `reference.date` is the LATEST closed trading day
+  //     (e.g. Apr 10 when today is Apr 13). The endpoint name is misleading;
+  //     it actually returns "the day before the requested date" which, when
+  //     called with today as the requested date, IS the latest closed day.
+  //   * `brief.daily_indicators.close` resolves to the SAME latest day, so it
+  //     can't give us a 2-day delta on its own.
+  //   * `reference.week.prev_session_close` is the close of the day BEFORE the
+  //     latest closed day (e.g. Apr 9). That's what we actually need for the
+  //     "earlier" KPI card and the 2-day change calculation.
   const kpiCards = useMemo(() => {
-    const prevClose = reference?.close;
-    const prevDateStr = reference?.date;
-    const latestClose = brief?.daily_indicators?.close;
-    const latestDateStr = brief?.daily_indicators?.date;
+    const latestClose = reference?.close;
+    const latestDateStr = reference?.date;
+    const prevClose = reference?.week?.prev_session_close ?? undefined;
+    const prevDateStr = reference?.week?.prev_session_date ?? undefined;
     const rsi = brief?.daily_indicators?.rsi_14;
-    if (!prevClose || !latestClose || !prevDateStr || !latestDateStr) return null;
+    if (!latestClose || !latestDateStr || !prevClose || !prevDateStr) return null;
 
     const fmtCardDate = (dateStr: string) => {
       // Accept YYYYMMDD or YYYY-MM-DD
@@ -268,11 +290,19 @@ export default function DashboardPage() {
     const wkAvgClose = reference?.week?.avg_close;
     const wkAvgRsi = reference?.week?.avg_rsi_14 ?? undefined;
     const wkSessions = reference?.week?.sessions;
-    const vsWeek = (v: number): string => {
-      if (!wkAvgClose) return 'Regular market close';
+
+    /**
+     * Compute the percent delta of `v` against the 5-day average close, plus
+     * a direction marker. Returns null when the week average is unavailable.
+     */
+    const closeVsWeek = (v: number): { subtitle: string; direction: 'up' | 'down' | 'neutral' } => {
+      if (!wkAvgClose) return { subtitle: 'Regular market close', direction: 'neutral' };
       const p = ((v - wkAvgClose) / wkAvgClose) * 100;
       const label = wkSessions ? `prev ${wkSessions}d avg` : 'prev wk avg';
-      return `${p >= 0 ? '+' : ''}${p.toFixed(2)}% vs ${label}`;
+      return {
+        subtitle: `${p >= 0 ? '+' : ''}${p.toFixed(2)}% vs ${label}`,
+        direction: p >= 0 ? 'up' : 'down',
+      };
     };
 
     const rsiZone = (v: number | undefined): string => {
@@ -290,16 +320,33 @@ export default function DashboardPage() {
       return 'warn';                       // mid-range
     };
 
+    const prevVsWk = closeVsWeek(prevClose);
+    const latestVsWk = closeVsWeek(latestClose);
+
+    // RSI delta vs 5d average → directional too
+    const rsiSubtitleDirection: 'up' | 'down' | 'neutral' =
+      rsi !== undefined && wkAvgRsi !== undefined
+        ? rsi >= wkAvgRsi ? 'up' : 'down'
+        : 'neutral';
+    const rsiSubtitle = (() => {
+      const zone = rsiZone(rsi);
+      if (rsi === undefined || wkAvgRsi === undefined || !wkSessions) return zone;
+      const p = ((rsi - wkAvgRsi) / wkAvgRsi) * 100;
+      return `${zone} · ${p >= 0 ? '+' : ''}${p.toFixed(1)}% vs ${wkSessions}d avg`;
+    })();
+
     return {
       prev: {
         label: `${fmtCardDate(prevDateStr)} CLOSE`,
         value: `$${prevClose.toFixed(2)}`,
-        subtitle: vsWeek(prevClose),
+        subtitle: prevVsWk.subtitle,
+        direction: prevVsWk.direction,
       },
       latest: {
         label: `${fmtCardDate(latestDateStr)} CLOSE`,
         value: `$${latestClose.toFixed(2)}`,
-        subtitle: vsWeek(latestClose),
+        subtitle: latestVsWk.subtitle,
+        direction: latestVsWk.direction,
       },
       change: {
         label: '2-DAY CHANGE',
@@ -311,12 +358,8 @@ export default function DashboardPage() {
       rsi: {
         label: 'RSI (14) LATEST',
         value: rsi !== undefined ? rsi.toFixed(1) : '—',
-        subtitle: (() => {
-          const zone = rsiZone(rsi);
-          if (rsi === undefined || wkAvgRsi === undefined || !wkSessions) return zone;
-          const p = ((rsi - wkAvgRsi) / wkAvgRsi) * 100;
-          return `${zone} · ${p >= 0 ? '+' : ''}${p.toFixed(1)}% vs ${wkSessions}d avg`;
-        })(),
+        subtitle: rsiSubtitle,
+        direction: rsiSubtitleDirection,
         tone: rsiTone(rsi),
       },
     };
@@ -436,6 +479,9 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      {/* ── Data pipeline freshness (single collapsible row; expands on click) ── */}
+      <DataPipelineStatus />
+
       {/* ── Page header: Ticker + metadata (left) · Market status + Cloud SQL (right) ── */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -492,41 +538,42 @@ export default function DashboardPage() {
 
       {/* ── SECTION 2: Price + Key Levels ────────────────────────────────── */}
       <div className="rounded-xl bg-[var(--surface-2)] p-6">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-          {/* Ticker + price */}
-          <div>
-            <h2 className="label-micro">{activeTicker}</h2>
-            <p className="font-mono text-4xl font-bold text-[var(--color-text-primary)] leading-tight mt-1">
-              ${quote?.price?.toFixed(2) ?? '--'}
-            </p>
-          </div>
-
-          {/* Change + OHLV grouped, vertically centered against price */}
-          {quote && (
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-              <div className={quote.change >= 0 ? 'text-green-400' : 'text-red-400'}>
-                <p className="text-xl font-bold font-mono leading-tight">
-                  {quote.change >= 0 ? '+' : ''}{quote.change.toFixed(2)}
-                </p>
-                <p className="text-sm font-mono">
-                  ({quote.change_pct >= 0 ? '+' : ''}{quote.change_pct.toFixed(2)}%)
-                </p>
-              </div>
-
-              <div className="flex gap-4 text-xs">
-                <span className="text-[var(--color-text-muted)]">O <span className="text-[var(--color-accent-blue)] font-mono font-semibold">${quote.open.toFixed(2)}</span></span>
-                <span className="text-[var(--color-text-muted)]">H <span className="text-green-400 font-mono font-semibold">${quote.high.toFixed(2)}</span></span>
-                <span className="text-[var(--color-text-muted)]">L <span className="text-amber-400 font-mono font-semibold">${quote.low.toFixed(2)}</span></span>
-                <span className="text-[var(--color-text-muted)]">Vol <span className="text-[var(--color-text-secondary)] font-mono font-semibold">{(quote.volume / 1e6).toFixed(1)}M</span></span>
-              </div>
-            </div>
-          )}
-
-          {/* Timestamp (pushed right) */}
+        {/* Top row: ticker label (left) · timestamp (right, top-aligned) */}
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="label-micro">{activeTicker}</h2>
           {quote && (isReview || !isOpen) && (
-            <span className="ml-auto text-xs text-[var(--color-text-muted)]">
+            <span className="text-xs text-[var(--color-text-muted)]">
               {isReview ? 'Close of' : 'As of'} {quote.last_updated}
             </span>
+          )}
+        </div>
+
+        {/* Main row: price + change/% + OHLV all baseline-aligned */}
+        <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
+          <p className="font-mono text-4xl font-bold text-[var(--color-text-primary)] leading-none">
+            ${quote?.price?.toFixed(2) ?? '--'}
+          </p>
+          {quote && (
+            <span
+              className={`font-mono text-xl font-bold leading-none ${
+                quote.change >= 0 ? 'text-green-400' : 'text-red-400'
+              }`}
+            >
+              {quote.change >= 0 ? '+' : ''}
+              {quote.change.toFixed(2)}
+              <span className="ml-1.5 text-base font-semibold">
+                ({quote.change_pct >= 0 ? '+' : ''}
+                {quote.change_pct.toFixed(2)}%)
+              </span>
+            </span>
+          )}
+          {quote && (
+            <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-xs">
+              <span className="text-[var(--color-text-muted)]">O <span className="text-[var(--color-accent-blue)] font-mono font-semibold">${quote.open.toFixed(2)}</span></span>
+              <span className="text-[var(--color-text-muted)]">H <span className="text-green-400 font-mono font-semibold">${quote.high.toFixed(2)}</span></span>
+              <span className="text-[var(--color-text-muted)]">L <span className="text-amber-400 font-mono font-semibold">${quote.low.toFixed(2)}</span></span>
+              <span className="text-[var(--color-text-muted)]">Vol <span className="text-[var(--color-text-secondary)] font-mono font-semibold">{(quote.volume / 1e6).toFixed(1)}M</span></span>
+            </div>
           )}
         </div>
 
@@ -661,11 +708,13 @@ export default function DashboardPage() {
             label={kpiCards.prev.label}
             value={kpiCards.prev.value}
             subtitle={kpiCards.prev.subtitle}
+            direction={kpiCards.prev.direction}
           />
           <MetricCard
             label={kpiCards.latest.label}
             value={kpiCards.latest.value}
             subtitle={kpiCards.latest.subtitle}
+            direction={kpiCards.latest.direction}
           />
           <MetricCard
             label={kpiCards.change.label}
@@ -679,6 +728,7 @@ export default function DashboardPage() {
             value={kpiCards.rsi.value}
             subtitle={kpiCards.rsi.subtitle}
             tone={kpiCards.rsi.tone}
+            direction={kpiCards.rsi.direction}
           />
         </div>
       )}
