@@ -1,0 +1,121 @@
+name: Freshness Watchdog
+
+# Runs `scripts/audit_data_freshness.py --strict` against Cloud SQL every hour
+# during active hours and once post-close. Any stale table makes the workflow
+# fail, which the standard handle-workflow-failure reusable workflow turns into
+# a labeled GitHub issue (with the audit JSON embedded) so the next data gap
+# is caught within ~1 hour instead of on user complaint.
+#
+# Rationale: see docs/incidents/2026-04-14-market-data-daily-gap.md — the
+# April 10 regression was silent for 3 days because nothing was actively
+# checking freshness.
+
+on:
+  schedule:
+    # Hourly 09:00–19:00 ET Mon–Fri (13:00–23:00 UTC during DST; close enough)
+    - cron: '0 13-23 * * 1-5'
+    # Nightly post-close summary (all days so weekends surface stale pipelines)
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  audit-freshness:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-freshness-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-freshness-
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install 'cloud-sql-python-connector[pg8000]'
+
+      - name: Write GCP service account key
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          if [ -z "$GCP_SA_KEY" ]; then
+            echo "::error::GCP_SA_KEY secret is not set"
+            exit 1
+          fi
+          echo "$GCP_SA_KEY" > "$RUNNER_TEMP/gcp-key.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-key.json" >> "$GITHUB_ENV"
+
+      - name: Run freshness audit (strict)
+        env:
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          for var in CLOUD_SQL_CONNECTION_NAME DB_USER DB_PASS DB_NAME; do
+            if [ -z "${!var}" ]; then
+              echo "::error::$var secret is not set"
+              exit 1
+            fi
+          done
+
+          # Write JSON to a file so it can be attached on failure.
+          set +e
+          python scripts/audit_data_freshness.py --json --strict > /tmp/freshness.json
+          AUDIT_EXIT=$?
+          set -e
+
+          echo "## Freshness audit result" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/freshness.json >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          if [ "$AUDIT_EXIT" -ne 0 ]; then
+            echo "::error::Freshness audit detected stale tables (exit=$AUDIT_EXIT)"
+            exit "$AUDIT_EXIT"
+          fi
+
+  handle-failure:
+    needs: audit-freshness
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Freshness Watchdog"
+      failure_title: "❌ Cloud SQL data pipeline freshness audit failed"
+      issue_labels: "workflow-failure,freshness,automated"
+      workflow_file: "freshness-watchdog.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false
