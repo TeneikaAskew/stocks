@@ -51,6 +51,9 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 VALID_TICKERS = {"SPY", "IWM", "QQQ", "SPX"}
+# Tickers whose Greeks are computed locally (lib.options_greeks) instead of
+# coming from AlphaVantage. Must mirror lib.options_greeks.COMPUTE_GREEKS_TICKERS.
+COMPUTED_GREEKS_TICKERS = {"SPX", "SPXW", "NDX", "RUT", "XSP"}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # (ticker, date_str) → response dict; 12h TTL (EOD rows are immutable).
@@ -105,30 +108,46 @@ _COLUMN_ALIAS = {
     "last_price": "last",
 }
 
-# Columns we surface in each contract row (order not significant for the
-# frontend, but kept stable for debugging).
+# Base contract columns (always emitted under their source-column names).
 _CONTRACT_COLUMNS = [
     "contract_symbol", "expiration", "strike", "option_type",
     "bid", "ask", "mark", "last_price", "volume", "open_interest",
-    "implied_volatility", "delta", "gamma", "theta", "vega", "rho",
 ]
+# Greek columns. For computed tickers we emit values from the *_computed
+# sidecar columns under the standard names; for AV-native tickers we emit
+# the AV columns directly. Either way the frontend keeps reading
+# `delta`/`gamma`/etc. unchanged.
+_GREEK_COLS = ("implied_volatility", "delta", "gamma", "theta", "vega", "rho")
 
 
-def _df_to_contracts(df: pd.DataFrame) -> list[dict]:
+def _df_to_contracts(df: pd.DataFrame, ticker_upper: str) -> list[dict]:
     """Convert a DataFrame of etf_options_snapshots rows into the JSON shape the
-    React page already consumes.  Handles NaN → None, option_type pluralization,
-    and column aliases (`last_price` → `last`).
+    React page already consumes.
+
+    For tickers in :data:`COMPUTED_GREEKS_TICKERS`, the Greeks are sourced
+    from the ``*_computed`` sidecar columns (``delta_computed`` etc.) and
+    emitted under the canonical ``delta``/``gamma``/... keys. The original
+    AV columns are read but ignored — provenance lives in ``greeks_source``.
+
+    Handles NaN → None, ``option_type`` pluralization, and column aliases.
     """
     if df.empty:
         return []
 
-    # Drop rows with missing core fields the frontend requires.
     df = df.dropna(subset=["option_type", "strike", "expiration"])
-
-    # Plural → singular for `type` field.
     type_map = {"calls": "call", "puts": "put"}
 
+    use_computed = ticker_upper in COMPUTED_GREEKS_TICKERS
+    greeks_source = "computed_bsm" if use_computed else "alphavantage"
+
     import math
+
+    def _clean(val):
+        """NaN-safe scalar coercion. df.where(pd.notnull, None) re-coerces
+        None back to NaN on float columns, so we handle it per-value."""
+        if isinstance(val, float) and math.isnan(val):
+            return None
+        return val
 
     records: list[dict] = []
     for row in df.to_dict(orient="records"):
@@ -137,23 +156,23 @@ def _df_to_contracts(df: pd.DataFrame) -> list[dict]:
             if col not in row:
                 continue
             key = _COLUMN_ALIAS.get(col, col)
-            val = row[col]
-            # NaN → None at the value level. df.where(pd.notnull(df), None)
-            # doesn't work for float columns because pandas re-coerces None
-            # back to NaN. Must handle it on the dict that goes to json.dumps.
-            if isinstance(val, float) and math.isnan(val):
-                val = None
+            val = _clean(row[col])
             if col == "option_type":
-                # Frontend expects `type` (singular value 'call'/'put').
                 out["type"] = type_map.get(str(val).lower() if val else "", val)
                 continue
             if col == "expiration" and val is not None:
-                # Expiration may come back as a datetime/date — normalize to ISO string.
                 if hasattr(val, "strftime"):
                     val = val.strftime("%Y-%m-%d")
                 else:
                     val = str(val)
             out[key] = val
+
+        # Greeks: pick AV vs computed source per ticker.
+        for greek in _GREEK_COLS:
+            src_col = f"{greek}_computed" if use_computed else greek
+            out[greek] = _clean(row.get(src_col))
+
+        out["greeks_source"] = greeks_source
         records.append(out)
     return records
 
@@ -258,6 +277,9 @@ async def get_options(ticker: str, date_str: str):
         SELECT contract_symbol, expiration, strike, option_type,
                bid, ask, mark, last_price, volume, open_interest,
                implied_volatility, delta, gamma, theta, vega, rho,
+               implied_volatility_computed,
+               delta_computed, gamma_computed, theta_computed,
+               vega_computed, rho_computed,
                snapshot_ts
         FROM   etf_options_snapshots
         WHERE  ticker = :ticker
@@ -291,7 +313,7 @@ async def get_options(ticker: str, date_str: str):
         )
         raise HTTPException(status_code=404, detail=msg)
 
-    contracts = _df_to_contracts(df)
+    contracts = _df_to_contracts(df, ticker_upper)
 
     # Take the max snapshot_ts as the "as of" marker.
     snapshot_ts_val = df["snapshot_ts"].max() if "snapshot_ts" in df.columns else None
@@ -300,6 +322,7 @@ async def get_options(ticker: str, date_str: str):
     else:
         snapshot_timestamp = date_str
 
+    greeks_source = "computed_bsm" if ticker_upper in COMPUTED_GREEKS_TICKERS else "alphavantage"
     response = {
         "ticker": ticker_upper,
         "date": date_str,
@@ -308,6 +331,7 @@ async def get_options(ticker: str, date_str: str):
         "metadata": {
             "source": "cloud_sql",
             "data_source": "alphavantage",
+            "greeks_source": greeks_source,
             "row_count": len(contracts),
         },
     }

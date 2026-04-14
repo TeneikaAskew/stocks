@@ -21,7 +21,12 @@ interface OptionsResponse {
   date: string;
   options: OptionRecord[];
   snapshot_timestamp?: string;
-  metadata?: { source?: string; data_source?: string; row_count?: number };
+  metadata?: {
+    source?: string;
+    data_source?: string;
+    greeks_source?: 'alphavantage' | 'computed_bsm';
+    row_count?: number;
+  };
 }
 
 interface AvailableDatesResponse {
@@ -489,6 +494,9 @@ export default function OptionsFlowPage() {
       {optionsData && options.length > 0 && (
         <div className="text-right text-[10px] text-[var(--color-text-muted)]">
           Source: AlphaVantage EOD · Cloud SQL · {options.length} contracts · snapshot {optionsData.snapshot_timestamp?.slice(0, 10) ?? selectedDate}
+          {optionsData.metadata?.greeks_source === 'computed_bsm' && (
+            <span className="ml-1">· Greeks: computed (BSM, py_vollib)</span>
+          )}
         </div>
       )}
     </div>

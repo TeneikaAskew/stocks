@@ -11,6 +11,10 @@ export interface OptionRecord {
   vega: number;
   delta: number;
   volume: number;
+  /** Provenance of the Greeks on this row. 'computed_bsm' for tickers
+   * (e.g. SPX) where the platform back-end solves IV from AlphaVantage mid
+   * prices; 'alphavantage' for tickers where AV publishes Greeks directly. */
+  greeks_source?: 'alphavantage' | 'computed_bsm';
 }
 
 export interface AggregatedStrike {
