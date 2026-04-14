@@ -48,7 +48,7 @@ class TestHealth:
         data = r.json()
         assert data["status"] == "ok"
         assert "cloud_sql" in data
-        assert "data_dir_exists" in data
+        assert "lib_dir_exists" in data
 
     def test_live_status(self, client):
         r = client.get("/api/live/status")
