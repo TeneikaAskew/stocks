@@ -151,12 +151,24 @@ CREATE TABLE IF NOT EXISTS etf_options_snapshots (
     -- IV
     implied_volatility  DOUBLE PRECISION,
 
-    -- Greeks
+    -- Greeks (as provided by the source — AV for SPY/IWM/QQQ, NaN/null for SPX
+    -- because AV does not publish Greeks for cash-settled index options)
     delta               DOUBLE PRECISION,
     gamma               DOUBLE PRECISION,
     theta               DOUBLE PRECISION,
     vega                DOUBLE PRECISION,
     rho                 DOUBLE PRECISION,
+
+    -- Computed Greeks (BSM, py_vollib_vectorized) — sidecar columns populated
+    -- by lib.options_greeks for tickers in COMPUTE_GREEKS_TICKERS (SPX, SPXW,
+    -- NDX, RUT, XSP). The original delta/gamma/etc. columns above are NEVER
+    -- written to by the compute path so source provenance is preserved.
+    delta_computed              DOUBLE PRECISION,
+    gamma_computed              DOUBLE PRECISION,
+    theta_computed              DOUBLE PRECISION,
+    vega_computed               DOUBLE PRECISION,
+    rho_computed                DOUBLE PRECISION,
+    implied_volatility_computed DOUBLE PRECISION,
 
     -- Underlying at snapshot time
     underlying_price    DOUBLE PRECISION,
@@ -169,6 +181,16 @@ CREATE TABLE IF NOT EXISTS etf_options_snapshots (
     CONSTRAINT uq_etf_options_snapshot
         UNIQUE (ticker, snapshot_ts, option_type, expiration, strike)
 );
+
+-- Idempotent ALTERs so existing deployments pick up the new sidecar columns
+-- without a full schema reload. Safe to re-run.
+ALTER TABLE etf_options_snapshots
+    ADD COLUMN IF NOT EXISTS delta_computed              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS gamma_computed              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS theta_computed              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS vega_computed               DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS rho_computed                DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS implied_volatility_computed DOUBLE PRECISION;
 
 CREATE INDEX IF NOT EXISTS idx_etf_options_ticker_date
     ON etf_options_snapshots (ticker, snapshot_date DESC);
@@ -224,6 +246,29 @@ CREATE TABLE IF NOT EXISTS earnings_options_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_earnings_options_symbol_date
     ON earnings_options_snapshots (symbol, snapshot_date DESC);
+
+
+-- ─────────────────────────────────────────────────────────
+-- DAILY MACRO RATES (FRED-sourced inputs for Greeks computation)
+-- ─────────────────────────────────────────────────────────
+-- Populated by gcp/fetchers/fetch_fred_rates.py. Used by lib/options_greeks.py
+-- when computing Black-Scholes-Merton Greeks for SPX (and any other index
+-- ticker without source-provided Greeks).
+-- Series:
+--   dgs3mo        — FRED DGS3MO, 3-month Treasury constant-maturity rate
+--                   (decimal: 0.0445 = 4.45%). Used as risk-free `r`.
+--   sp500_div_yld — FRED SP500DIV (or fallback monthly series), trailing
+--                   12-month S&P 500 dividend yield (decimal). Used as `q`.
+
+CREATE TABLE IF NOT EXISTS daily_rates (
+    date           DATE PRIMARY KEY,
+    dgs3mo         DOUBLE PRECISION,
+    sp500_div_yld  DOUBLE PRECISION,
+    fetched_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_rates_date
+    ON daily_rates (date DESC);
 
 
 -- ─────────────────────────────────────────────────────────

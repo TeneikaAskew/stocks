@@ -258,6 +258,73 @@ deploy_fetchers() {
     deploy_fetch_earnings_calendar
 }
 
+# ── One-shot maintenance jobs ─────────────────────────────────────────────────
+# These do not run on a schedule. Create once with deploy_*, then execute
+# manually via `gcloud run jobs execute <name> --region us-east1` whenever
+# needed. All three are idempotent.
+
+# Apply gcp/schema.sql — adds new tables / columns / indexes. Safe to re-run;
+# every statement is IF NOT EXISTS / OR REPLACE.
+deploy_apply_schema_migrations() {
+    echo "Deploying apply-schema-migrations job..."
+    gcloud run jobs create apply-schema-migrations \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.apply_schema" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update apply-schema-migrations \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.apply_schema" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# Pull FRED DGS3MO + SP500 → daily_rates + market_data_daily(SPX). Used by
+# lib.options_greeks for risk-free rate and SPX spot price lookups.
+# Backfill mode pulls full history from 2015 (~3000 daily rows, <60s).
+# Default mode is the 14-day incremental window — wire to a daily scheduler
+# at ~00:30 UTC after FRED's nightly publication.
+deploy_fetch_fred_rates() {
+    echo "Deploying fetch-fred-rates job..."
+    gcloud run jobs create fetch-fred-rates \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_fred_rates" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-fred-rates \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_fred_rates" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# One-shot SPX Greeks backfill. Walks every historical SPX snapshot_date in
+# etf_options_snapshots and writes computed Greeks into the *_computed
+# sidecar columns. AV columns are NEVER touched. 12h timeout (typical run
+# 3-5h on db-g1-small for ~22.5M rows). Idempotent: skips dates whose
+# gamma_computed is already finite, unless --force is passed at execute time.
+deploy_compute_spx_greeks_backfill() {
+    echo "Deploying compute-spx-greeks-backfill job..."
+    gcloud run jobs create compute-spx-greeks-backfill \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 0 --task-timeout 43200 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.maintenance.compute_spx_greeks" \
+        --args "--ticker,SPX" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update compute-spx-greeks-backfill \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,scripts.maintenance.compute_spx_greeks" \
+        --args "--ticker,SPX" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
 _job_uri() {
     echo "https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${1}:run"
@@ -330,6 +397,23 @@ case "${1:-help}" in
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers ;;
     schedulers)  deploy_schedulers ;;
+    apply-schema) build_image && deploy_apply_schema_migrations ;;
+    fred-rates)   build_image && deploy_fetch_fred_rates ;;
+    spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
+    spx-greeks-pipeline)
+        # Convenience: build once + deploy the three jobs that compose the
+        # SPX Greeks roll-out. Does NOT execute any of them.
+        build_image
+        deploy_apply_schema_migrations
+        deploy_fetch_fred_rates
+        deploy_compute_spx_greeks_backfill
+        echo ""
+        echo "Pipeline jobs deployed. Execute in order:"
+        echo "  gcloud run jobs execute apply-schema-migrations --region ${REGION} --wait"
+        echo "  gcloud run jobs execute fetch-fred-rates --region ${REGION} --wait \\"
+        echo "      --args=--backfill"
+        echo "  gcloud run jobs execute compute-spx-greeks-backfill --region ${REGION} --wait"
+        ;;
     all)
         build_image
         deploy_premarket
@@ -342,14 +426,18 @@ case "${1:-help}" in
     help|*)
         echo "Usage: $0 <command>"
         echo ""
-        echo "  setup      Provision Cloud SQL, GCS bucket, service account"
-        echo "  migrate    Migrate local Parquet data → GCS + Cloud SQL"
-        echo "  build      Build and push Docker image"
-        echo "  premarket  Deploy pre-market brief job"
-        echo "  monitor    Deploy real-time signal monitor service"
-        echo "  weekend    Deploy weekend review job"
-        echo "  fetchers   Deploy all data-fetching Cloud Run jobs"
-        echo "  schedulers Create/update all Cloud Scheduler triggers"
-        echo "  all        Build + deploy everything (jobs + schedulers)"
+        echo "  setup               Provision Cloud SQL, GCS bucket, service account"
+        echo "  migrate             Migrate local Parquet data → GCS + Cloud SQL"
+        echo "  build               Build and push Docker image"
+        echo "  premarket           Deploy pre-market brief job"
+        echo "  monitor             Deploy real-time signal monitor service"
+        echo "  weekend             Deploy weekend review job"
+        echo "  fetchers            Deploy all data-fetching Cloud Run jobs"
+        echo "  schedulers          Create/update all Cloud Scheduler triggers"
+        echo "  apply-schema        Deploy schema-migration one-shot job"
+        echo "  fred-rates          Deploy FRED rates fetcher job"
+        echo "  spx-greeks          Deploy SPX Greeks backfill job"
+        echo "  spx-greeks-pipeline Build + deploy schema/FRED/Greeks jobs (no execute)"
+        echo "  all                 Build + deploy everything (jobs + schedulers)"
         ;;
 esac

@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from gcp.gcs_utils import upload_dataframe_as_parquet
 from lib.config import AlphaVantageConfig
+from lib.options_greeks import enrich_av_chain_with_greeks
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -150,6 +151,11 @@ def process_ticker(ticker: str, fetch_date: str, bucket: str, api_key: str,
     df = df.drop_duplicates(subset=conflict_cols, keep='last')
     if len(df) < before:
         log.info("    deduped %d → %d rows", before, len(df))
+
+    # Greeks enrichment for tickers AV doesn't publish Greeks for (SPX, etc.).
+    # No-op for SPY/IWM/QQQ. Writes ONLY to the *_computed sidecar columns —
+    # the original AV delta/gamma/etc. columns are never touched.
+    df = enrich_av_chain_with_greeks(df, ticker, fetch_date)
 
     if is_cloud_sql_configured():
         upsert_dataframe(df, 'etf_options_snapshots', conflict_cols)

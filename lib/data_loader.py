@@ -410,6 +410,39 @@ class DataLoader:
         sql = f"SELECT * FROM {table} {where} ORDER BY snapshot_ts, expiration, strike"
         return _query_cloud_sql(sql, params)
 
+    def get_close_price(
+        self,
+        ticker: str,
+        target_date,
+    ) -> Optional[float]:
+        """Return the close price for ``ticker`` on ``target_date`` from Cloud SQL.
+
+        Single-row lookup against ``market_data_daily`` (uses the
+        ``(ticker, date)`` unique index, so it's O(1)). Returns ``None`` if
+        no row exists or Cloud SQL is unavailable. The caller decides whether
+        to fall back to put-call parity / proxy spot.
+
+        ``target_date`` may be a ``datetime.date``, ``datetime.datetime``, or
+        ``YYYY-MM-DD`` string.
+        """
+        if not _cloud_sql_active():
+            return None
+        if hasattr(target_date, "strftime"):
+            d_str = target_date.strftime("%Y-%m-%d")
+        else:
+            d_str = str(target_date)
+        df = _query_cloud_sql(
+            "SELECT close FROM market_data_daily "
+            "WHERE ticker = :t AND date = :d LIMIT 1",
+            {"t": ticker.upper(), "d": d_str},
+        )
+        if df.empty:
+            return None
+        val = df.iloc[0]["close"]
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return None
+        return float(val)
+
     def load_trades(
         self,
         start_date: Optional[str] = None,
@@ -459,3 +492,19 @@ class DataLoader:
             end = pd.to_datetime(end_date)
             df = df[df.index <= end]
         return df
+
+
+# Module-level convenience wrapper. Single shared DataLoader instance so
+# repeated calls don't recreate the data_dir Path. Used by lib.options_greeks.
+_DEFAULT_LOADER: Optional[DataLoader] = None
+
+
+def get_close_price(ticker: str, target_date) -> Optional[float]:
+    """Module-level shortcut for ``DataLoader().get_close_price(ticker, date)``.
+
+    Returns ``None`` when Cloud SQL is unreachable or the row doesn't exist.
+    """
+    global _DEFAULT_LOADER
+    if _DEFAULT_LOADER is None:
+        _DEFAULT_LOADER = DataLoader()
+    return _DEFAULT_LOADER.get_close_price(ticker, target_date)

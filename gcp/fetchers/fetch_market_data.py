@@ -343,9 +343,45 @@ def write_intraday_to_sql(ticker: str, df: pd.DataFrame, fetch_date: str):
     log.info("    ✓ intraday: %d rows for %s", len(out), ticker)
 
 
+def process_spx_via_parity(fetch_date: str) -> None:
+    """SPX has no AV TIME_SERIES feed — derive daily close from put-call parity
+    on the SPX options already in etf_options_snapshots, then compute indicators.
+
+    Requires that day's SPX options chain already be populated (the options
+    backfill job runs at 01:00 UTC; this fetcher runs at 22:00 UTC, giving a
+    21-hour buffer).
+    """
+    from scripts.backfill_spx_from_options import derive_spx_spot_for_date
+
+    spot = derive_spx_spot_for_date(fetch_date)
+    if spot is None:
+        log.warning("    SPX parity: no viable option pairs for %s — skipping", fetch_date)
+        return
+
+    row = {
+        'ticker':         'SPX',
+        'date':           pd.to_datetime(fetch_date).date(),
+        'open':           spot,
+        'high':           spot,
+        'low':            spot,
+        'close':          spot,
+        'adjusted_close': spot,
+        'volume':         0,
+        'data_source':    'derived_put_call_parity',
+    }
+    upsert_dataframe(pd.DataFrame([row]), 'market_data_daily', ['ticker', 'date'])
+    log.info("    ✓ SPX daily upserted via parity: spot=%.2f", spot)
+    compute_and_upsert_daily_indicators('SPX', fetch_date)
+
+
 def process_ticker(ticker: str, fetch_date: str, bucket: str, av_api_key: str):
     """Full pipeline for one ticker: fetch → enrich → write SQL + GCS."""
     log.info("  Processing %s for %s...", ticker, fetch_date)
+
+    # SPX has no AV TIME_SERIES feed — use put-call parity from existing options.
+    if ticker.upper() == 'SPX':
+        process_spx_via_parity(fetch_date)
+        return
 
     # 1. Fetch 1-min bars from AlphaVantage TIME_SERIES_INTRADAY
     minute_df = fetch_minute_data(ticker, fetch_date, av_api_key)
@@ -404,6 +440,17 @@ def main():
     log.info("  SQL       : %s", 'yes' if is_cloud_sql_configured() else 'NO (env vars missing)')
     log.info("  GCS       : %s", bucket or 'disabled')
     log.info("  AV key    : %s", 'yes' if av_api_key else 'NO (required for all data sources)')
+
+    # Fail-fast guards: these env vars are required for any actual work.
+    # Without them the job used to exit(0) while silently skipping all writes —
+    # Cloud Scheduler marked those runs as successful and we missed April 10
+    # and April 13 data without any alert. See docs/incidents/2026-04-14-market-data-daily-gap.md.
+    if not av_api_key:
+        log.error("ALPHA_VANTAGE_API_KEY is not set — cannot fetch any data. Aborting.")
+        sys.exit(2)
+    if not is_cloud_sql_configured():
+        log.error("Cloud SQL env vars missing (CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME) — aborting.")
+        sys.exit(3)
 
     errors = []
     for ticker in tickers:
