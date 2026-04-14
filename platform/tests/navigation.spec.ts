@@ -30,7 +30,7 @@ async function collectConsoleErrors(page: Page): Promise<string[]> {
 
 test.describe('Navigation smoke', () => {
   test('sidebar renders with all 10 nav items', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
     const nav = page.locator('nav a');
     await expect(nav).toHaveCount(10);
   });
@@ -38,8 +38,7 @@ test.describe('Navigation smoke', () => {
   for (const { path, heading } of ROUTES) {
     test(`route ${path} loads without fatal errors`, async ({ page }) => {
       const errors = await collectConsoleErrors(page);
-      await page.goto(path);
-      await page.waitForLoadState('networkidle');
+      await page.goto(path, { waitUntil: 'domcontentloaded' });
 
       // AppShell should always mount a nav — a blank page = fatal
       await expect(page.locator('nav')).toBeVisible();

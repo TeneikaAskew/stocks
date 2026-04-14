@@ -6,8 +6,7 @@ import { test, expect } from '@playwright/test';
 
 test.describe('Phase 1: Chart Viewer', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
   });
 
   // ── Layout ──────────────────────────────────────────────────────────────
@@ -24,17 +23,18 @@ test.describe('Phase 1: Chart Viewer', () => {
   test('can navigate to /charts route', async ({ page }) => {
     await page.click('a[href="/charts"]');
     await page.waitForURL('**/charts');
-    await expect(page.locator('select')).toBeVisible();
+    // Charts page has its own <input type="date"> inside <main>
+    await expect(page.locator('main input[type="date"]')).toBeVisible();
   });
 
   // ── Chart toolbar ────────────────────────────────────────────────────────
-  test('charts page: date selector is populated', async ({ page }) => {
+  test('charts page: date picker is populated', async ({ page }) => {
     await page.goto('/charts');
-    // Wait for API call to resolve
-    const select = page.locator('select').first();
-    await expect(select).toBeVisible();
-    // Should have at least one option
-    await expect(select.locator('option')).not.toHaveCount(0);
+    // Scope to <main> — the header also has a date input for review mode
+    const picker = page.locator('main input[type="date"]').first();
+    await expect(picker).toBeVisible();
+    // Auto-select runs in a useEffect after market dates load — give it 15s
+    await expect(picker).not.toHaveValue('', { timeout: 15_000 });
   });
 
   test('charts page: timeframe buttons render', async ({ page }) => {
@@ -68,10 +68,9 @@ test.describe('Phase 1: Chart Viewer', () => {
   // ── Chart canvas ────────────────────────────────────────────────────────
   test('candlestick chart canvas is rendered', async ({ page }) => {
     await page.goto('/charts');
-    // Wait for market data to load (API call)
-    await page.waitForTimeout(3000);
-    const canvas = page.locator('canvas').first();
-    await expect(canvas).toBeVisible();
+    // Canvas is mounted by lightweight-charts after the date auto-select + bars fetch
+    const canvas = page.locator('main canvas').first();
+    await expect(canvas).toBeVisible({ timeout: 20_000 });
   });
 
   // ── Drawing mode ────────────────────────────────────────────────────────

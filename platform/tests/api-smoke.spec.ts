@@ -23,7 +23,11 @@ test.describe('Core health', () => {
   });
 
   test('GET /api/health/freshness returns a report', async ({ request }) => {
-    const json = await getOk(request, '/api/health/freshness');
+    // First uncached call may run the full Cloud SQL audit — raise timeout
+    test.setTimeout(90_000);
+    const res = await request.get(API + '/api/health/freshness', { timeout: 80_000 });
+    expect(res.ok(), `/api/health/freshness returned ${res.status()}`).toBeTruthy();
+    const json = await res.json();
     expect(json).toHaveProperty('overall_status');
     expect(json).toHaveProperty('tables');
   });
@@ -46,9 +50,11 @@ test.describe('Market data', () => {
     expect(ref).toHaveProperty('close');
     expect(ref.high).toBeGreaterThanOrEqual(ref.low);
 
-    // Previous session fields landed during the April 10 gap fix
-    expect(ref).toHaveProperty('prev_session_close');
-    expect(ref).toHaveProperty('prev_session_date');
+    // Previous session fields landed during the April 10 gap fix. They live
+    // under the `week` sub-object, not the top level.
+    expect(ref).toHaveProperty('week');
+    expect(ref.week).toHaveProperty('prev_session_close');
+    expect(ref.week).toHaveProperty('prev_session_date');
   });
 
   test('GET /api/market/data/:ticker/:date returns candlestick bars', async ({ request }) => {
@@ -64,33 +70,28 @@ test.describe('Market data', () => {
 test.describe('Live / signals / options / playbook routers', () => {
   test('GET /api/live/status returns a status object', async ({ request }) => {
     const json = await getOk(request, '/api/live/status');
-    expect(json).toHaveProperty('market_open');
+    expect(json).toHaveProperty('is_open');
+    expect(json).toHaveProperty('session');
   });
 
-  test('GET /api/signals/IWM responds (empty list is fine)', async ({ request }) => {
+  test('GET /api/signals/IWM responds without a server error', async ({ request }) => {
     const res = await request.get(API + '/api/signals/IWM?limit=5');
-    // Accept 200 with empty list OR 404 if the signal file doesn't exist
-    // in the current environment. Fail only on 5xx.
     expect(res.status(), `/api/signals/IWM returned ${res.status()}`).toBeLessThan(500);
   });
 
-  test('GET /api/playbook/rules returns a rule list', async ({ request }) => {
+  test('GET /api/playbook/rules responds without a server error', async ({ request }) => {
     const res = await request.get(API + '/api/playbook/rules');
     expect(res.status()).toBeLessThan(500);
   });
 
-  test('GET /api/options/IWM?limit=5 returns a chain or structured empty', async ({ request }) => {
+  test('GET /api/options/IWM responds without a server error', async ({ request }) => {
     const res = await request.get(API + '/api/options/IWM?limit=5');
     expect(res.status()).toBeLessThan(500);
   });
 
-  test('GET /api/backtest/runs returns a run list', async ({ request }) => {
-    const res = await request.get(API + '/api/backtest/runs');
+  test('GET /api/backtest/all/IWM responds without a server error', async ({ request }) => {
+    // Real endpoint (no /runs route — that was a memory-based misconception)
+    const res = await request.get(API + '/api/backtest/all/IWM');
     expect(res.status()).toBeLessThan(500);
-    if (res.ok()) {
-      const json = await res.json();
-      expect(json).toHaveProperty('runs');
-      expect(Array.isArray(json.runs)).toBeTruthy();
-    }
   });
 });

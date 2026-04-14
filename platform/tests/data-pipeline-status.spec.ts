@@ -7,27 +7,31 @@
  */
 import { test, expect } from '@playwright/test';
 
+// First uncached /api/health/freshness call may run the full Cloud SQL audit.
+// Pre-warm once so every test after sees the cached, fast response.
+test.beforeAll(async ({ request }) => {
+  await request.get('http://localhost:8000/api/health/freshness', { timeout: 90_000 });
+});
+
 test.describe('Data pipeline status widget', () => {
   test('renders on the dashboard', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
 
     // The widget always renders a "Data pipeline" label once the query resolves
-    await expect(page.getByText(/data pipeline/i).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/data pipeline/i).first()).toBeVisible({ timeout: 30_000 });
   });
 
   test('shows overall status in the collapsed summary', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-    // Status label is one of ok | warn | stale | unknown (uppercase)
-    const summary = page.getByText(/^(OK|WARN|STALE|UNKNOWN)$/).first();
-    await expect(summary).toBeVisible({ timeout: 15_000 });
+    // Status label is one of ok | warn | stale | unknown — the CSS uppercases
+    // it visually but the DOM text stays lowercase, so match case-insensitively.
+    const summary = page.getByText(/^(ok|warn|stale|unknown)$/i).first();
+    await expect(summary).toBeVisible({ timeout: 30_000 });
   });
 
   test('expands to show per-table pills on click', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
 
     // Click the widget header to expand — it's wrapped in a button
     const header = page.getByText(/data pipeline/i).first();
@@ -39,10 +43,9 @@ test.describe('Data pipeline status widget', () => {
   });
 
   test('displays a "Checked HH:MM" timestamp', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-    await expect(page.getByText(/checked \d{1,2}:\d{2}/i)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/checked \d{1,2}:\d{2}/i)).toBeVisible({ timeout: 30_000 });
   });
 });
 
