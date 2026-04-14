@@ -9,6 +9,6 @@ interface TickerState {
 
 export const useTickerStore = create<TickerState>((set) => ({
   activeTicker: 'IWM',
-  availableTickers: ['IWM', 'SPY', 'QQQ'],
+  availableTickers: ['IWM', 'SPY', 'QQQ', 'SPX'],
   setTicker: (ticker) => set({ activeTicker: ticker }),
 }));

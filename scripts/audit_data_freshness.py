@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+"""
+Audit Cloud SQL data freshness across the platform.
+
+Queries every critical data table, computes the age of its most recent row,
+and compares against expected cadence. Catches failures like the April 13
+`market_data_daily` gap that sat silent for 4+ days.
+
+Usage:
+    python scripts/audit_data_freshness.py                  # Pretty terminal table
+    python scripts/audit_data_freshness.py --json           # JSON output
+    python scripts/audit_data_freshness.py --strict         # Exit 1 if any table is stale (for CI)
+
+Required env vars: CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from dataclasses import dataclass, field, asdict
+from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
+from typing import Optional
+
+# Add project root for gcp.* imports
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from gcp.database import is_cloud_sql_configured, query_to_dataframe  # noqa: E402
+
+log = logging.getLogger(__name__)
+
+
+# ── Configuration ────────────────────────────────────────────────────────────
+
+TICKERS = ("IWM", "SPY", "QQQ", "SPX")
+
+# Tables to check. Each entry describes how to compute freshness for one table.
+#
+# Fields:
+#   name: Cloud SQL table name
+#   ts_column: the date/timestamp column to use for "most recent row"
+#   ts_is_date: True if the column is DATE, False if TIMESTAMPTZ
+#   expected_lag_hours: warn if last_row_at is older than this many hours from
+#                       the latest expected trading session
+#   per_ticker: if True, compute freshness per ticker and report each
+#   tickers: override the default ticker list
+#   where: optional extra WHERE clause (e.g. to filter out archival rows)
+#   tolerate_holidays: if True, don't flag as stale on market holidays
+CHECKS: list[dict] = [
+    {
+        "name": "market_data_daily",
+        "ts_column": "date",
+        "ts_is_date": True,
+        "expected_lag_hours": 30,
+        "per_ticker": True,
+        "tickers": ("IWM", "SPY", "QQQ", "SPX"),
+        "min_rows_per_day": 1,
+        "gap_scan_days": 5,
+    },
+    {
+        "name": "market_data_intraday",
+        "ts_column": "ts",
+        "ts_is_date": False,
+        "expected_lag_hours": 30,
+        "per_ticker": True,
+        "tickers": ("IWM", "SPY", "QQQ"),
+        "where": "interval = '1min'",
+        "min_rows_per_day": 350,    # ~full RTH session at 1-min
+        "gap_scan_days": 5,
+    },
+    {
+        "name": "etf_options_snapshots",
+        "ts_column": "snapshot_date",
+        "ts_is_date": True,
+        "expected_lag_hours": 30,
+        "per_ticker": True,
+        "tickers": ("IWM", "SPY", "QQQ", "SPX"),
+        "where": "data_source = 'alphavantage'",
+        "min_rows_per_day": 100,    # chain is typically 1k+, 100 is a conservative floor
+        "gap_scan_days": 5,
+    },
+    {
+        "name": "earnings_options_snapshots",
+        "ts_column": "snapshot_date",
+        "ts_is_date": True,
+        "expected_lag_hours": 24,   # Cloud Run runs 6x/day during market hours
+        "per_ticker": False,
+        "ticker_column": "symbol",  # this table uses `symbol`, not `ticker`
+    },
+    {
+        "name": "earnings_calendar",
+        "ts_column": "fetched_at",
+        "ts_is_date": False,
+        "expected_lag_hours": 192,  # Weekly = ~8 days OK
+        "per_ticker": False,
+    },
+    {
+        "name": "economic_events",
+        "ts_column": "inserted_at",  # event_date is the event schedule (future); inserted_at is the fetch time
+        "ts_is_date": False,
+        "expected_lag_hours": 192,  # Weekly
+        "per_ticker": False,
+    },
+    {
+        "name": "premarket_analysis",
+        "ts_column": "analysis_date",
+        "ts_is_date": True,
+        "expected_lag_hours": 30,
+        "per_ticker": True,
+        "tickers": ("IWM", "SPY", "QQQ"),
+    },
+    {
+        "name": "signal_alerts",
+        "ts_column": "alert_date",
+        "ts_is_date": True,
+        "expected_lag_hours": 30,
+        "per_ticker": False,
+    },
+    {
+        "name": "daily_rates",
+        "ts_column": "date",
+        "ts_is_date": True,
+        "expected_lag_hours": 72,   # FRED publishes with 1-2 day lag
+        "per_ticker": False,
+    },
+]
+
+
+# ── Domain helpers ───────────────────────────────────────────────────────────
+
+# Market holidays for 2026 (NYSE). Used to avoid false "stale" alerts
+# when the most recent expected trading session was a holiday.
+MARKET_HOLIDAYS_2026 = {
+    date(2026, 1, 1),    # New Year's
+    date(2026, 1, 19),   # MLK Day
+    date(2026, 2, 16),   # Presidents Day
+    date(2026, 4, 3),    # Good Friday
+    date(2026, 5, 25),   # Memorial Day
+    date(2026, 6, 19),   # Juneteenth
+    date(2026, 7, 3),    # Independence Day observed
+    date(2026, 9, 7),    # Labor Day
+    date(2026, 11, 26),  # Thanksgiving
+    date(2026, 11, 27),  # Black Friday (early close, treated as closed)
+    date(2026, 12, 25),  # Christmas
+}
+
+
+def most_recent_trading_day(now_utc: datetime) -> date:
+    """Return the most recent date that the US market was open as of now.
+
+    Approximates with ET by subtracting 4-5 hours from UTC; close enough for
+    freshness checks since we're comparing dates, not timestamps.
+    """
+    et_now = now_utc - timedelta(hours=4)
+    d = et_now.date()
+    # If we're still before market close (4 PM ET), yesterday is the most recent close
+    if et_now.time() < time(16, 0, 0):
+        d = d - timedelta(days=1)
+    # Walk backward past weekends and holidays
+    while d.weekday() >= 5 or d in MARKET_HOLIDAYS_2026:
+        d = d - timedelta(days=1)
+    return d
+
+
+# ── Freshness report dataclass ───────────────────────────────────────────────
+
+
+@dataclass
+class FreshnessRow:
+    table: str
+    ticker: Optional[str]
+    last_row_at: Optional[str]
+    expected_latest: str
+    lag_hours: Optional[float]
+    expected_max_hours: float
+    status: str  # ok | warn | stale | unknown
+    row_count_recent: int = 0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class FreshnessReport:
+    checked_at: str
+    expected_market_close: str
+    rows: list[FreshnessRow] = field(default_factory=list)
+
+    @property
+    def overall_status(self) -> str:
+        if not self.rows:
+            return "unknown"
+        if any(r.status == "stale" for r in self.rows):
+            return "stale"
+        if any(r.status == "warn" for r in self.rows):
+            return "warn"
+        if any(r.status == "unknown" for r in self.rows):
+            return "warn"
+        return "ok"
+
+    def to_dict(self) -> dict:
+        return {
+            "checked_at": self.checked_at,
+            "expected_market_close": self.expected_market_close,
+            "overall_status": self.overall_status,
+            "tables": [r.to_dict() for r in self.rows],
+        }
+
+
+# ── Query implementation ─────────────────────────────────────────────────────
+
+
+def _query_freshness_one(
+    check: dict,
+    expected_date: date,
+    ticker: Optional[str] = None,
+    now_utc: Optional[datetime] = None,
+) -> FreshnessRow:
+    """Run the freshness query for one (table, ticker) combination."""
+    now = now_utc or datetime.now(UTC).replace(tzinfo=None)
+    ts_col = check["ts_column"]
+    ticker_col = check.get("ticker_column", "ticker")
+    where_clauses = []
+    params: dict = {}
+
+    if ticker:
+        where_clauses.append(f"{ticker_col} = :ticker")
+        params["ticker"] = ticker
+
+    extra_where = check.get("where")
+    if extra_where:
+        where_clauses.append(extra_where)
+
+    where_sql = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+    # Count how many rows land on the expected trading day (sanity check)
+    if check["ts_is_date"]:
+        count_filter = f"{ts_col} = :expected_date"
+    else:
+        count_filter = f"DATE({ts_col}) = :expected_date"
+
+    count_where = list(where_clauses) + [count_filter]
+    count_where_sql = " WHERE " + " AND ".join(count_where)
+
+    q = f"""
+    SELECT
+      MAX({ts_col}) AS last_row_at,
+      (SELECT COUNT(*) FROM {check['name']} {count_where_sql}) AS row_count_recent
+    FROM {check['name']}
+    {where_sql}
+    """
+    params["expected_date"] = expected_date
+
+    try:
+        df = query_to_dataframe(q, params)
+    except Exception as e:
+        err_msg = str(e)
+        # Missing table is a specific failure mode — the table either hasn't
+        # been created yet or the migration never ran. Treat as "unknown" so
+        # overall status becomes warn instead of stale.
+        if "does not exist" in err_msg or "relation" in err_msg.lower():
+            log.debug("Table %s does not exist: %s", check["name"], err_msg)
+        else:
+            log.warning("Query failed for %s (%s): %s", check["name"], ticker, e)
+        return FreshnessRow(
+            table=check["name"],
+            ticker=ticker,
+            last_row_at=None,
+            expected_latest=expected_date.isoformat(),
+            lag_hours=None,
+            expected_max_hours=check["expected_lag_hours"],
+            status="unknown",
+        )
+
+    if df.empty or df["last_row_at"].iloc[0] is None:
+        return FreshnessRow(
+            table=check["name"],
+            ticker=ticker,
+            last_row_at=None,
+            expected_latest=expected_date.isoformat(),
+            lag_hours=None,
+            expected_max_hours=check["expected_lag_hours"],
+            status="stale",
+        )
+
+    last_row_at = df["last_row_at"].iloc[0]
+    row_count_recent = int(df["row_count_recent"].iloc[0])
+
+    # Normalize last_row_at to a naive UTC datetime for lag math.
+    if isinstance(last_row_at, date) and not isinstance(last_row_at, datetime):
+        # DATE column — assume 16:00 ET = 20:00 UTC (market close) for lag
+        last_dt = datetime.combine(last_row_at, time(20, 0, 0))
+    else:
+        # TIMESTAMPTZ — convert to naive UTC
+        last_dt = last_row_at
+        if hasattr(last_dt, "tzinfo") and last_dt.tzinfo is not None:
+            last_dt = last_dt.replace(tzinfo=None)
+
+    lag_hours = (now - last_dt).total_seconds() / 3600.0
+    expected_max = check["expected_lag_hours"]
+
+    # Status:
+    #   ok     — within expected lag
+    #   warn   — 1-2x the expected lag (likely delayed but recoverable)
+    #   stale  — >2x the expected lag (real problem)
+    if lag_hours <= expected_max:
+        status = "ok"
+    elif lag_hours <= expected_max * 2:
+        status = "warn"
+    else:
+        status = "stale"
+
+    # Row-count floor: catches "fetcher ran but wrote 0 rows" (the exact
+    # failure mode that sat silent for SPX for 4 months).
+    min_rows = check.get("min_rows_per_day")
+    if min_rows is not None and status == "ok" and row_count_recent < min_rows:
+        status = "stale"
+
+    return FreshnessRow(
+        table=check["name"],
+        ticker=ticker,
+        last_row_at=last_row_at.isoformat() if hasattr(last_row_at, "isoformat") else str(last_row_at),
+        expected_latest=expected_date.isoformat(),
+        lag_hours=round(lag_hours, 1),
+        expected_max_hours=expected_max,
+        status=status,
+        row_count_recent=row_count_recent,
+    )
+
+
+def _recent_trading_days(now_utc: datetime, n: int) -> list[date]:
+    """Return the last `n` trading days ending at `most_recent_trading_day(now)`."""
+    end = most_recent_trading_day(now_utc)
+    days: list[date] = []
+    d = end
+    while len(days) < n:
+        if d.weekday() < 5 and d not in MARKET_HOLIDAYS_2026:
+            days.append(d)
+        d = d - timedelta(days=1)
+    return days
+
+
+def _query_gap_scan(check: dict, now_utc: datetime) -> list[FreshnessRow]:
+    """For per-ticker tables, check whether every expected trading day in the
+    last N days has at least one row per ticker. Catches mid-window holes
+    that the simple MAX(ts) check misses.
+    """
+    if not check.get("per_ticker") or not check.get("gap_scan_days"):
+        return []
+
+    ts_col = check["ts_column"]
+    ticker_col = check.get("ticker_column", "ticker")
+    n = check["gap_scan_days"]
+    expected_days = _recent_trading_days(now_utc, n)
+    tickers = check.get("tickers", TICKERS)
+
+    date_expr = ts_col if check["ts_is_date"] else f"DATE({ts_col})"
+    extra_where = check.get("where")
+    where_parts = [
+        f"{ticker_col} = ANY(:tickers)",
+        f"{date_expr} >= :start_date",
+        f"{date_expr} <= :end_date",
+    ]
+    if extra_where:
+        where_parts.append(extra_where)
+    where_sql = " WHERE " + " AND ".join(where_parts)
+
+    sql = f"""
+    SELECT {ticker_col} AS ticker, {date_expr} AS d, COUNT(*) AS c
+    FROM {check['name']}
+    {where_sql}
+    GROUP BY {ticker_col}, {date_expr}
+    """
+    try:
+        df = query_to_dataframe(sql, {
+            "tickers": list(tickers),
+            "start_date": expected_days[-1],
+            "end_date": expected_days[0],
+        })
+    except Exception as e:
+        if "does not exist" not in str(e):
+            log.warning("Gap scan failed for %s: %s", check["name"], e)
+        return []
+
+    present: dict[str, set] = {t: set() for t in tickers}
+    if not df.empty:
+        for _, r in df.iterrows():
+            tkr = r["ticker"]
+            d = r["d"]
+            if tkr in present:
+                present[tkr].add(d if isinstance(d, date) else d.date())
+
+    rows: list[FreshnessRow] = []
+    for tkr in tickers:
+        missing = [d for d in expected_days if d not in present[tkr]]
+        if not missing:
+            continue
+        rows.append(FreshnessRow(
+            table=f"{check['name']} [gap]",
+            ticker=tkr,
+            last_row_at=None,
+            expected_latest=expected_days[0].isoformat(),
+            lag_hours=None,
+            expected_max_hours=0,
+            status="stale",
+            row_count_recent=len(expected_days) - len(missing),
+        ))
+    return rows
+
+
+def _query_value_sanity(now_utc: datetime) -> list[FreshnessRow]:
+    """Hardcoded cross-table sanity checks on recent rows. Returns only
+    FAILING rows; silent when everything is within range.
+    """
+    checks: list[tuple[str, str, str]] = [
+        # (label, SQL returning count of bad rows, description)
+        (
+            "market_data_daily [sanity]",
+            """SELECT COUNT(*) AS bad FROM market_data_daily
+               WHERE date >= CURRENT_DATE - INTERVAL '30 days'
+                 AND (high < low OR close < 0 OR volume < 0)""",
+            "high<low or negative values",
+        ),
+        (
+            "market_data_daily [sanity:SPX]",
+            """SELECT COUNT(*) AS bad FROM market_data_daily
+               WHERE ticker='SPX'
+                 AND date >= CURRENT_DATE - INTERVAL '30 days'
+                 AND (close < 1000 OR close > 20000)""",
+            "SPX close out of sane range",
+        ),
+        (
+            "etf_options_snapshots [sanity]",
+            """SELECT COUNT(*) AS bad FROM etf_options_snapshots
+               WHERE snapshot_date >= CURRENT_DATE - INTERVAL '7 days'
+                 AND data_source = 'alphavantage'
+                 AND (strike <= 0 OR mark < 0)""",
+            "non-positive strike or negative mark",
+        ),
+    ]
+
+    results: list[FreshnessRow] = []
+    for label, sql, desc in checks:
+        try:
+            df = query_to_dataframe(sql)
+            bad = int(df["bad"].iloc[0]) if not df.empty else 0
+        except Exception as e:
+            if "does not exist" in str(e):
+                continue
+            log.warning("Sanity check %s failed: %s", label, e)
+            continue
+        if bad > 0:
+            results.append(FreshnessRow(
+                table=label,
+                ticker=None,
+                last_row_at=desc,
+                expected_latest="",
+                lag_hours=None,
+                expected_max_hours=0,
+                status="stale",
+                row_count_recent=bad,
+            ))
+    return results
+
+
+def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
+    """Run all freshness checks and return a full report."""
+    now = now_utc or datetime.now(UTC).replace(tzinfo=None)
+    expected_date = most_recent_trading_day(now)
+
+    report = FreshnessReport(
+        checked_at=now.isoformat() + "Z",
+        expected_market_close=expected_date.isoformat(),
+    )
+
+    for check in CHECKS:
+        tickers_to_check = check.get("tickers", TICKERS) if check.get("per_ticker") else [None]
+        for t in tickers_to_check:
+            row = _query_freshness_one(check, expected_date, ticker=t, now_utc=now)
+            report.rows.append(row)
+
+        # Gap scan: only reports failing (ticker, day) combinations
+        report.rows.extend(_query_gap_scan(check, now))
+
+    # Value sanity across tables — only reports failures
+    report.rows.extend(_query_value_sanity(now))
+
+    return report
+
+
+# ── Output formats ───────────────────────────────────────────────────────────
+
+
+def format_terminal(report: FreshnessReport) -> str:
+    """Pretty terminal output with colored status markers (ANSI)."""
+    RESET = "\033[0m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    RED = "\033[31m"
+    DIM = "\033[2m"
+    BOLD = "\033[1m"
+
+    status_icon = {
+        "ok": f"{GREEN}●{RESET}",
+        "warn": f"{YELLOW}●{RESET}",
+        "stale": f"{RED}●{RESET}",
+        "unknown": f"{DIM}●{RESET}",
+    }
+
+    lines = []
+    lines.append(f"{BOLD}Data freshness audit{RESET}  —  {DIM}expected close: {report.expected_market_close}, checked: {report.checked_at}{RESET}")
+    lines.append("")
+
+    # Header
+    lines.append(f"  {BOLD}{'TABLE':<28} {'TICKER':<7} {'LAST ROW':<22} {'LAG (h)':>10} {'LIMIT':>8}  STATUS{RESET}")
+    lines.append(f"  {DIM}{'─' * 28} {'─' * 7} {'─' * 22} {'─' * 10} {'─' * 8}  ──────{RESET}")
+
+    for r in report.rows:
+        icon = status_icon.get(r.status, "●")
+        ticker = r.ticker or "—"
+        last = (r.last_row_at or "(none)")[:22]
+        lag = f"{r.lag_hours:.1f}" if r.lag_hours is not None else "—"
+        lim = f"{r.expected_max_hours:.0f}"
+        lines.append(f"  {r.table:<28} {ticker:<7} {last:<22} {lag:>10} {lim:>8}  {icon} {r.status}")
+
+    lines.append("")
+    overall_color = {"ok": GREEN, "warn": YELLOW, "stale": RED, "unknown": DIM}[report.overall_status]
+    lines.append(f"  {BOLD}Overall:{RESET} {overall_color}{report.overall_status.upper()}{RESET}")
+
+    return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Audit Cloud SQL data freshness across the platform."
+    )
+    parser.add_argument("--json", action="store_true", help="Output JSON instead of a pretty table")
+    parser.add_argument("--strict", action="store_true", help="Exit 1 if any table is stale (for CI)")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.WARNING, format="%(message)s")
+    # Silence Cloud SQL query failures — we handle them gracefully and re-report
+    # in the output table, so raw pg8000 errors would just be noise.
+    logging.getLogger("gcp.database").setLevel(logging.ERROR + 1)
+
+    if not is_cloud_sql_configured():
+        msg = "Cloud SQL not configured. Set CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME."
+        if args.json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(msg, file=sys.stderr)
+        sys.exit(2)
+
+    report = audit_all()
+
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2, default=str))
+    else:
+        print(format_terminal(report))
+
+    if args.strict and report.overall_status == "stale":
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
