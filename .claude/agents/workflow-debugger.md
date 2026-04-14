@@ -111,6 +111,66 @@ gh run list --workflow <filename.yml> --limit 5
 gh run rerun <RUN_ID> --failed
 ```
 
+## Debugging Discipline (NO SHORTCUTS)
+
+Even with a strong patterns table, you MUST follow these 5 steps for every workflow failure. Skipping them leads to "fixes" that mask the real problem.
+
+1. **Read the actual error first**. Get the raw log via `gh run view <ID> --log-failed` before matching against the patterns table. Do not pattern-match from memory.
+2. **Binary-search to the exact failing line**. The bottom-most frame of a Python traceback is the failing line. For shell steps, find the non-zero exit. For schema/data errors, trace from the fetcher script to the DB write.
+3. **Propose a minimal fix (≤5 lines)**. Change only what is broken. Forbidden: refactoring unrelated code, removing comments or logging, fixing adjacent bugs, renaming variables. If the fix is >5 lines, stop and re-evaluate — you may have mis-diagnosed the root cause.
+4. **Verify**. Re-run the failed workflow (`gh run rerun <ID> --failed`) or trigger it via `workflow_dispatch`. Confirm the error is gone AND no new failures appear.
+5. **Postmortem** (step 6 below).
+
+## Postmortem writing
+
+For any failure with severity `code fix needed` or higher, write a postmortem to `docs/incidents/YYYY-MM-DD_workflow-<name>.md` using the format of existing incidents (see `docs/incidents/2026-04-14-market-data-daily-gap.md` as reference):
+
+```markdown
+# Incident: <workflow-name> <short description>
+
+**Date**: <ISO>
+**Severity**: low | medium | high
+**Workflow**: <name>
+**Run ID**: <id>
+**Duration**: <time from first failure to resolution>
+
+## What happened
+<1-2 sentences>
+
+## Root cause
+<the actual reason — not the proximate symptom. Reference the exact file:line.>
+
+## Fix
+- File: <path:line>
+- Change: <exact diff in words>
+- Commit: <SHA>
+
+## Why it wasn't caught earlier
+<missing test? missing pre-deploy check? unhandled edge case in the pattern?>
+
+## Prevention
+- [ ] Add <new test / check / doc update>
+- [ ] Update pattern table in workflow-debugger.md if this is a recurring class
+- [ ] Link related issue: #<N>
+```
+
+Write the postmortem BEFORE telling the user the fix is done. The postmortem forces you to articulate the root cause.
+
+## Anti-shortcut self-check
+
+Before declaring a fix complete, run:
+
+```bash
+git diff --stat
+```
+
+If more than 5 files changed or >30 lines total, warn yourself: *"This is larger than a typical fix — is the root cause actually deeper, or am I taking a shortcut?"*
+
+Also check for:
+- Removed comments (usually wrong during a bug fix)
+- Removed logging (usually wrong — logging aids future debugging)
+- Renamed variables (unrelated refactor, move to a separate PR)
+
 ## Important Notes
 
 - NEVER re-run a workflow without understanding why it failed first

@@ -1,6 +1,20 @@
 # Audit & Review Command
 
-You are the Audit & Review agent for the stocks trading platform. Perform a comprehensive production-readiness audit of the codebase, generate a scored report, and flag actionable findings.
+You are the Audit & Review agent for the stocks trading platform. Perform a comprehensive production-readiness audit of the codebase, generate a **100-point scored report** (7 categories), and flag actionable findings.
+
+## Phase 0: Delegate to Specialized Agents
+
+Before running the in-line checks, invoke these agents in parallel and collect their findings. Each owns a specific category of the final scorecard:
+
+1. **`security-scan`** → owns the Security category (15 pts)
+2. **`test-coverage-analyzer`** → owns the Testing category (20 pts)
+3. **`pre-deploy-check`** → owns the Deploy Readiness category (10 pts)
+4. **`data-pipeline-validator`** → owns the Data Integrity category (15 pts)
+5. **`infra-drift-detector`** → contributes to the Monitoring category (15 pts)
+
+For each agent, parse the `_EXIT=<N>` line it prints and the finding counts in its output. Collect them into a working scratchpad; you'll assemble the scorecard in Phase 4.
+
+If Cloud SQL proxy or `gcloud` isn't authenticated locally, some agents will emit `[SKIP]` lines — treat those as "could not evaluate, score 50% of max for that sub-check" rather than a hard failure.
 
 ## Phase 1: Run Automated Tests
 
