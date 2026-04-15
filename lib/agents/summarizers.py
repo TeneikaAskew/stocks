@@ -275,20 +275,43 @@ def summarize_options_flow(
 # ---------------------------------------------------------------------------
 
 
-def summarize_signals_history(ticker: str, lookback_days: int = 30) -> dict:
-    """Recent live signal_alerts aggregates.
+def summarize_signals_history(
+    ticker: str,
+    lookback_days: int = 30,
+    as_of: Optional[date_type] = None,
+) -> dict:
+    """signal_alerts aggregates anchored at `as_of`.
 
-    Returns the last N days of alerts grouped by direction/strength,
-    and lists the most recent 5 alerts for reference.
+    Returns the `lookback_days` window ending at `as_of` (defaults to
+    now when None). Grouped by direction/strength, with the 5 most
+    recent rows for reference. Historical runs therefore see the same
+    data the live platform would have seen on `as_of`, not today's
+    live signals.
     """
-    sql = (
-        "SELECT alert_ts, direction, strength_label, total_score "
-        "FROM signal_alerts "
-        "WHERE ticker = :ticker "
-        "  AND alert_ts >= NOW() - (:days || ' days')::interval "
-        "ORDER BY alert_ts DESC"
-    )
-    df = _query(sql, {"ticker": ticker.upper(), "days": lookback_days})
+    if as_of is None:
+        sql = (
+            "SELECT alert_ts, direction, strength_label, total_score "
+            "FROM signal_alerts "
+            "WHERE ticker = :ticker "
+            "  AND alert_ts >= NOW() - (:days || ' days')::interval "
+            "ORDER BY alert_ts DESC"
+        )
+        params: dict[str, Any] = {"ticker": ticker.upper(), "days": lookback_days}
+    else:
+        sql = (
+            "SELECT alert_ts, direction, strength_label, total_score "
+            "FROM signal_alerts "
+            "WHERE ticker = :ticker "
+            "  AND alert_ts <= :end_ts "
+            "  AND alert_ts >= :end_ts - (:days || ' days')::interval "
+            "ORDER BY alert_ts DESC"
+        )
+        params = {
+            "ticker": ticker.upper(),
+            "days": lookback_days,
+            "end_ts": str(as_of),
+        }
+    df = _query(sql, params)
     if df.empty:
         return {
             "available": True,
@@ -327,21 +350,44 @@ def summarize_signals_history(ticker: str, lookback_days: int = 30) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def summarize_backtest_metrics(ticker: str, lookback_days: int = 90) -> dict:
-    """Aggregate metrics over recent pipeline trades for a ticker.
+def summarize_backtest_metrics(
+    ticker: str,
+    lookback_days: int = 90,
+    as_of: Optional[date_type] = None,
+) -> dict:
+    """Aggregate metrics over pipeline trades in the lookback window
+    ending at `as_of` (defaults to today when None).
 
     Computes win rate, avg return, profit factor (sum of wins / abs
     sum of losses), and raw trade count. Sharpe is intentionally
     omitted — it needs a longer horizon than 90 days of intraday
     trades to be meaningful.
+
+    Historical runs pass `as_of` so the metrics reflect what the
+    platform's trade log *looked like* on that date, not today.
     """
-    sql = (
-        "SELECT return_pct, direction, exit_reason "
-        "FROM trades "
-        "WHERE ticker = :ticker "
-        "  AND trade_date >= CURRENT_DATE - (:days || ' days')::interval"
-    )
-    df = _query(sql, {"ticker": ticker.upper(), "days": lookback_days})
+    if as_of is None:
+        sql = (
+            "SELECT return_pct, direction, exit_reason "
+            "FROM trades "
+            "WHERE ticker = :ticker "
+            "  AND trade_date >= CURRENT_DATE - (:days || ' days')::interval"
+        )
+        params: dict[str, Any] = {"ticker": ticker.upper(), "days": lookback_days}
+    else:
+        sql = (
+            "SELECT return_pct, direction, exit_reason "
+            "FROM trades "
+            "WHERE ticker = :ticker "
+            "  AND trade_date <= :end_date "
+            "  AND trade_date >= :end_date - (:days || ' days')::interval"
+        )
+        params = {
+            "ticker": ticker.upper(),
+            "days": lookback_days,
+            "end_date": str(as_of),
+        }
+    df = _query(sql, params)
     if df.empty:
         return _unavailable(f"no trades for {ticker} in last {lookback_days}d")
 
@@ -506,8 +552,8 @@ def build_context_bundle(
         "market": lambda: summarize_market_context(ticker, as_of),
         "strat": lambda: summarize_strat_status(ticker, as_of),
         "options": lambda: summarize_options_flow(ticker, as_of),
-        "signals": lambda: summarize_signals_history(ticker),
-        "backtest": lambda: summarize_backtest_metrics(ticker),
+        "signals": lambda: summarize_signals_history(ticker, as_of=as_of),
+        "backtest": lambda: summarize_backtest_metrics(ticker, as_of=as_of),
         "catalysts": lambda: summarize_catalysts(ticker, as_of),
     }
     failed: list[str] = []

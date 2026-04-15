@@ -32,18 +32,31 @@ DEFAULT_GCP_KEY_FILE = str(PROJECT_ROOT / ".gcp-key.json")
 
 def _get_genai_client():
     """Lazy-initialize the google-genai Vertex client. Reused between
-    calls in the same process."""
-    from google.oauth2 import service_account
+    calls in the same process.
+
+    Credential resolution order:
+      1. Explicit key file at GOOGLE_APPLICATION_CREDENTIALS (local dev).
+      2. Key file at the default .gcp-key.json path if it exists.
+      3. Application Default Credentials — the attached service account
+         when running on Cloud Run / GCE / GKE.
+    """
     from google import genai
 
     project = os.environ.get("GCP_PROJECT_ID", DEFAULT_GCP_PROJECT)
     location = os.environ.get("GCP_REGION", DEFAULT_GCP_LOCATION)
     key_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", DEFAULT_GCP_KEY_FILE)
 
-    credentials = service_account.Credentials.from_service_account_file(
-        key_file,
-        scopes=["https://www.googleapis.com/auth/cloud-platform"],
-    )
+    credentials = None
+    if key_file and Path(key_file).exists():
+        from google.oauth2 import service_account
+
+        credentials = service_account.Credentials.from_service_account_file(
+            key_file,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+
+    # When credentials is None, google-genai falls back to ADC — which
+    # picks up the service account attached to the Cloud Run Job.
     return genai.Client(
         vertexai=True,
         project=project,

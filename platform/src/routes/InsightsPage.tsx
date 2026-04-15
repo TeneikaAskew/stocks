@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Loader2, RefreshCw, History as HistoryIcon, FileText } from 'lucide-react';
+import { ArrowLeft, Loader2, RefreshCw, History as HistoryIcon, FileText } from 'lucide-react';
 import { useTickerStore } from '@/stores/tickerStore';
 import {
   useInsightHistory,
   useInsightReport,
+  useInsightReportById,
   useRefreshInsight,
   useRunStatus,
 } from '@/hooks/useInsights';
@@ -26,11 +27,20 @@ export default function InsightsPage() {
   const { activeTicker } = useTickerStore();
   const [tab, setTab] = useState<Tab>('report');
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  // When non-null, the Report tab shows a past report instead of latest.
+  const [viewingHistoricalId, setViewingHistoricalId] = useState<string | null>(null);
 
   const reportQuery = useInsightReport(activeTicker);
   const historyQuery = useInsightHistory(activeTicker, 20);
+  const historicalQuery = useInsightReportById(viewingHistoricalId);
   const refreshMut = useRefreshInsight();
   const runStatus = useRunStatus(currentRunId, activeTicker);
+
+  // Reset historical view when ticker changes — a saved SPY report id
+  // shouldn't linger into an IWM selection.
+  useEffect(() => {
+    setViewingHistoricalId(null);
+  }, [activeTicker]);
 
   // Clear run tracking once the run finishes so the spinner stops.
   useEffect(() => {
@@ -58,7 +68,17 @@ export default function InsightsPage() {
     <div className="flex h-full flex-col gap-3" style={{ maxHeight: 'calc(100vh - 120px)' }}>
       {/* Tab bar */}
       <div className="flex items-center gap-2">
-        <TabButton active={tab === 'report'} onClick={() => setTab('report')} icon={<FileText size={14} />}>
+        <TabButton
+          active={tab === 'report'}
+          onClick={() => {
+            setTab('report');
+            // Returning to the Report tab via the tab button clears
+            // the historical view — the user explicitly asked for
+            // "the current report".
+            setViewingHistoricalId(null);
+          }}
+          icon={<FileText size={14} />}
+        >
           Report
         </TabButton>
         <TabButton active={tab === 'history'} onClick={() => setTab('history')} icon={<HistoryIcon size={14} />}>
@@ -91,14 +111,33 @@ export default function InsightsPage() {
       <div className="flex-1 overflow-y-auto">
         {tab === 'report' ? (
           <ReportView
-            loading={reportQuery.isLoading}
-            envelope={reportQuery.data ?? null}
-            error={reportQuery.error ?? null}
+            loading={
+              viewingHistoricalId ? historicalQuery.isLoading : reportQuery.isLoading
+            }
+            envelope={
+              viewingHistoricalId
+                ? historicalQuery.data ?? null
+                : reportQuery.data ?? null
+            }
+            error={
+              viewingHistoricalId
+                ? (historicalQuery.error as Error | null)
+                : (reportQuery.error as Error | null)
+            }
             onRefresh={onRefresh}
             refreshing={refreshMut.isPending || isRunning}
+            historical={!!viewingHistoricalId}
+            onBackToLatest={() => setViewingHistoricalId(null)}
           />
         ) : (
-          <HistoryView loading={historyQuery.isLoading} data={historyQuery.data} />
+          <HistoryView
+            loading={historyQuery.isLoading}
+            data={historyQuery.data}
+            onSelect={(id) => {
+              setViewingHistoricalId(id);
+              setTab('report');
+            }}
+          />
         )}
       </div>
     </div>
@@ -141,12 +180,16 @@ function ReportView({
   error,
   onRefresh,
   refreshing,
+  historical,
+  onBackToLatest,
 }: {
   loading: boolean;
   envelope: import('@/types/insights').InsightReportEnvelope | null;
   error: Error | null;
   onRefresh: () => void;
   refreshing: boolean;
+  historical: boolean;
+  onBackToLatest: () => void;
 }) {
   if (loading) {
     return (
@@ -186,6 +229,17 @@ function ReportView({
   const report = envelope.report;
   return (
     <div className="space-y-3">
+      {historical && (
+        <div className="flex items-center justify-between rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          <span>Viewing historical report — not the current latest.</span>
+          <button
+            onClick={onBackToLatest}
+            className="flex items-center gap-1 rounded border border-amber-500/40 px-2 py-0.5 text-[10px] text-amber-200 hover:bg-amber-500/10"
+          >
+            <ArrowLeft size={10} /> Back to latest
+          </button>
+        </div>
+      )}
       <DegradationBanner failedSections={report.failed_sections} />
       <HeaderCard
         report={report}
@@ -221,9 +275,11 @@ function ReportView({
 function HistoryView({
   loading,
   data,
+  onSelect,
 }: {
   loading: boolean;
   data: import('@/types/insights').InsightHistoryResponse | undefined;
+  onSelect: (reportId: string) => void;
 }) {
   if (loading) {
     return (
@@ -242,9 +298,10 @@ function HistoryView({
   return (
     <div className="space-y-2">
       {data.reports.map((r) => (
-        <div
+        <button
           key={r.id}
-          className="rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-3"
+          onClick={() => onSelect(r.id)}
+          className="block w-full rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-3 text-left transition-colors hover:border-[var(--color-accent-blue)]"
         >
           <div className="mb-1 flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -270,7 +327,7 @@ function HistoryView({
             )}
           </div>
           <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">{r.thesis}</p>
-        </div>
+        </button>
       ))}
     </div>
   );

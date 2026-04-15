@@ -95,6 +95,29 @@ def _fetch_latest_report(ticker: str) -> Optional[dict]:
         row = cur.fetchone()
     finally:
         conn.close()
+    return _row_to_envelope(row)
+
+
+def _fetch_report_by_id(report_id: str) -> Optional[dict]:
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id::text, ticker, as_of, report, model_versions,
+                   cost_usd, latency_ms
+            FROM insight_reports
+            WHERE id = %s
+            """,
+            (report_id,),
+        )
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    return _row_to_envelope(row)
+
+
+def _row_to_envelope(row) -> Optional[dict]:
     if not row:
         return None
     return {
@@ -321,6 +344,32 @@ async def get_insight_history(ticker: str, limit: int = 20):
         raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
     rows = _fetch_report_history(ticker, limit)
     return {"ticker": ticker.upper(), "count": len(rows), "reports": rows}
+
+
+@router.get("/api/insights/reports/{report_id}", response_model=ReportEnvelope)
+async def get_insight_report_by_id(report_id: str):
+    """Return a single insight report by row id.
+
+    Used by the frontend History tab to open a past report in the
+    full card view. Accepts any id string; invalid UUIDs return 404
+    from the database query rather than 400, since operator-facing
+    404 is a clearer signal than request-validation 400.
+    """
+    try:
+        UUID(report_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="report_id must be a UUID")
+    row = _fetch_report_by_id(report_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"report {report_id} not found")
+    return ReportEnvelope(
+        ticker=row["ticker"],
+        as_of=row["as_of"],
+        report=row["report"],
+        model_versions=row["model_versions"],
+        cost_usd=row["cost_usd"],
+        latency_ms=row["latency_ms"],
+    )
 
 
 @router.post(

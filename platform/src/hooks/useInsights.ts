@@ -26,6 +26,25 @@ export function useInsightReport(ticker: string) {
 }
 
 // ---------------------------------------------------------------------------
+// GET a specific past report by its row id — used by the History tab
+// to open an older report in the full card view.
+// ---------------------------------------------------------------------------
+
+export function useInsightReportById(reportId: string | null) {
+  return useQuery<InsightReportEnvelope>({
+    queryKey: ['insight-report-by-id', reportId],
+    queryFn: async () => {
+      if (!reportId) throw new Error('no report id');
+      const r = await fetch(`/api/insights/reports/${reportId}`);
+      if (!r.ok) throw new Error(`insights by-id ${r.status}`);
+      return r.json();
+    },
+    enabled: !!reportId,
+    staleTime: 5 * 60_000,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // GET history — used by the History view to render a scannable list.
 // ---------------------------------------------------------------------------
 
