@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from typing import Iterable, Optional
 
 import psycopg2
-import psycopg2.extras
 
 from .llm_client import RouteSnapshot, available_providers
 from .pricing import PRICE_TABLE, Provider, list_priced_models
@@ -21,8 +20,22 @@ from .schema import ALL_ROLES, AgentRole
 
 
 # ---------------------------------------------------------------------------
-# Connection — reuses the same env-var contract as the rest of the
-# codebase (CLOUD_SQL_URL takes precedence, else DB_* fallbacks).
+# Connection — three supported modes, in priority order:
+#
+#   1. CLOUD_SQL_URL          — a full libpq URL; used by CI and the
+#                               Cloud Tasks-triggered Cloud Run job.
+#   2. CLOUD_SQL_CONNECTION_NAME — production default. Uses the Cloud
+#                               SQL Python Connector with pg8000, the
+#                               same path every other router uses via
+#                               gcp.database.get_engine(). This works
+#                               without a local proxy because the
+#                               connector tunnels through IAM.
+#   3. DB_HOST / DB_PORT      — direct psycopg2 socket for tests
+#                               against a local Postgres container.
+#
+# All three return a DB-API-2 compliant connection. Callers use
+# positional cursor access (no RealDictCursor) so the same code works
+# against both psycopg2 and pg8000.
 # ---------------------------------------------------------------------------
 
 
@@ -30,12 +43,26 @@ def _connect():
     url = os.environ.get("CLOUD_SQL_URL")
     if url:
         return psycopg2.connect(url)
+
+    conn_name = os.environ.get("CLOUD_SQL_CONNECTION_NAME")
+    if conn_name:
+        from google.cloud.sql.connector import Connector  # type: ignore
+
+        connector = Connector()
+        return connector.connect(
+            conn_name,
+            "pg8000",
+            user=os.environ.get("DB_USER", "trading_user"),
+            password=os.environ.get("DB_PASS", os.environ.get("DB_PASSWORD", "")),
+            db=os.environ.get("DB_NAME", "trading"),
+        )
+
     return psycopg2.connect(
         host=os.environ.get("DB_HOST", "localhost"),
         port=int(os.environ.get("DB_PORT", "5432")),
         dbname=os.environ.get("DB_NAME", "trading"),
         user=os.environ.get("DB_USER", "trading_user"),
-        password=os.environ.get("DB_PASSWORD", ""),
+        password=os.environ.get("DB_PASS", os.environ.get("DB_PASSWORD", "")),
     )
 
 
@@ -60,26 +87,33 @@ def list_routes(conn=None) -> list[Route]:
         conn = _connect()
         close = True
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur = conn.cursor()
+        try:
             cur.execute(
                 "SELECT role, provider, model, updated_at, updated_by "
                 "FROM model_routing"
             )
-            rows = {r["role"]: r for r in cur.fetchall()}
+            raw = cur.fetchall()
+        finally:
+            cur.close()
+        by_role: dict[str, tuple] = {row[0]: row for row in raw}
         ordered: list[Route] = []
         for role in ALL_ROLES:
-            r = rows.get(role)
-            if r is None:
+            row = by_role.get(role)
+            if row is None:
                 continue
+            updated_at_val = row[3]
             ordered.append(
                 Route(
                     role=role,
-                    provider=r["provider"],
-                    model=r["model"],
+                    provider=row[1],
+                    model=row[2],
                     updated_at=(
-                        r["updated_at"].isoformat() if r["updated_at"] else None
+                        updated_at_val.isoformat()
+                        if hasattr(updated_at_val, "isoformat")
+                        else (str(updated_at_val) if updated_at_val else None)
                     ),
-                    updated_by=r["updated_by"],
+                    updated_by=row[4],
                 )
             )
         return ordered
