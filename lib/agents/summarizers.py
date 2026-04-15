@@ -298,12 +298,16 @@ def summarize_signals_history(
         )
         params: dict[str, Any] = {"ticker": ticker.upper(), "days": lookback_days}
     else:
+        # CAST() rather than ::timestamptz because SQLAlchemy text()
+        # collides with the `::` cast syntax when it appears right
+        # after a :param reference. Explicit cast also fixes pg8000
+        # TEXT binding for `end - interval` math.
         sql = (
             "SELECT alert_ts, direction, strength_label, total_score "
             "FROM signal_alerts "
             "WHERE ticker = :ticker "
-            "  AND alert_ts <= :end_ts "
-            "  AND alert_ts >= :end_ts - (:days || ' days')::interval "
+            "  AND alert_ts <= CAST(:end_ts AS timestamptz) "
+            "  AND alert_ts >= CAST(:end_ts AS timestamptz) - (:days || ' days')::interval "
             "ORDER BY alert_ts DESC"
         )
         params = {
@@ -375,12 +379,14 @@ def summarize_backtest_metrics(
         )
         params: dict[str, Any] = {"ticker": ticker.upper(), "days": lookback_days}
     else:
+        # Same pg8000-vs-psycopg2 + SQLAlchemy cast-parser story as
+        # summarize_signals_history — use CAST() not ::.
         sql = (
             "SELECT return_pct, direction, exit_reason "
             "FROM trades "
             "WHERE ticker = :ticker "
-            "  AND trade_date <= :end_date "
-            "  AND trade_date >= :end_date - (:days || ' days')::interval"
+            "  AND trade_date <= CAST(:end_date AS date) "
+            "  AND trade_date >= CAST(:end_date AS date) - (:days || ' days')::interval"
         )
         params = {
             "ticker": ticker.upper(),
