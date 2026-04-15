@@ -1,276 +1,277 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { marked } from 'marked';
+import { useEffect, useState } from 'react';
+import { Loader2, RefreshCw, History as HistoryIcon, FileText } from 'lucide-react';
 import { useTickerStore } from '@/stores/tickerStore';
-import { Send, BarChart2, TrendingUp, BookOpen, MessageSquare, Loader2 } from 'lucide-react';
+import {
+  useInsightHistory,
+  useInsightReport,
+  useRefreshInsight,
+  useRunStatus,
+} from '@/hooks/useInsights';
+import {
+  CatalystsCard,
+  DebateCard,
+  DegradationBanner,
+  HeaderCard,
+  KeyLevelsCard,
+  RiskFlagsCard,
+  SignalsCard,
+  SimilarTradesCard,
+  StratCard,
+  TradePlanCard,
+} from '@/components/insights/ReportCards';
 
-type Mode = 'chat' | 'market' | 'strategy' | 'trade';
-
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-const MODE_CONFIG: Record<Mode, { label: string; icon: React.ReactNode; placeholder: string; quickActions: string[] }> = {
-  chat: {
-    label: 'Open Chat',
-    icon: <MessageSquare size={14} />,
-    placeholder: 'Ask anything about your trading data, strategies, or market structure…',
-    quickActions: [
-      'What are the key levels for today?',
-      'Review my recent performance',
-      'What patterns should I watch for?',
-      'Explain GEX and how it affects price',
-    ],
-  },
-  market: {
-    label: 'Market Brief',
-    icon: <BarChart2 size={14} />,
-    placeholder: 'Ask about current market structure, key levels, or options flow…',
-    quickActions: [
-      'Give me a market structure brief',
-      'Where are the key support/resistance levels?',
-      'What does the options flow say?',
-      'Is this a trending or ranging day?',
-    ],
-  },
-  strategy: {
-    label: 'Strategy',
-    icon: <TrendingUp size={14} />,
-    placeholder: 'Ask for feedback on your backtest results or strategy improvements…',
-    quickActions: [
-      'Evaluate my backtest results',
-      'How can I improve my win rate?',
-      'What are the weakest conditions in my strategy?',
-      'Is this strategy robust enough to trade live?',
-    ],
-  },
-  trade: {
-    label: 'Trade Review',
-    icon: <BookOpen size={14} />,
-    placeholder: 'Describe a trade for AI review — entry, exit, setup quality…',
-    quickActions: [
-      'Review my last trade entry',
-      'Was my exit optimal?',
-      'Grade this setup A-F',
-      'What would you have done differently?',
-    ],
-  },
-};
-
-function MessageBubble({ msg }: { msg: Message }) {
-  const isUser = msg.role === 'user';
-
-  const html = useMemo(() => {
-    if (isUser) return '';
-    return marked.parse(msg.content) as string;
-  }, [msg.content, isUser]);
-
-  return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      {isUser ? (
-        <div
-          className="max-w-[85%] rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-[var(--color-accent-blue)] text-white"
-          style={{ whiteSpace: 'pre-wrap' }}
-        >
-          {msg.content}
-        </div>
-      ) : (
-        <div
-          className="prose-report max-w-[85%] rounded-lg px-4 py-2.5 bg-[var(--color-bg-tertiary)]"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      )}
-    </div>
-  );
-}
-
-function TypingIndicator() {
-  return (
-    <div className="flex justify-start">
-      <div className="flex items-center gap-1.5 rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-3">
-        {[0, 1, 2].map(i => (
-          <span
-            key={i}
-            className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--color-text-muted)]"
-            style={{ animationDelay: `${i * 150}ms` }}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
+type Tab = 'report' | 'history';
 
 export default function InsightsPage() {
   const { activeTicker } = useTickerStore();
-  const [mode, setMode] = useState<Mode>('chat');
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [tab, setTab] = useState<Tab>('report');
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
 
+  const reportQuery = useInsightReport(activeTicker);
+  const historyQuery = useInsightHistory(activeTicker, 20);
+  const refreshMut = useRefreshInsight();
+  const runStatus = useRunStatus(currentRunId, activeTicker);
+
+  // Clear run tracking once the run finishes so the spinner stops.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isStreaming]);
+    if (runStatus.data && (runStatus.data.status === 'done' || runStatus.data.status === 'failed')) {
+      // Keep the id for a beat so the banner can show the final state,
+      // then clear.
+      const t = setTimeout(() => setCurrentRunId(null), 1500);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [runStatus.data]);
 
-  useEffect(() => {
-    setMessages([]);
-  }, [mode, activeTicker]);
-
-  const sendMessage = async (text: string) => {
-    if (!text.trim() || isStreaming) return;
-
-    const userMsg: Message = { role: 'user', content: text };
-    setMessages(prev => [...prev, userMsg]);
-    setInput('');
-    setIsStreaming(true);
-
-    const assistantMsg: Message = { role: 'assistant', content: '' };
-    setMessages(prev => [...prev, assistantMsg]);
-
+  const onRefresh = async () => {
     try {
-      const res = await fetch('/api/insights/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          mode,
-          ticker: activeTicker,
-          history: messages.slice(-6).map(m => ({ role: m.role, content: m.content })),
-        }),
-      });
-
-      if (!res.ok) {
-        const err = await res.text();
-        setMessages(prev => {
-          const updated = [...prev];
-          updated[updated.length - 1] = {
-            role: 'assistant',
-            content: `Error: ${err || 'AI service unavailable. Configure Vertex AI Gemini to enable this feature.'}`,
-          };
-          return updated;
-        });
-        return;
-      }
-
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      if (!reader) throw new Error('No stream');
-
-      let accumulated = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        accumulated += decoder.decode(value, { stream: true });
-        const snapshot = accumulated;
-        setMessages(prev => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { role: 'assistant', content: snapshot };
-          return updated;
-        });
-      }
-    } catch {
-      setMessages(prev => {
-        const updated = [...prev];
-        updated[updated.length - 1] = {
-          role: 'assistant',
-          content: 'AI service unavailable. Enable Vertex AI Gemini on GCP to use this feature.',
-        };
-        return updated;
-      });
-    } finally {
-      setIsStreaming(false);
+      const res = await refreshMut.mutateAsync(activeTicker);
+      setCurrentRunId(res.run_id);
+    } catch (e) {
+      console.error('refresh failed', e);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage(input);
-    }
-  };
-
-  const cfg = MODE_CONFIG[mode];
+  const isRunning = !!currentRunId && runStatus.data?.status !== 'done' && runStatus.data?.status !== 'failed';
 
   return (
     <div className="flex h-full flex-col gap-3" style={{ maxHeight: 'calc(100vh - 120px)' }}>
-      {/* Mode selector */}
-      <div className="flex flex-wrap items-center gap-2">
-        {(Object.entries(MODE_CONFIG) as [Mode, typeof MODE_CONFIG[Mode]][]).map(([m, c]) => (
+      {/* Tab bar */}
+      <div className="flex items-center gap-2">
+        <TabButton active={tab === 'report'} onClick={() => setTab('report')} icon={<FileText size={14} />}>
+          Report
+        </TabButton>
+        <TabButton active={tab === 'history'} onClick={() => setTab('history')} icon={<HistoryIcon size={14} />}>
+          History
+        </TabButton>
+
+        <div className="ml-auto flex items-center gap-3">
+          {isRunning && (
+            <span className="flex items-center gap-1 text-xs text-[var(--color-text-muted)]">
+              <Loader2 size={12} className="animate-spin" />
+              {runStatus.data?.status ?? 'queued'}…
+            </span>
+          )}
           <button
-            key={m}
-            onClick={() => setMode(m)}
-            className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium ${
-              mode === m
-                ? 'bg-[var(--color-accent-blue)] text-white'
-                : 'border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]'
-            }`}
+            onClick={onRefresh}
+            disabled={refreshMut.isPending || isRunning}
+            className="flex items-center gap-1.5 rounded-lg bg-[var(--color-accent-blue)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
           >
-            {c.icon}
-            {c.label}
+            {refreshMut.isPending || isRunning ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <RefreshCw size={14} />
+            )}
+            Re-analyze
           </button>
-        ))}
-        <span className="ml-auto text-xs text-[var(--color-text-muted)]">
-          Vertex AI Gemini · {activeTicker}
-        </span>
+        </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4">
-        {messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-4">
-            <div className="text-center">
-              <div className="mb-2 text-3xl">🤖</div>
-              <h3 className="text-sm font-medium text-[var(--color-text-primary)]">
-                {cfg.label} Mode
-              </h3>
-              <p className="mt-1 text-xs text-[var(--color-text-muted)]">
-                AI quant/trader grounded in your {activeTicker} data
-              </p>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {cfg.quickActions.map(action => (
-                <button
-                  key={action}
-                  onClick={() => sendMessage(action)}
-                  className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-left text-xs text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-blue)] hover:text-[var(--color-text-primary)]"
-                >
-                  {action}
-                </button>
-              ))}
-            </div>
-          </div>
+      {/* Tab body */}
+      <div className="flex-1 overflow-y-auto">
+        {tab === 'report' ? (
+          <ReportView
+            loading={reportQuery.isLoading}
+            envelope={reportQuery.data ?? null}
+            error={reportQuery.error ?? null}
+            onRefresh={onRefresh}
+            refreshing={refreshMut.isPending || isRunning}
+          />
         ) : (
-          <div className="space-y-3">
-            {messages.map((msg, i) => (
-              <MessageBubble key={i} msg={msg} />
-            ))}
-            {isStreaming && messages[messages.length - 1]?.content === '' && <TypingIndicator />}
-            <div ref={messagesEndRef} />
-          </div>
+          <HistoryView loading={historyQuery.isLoading} data={historyQuery.data} />
         )}
       </div>
+    </div>
+  );
+}
 
-      {/* Input */}
-      <div className="flex gap-2">
-        <textarea
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={cfg.placeholder}
-          rows={2}
-          className="flex-1 resize-none rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-blue)] focus:outline-none"
-        />
+function TabButton({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
+        active
+          ? 'bg-[var(--color-accent-blue)] text-white'
+          : 'border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+      }`}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Report view
+// ---------------------------------------------------------------------------
+
+function ReportView({
+  loading,
+  envelope,
+  error,
+  onRefresh,
+  refreshing,
+}: {
+  loading: boolean;
+  envelope: import('@/types/insights').InsightReportEnvelope | null;
+  error: Error | null;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 size={24} className="animate-spin text-[var(--color-text-muted)]" />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-300">
+        Failed to load report: {error.message}
+      </div>
+    );
+  }
+  if (!envelope) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+        <FileText size={32} className="text-[var(--color-text-muted)]" />
+        <div>
+          <div className="text-sm font-medium text-[var(--color-text-primary)]">No report yet</div>
+          <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+            Generate the first AI insight report for this ticker.
+          </div>
+        </div>
         <button
-          onClick={() => sendMessage(input)}
-          disabled={!input.trim() || isStreaming}
-          className="flex items-center gap-2 rounded-lg bg-[var(--color-accent-blue)] px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
+          onClick={onRefresh}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 rounded-lg bg-[var(--color-accent-blue)] px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
         >
-          {isStreaming ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+          {refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          Generate Report
         </button>
       </div>
-      <p className="text-center text-[10px] text-[var(--color-text-muted)]">
-        Enter to send · Shift+Enter for new line
-      </p>
+    );
+  }
+  const report = envelope.report;
+  return (
+    <div className="space-y-3">
+      <DegradationBanner failedSections={report.failed_sections} />
+      <HeaderCard
+        report={report}
+        asOf={envelope.as_of}
+        costUsd={envelope.cost_usd}
+        latencyMs={envelope.latency_ms}
+      />
+      <div className="grid gap-3 md:grid-cols-2">
+        <TradePlanCard report={report} />
+        <KeyLevelsCard levels={report.key_levels} />
+        <StratCard strat={report.strat_status} />
+        <CatalystsCard catalysts={report.catalysts} />
+      </div>
+      <DebateCard bullCase={report.bull_case} bearCase={report.bear_case} />
+      <div className="grid gap-3 md:grid-cols-2">
+        <RiskFlagsCard flags={report.risk_flags} />
+        <SignalsCard signals={report.supporting_signals} />
+      </div>
+      <SimilarTradesCard trades={report.similar_past_trades} />
+      <div className="text-center text-[10px] text-[var(--color-text-muted)]">
+        {Object.entries(report.model_versions)
+          .map(([role, v]) => `${role}: ${v}`)
+          .join(' · ')}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// History view — scannable list of recent runs
+// ---------------------------------------------------------------------------
+
+function HistoryView({
+  loading,
+  data,
+}: {
+  loading: boolean;
+  data: import('@/types/insights').InsightHistoryResponse | undefined;
+}) {
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 size={24} className="animate-spin text-[var(--color-text-muted)]" />
+      </div>
+    );
+  }
+  if (!data || data.reports.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-xs text-[var(--color-text-muted)]">
+        No history yet.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      {data.reports.map((r) => (
+        <div
+          key={r.id}
+          className="rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-3"
+        >
+          <div className="mb-1 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span
+                className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                  r.direction === 'long'
+                    ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-400'
+                    : r.direction === 'short'
+                    ? 'border-rose-500/40 bg-rose-500/20 text-rose-400'
+                    : 'border-zinc-500/40 bg-zinc-500/20 text-zinc-400'
+                }`}
+              >
+                {r.direction} · {r.conviction}
+              </span>
+              <span className="text-xs text-[var(--color-text-muted)]">
+                {new Date(r.as_of).toLocaleString()}
+              </span>
+            </div>
+            {r.cost_usd !== null && (
+              <span className="text-[10px] text-[var(--color-text-muted)]">
+                ${r.cost_usd.toFixed(4)}
+              </span>
+            )}
+          </div>
+          <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">{r.thesis}</p>
+        </div>
+      ))}
     </div>
   );
 }
