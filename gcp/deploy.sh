@@ -325,6 +325,131 @@ deploy_compute_spx_greeks_backfill() {
         --quiet
 }
 
+# ── Failure notifier (Cloud Run Service) ─────────────────────────────────────
+# Receives Cloud Logging entries about failed Cloud Run Jobs via Pub/Sub push
+# and fans out to (1) Discord webhook and (2) GitHub issue create/update.
+# See gcp/failure_notifier.py for details.
+
+NOTIFIER_SERVICE="failure-notifier"
+NOTIFIER_TOPIC="gcp-job-failures"
+NOTIFIER_SUB="gcp-job-failures-push"
+NOTIFIER_SINK="gcp-job-failures-sink"
+
+setup_notifier_secrets() {
+    echo "Setting up failure notifier secrets..."
+    echo ""
+    echo "This stores a GitHub PAT (with 'issues: write' on the target repo)"
+    echo "and the target repo slug in Secret Manager. Both are injected into"
+    echo "the failure-notifier Cloud Run service at deploy time."
+    echo ""
+
+    if ! gcloud secrets describe github-pat --quiet >/dev/null 2>&1; then
+        echo "Enter a fine-grained GitHub PAT with 'issues: write' (input hidden):"
+        read -rs GH_PAT
+        echo ""
+        printf '%s' "$GH_PAT" | gcloud secrets create github-pat \
+            --replication-policy=automatic --data-file=- --quiet
+        unset GH_PAT
+        echo "github-pat created"
+    else
+        echo "  github-pat already exists. Use 'gcloud secrets versions add' to rotate."
+    fi
+
+    if ! gcloud secrets describe github-repo --quiet >/dev/null 2>&1; then
+        echo "Enter the GitHub repo slug (e.g. 'Teneika/stocks'):"
+        read -r GH_REPO
+        printf '%s' "$GH_REPO" | gcloud secrets create github-repo \
+            --replication-policy=automatic --data-file=- --quiet
+        echo "github-repo created"
+    else
+        echo "  github-repo already exists."
+    fi
+}
+
+deploy_notifier() {
+    echo "Deploying failure-notifier Cloud Run service..."
+
+    local gh_pat gh_repo env_string
+    gh_pat="$(_secret github-pat)"
+    gh_repo="$(_secret github-repo)"
+
+    if [ -z "$gh_pat" ] || [ -z "$gh_repo" ]; then
+        echo "  github-pat / github-repo missing. Run: $0 setup-notifier-secrets"
+        return 1
+    fi
+
+    env_string="$(_env_string)"
+    env_string="${env_string},GITHUB_PAT=${gh_pat},GITHUB_REPO=${gh_repo}"
+    env_string="${env_string},GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION}"
+
+    # 1) Deploy the Cloud Run service (overrides Dockerfile CMD with stdlib server)
+    gcloud run deploy "${NOTIFIER_SERVICE}" \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 \
+        --service-account "${SA_EMAIL}" \
+        --command "python" --args "-m,gcp.failure_notifier" \
+        --set-env-vars "${env_string}" \
+        --no-allow-unauthenticated \
+        --quiet
+
+    local service_url
+    service_url="$(gcloud run services describe "${NOTIFIER_SERVICE}" \
+        --region "${REGION}" --format='value(status.url)')"
+    echo "  Service URL: ${service_url}"
+
+    # 2) Create Pub/Sub topic (idempotent)
+    gcloud pubsub topics create "${NOTIFIER_TOPIC}" --quiet 2>/dev/null \
+        || echo "  topic ${NOTIFIER_TOPIC}: already exists"
+
+    # 3) Grant the Pub/Sub service account permission to invoke the Run service
+    local project_number pubsub_sa
+    project_number="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
+    pubsub_sa="service-${project_number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+
+    gcloud run services add-iam-policy-binding "${NOTIFIER_SERVICE}" \
+        --region "${REGION}" \
+        --member="serviceAccount:${pubsub_sa}" \
+        --role="roles/run.invoker" --quiet
+
+    # 4) Create Pub/Sub push subscription with OIDC auth (idempotent)
+    gcloud pubsub subscriptions create "${NOTIFIER_SUB}" \
+        --topic="${NOTIFIER_TOPIC}" \
+        --push-endpoint="${service_url}" \
+        --push-auth-service-account="${SA_EMAIL}" \
+        --ack-deadline=60 \
+        --quiet 2>/dev/null \
+        || gcloud pubsub subscriptions update "${NOTIFIER_SUB}" \
+            --push-endpoint="${service_url}" \
+            --push-auth-service-account="${SA_EMAIL}" \
+            --quiet
+
+    # 5) Create Cloud Logging sink → Pub/Sub
+    # Filter catches Cloud Run Job execution failures but excludes the notifier
+    # itself to prevent infinite loops.
+    local sink_filter
+    sink_filter='resource.type="cloud_run_job"
+AND severity>=ERROR
+AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"'
+
+    gcloud logging sinks create "${NOTIFIER_SINK}" \
+        "pubsub.googleapis.com/projects/${PROJECT_ID}/topics/${NOTIFIER_TOPIC}" \
+        --log-filter="${sink_filter}" \
+        --quiet 2>/dev/null \
+        || gcloud logging sinks update "${NOTIFIER_SINK}" \
+            "pubsub.googleapis.com/projects/${PROJECT_ID}/topics/${NOTIFIER_TOPIC}" \
+            --log-filter="${sink_filter}" --quiet
+
+    # 6) Grant sink writer permission to publish to the topic
+    local sink_writer
+    sink_writer="$(gcloud logging sinks describe "${NOTIFIER_SINK}" \
+        --format='value(writerIdentity)')"
+    gcloud pubsub topics add-iam-policy-binding "${NOTIFIER_TOPIC}" \
+        --member="${sink_writer}" \
+        --role="roles/pubsub.publisher" --quiet
+
+    echo "failure-notifier deployed and wired to Cloud Logging."
+}
+
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
 _job_uri() {
     echo "https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${1}:run"
@@ -400,6 +525,8 @@ case "${1:-help}" in
     apply-schema) build_image && deploy_apply_schema_migrations ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
+    setup-notifier-secrets) setup_notifier_secrets ;;
+    notifier)    build_image && deploy_notifier ;;
     spx-greeks-pipeline)
         # Convenience: build once + deploy the three jobs that compose the
         # SPX Greeks roll-out. Does NOT execute any of them.
@@ -420,6 +547,7 @@ case "${1:-help}" in
         deploy_monitor
         deploy_weekend
         deploy_fetchers
+        deploy_notifier
         deploy_schedulers
         echo "All components deployed."
         ;;
@@ -438,6 +566,8 @@ case "${1:-help}" in
         echo "  fred-rates          Deploy FRED rates fetcher job"
         echo "  spx-greeks          Deploy SPX Greeks backfill job"
         echo "  spx-greeks-pipeline Build + deploy schema/FRED/Greeks jobs (no execute)"
+        echo "  setup-notifier-secrets  One-time: store GitHub PAT + repo in Secret Manager"
+        echo "  notifier            Deploy failure-notifier Cloud Run service + log sink"
         echo "  all                 Build + deploy everything (jobs + schedulers)"
         ;;
 esac
