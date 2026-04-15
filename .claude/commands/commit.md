@@ -130,16 +130,13 @@ List every modified, added, and deleted file. Do not proceed until you have a co
 
 **MANDATORY** — Every commit must be reflected in the changelog.
 
-8b. **Append to current changelog** at `docs/changelog/`:
-   - Check `docs/changelog/` for the most recent `CHANGELOG_*.md` file
-   - If no file covers the current week, create one: `CHANGELOG_YYYY-MM-DD_to_YYYY-MM-DD.md` (Monday to Sunday)
-   - If `docs/changelog/` does not exist, create it: `mkdir -p docs/changelog`
-   - For each commit group, add a brief entry under the appropriate section:
-     - If an existing section covers this area, append to it
-     - If it's a new area, add a new section with: **Date**, **Commit(s)**, **Files**, **What Changed**, **Why**, **Benefit**
-   - Follow the format of existing changelogs (use the most recent `CHANGELOG_*.md` as template)
-   - Update the file header line count and summary table if present
-   - Include the changelog file in the same commit as the code it documents (or as a separate `docs` commit if the code was already committed)
+8b. **Prepend to the single changelog** at `docs/changelog/CHANGELOG.md`:
+   - There is ONE canonical changelog file: `docs/changelog/CHANGELOG.md`. Do NOT create weekly `CHANGELOG_*.md` files.
+   - If `docs/changelog/CHANGELOG.md` does not exist, create it with a `# Changelog` header.
+   - New entries go at the TOP of the file (reverse chronological), under a `## Session (YYYY-MM-DD)` heading.
+   - For each commit group, add a section with: **Commit(s)**, **Files**, **What Changed**, **Why**, **Benefit**.
+   - If an existing section under today's date already covers this area, append to it instead of duplicating.
+   - Include the changelog file in the same commit as the code it documents (or as a separate `docs` commit if the code was already committed).
 
 ---
 

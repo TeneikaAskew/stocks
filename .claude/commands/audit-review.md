@@ -121,7 +121,7 @@ After collecting all findings from Phase 0 (delegated agents) and Phases 1-3 (in
 | **Performance** | 15 | N+1 Cloud SQL patterns, pandas memory in fetchers, slow routers | X/15 |
 | **Monitoring** | 15 | `gcloud logging` coverage, `freshness-watchdog.yml` present, Cloud Run alerts, `infra-drift-detector` findings | X/15 |
 | **Data Integrity** | 15 | `data-pipeline-validator` agent | X/15 |
-| **Documentation** | 10 | `CLAUDE.md` present and current, `docs/` comprehensive, `CHANGELOG_*.md` freshness (last entry <7 days old) | X/10 |
+| **Documentation** | 10 | `CLAUDE.md` present and current, `docs/` comprehensive, `docs/changelog/CHANGELOG.md` freshness (top entry <7 days old) | X/10 |
 | **Testing** | 20 | `test-coverage-analyzer` agent | X/20 |
 | **Deploy Readiness** | 10 | `pre-deploy-check` agent | X/10 |
 | **OVERALL** | **100** | sum of above | **X/100** |
@@ -173,7 +173,7 @@ Performance (15 pts):
 Documentation (10 pts):
 - 4 for `CLAUDE.md` current and accurate (touched within last 30 days or known-stable)
 - 2 for `docs/GCP_IMPLEMENTATION_GUIDE.md` current
-- 2 for most recent `CHANGELOG_*.md` updated within last 7 days
+- 2 for `docs/changelog/CHANGELOG.md` top entry within last 7 days
 - 2 for `docs/incidents/` having postmortems for recent incidents
 
 ### Top 3 Action Items
