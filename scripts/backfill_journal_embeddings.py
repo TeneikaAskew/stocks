@@ -46,7 +46,8 @@ def _fetch_pending(conn, limit: int) -> list[tuple[str, str]]:
 
     `text` is a concatenation of ticker, direction, and notes so the
     embedding captures the trade's qualitative character."""
-    with conn.cursor() as cur:
+    cur = conn.cursor()
+    try:
         cur.execute(
             """
             SELECT id::text,
@@ -63,13 +64,16 @@ def _fetch_pending(conn, limit: int) -> list[tuple[str, str]]:
             (limit,),
         )
         return [(r[0], r[1]) for r in cur.fetchall()]
+    finally:
+        cur.close()
 
 
 def _write_embeddings(conn, pairs: list[tuple[str, list[float]]]) -> int:
     """Update a batch of rows with their new embeddings."""
     if not pairs:
         return 0
-    with conn.cursor() as cur:
+    cur = conn.cursor()
+    try:
         for row_id, vec in pairs:
             cur.execute(
                 "UPDATE journal_entries "
@@ -77,6 +81,8 @@ def _write_embeddings(conn, pairs: list[tuple[str, list[float]]]) -> int:
                 "WHERE id = %s",
                 (format_vector_literal(vec), row_id),
             )
+    finally:
+        cur.close()
     conn.commit()
     return len(pairs)
 
