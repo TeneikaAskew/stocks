@@ -64,14 +64,14 @@ def _insert_run(ticker: str, trigger: str) -> str:
     conn = _connect()
     run_id = str(uuid4())
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO insight_runs (id, ticker, status, trigger)
-                VALUES (%s, %s, 'queued', %s)
-                """,
-                (run_id, ticker.upper(), trigger),
-            )
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO insight_runs (id, ticker, status, trigger)
+            VALUES (%s, %s, 'queued', %s)
+            """,
+            (run_id, ticker.upper(), trigger),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -87,30 +87,30 @@ def _transition(
 ) -> None:
     conn = _connect()
     try:
-        with conn.cursor() as cur:
-            if status == "running":
-                cur.execute(
-                    "UPDATE insight_runs SET status='running', started_at=NOW() WHERE id=%s",
-                    (run_id,),
-                )
-            elif status == "done":
-                cur.execute(
-                    """
-                    UPDATE insight_runs
-                    SET status='done', finished_at=NOW(), report_id=%s
-                    WHERE id=%s
-                    """,
-                    (report_id, run_id),
-                )
-            elif status == "failed":
-                cur.execute(
-                    """
-                    UPDATE insight_runs
-                    SET status='failed', finished_at=NOW(), error=%s
-                    WHERE id=%s
-                    """,
-                    (error, run_id),
-                )
+        cur = conn.cursor()
+        if status == "running":
+            cur.execute(
+                "UPDATE insight_runs SET status='running', started_at=NOW() WHERE id=%s",
+                (run_id,),
+            )
+        elif status == "done":
+            cur.execute(
+                """
+                UPDATE insight_runs
+                SET status='done', finished_at=NOW(), report_id=%s
+                WHERE id=%s
+                """,
+                (report_id, run_id),
+            )
+        elif status == "failed":
+            cur.execute(
+                """
+                UPDATE insight_runs
+                SET status='failed', finished_at=NOW(), error=%s
+                WHERE id=%s
+                """,
+                (error, run_id),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -120,32 +120,32 @@ def _upsert_report(report: InsightReport) -> str:
     conn = _connect()
     row_id = str(uuid4())
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO insight_reports
-                    (id, ticker, as_of, report, model_versions, cost_usd, latency_ms)
-                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
-                ON CONFLICT (ticker, as_of) DO UPDATE
-                SET report = EXCLUDED.report,
-                    model_versions = EXCLUDED.model_versions,
-                    cost_usd = EXCLUDED.cost_usd,
-                    latency_ms = EXCLUDED.latency_ms
-                RETURNING id::text
-                """,
-                (
-                    row_id,
-                    report.ticker,
-                    report.as_of,
-                    report.model_dump_json(),
-                    json.dumps(report.model_versions),
-                    report.run_cost_usd,
-                    report.run_latency_ms,
-                ),
-            )
-            returned = cur.fetchone()
-            if returned:
-                row_id = returned[0]
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO insight_reports
+                (id, ticker, as_of, report, model_versions, cost_usd, latency_ms)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+            ON CONFLICT (ticker, as_of) DO UPDATE
+            SET report = EXCLUDED.report,
+                model_versions = EXCLUDED.model_versions,
+                cost_usd = EXCLUDED.cost_usd,
+                latency_ms = EXCLUDED.latency_ms
+            RETURNING id::text
+            """,
+            (
+                row_id,
+                report.ticker,
+                report.as_of,
+                report.model_dump_json(),
+                json.dumps(report.model_versions),
+                report.run_cost_usd,
+                report.run_latency_ms,
+            ),
+        )
+        returned = cur.fetchone()
+        if returned:
+            row_id = returned[0]
         conn.commit()
     finally:
         conn.close()

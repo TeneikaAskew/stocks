@@ -80,19 +80,19 @@ class ReportEnvelope(BaseModel):
 def _fetch_latest_report(ticker: str) -> Optional[dict]:
     conn = _connect()
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id::text, ticker, as_of, report, model_versions,
-                       cost_usd, latency_ms
-                FROM insight_reports
-                WHERE ticker = %s
-                ORDER BY as_of DESC
-                LIMIT 1
-                """,
-                (ticker.upper(),),
-            )
-            row = cur.fetchone()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id::text, ticker, as_of, report, model_versions,
+                   cost_usd, latency_ms
+            FROM insight_reports
+            WHERE ticker = %s
+            ORDER BY as_of DESC
+            LIMIT 1
+            """,
+            (ticker.upper(),),
+        )
+        row = cur.fetchone()
     finally:
         conn.close()
     if not row:
@@ -111,22 +111,22 @@ def _fetch_latest_report(ticker: str) -> Optional[dict]:
 def _fetch_report_history(ticker: str, limit: int) -> list[dict]:
     conn = _connect()
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id::text, as_of,
-                       report->>'direction' AS direction,
-                       report->>'conviction' AS conviction,
-                       report->>'thesis' AS thesis,
-                       cost_usd
-                FROM insight_reports
-                WHERE ticker = %s
-                ORDER BY as_of DESC
-                LIMIT %s
-                """,
-                (ticker.upper(), limit),
-            )
-            rows = cur.fetchall()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id::text, as_of,
+                   report->>'direction' AS direction,
+                   report->>'conviction' AS conviction,
+                   report->>'thesis' AS thesis,
+                   cost_usd
+            FROM insight_reports
+            WHERE ticker = %s
+            ORDER BY as_of DESC
+            LIMIT %s
+            """,
+            (ticker.upper(), limit),
+        )
+        rows = cur.fetchall()
     finally:
         conn.close()
     return [
@@ -146,14 +146,14 @@ def _insert_run(ticker: str, trigger: str) -> str:
     conn = _connect()
     run_id = str(uuid4())
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO insight_runs (id, ticker, status, trigger)
-                VALUES (%s, %s, 'queued', %s)
-                """,
-                (run_id, ticker.upper(), trigger),
-            )
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO insight_runs (id, ticker, status, trigger)
+            VALUES (%s, %s, 'queued', %s)
+            """,
+            (run_id, ticker.upper(), trigger),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -163,17 +163,17 @@ def _insert_run(ticker: str, trigger: str) -> str:
 def _fetch_run(run_id: str) -> Optional[dict]:
     conn = _connect()
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id::text, ticker, status, trigger, started_at,
-                       finished_at, error, report_id::text
-                FROM insight_runs
-                WHERE id = %s
-                """,
-                (run_id,),
-            )
-            row = cur.fetchone()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id::text, ticker, status, trigger, started_at,
+                   finished_at, error, report_id::text
+            FROM insight_runs
+            WHERE id = %s
+            """,
+            (run_id,),
+        )
+        row = cur.fetchone()
     finally:
         conn.close()
     if not row:
@@ -199,30 +199,30 @@ def _update_run_status(
 ) -> None:
     conn = _connect()
     try:
-        with conn.cursor() as cur:
-            if status == "running":
-                cur.execute(
-                    "UPDATE insight_runs SET status='running', started_at=NOW() WHERE id=%s",
-                    (run_id,),
-                )
-            elif status == "done":
-                cur.execute(
-                    """
-                    UPDATE insight_runs
-                    SET status='done', finished_at=NOW(), report_id=%s
-                    WHERE id=%s
-                    """,
-                    (report_id, run_id),
-                )
-            elif status == "failed":
-                cur.execute(
-                    """
-                    UPDATE insight_runs
-                    SET status='failed', finished_at=NOW(), error=%s
-                    WHERE id=%s
-                    """,
-                    (error, run_id),
-                )
+        cur = conn.cursor()
+        if status == "running":
+            cur.execute(
+                "UPDATE insight_runs SET status='running', started_at=NOW() WHERE id=%s",
+                (run_id,),
+            )
+        elif status == "done":
+            cur.execute(
+                """
+                UPDATE insight_runs
+                SET status='done', finished_at=NOW(), report_id=%s
+                WHERE id=%s
+                """,
+                (report_id, run_id),
+            )
+        elif status == "failed":
+            cur.execute(
+                """
+                UPDATE insight_runs
+                SET status='failed', finished_at=NOW(), error=%s
+                WHERE id=%s
+                """,
+                (error, run_id),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -233,32 +233,32 @@ def _upsert_report(report: InsightReport) -> str:
     conn = _connect()
     row_id = str(uuid4())
     try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO insight_reports
-                    (id, ticker, as_of, report, model_versions, cost_usd, latency_ms)
-                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
-                ON CONFLICT (ticker, as_of) DO UPDATE
-                SET report = EXCLUDED.report,
-                    model_versions = EXCLUDED.model_versions,
-                    cost_usd = EXCLUDED.cost_usd,
-                    latency_ms = EXCLUDED.latency_ms
-                RETURNING id::text
-                """,
-                (
-                    row_id,
-                    report.ticker,
-                    report.as_of,
-                    report.model_dump_json(),
-                    json.dumps(report.model_versions),
-                    report.run_cost_usd,
-                    report.run_latency_ms,
-                ),
-            )
-            returned = cur.fetchone()
-            if returned:
-                row_id = returned[0]
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO insight_reports
+                (id, ticker, as_of, report, model_versions, cost_usd, latency_ms)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+            ON CONFLICT (ticker, as_of) DO UPDATE
+            SET report = EXCLUDED.report,
+                model_versions = EXCLUDED.model_versions,
+                cost_usd = EXCLUDED.cost_usd,
+                latency_ms = EXCLUDED.latency_ms
+            RETURNING id::text
+            """,
+            (
+                row_id,
+                report.ticker,
+                report.as_of,
+                report.model_dump_json(),
+                json.dumps(report.model_versions),
+                report.run_cost_usd,
+                report.run_latency_ms,
+            ),
+        )
+        returned = cur.fetchone()
+        if returned:
+            row_id = returned[0]
         conn.commit()
     finally:
         conn.close()
