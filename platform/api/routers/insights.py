@@ -333,24 +333,90 @@ async def refresh_insight_report(
 ):
     """Enqueue a fresh pipeline run for the ticker.
 
-    Local dev: runs via FastAPI BackgroundTasks (survives within the
-    process but not across restarts — acceptable for dev only).
-    Production: will enqueue a Cloud Tasks message targeting the
-    insight-pipeline Cloud Run job (see gcp/deploy.sh). The job
-    transitions insight_runs.status as it executes.
+    Local dev: runs via FastAPI BackgroundTasks. Durable within the
+    process but not across restarts — acceptable for dev only.
+
+    Production: enqueues a Cloud Tasks message to the
+    `insight-pipeline-queue`. The task targets the
+    `insight-pipeline` Cloud Run job with env overrides
+    `INSIGHT_RUN_ID` and `INSIGHT_TICKER`. Cloud Run scale-to-zero
+    can't drop the run because the job is invoked fresh. If
+    google-cloud-tasks isn't importable we fall back to
+    BackgroundTasks with a logged warning so the endpoint remains
+    functional.
     """
     ticker_up = ticker.upper()
-    run_id = _insert_run(ticker_up, trigger="local_dev" if _is_local_dev() else "on_demand")
+    trigger = "local_dev" if _is_local_dev() else "on_demand"
+    run_id = _insert_run(ticker_up, trigger=trigger)
 
     if _is_local_dev():
         background_tasks.add_task(_sync_run, run_id, ticker_up)
     else:
-        # Production Cloud Tasks enqueue is wired in segment 8.
-        # For now, fall through to BackgroundTasks so the endpoint is
-        # functional — the segment-8 commit will replace this branch.
-        background_tasks.add_task(_sync_run, run_id, ticker_up)
+        enqueued = _enqueue_cloud_task(run_id, ticker_up)
+        if not enqueued:
+            logger.warning(
+                "Cloud Tasks enqueue unavailable — falling back to BackgroundTasks"
+            )
+            background_tasks.add_task(_sync_run, run_id, ticker_up)
 
     return RefreshResponse(run_id=run_id, ticker=ticker_up, status="queued")
+
+
+def _enqueue_cloud_task(run_id: str, ticker: str) -> bool:
+    """Submit a Cloud Tasks message that runs the insight-pipeline
+    Cloud Run job with INSIGHT_RUN_ID / INSIGHT_TICKER env overrides.
+
+    Returns True on successful enqueue, False on any failure (so the
+    caller can fall back to BackgroundTasks).
+    """
+    try:
+        from google.cloud import tasks_v2  # type: ignore
+    except ImportError:
+        return False
+
+    project = os.environ.get("GCP_PROJECT_ID", "adept-mountain-474619-d4")
+    region = os.environ.get("GCP_REGION", "us-east1")
+    queue = os.environ.get("INSIGHT_TASKS_QUEUE", "insight-pipeline-queue")
+    sa_email = os.environ.get(
+        "INSIGHT_TASKS_SERVICE_ACCOUNT",
+        f"trading-runner@{project}.iam.gserviceaccount.com",
+    )
+    job_url = (
+        f"https://{region}-run.googleapis.com/apis/run.googleapis.com/v1/"
+        f"namespaces/{project}/jobs/insight-pipeline:run"
+    )
+
+    try:
+        client = tasks_v2.CloudTasksClient()
+        parent = client.queue_path(project, region, queue)
+        body = json.dumps(
+            {
+                "overrides": {
+                    "containerOverrides": [
+                        {
+                            "env": [
+                                {"name": "INSIGHT_RUN_ID", "value": run_id},
+                                {"name": "INSIGHT_TICKER", "value": ticker},
+                            ]
+                        }
+                    ]
+                }
+            }
+        ).encode()
+        task = {
+            "http_request": {
+                "http_method": tasks_v2.HttpMethod.POST,
+                "url": job_url,
+                "headers": {"Content-Type": "application/json"},
+                "body": body,
+                "oauth_token": {"service_account_email": sa_email},
+            }
+        }
+        client.create_task(parent=parent, task=task)
+        return True
+    except Exception as exc:  # network, auth, queue-missing, etc.
+        logger.warning("Cloud Tasks enqueue failed: %s", exc)
+        return False
 
 
 def _sync_run(run_id: str, ticker: str) -> None:
