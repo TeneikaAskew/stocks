@@ -11,9 +11,9 @@ test.describe('Phase 1: Chart Viewer', () => {
   });
 
   // ── Layout ──────────────────────────────────────────────────────────────
-  test('sidebar renders with all 10 nav items', async ({ page }) => {
+  test('sidebar renders with all 12 nav items', async ({ page }) => {
     const nav = page.locator('nav a');
-    await expect(nav).toHaveCount(10);
+    await expect(nav).toHaveCount(12);
   });
 
   test('header shows active ticker', async ({ page }) => {
