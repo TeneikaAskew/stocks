@@ -124,6 +124,8 @@ jobs:
       issues: write
       pull-requests: write
       actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
     with:
       workflow_name: "Daily AI Insight Reports"
       failure_title: "❌ Daily AI Insight Reports failed"
