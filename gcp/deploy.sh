@@ -343,24 +343,51 @@ setup_notifier_secrets() {
     echo "the failure-notifier Cloud Run service at deploy time."
     echo ""
 
+    # ── GitHub PAT ────────────────────────────────────────────────────────
     if ! gcloud secrets describe github-pat --quiet >/dev/null 2>&1; then
-        echo "Enter a fine-grained GitHub PAT with 'issues: write' (input hidden):"
-        read -rs GH_PAT
-        echo ""
-        printf '%s' "$GH_PAT" | gcloud secrets create github-pat \
+        # Auto-detect: env var → gh CLI → interactive prompt
+        local pat="${GH_PAT:-}"
+        if [ -z "$pat" ] && command -v gh >/dev/null 2>&1; then
+            pat="$(gh auth token 2>/dev/null || true)"
+        fi
+        if [ -z "$pat" ]; then
+            echo "Enter a fine-grained GitHub PAT with 'issues: write' (input hidden):"
+            read -rs pat
+            echo ""
+        fi
+        if [ -z "$pat" ]; then
+            echo "  ERROR: no PAT provided. Set GH_PAT env var, log in with 'gh auth login', or enter interactively."
+            return 1
+        fi
+        printf '%s' "$pat" | gcloud secrets create github-pat \
             --replication-policy=automatic --data-file=- --quiet
-        unset GH_PAT
-        echo "github-pat created"
+        echo "  github-pat created"
     else
         echo "  github-pat already exists. Use 'gcloud secrets versions add' to rotate."
     fi
 
+    # ── GitHub repo slug ──────────────────────────────────────────────────
     if ! gcloud secrets describe github-repo --quiet >/dev/null 2>&1; then
-        echo "Enter the GitHub repo slug (e.g. 'Teneika/stocks'):"
-        read -r GH_REPO
-        printf '%s' "$GH_REPO" | gcloud secrets create github-repo \
+        # Auto-detect from git remote origin
+        local repo="${GH_REPO:-}"
+        if [ -z "$repo" ]; then
+            local remote_url
+            remote_url="$(git remote get-url origin 2>/dev/null || true)"
+            # Extract owner/repo from HTTPS or SSH URLs
+            repo="$(echo "$remote_url" | sed -E 's#.*(github\.com[:/])##; s/\.git$//')"
+        fi
+        if [ -z "$repo" ]; then
+            echo "Enter the GitHub repo slug (e.g. 'TeneikaAskew/stocks'):"
+            read -r repo
+        fi
+        if [ -z "$repo" ]; then
+            echo "  ERROR: no repo slug provided."
+            return 1
+        fi
+        echo "  Using repo: ${repo}"
+        printf '%s' "$repo" | gcloud secrets create github-repo \
             --replication-policy=automatic --data-file=- --quiet
-        echo "github-repo created"
+        echo "  github-repo created"
     else
         echo "  github-repo already exists."
     fi

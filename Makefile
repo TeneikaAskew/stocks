@@ -1,4 +1,4 @@
-.PHONY: install install-unpinned lock test test-e2e test-scripts install-playwright pipeline pipeline-fast report sweep backtest dev api web stop clean help
+.PHONY: install install-unpinned lock test test-e2e test-scripts install-playwright pipeline pipeline-fast report sweep backtest dev api web stop clean setup-notifier notifier help
 
 PYTHON ?= python
 TICKERS ?= IWM SPY QQQ
@@ -80,6 +80,20 @@ stop:
 	-@pkill -f '[n]ode.*platform/node_modules/.bin/vite' 2>/dev/null; true
 	@sleep 1 2>/dev/null; echo "Done."
 
+## One-time: store GitHub PAT + repo slug in GCP Secret Manager for the failure notifier.
+## Auto-detects repo from git remote. PAT is resolved in order:
+##   1. GH_PAT env var          (export GH_PAT=ghp_xxx && make setup-notifier)
+##   2. gh CLI auth token       (if gh is installed and authenticated)
+##   3. Interactive prompt       (fallback)
+setup-notifier:
+	./gcp/deploy.sh setup-notifier-secrets
+
+## Build Docker image + deploy failure-notifier Cloud Run service, Pub/Sub topic,
+## push subscription (with dead-letter), and Cloud Logging sink.
+## Requires: make setup-notifier (one-time) and gcloud auth login.
+notifier:
+	./gcp/deploy.sh notifier
+
 ## Remove generated backtest CSVs (keeps data/ structure)
 clean:
 	rm -f data/backtest_results/backtest_*.csv
@@ -106,3 +120,7 @@ help:
 	@echo "  make sweep               Run timeframe sweeps"
 	@echo "  make backtest            Run backtest for TICKER (default: IWM)"
 	@echo "  make clean               Remove generated CSV files"
+	@echo ""
+	@echo "GCP deployment:"
+	@echo "  make setup-notifier      One-time: store GitHub PAT + repo in Secret Manager"
+	@echo "  make notifier            Build + deploy failure-notifier service + log sink"
