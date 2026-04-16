@@ -13,6 +13,7 @@ const ReportsPage = lazy(() => import('@/routes/ReportsPage'));
 const SignalsPage = lazy(() => import('@/routes/SignalsPage'));
 const JournalPage = lazy(() => import('@/routes/JournalPage'));
 const InsightsPage = lazy(() => import('@/routes/InsightsPage'));
+const CatalystsPage = lazy(() => import('@/routes/CatalystsPage'));
 const HelpPage = lazy(() => import('@/routes/HelpPage'));
 
 const queryClient = new QueryClient({
@@ -45,6 +46,7 @@ const router = createBrowserRouter([
       { path: '/signals', element: <Suspense fallback={<PageLoader />}><SignalsPage /></Suspense> },
       { path: '/journal', element: <Suspense fallback={<PageLoader />}><JournalPage /></Suspense> },
       { path: '/insights', element: <Suspense fallback={<PageLoader />}><InsightsPage /></Suspense> },
+      { path: '/catalysts', element: <Suspense fallback={<PageLoader />}><CatalystsPage /></Suspense> },
       { path: '/help', element: <Suspense fallback={<PageLoader />}><HelpPage /></Suspense> },
     ],
   },

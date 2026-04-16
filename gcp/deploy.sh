@@ -82,6 +82,9 @@ _env_string() {
     local webhook
     webhook="$(_secret discord-webhook 2>/dev/null || true)"
     [ -n "$webhook" ] && env="${env},DISCORD_WEBHOOK_URL=${webhook}"
+    local benzinga_key
+    benzinga_key="$(_secret benzinga-api-key 2>/dev/null || true)"
+    [ -n "$benzinga_key" ] && env="${env},BENZINGA_API_KEY=${benzinga_key}"
     echo "$env"
 }
 
