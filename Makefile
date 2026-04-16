@@ -82,8 +82,8 @@ stop:
 
 ## One-time: store GitHub PAT + repo slug in GCP Secret Manager for the failure notifier.
 ## Auto-detects repo from git remote. PAT is resolved in order:
-##   1. GH_PAT env var          (export GH_PAT=ghp_xxx && make setup-notifier)
-##   2. gh CLI auth token       (if gh is installed and authenticated)
+##   1. GCP Secret Manager      (gh-stocks-repo-pat in project 28960574877)
+##   2. STOCKS_REPO_PAT env var (export STOCKS_REPO_PAT=ghp_xxx && make setup-notifier)
 ##   3. Interactive prompt       (fallback)
 setup-notifier:
 	./gcp/deploy.sh setup-notifier-secrets

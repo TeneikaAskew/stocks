@@ -345,18 +345,29 @@ setup_notifier_secrets() {
 
     # ── GitHub PAT ────────────────────────────────────────────────────────
     if ! gcloud secrets describe github-pat --quiet >/dev/null 2>&1; then
-        # Auto-detect: env var → gh CLI → interactive prompt
-        local pat="${GH_PAT:-}"
-        if [ -z "$pat" ] && command -v gh >/dev/null 2>&1; then
-            pat="$(gh auth token 2>/dev/null || true)"
-        fi
+        # Auto-detect: GCP secret → env var → interactive prompt
+        local pat=""
+        # 1) Pull from existing GCP Secret Manager secret (shared PAT)
         if [ -z "$pat" ]; then
-            echo "Enter a fine-grained GitHub PAT with 'issues: write' (input hidden):"
+            pat="$(gcloud secrets versions access latest \
+                --secret=gh-stocks-repo-pat \
+                --project=28960574877 --quiet 2>/dev/null || true)"
+            [ -n "$pat" ] && echo "  PAT sourced from GCP secret gh-stocks-repo-pat"
+        fi
+        # 2) STOCKS_REPO_PAT env var
+        if [ -z "$pat" ]; then
+            pat="${STOCKS_REPO_PAT:-}"
+            [ -n "$pat" ] && echo "  PAT sourced from STOCKS_REPO_PAT env var"
+        fi
+        # 3) Interactive fallback
+        if [ -z "$pat" ]; then
+            echo "Enter a GitHub PAT with 'issues: write' (input hidden):"
             read -rs pat
             echo ""
         fi
         if [ -z "$pat" ]; then
-            echo "  ERROR: no PAT provided. Set GH_PAT env var, log in with 'gh auth login', or enter interactively."
+            echo "  ERROR: no PAT found. Ensure gh-stocks-repo-pat exists in GCP project 28960574877,"
+            echo "         or set STOCKS_REPO_PAT env var."
             return 1
         fi
         printf '%s' "$pat" | gcloud secrets create github-pat \
