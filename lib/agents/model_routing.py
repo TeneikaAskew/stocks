@@ -12,6 +12,8 @@ import os
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
+import atexit
+
 import psycopg2
 
 from .llm_client import RouteSnapshot, available_providers
@@ -38,17 +40,29 @@ from .schema import ALL_ROLES, AgentRole
 # against both psycopg2 and pg8000.
 # ---------------------------------------------------------------------------
 
+# Singleton Cloud SQL Connector — reused across all connect() calls so
+# we don't leak connection-pool instances on every request.
+_CONNECTOR = None
 
-def _connect():
+
+def _get_connector():
+    global _CONNECTOR
+    if _CONNECTOR is None:
+        from google.cloud.sql.connector import Connector  # type: ignore
+
+        _CONNECTOR = Connector()
+        atexit.register(_CONNECTOR.close)
+    return _CONNECTOR
+
+
+def connect():
     url = os.environ.get("CLOUD_SQL_URL")
     if url:
         return psycopg2.connect(url)
 
     conn_name = os.environ.get("CLOUD_SQL_CONNECTION_NAME")
     if conn_name:
-        from google.cloud.sql.connector import Connector  # type: ignore
-
-        connector = Connector()
+        connector = _get_connector()
         return connector.connect(
             conn_name,
             "pg8000",
@@ -84,7 +98,7 @@ def list_routes(conn=None) -> list[Route]:
     """Return all 7 per-role routes ordered by ALL_ROLES."""
     close = False
     if conn is None:
-        conn = _connect()
+        conn = connect()
         close = True
     try:
         cur = conn.cursor()
@@ -144,9 +158,15 @@ def set_route(
             f"{provider}:{model} is not in the known price table — "
             "add it to lib/agents/pricing.py first"
         )
+    if provider not in set(available_providers()):
+        raise ValueError(
+            f"Provider {provider!r} has no registered adapter — "
+            "the pipeline will crash if this route is activated. "
+            "Install the SDK and set credentials first."
+        )
     close = False
     if conn is None:
-        conn = _connect()
+        conn = connect()
         close = True
     try:
         with conn.cursor() as cur:

@@ -32,7 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.agents.embeddings import embed_batch, format_vector_literal  # noqa: E402
-from lib.agents.model_routing import _connect  # noqa: E402
+from lib.agents.model_routing import connect  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -88,7 +88,7 @@ def _write_embeddings(conn, pairs: list[tuple[str, list[float]]]) -> int:
 
 
 async def _backfill(batch_size: int, dry_run: bool) -> int:
-    conn = _connect()
+    conn = connect()
     total = 0
     try:
         while True:

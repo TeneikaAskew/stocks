@@ -40,7 +40,7 @@ from uuid import uuid4
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from lib.agents.model_routing import _connect, load_routes_snapshot  # noqa: E402
+from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
 import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
@@ -56,7 +56,7 @@ def _upsert_report(report: InsightReport) -> str:
     """Store the report. Returns the row id. Copy of the helper in
     platform.api.routers.insights so this script has no FastAPI
     dependency."""
-    conn = _connect()
+    conn = connect()
     row_id = str(uuid4())
     try:
         cur = conn.cursor()

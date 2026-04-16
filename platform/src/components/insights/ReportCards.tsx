@@ -25,8 +25,8 @@ function fmt(n: number | null | undefined, digits = 2): string {
 
 function DirectionBadge({ direction, conviction }: { direction: Direction; conviction: string }) {
   const colors: Record<Direction, string> = {
-    long: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40',
-    short: 'bg-rose-500/20 text-rose-400 border-rose-500/40',
+    long: 'bg-green-500/20 text-green-400 border-green-500/40',
+    short: 'bg-red-500/20 text-red-400 border-red-500/40',
     flat: 'bg-zinc-500/20 text-zinc-400 border-zinc-500/40',
   };
   const Icon = direction === 'long' ? TrendingUp : direction === 'short' ? TrendingDown : Minus;
@@ -120,11 +120,11 @@ export function TradePlanCard({ report }: { report: InsightReport }) {
         </div>
         <div>
           <div className="text-[10px] uppercase text-[var(--color-text-muted)]">Stop</div>
-          <div className="font-mono text-rose-400">{fmt(report.stop)}</div>
+          <div className="font-mono text-red-400">{fmt(report.stop)}</div>
         </div>
         <div className="col-span-2">
           <div className="text-[10px] uppercase text-[var(--color-text-muted)]">Targets</div>
-          <div className="flex items-center gap-3 font-mono text-emerald-400">
+          <div className="flex items-center gap-3 font-mono text-green-400">
             {report.targets.length === 0 ? (
               <span className="text-[var(--color-text-muted)]">—</span>
             ) : (
@@ -152,9 +152,9 @@ export function TradePlanCard({ report }: { report: InsightReport }) {
 export function StratCard({ strat }: { strat: StratSnapshot }) {
   const dirColor =
     strat.ftfc_direction === 'bullish'
-      ? 'text-emerald-400'
+      ? 'text-green-400'
       : strat.ftfc_direction === 'bearish'
-      ? 'text-rose-400'
+      ? 'text-red-400'
       : 'text-zinc-400';
   return (
     <Card title="Strat Status">
@@ -227,10 +227,10 @@ export function DebateCard({
 }) {
   return (
     <div className="grid gap-3 md:grid-cols-2">
-      <Card title="Bull Case" className="border-emerald-500/30">
+      <Card title="Bull Case" className="border-green-500/30">
         <p className="text-xs leading-relaxed text-[var(--color-text-primary)]">{bullCase}</p>
       </Card>
-      <Card title="Bear Case" className="border-rose-500/30">
+      <Card title="Bear Case" className="border-red-500/30">
         <p className="text-xs leading-relaxed text-[var(--color-text-primary)]">{bearCase}</p>
       </Card>
     </div>
@@ -254,7 +254,7 @@ export function CatalystsCard({ catalysts }: { catalysts: Catalyst[] }) {
                 <span
                   className={`inline-block h-2 w-2 rounded-full ${
                     c.impact === 'high'
-                      ? 'bg-rose-400'
+                      ? 'bg-red-400'
                       : c.impact === 'medium'
                       ? 'bg-amber-400'
                       : 'bg-zinc-400'
@@ -292,7 +292,7 @@ export function RiskFlagsCard({ flags }: { flags: RiskFlag[] }) {
               size={12}
               className={`mt-0.5 flex-shrink-0 ${
                 f.severity === 'block'
-                  ? 'text-rose-400'
+                  ? 'text-red-400'
                   : f.severity === 'warn'
                   ? 'text-amber-400'
                   : 'text-zinc-400'
@@ -328,7 +328,7 @@ export function SignalsCard({ signals }: { signals: SignalRef[] }) {
             <li key={i} className="flex items-center justify-between">
               <span
                 className={`font-mono ${
-                  s.direction === 'CALL' ? 'text-emerald-400' : 'text-rose-400'
+                  s.direction === 'CALL' ? 'text-green-400' : 'text-red-400'
                 }`}
               >
                 {s.direction}
@@ -361,7 +361,7 @@ export function SimilarTradesCard({ trades }: { trades: JournalRef[] }) {
             <li key={t.id} className="flex items-center justify-between">
               <span
                 className={`font-mono ${
-                  t.direction === 'CALL' ? 'text-emerald-400' : 'text-rose-400'
+                  t.direction === 'CALL' ? 'text-green-400' : 'text-red-400'
                 }`}
               >
                 {t.ticker} {t.direction}

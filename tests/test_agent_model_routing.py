@@ -25,7 +25,7 @@ import pytest
 psycopg2 = pytest.importorskip("psycopg2")
 from lib.agents.llm_client import RouteSnapshot, register_adapter
 from lib.agents.model_routing import (
-    _connect,
+    connect,
     get_route,
     list_available_models,
     list_routes,
@@ -45,7 +45,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def seeded_db():
     """Create model_routing table + seed rows. Drops it after."""
-    conn = _connect()
+    conn = connect()
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS model_routing CASCADE")
@@ -121,7 +121,7 @@ def test_load_routes_snapshot(seeded_db):
 
 
 def test_load_routes_snapshot_errors_when_incomplete(seeded_db):
-    conn = _connect()
+    conn = connect()
     try:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM model_routing WHERE role='risk'")

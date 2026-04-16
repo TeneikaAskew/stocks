@@ -68,6 +68,18 @@ ANALYST_PROMPTS: dict[str, str] = {
         "Bias is neutral unless a single high-impact event clearly "
         "skews the risk/reward."
     ),
+    "sentiment": (
+        "You are a news sentiment analyst. You will receive aggregated "
+        "news sentiment data for the ticker: article count, bullish/ "
+        "bearish/neutral headline counts, average sentiment score "
+        "(-1.0 to +1.0), and the top headlines with individual scores. "
+        "Interpret whether the media narrative is supporting or fighting "
+        "the technical setup. Note if sentiment is extreme (>80% one "
+        "direction) — that can be contrarian. Flag any headline that "
+        "references material non-public events or regulatory actions. "
+        "Bias follows the sentiment tilt unless the signal is clearly "
+        "crowded (contrarian opportunity)."
+    ),
 }
 
 
@@ -166,7 +178,7 @@ def get_prompt(role: AgentRole, sub: str | None = None) -> str:
     (market/strat/options/catalyst) and risk personas."""
     if role == "analyst":
         if sub is None:
-            raise ValueError("analyst role requires sub in {market,strat,options,catalyst}")
+            raise ValueError("analyst role requires sub in {market,strat,options,catalyst,sentiment}")
         return ANALYST_PROMPTS[sub]
     if role == "bull":
         return BULL_RESEARCHER_PROMPT

@@ -491,7 +491,80 @@ def summarize_catalysts(
 
 
 # ---------------------------------------------------------------------------
-# 7. Reflection memory (pgvector over journal_entries)
+# 7. News sentiment
+# ---------------------------------------------------------------------------
+
+
+def summarize_news_sentiment(
+    ticker: str, as_of: Optional[date_type] = None, lookback_hours: int = 48
+) -> dict:
+    """Aggregate recent news sentiment from the news_sentiment table.
+
+    Returns headline counts, average sentiment score, and the top 5
+    most relevant recent headlines. Uses a 48-hour lookback window
+    ending at `as_of` (defaults to now when None).
+    """
+    if as_of is None:
+        sql = (
+            "SELECT title, sentiment_score, relevance_score, source, published_ts "
+            "FROM news_sentiment "
+            "WHERE ticker = :ticker "
+            "  AND published_ts >= NOW() - (:hours || ' hours')::interval "
+            "ORDER BY published_ts DESC"
+        )
+        params: dict[str, Any] = {"ticker": ticker.upper(), "hours": lookback_hours}
+    else:
+        sql = (
+            "SELECT title, sentiment_score, relevance_score, source, published_ts "
+            "FROM news_sentiment "
+            "WHERE ticker = :ticker "
+            "  AND published_ts <= CAST(:end_ts AS timestamptz) "
+            "  AND published_ts >= CAST(:end_ts AS timestamptz) - (:hours || ' hours')::interval "
+            "ORDER BY published_ts DESC"
+        )
+        params = {
+            "ticker": ticker.upper(),
+            "hours": lookback_hours,
+            "end_ts": str(as_of),
+        }
+    df = _query(sql, params)
+    if df.empty:
+        return _unavailable(f"no news_sentiment rows for {ticker} in last {lookback_hours}h")
+
+    scores = df["sentiment_score"].dropna().astype(float)
+    relevances = df["relevance_score"].dropna().astype(float)
+
+    bullish = int((scores > 0.15).sum())
+    bearish = int((scores < -0.15).sum())
+    neutral = int(len(scores)) - bullish - bearish
+    avg_score = round(float(scores.mean()), 4) if not scores.empty else 0.0
+
+    # Top 5 most relevant headlines
+    top_df = df.nlargest(5, "relevance_score") if "relevance_score" in df.columns else df.head(5)
+    headlines = [
+        {
+            "title": str(r.get("title", "")),
+            "sentiment": round(float(r["sentiment_score"]), 3) if r.get("sentiment_score") is not None else None,
+            "source": str(r.get("source", "")),
+            "published": str(r.get("published_ts", "")),
+        }
+        for _, r in top_df.iterrows()
+    ]
+
+    return {
+        "available": True,
+        "lookback_hours": lookback_hours,
+        "article_count": int(len(df)),
+        "bullish_count": bullish,
+        "bearish_count": bearish,
+        "neutral_count": neutral,
+        "avg_sentiment_score": avg_score,
+        "headlines": headlines,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8. Reflection memory (pgvector over journal_entries)
 # ---------------------------------------------------------------------------
 
 
@@ -561,6 +634,7 @@ def build_context_bundle(
         "signals": lambda: summarize_signals_history(ticker, as_of=as_of),
         "backtest": lambda: summarize_backtest_metrics(ticker, as_of=as_of),
         "catalysts": lambda: summarize_catalysts(ticker, as_of),
+        "sentiment": lambda: summarize_news_sentiment(ticker, as_of),
     }
     failed: list[str] = []
     for name, fn in sections.items():
