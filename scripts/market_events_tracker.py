@@ -542,6 +542,65 @@ class MarketEventsTracker:
         # Default
         return 'FED_EVENT', 'Low'
 
+    def fetch_benzinga_catalysts(self):
+        """Fetch catalyst events from Benzinga Calendar API.
+
+        Covers: earnings, conference calls, guidance, dividends, M&A, FDA, ratings.
+        Does NOT cover: investor conferences, summits, production updates,
+        shareholder meetings, interim statements, business updates.
+        Those require Wall Street Horizon via IBKR TWS API ($49-149/mo).
+        """
+        import os
+        api_key = os.environ.get('BENZINGA_API_KEY')
+        if not api_key:
+            print("Warning: BENZINGA_API_KEY not set — skipping Benzinga catalysts")
+            return pd.DataFrame()
+
+        try:
+            from scripts.fetch_catalyst_calendar import fetch_all_catalysts
+        except ImportError:
+            try:
+                from fetch_catalyst_calendar import fetch_all_catalysts
+            except ImportError:
+                print("Warning: fetch_catalyst_calendar module not found")
+                return pd.DataFrame()
+
+        from datetime import timedelta
+        today = datetime.now()
+        date_from = (today - timedelta(days=3)).strftime('%Y-%m-%d')
+        date_to = (today + timedelta(days=14)).strftime('%Y-%m-%d')
+
+        try:
+            print(f"Fetching Benzinga catalysts from {date_from} to {date_to}...")
+            # Only fetch the most useful calendar types for the event tracker
+            cal_types = ['earnings', 'guidance', 'fda', 'ma']
+            events = fetch_all_catalysts(api_key, date_from, date_to, calendar_types=cal_types)
+
+            if not events:
+                print("No Benzinga catalyst events found")
+                return pd.DataFrame()
+
+            # Convert to the market_events format
+            rows = []
+            for evt in events:
+                rows.append({
+                    'date': evt.get('date', ''),
+                    'event_type': evt.get('catalyst_type', 'OTHER'),
+                    'event': evt.get('event', ''),
+                    'expected_impact': evt.get('expected_impact', 'Medium'),
+                    'actual': None,
+                    'consensus': None,
+                    'notes': f"Ticker: {evt.get('ticker', '')}",
+                    'source': 'Benzinga',
+                })
+
+            print(f"Fetched {len(rows)} catalyst events from Benzinga")
+            return pd.DataFrame(rows)
+
+        except Exception as e:
+            print(f"Error fetching Benzinga catalysts: {e}")
+            return pd.DataFrame()
+
     def get_market_holidays(self, year):
         """
         Get US market holidays and early closes for a given year using pandas-market-calendars.
@@ -762,6 +821,11 @@ class MarketEventsTracker:
         uw_events = self.fetch_unusual_whales_trading_calendar(year=2025)
         if not uw_events.empty:
             all_events.append(uw_events)
+
+        # Fetch Benzinga catalyst events (earnings, guidance, FDA, M&A, etc.)
+        benzinga_events = self.fetch_benzinga_catalysts()
+        if not benzinga_events.empty:
+            all_events.append(benzinga_events)
 
         # Add market holidays for 2024-2026 (backup)
         years = [2024, 2026]  # 2025 already covered by UW API
