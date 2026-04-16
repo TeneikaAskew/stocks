@@ -281,6 +281,26 @@ deploy_fetch_earnings_calendar() {
         --quiet
 }
 
+deploy_fetch_news_sentiment() {
+    echo "Deploying fetch-news-sentiment job..."
+    local av_key av_env
+    av_key="$(_secret av-api-key 2>/dev/null || true)"
+    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
+
+    gcloud run jobs create fetch-news-sentiment \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment,--tickers,SPY,IWM,QQQ" \
+        --set-env-vars "${av_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-news-sentiment \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment,--tickers,SPY,IWM,QQQ" \
+        --set-env-vars "${av_env}" \
+        --quiet
+}
+
 deploy_fetchers() {
     deploy_fetch_market_data
     deploy_fetch_etf_options
@@ -288,6 +308,7 @@ deploy_fetchers() {
     deploy_fetch_alphavantage
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
+    deploy_fetch_news_sentiment
 }
 
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
@@ -348,6 +369,11 @@ deploy_schedulers() {
 
     # Earnings calendar (UW + EW) — 7:15 AM ET weekdays
     _schedule "earnings-calendar-daily"  "15 7 * * 1-5"  "fetch-earnings-calendar"
+
+    # News sentiment — 3x per trading day (pre-market, midday, post-close)
+    _schedule "news-sentiment-0800"  "0 8 * * 1-5"   "fetch-news-sentiment"
+    _schedule "news-sentiment-1200"  "0 12 * * 1-5"  "fetch-news-sentiment"
+    _schedule "news-sentiment-1600"  "0 16 * * 1-5"  "fetch-news-sentiment"
 
     # AI Insights daily report — 8:45 AM ET weekdays, after premarket-brief
     # (which seeds the strat + daily indicators the pipeline consumes).

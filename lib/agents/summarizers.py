@@ -302,18 +302,22 @@ def summarize_signals_history(
         # collides with the `::` cast syntax when it appears right
         # after a :param reference. Explicit cast also fixes pg8000
         # TEXT binding for `end - interval` math.
+        # Use start of the *next* day with `<` so that all intraday
+        # alerts on `as_of` are included (str(date) resolves to midnight
+        # at the *start*, which would exclude the entire day with `<=`).
+        end_exclusive = as_of + timedelta(days=1)
         sql = (
             "SELECT alert_ts, direction, strength_label, total_score "
             "FROM signal_alerts "
             "WHERE ticker = :ticker "
-            "  AND alert_ts <= CAST(:end_ts AS timestamptz) "
+            "  AND alert_ts < CAST(:end_ts AS timestamptz) "
             "  AND alert_ts >= CAST(:end_ts AS timestamptz) - (:days || ' days')::interval "
             "ORDER BY alert_ts DESC"
         )
         params = {
             "ticker": ticker.upper(),
             "days": lookback_days,
-            "end_ts": str(as_of),
+            "end_ts": str(end_exclusive),
         }
     df = _query(sql, params)
     if df.empty:
@@ -514,18 +518,21 @@ def summarize_news_sentiment(
         )
         params: dict[str, Any] = {"ticker": ticker.upper(), "hours": lookback_hours}
     else:
+        # Use start of the *next* day with `<` so intraday articles on
+        # `as_of` are included (str(date) resolves to midnight start).
+        end_exclusive = as_of + timedelta(days=1)
         sql = (
             "SELECT title, sentiment_score, relevance_score, source, published_ts "
             "FROM news_sentiment "
             "WHERE ticker = :ticker "
-            "  AND published_ts <= CAST(:end_ts AS timestamptz) "
+            "  AND published_ts < CAST(:end_ts AS timestamptz) "
             "  AND published_ts >= CAST(:end_ts AS timestamptz) - (:hours || ' hours')::interval "
             "ORDER BY published_ts DESC"
         )
         params = {
             "ticker": ticker.upper(),
             "hours": lookback_hours,
-            "end_ts": str(as_of),
+            "end_ts": str(end_exclusive),
         }
     df = _query(sql, params)
     if df.empty:

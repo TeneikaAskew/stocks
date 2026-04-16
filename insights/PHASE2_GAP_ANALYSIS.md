@@ -202,6 +202,17 @@ Everything else is consistent: card containers use `var(--color-border)` + `var(
 1. [x] Create `lib/agents/anthropic_adapter.py` (forced tool-use structured output, conditional registration)
 2. [x] Add `anthropic>=0.40.0` to `requirements-gcp.txt`
 
+### Phase F: Codex Review Fixes (post-review)
+1. [x] Bug 7: Add `"sentiment"` to `AnalystOutput.section` Literal in `lib/agents/schema.py` — Pydantic was rejecting every sentiment analyst response
+2. [x] Bug 8: Fix `DB_PASSWORD` → `DB_PASS` in `.github/workflows/fetch-news-sentiment.yml` — writes were silently skipping
+3. [x] Bug 9: Fix `str(as_of)` midnight cutoff in `lib/agents/summarizers.py` — historical reports excluded all same-day intraday data
+4. [x] Bug 10: Add missing `PR_WORKFLOW_TOKEN` secret to `.github/workflows/daily-insight-reports.yml` handle-failure job
+5. [x] Bug 11: Fix cron schedule in `fetch-news-sentiment.yml` — removed `0` hour (was firing Sunday night UTC)
+6. [x] Add `fetch-news-sentiment` Cloud Run Job + 3 Cloud Scheduler triggers (8am/noon/4pm ET) to `gcp/deploy.sh`
+
+### Deferred
+- Bug 2: Insights router DB helpers create individual connections per request. Mitigated by the Connector singleton (Bug 1 fix) but not fully pooled via SQLAlchemy engine. Low-priority optimization.
+
 ---
 
 ## Verification
