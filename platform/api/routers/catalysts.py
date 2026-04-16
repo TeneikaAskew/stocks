@@ -42,16 +42,22 @@ BENZINGA_TYPES = {
     "FDA": {"label": "FDA", "color": "#c0392b", "icon": "Shield"},
     "ANALYST_RATING": {"label": "Rating", "color": "#2980b9", "icon": "Star"},
     "ECONOMIC": {"label": "Economic", "color": "#7f8c8d", "icon": "Globe"},
-}
-
-# WSH types not available via Benzinga (upgrade path)
-WSH_ONLY_TYPES = {
+    # Corporate Events API types (investor meetings, conferences, presentations)
+    "CORPORATE_EVENT": {"label": "Corp. Event", "color": "#34495e", "icon": "Calendar"},
     "INVESTOR_CONFERENCE": {"label": "Conference", "color": "#8e44ad", "icon": "Users"},
     "SUMMIT": {"label": "Summit", "color": "#16a085", "icon": "Mountain"},
-    "PRODUCTION_UPDATE": {"label": "Production Update", "color": "#d35400", "icon": "Factory"},
     "SHAREHOLDER_MEETING": {"label": "Shareholder Meeting", "color": "#2c3e50", "icon": "Building"},
-    "INTERIM_STATEMENT": {"label": "Interim Statement", "color": "#c0392b", "icon": "FileText"},
+    "ANALYST_DAY": {"label": "Analyst Day", "color": "#e74c3c", "icon": "Presentation"},
+    "INVESTOR_DAY": {"label": "Investor Day", "color": "#d35400", "icon": "Users"},
+    "PRESENTATION": {"label": "Presentation", "color": "#2980b9", "icon": "Monitor"},
     "BUSINESS_UPDATE": {"label": "Business Update", "color": "#f39c12", "icon": "Briefcase"},
+    "WEBCAST": {"label": "Webcast", "color": "#1abc9c", "icon": "Video"},
+}
+
+# WSH types that may still need upgrade for full coverage
+WSH_ONLY_TYPES = {
+    "PRODUCTION_UPDATE": {"label": "Production Update", "color": "#d35400", "icon": "Factory"},
+    "INTERIM_STATEMENT": {"label": "Interim Statement", "color": "#c0392b", "icon": "FileText"},
     "SALES_UPDATE": {"label": "Sales Update", "color": "#27ae60", "icon": "BarChart"},
 }
 

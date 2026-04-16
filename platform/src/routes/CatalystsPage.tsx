@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import {
   TrendingUp, Phone, Target, DollarSign, Scissors, Rocket,
   GitMerge, Shield, Star, Globe, Calendar, RefreshCw, Filter,
-  Lock, ArrowUpRight,
+  Lock, ArrowUpRight, Users, Building, Presentation, Monitor,
+  Video, Briefcase,
 } from 'lucide-react';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -53,6 +54,16 @@ const TYPE_CONFIG: Record<string, { label: string; color: string; icon: typeof T
   FDA:                { label: 'FDA',         color: '#c0392b', icon: Shield },
   ANALYST_RATING:     { label: 'Rating',      color: '#2980b9', icon: Star },
   ECONOMIC:           { label: 'Economic',    color: '#7f8c8d', icon: Globe },
+  // Corporate Events API types
+  CORPORATE_EVENT:    { label: 'Corp. Event', color: '#34495e', icon: Calendar },
+  INVESTOR_CONFERENCE:{ label: 'Conference',  color: '#8e44ad', icon: Users },
+  SUMMIT:             { label: 'Summit',      color: '#16a085', icon: Globe },
+  SHAREHOLDER_MEETING:{ label: 'Shareholder', color: '#2c3e50', icon: Building },
+  ANALYST_DAY:        { label: 'Analyst Day', color: '#e74c3c', icon: Presentation },
+  INVESTOR_DAY:       { label: 'Investor Day',color: '#d35400', icon: Users },
+  PRESENTATION:       { label: 'Presentation',color: '#2980b9', icon: Monitor },
+  BUSINESS_UPDATE:    { label: 'Biz Update',  color: '#f39c12', icon: Briefcase },
+  WEBCAST:            { label: 'Webcast',     color: '#1abc9c', icon: Video },
 };
 
 const IMPACT_COLORS: Record<string, string> = {
