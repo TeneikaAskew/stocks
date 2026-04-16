@@ -12,8 +12,8 @@ Cloud Run Job executions, then:
 Deployed as a Cloud Run Service (not Job) so Pub/Sub push can invoke it. Env
 vars are injected via Secret Manager in gcp/deploy.sh — see deploy_notifier().
 
-Runs on Python stdlib only (http.server + requests) so the GCP Docker image
-does not need FastAPI/uvicorn added to requirements-gcp.txt.
+Uses http.server (stdlib) + requests and tenacity (both already in
+requirements-gcp.txt), so no new dependencies are needed.
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 import requests
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger("failure_notifier")
 logging.basicConfig(
@@ -36,6 +37,7 @@ logging.basicConfig(
 
 GITHUB_API = "https://api.github.com"
 REQUEST_TIMEOUT = 15
+MAX_BODY = 1_048_576  # 1 MB — log entries are typically < 10 KB
 
 
 # ── Parsing ──────────────────────────────────────────────────────────────────
@@ -149,8 +151,9 @@ def build_discord_payload(details: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
 def send_discord(webhook_url: str, payload: dict[str, Any]) -> None:
-    """Post to Discord webhook. Mirrors gcp/premarket_brief.py:send_to_discord."""
+    """Post to Discord webhook. Retries up to 3 times with exponential backoff."""
     resp = requests.post(webhook_url, json=payload, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     logger.info("Discord notification sent (status=%s)", resp.status_code)
@@ -181,6 +184,7 @@ def find_existing_issue(repo: str, labels: list[str], token: str) -> int | None:
     return None
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
 def create_issue(repo: str, title: str, body: str, labels: list[str], token: str) -> int:
     url = f"{GITHUB_API}/repos/{repo}/issues"
     resp = requests.post(
@@ -193,6 +197,7 @@ def create_issue(repo: str, title: str, body: str, labels: list[str], token: str
     return resp.json()["number"]
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
 def add_issue_comment(repo: str, issue_number: int, body: str, token: str) -> None:
     url = f"{GITHUB_API}/repos/{repo}/issues/{issue_number}/comments"
     resp = requests.post(
@@ -254,7 +259,10 @@ def handle_notification(body: bytes) -> tuple[int, str]:
 
     details = extract_failure_details(log_entry)
 
-    # Safeguard against self-notification loops
+    # Belt-and-suspenders self-loop guard. Primary protection is the sink
+    # filter (resource.type="cloud_run_job" excludes this service's logs since
+    # it runs as a Cloud Run Service). This catches the edge case where a Job
+    # named "failure-notifier" is accidentally created.
     if details["job_name"] == "failure-notifier":
         logger.info("Ignoring self-notification.")
         return 204, ""
@@ -290,10 +298,12 @@ def handle_notification(body: bytes) -> tuple[int, str]:
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
-        length = int(self.headers.get("Content-Length") or 0)
+        length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
         raw = self.rfile.read(length) if length else b""
         status, message = handle_notification(raw)
         self.send_response(status)
+        if message:
+            self.send_header("Content-Type", "text/plain")
         self.end_headers()
         if message:
             self.wfile.write(message.encode())
