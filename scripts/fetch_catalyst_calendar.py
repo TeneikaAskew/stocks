@@ -33,9 +33,16 @@ logger = logging.getLogger(__name__)
 # ── Benzinga API config ─────────────────────────────────────────────────────
 
 BENZINGA_BASE = "https://api.benzinga.com/api/v2.1/calendar"
+BENZINGA_NEWS_BASE = "https://api.benzinga.com/api/v2/news"
+BENZINGA_GOV_BASE = "https://api.benzinga.com/api/v1/government"
 
 # Calendar types → endpoint paths and how to classify them
 CALENDAR_TYPES = {
+    "events": {
+        "path": "/events",
+        "catalyst_type": "CORPORATE_EVENT",
+        "impact": "High",
+    },
     "earnings": {
         "path": "/earnings",
         "catalyst_type": "EARNINGS",
@@ -88,18 +95,12 @@ CALENDAR_TYPES = {
     },
 }
 
-# WSH event types that Benzinga CANNOT provide — placeholder for future upgrade
+# WSH event types that MAY require upgrade — Benzinga Corporate Events API
+# may cover some of these. Test with test_benzinga_corporate_events.py to confirm.
 WSH_ONLY_TYPES = [
-    "INVESTOR_CONFERENCE",
-    "SUMMIT",
     "PRODUCTION_UPDATE",
-    "SHAREHOLDER_MEETING",
     "INTERIM_STATEMENT",
-    "BUSINESS_UPDATE",
     "SALES_UPDATE",
-    "ANALYST_DAY",
-    "CAPITAL_MARKETS_DAY",
-    "INVESTOR_DAY",
     "ROAD_SHOW",
 ]
 
@@ -384,8 +385,80 @@ def normalize_generic(records, catalyst_type, impact):
     return events
 
 
+def normalize_corporate_events(records):
+    """Normalize Corporate Events API records (investor conferences, meetings, presentations).
+
+    This is the key endpoint that may cover WSH-type events:
+    conferences, summits, shareholder meetings, investor days, etc.
+    """
+    events = []
+    for rec in records:
+        # Securities array contains ticker info
+        ticker = ""
+        securities = rec.get("securities", [])
+        if securities and isinstance(securities, list):
+            first = securities[0]
+            if isinstance(first, dict):
+                ticker = first.get("symbol", "")
+            elif isinstance(first, str):
+                ticker = first
+
+        event_name = rec.get("eventname", rec.get("name", ""))
+        event_type_raw = rec.get("eventtype", rec.get("event_type", ""))
+
+        # Classify the event type based on eventtype field
+        catalyst_type = _classify_corporate_event(event_type_raw, event_name)
+
+        events.append({
+            "date": rec.get("datestart", rec.get("date", "")),
+            "ticker": ticker,
+            "company_name": "",
+            "catalyst_type": catalyst_type,
+            "event": event_name,
+            "expected_impact": "High",
+            "details": {
+                "event_type_raw": event_type_raw,
+                "location": rec.get("location", ""),
+                "webcast_link": rec.get("webcast_link", ""),
+                "date_end": rec.get("dateend", ""),
+                "start_time": rec.get("starttime", ""),
+                "importance": rec.get("importance", ""),
+                "source_link": rec.get("sourcelink", ""),
+                "tags": rec.get("tags", []),
+            },
+            "confirmed": True,
+            "source": "Benzinga",
+        })
+    return events
+
+
+def _classify_corporate_event(event_type_raw, event_name):
+    """Classify a Benzinga corporate event into our catalyst taxonomy."""
+    et = (event_type_raw or "").lower()
+    en = (event_name or "").lower()
+
+    if "conference" in et or "conference" in en:
+        return "INVESTOR_CONFERENCE"
+    if "summit" in et or "summit" in en:
+        return "SUMMIT"
+    if "shareholder" in et or "shareholder" in en or "annual meeting" in en:
+        return "SHAREHOLDER_MEETING"
+    if "analyst day" in et or "analyst day" in en or "capital markets" in en:
+        return "ANALYST_DAY"
+    if "investor day" in et or "investor day" in en:
+        return "INVESTOR_DAY"
+    if "presentation" in et or "presentation" in en:
+        return "PRESENTATION"
+    if "business update" in et or "business update" in en:
+        return "BUSINESS_UPDATE"
+    if "webcast" in et or "webinar" in en:
+        return "WEBCAST"
+    return "CORPORATE_EVENT"
+
+
 # Map calendar types to their normalizer functions
 NORMALIZERS = {
+    "events": normalize_corporate_events,
     "earnings": normalize_earnings,
     "conference-calls": normalize_conference_calls,
     "guidance": normalize_guidance,
