@@ -24,13 +24,16 @@ from pathlib import Path
 from typing import Optional
 from uuid import UUID, uuid4
 
+from typing import AsyncGenerator
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Path as PathParam
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from lib.agents.model_routing import _connect, load_routes_snapshot  # noqa: E402
+from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
 import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
@@ -78,7 +81,7 @@ class ReportEnvelope(BaseModel):
 
 
 def _fetch_latest_report(ticker: str) -> Optional[dict]:
-    conn = _connect()
+    conn = connect()
     try:
         cur = conn.cursor()
         cur.execute(
@@ -99,7 +102,7 @@ def _fetch_latest_report(ticker: str) -> Optional[dict]:
 
 
 def _fetch_report_by_id(report_id: str) -> Optional[dict]:
-    conn = _connect()
+    conn = connect()
     try:
         cur = conn.cursor()
         cur.execute(
@@ -132,7 +135,7 @@ def _row_to_envelope(row) -> Optional[dict]:
 
 
 def _fetch_report_history(ticker: str, limit: int) -> list[dict]:
-    conn = _connect()
+    conn = connect()
     try:
         cur = conn.cursor()
         cur.execute(
@@ -166,7 +169,7 @@ def _fetch_report_history(ticker: str, limit: int) -> list[dict]:
 
 
 def _insert_run(ticker: str, trigger: str) -> str:
-    conn = _connect()
+    conn = connect()
     run_id = str(uuid4())
     try:
         cur = conn.cursor()
@@ -184,7 +187,7 @@ def _insert_run(ticker: str, trigger: str) -> str:
 
 
 def _fetch_run(run_id: str) -> Optional[dict]:
-    conn = _connect()
+    conn = connect()
     try:
         cur = conn.cursor()
         cur.execute(
@@ -220,7 +223,7 @@ def _update_run_status(
     error: Optional[str] = None,
     report_id: Optional[str] = None,
 ) -> None:
-    conn = _connect()
+    conn = connect()
     try:
         cur = conn.cursor()
         if status == "running":
@@ -253,7 +256,7 @@ def _update_run_status(
 
 def _upsert_report(report: InsightReport) -> str:
     """Upsert the report and return its row id."""
-    conn = _connect()
+    conn = connect()
     row_id = str(uuid4())
     try:
         cur = conn.cursor()
@@ -487,3 +490,135 @@ async def get_run_status(run_id: str):
     if row is None:
         raise HTTPException(status_code=404, detail=f"run {run_id} not found")
     return RunStatus(**row)
+
+
+# ---------------------------------------------------------------------------
+# Gemini Chat endpoint (restored from pre-agent-pipeline implementation)
+# ---------------------------------------------------------------------------
+
+CHAT_SYSTEM_PROMPTS = {
+    "chat": (
+        "You are a senior quantitative trader and portfolio manager with 20 years of "
+        "institutional experience across equities, options, and systematic strategies. "
+        "You are mentoring a developing trader who uses IWM/SPY/QQQ as their primary instruments.\n\n"
+        "Available context you can reference:\n"
+        "- Historical signals (330K+ entries with RSI, EMA, StochRSI, ATR, VWAP indicators)\n"
+        "- Backtest results for systematic strategies on IWM/SPY/QQQ\n"
+        "- Options GEX/VEX flow data (dealer positioning, king nodes, gatekeepers)\n"
+        "- Playbook decision cards for each ticker\n\n"
+        "Respond conversationally but tie advice back to actual data when possible. "
+        "Be direct, specific, and constructive. Challenge assumptions. Don't give generic advice."
+    ),
+    "market": (
+        "You are a derivatives market maker explaining current market structure to a trader on "
+        "your desk. Be precise about levels, flows, and what matters today. Reference GEX/VEX "
+        "data and explain dealer positioning. Focus on actionable insights for intraday trading."
+    ),
+    "strategy": (
+        "You are a quantitative portfolio manager evaluating a retail trader's systematic strategy. "
+        "Analyze it as if considering an allocation decision. Be rigorous and critical. Highlight "
+        "risks, edge cases, and improvement opportunities. Reference specific metrics from their "
+        "backtest data (win rate, profit factor, max drawdown, Sharpe)."
+    ),
+    "trade": (
+        "You are a senior prop desk trader reviewing a junior trader's work. Be direct, specific, "
+        "and constructive. Reference the actual numbers. Grade trades A-F with specific reasoning. "
+        "Focus on: entry timing quality, exit optimization, setup alignment with playbook, "
+        "and risk management."
+    ),
+}
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    mode: str = "chat"
+    ticker: str = "IWM"
+    history: list[ChatMessage] = []
+
+
+def _get_gemini_client():
+    """Create a google-genai client for the chat endpoint."""
+    from google import genai
+
+    project = os.environ.get("GCP_PROJECT_ID", "adept-mountain-474619-d4")
+    location = os.environ.get("GCP_REGION", "us-east1")
+    key_file = os.environ.get(
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        str(PROJECT_ROOT / ".gcp-key.json"),
+    )
+
+    credentials = None
+    if key_file and Path(key_file).exists():
+        from google.oauth2 import service_account
+
+        credentials = service_account.Credentials.from_service_account_file(
+            key_file,
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+
+    return genai.Client(
+        vertexai=True,
+        project=project,
+        location=location,
+        credentials=credentials,
+    )
+
+
+async def _stream_gemini(request: ChatRequest) -> AsyncGenerator[str, None]:
+    """Stream response from Vertex AI Gemini."""
+    try:
+        from google.genai import types
+
+        client = _get_gemini_client()
+
+        contents: list[types.Content] = []
+        for msg in request.history[-6:]:
+            role = "user" if msg.role == "user" else "model"
+            contents.append(types.Content(role=role, parts=[types.Part(text=msg.content)]))
+
+        ticker_context = f"[Ticker: {request.ticker} | Mode: {request.mode}]\n\n"
+        contents.append(
+            types.Content(role="user", parts=[types.Part(text=ticker_context + request.message)])
+        )
+
+        system_prompt = CHAT_SYSTEM_PROMPTS.get(request.mode, CHAT_SYSTEM_PROMPTS["chat"])
+
+        for chunk in client.models.generate_content_stream(
+            model="gemini-2.0-flash",
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.7,
+                max_output_tokens=2048,
+            ),
+        ):
+            if chunk.text:
+                yield chunk.text
+
+    except ImportError:
+        yield (
+            "google-genai SDK not installed.\n"
+            "Run: pip install google-genai google-cloud-aiplatform"
+        )
+    except Exception as e:
+        yield f"Gemini error: {e}"
+
+
+@router.post("/api/insights/chat")
+async def insights_chat(request: ChatRequest):
+    """Stream a Gemini response for the given mode and message."""
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    if request.mode not in CHAT_SYSTEM_PROMPTS:
+        raise HTTPException(status_code=400, detail=f"Unknown mode: {request.mode}")
+
+    return StreamingResponse(
+        _stream_gemini(request),
+        media_type="text/plain",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )

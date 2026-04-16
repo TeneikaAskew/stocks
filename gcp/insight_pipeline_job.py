@@ -39,7 +39,7 @@ from uuid import uuid4
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from lib.agents.model_routing import _connect, load_routes_snapshot  # noqa: E402
+from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
 from lib.agents.schema import InsightReport  # noqa: E402
 import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
@@ -61,7 +61,7 @@ DEFAULT_TICKERS = ("SPY", "IWM", "QQQ")
 
 
 def _insert_run(ticker: str, trigger: str) -> str:
-    conn = _connect()
+    conn = connect()
     run_id = str(uuid4())
     try:
         cur = conn.cursor()
@@ -85,7 +85,7 @@ def _transition(
     error: str | None = None,
     report_id: str | None = None,
 ) -> None:
-    conn = _connect()
+    conn = connect()
     try:
         cur = conn.cursor()
         if status == "running":
@@ -117,7 +117,7 @@ def _transition(
 
 
 def _upsert_report(report: InsightReport) -> str:
-    conn = _connect()
+    conn = connect()
     row_id = str(uuid4())
     try:
         cur = conn.cursor()
@@ -194,9 +194,36 @@ async def _run_on_demand() -> int:
     return 0 if ok else 1
 
 
+def _earnings_tickers_next_7d() -> list[str]:
+    """Query earnings_calendar for tickers with earnings in the next 7 days."""
+    try:
+        from gcp.database import query_to_dataframe
+
+        df = query_to_dataframe(
+            "SELECT DISTINCT ticker FROM earnings_calendar "
+            "WHERE earnings_date BETWEEN CURRENT_DATE AND CURRENT_DATE + interval '7 days'",
+            {},
+        )
+        if df.empty:
+            return []
+        return [str(t).upper() for t in df["ticker"].tolist()]
+    except Exception as e:
+        logger.warning("earnings ticker lookup failed: %s", e)
+        return []
+
+
 async def _run_scheduled() -> int:
     tickers_env = os.environ.get("INSIGHT_TICKERS", ",".join(DEFAULT_TICKERS))
     tickers = [t.strip().upper() for t in tickers_env.split(",") if t.strip()]
+
+    # Dynamically add tickers with earnings in the next 7 days
+    earnings = _earnings_tickers_next_7d()
+    if earnings:
+        added = [t for t in earnings if t not in tickers]
+        if added:
+            logger.info("adding earnings tickers: %s", added)
+            tickers.extend(added)
+
     logger.info("scheduled run for tickers: %s", tickers)
 
     any_failures = False

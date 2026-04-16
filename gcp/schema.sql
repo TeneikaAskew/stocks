@@ -592,3 +592,26 @@ CREATE INDEX IF NOT EXISTS idx_insight_runs_ticker_created
     ON insight_runs (ticker, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_insight_runs_status
     ON insight_runs (status, created_at DESC);
+
+
+-- ─────────────────────────────────────────────────────────
+-- NEWS SENTIMENT (AlphaVantage NEWS_SENTIMENT endpoint)
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS news_sentiment (
+    id              BIGSERIAL    PRIMARY KEY,
+    ticker          VARCHAR(10)  NOT NULL,
+    published_ts    TIMESTAMPTZ  NOT NULL,
+    title           TEXT,
+    url             TEXT,
+    summary         TEXT,
+    sentiment_score DOUBLE PRECISION,
+    relevance_score DOUBLE PRECISION,
+    source          VARCHAR(100),
+    inserted_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_news UNIQUE (ticker, published_ts, url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_news_sentiment_ticker_ts
+    ON news_sentiment (ticker, published_ts DESC);

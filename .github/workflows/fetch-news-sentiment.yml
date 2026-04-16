@@ -1,0 +1,95 @@
+name: Fetch News Sentiment
+
+on:
+  schedule:
+    # Run every 4 hours on weekdays during market hours (8am-8pm ET)
+    - cron: '0 12,16,20,0 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: 'Comma-separated tickers (default: SPY,IWM,QQQ)'
+        required: false
+        default: 'SPY,IWM,QQQ'
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  fetch-news-sentiment:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: true
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-news-sentiment-${{ hashFiles('requirements-gcp.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-news-sentiment-
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas requests cloud-sql-python-connector[pg8000] pg8000 sqlalchemy google-cloud-storage
+
+    - name: Determine tickers
+      id: tickers
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tickers }}" ]; then
+          echo "TICKERS=${{ github.event.inputs.tickers }}" >> $GITHUB_OUTPUT
+        else
+          echo "TICKERS=SPY,IWM,QQQ" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Fetch news sentiment
+      env:
+        AV_API_KEY: ${{ secrets.AV_API_KEY }}
+        CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+      run: |
+        python -m gcp.fetchers.fetch_news_sentiment \
+          --tickers "${{ steps.tickers.outputs.TICKERS }}"
+
+  handle-failure:
+    needs: fetch-news-sentiment
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "News Sentiment Fetch"
+      failure_title: "❌ News Sentiment Fetch Failed"
+      issue_labels: "workflow-failure,news-sentiment,automated"
+      workflow_file: "fetch-news-sentiment.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: true

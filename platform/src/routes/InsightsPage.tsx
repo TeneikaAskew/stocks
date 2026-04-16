@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ArrowLeft, Loader2, RefreshCw, History as HistoryIcon, FileText } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, Loader2, RefreshCw, History as HistoryIcon, FileText, MessageCircle, Send } from 'lucide-react';
 import { useTickerStore } from '@/stores/tickerStore';
 import {
   useInsightHistory,
@@ -21,7 +21,7 @@ import {
   TradePlanCard,
 } from '@/components/insights/ReportCards';
 
-type Tab = 'report' | 'history';
+type Tab = 'report' | 'history' | 'chat';
 
 export default function InsightsPage() {
   const { activeTicker } = useTickerStore();
@@ -84,6 +84,9 @@ export default function InsightsPage() {
         <TabButton active={tab === 'history'} onClick={() => setTab('history')} icon={<HistoryIcon size={14} />}>
           History
         </TabButton>
+        <TabButton active={tab === 'chat'} onClick={() => setTab('chat')} icon={<MessageCircle size={14} />}>
+          Chat
+        </TabButton>
 
         <div className="ml-auto flex items-center gap-3">
           {isRunning && (
@@ -129,7 +132,7 @@ export default function InsightsPage() {
             historical={!!viewingHistoricalId}
             onBackToLatest={() => setViewingHistoricalId(null)}
           />
-        ) : (
+        ) : tab === 'history' ? (
           <HistoryView
             loading={historyQuery.isLoading}
             data={historyQuery.data}
@@ -138,6 +141,8 @@ export default function InsightsPage() {
               setTab('report');
             }}
           />
+        ) : (
+          <ChatView ticker={activeTicker} />
         )}
       </div>
     </div>
@@ -200,7 +205,7 @@ function ReportView({
   }
   if (error) {
     return (
-      <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-300">
+      <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-300">
         Failed to load report: {error.message}
       </div>
     );
@@ -308,9 +313,9 @@ function HistoryView({
               <span
                 className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase ${
                   r.direction === 'long'
-                    ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-400'
+                    ? 'border-green-500/40 bg-green-500/20 text-green-400'
                     : r.direction === 'short'
-                    ? 'border-rose-500/40 bg-rose-500/20 text-rose-400'
+                    ? 'border-red-500/40 bg-red-500/20 text-red-400'
                     : 'border-zinc-500/40 bg-zinc-500/20 text-zinc-400'
                 }`}
               >
@@ -329,6 +334,151 @@ function HistoryView({
           <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">{r.thesis}</p>
         </button>
       ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Chat view — streaming Gemini chat
+// ---------------------------------------------------------------------------
+
+type ChatMsg = { role: 'user' | 'assistant'; content: string };
+
+const CHAT_MODES = ['chat', 'market', 'strategy', 'trade'] as const;
+
+function ChatView({ ticker }: { ticker: string }) {
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [input, setInput] = useState('');
+  const [mode, setMode] = useState<(typeof CHAT_MODES)[number]>('chat');
+  const [streaming, setStreaming] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || streaming) return;
+    setInput('');
+
+    const userMsg: ChatMsg = { role: 'user', content: text };
+    setMessages((prev) => [...prev, userMsg]);
+    setStreaming(true);
+
+    try {
+      const resp = await fetch('/api/insights/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          mode,
+          ticker,
+          history: messages.slice(-6).map((m) => ({ role: m.role, content: m.content })),
+        }),
+      });
+
+      if (!resp.ok || !resp.body) {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: `Error: ${resp.status} ${resp.statusText}` },
+        ]);
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let assistantContent = '';
+
+      setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        assistantContent += decoder.decode(value, { stream: true });
+        setMessages((prev) => {
+          const copy = [...prev];
+          copy[copy.length - 1] = { role: 'assistant', content: assistantContent };
+          return copy;
+        });
+      }
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: `Error: ${err instanceof Error ? err.message : String(err)}` },
+      ]);
+    } finally {
+      setStreaming(false);
+    }
+  };
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Mode selector */}
+      <div className="mb-2 flex items-center gap-2">
+        {CHAT_MODES.map((m) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className={`rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wide transition-colors ${
+              mode === m
+                ? 'bg-[var(--color-accent-blue)] text-white'
+                : 'border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
+            }`}
+          >
+            {m}
+          </button>
+        ))}
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 space-y-3 overflow-y-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] p-3">
+        {messages.length === 0 && (
+          <div className="flex h-full items-center justify-center text-xs text-[var(--color-text-muted)]">
+            Ask a question about {ticker} in {mode} mode.
+          </div>
+        )}
+        {messages.map((msg, i) => (
+          <div
+            key={i}
+            className={`rounded-lg px-3 py-2 text-xs leading-relaxed ${
+              msg.role === 'user'
+                ? 'ml-8 bg-[var(--color-accent-blue)]/15 text-[var(--color-text-primary)]'
+                : 'mr-8 bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]'
+            }`}
+          >
+            <div className="prose-report whitespace-pre-wrap">{msg.content}</div>
+          </div>
+        ))}
+        {streaming && (
+          <Loader2 size={14} className="animate-spin text-[var(--color-text-muted)]" />
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          send();
+        }}
+        className="mt-2 flex items-center gap-2"
+      >
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={`Ask about ${ticker}...`}
+          disabled={streaming}
+          className="flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-blue)] focus:outline-none disabled:opacity-50"
+        />
+        <button
+          type="submit"
+          disabled={!input.trim() || streaming}
+          className="flex items-center gap-1 rounded-lg bg-[var(--color-accent-blue)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+        >
+          <Send size={12} />
+        </button>
+      </form>
     </div>
   );
 }

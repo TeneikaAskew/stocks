@@ -245,7 +245,7 @@ def _portfolio_payload(
             "bear_case": bear.case,
             "failed_sections": bundle.get("failed_sections", []),
             "summaries": {
-                k: bundle.get(k, {}).get("available") for k in ("market", "strat", "options", "catalysts")
+                k: bundle.get(k, {}).get("available") for k in ("market", "strat", "options", "catalysts", "sentiment")
             },
         },
         default=str,
@@ -297,7 +297,7 @@ async def run_insight_pipeline(
         snapshot = load_routes_snapshot()
 
     # 3. Parallel analyst tier — one per section
-    analyst_sections = ("market", "strat", "options", "catalyst")
+    analyst_sections = ("market", "strat", "options", "catalyst", "sentiment")
     analyst_tasks = [
         _run_node(
             role="analyst",
@@ -351,7 +351,18 @@ async def run_insight_pipeline(
         response_model=ResearcherOutput,
         tracker=tracker,
     )
-    bull, bear = await asyncio.gather(bull_task, bear_task)
+    raw_bull_bear = await asyncio.gather(bull_task, bear_task, return_exceptions=True)
+    bull, bear = raw_bull_bear
+    if isinstance(bull, Exception):
+        logger.warning("bull researcher failed: %s", bull)
+        bull = ResearcherOutput(
+            stance="bull", case="Analysis unavailable due to LLM error.", key_points=[]
+        )
+    if isinstance(bear, Exception):
+        logger.warning("bear researcher failed: %s", bear)
+        bear = ResearcherOutput(
+            stance="bear", case="Analysis unavailable due to LLM error.", key_points=[]
+        )
 
     # 5. Research manager (judge)
     judge: JudgeOutput = await _run_node(  # type: ignore[assignment]
@@ -366,16 +377,28 @@ async def run_insight_pipeline(
     )
 
     # 6. Trader
-    trader: TraderOutput = await _run_node(  # type: ignore[assignment]
-        role="trader",
-        sub=None,
-        snapshot=snapshot,
-        factory=llm_factory,
-        system=get_prompt("trader"),
-        user_payload=_trader_payload(bundle, judge, analyst_reports),
-        response_model=TraderOutput,
-        tracker=tracker,
-    )
+    try:
+        trader: TraderOutput = await _run_node(  # type: ignore[assignment]
+            role="trader",
+            sub=None,
+            snapshot=snapshot,
+            factory=llm_factory,
+            system=get_prompt("trader"),
+            user_payload=_trader_payload(bundle, judge, analyst_reports),
+            response_model=TraderOutput,
+            tracker=tracker,
+        )
+    except Exception as exc:
+        logger.warning("trader node failed: %s — using flat default", exc)
+        trader = TraderOutput(
+            direction="flat",
+            entry_zone=EntryZone(low=0.0, high=0.0),
+            stop=0.0,
+            targets=[],
+            time_horizon="swing",
+            invalidation="Trade plan unavailable due to LLM error.",
+            confidence=0.0,
+        )
 
     # 7. Risk debate (3 personas in parallel)
     risk_user = _risk_payload(bundle, trader)
@@ -402,18 +425,35 @@ async def run_insight_pipeline(
         risk_outputs.append(result)  # type: ignore[arg-type]
 
     # 8. Portfolio manager (final merge)
-    pm: PortfolioManagerOutput = await _run_node(  # type: ignore[assignment]
-        role="portfolio_manager",
-        sub=None,
-        snapshot=snapshot,
-        factory=llm_factory,
-        system=get_prompt("portfolio_manager"),
-        user_payload=_portfolio_payload(
-            bundle, judge, trader, risk_outputs, bull, bear
-        ),
-        response_model=PortfolioManagerOutput,
-        tracker=tracker,
-    )
+    try:
+        pm: PortfolioManagerOutput = await _run_node(  # type: ignore[assignment]
+            role="portfolio_manager",
+            sub=None,
+            snapshot=snapshot,
+            factory=llm_factory,
+            system=get_prompt("portfolio_manager"),
+            user_payload=_portfolio_payload(
+                bundle, judge, trader, risk_outputs, bull, bear
+            ),
+            response_model=PortfolioManagerOutput,
+            tracker=tracker,
+        )
+    except Exception as exc:
+        logger.warning("portfolio_manager failed: %s — assembling from trader output", exc)
+        pm = PortfolioManagerOutput(
+            direction=trader.direction,
+            conviction="low",
+            thesis=trader.invalidation,
+            entry_zone=trader.entry_zone,
+            stop=trader.stop,
+            targets=trader.targets,
+            invalidation=trader.invalidation,
+            time_horizon=trader.time_horizon,
+            key_levels={},
+            bull_case=bull.case,
+            bear_case=bear.case,
+            confidence_score=0.3,
+        )
 
     # 9. Assemble final InsightReport
     strat_section = bundle.get("strat", {})
@@ -535,7 +575,9 @@ def _build_signal_refs(section: dict) -> list[SignalRef]:
 
 def _as_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
     if isinstance(value, date_type):
         return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
     return datetime.now(timezone.utc)

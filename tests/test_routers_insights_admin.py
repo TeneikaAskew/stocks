@@ -40,7 +40,7 @@ pytestmark = pytest.mark.skipif(
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from lib.agents.model_routing import _connect  # noqa: E402
+from lib.agents.model_routing import connect  # noqa: E402
 from lib.agents.schema import ALL_ROLES  # noqa: E402
 
 
@@ -53,7 +53,7 @@ from lib.agents.schema import ALL_ROLES  # noqa: E402
 def _schema():
     """Create the insights tables (no full schema.sql replay — only
     what the insights/admin routers touch)."""
-    conn = _connect()
+    conn = connect()
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -127,7 +127,7 @@ def client(monkeypatch):
 @pytest.fixture
 def seed_report():
     """Insert a fresh insight report for SPY and return the id."""
-    conn = _connect()
+    conn = connect()
     row_id = str(uuid4())
     as_of = datetime.now(timezone.utc)
     payload = {
@@ -183,7 +183,7 @@ def seed_report():
     finally:
         conn.close()
     yield row_id
-    conn = _connect()
+    conn = connect()
     try:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM insight_reports WHERE id=%s", (row_id,))
