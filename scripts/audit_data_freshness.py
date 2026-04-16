@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 # Add project root for gcp.* imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -152,10 +153,10 @@ MARKET_HOLIDAYS_2026 = {
 def most_recent_trading_day(now_utc: datetime) -> date:
     """Return the most recent date that the US market was open as of now.
 
-    Approximates with ET by subtracting 4-5 hours from UTC; close enough for
-    freshness checks since we're comparing dates, not timestamps.
+    Converts UTC to America/New_York to handle EDT/EST correctly (UTC-4 in
+    summer, UTC-5 in winter) before checking against the 4 PM close.
     """
-    et_now = now_utc - timedelta(hours=4)
+    et_now = now_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("America/New_York"))
     d = et_now.date()
     # If we're still before market close (4 PM ET), yesterday is the most recent close
     if et_now.time() < time(16, 0, 0):
@@ -300,7 +301,11 @@ def _query_freshness_one(
         if hasattr(last_dt, "tzinfo") and last_dt.tzinfo is not None:
             last_dt = last_dt.replace(tzinfo=None)
 
-    lag_hours = (now - last_dt).total_seconds() / 3600.0
+    # Measure lag relative to expected session close, not wall clock.
+    # Wall-clock lag inflates over weekends/holidays (e.g., Friday data looks
+    # 65h old on Monday morning), causing false stale alarms.
+    expected_close_dt = datetime.combine(expected_date, time(20, 0, 0))  # 4 PM ET = 20:00 UTC
+    lag_hours = max(0, (expected_close_dt - last_dt).total_seconds() / 3600.0)
     expected_max = check["expected_lag_hours"]
 
     # Status:
