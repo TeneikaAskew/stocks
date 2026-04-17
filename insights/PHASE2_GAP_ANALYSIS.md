@@ -210,6 +210,14 @@ Everything else is consistent: card containers use `var(--color-border)` + `var(
 5. [x] Bug 11: Fix cron schedule in `fetch-news-sentiment.yml` — removed `0` hour (was firing Sunday night UTC)
 6. [x] Add `fetch-news-sentiment` Cloud Run Job + 3 Cloud Scheduler triggers (8am/noon/4pm ET) to `gcp/deploy.sh`
 
+### Phase G: Actionability Improvements (post-evaluation)
+1. [x] Add R:R ratio calculation + color-coded display to TradePlanCard (green ≥2:1, amber ≥1:1, red <1:1)
+2. [x] Add risk-per-share and position sizing hint ("Shares @ $500 Risk") to TradePlanCard
+3. [x] Persist judge weights (`weight_bull`, `weight_bear`) in InsightReport schema + display as percentages on DebateCard
+4. [x] Persist researcher key_points (`bull_key_points`, `bear_key_points`) in InsightReport schema + display as structured bullets on DebateCard
+5. [x] Add Judge node fallback — was the only unprotected node in the pipeline
+6. [x] Pass bull/bear key_points to Trader payload for richer entry/stop/target reasoning
+
 ### Deferred
 - Bug 2: Insights router DB helpers create individual connections per request. Mitigated by the Connector singleton (Bug 1 fix) but not fully pooled via SQLAlchemy engine. Low-priority optimization.
 
