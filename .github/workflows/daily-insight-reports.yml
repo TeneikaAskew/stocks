@@ -1,0 +1,140 @@
+name: Daily AI Insight Reports
+
+# Runs the multi-agent AI Insights pipeline for SPY/IWM/QQQ. Two modes:
+#
+# 1. Scheduled — Weekdays at 8:45 AM ET (12:45 UTC during EST, 13:45 UTC
+#    during EDT). Intentionally lands AFTER the 8:30 AM premarket-brief
+#    Cloud Scheduler job so the pipeline reads fresh strat state. We
+#    register this as a GitHub Actions schedule in addition to the
+#    Cloud Scheduler trigger in gcp/deploy.sh so there's an observable
+#    failure surface (auto-issue + auto-PR on failure) that Cloud
+#    Scheduler doesn't give us. If both fire on the same day, Cloud
+#    SQL's UNIQUE (ticker, as_of) constraint with ON CONFLICT UPDATE
+#    makes the second one a no-op upsert.
+#
+# 2. workflow_dispatch — Manual trigger with a ticker input, useful
+#    for debugging a single report without waiting for the next cron.
+
+on:
+  schedule:
+    # 12:45 UTC = 8:45 AM ET during EST. GitHub Actions uses UTC, so
+    # during EDT (UTC-4) this effectively fires at 8:45 AM ET as well
+    # after DST shifts — close enough for a post-brief window.
+    - cron: '45 12 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: 'Ticker to run (e.g. SPY). Leave empty to run SPY,IWM,QQQ.'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  run-insight-pipeline:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: adept-mountain-474619-d4
+
+      - name: Determine tickers to run
+        id: pick
+        run: |
+          if [ -n "${{ github.event.inputs.ticker }}" ]; then
+            echo "tickers=${{ github.event.inputs.ticker }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tickers=SPY,IWM,QQQ" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Execute insight-pipeline Cloud Run Job
+        run: |
+          set -euo pipefail
+          # The job reads INSIGHT_TICKERS from env when INSIGHT_RUN_ID is
+          # not set, and iterates sequentially. --wait blocks until the
+          # job finishes so failures are visible in the workflow run
+          # instead of silently completing.
+          gcloud run jobs execute insight-pipeline \
+            --region us-east1 \
+            --update-env-vars "INSIGHT_TICKERS=${{ steps.pick.outputs.tickers }}" \
+            --wait
+
+      - name: Verify report row exists
+        env:
+          CLOUD_SQL_URL: ${{ secrets.CLOUD_SQL_URL }}
+        run: |
+          # Non-fatal sanity check: confirm that at least one report
+          # row was written for today by the pipeline.
+          python - <<'PY'
+          import os, sys
+          try:
+              import psycopg2
+          except ImportError:
+              print("psycopg2 not installed; skipping verification")
+              sys.exit(0)
+          url = os.environ.get("CLOUD_SQL_URL", "")
+          if not url:
+              print("CLOUD_SQL_URL not set; skipping verification")
+              sys.exit(0)
+          conn = psycopg2.connect(url)
+          with conn.cursor() as cur:
+              cur.execute(
+                  """
+                  SELECT ticker, as_of, cost_usd
+                  FROM insight_reports
+                  WHERE as_of::date = CURRENT_DATE
+                  ORDER BY as_of DESC
+                  """
+              )
+              rows = cur.fetchall()
+          conn.close()
+          if not rows:
+              print("WARNING: no insight_reports rows found for today")
+              sys.exit(0)
+          for r in rows:
+              print(f"  {r[0]}  {r[1]}  ${r[2]}")
+          PY
+
+  handle-failure:
+    needs: run-insight-pipeline
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Daily AI Insight Reports"
+      failure_title: "❌ Daily AI Insight Reports failed"
+      issue_labels: "workflow-failure,insight-pipeline,automated"
+      workflow_file: "daily-insight-reports.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: true

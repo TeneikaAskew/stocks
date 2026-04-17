@@ -515,3 +515,126 @@ DROP TRIGGER IF EXISTS trg_market_data_daily_updated ON market_data_daily;
 CREATE TRIGGER trg_market_data_daily_updated
     BEFORE UPDATE ON market_data_daily
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- ─────────────────────────────────────────────────────────
+-- AI INSIGHTS — multi-agent analyst pipeline
+-- Tables: insight_reports, insight_runs, model_routing
+-- Plus pgvector extension and journal_entries.embedding column
+-- for reflection memory.
+-- ─────────────────────────────────────────────────────────
+
+-- pgvector extension. On Cloud SQL PG15 this requires the
+-- `cloudsql.enable_pgvector` flag. Verify with:
+--   psql -c "SHOW cloudsql.enable_pgvector"
+-- before first apply.
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Reflection-memory embedding on journal_entries.
+-- Uses Vertex text-embedding-005 (768-dim). Backfilled via
+-- scripts/backfill_journal_embeddings.py.
+ALTER TABLE journal_entries
+    ADD COLUMN IF NOT EXISTS embedding vector(768);
+
+CREATE INDEX IF NOT EXISTS idx_journal_entries_embedding
+    ON journal_entries USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
+
+
+-- Per-role provider/model routing for the agent pipeline.
+-- Drives the /admin model-routing dashboard. Defaults to Vertex
+-- Gemini for every role on fresh install (no new secrets required).
+CREATE TABLE IF NOT EXISTS model_routing (
+    role          VARCHAR(32)  PRIMARY KEY,
+    provider      VARCHAR(32)  NOT NULL,   -- 'vertex' | 'anthropic' | 'openai'
+    model         VARCHAR(64)  NOT NULL,
+    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_by    VARCHAR(64)
+);
+
+INSERT INTO model_routing (role, provider, model) VALUES
+    ('analyst',           'vertex', 'gemini-2.0-flash'),
+    ('bull',              'vertex', 'gemini-2.0-flash'),
+    ('bear',              'vertex', 'gemini-2.0-flash'),
+    ('judge',             'vertex', 'gemini-2.0-flash'),
+    ('trader',            'vertex', 'gemini-2.0-flash'),
+    ('risk',              'vertex', 'gemini-2.0-flash'),
+    ('portfolio_manager', 'vertex', 'gemini-2.0-flash')
+ON CONFLICT (role) DO NOTHING;
+
+DROP TRIGGER IF EXISTS trg_model_routing_updated ON model_routing;
+CREATE TRIGGER trg_model_routing_updated
+    BEFORE UPDATE ON model_routing
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- Cached InsightReport rows. One row per (ticker, as_of). `as_of` is
+-- a full timestamp so the daily scheduled run and intra-day on-demand
+-- runs coexist; "latest" reads sort DESC.
+CREATE TABLE IF NOT EXISTS insight_reports (
+    id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticker          VARCHAR(10)  NOT NULL,
+    as_of           TIMESTAMPTZ  NOT NULL,
+    report          JSONB        NOT NULL,
+    model_versions  JSONB        NOT NULL,
+    cost_usd        NUMERIC(10,4),
+    latency_ms      INTEGER,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_insight_reports_ticker_asof UNIQUE (ticker, as_of)
+);
+
+CREATE INDEX IF NOT EXISTS idx_insight_reports_ticker_asof
+    ON insight_reports (ticker, as_of DESC);
+
+-- GIN index so the history view can filter by direction/conviction
+-- inside the JSONB report without full scans.
+CREATE INDEX IF NOT EXISTS idx_insight_reports_report_gin
+    ON insight_reports USING GIN (report jsonb_path_ops);
+
+
+-- Durable run-state table for async pipeline execution.
+-- The refresh endpoint inserts a `queued` row and enqueues a Cloud
+-- Tasks message; the Cloud Run job flips status as it runs.
+-- FastAPI BackgroundTasks is only used for local-dev mode.
+CREATE TABLE IF NOT EXISTS insight_runs (
+    id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticker          VARCHAR(10)  NOT NULL,
+    status          VARCHAR(16)  NOT NULL DEFAULT 'queued'
+                    CHECK (status IN ('queued','running','done','failed')),
+    trigger         VARCHAR(16)  NOT NULL DEFAULT 'on_demand'
+                    CHECK (trigger IN ('on_demand','scheduled','local_dev')),
+    started_at      TIMESTAMPTZ,
+    finished_at     TIMESTAMPTZ,
+    error           TEXT,
+    report_id       UUID REFERENCES insight_reports(id) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_insight_runs_ticker_created
+    ON insight_runs (ticker, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_insight_runs_status
+    ON insight_runs (status, created_at DESC);
+
+
+-- ─────────────────────────────────────────────────────────
+-- NEWS SENTIMENT (AlphaVantage NEWS_SENTIMENT endpoint)
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS news_sentiment (
+    id              BIGSERIAL    PRIMARY KEY,
+    ticker          VARCHAR(10)  NOT NULL,
+    published_ts    TIMESTAMPTZ  NOT NULL,
+    title           TEXT,
+    url             TEXT,
+    summary         TEXT,
+    sentiment_score DOUBLE PRECISION,
+    relevance_score DOUBLE PRECISION,
+    source          VARCHAR(100),
+    inserted_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_news UNIQUE (ticker, published_ts, url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_news_sentiment_ticker_ts
+    ON news_sentiment (ticker, published_ts DESC);

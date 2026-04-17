@@ -1,286 +1,484 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { marked } from 'marked';
+import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, Loader2, RefreshCw, History as HistoryIcon, FileText, MessageCircle, Send } from 'lucide-react';
 import { useTickerStore } from '@/stores/tickerStore';
-import { Send, BarChart2, TrendingUp, BookOpen, MessageSquare, Loader2 } from 'lucide-react';
+import {
+  useInsightHistory,
+  useInsightReport,
+  useInsightReportById,
+  useRefreshInsight,
+  useRunStatus,
+} from '@/hooks/useInsights';
+import {
+  CatalystsCard,
+  DebateCard,
+  DegradationBanner,
+  HeaderCard,
+  KeyLevelsCard,
+  RiskFlagsCard,
+  SignalsCard,
+  SimilarTradesCard,
+  StratCard,
+  TradePlanCard,
+} from '@/components/insights/ReportCards';
 
-type Mode = 'chat' | 'market' | 'strategy' | 'trade';
+type Tab = 'report' | 'history' | 'chat';
 
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
-}
+export default function InsightsPage() {
+  const { activeTicker } = useTickerStore();
+  const [tab, setTab] = useState<Tab>('report');
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  // When non-null, the Report tab shows a past report instead of latest.
+  const [viewingHistoricalId, setViewingHistoricalId] = useState<string | null>(null);
 
-const MODE_CONFIG: Record<Mode, { label: string; icon: React.ReactNode; placeholder: string; quickActions: string[] }> = {
-  chat: {
-    label: 'Open Chat',
-    icon: <MessageSquare size={14} />,
-    placeholder: 'Ask anything about your trading data, strategies, or market structure…',
-    quickActions: [
-      'What are the key levels for today?',
-      'Review my recent performance',
-      'What patterns should I watch for?',
-      'Explain GEX and how it affects price',
-    ],
-  },
-  market: {
-    label: 'Market Brief',
-    icon: <BarChart2 size={14} />,
-    placeholder: 'Ask about current market structure, key levels, or options flow…',
-    quickActions: [
-      'Give me a market structure brief',
-      'Where are the key support/resistance levels?',
-      'What does the options flow say?',
-      'Is this a trending or ranging day?',
-    ],
-  },
-  strategy: {
-    label: 'Strategy',
-    icon: <TrendingUp size={14} />,
-    placeholder: 'Ask for feedback on your backtest results or strategy improvements…',
-    quickActions: [
-      'Evaluate my backtest results',
-      'How can I improve my win rate?',
-      'What are the weakest conditions in my strategy?',
-      'Is this strategy robust enough to trade live?',
-    ],
-  },
-  trade: {
-    label: 'Trade Review',
-    icon: <BookOpen size={14} />,
-    placeholder: 'Describe a trade for AI review — entry, exit, setup quality…',
-    quickActions: [
-      'Review my last trade entry',
-      'Was my exit optimal?',
-      'Grade this setup A-F',
-      'What would you have done differently?',
-    ],
-  },
-};
+  const reportQuery = useInsightReport(activeTicker);
+  const historyQuery = useInsightHistory(activeTicker, 20);
+  const historicalQuery = useInsightReportById(viewingHistoricalId);
+  const refreshMut = useRefreshInsight();
+  const runStatus = useRunStatus(currentRunId, activeTicker);
 
-function MessageBubble({ msg }: { msg: Message }) {
-  const isUser = msg.role === 'user';
+  // Reset historical view when ticker changes — a saved SPY report id
+  // shouldn't linger into an IWM selection.
+  useEffect(() => {
+    setViewingHistoricalId(null);
+  }, [activeTicker]);
 
-  const html = useMemo(() => {
-    if (isUser) return '';
-    return marked.parse(msg.content) as string;
-  }, [msg.content, isUser]);
+  // Clear run tracking once the run finishes so the spinner stops.
+  useEffect(() => {
+    if (runStatus.data && (runStatus.data.status === 'done' || runStatus.data.status === 'failed')) {
+      // Keep the id for a beat so the banner can show the final state,
+      // then clear.
+      const t = setTimeout(() => setCurrentRunId(null), 1500);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [runStatus.data]);
+
+  const onRefresh = async () => {
+    try {
+      const res = await refreshMut.mutateAsync(activeTicker);
+      setCurrentRunId(res.run_id);
+    } catch (e) {
+      console.error('refresh failed', e);
+    }
+  };
+
+  const isRunning = !!currentRunId && runStatus.data?.status !== 'done' && runStatus.data?.status !== 'failed';
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      {isUser ? (
-        <div
-          className="max-w-[85%] rounded-lg px-4 py-2.5 text-sm leading-relaxed bg-[var(--color-accent-blue)] text-[var(--on-brand)]"
-          style={{ whiteSpace: 'pre-wrap' }}
+    <div className="flex h-full flex-col gap-3" style={{ maxHeight: 'calc(100vh - 120px)' }}>
+      {/* Tab bar */}
+      <div className="flex items-center gap-2">
+        <TabButton
+          active={tab === 'report'}
+          onClick={() => {
+            setTab('report');
+            // Returning to the Report tab via the tab button clears
+            // the historical view — the user explicitly asked for
+            // "the current report".
+            setViewingHistoricalId(null);
+          }}
+          icon={<FileText size={14} />}
         >
-          {msg.content}
-        </div>
-      ) : (
-        <div
-          className="prose-report max-w-[85%] rounded-lg px-4 py-2.5 bg-[var(--color-bg-tertiary)]"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      )}
-    </div>
-  );
-}
+          Report
+        </TabButton>
+        <TabButton active={tab === 'history'} onClick={() => setTab('history')} icon={<HistoryIcon size={14} />}>
+          History
+        </TabButton>
+        <TabButton active={tab === 'chat'} onClick={() => setTab('chat')} icon={<MessageCircle size={14} />}>
+          Chat
+        </TabButton>
 
-function TypingIndicator() {
-  return (
-    <div className="flex justify-start">
-      <div className="flex items-center gap-1.5 rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-3">
-        {[0, 1, 2].map(i => (
-          <span
-            key={i}
-            className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--color-text-muted)]"
-            style={{ animationDelay: `${i * 150}ms` }}
+        <div className="ml-auto flex items-center gap-3">
+          {isRunning && (
+            <span className="flex items-center gap-1 text-xs text-[var(--color-text-muted)]">
+              <Loader2 size={12} className="animate-spin" />
+              {runStatus.data?.status ?? 'queued'}…
+            </span>
+          )}
+          <button
+            onClick={onRefresh}
+            disabled={refreshMut.isPending || isRunning}
+            className="flex items-center gap-1.5 rounded-lg bg-[var(--color-accent-blue)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+          >
+            {refreshMut.isPending || isRunning ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <RefreshCw size={14} />
+            )}
+            Re-analyze
+          </button>
+        </div>
+      </div>
+
+      {/* Tab body */}
+      <div className="flex-1 overflow-y-auto">
+        {tab === 'report' ? (
+          <ReportView
+            loading={
+              viewingHistoricalId ? historicalQuery.isLoading : reportQuery.isLoading
+            }
+            envelope={
+              viewingHistoricalId
+                ? historicalQuery.data ?? null
+                : reportQuery.data ?? null
+            }
+            error={
+              viewingHistoricalId
+                ? (historicalQuery.error as Error | null)
+                : (reportQuery.error as Error | null)
+            }
+            onRefresh={onRefresh}
+            refreshing={refreshMut.isPending || isRunning}
+            historical={!!viewingHistoricalId}
+            onBackToLatest={() => setViewingHistoricalId(null)}
           />
-        ))}
+        ) : tab === 'history' ? (
+          <HistoryView
+            loading={historyQuery.isLoading}
+            data={historyQuery.data}
+            onSelect={(id) => {
+              setViewingHistoricalId(id);
+              setTab('report');
+            }}
+          />
+        ) : (
+          <ChatView ticker={activeTicker} />
+        )}
       </div>
     </div>
   );
 }
 
-export default function InsightsPage() {
-  const { activeTicker } = useTickerStore();
-  const [mode, setMode] = useState<Mode>('chat');
-  const [messages, setMessages] = useState<Message[]>([]);
+function TabButton({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
+        active
+          ? 'bg-[var(--color-accent-blue)] text-white'
+          : 'border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+      }`}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Report view
+// ---------------------------------------------------------------------------
+
+function ReportView({
+  loading,
+  envelope,
+  error,
+  onRefresh,
+  refreshing,
+  historical,
+  onBackToLatest,
+}: {
+  loading: boolean;
+  envelope: import('@/types/insights').InsightReportEnvelope | null;
+  error: Error | null;
+  onRefresh: () => void;
+  refreshing: boolean;
+  historical: boolean;
+  onBackToLatest: () => void;
+}) {
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 size={24} className="animate-spin text-[var(--color-text-muted)]" />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-300">
+        Failed to load report: {error.message}
+      </div>
+    );
+  }
+  if (!envelope) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+        <FileText size={32} className="text-[var(--color-text-muted)]" />
+        <div>
+          <div className="text-sm font-medium text-[var(--color-text-primary)]">No report yet</div>
+          <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+            Generate the first AI insight report for this ticker.
+          </div>
+        </div>
+        <button
+          onClick={onRefresh}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 rounded-lg bg-[var(--color-accent-blue)] px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
+        >
+          {refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          Generate Report
+        </button>
+      </div>
+    );
+  }
+  const report = envelope.report;
+  return (
+    <div className="space-y-3">
+      {historical && (
+        <div className="flex items-center justify-between rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          <span>Viewing historical report — not the current latest.</span>
+          <button
+            onClick={onBackToLatest}
+            className="flex items-center gap-1 rounded border border-amber-500/40 px-2 py-0.5 text-[10px] text-amber-200 hover:bg-amber-500/10"
+          >
+            <ArrowLeft size={10} /> Back to latest
+          </button>
+        </div>
+      )}
+      <DegradationBanner failedSections={report.failed_sections} />
+      <HeaderCard
+        report={report}
+        asOf={envelope.as_of}
+        costUsd={envelope.cost_usd}
+        latencyMs={envelope.latency_ms}
+      />
+      <div className="grid gap-3 md:grid-cols-2">
+        <TradePlanCard report={report} />
+        <KeyLevelsCard levels={report.key_levels} />
+        <StratCard strat={report.strat_status} />
+        <CatalystsCard catalysts={report.catalysts} />
+      </div>
+      <DebateCard bullCase={report.bull_case} bearCase={report.bear_case} />
+      <div className="grid gap-3 md:grid-cols-2">
+        <RiskFlagsCard flags={report.risk_flags} />
+        <SignalsCard signals={report.supporting_signals} />
+      </div>
+      <SimilarTradesCard trades={report.similar_past_trades} />
+      <div className="text-center text-[10px] text-[var(--color-text-muted)]">
+        {Object.entries(report.model_versions)
+          .map(([role, v]) => `${role}: ${v}`)
+          .join(' · ')}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// History view — scannable list of recent runs
+// ---------------------------------------------------------------------------
+
+function HistoryView({
+  loading,
+  data,
+  onSelect,
+}: {
+  loading: boolean;
+  data: import('@/types/insights').InsightHistoryResponse | undefined;
+  onSelect: (reportId: string) => void;
+}) {
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 size={24} className="animate-spin text-[var(--color-text-muted)]" />
+      </div>
+    );
+  }
+  if (!data || data.reports.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-xs text-[var(--color-text-muted)]">
+        No history yet.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      {data.reports.map((r) => (
+        <button
+          key={r.id}
+          onClick={() => onSelect(r.id)}
+          className="block w-full rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-3 text-left transition-colors hover:border-[var(--color-accent-blue)]"
+        >
+          <div className="mb-1 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span
+                className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                  r.direction === 'long'
+                    ? 'border-green-500/40 bg-green-500/20 text-green-400'
+                    : r.direction === 'short'
+                    ? 'border-red-500/40 bg-red-500/20 text-red-400'
+                    : 'border-zinc-500/40 bg-zinc-500/20 text-zinc-400'
+                }`}
+              >
+                {r.direction} · {r.conviction}
+              </span>
+              <span className="text-xs text-[var(--color-text-muted)]">
+                {new Date(r.as_of).toLocaleString()}
+              </span>
+            </div>
+            {r.cost_usd !== null && (
+              <span className="text-[10px] text-[var(--color-text-muted)]">
+                ${r.cost_usd.toFixed(4)}
+              </span>
+            )}
+          </div>
+          <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">{r.thesis}</p>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Chat view — streaming Gemini chat
+// ---------------------------------------------------------------------------
+
+type ChatMsg = { role: 'user' | 'assistant'; content: string };
+
+const CHAT_MODES = ['chat', 'market', 'strategy', 'trade'] as const;
+
+function ChatView({ ticker }: { ticker: string }) {
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [mode, setMode] = useState<(typeof CHAT_MODES)[number]>('chat');
+  const [streaming, setStreaming] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isStreaming]);
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-  useEffect(() => {
-    setMessages([]);
-  }, [mode, activeTicker]);
-
-  const sendMessage = async (text: string) => {
-    if (!text.trim() || isStreaming) return;
-
-    const userMsg: Message = { role: 'user', content: text };
-    setMessages(prev => [...prev, userMsg]);
+  const send = async () => {
+    const text = input.trim();
+    if (!text || streaming) return;
     setInput('');
-    setIsStreaming(true);
 
-    const assistantMsg: Message = { role: 'assistant', content: '' };
-    setMessages(prev => [...prev, assistantMsg]);
+    const userMsg: ChatMsg = { role: 'user', content: text };
+    setMessages((prev) => [...prev, userMsg]);
+    setStreaming(true);
 
     try {
-      const res = await fetch('/api/insights/chat', {
+      const resp = await fetch('/api/insights/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: text,
           mode,
-          ticker: activeTicker,
-          history: messages.slice(-6).map(m => ({ role: m.role, content: m.content })),
+          ticker,
+          history: messages.slice(-6).map((m) => ({ role: m.role, content: m.content })),
         }),
       });
 
-      if (!res.ok) {
-        const err = await res.text();
-        setMessages(prev => {
-          const updated = [...prev];
-          updated[updated.length - 1] = {
-            role: 'assistant',
-            content: `Error: ${err || 'AI service unavailable. Configure Vertex AI Gemini to enable this feature.'}`,
-          };
-          return updated;
-        });
+      if (!resp.ok || !resp.body) {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: `Error: ${resp.status} ${resp.statusText}` },
+        ]);
         return;
       }
 
-      const reader = res.body?.getReader();
+      const reader = resp.body.getReader();
       const decoder = new TextDecoder();
-      if (!reader) throw new Error('No stream');
+      let assistantContent = '';
 
-      let accumulated = '';
+      setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        accumulated += decoder.decode(value, { stream: true });
-        const snapshot = accumulated;
-        setMessages(prev => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { role: 'assistant', content: snapshot };
-          return updated;
+        assistantContent += decoder.decode(value, { stream: true });
+        setMessages((prev) => {
+          const copy = [...prev];
+          copy[copy.length - 1] = { role: 'assistant', content: assistantContent };
+          return copy;
         });
       }
-    } catch {
-      setMessages(prev => {
-        const updated = [...prev];
-        updated[updated.length - 1] = {
-          role: 'assistant',
-          content: 'AI service unavailable. Enable Vertex AI Gemini on GCP to use this feature.',
-        };
-        return updated;
-      });
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: `Error: ${err instanceof Error ? err.message : String(err)}` },
+      ]);
     } finally {
-      setIsStreaming(false);
+      setStreaming(false);
     }
   };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage(input);
-    }
-  };
-
-  const cfg = MODE_CONFIG[mode];
 
   return (
-    <div className="flex h-full flex-col gap-4" style={{ maxHeight: 'calc(100vh - 120px)' }}>
-      {/* Page header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="label-micro">AI Insights · Vertex AI Gemini</p>
-          <h1 className="mt-1 text-2xl font-bold text-[var(--color-text-primary)]">
-            {activeTicker} Intelligence
-          </h1>
-          <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">
-            Grounded in your live data, trades, and market structure
-          </p>
-        </div>
-      </div>
-
+    <div className="flex h-full flex-col">
       {/* Mode selector */}
-      <div className="flex flex-wrap items-center gap-2">
-        {(Object.entries(MODE_CONFIG) as [Mode, typeof MODE_CONFIG[Mode]][]).map(([m, c]) => (
+      <div className="mb-2 flex items-center gap-2">
+        {CHAT_MODES.map((m) => (
           <button
             key={m}
             onClick={() => setMode(m)}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+            className={`rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wide transition-colors ${
               mode === m
-                ? 'bg-[var(--color-brand)] text-[var(--on-brand)]'
-                : 'border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] hover:border-[var(--color-brand)] hover:text-[var(--color-text-primary)]'
+                ? 'bg-[var(--color-accent-blue)] text-white'
+                : 'border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
             }`}
           >
-            {c.icon}
-            {c.label}
+            {m}
           </button>
         ))}
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto rounded-xl bg-[var(--surface-2)] p-6">
-        {messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-4">
-            <div className="text-center">
-              <div className="mb-2 text-3xl">🤖</div>
-              <h3 className="text-sm font-medium text-[var(--color-text-primary)]">
-                {cfg.label} Mode
-              </h3>
-              <p className="mt-1 text-xs text-[var(--color-text-muted)]">
-                AI quant/trader grounded in your {activeTicker} data
-              </p>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {cfg.quickActions.map(action => (
-                <button
-                  key={action}
-                  onClick={() => sendMessage(action)}
-                  className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-left text-xs text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-blue)] hover:text-[var(--color-text-primary)]"
-                >
-                  {action}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {messages.map((msg, i) => (
-              <MessageBubble key={i} msg={msg} />
-            ))}
-            {isStreaming && messages[messages.length - 1]?.content === '' && <TypingIndicator />}
-            <div ref={messagesEndRef} />
+      <div className="flex-1 space-y-3 overflow-y-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] p-3">
+        {messages.length === 0 && (
+          <div className="flex h-full items-center justify-center text-xs text-[var(--color-text-muted)]">
+            Ask a question about {ticker} in {mode} mode.
           </div>
         )}
+        {messages.map((msg, i) => (
+          <div
+            key={i}
+            className={`rounded-lg px-3 py-2 text-xs leading-relaxed ${
+              msg.role === 'user'
+                ? 'ml-8 bg-[var(--color-accent-blue)]/15 text-[var(--color-text-primary)]'
+                : 'mr-8 bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]'
+            }`}
+          >
+            <div className="prose-report whitespace-pre-wrap">{msg.content}</div>
+          </div>
+        ))}
+        {streaming && (
+          <Loader2 size={14} className="animate-spin text-[var(--color-text-muted)]" />
+        )}
+        <div ref={bottomRef} />
       </div>
 
       {/* Input */}
-      <div className="flex gap-2">
-        <textarea
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          send();
+        }}
+        className="mt-2 flex items-center gap-2"
+      >
+        <input
           value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={cfg.placeholder}
-          rows={2}
-          className="flex-1 resize-none rounded-xl bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-blue)] focus:outline-none"
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={`Ask about ${ticker}...`}
+          disabled={streaming}
+          className="flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-blue)] focus:outline-none disabled:opacity-50"
         />
         <button
-          onClick={() => sendMessage(input)}
-          disabled={!input.trim() || isStreaming}
-          className="flex items-center gap-2 rounded-lg bg-[var(--color-accent-blue)] px-4 py-2 text-sm font-medium text-[var(--on-brand)] disabled:opacity-40"
+          type="submit"
+          disabled={!input.trim() || streaming}
+          className="flex items-center gap-1 rounded-lg bg-[var(--color-accent-blue)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
         >
-          {isStreaming ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+          <Send size={12} />
         </button>
-      </div>
-      <p className="text-center text-[10px] text-[var(--color-text-muted)]">
-        Enter to send · Shift+Enter for new line
-      </p>
+      </form>
     </div>
   );
 }

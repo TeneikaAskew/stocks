@@ -14,6 +14,7 @@
 #   ./gcp/deploy.sh monitor    # deploy signal monitor service
 #   ./gcp/deploy.sh weekend    # deploy weekend review job
 #   ./gcp/deploy.sh fetchers   # deploy all data-fetching Cloud Run jobs
+#   ./gcp/deploy.sh insights   # deploy insight-pipeline job + Cloud Tasks queue
 #   ./gcp/deploy.sh schedulers # create/update all Cloud Scheduler triggers
 #   ./gcp/deploy.sh all        # build + deploy everything + schedulers
 
@@ -63,6 +64,43 @@ build_image() {
     cp -r scripts/             "$tmpdir/scripts/"
     gcloud builds submit --tag "${IMAGE}" "$tmpdir"
     rm -rf "$tmpdir"
+}
+
+# ── AI Insights pipeline (Cloud Run Job) ─────────────────────────────────────
+# The same image runs scheduled daily batches and on-demand runs enqueued via
+# Cloud Tasks from the platform API. The refresh endpoint passes the run_id
+# and ticker as env-var overrides on the job execution.
+deploy_insight_pipeline() {
+    echo "Deploying insight-pipeline job..."
+    local admin_token admin_env
+    admin_token="$(_secret admin-token 2>/dev/null || true)"
+    admin_env="$(_env_string)${admin_token:+,ADMIN_TOKEN=${admin_token}}"
+
+    gcloud run jobs create insight-pipeline \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.insight_pipeline_job" \
+        --set-env-vars "${admin_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update insight-pipeline \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.insight_pipeline_job" \
+        --set-env-vars "${admin_env}" \
+        --quiet
+}
+
+# ── Cloud Tasks queue for on-demand pipeline runs ────────────────────────────
+# The refresh endpoint enqueues a task that triggers this Cloud Run job with
+# INSIGHT_RUN_ID / INSIGHT_TICKER env overrides. Queue creation is idempotent.
+setup_insight_tasks_queue() {
+    echo "Ensuring Cloud Tasks queue insight-pipeline-queue exists..."
+    gcloud tasks queues create insight-pipeline-queue \
+        --location "${REGION}" \
+        --max-attempts 2 \
+        --max-concurrent-dispatches 5 \
+        --quiet 2>/dev/null || echo "  insight-pipeline-queue: already exists"
 }
 
 # ── Shared env vars injected into every Cloud Run job ─────────────────────────
@@ -252,6 +290,26 @@ deploy_fetch_earnings_calendar() {
         --quiet
 }
 
+deploy_fetch_news_sentiment() {
+    echo "Deploying fetch-news-sentiment job..."
+    local av_key av_env
+    av_key="$(_secret av-api-key 2>/dev/null || true)"
+    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
+
+    gcloud run jobs create fetch-news-sentiment \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment,--tickers,SPY,IWM,QQQ" \
+        --set-env-vars "${av_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-news-sentiment \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment,--tickers,SPY,IWM,QQQ" \
+        --set-env-vars "${av_env}" \
+        --quiet
+}
+
 deploy_fetchers() {
     deploy_fetch_market_data
     deploy_fetch_etf_options
@@ -259,6 +317,7 @@ deploy_fetchers() {
     deploy_fetch_alphavantage
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
+    deploy_fetch_news_sentiment
 }
 
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
@@ -320,6 +379,15 @@ deploy_schedulers() {
     # Earnings calendar (UW + EW) — 7:15 AM ET weekdays
     _schedule "earnings-calendar-daily"  "15 7 * * 1-5"  "fetch-earnings-calendar"
 
+    # News sentiment — 3x per trading day (pre-market, midday, post-close)
+    _schedule "news-sentiment-0800"  "0 8 * * 1-5"   "fetch-news-sentiment"
+    _schedule "news-sentiment-1200"  "0 12 * * 1-5"  "fetch-news-sentiment"
+    _schedule "news-sentiment-1600"  "0 16 * * 1-5"  "fetch-news-sentiment"
+
+    # AI Insights daily report — 8:45 AM ET weekdays, after premarket-brief
+    # (which seeds the strat + daily indicators the pipeline consumes).
+    _schedule "insight-pipeline-daily"   "45 8 * * 1-5"  "insight-pipeline"
+
     echo "All schedulers configured."
 }
 
@@ -332,6 +400,7 @@ case "${1:-help}" in
     monitor)     build_image && deploy_monitor ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers ;;
+    insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline ;;
     schedulers)  deploy_schedulers ;;
     all)
         build_image
@@ -339,6 +408,8 @@ case "${1:-help}" in
         deploy_monitor
         deploy_weekend
         deploy_fetchers
+        setup_insight_tasks_queue
+        deploy_insight_pipeline
         deploy_schedulers
         echo "All components deployed."
         ;;
@@ -352,6 +423,7 @@ case "${1:-help}" in
         echo "  monitor    Deploy real-time signal monitor service"
         echo "  weekend    Deploy weekend review job"
         echo "  fetchers   Deploy all data-fetching Cloud Run jobs"
+        echo "  insights   Deploy AI insight pipeline job + Cloud Tasks queue"
         echo "  schedulers Create/update all Cloud Scheduler triggers"
         echo "  all        Build + deploy everything (jobs + schedulers)"
         ;;

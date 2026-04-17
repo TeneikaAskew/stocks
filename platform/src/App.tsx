@@ -14,6 +14,7 @@ const SignalsPage = lazy(() => import('@/routes/SignalsPage'));
 const JournalPage = lazy(() => import('@/routes/JournalPage'));
 const InsightsPage = lazy(() => import('@/routes/InsightsPage'));
 const CatalystsPage = lazy(() => import('@/routes/CatalystsPage'));
+const AdminPage = lazy(() => import('@/routes/AdminPage'));
 const HelpPage = lazy(() => import('@/routes/HelpPage'));
 
 const queryClient = new QueryClient({
@@ -47,6 +48,7 @@ const router = createBrowserRouter([
       { path: '/journal', element: <Suspense fallback={<PageLoader />}><JournalPage /></Suspense> },
       { path: '/insights', element: <Suspense fallback={<PageLoader />}><InsightsPage /></Suspense> },
       { path: '/catalysts', element: <Suspense fallback={<PageLoader />}><CatalystsPage /></Suspense> },
+      { path: '/admin', element: <Suspense fallback={<PageLoader />}><AdminPage /></Suspense> },
       { path: '/help', element: <Suspense fallback={<PageLoader />}><HelpPage /></Suspense> },
     ],
   },
