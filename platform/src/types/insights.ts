@@ -65,6 +65,10 @@ export interface InsightReport {
   catalysts: Catalyst[];
   bull_case: string;
   bear_case: string;
+  bull_key_points: string[];
+  bear_key_points: string[];
+  weight_bull: number;
+  weight_bear: number;
   risk_flags: RiskFlag[];
   supporting_signals: SignalRef[];
   similar_past_trades: JournalRef[];

@@ -193,6 +193,8 @@ def _trader_payload(
     bundle: dict,
     judge: JudgeOutput,
     analyst_reports: dict[str, AnalystOutput],
+    bull: ResearcherOutput,
+    bear: ResearcherOutput,
 ) -> str:
     import json
 
@@ -200,6 +202,8 @@ def _trader_payload(
         {
             "ticker": bundle["ticker"],
             "verdict": judge.model_dump(),
+            "bull_key_points": bull.key_points,
+            "bear_key_points": bear.key_points,
             "strat": bundle.get("strat", {}),
             "market": bundle.get("market", {}),
             "analysts": {
@@ -365,16 +369,26 @@ async def run_insight_pipeline(
         )
 
     # 5. Research manager (judge)
-    judge: JudgeOutput = await _run_node(  # type: ignore[assignment]
-        role="judge",
-        sub=None,
-        snapshot=snapshot,
-        factory=llm_factory,
-        system=get_prompt("judge"),
-        user_payload=_judge_payload(bull, bear),
-        response_model=JudgeOutput,
-        tracker=tracker,
-    )
+    try:
+        judge: JudgeOutput = await _run_node(  # type: ignore[assignment]
+            role="judge",
+            sub=None,
+            snapshot=snapshot,
+            factory=llm_factory,
+            system=get_prompt("judge"),
+            user_payload=_judge_payload(bull, bear),
+            response_model=JudgeOutput,
+            tracker=tracker,
+        )
+    except Exception as exc:
+        logger.warning("judge node failed: %s — using neutral fallback", exc)
+        judge = JudgeOutput(
+            verdict="flat",
+            thesis="Analysis unavailable due to LLM error.",
+            weight_bull=0.5,
+            weight_bear=0.5,
+            rationale="Neutral fallback after judge failure.",
+        )
 
     # 6. Trader
     try:
@@ -384,7 +398,7 @@ async def run_insight_pipeline(
             snapshot=snapshot,
             factory=llm_factory,
             system=get_prompt("trader"),
-            user_payload=_trader_payload(bundle, judge, analyst_reports),
+            user_payload=_trader_payload(bundle, judge, analyst_reports, bull, bear),
             response_model=TraderOutput,
             tracker=tracker,
         )
@@ -493,6 +507,10 @@ async def run_insight_pipeline(
         catalysts=catalysts,
         bull_case=pm.bull_case,
         bear_case=pm.bear_case,
+        bull_key_points=bull.key_points,
+        bear_key_points=bear.key_points,
+        weight_bull=judge.weight_bull,
+        weight_bear=judge.weight_bear,
         risk_flags=all_flags,
         supporting_signals=signals_refs,
         similar_past_trades=similar,

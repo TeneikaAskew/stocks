@@ -258,7 +258,14 @@ function ReportView({
         <StratCard strat={report.strat_status} />
         <CatalystsCard catalysts={report.catalysts} />
       </div>
-      <DebateCard bullCase={report.bull_case} bearCase={report.bear_case} />
+      <DebateCard
+        bullCase={report.bull_case}
+        bearCase={report.bear_case}
+        bullKeyPoints={report.bull_key_points}
+        bearKeyPoints={report.bear_key_points}
+        weightBull={report.weight_bull}
+        weightBear={report.weight_bear}
+      />
       <div className="grid gap-3 md:grid-cols-2">
         <RiskFlagsCard flags={report.risk_flags} />
         <SignalsCard signals={report.supporting_signals} />

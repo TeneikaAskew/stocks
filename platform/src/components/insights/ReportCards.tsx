@@ -109,6 +109,15 @@ export function HeaderCard({
 // ---------------------------------------------------------------------------
 
 export function TradePlanCard({ report }: { report: InsightReport }) {
+  const entryMid = (report.entry_zone.low + report.entry_zone.high) / 2;
+  const riskPerShare = Math.abs(entryMid - report.stop);
+  const rewardPerShare =
+    report.targets.length > 0 ? Math.abs(report.targets[0] - entryMid) : 0;
+  const rr = riskPerShare > 0 && rewardPerShare > 0
+    ? rewardPerShare / riskPerShare
+    : null;
+  const rrColor = rr === null ? '' : rr >= 2 ? 'text-green-400' : rr >= 1 ? 'text-amber-400' : 'text-red-400';
+
   return (
     <Card title="Trade Plan">
       <div className="grid grid-cols-2 gap-3 text-sm">
@@ -136,6 +145,34 @@ export function TradePlanCard({ report }: { report: InsightReport }) {
             )}
           </div>
         </div>
+
+        {rr !== null && (
+          <div className="col-span-2 flex items-center gap-4 rounded border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] px-3 py-2">
+            <div>
+              <div className="text-[10px] uppercase text-[var(--color-text-muted)]">Risk : Reward</div>
+              <div className={`font-mono text-sm font-semibold ${rrColor}`}>
+                1 : {rr.toFixed(1)}
+              </div>
+            </div>
+            <div className="h-6 w-px bg-[var(--color-border)]" />
+            <div>
+              <div className="text-[10px] uppercase text-[var(--color-text-muted)]">Risk / Share</div>
+              <div className="font-mono text-sm text-red-400">${riskPerShare.toFixed(2)}</div>
+            </div>
+            {riskPerShare > 0 && (
+              <>
+                <div className="h-6 w-px bg-[var(--color-border)]" />
+                <div>
+                  <div className="text-[10px] uppercase text-[var(--color-text-muted)]">Shares @ $500 Risk</div>
+                  <div className="font-mono text-sm text-[var(--color-text-primary)]">
+                    {Math.floor(500 / riskPerShare)}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         <div className="col-span-2">
           <div className="text-[10px] uppercase text-[var(--color-text-muted)]">Invalidation</div>
           <div className="text-xs text-[var(--color-text-secondary)]">{report.invalidation}</div>
@@ -221,17 +258,53 @@ export function KeyLevelsCard({ levels }: { levels: Record<string, number> }) {
 export function DebateCard({
   bullCase,
   bearCase,
+  bullKeyPoints,
+  bearKeyPoints,
+  weightBull,
+  weightBear,
 }: {
   bullCase: string;
   bearCase: string;
+  bullKeyPoints?: string[];
+  bearKeyPoints?: string[];
+  weightBull?: number;
+  weightBear?: number;
 }) {
+  const bullPct = weightBull != null ? Math.round(weightBull * 100) : null;
+  const bearPct = weightBear != null ? Math.round(weightBear * 100) : null;
   return (
     <div className="grid gap-3 md:grid-cols-2">
-      <Card title="Bull Case" className="border-green-500/30">
-        <p className="text-xs leading-relaxed text-[var(--color-text-primary)]">{bullCase}</p>
+      <Card
+        title={bullPct !== null ? `Bull Case · ${bullPct}%` : 'Bull Case'}
+        className="border-green-500/30"
+      >
+        {bullKeyPoints && bullKeyPoints.length > 0 ? (
+          <ul className="mb-2 space-y-1 text-xs text-[var(--color-text-primary)]">
+            {bullKeyPoints.map((pt, i) => (
+              <li key={i} className="flex items-start gap-1.5">
+                <span className="mt-0.5 flex-shrink-0 text-green-400">•</span>
+                {pt}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">{bullCase}</p>
       </Card>
-      <Card title="Bear Case" className="border-red-500/30">
-        <p className="text-xs leading-relaxed text-[var(--color-text-primary)]">{bearCase}</p>
+      <Card
+        title={bearPct !== null ? `Bear Case · ${bearPct}%` : 'Bear Case'}
+        className="border-red-500/30"
+      >
+        {bearKeyPoints && bearKeyPoints.length > 0 ? (
+          <ul className="mb-2 space-y-1 text-xs text-[var(--color-text-primary)]">
+            {bearKeyPoints.map((pt, i) => (
+              <li key={i} className="flex items-start gap-1.5">
+                <span className="mt-0.5 flex-shrink-0 text-red-400">•</span>
+                {pt}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">{bearCase}</p>
       </Card>
     </div>
   );

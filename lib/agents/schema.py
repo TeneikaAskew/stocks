@@ -159,6 +159,22 @@ class InsightReport(BaseModel):
     catalysts: list[Catalyst] = Field(default_factory=list)
     bull_case: str
     bear_case: str
+    bull_key_points: list[str] = Field(
+        default_factory=list,
+        description="Structured bullet points from the bull researcher",
+    )
+    bear_key_points: list[str] = Field(
+        default_factory=list,
+        description="Structured bullet points from the bear researcher",
+    )
+    weight_bull: float = Field(
+        0.5, ge=0.0, le=1.0,
+        description="Judge's weight toward the bull case (0.0-1.0)",
+    )
+    weight_bear: float = Field(
+        0.5, ge=0.0, le=1.0,
+        description="Judge's weight toward the bear case (0.0-1.0)",
+    )
     risk_flags: list[RiskFlag] = Field(default_factory=list)
     supporting_signals: list[SignalRef] = Field(default_factory=list)
     similar_past_trades: list[JournalRef] = Field(default_factory=list)
