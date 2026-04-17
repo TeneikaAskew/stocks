@@ -12,6 +12,7 @@ import {
   NotebookPen,
   BrainCircuit,
   Zap,
+  Settings,
   HelpCircle,
   ChevronLeft,
   ChevronRight,
@@ -29,6 +30,7 @@ const navItems = [
   { path: '/journal', label: 'Journal', icon: NotebookPen },
   { path: '/insights', label: 'AI Insights', icon: BrainCircuit },
   { path: '/catalysts', label: 'Catalysts', icon: Zap },
+  { path: '/admin', label: 'Admin', icon: Settings },
   { path: '/help', label: 'Help & Glossary', icon: HelpCircle },
 ];
 
