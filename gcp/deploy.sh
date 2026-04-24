@@ -213,15 +213,19 @@ deploy_fetch_etf_options() {
 
 deploy_fetch_earnings_options() {
     echo "Deploying fetch-earnings-options job..."
+    # 1800s timeout: earnings_calendar lookahead can yield 100-200+ tickers during
+    # peak earnings season, which exceeds the 600s default at AV's 150 RPM limit.
     gcloud run jobs create fetch-earnings-options \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_earnings_options" \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-options \
         --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_earnings_options" \
         --set-env-vars "$(_env_string)" \
         --quiet

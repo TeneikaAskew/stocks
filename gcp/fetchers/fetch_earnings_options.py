@@ -292,17 +292,35 @@ def main():
 
     all_frames = []
     errors = []
+    processed = 0
+
+    # Soft deadline: exit gracefully ~60s before Cloud Run's hard SIGKILL so
+    # we still upload the partial GCS snapshot and log a summary.  The hard
+    # --task-timeout is 1800s; anything less than that leaves headroom.
+    deadline_s = int(os.environ.get('JOB_SOFT_DEADLINE_S', '1680'))
+    start_ts = time_module.monotonic()
 
     for i in range(0, len(tickers), BATCH_SIZE):
         batch = tickers[i: i + BATCH_SIZE]
         log.info("  Batch %d-%d / %d: %s",
                  i + 1, min(i + BATCH_SIZE, len(tickers)), len(tickers), batch)
 
-        for j, symbol in enumerate(batch):
-            if j > 0:
+        for symbol in batch:
+            if processed > 0:
                 time_module.sleep(_av_cfg.delay_between_calls)
+
+            if time_module.monotonic() - start_ts >= deadline_s:
+                remaining = len(tickers) - processed
+                log.warning(
+                    "  Soft deadline reached after %d tickers (%d remaining) — "
+                    "flushing partial snapshot and exiting cleanly",
+                    processed, remaining,
+                )
+                break
+
             try:
                 df = fetch_options_for_symbol(symbol, snap_date, api_key)
+                processed += 1
                 if df.empty:
                     continue
 
@@ -321,6 +339,11 @@ def main():
             except Exception as e:
                 log.error("    ✗ %s: %s", symbol, e)
                 errors.append(symbol)
+        else:
+            # inner loop finished without break → continue to next batch
+            continue
+        # inner loop hit break → stop outer loop too
+        break
 
     # Write combined daily snapshot to GCS
     if all_frames and bucket:
@@ -337,7 +360,10 @@ def main():
         if len(errors) == len(tickers):
             sys.exit(1)
 
-    log.info("Done. Processed %d symbols.", len(tickers) - len(errors))
+    log.info(
+        "Done. Processed %d/%d symbols (%d errors).",
+        processed, len(tickers), len(errors),
+    )
 
 
 if __name__ == '__main__':
