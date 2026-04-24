@@ -21,7 +21,6 @@ This project has 17+ GitHub Actions workflows with an automated failure handling
 |--------------|----------|-------------|-----------------|
 | `fetch-market-data.yml` | Daily | Fetches OHLCV + indicators | `market_data_daily`, `market_data_intraday` |
 | `fetch_etf_options.yml` | Every 15min (market hours) | ETF options snapshots | `etf_options_snapshots` |
-| `fetch-earnings-options.yml` | Daily | Earnings-related options | `earnings_options_snapshots` |
 | `analyze-market-data.yml` | After fetch | Analysis pipeline | — |
 | `validate-market-data.yml` | Daily | Data quality checks | — |
 | `update_economic_events_calendar.yml` | Weekly | Economic calendar | `economic_events` |

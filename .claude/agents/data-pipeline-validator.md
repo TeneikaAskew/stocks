@@ -28,7 +28,6 @@ GitHub Actions workflows → gcp/fetchers/*.py → Cloud SQL + GCS
 | `market_data_daily` | `gcp/fetchers/fetch_market_data.py` | `fetch-market-data.yml` |
 | `market_data_intraday` | `gcp/fetchers/fetch_market_data.py` | `fetch-market-data.yml` |
 | `etf_options_snapshots` | `gcp/fetchers/fetch_etf_options.py` | `fetch_etf_options.yml` |
-| `earnings_options_snapshots` | `gcp/fetchers/fetch_earnings_options.py` | `fetch-earnings-options.yml` |
 | `signal_alerts` | `gcp/signal_monitor.py` | Cloud Scheduler |
 | `trades` | `gcp/trade_logger.py` | Cloud Scheduler |
 | `premarket_analysis` | `gcp/premarket_brief.py` | Cloud Scheduler |

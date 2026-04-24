@@ -211,26 +211,6 @@ deploy_fetch_etf_options() {
         --quiet
 }
 
-deploy_fetch_earnings_options() {
-    echo "Deploying fetch-earnings-options job..."
-    # 1800s timeout: earnings_calendar lookahead can yield 100-200+ tickers during
-    # peak earnings season, which exceeds the 600s default at AV's 150 RPM limit.
-    gcloud run jobs create fetch-earnings-options \
-        --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 1 \
-        --task-timeout 1800 \
-        --service-account "${SA_EMAIL}" \
-        --command "python,-m,gcp.fetchers.fetch_earnings_options" \
-        --set-env-vars "$(_env_string)" \
-        --quiet 2>/dev/null || \
-    gcloud run jobs update fetch-earnings-options \
-        --image "${IMAGE}" --region "${REGION}" \
-        --task-timeout 1800 \
-        --command "python,-m,gcp.fetchers.fetch_earnings_options" \
-        --set-env-vars "$(_env_string)" \
-        --quiet
-}
-
 deploy_fetch_alphavantage() {
     echo "Deploying fetch-alphavantage-intraday job..."
     local av_key av_env
@@ -317,7 +297,6 @@ deploy_fetch_news_sentiment() {
 deploy_fetchers() {
     deploy_fetch_market_data
     deploy_fetch_etf_options
-    deploy_fetch_earnings_options
     deploy_fetch_alphavantage
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
@@ -365,14 +344,6 @@ deploy_schedulers() {
     _schedule "etf-options-1430"  "30 14 * * 1-5"  "fetch-etf-options"
     _schedule "etf-options-1530"  "30 15 * * 1-5"  "fetch-etf-options"
     _schedule "etf-options-1605"  "5 16 * * 1-5"   "fetch-etf-options"
-
-    # Earnings options — 6 snapshots per trading day
-    _schedule "earnings-opts-0900"  "0 9 * * 1-5"    "fetch-earnings-options"
-    _schedule "earnings-opts-0935"  "35 9 * * 1-5"   "fetch-earnings-options"
-    _schedule "earnings-opts-1000"  "0 10 * * 1-5"   "fetch-earnings-options"
-    _schedule "earnings-opts-1200"  "0 12 * * 1-5"   "fetch-earnings-options"
-    _schedule "earnings-opts-1550"  "50 15 * * 1-5"  "fetch-earnings-options"
-    _schedule "earnings-opts-1630"  "30 16 * * 1-5"  "fetch-earnings-options"
 
     # AlphaVantage monthly intraday — 1st of each month 9 PM ET
     _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
