@@ -73,7 +73,6 @@ You are the Data Validation agent. Run a comprehensive health check on the tradi
    |----------|----------|--------|----------------|
    | fetch-market-data | date | success/failure | market_data_* |
    | fetch_etf_options | date | success/failure | etf_options_snapshots |
-   | fetch-earnings-options | date | success/failure | earnings_options_snapshots |
 
    ### Issues Found
    - [issue description — responsible fetcher — suggested action]

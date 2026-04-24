@@ -37,7 +37,6 @@ List every modified, added, and deleted file. Do not proceed until you have a co
 | `gcp/weekend_review.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (Weekend Review flow) | Aggregation changes |
 | `gcp/fetchers/fetch_market_data.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 Data Flow | Fetch logic, new tickers |
 | `gcp/fetchers/fetch_etf_options.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (ETF Options flow) | Session times, Greeks calc |
-| `gcp/fetchers/fetch_earnings_options.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 Data Flow | Batch size, active ticker source |
 | `gcp/fetchers/fetch_alphavantage_intraday.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (AlphaVantage flow) | Rate limiting, key rotation |
 | `gcp/schema.sql` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §11 Cloud SQL Schema | New tables, columns, indexes |
 | `gcp/migrate_to_gcp.py` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §12 Data Migration | New migration scope, column maps |
