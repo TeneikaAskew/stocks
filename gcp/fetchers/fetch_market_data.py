@@ -311,8 +311,63 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
         if val is not None and pd.notna(val):
             row[dst] = int(val) if dst in _INT_COLS else float(val)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Strat fields: classify the latest daily candle, detect any in-force
+    # combo, compute a daily+weekly FTFC score. Without these, the LLM
+    # pipeline's strat snapshot returns ftfc_score=0.0 for any ticker
+    # whose `premarket-brief` Cloud Run job hasn't run (e.g. one-off
+    # backfills like AVGO).
+    try:
+        from lib.strat import StratClassifier
+
+        # Build OHLC frame the classifier expects.
+        ohlc = enriched.rename(columns={'Open': 'Open', 'High': 'High',
+                                        'Low': 'Low', 'Close': 'Close'})
+        clf = StratClassifier()
+        # Daily candle
+        labels = clf.classify_series(ohlc[['Open', 'High', 'Low', 'Close']])
+        last_candle = labels.iloc[-1]
+        # Combo detection
+        combos = clf.detect_combos(ohlc[['Open', 'High', 'Low', 'Close']], labels)
+        last_combo = None
+        if not combos.empty:
+            last_combo_row = combos.iloc[-1]
+            last_combo = (last_combo_row.get('combo')
+                          if isinstance(last_combo_row, pd.Series)
+                          else None)
+
+        # Weekly resample for FTFC. With daily-only data we can build
+        # 'D' and 'W'; intraday timeframes ('5m','15m','1h') are absent
+        # here. Override weights so D + W sum to 1.0.
+        df_dt = enriched.copy()
+        df_dt['date'] = df['date'].values  # retain date col from raw frame
+        df_dt = df_dt.set_index(pd.to_datetime(df_dt['date']))
+        weekly = df_dt[['Open', 'High', 'Low', 'Close']].resample('W').agg({
+            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last',
+        }).dropna()
+        ftfc_inputs = {'D': df_dt[['Open', 'High', 'Low', 'Close']]}
+        if len(weekly) >= 2:
+            ftfc_inputs['W'] = weekly
+        ftfc_score, ftfc_dir, _labels = clf.calculate_ftfc(
+            ftfc_inputs, weights={'D': 0.7, 'W': 0.3},
+        )
+
+        if last_candle and last_candle != 'X':
+            row['strat_candle'] = str(last_candle)
+        if last_combo:
+            row['strat_combo'] = str(last_combo)[:30]
+        row['ftfc_score'] = float(ftfc_score) if ftfc_score is not None else 0.0
+        row['ftfc_direction'] = str(ftfc_dir or 'mixed')[:10]
+        # `strat_setup` is true when FTFC aligns directionally and a
+        # combo is in force — the `premarket-brief` definition.
+        row['strat_setup'] = bool(
+            last_combo and abs(ftfc_score or 0.0) >= 0.3
+        )
+    except Exception as e:
+        log.warning("    Strat compute failed for %s: %s", ticker, e)
+
     upsert_dataframe(pd.DataFrame([row]), 'market_data_daily', ['ticker', 'date'])
-    log.info("    ✓ daily indicators computed (%d bars context)", len(df))
+    log.info("    ✓ daily indicators + strat computed (%d bars context)", len(df))
 
 
 def write_intraday_to_sql(ticker: str, df: pd.DataFrame, fetch_date: str):
