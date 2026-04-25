@@ -567,10 +567,10 @@ CREATE TABLE IF NOT EXISTS journal_entries (
 CREATE INDEX IF NOT EXISTS idx_journal_entries_ticker_ts
     ON journal_entries (ticker, entry_ts DESC);
 
--- Reuse the existing update_updated_at_column() trigger function
+-- Reuse the existing set_updated_at() trigger function defined below
 CREATE OR REPLACE TRIGGER set_journal_updated_at
     BEFORE UPDATE ON journal_entries
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 
 -- ─────────────────────────────────────────────────────────
@@ -779,14 +779,15 @@ CREATE TABLE IF NOT EXISTS news_sentiment (
 CREATE INDEX IF NOT EXISTS idx_news_sentiment_ticker_ts
     ON news_sentiment (ticker, published_ts DESC);
 
--- GIN index for fast `topics @> ARRAY['mergers_and_acquisitions']` lookups.
-CREATE INDEX IF NOT EXISTS idx_news_sentiment_topics
-    ON news_sentiment USING GIN (topics);
-
 -- Live migration for existing deployments: add the topics + overall
 -- sentiment columns introduced alongside the multi-ticker capture
--- rebuild of fetch_news_sentiment.py. Idempotent.
+-- rebuild of fetch_news_sentiment.py. Idempotent. Must run BEFORE the
+-- GIN index below, because pre-existing deployments lack `topics`.
 ALTER TABLE news_sentiment
     ADD COLUMN IF NOT EXISTS overall_sentiment_score DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS overall_sentiment_label VARCHAR(20),
     ADD COLUMN IF NOT EXISTS topics TEXT[];
+
+-- GIN index for fast `topics @> ARRAY['mergers_and_acquisitions']` lookups.
+CREATE INDEX IF NOT EXISTS idx_news_sentiment_topics
+    ON news_sentiment USING GIN (topics);
