@@ -9,7 +9,10 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "e2e": "playwright test --project=chromium",
+    "e2e:cloud:auth": "playwright test --project=iap-setup --headed",
+    "e2e:cloud": "playwright test --project=cloud"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.21",

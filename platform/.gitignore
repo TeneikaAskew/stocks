@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Playwright IAP cookie store (interactive auth output)
+tests/.auth/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
