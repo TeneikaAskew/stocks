@@ -292,6 +292,31 @@ deploy_fetch_earnings_calendar() {
 # The list-valued env vars are set via a follow-up --update-env-vars
 # call using gcloud's "^@^" delimiter syntax, because the default
 # comma delimiter would split SPY,IWM,QQQ into three separate vars.
+deploy_fetch_sec_filings() {
+    echo "Deploying fetch-sec-filings job..."
+    # SEC requires a descriptive User-Agent identifying the organization
+    # and a contact email. Pulled from Secret Manager so individual
+    # operators can set their own without touching the deploy script.
+    local sec_ua env
+    sec_ua="$(_secret sec-user-agent 2>/dev/null || true)"
+    env="$(_env_string)${sec_ua:+,SEC_USER_AGENT=${sec_ua}}"
+
+    gcloud run jobs create fetch-sec-filings \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_sec_filings" \
+        --set-env-vars "${env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-sec-filings \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.fetchers.fetch_sec_filings" \
+        --set-env-vars "${env}" \
+        --quiet
+}
+
 deploy_fetch_earnings_history() {
     echo "Deploying fetch-earnings-history job..."
     # 1800s timeout: pulls ~100-300 tickers (anyone reporting in next 90d).
@@ -374,6 +399,7 @@ deploy_fetchers() {
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
     deploy_fetch_earnings_history
+    deploy_fetch_sec_filings
     deploy_fetch_news_sentiment
     deploy_fetch_news_sentiment_topics
 }
@@ -432,6 +458,27 @@ deploy_schedulers() {
     # Earnings history (AV EARNINGS, per-ticker quarterly EPS) — Sunday 6 AM ET.
     # Weekly cadence is enough since past quarters never change.
     _schedule "earnings-history-weekly"  "0 6 * * 0"  "fetch-earnings-history"
+
+    # SEC EDGAR filings — every 30min during market hours, hourly otherwise.
+    # 8-Ks (material events) hit at any time; M&A and earnings preannouncements
+    # are the highest-impact catalysts and appear only here at zero cost.
+    _schedule "sec-filings-0930"  "30 9 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1000"  "0 10 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1030"  "30 10 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1100"  "0 11 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1130"  "30 11 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1200"  "0 12 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1230"  "30 12 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1300"  "0 13 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1330"  "30 13 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1400"  "0 14 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1430"  "30 14 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1500"  "0 15 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1530"  "30 15 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1600"  "0 16 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1700"  "0 17 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-2000"  "0 20 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-0700"  "0 7 * * 1-5"    "fetch-sec-filings"
 
     # News sentiment — 3x per trading day (pre-market, midday, post-close)
     # Ticker mode: always-on watchlist (SPY/IWM/QQQ).
