@@ -395,12 +395,9 @@ def signal_historical_earnings_reaction(
 # ---------------------------------------------------------------------------
 
 
-def signal_insider_cluster(
-    ticker: str, days: int = 30,
-    big_value_threshold: float = 1_000_000.0,
-) -> dict:
-    """Cluster of insider transactions within window."""
-    df = _query(
+def _insider_window(ticker: str, days: int):
+    """Shared SQL fetch for insider buying + selling signals."""
+    return _query(
         """
         SELECT executive, transaction_type, shares, share_price,
                COALESCE(transaction_value, shares * share_price) AS value
@@ -410,35 +407,63 @@ def signal_insider_cluster(
         """,
         {"ticker": ticker.upper(), "days": days},
     )
+
+
+def _insider_score(df, side: str, big_value_threshold: float) -> dict:
+    """Score one side (buys or sells) of insider activity."""
+    code = "A" if side == "buy" else "D"
+    side_df = df[df["transaction_type"] == code] if df is not None else None
+    if side_df is None or side_df.empty:
+        return {"available": True, "score_0_to_1": 0.0,
+                "reason": f"no insider {side}ing", "raw": {side + "s": 0}}
+    n_people = int(side_df["executive"].nunique())
+    big_n = int((side_df["value"].fillna(0) >= big_value_threshold).sum())
+    cluster_pts = min(n_people / 3.0, 1.0) * 0.6
+    big_pts = min(big_n / 1.0, 1.0) * 0.4
+    score = min(cluster_pts + big_pts, 1.0)
+    total_value = float(side_df["value"].fillna(0).sum())
+    return {
+        "available": True, "score_0_to_1": round(score, 3),
+        "reason": (
+            f"{n_people} insider(s) {side}ing, {len(side_df)} txns, "
+            f"{big_n} >${big_value_threshold/1e6:.1f}M, total ${total_value/1e6:.1f}M"
+        ),
+        "raw": {
+            "side": side, "txns": int(len(side_df)),
+            "unique_insiders": n_people, "big_transactions": big_n,
+            "total_value": total_value,
+        },
+    }
+
+
+def signal_insider_buying(
+    ticker: str, days: int = 30,
+    big_value_threshold: float = 1_000_000.0,
+) -> dict:
+    """Cluster of insider acquisitions (transaction_type=A) — bullish."""
+    df = _insider_window(ticker, days)
     if df is None or df.empty:
         return {"available": True, "score_0_to_1": 0.0,
                 "reason": f"no insider transactions in {days}d",
                 "raw": {"transactions": 0}}
+    return _insider_score(df, "buy", big_value_threshold)
 
-    n_insiders = df["executive"].nunique()
-    big_txns = df[df["value"].fillna(0) >= big_value_threshold]
-    n_buys = (df["transaction_type"] == "A").sum()
-    n_sells = (df["transaction_type"] == "D").sum()
 
-    # 3+ insiders OR a single >$1M transaction = max signal
-    cluster_pts = min(n_insiders / 3.0, 1.0) * 0.6
-    big_pts = min(len(big_txns) / 1.0, 1.0) * 0.4
-    score = min(cluster_pts + big_pts, 1.0)
-    direction = "buy" if n_buys > n_sells else "sell" if n_sells > n_buys else "mixed"
+def signal_insider_selling(
+    ticker: str, days: int = 30,
+    big_value_threshold: float = 1_000_000.0,
+) -> dict:
+    """Cluster of insider disposals (transaction_type=D) — bearish.
 
-    return {
-        "available": True, "score_0_to_1": round(score, 3),
-        "reason": (
-            f"{n_insiders} insider(s), {n_buys} buys / {n_sells} sells, "
-            f"{len(big_txns)} >${big_value_threshold/1e6:.1f}M, dir={direction}"
-        ),
-        "raw": {
-            "transactions": len(df), "unique_insiders": int(n_insiders),
-            "buys": int(n_buys), "sells": int(n_sells),
-            "big_transactions": len(big_txns),
-            "direction": direction,
-        },
-    }
+    Returns a positive score_0_to_1; the ranker config gives this signal
+    a *negative* weight so the contribution to total score is negative.
+    """
+    df = _insider_window(ticker, days)
+    if df is None or df.empty:
+        return {"available": True, "score_0_to_1": 0.0,
+                "reason": f"no insider transactions in {days}d",
+                "raw": {"transactions": 0}}
+    return _insider_score(df, "sell", big_value_threshold)
 
 
 # ---------------------------------------------------------------------------
@@ -550,7 +575,8 @@ ALL_SIGNALS = {
     "sentiment_shift": signal_sentiment_shift,
     "liquidity": signal_liquidity,
     "historical_earnings_reaction": signal_historical_earnings_reaction,
-    "insider_cluster": signal_insider_cluster,
+    "insider_buying": signal_insider_buying,
+    "insider_selling": signal_insider_selling,
     "is_top_mover_today": signal_is_top_mover,
     "has_recent_8k": signal_recent_8k,
 }
