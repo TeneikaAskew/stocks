@@ -6,6 +6,7 @@ import {
   Lock, ArrowUpRight, Users, Building, Presentation, Monitor,
   Video, Briefcase,
 } from 'lucide-react';
+import { useThemeStore } from '@/stores/themeStore';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -43,27 +44,51 @@ const ICON_MAP: Record<string, typeof TrendingUp> = {
   GitMerge, Shield, Star, Globe,
 };
 
-const TYPE_CONFIG: Record<string, { label: string; color: string; icon: typeof TrendingUp }> = {
-  EARNINGS:           { label: 'Earnings',    color: '#e74c3c', icon: TrendingUp },
-  CONFERENCE_CALL:    { label: 'Conf. Call',  color: '#3498db', icon: Phone },
-  GUIDANCE:           { label: 'Guidance',    color: '#f39c12', icon: Target },
-  DIVIDEND:           { label: 'Dividend',    color: '#27ae60', icon: DollarSign },
-  SPLIT:              { label: 'Split',       color: '#9b59b6', icon: Scissors },
-  IPO:                { label: 'IPO',         color: '#1abc9c', icon: Rocket },
-  MERGER_ACQUISITION: { label: 'M&A',         color: '#e67e22', icon: GitMerge },
-  FDA:                { label: 'FDA',         color: '#c0392b', icon: Shield },
-  ANALYST_RATING:     { label: 'Rating',      color: '#2980b9', icon: Star },
-  ECONOMIC:           { label: 'Economic',    color: '#7f8c8d', icon: Globe },
+// Tone palette: each entry is a (dark-mode, light-mode) hex pair chosen so
+// the same tone reads at WCAG AA on both surface-2 dark (#282a2e) and
+// surface-2 light (#e4e7ee). Replaces the original flat-UI palette which
+// was tuned for dark backgrounds only and failed AA on the light surface
+// (e.g. #1abc9c → 2.3:1, #f39c12 → 2.4:1) and also failed in dark for the
+// near-black tones (#34495e → 1.6:1, #2c3e50 → 1.4:1).
+type Tone = 'red' | 'orange' | 'amber' | 'green' | 'teal' | 'blue' | 'indigo' | 'purple' | 'neutral';
+
+const TONE_PALETTE: Record<Tone, { dark: string; light: string }> = {
+  red:     { dark: '#f87171', light: '#b91c1c' },
+  orange:  { dark: '#fb923c', light: '#c2410c' },
+  amber:   { dark: '#fbbf24', light: '#b45309' },
+  green:   { dark: '#4ade80', light: '#15803d' },
+  teal:    { dark: '#2dd4bf', light: '#0f766e' },
+  blue:    { dark: '#60a5fa', light: '#1d4ed8' },
+  indigo:  { dark: '#a5b4fc', light: '#4338ca' },
+  purple:  { dark: '#c084fc', light: '#6d28d9' },
+  neutral: { dark: '#94a3b8', light: '#475569' },
+};
+
+function toneColor(tone: Tone, theme: 'dark' | 'light'): string {
+  return TONE_PALETTE[tone][theme];
+}
+
+const TYPE_CONFIG: Record<string, { label: string; tone: Tone; icon: typeof TrendingUp }> = {
+  EARNINGS:           { label: 'Earnings',    tone: 'red',     icon: TrendingUp },
+  CONFERENCE_CALL:    { label: 'Conf. Call',  tone: 'blue',    icon: Phone },
+  GUIDANCE:           { label: 'Guidance',    tone: 'amber',   icon: Target },
+  DIVIDEND:           { label: 'Dividend',    tone: 'green',   icon: DollarSign },
+  SPLIT:              { label: 'Split',       tone: 'purple',  icon: Scissors },
+  IPO:                { label: 'IPO',         tone: 'teal',    icon: Rocket },
+  MERGER_ACQUISITION: { label: 'M&A',         tone: 'orange',  icon: GitMerge },
+  FDA:                { label: 'FDA',         tone: 'red',     icon: Shield },
+  ANALYST_RATING:     { label: 'Rating',      tone: 'blue',    icon: Star },
+  ECONOMIC:           { label: 'Economic',    tone: 'neutral', icon: Globe },
   // Corporate Events API types
-  CORPORATE_EVENT:    { label: 'Corp. Event', color: '#34495e', icon: Calendar },
-  INVESTOR_CONFERENCE:{ label: 'Conference',  color: '#8e44ad', icon: Users },
-  SUMMIT:             { label: 'Summit',      color: '#16a085', icon: Globe },
-  SHAREHOLDER_MEETING:{ label: 'Shareholder', color: '#2c3e50', icon: Building },
-  ANALYST_DAY:        { label: 'Analyst Day', color: '#e74c3c', icon: Presentation },
-  INVESTOR_DAY:       { label: 'Investor Day',color: '#d35400', icon: Users },
-  PRESENTATION:       { label: 'Presentation',color: '#2980b9', icon: Monitor },
-  BUSINESS_UPDATE:    { label: 'Biz Update',  color: '#f39c12', icon: Briefcase },
-  WEBCAST:            { label: 'Webcast',     color: '#1abc9c', icon: Video },
+  CORPORATE_EVENT:    { label: 'Corp. Event', tone: 'neutral', icon: Calendar },
+  INVESTOR_CONFERENCE:{ label: 'Conference',  tone: 'purple',  icon: Users },
+  SUMMIT:             { label: 'Summit',      tone: 'teal',    icon: Globe },
+  SHAREHOLDER_MEETING:{ label: 'Shareholder', tone: 'neutral', icon: Building },
+  ANALYST_DAY:        { label: 'Analyst Day', tone: 'red',     icon: Presentation },
+  INVESTOR_DAY:       { label: 'Investor Day',tone: 'orange',  icon: Users },
+  PRESENTATION:       { label: 'Presentation',tone: 'indigo',  icon: Monitor },
+  BUSINESS_UPDATE:    { label: 'Biz Update',  tone: 'amber',   icon: Briefcase },
+  WEBCAST:            { label: 'Webcast',     tone: 'teal',    icon: Video },
 };
 
 const IMPACT_COLORS: Record<string, string> = {
@@ -127,12 +152,14 @@ function getRelativeLabel(dateStr: string): string | null {
 // ── Components ─────────────────────────────────────────────────────────────
 
 function CatalystBadge({ type }: { type: string }) {
-  const config = TYPE_CONFIG[type] || { label: type, color: '#95a5a6', icon: Calendar };
+  const theme = useThemeStore((s) => s.theme);
+  const config = TYPE_CONFIG[type] || { label: type, tone: 'neutral' as Tone, icon: Calendar };
+  const color = toneColor(config.tone, theme);
   const Icon = config.icon;
   return (
     <span
       className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide"
-      style={{ backgroundColor: config.color + '22', color: config.color, border: `1px solid ${config.color}44` }}
+      style={{ backgroundColor: color + '22', color, border: `1px solid ${color}44` }}
     >
       <Icon size={11} />
       {config.label}
@@ -227,6 +254,7 @@ function WSHUpgradeBanner({ types }: { types: CatalystTypesResponse | undefined 
 // ── Main page ──────────────────────────────────────────────────────────────
 
 export default function CatalystsPage() {
+  const theme = useThemeStore((s) => s.theme);
   const today = new Date();
   const [dateFrom] = useState(() => {
     const d = new Date(today);
@@ -301,6 +329,7 @@ export default function CatalystsPage() {
           </button>
           {Array.from(allTypes).sort().map(type => {
             const config = TYPE_CONFIG[type];
+            const chipColor = config ? toneColor(config.tone, theme) : null;
             return (
               <button
                 key={type}
@@ -311,11 +340,11 @@ export default function CatalystsPage() {
                     : 'bg-[var(--surface-2)] text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)]'
                 }`}
                 style={
-                  activeFilter === type && config
+                  activeFilter === type && chipColor
                     ? {
-                        backgroundColor: config.color + '33',
-                        color: config.color,
-                        border: `1px solid ${config.color}55`,
+                        backgroundColor: chipColor + '33',
+                        color: chipColor,
+                        border: `1px solid ${chipColor}55`,
                       }
                     : undefined
                 }

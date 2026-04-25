@@ -88,9 +88,12 @@
   --brand-glow: #3b9fde;
   --on-brand: #ffffff;
 
-  --bull: #16a34a;
-  --bear: #dc2626;
-  --warn: #d97706;
+  /* Darkened for AA contrast on --surface-1/--surface-2 light cards.
+     The previous values (#16a34a / #dc2626 / #d97706) only hit ~2.5:1 against
+     surface-2 (#e4e7ee), failing AA for normal text. These shades clear 4.5:1. */
+  --bull: #15803d;
+  --bear: #b91c1c;
+  --warn: #b45309;
 
   --chart-grid: #e4e7ee;
   --chart-axis: #6e7781;
@@ -336,6 +339,20 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover {
   background: var(--surface-3);
   border-color: var(--outline);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Semantic text colors — swap automatically with theme.
+   Prefer these over Tailwind's `text-green-400` / `text-red-400` / `text-amber-400`
+   etc., which use fixed pastel shades that fail WCAG AA on light surfaces.
+   ───────────────────────────────────────────────────────────────────────── */
+.text-bull { color: var(--bull); }
+.text-bear { color: var(--bear); }
+.text-warn { color: var(--warn); }
+.text-brand { color: var(--brand); }
+
+/* GEX negative gamma — violet in dark, deeper purple in light for contrast */
+.text-gex-negative { color: #a78bfa; }
+[data-theme="light"] .text-gex-negative { color: #6d28d9; }
 
 /* Glass pill — for "Live Data" indicators and status tags */
 .pill-glass {

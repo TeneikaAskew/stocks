@@ -60,7 +60,7 @@ const columns = [
   columnHelper.accessor('direction', {
     header: 'Dir',
     cell: i => (
-      <span className={`text-xs font-bold ${String(i.getValue()) === 'CALL' ? 'text-green-400' : 'text-red-400'}`}>
+      <span className={`text-xs font-bold ${String(i.getValue()) === 'CALL' ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
         {String(i.getValue())}
       </span>
     ),
@@ -72,7 +72,7 @@ const columns = [
     cell: i => {
       const v = Number(i.getValue());
       return (
-        <span className={`font-mono text-xs font-medium ${v >= 7 ? 'text-green-400' : v >= 5 ? 'text-amber-400' : 'text-[var(--color-text-muted)]'}`}>
+        <span className={`font-mono text-xs font-medium ${v >= 7 ? 'text-[var(--bull)]' : v >= 5 ? 'text-[var(--warn)]' : 'text-[var(--color-text-muted)]'}`}>
           {v.toFixed(1)}
         </span>
       );
@@ -92,7 +92,7 @@ const columns = [
       if (v == null) return <span className="text-xs text-[var(--color-text-muted)]">--</span>;
       const n = Number(v);
       return (
-        <span className={`font-mono text-xs ${n > 70 ? 'text-red-400' : n < 30 ? 'text-green-400' : 'text-[var(--color-text-secondary)]'}`}>
+        <span className={`font-mono text-xs ${n > 70 ? 'text-[var(--bear)]' : n < 30 ? 'text-[var(--bull)]' : 'text-[var(--color-text-secondary)]'}`}>
           {n.toFixed(1)}
         </span>
       );
@@ -234,7 +234,7 @@ export default function SignalsPage() {
             title={isReview ? 'Set by global historical mode — clear review mode to edit' : undefined}
           />
           {isReview && (
-            <span className="text-[10px] text-amber-400">global</span>
+            <span className="text-[10px] text-[var(--warn)]">global</span>
           )}
         </div>
 
@@ -249,7 +249,7 @@ export default function SignalsPage() {
       </div>
 
       {isError && (
-        <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400">
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-[var(--warn)]">
           <AlertTriangle size={16} />
           Signal data not found for {activeTicker}. Run the signals generation pipeline first.
         </div>
