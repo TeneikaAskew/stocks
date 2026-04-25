@@ -81,6 +81,10 @@ const TYPE_CONFIG: Record<string, { label: string; tone: Tone; icon: typeof Tren
   PRESENTATION:       { label: 'Presentation',tone: 'indigo',  icon: Monitor },
   BUSINESS_UPDATE:    { label: 'Biz Update',  tone: 'amber',   icon: Briefcase },
   WEBCAST:            { label: 'Webcast',     tone: 'teal',    icon: Video },
+  // DB-sourced events (news with catalyst topics + SEC 8-K filings)
+  NEWS_CATALYST:      { label: 'News',        tone: 'blue',    icon: Globe },
+  EARNINGS_NEWS:      { label: 'Earnings News',tone: 'red',    icon: TrendingUp },
+  SEC_8K:             { label: '8-K',         tone: 'amber',   icon: Briefcase },
 };
 
 const IMPACT_COLORS: Record<string, string> = {

@@ -121,18 +121,12 @@ async def get_catalyst_events(
     if refresh or not CATALYSTS_FILE.exists():
         events = _fetch_live_events(d_from, d_to, ticker_list)
 
-    # Fall back to cache
+    # Fall back to cache. If no Benzinga data is available, fall through
+    # with an empty list — our own DB sources (news / SEC) below still
+    # populate the feed so the page is never blank.
     if events is None:
         cached = _load_cached_events()
-        if cached:
-            events = cached.get("events", [])
-        else:
-            return {
-                "status": "no_data",
-                "message": "No catalyst data available. Set BENZINGA_API_KEY and call with refresh=true.",
-                "events_by_date": {},
-                "total": 0,
-            }
+        events = cached.get("events", []) if cached else []
 
     # Apply filters
     filtered = events
@@ -142,6 +136,14 @@ async def get_catalyst_events(
         filtered = [e for e in filtered if e.get("date", "") <= d_to]
     if ticker_list:
         filtered = [e for e in filtered if e.get("ticker", "").upper() in ticker_list]
+
+    # Merge our own DB-sourced catalyst events (news with catalyst topics
+    # + 8-K filings with material item codes). These complement Benzinga's
+    # earnings/M&A/dividend/IPO coverage with the realtime news stream
+    # and SEC filings we now collect ourselves.
+    db_events = _db_catalyst_events(d_from, d_to, ticker_list)
+    filtered = filtered + db_events
+
     if type_list:
         filtered = [e for e in filtered if e.get("catalyst_type", "").upper() in type_list]
 
@@ -156,13 +158,267 @@ async def get_catalyst_events(
     # Sort dates
     sorted_dates = dict(sorted(by_date.items()))
 
+    sources = ["Benzinga"]
+    if db_events:
+        sources.append(f"DB (news + sec, {len(db_events)})")
+
     return {
         "status": "ok",
-        "source": "Benzinga",
+        "source": " + ".join(sources),
         "date_range": {"from": d_from, "to": d_to},
         "total": len(filtered),
         "events_by_date": sorted_dates,
     }
+
+
+# ── DB-sourced catalyst event helpers ───────────────────────────────────────
+
+
+def _db_catalyst_events(
+    d_from: str, d_to: str, ticker_list: Optional[list[str]],
+) -> list[dict]:
+    """Pull news + 8-K events from Cloud SQL in the date range and shape
+    them like Benzinga events so the existing UI renders them.
+
+    Returns one entry per (ticker, day, source-event). News events are
+    deduped to one-per-(ticker, day, headline) so the catalyst page
+    doesn't drown in re-syndicated articles. 8-K events emit one row
+    per filing.
+    """
+    try:
+        from gcp.database import query_to_dataframe
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("DB catalyst lookup failed (db import): %s", exc)
+        return []
+
+    out: list[dict] = []
+
+    # ── 1. News with catalyst-tagged topics ───────────────────────────
+    news_sql = (
+        "SELECT ticker, published_ts::date AS date, title, "
+        "       overall_sentiment_label, sentiment_score, "
+        "       relevance_score, topics, url "
+        "FROM news_sentiment "
+        "WHERE published_ts::date BETWEEN CAST(:d_from AS date) "
+        "                              AND CAST(:d_to AS date) "
+        "  AND relevance_score >= 0.7 "
+        "  AND topics && ARRAY['mergers_and_acquisitions','earnings',"
+        "                      'ipo','economy_monetary']::TEXT[]"
+    )
+    params = {"d_from": d_from, "d_to": d_to}
+    try:
+        news_df = query_to_dataframe(news_sql, params)
+    except Exception as exc:
+        logger.warning("news catalyst lookup failed: %s", exc)
+        news_df = None
+
+    if news_df is not None and not news_df.empty:
+        # Filter by ticker_list if provided
+        if ticker_list:
+            news_df = news_df[news_df["ticker"].str.upper().isin(ticker_list)]
+        # Dedupe to one event per (ticker, date, headline)
+        seen: set[tuple] = set()
+        for _, r in news_df.iterrows():
+            tk = str(r.get("ticker") or "").upper()
+            if not tk:
+                continue
+            title = str(r.get("title") or "")[:200]
+            key = (tk, str(r["date"]), title)
+            if key in seen:
+                continue
+            seen.add(key)
+            topics = list(r.get("topics") or [])
+            # Map AV topic to a Benzinga-compatible catalyst_type so
+            # the existing TYPE_CONFIG renders a badge cleanly.
+            if "mergers_and_acquisitions" in topics:
+                cat_type = "MERGER_ACQUISITION"
+            elif "ipo" in topics:
+                cat_type = "IPO"
+            elif "economy_monetary" in topics:
+                cat_type = "ECONOMIC"
+            elif "earnings" in topics:
+                cat_type = "EARNINGS_NEWS"
+            else:
+                cat_type = "NEWS_CATALYST"
+            rel = float(r.get("relevance_score") or 0)
+            sent = float(r.get("sentiment_score") or 0)
+            impact = "High" if rel >= 0.9 and abs(sent) >= 0.4 else (
+                "Medium" if rel >= 0.7 and abs(sent) >= 0.2 else "Low"
+            )
+            out.append({
+                "date": str(r["date"]),
+                "ticker": tk,
+                "catalyst_type": cat_type,
+                "title": title,
+                "impact": impact,
+                "source": "AV news",
+                "url": str(r.get("url") or "") or None,
+                "sentiment_label": str(r.get("overall_sentiment_label") or ""),
+                "sentiment_score": round(sent, 2),
+                "relevance_score": round(rel, 2),
+            })
+
+    # ── 2. Economic events (CPI, GDP, FOMC, etc.) ─────────────────────
+    econ_sql = (
+        "SELECT event_date AS date, event_name AS title, importance, "
+        "       country, actual, forecast, previous "
+        "FROM economic_events "
+        "WHERE event_date BETWEEN CAST(:d_from AS date) "
+        "                      AND CAST(:d_to AS date) "
+        "  AND COALESCE(importance, '') IN ('high', 'medium')"
+    )
+    try:
+        econ_df = query_to_dataframe(econ_sql, params)
+    except Exception as exc:
+        logger.warning("economic_events catalyst lookup failed: %s", exc)
+        econ_df = None
+    if econ_df is not None and not econ_df.empty:
+        for _, r in econ_df.iterrows():
+            imp = str(r.get("importance") or "medium").lower()
+            out.append({
+                "date": str(r["date"]),
+                "ticker": "MACRO",
+                "catalyst_type": "ECONOMIC",
+                "title": str(r.get("title") or ""),
+                "impact": "High" if imp == "high" else "Medium",
+                "source": "FRED/Calendar",
+                "country": str(r.get("country") or ""),
+                "actual": str(r.get("actual") or ""),
+                "forecast": str(r.get("forecast") or ""),
+                "previous": str(r.get("previous") or ""),
+            })
+
+    # ── 3. Earnings calendar ──────────────────────────────────────────
+    earn_sql = (
+        "SELECT ticker, earnings_date AS date, company_name, "
+        "       earnings_time, eps_estimate "
+        "FROM earnings_calendar "
+        "WHERE earnings_date BETWEEN CAST(:d_from AS date) "
+        "                         AND CAST(:d_to AS date)"
+    )
+    try:
+        earn_df = query_to_dataframe(earn_sql, params)
+    except Exception as exc:
+        logger.warning("earnings_calendar catalyst lookup failed: %s", exc)
+        earn_df = None
+    if earn_df is not None and not earn_df.empty:
+        if ticker_list:
+            earn_df = earn_df[earn_df["ticker"].str.upper().isin(ticker_list)]
+        seen_e: set[tuple] = set()
+        for _, r in earn_df.iterrows():
+            tk = str(r.get("ticker") or "").upper()
+            if not tk:
+                continue
+            key = (tk, str(r["date"]))
+            if key in seen_e:
+                continue
+            seen_e.add(key)
+            company = str(r.get("company_name") or tk)
+            est = r.get("eps_estimate")
+            est_str = f", est {float(est):.2f}" if est not in (None, "") else ""
+            out.append({
+                "date": str(r["date"]),
+                "ticker": tk,
+                "catalyst_type": "EARNINGS",
+                "title": f"{company} earnings ({r.get('earnings_time') or 'unknown'}{est_str})",
+                "impact": "High",
+                "source": "AV earnings_calendar",
+            })
+
+    # ── 4. Insider clusters (≥3 distinct insiders, same ticker, ──────
+    #       same direction, within 3-day rolling window). One event
+    #       per (ticker, day, direction).
+    insider_sql = (
+        "SELECT ticker, transaction_date AS date, "
+        "       transaction_type, "
+        "       COUNT(DISTINCT executive) AS insiders, "
+        "       COUNT(*)                   AS txns, "
+        "       SUM(transaction_value)     AS total_value "
+        "FROM insider_transactions "
+        "WHERE transaction_date BETWEEN CAST(:d_from AS date) "
+        "                            AND CAST(:d_to AS date) "
+        "GROUP BY ticker, transaction_date, transaction_type "
+        "HAVING COUNT(DISTINCT executive) >= 3"
+    )
+    try:
+        ins_df = query_to_dataframe(insider_sql, params)
+    except Exception as exc:
+        logger.warning("insider_transactions catalyst lookup failed: %s", exc)
+        ins_df = None
+    if ins_df is not None and not ins_df.empty:
+        if ticker_list:
+            ins_df = ins_df[ins_df["ticker"].str.upper().isin(ticker_list)]
+        for _, r in ins_df.iterrows():
+            tk = str(r.get("ticker") or "").upper()
+            if not tk:
+                continue
+            kind = str(r.get("transaction_type") or "")
+            cat_type = "INSIDER_BUY" if kind == "A" else "INSIDER_SELL"
+            insiders = int(r.get("insiders") or 0)
+            total_value = float(r.get("total_value") or 0.0)
+            out.append({
+                "date": str(r["date"]),
+                "ticker": tk,
+                "catalyst_type": cat_type,
+                "title": (
+                    f"{insiders} insider{'s' if insiders > 1 else ''} "
+                    f"{'buying' if kind == 'A' else 'selling'} "
+                    f"~${total_value/1e6:.1f}M"
+                ),
+                "impact": "Medium",
+                "source": "AV insider",
+                "insiders": insiders,
+                "total_value": round(total_value, 0),
+            })
+
+    # ── 5. 8-K filings with material items ────────────────────────────
+    sec_sql = (
+        "SELECT ticker, filing_date AS date, form, items, primary_doc, "
+        "       accession_number "
+        "FROM sec_filings "
+        "WHERE filing_date BETWEEN CAST(:d_from AS date) "
+        "                       AND CAST(:d_to AS date) "
+        "  AND form = '8-K' "
+        "  AND items && ARRAY['1.01','2.01','5.02','7.01','8.01']::TEXT[]"
+    )
+    try:
+        sec_df = query_to_dataframe(sec_sql, params)
+    except Exception as exc:
+        logger.warning("sec_filings catalyst lookup failed: %s", exc)
+        sec_df = None
+
+    if sec_df is not None and not sec_df.empty:
+        if ticker_list:
+            sec_df = sec_df[sec_df["ticker"].str.upper().isin(ticker_list)]
+        ITEM_LABELS = {
+            "1.01": "Material Definitive Agreement",
+            "2.01": "Completed Acquisition / Disposition",
+            "5.02": "Officer Departure / Election",
+            "7.01": "Reg-FD Disclosure",
+            "8.01": "Other Events",
+        }
+        for _, r in sec_df.iterrows():
+            tk = str(r.get("ticker") or "").upper()
+            if not tk:
+                continue
+            items = list(r.get("items") or [])
+            labels = [ITEM_LABELS.get(it, it) for it in items if it in ITEM_LABELS]
+            if not labels:
+                continue
+            heavy = any(it in ("1.01", "2.01") for it in items)
+            out.append({
+                "date": str(r["date"]),
+                "ticker": tk,
+                "catalyst_type": "SEC_8K",
+                "title": f"8-K — {', '.join(labels)}",
+                "impact": "High" if heavy else "Medium",
+                "source": "SEC EDGAR",
+                "items": items,
+                "primary_doc": str(r.get("primary_doc") or ""),
+                "accession_number": str(r.get("accession_number") or ""),
+            })
+
+    return out
 
 
 @router.get("/api/catalysts/ticker/{ticker}")
