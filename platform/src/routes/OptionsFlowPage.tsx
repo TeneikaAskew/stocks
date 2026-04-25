@@ -9,8 +9,13 @@ import {
   type GEXByStrike,
   type NodeResult,
 } from '@/hooks/useOptionsGreeks';
+import {
+  useGammaLevels,
+  spotMethodLabel,
+  regimeLabel,
+} from '@/hooks/useGammaLevels';
 import * as d3 from 'd3';
-import { ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, AlertTriangle, Info } from 'lucide-react';
 
 type Metric = 'gex' | 'vex';
 type Filter = 'net' | 'calls' | 'puts';
@@ -286,20 +291,41 @@ export default function OptionsFlowPage() {
       }).strike
     : 0;
 
-  const spotPrice = spotOverride ? parseFloat(spotOverride) : estimatedSpot;
+  // Initial spot from local delta proxy (used until /levels returns the
+  // server-estimated parity-based spot).
+  const localSpot = spotOverride ? parseFloat(spotOverride) : estimatedSpot;
 
   // All Greek/node math is server-side. See lib/indicators.py discipline —
   // we never duplicate financial math in the app.
-  const greeksQuery = useOptionsGreeks(options, spotPrice);
+  const greeksQuery = useOptionsGreeks(options, localSpot);
   const greeks = greeksQuery.data ?? EMPTY_GREEKS;
   const gexData = greeks.gex_by_strike;
   const metrics = greeks.metrics;
   const nodes = greeks.nodes;
   const rangePct = greeks.config.strike_range_pct;
 
+  // Gamma flip / regime / Stratalyst-style King/Gate/Spot/Flip taxonomy
+  // come from the chain-source-aware /levels endpoint. The hook does its
+  // own server-side spot estimation (parity → delta → median fallback)
+  // so we don't depend on the local delta-proxy here.
+  const levelsQuery = useGammaLevels(activeTicker, selectedDate, {
+    spotOverride: spotOverride ? parseFloat(spotOverride) : undefined,
+    enabled: dates.length > 0 && !!selectedDate,
+  });
+  const gammaLevels = levelsQuery.data;
+  const flip = gammaLevels?.flip ?? null;
+  const regime = gammaLevels?.regime ?? 'unknown';
+  const spotMethod = gammaLevels?.spot.method;
+  const serverSpot = gammaLevels?.spot.price;
+  // Prefer server-estimated spot when available — it uses put-call parity
+  // which is far more accurate than the local delta proxy.
+  const finalSpot = spotOverride
+    ? parseFloat(spotOverride)
+    : (serverSpot && serverSpot > 0 ? serverSpot : estimatedSpot);
+
   // Display filter — bounded by the server's declared display range config.
-  const focusedGex = spotPrice > 0
-    ? gexData.filter(d => Math.abs(d.strike - spotPrice) / spotPrice <= rangePct)
+  const focusedGex = finalSpot > 0
+    ? gexData.filter(d => Math.abs(d.strike - finalSpot) / finalSpot <= rangePct)
     : gexData;
 
   const totalGex = metrics.total_gex;
@@ -371,11 +397,19 @@ export default function OptionsFlowPage() {
           <span className="text-xs text-[var(--color-text-muted)]">Spot:</span>
           <input
             type="number"
-            value={spotOverride || (estimatedSpot > 0 ? estimatedSpot.toFixed(2) : '')}
+            value={spotOverride || (finalSpot > 0 ? finalSpot.toFixed(2) : '')}
             onChange={e => setSpotOverride(e.target.value)}
             placeholder="price"
             className="w-20 rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-2 py-1 text-xs font-mono text-[var(--color-text-primary)]"
           />
+          {spotMethod && !spotOverride && (
+            <span
+              className="ml-1 rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-muted)]"
+              title={spotMethodLabel(spotMethod)}
+            >
+              {spotMethod}
+            </span>
+          )}
         </div>
       </div>
 
@@ -410,8 +444,34 @@ export default function OptionsFlowPage() {
         </div>
       )}
 
+      {/* Spot estimation failure — surface explicitly so the user knows
+          why the metrics + heatmap are missing. */}
+      {!isLoading && !datesLoading && options.length > 0 && finalSpot <= 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400">
+          <Info size={16} className="mt-0.5 shrink-0" />
+          <div>
+            <div className="font-semibold">Couldn't estimate spot from this chain</div>
+            <div className="mt-1 text-xs text-amber-300/90">
+              The chain has no put-call parity pairs, no usable deltas, and no
+              strikes. Enter a spot price manually in the toolbar above to
+              continue analyzing this snapshot.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Server-side warnings (e.g. median-strike fallback used) */}
+      {gammaLevels?.warnings && gammaLevels.warnings.length > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-300">
+          <Info size={14} className="mt-0.5 shrink-0" />
+          <div>
+            {gammaLevels.warnings.map((w, i) => <div key={i}>{w}</div>)}
+          </div>
+        </div>
+      )}
+
       {/* Metrics bar */}
-      {spotPrice > 0 && (
+      {finalSpot > 0 && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <MetricCard
             label={`Total ${metric.toUpperCase()}`}
@@ -420,8 +480,9 @@ export default function OptionsFlowPage() {
             changeLabel={displayMetricGex >= 0 ? 'Positive' : 'Negative'}
           />
           <MetricCard
-            label="Zero Gamma"
-            value={metrics.zero_gamma ? `$${metrics.zero_gamma.toFixed(2)}` : '--'}
+            label="Gamma Flip"
+            value={flip ? `$${flip.toFixed(2)}` : (metrics.zero_gamma ? `$${metrics.zero_gamma.toFixed(2)}` : '--')}
+            changeLabel={flip ? regimeLabel(regime).description : undefined}
           />
           <MetricCard
             label="Max Pain"
@@ -436,8 +497,58 @@ export default function OptionsFlowPage() {
         </div>
       )}
 
-      {/* Node summary */}
-      {nodes.kingNode && (
+      {/* Regime + Levels taxonomy (King/Gate/Spot/Flip) */}
+      {gammaLevels && finalSpot > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          {regime !== 'unknown' && (
+            <span
+              className={`rounded border px-2 py-1 font-semibold ${
+                regimeLabel(regime).tone === 'positive'
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                  : regimeLabel(regime).tone === 'negative'
+                  ? 'border-rose-500/30 bg-rose-500/10 text-rose-400'
+                  : 'border-[var(--color-border)] bg-[var(--surface-2)] text-[var(--color-text-muted)]'
+              }`}
+              title={regimeLabel(regime).description}
+            >
+              {regimeLabel(regime).label}
+            </span>
+          )}
+          {gammaLevels.kings.map(k => (
+            <span
+              key={`king-${k.strike}`}
+              className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-amber-400"
+              title={`Net GEX ${formatGEX(k.gex)} · OI ${k.call_oi}c / ${k.put_oi}p`}
+            >
+              ★ King ${k.strike.toFixed(2)}{' '}
+              <span className="text-[10px] opacity-70">
+                ({k.distance_pct >= 0 ? '+' : ''}{k.distance_pct.toFixed(1)}%)
+              </span>
+            </span>
+          ))}
+          {gammaLevels.gates.map(g => (
+            <span
+              key={`gate-${g.strike}`}
+              className="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-400"
+              title={`Net GEX ${formatGEX(g.gex)} · OI ${g.call_oi}c / ${g.put_oi}p`}
+            >
+              ◆ Gate ${g.strike.toFixed(2)}
+            </span>
+          ))}
+          {gammaLevels.flip_levels.map(f => (
+            <span
+              key={`flip-${f.strike}`}
+              className="rounded border border-violet-500/30 bg-violet-500/10 px-2 py-1 text-violet-400"
+              title={`Adjacent to flip @ ${flip?.toFixed(2) ?? '--'}`}
+            >
+              ⇅ Flip ${f.strike.toFixed(2)}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Fallback: original heatseeker node summary if /levels hasn't loaded yet */}
+      {!gammaLevels && nodes.kingNode && (
         <div className="flex flex-wrap gap-2 text-xs">
           <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-amber-400">
             ★ King: ${nodes.kingNode.strike.toFixed(0)} ({nodes.kingNode.distance_percent >= 0 ? '+' : ''}{nodes.kingNode.distance_percent.toFixed(1)}%)
@@ -456,7 +567,7 @@ export default function OptionsFlowPage() {
       )}
 
       {/* Heatmap */}
-      {focusedGex.length > 0 && spotPrice > 0 && (
+      {focusedGex.length > 0 && finalSpot > 0 && (
         <div className="rounded-xl bg-[var(--surface-2)] p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs text-[var(--color-text-muted)]">
@@ -470,7 +581,7 @@ export default function OptionsFlowPage() {
           </div>
           <GEXHeatmap
             gexData={focusedGex}
-            spotPrice={spotPrice}
+            spotPrice={finalSpot}
             filter={filter}
             nodes={nodes}
             atmTolerance={greeks.config.atm_tolerance}
