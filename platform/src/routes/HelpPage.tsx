@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Search } from 'lucide-react';
+import { useIndicatorConfig, type IndicatorConfig } from '@/hooks/useConfig';
 
 interface GlossaryEntry {
   term: string;
@@ -8,7 +9,22 @@ interface GlossaryEntry {
   category: string;
 }
 
-const GLOSSARY: GlossaryEntry[] = [
+// Build the glossary array from the live indicator config so periods and
+// thresholds match what Python is actually using. When the config query is
+// still loading we substitute the documented defaults from lib/config.py
+// so the page never looks broken on first paint.
+function buildGlossary(cfg: IndicatorConfig | undefined): GlossaryEntry[] {
+  const rsiPeriod = cfg?.rsi.period ?? 14;
+  const rsiOversold = cfg?.rsi.oversold ?? 30;
+  const rsiOverbought = cfg?.rsi.overbought ?? 70;
+  const emaFast = cfg?.ema.periods[0] ?? 9;
+  const emaMid = cfg?.ema.periods[1] ?? 20;
+  const stochOversold = cfg?.stoch_rsi.oversold ?? 20;
+  const stochOverbought = cfg?.stoch_rsi.overbought ?? 80;
+  const rvolThreshold = cfg?.rvol.signal_threshold ?? 1.0;
+  const minConditions = cfg?.signal.min_conditions ?? 3;
+
+  return [
   // Strategy & Signals
   { term: 'Win Rate', short: 'Percentage of trades that were profitable.', detail: 'A 41% win rate means roughly 4 out of every 10 trades made money. Win rate alone doesn\'t determine profitability — if winners are larger than losers, you can profit with a low win rate.', category: 'Performance' },
   { term: 'Profit Factor', short: 'Total gains divided by total losses.', detail: 'A profit factor of 1.03 means for every $1 lost, the strategy made $1.03. Above 1.0 = profitable. Above 1.5 = strong. Below 1.0 = losing money.', category: 'Performance' },
@@ -27,15 +43,15 @@ const GLOSSARY: GlossaryEntry[] = [
   { term: 'RevStrat', short: 'Reversal Strat — a 3-bar reversal pattern.', detail: 'Occurs when a 3 (outside bar) reverses the prior direction. For example, a bearish move followed by a 3 that takes out the prior high signals a potential bullish reversal.', category: 'The Strat' },
 
   // Technical Indicators
-  { term: 'RSI (Relative Strength Index)', short: 'Momentum oscillator measuring speed of price changes (0-100).', detail: 'Below 30 = oversold (potential bounce). Above 70 = overbought (potential pullback). The strategy uses RSI 14 (14-period) as the primary. RSI between 40-60 is neutral.', category: 'Indicators' },
-  { term: 'EMA (Exponential Moving Average)', short: 'A moving average that weights recent prices more heavily.', detail: 'EMA 9 (fast) and EMA 20 (slow) are used. Price above EMA = bullish. EMA 9 crossing above EMA 20 = bullish signal. The strategy tracks "price vs EMA" as a percentage distance.', category: 'Indicators' },
+  { term: 'RSI (Relative Strength Index)', short: 'Momentum oscillator measuring speed of price changes (0-100).', detail: `Below ${rsiOversold} = oversold (potential bounce). Above ${rsiOverbought} = overbought (potential pullback). The strategy uses RSI ${rsiPeriod} (${rsiPeriod}-period) as the primary. RSI between 40-60 is neutral.`, category: 'Indicators' },
+  { term: 'EMA (Exponential Moving Average)', short: 'A moving average that weights recent prices more heavily.', detail: `EMA ${emaFast} (fast) and EMA ${emaMid} (slow) are used. Price above EMA = bullish. EMA ${emaFast} crossing above EMA ${emaMid} = bullish signal. The strategy tracks "price vs EMA" as a percentage distance.`, category: 'Indicators' },
   { term: 'SMA 200', short: '200-day Simple Moving Average — the long-term trend line.', detail: 'Price above SMA 200 = long-term uptrend. Price below = downtrend. Institutional traders watch this level closely.', category: 'Indicators' },
   { term: 'VWAP (Volume Weighted Average Price)', short: 'Average price weighted by volume throughout the day.', detail: 'Resets daily. Price above VWAP = buyers are in control. Below = sellers. Day traders use VWAP as a key level for entries and exits.', category: 'Indicators' },
   { term: 'MACD', short: 'Moving Average Convergence Divergence — trend and momentum indicator.', detail: 'Shows the relationship between two EMAs (12 and 26 period). MACD line crossing above signal line = bullish. Histogram shows the gap between them.', category: 'Indicators' },
   { term: 'ATR (Average True Range)', short: 'Measures average price volatility over N periods.', detail: 'Higher ATR = more volatility = bigger potential moves (and bigger risk). Used for setting stop losses and profit targets proportional to current volatility.', category: 'Indicators' },
-  { term: 'RVOL (Relative Volume)', short: 'Current volume compared to the average for this time of day.', detail: 'RVOL 1.5 = 50% more volume than usual. High RVOL confirms that a move has participation. Low RVOL moves are more likely to reverse. The strategy requires RVOL > 1.5 for signals.', category: 'Indicators' },
+  { term: 'RVOL (Relative Volume)', short: 'Current volume compared to the average for this time of day.', detail: `RVOL 1.5 = 50% more volume than usual. High RVOL confirms that a move has participation. Low RVOL moves are more likely to reverse. The strategy requires RVOL > ${rvolThreshold.toFixed(1)} for signals.`, category: 'Indicators' },
   { term: 'Bollinger Bands', short: 'Volatility bands plotted 2 standard deviations from a moving average.', detail: 'Price touching the upper band = extended/overbought. Lower band = oversold. Band width expanding = increasing volatility. Squeezing = low vol, potential breakout coming.', category: 'Indicators' },
-  { term: 'StochRSI', short: 'RSI applied to RSI — a more sensitive momentum oscillator.', detail: 'Ranges from 0 to 100. Below 20 = oversold. Above 80 = overbought. More responsive than regular RSI, so it gives earlier signals but more false positives.', category: 'Indicators' },
+  { term: 'StochRSI', short: 'RSI applied to RSI — a more sensitive momentum oscillator.', detail: `Ranges from 0 to 100. Below ${stochOversold} = oversold. Above ${stochOverbought} = overbought. More responsive than regular RSI, so it gives earlier signals but more false positives.`, category: 'Indicators' },
 
   // ORB
   { term: 'ORB (Opening Range Breakout)', short: 'Trading strategy based on the first N minutes of the session.', detail: 'The opening range is defined by the high and low of the first 5, 15, or 30 minutes. A breakout above the ORB high is bullish; below the ORB low is bearish. Used with volume confirmation.', category: 'ORB' },
@@ -52,8 +68,8 @@ const GLOSSARY: GlossaryEntry[] = [
   { term: 'GEX (Gamma Exposure)', short: 'Net gamma exposure of market makers at each strike.', detail: 'Positive GEX = market makers hedge by selling rallies and buying dips (dampens moves). Negative GEX = they amplify moves. Key for predicting intraday volatility.', category: 'Options' },
 
   // Signals & Scoring
-  { term: 'Signal Score', short: 'Number of conditions met out of 5 for a trade entry.', detail: 'The system checks 5 conditions (RSI range, EMA alignment, VWAP position, RVOL threshold, StochRSI). A score of 3/5 is the minimum for a signal. Higher = stronger conviction.', category: 'Signals' },
-  { term: 'Base Score', short: 'Score from the 5 core signal conditions.', detail: 'Each met condition adds 1 point. Range: 0-5. The minimum threshold for a valid signal is 3.', category: 'Signals' },
+  { term: 'Signal Score', short: 'Number of conditions met out of 5 for a trade entry.', detail: `The system checks 5 conditions (RSI range, EMA alignment, VWAP position, RVOL threshold, StochRSI). A score of ${minConditions}/5 is the minimum for a signal. Higher = stronger conviction.`, category: 'Signals' },
+  { term: 'Base Score', short: 'Score from the 5 core signal conditions.', detail: `Each met condition adds 1 point. Range: 0-5. The minimum threshold for a valid signal is ${minConditions}.`, category: 'Signals' },
   { term: 'Strat Bonus', short: 'Extra score points from Strat pattern alignment.', detail: 'Added to the base score when the Strat candle pattern and FTFC alignment support the signal direction. Can push a marginal signal into a strong one.', category: 'Signals' },
   { term: 'Conditions Met', short: 'Which of the 5 signal conditions are currently true.', detail: 'Displayed as "3/5" or "4/5". The conditions are: RSI in range, price vs EMA alignment, VWAP position, RVOL above minimum, and StochRSI confirmation.', category: 'Signals' },
 
@@ -68,16 +84,20 @@ const GLOSSARY: GlossaryEntry[] = [
   { term: 'Previous Day Levels', short: 'Yesterday\'s high, low, and close — key support/resistance.', detail: 'Price tends to react at these levels. Previous high = resistance (sellers may appear). Previous low = support (buyers may step in). Previous close = neutral pivot.', category: 'Dashboard' },
   { term: 'Consecutive Up/Down', short: 'Number of days in a row the stock closed higher (or lower).', detail: 'A streak of 3+ consecutive up days may signal overextension. Useful for mean-reversion and continuation setups.', category: 'Dashboard' },
   { term: 'Cloud SQL', short: 'The cloud database storing all market data and analysis.', detail: 'When connected, the dashboard pulls daily indicators, premarket analysis, and trade history from Google Cloud SQL. When disconnected, some features are unavailable.', category: 'Dashboard' },
-];
-
-const CATEGORIES = [...new Set(GLOSSARY.map(g => g.category))];
+  ];
+}
 
 export default function HelpPage() {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const filtered = GLOSSARY.filter(g => {
+  // Indicator config powers the periods/thresholds shown in the glossary.
+  const { data: indicatorCfg } = useIndicatorConfig();
+  const glossary = useMemo(() => buildGlossary(indicatorCfg), [indicatorCfg]);
+  const categories = useMemo(() => [...new Set(glossary.map((g) => g.category))], [glossary]);
+
+  const filtered = glossary.filter(g => {
     const matchesSearch = !search || g.term.toLowerCase().includes(search.toLowerCase()) || g.short.toLowerCase().includes(search.toLowerCase());
     const matchesCat = !activeCategory || g.category === activeCategory;
     return matchesSearch && matchesCat;
@@ -114,10 +134,10 @@ export default function HelpPage() {
               : 'border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'
           }`}
         >
-          All ({GLOSSARY.length})
+          All ({glossary.length})
         </button>
-        {CATEGORIES.map(cat => {
-          const count = GLOSSARY.filter(g => g.category === cat).length;
+        {categories.map(cat => {
+          const count = glossary.filter(g => g.category === cat).length;
           return (
             <button
               key={cat}

@@ -3,13 +3,12 @@ import { useQuery } from '@tanstack/react-query';
 import { useTickerStore } from '@/stores/tickerStore';
 import { MetricCard } from '@/components/shared/MetricCard';
 import {
-  aggregateByStrike,
-  calculateGEXByStrike,
-  computeAllMetrics,
-} from '@/lib/greeksCalculator';
-import type { OptionRecord, GEXByStrike } from '@/lib/greeksCalculator';
-import { detectNodes } from '@/lib/nodeAnalyzer';
-import type { NodeResult } from '@/lib/nodeAnalyzer';
+  useOptionsGreeks,
+  EMPTY_GREEKS,
+  type OptionRecord,
+  type GEXByStrike,
+  type NodeResult,
+} from '@/hooks/useOptionsGreeks';
 import * as d3 from 'd3';
 import { ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react';
 
@@ -73,9 +72,10 @@ interface HeatmapProps {
   spotPrice: number;
   filter: Filter;
   nodes: NodeResult;
+  atmTolerance: number;
 }
 
-function GEXHeatmap({ gexData, spotPrice, filter, nodes }: HeatmapProps) {
+function GEXHeatmap({ gexData, spotPrice, filter, nodes, atmTolerance }: HeatmapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const renderHeatmap = useCallback(() => {
@@ -162,7 +162,7 @@ function GEXHeatmap({ gexData, spotPrice, filter, nodes }: HeatmapProps) {
         .attr('dy', '0.35em')
         .attr('text-anchor', 'end')
         .attr('font-size', rowHeight < 20 ? 9 : 10)
-        .attr('fill', Math.abs(spotPrice - d.strike) / spotPrice < 0.005 ? '#f59e0b' : '#6b7280')
+        .attr('fill', Math.abs(spotPrice - d.strike) / spotPrice < atmTolerance ? '#f59e0b' : '#6b7280')
         .text(d.strike.toFixed(0));
 
       // Value label (right)
@@ -222,7 +222,7 @@ function GEXHeatmap({ gexData, spotPrice, filter, nodes }: HeatmapProps) {
       .attr('font-size', 9)
       .attr('fill', '#ef4444')
       .text(`$${spotPrice.toFixed(2)}`);
-  }, [gexData, spotPrice, filter, nodes]);
+  }, [gexData, spotPrice, filter, nodes, atmTolerance]);
 
   useEffect(() => {
     renderHeatmap();
@@ -288,21 +288,22 @@ export default function OptionsFlowPage() {
 
   const spotPrice = spotOverride ? parseFloat(spotOverride) : estimatedSpot;
 
-  // Aggregate and compute
-  const aggregated = aggregateByStrike(options);
-  const gexData = calculateGEXByStrike(aggregated, spotPrice || 1);
-  const metrics = spotPrice > 0 ? computeAllMetrics(options, spotPrice) : null;
-  const nodes = spotPrice > 0 ? detectNodes(aggregated, spotPrice) : {
-    kingNode: null, gatekeepers: [], midpoints: [], allNodes: []
-  };
+  // All Greek/node math is server-side. See lib/indicators.py discipline —
+  // we never duplicate financial math in the app.
+  const greeksQuery = useOptionsGreeks(options, spotPrice);
+  const greeks = greeksQuery.data ?? EMPTY_GREEKS;
+  const gexData = greeks.gex_by_strike;
+  const metrics = greeks.metrics;
+  const nodes = greeks.nodes;
+  const rangePct = greeks.config.strike_range_pct;
 
-  // Focus on ±15% range around spot
+  // Display filter — bounded by the server's declared display range config.
   const focusedGex = spotPrice > 0
-    ? gexData.filter(d => Math.abs(d.strike - spotPrice) / spotPrice <= 0.15)
+    ? gexData.filter(d => Math.abs(d.strike - spotPrice) / spotPrice <= rangePct)
     : gexData;
 
-  const totalGex = metrics?.totalGEX ?? 0;
-  const totalVex = metrics?.totalVEX ?? 0;
+  const totalGex = metrics.total_gex;
+  const totalVex = metrics.total_vex;
 
   const displayMetricGex = metric === 'gex' ? totalGex : totalVex;
 
@@ -410,7 +411,7 @@ export default function OptionsFlowPage() {
       )}
 
       {/* Metrics bar */}
-      {metrics && (
+      {spotPrice > 0 && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <MetricCard
             label={`Total ${metric.toUpperCase()}`}
@@ -420,17 +421,17 @@ export default function OptionsFlowPage() {
           />
           <MetricCard
             label="Zero Gamma"
-            value={metrics.zeroGamma ? `$${metrics.zeroGamma.toFixed(2)}` : '--'}
+            value={metrics.zero_gamma ? `$${metrics.zero_gamma.toFixed(2)}` : '--'}
           />
           <MetricCard
             label="Max Pain"
-            value={metrics.maxPain ? `$${metrics.maxPain.toFixed(0)}` : '--'}
+            value={metrics.max_pain ? `$${metrics.max_pain.toFixed(0)}` : '--'}
           />
           <MetricCard
             label="Put/Call OI"
-            value={metrics.putCallRatio.toFixed(2)}
-            change={metrics.putCallRatio > 1 ? -1 : 1}
-            changeLabel={metrics.putCallRatio > 1 ? 'Bearish skew' : 'Bullish skew'}
+            value={metrics.put_call_ratio.toFixed(2)}
+            change={metrics.put_call_ratio > 1 ? -1 : 1}
+            changeLabel={metrics.put_call_ratio > 1 ? 'Bearish skew' : 'Bullish skew'}
           />
         </div>
       )}
@@ -459,7 +460,7 @@ export default function OptionsFlowPage() {
         <div className="rounded-xl bg-[var(--surface-2)] p-3">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs text-[var(--color-text-muted)]">
-              {metric.toUpperCase()} by Strike — {filter === 'net' ? 'Net' : filter === 'calls' ? 'Calls Only' : 'Puts Only'} — ±15% range ({focusedGex.length} strikes)
+              {metric.toUpperCase()} by Strike — {filter === 'net' ? 'Net' : filter === 'calls' ? 'Calls Only' : 'Puts Only'} — ±{Math.round(rangePct * 100)}% range ({focusedGex.length} strikes)
             </span>
             <div className="flex gap-3 text-[10px] text-[var(--color-text-muted)]">
               <span className="text-emerald-400">■ Positive</span>
@@ -472,6 +473,7 @@ export default function OptionsFlowPage() {
             spotPrice={spotPrice}
             filter={filter}
             nodes={nodes}
+            atmTolerance={greeks.config.atm_tolerance}
           />
         </div>
       )}
