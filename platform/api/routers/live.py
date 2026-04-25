@@ -12,7 +12,9 @@ from datetime import datetime, time, date
 from pathlib import Path
 
 import httpx
+import pandas as pd
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from zoneinfo import ZoneInfo
 
 # Project root so we can import gcp.database alongside the other routers.
@@ -26,6 +28,15 @@ try:
 except Exception:
     _CLOUD_SQL = False
     query_to_dataframe = None  # type: ignore[assignment]
+
+# Canonical indicator implementations — single source of truth.
+from lib.indicators import (
+    calculate_atr,
+    calculate_ema,
+    calculate_rsi,
+    calculate_stoch_rsi,
+    calculate_vwap,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -342,4 +353,171 @@ async def get_avg_volume(ticker: str):
         "sample_size": len(volumes),
         "last_date": sorted_dates[0] if sorted_dates else None,
         "source": "alphavantage",
+    }
+
+
+# ── Indicators + Signals (single source of truth — never compute client-side) ─
+
+class _Bar(BaseModel):
+    time: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+class _IndicatorsRequest(BaseModel):
+    bars: list[_Bar]
+    current_price: float | None = None
+    current_volume: float | None = None
+    avg_volume_20d: float | None = None
+
+
+def _last(series: pd.Series) -> float | None:
+    if series is None or len(series) == 0:
+        return None
+    v = series.iloc[-1]
+    if pd.isna(v):
+        return None
+    return float(v)
+
+
+def _make_condition(
+    cid: str,
+    label: str,
+    current: float | None,
+    threshold: float | None,
+    op: str,
+) -> dict:
+    met = False
+    if current is not None and threshold is not None:
+        met = (current > threshold) if op == ">" else (current < threshold)
+    return {
+        "id": cid,
+        "label": label,
+        "met": met,
+        "current": current,
+        "threshold": threshold,
+        "operator": op,
+    }
+
+
+@router.post("/api/live/indicators")
+def compute_live_indicators(req: _IndicatorsRequest) -> dict:
+    """Compute indicators and CALL/PUT signals from a bar series.
+
+    The frontend sends the bars it already has (live history or historical
+    review slice). This endpoint runs the canonical indicator library
+    (`lib/indicators.py`) and the dashboard signal logic server-side so
+    TS and Python stay in lockstep — there is no duplicate math in the app.
+    """
+    bars = req.bars
+    if len(bars) == 0:
+        empty_ind = {
+            "ema9": None,
+            "ema20": None,
+            "ema50": None,
+            "rsi": None,
+            "stochK": None,
+            "stochD": None,
+            "atr": None,
+            "vwap": None,
+        }
+        return {"indicators": empty_ind, "signals": _empty_signals()}
+
+    # Assemble Series — aligned, no index mismatches.
+    closes = pd.Series([b.close for b in bars], dtype=float)
+    highs = pd.Series([b.high for b in bars], dtype=float)
+    lows = pd.Series([b.low for b in bars], dtype=float)
+    volumes = pd.Series([b.volume for b in bars], dtype=float)
+    # VWAP in lib/indicators resets per session; group bars by calendar date.
+    dates = pd.Series([b.time[:10] for b in bars])
+
+    ema9 = calculate_ema(closes, 9)
+    ema20 = calculate_ema(closes, 20)
+    ema50 = calculate_ema(closes, 50)
+    rsi_series = calculate_rsi(closes, 14)
+    stoch_k, stoch_d = calculate_stoch_rsi(rsi_series, period=14, k_period=3, d_period=3)
+    atr_series = calculate_atr(highs, lows, closes, period=14)
+    vwap_series = calculate_vwap(highs, lows, closes, volumes, dates)
+
+    # Previous-bar StochRSI K for crossover checks in playbook conditions.
+    prev_stoch_k = None
+    if len(stoch_k) >= 2:
+        v = stoch_k.iloc[-2]
+        prev_stoch_k = None if pd.isna(v) else float(v)
+
+    indicators = {
+        "ema9": _last(ema9),
+        "ema20": _last(ema20),
+        "ema50": _last(ema50),
+        "rsi": _last(rsi_series),
+        "stochK": _last(stoch_k),
+        "stochD": _last(stoch_d),
+        "atr": _last(atr_series),
+        "vwap": _last(vwap_series),
+        "stochKPrev": prev_stoch_k,
+    }
+
+    price = req.current_price if req.current_price is not None else float(closes.iloc[-1])
+    vol = req.current_volume
+    rvol = None
+    if vol is not None and req.avg_volume_20d and req.avg_volume_20d > 0:
+        rvol = vol / req.avg_volume_20d
+
+    signals = _build_signals(price, indicators, rvol)
+    return {"indicators": indicators, "signals": signals}
+
+
+def _empty_signals() -> dict:
+    empty = {"direction": "", "strength": 0, "conditions": [], "fired": False}
+    return {
+        "call": {**empty, "direction": "CALL"},
+        "put": {**empty, "direction": "PUT"},
+    }
+
+
+def _build_signals(price: float | None, ind: dict, rvol: float | None) -> dict:
+    """Trend-following CALL/PUT conditions — ported from
+    platform/src/lib/indicators.ts so UI behavior is preserved exactly."""
+    call_conds = [
+        _make_condition("c_p_ema9", "Price > EMA9", price, ind["ema9"], ">"),
+        _make_condition("c_p_ema20", "Price > EMA20", price, ind["ema20"], ">"),
+        _make_condition("c_p_ema50", "Price > EMA50", price, ind["ema50"], ">"),
+        _make_condition("c_p_vwap", "Price > VWAP", price, ind["vwap"], ">"),
+        _make_condition("c_rsi50", "RSI > 50", ind["rsi"], 50.0, ">"),
+        _make_condition("c_rsi60", "RSI > 60", ind["rsi"], 60.0, ">"),
+        _make_condition("c_stoch70", "StochRSI > 70", ind["stochK"], 70.0, ">"),
+        _make_condition("c_rvol", "RVOL > 1.0", rvol, 1.0, ">"),
+        _make_condition("c_cross", "EMA9 > EMA20", ind["ema9"], ind["ema20"], ">"),
+        _make_condition("c_atr", "ATR > 2.0", ind["atr"], 2.0, ">"),
+    ]
+    put_conds = [
+        _make_condition("p_p_ema9", "Price < EMA9", price, ind["ema9"], "<"),
+        _make_condition("p_p_ema20", "Price < EMA20", price, ind["ema20"], "<"),
+        _make_condition("p_p_ema50", "Price < EMA50", price, ind["ema50"], "<"),
+        _make_condition("p_p_vwap", "Price < VWAP", price, ind["vwap"], "<"),
+        _make_condition("p_rsi50", "RSI < 50", ind["rsi"], 50.0, "<"),
+        _make_condition("p_rsi40", "RSI < 40", ind["rsi"], 40.0, "<"),
+        _make_condition("p_stoch30", "StochRSI < 30", ind["stochK"], 30.0, "<"),
+        _make_condition("p_rvol", "RVOL > 1.0", rvol, 1.0, ">"),
+        _make_condition("p_cross", "EMA9 < EMA20", ind["ema9"], ind["ema20"], "<"),
+        _make_condition("p_atr", "ATR > 2.0", ind["atr"], 2.0, ">"),
+    ]
+    call_strength = round(sum(1 for c in call_conds if c["met"]) / len(call_conds) * 100)
+    put_strength = round(sum(1 for c in put_conds if c["met"]) / len(put_conds) * 100)
+    return {
+        "call": {
+            "direction": "CALL",
+            "conditions": call_conds,
+            "strength": call_strength,
+            "fired": call_strength >= 70,
+        },
+        "put": {
+            "direction": "PUT",
+            "conditions": put_conds,
+            "strength": put_strength,
+            "fired": put_strength >= 70,
+        },
     }
