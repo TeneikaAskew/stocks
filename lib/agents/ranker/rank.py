@@ -69,6 +69,8 @@ def rank_tickers(
     catalyst_filter: Optional[set[str]] = None,
     limit: int = 10,
     manual_tickers: Optional[list[str]] = None,
+    expand_universe: bool = False,
+    extras: Optional[list[str]] = None,
     persist_audit: bool = True,
 ) -> dict:
     """Rank candidates. Returns a dict with the ranked list and metadata.
@@ -88,9 +90,15 @@ def rank_tickers(
     run_id = str(uuid4())
     weights = weights or DEFAULT_WEIGHTS
 
+    # Back-compat: legacy callers passed `manual_tickers`; merge into extras.
+    merged_extras = list(extras or [])
+    if manual_tickers:
+        merged_extras.extend(manual_tickers)
+
     candidates = gather_candidates(
         catalyst_filter=catalyst_filter,
-        manual_tickers=manual_tickers,
+        expand_universe=expand_universe,
+        extras=merged_extras or None,
     )
     logger.info("rank_tickers: %d candidates from gather", len(candidates))
 

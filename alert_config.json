@@ -123,5 +123,14 @@
     },
     "daily_loss_limit": -2.0,
     "daily_profit_target": 3.0
-  }
+  },
+
+  "watchlist": [
+    "SPY",
+    "IWM",
+    "QQQ",
+    "TLT",
+    "XLY",
+    "AVGO"
+  ]
 }

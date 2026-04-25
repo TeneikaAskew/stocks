@@ -76,6 +76,8 @@ def fetch_for_ticker(ticker: str, api_key: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     rows = []
+    today = pd.Timestamp.utcnow().date()
+    skipped_future = 0
     for t in txns:
         td = t.get("transaction_date")
         if not td:
@@ -83,6 +85,13 @@ def fetch_for_ticker(ticker: str, api_key: str) -> pd.DataFrame:
         try:
             txn_date = pd.to_datetime(td).date()
         except Exception:
+            continue
+        # AV occasionally returns garbage future dates (e.g. 2031-01-29).
+        # Insider transactions are by definition reported after they happen,
+        # so anything more than a week in the future is almost certainly a
+        # source data error.
+        if (txn_date - today).days > 7:
+            skipped_future += 1
             continue
         shares = _safe_float(t.get("shares"))
         price = _safe_float(t.get("share_price"))
@@ -102,6 +111,9 @@ def fetch_for_ticker(ticker: str, api_key: str) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if not df.empty:
         log.info("    %s: %d transactions", ticker, len(df))
+    if skipped_future:
+        log.warning("    %s: skipped %d rows with implausible future dates",
+                    ticker, skipped_future)
     return df
 
 
