@@ -365,6 +365,8 @@ def summarize_backtest_metrics(
     ticker: str,
     lookback_days: int = 90,
     as_of: Optional[date_type] = None,
+    *,
+    cross_ticker: bool = True,
 ) -> dict:
     """Catalyst-analog 'backtest' for the ticker's current pattern.
 
@@ -372,8 +374,15 @@ def summarize_backtest_metrics(
     meaningful (one trade). Instead, this function answers the
     question a Wall-Street analyst would ask: *given the price
     pattern visible today (gap, volume, RSI, regime), find prior
-    days where the same pattern appeared on this ticker and report
-    what happened over the next 1, 3, 5, 10 trading days*.
+    days where the same pattern appeared and report what happened
+    over the next 1, 3, 5, 10 trading days*.
+
+    `cross_ticker=True` (default) extends the analog universe to
+    every other ticker in `market_data_daily`. Same-ticker matches
+    are tried first; cross-ticker is appended only if fewer than
+    10 same-ticker matches exist (or if same-ticker is empty). Each
+    analog row carries the source ticker so the user can see
+    whether the historical move came from AVGO itself or e.g. SPY.
 
     No `trades` table dependency. Runs entirely against
     `market_data_daily` (which we already backfill).
@@ -381,6 +390,7 @@ def summarize_backtest_metrics(
     Output (when available=True):
         pattern_today: dict — features describing today's setup
         analog_count: int   — how many historical matches
+        cross_ticker_used: bool — whether cross-ticker analogs were merged
         forward_returns: dict — day_1/3/5/10 stats (median, mean,
                                 win_rate, p25, p75, max, min)
         top_analogs: list[dict] — up to 5 closest historical
@@ -458,6 +468,7 @@ def summarize_backtest_metrics(
     # 5. Match historical rows. Drop the current row + any rows in last
     #    20d to avoid trivial overlap. Match each feature within a
     #    tolerance band; widen progressively if matches are sparse.
+    df["ticker"] = ticker.upper()
     history = df.iloc[:-20].dropna(subset=[
         "gap_pct", "vol_ratio", "rsi_14", "close_vs_sma200_pct",
         "fwd_1d", "fwd_5d",
@@ -465,15 +476,15 @@ def summarize_backtest_metrics(
     if history.empty:
         return _unavailable("not enough complete history for analog match")
 
-    def matches(tol_gap, tol_vol, tol_rsi, tol_sma):
-        return history[
-            (history["gap_pct"].between(pattern["gap_pct"] - tol_gap,
-                                        pattern["gap_pct"] + tol_gap))
-            & (history["vol_ratio"].between(pattern["vol_ratio"] - tol_vol,
-                                            pattern["vol_ratio"] + tol_vol))
-            & (history["rsi_14"].between(pattern["rsi_14"] - tol_rsi,
-                                         pattern["rsi_14"] + tol_rsi))
-            & (history["close_vs_sma200_pct"].between(
+    def _matches_in(frame, tol_gap, tol_vol, tol_rsi, tol_sma):
+        return frame[
+            (frame["gap_pct"].between(pattern["gap_pct"] - tol_gap,
+                                      pattern["gap_pct"] + tol_gap))
+            & (frame["vol_ratio"].between(pattern["vol_ratio"] - tol_vol,
+                                          pattern["vol_ratio"] + tol_vol))
+            & (frame["rsi_14"].between(pattern["rsi_14"] - tol_rsi,
+                                       pattern["rsi_14"] + tol_rsi))
+            & (frame["close_vs_sma200_pct"].between(
                 pattern["close_vs_sma200_pct"] - tol_sma,
                 pattern["close_vs_sma200_pct"] + tol_sma,
             ))
@@ -489,16 +500,31 @@ def summarize_backtest_metrics(
     matched = pd.DataFrame()
     band_used = None
     for band in bands:
-        matched = matches(*band)
+        matched = _matches_in(history, *band)
         if len(matched) >= 5:
             band_used = band
             break
+
+    cross_used = False
+    # If same-ticker matches are sparse, expand to every other ticker
+    # in the table at the *same* tolerance band — keeps match quality
+    # comparable while widening the analog universe.
+    if cross_ticker and len(matched) < 10:
+        cross_history = _build_cross_ticker_history(ticker, str(cutoff))
+        if cross_history is not None and not cross_history.empty:
+            target_band = band_used or bands[-1]
+            cross_matched = _matches_in(cross_history, *target_band)
+            if not cross_matched.empty:
+                matched = pd.concat([matched, cross_matched], ignore_index=True)
+                cross_used = True
+
     if len(matched) < 3:
         return {
             "available": True,
             "pattern_today": pattern,
             "analog_count": int(len(matched)),
             "tolerance_bands_used": band_used or bands[-1],
+            "cross_ticker_used": cross_used,
             "forward_returns": None,
             "top_analogs": [],
             "note": (
@@ -538,6 +564,7 @@ def summarize_backtest_metrics(
 
     top = [
         {
+            "ticker": str(r.get("ticker", ticker.upper())),
             "date": str(r["date"]),
             "gap_pct": round(float(r["gap_pct"]), 2),
             "vol_ratio": round(float(r["vol_ratio"]), 2),
@@ -556,6 +583,7 @@ def summarize_backtest_metrics(
         "pattern_today": pattern,
         "analog_count": int(len(matched)),
         "tolerance_bands_used": band_used,
+        "cross_ticker_used": cross_used,
         "forward_returns": forward,
         "top_analogs": top,
     }
@@ -565,6 +593,73 @@ def _round_or_none(v):
     if v is None or pd.isna(v):
         return None
     return round(float(v), 2)
+
+
+def _build_cross_ticker_history(target_ticker: str, cutoff: str):
+    """Pull every other ticker's daily history and engineer the same
+    feature set used for analog matching. Returned frame has a `ticker`
+    column so each match can be attributed to its source.
+
+    Implementation: a single SQL pull (orders ticker, date so groupby
+    is contiguous), then a per-ticker pandas pipeline. This is fine for
+    the current ~5-ticker analog universe — if we ever need to scale
+    past 50 tickers, push the gap/vol/RSI math into SQL window
+    functions instead.
+    """
+    df = _query(
+        "SELECT ticker, date, open, high, low, close, volume "
+        "FROM market_data_daily "
+        "WHERE ticker <> :ticker "
+        "  AND date <= CAST(:cutoff AS date) "
+        "ORDER BY ticker ASC, date ASC",
+        {"ticker": target_ticker.upper(), "cutoff": cutoff},
+    )
+    if df is None or df.empty:
+        return None
+
+    out_frames: list[pd.DataFrame] = []
+    for tk, group in df.groupby("ticker", sort=False):
+        if len(group) < 60:
+            continue
+        g = group.reset_index(drop=True).copy()
+        g["close"] = g["close"].astype(float)
+        g["open"] = g["open"].astype(float)
+        g["high"] = g["high"].astype(float)
+        g["low"] = g["low"].astype(float)
+        g["volume"] = g["volume"].astype(float)
+
+        delta = g["close"].diff()
+        gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+        loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+        rs = gain / loss.replace(0, np.nan)
+        g["rsi_14"] = 100 - (100 / (1 + rs))
+        g["sma_200"] = g["close"].rolling(200).mean()
+        g["ema_20"] = g["close"].ewm(span=20, adjust=False).mean()
+
+        g["prev_close"] = g["close"].shift(1)
+        g["gap_pct"] = (g["open"] - g["prev_close"]) / g["prev_close"] * 100
+        g["range_pct"] = (g["high"] - g["low"]) / g["prev_close"] * 100
+        g["close_pct"] = (g["close"] - g["prev_close"]) / g["prev_close"] * 100
+        g["vol_20d_avg"] = g["volume"].rolling(20).mean()
+        g["vol_ratio"] = g["volume"] / g["vol_20d_avg"]
+        g["close_vs_sma200_pct"] = (g["close"] - g["sma_200"]) / g["sma_200"] * 100
+        g["close_vs_ema20_pct"] = (g["close"] - g["ema_20"]) / g["ema_20"] * 100
+        for n in (1, 3, 5, 10):
+            g[f"fwd_{n}d"] = (g["close"].shift(-n) - g["close"]) / g["close"] * 100
+
+        # Drop the most recent 20 days so the analog window mirrors
+        # the same-ticker logic and we don't include trivially-recent
+        # patterns from peer tickers either.
+        g = g.iloc[:-20].dropna(subset=[
+            "gap_pct", "vol_ratio", "rsi_14",
+            "close_vs_sma200_pct", "fwd_1d", "fwd_5d",
+        ])
+        if not g.empty:
+            out_frames.append(g)
+
+    if not out_frames:
+        return None
+    return pd.concat(out_frames, ignore_index=True)
 
 
 # ---------------------------------------------------------------------------
