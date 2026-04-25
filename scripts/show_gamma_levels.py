@@ -3,25 +3,30 @@
 Print Stratalyst-style gamma levels (King / Gate / Spot / Flip) from the
 options-heatseeker JSON snapshots already in this repo.
 
+Thin wrapper around lib.gamma — the canonical math lives there. This script
+exists so you can compare the project's analytics against third-party
+gamma-positioning tools without spinning up the React app.
+
 Usage:
     python3 scripts/show_gamma_levels.py qqq
-    python3 scripts/show_gamma_levels.py iwm --date 20251121 --window 15
+    python3 scripts/show_gamma_levels.py iwm --date 20251121 --window 8
+    python3 scripts/show_gamma_levels.py qqq --expiry 2025-11-21
+    python3 scripts/show_gamma_levels.py qqq --spot 590.50  # override
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 DATA_ROOT = REPO / "options-heatseeker" / "data"
 
-CONTRACT_MULT = 100
-KING_THRESHOLD = 0.50      # >= 50% of max |gex| in window -> KING
-GATE_THRESHOLD = 0.20      # >= 20% of max |gex| in window -> GATE
-FLIP_BAND = 0.10           # strikes whose net gex flips sign neighbor-to-neighbor
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+from lib import gamma  # noqa: E402
 
 
 def latest_snapshot(ticker: str, date: str | None) -> Path:
@@ -39,64 +44,6 @@ def latest_snapshot(ticker: str, date: str | None) -> Path:
     return files[-1]
 
 
-def estimate_spot(options: list[dict]) -> float:
-    """Estimate spot from put-call parity proxy: strike where |call_delta|≈0.5."""
-    nearest_exp = min(o["expiration"] for o in options)
-    near = [o for o in options if o["expiration"] == nearest_exp and o["type"] == "call"]
-    if not near:
-        return 0.0
-    near.sort(key=lambda o: abs(abs(o.get("delta", 0)) - 0.5))
-    return float(near[0]["strike"])
-
-
-def aggregate_gex(options: list[dict], spot: float) -> dict[float, dict]:
-    """Net dealer GEX per strike. Convention: dealer is short calls / long puts."""
-    book: dict[float, dict] = defaultdict(lambda: {"call_oi": 0, "put_oi": 0, "gex": 0.0})
-    for o in options:
-        strike = float(o["strike"])
-        gamma = float(o.get("gamma") or 0)
-        oi = int(o.get("open_interest") or 0)
-        if gamma == 0 or oi == 0:
-            continue
-        sign = -1 if o["type"] == "call" else 1
-        # GEX per strike (notional $ gamma): gamma * OI * 100 * spot^2 * sign / 100
-        gex = sign * gamma * oi * CONTRACT_MULT * (spot ** 2) / 100.0
-        book[strike]["gex"] += gex
-        if o["type"] == "call":
-            book[strike]["call_oi"] += oi
-        else:
-            book[strike]["put_oi"] += oi
-    return book
-
-
-def classify(book: dict[float, dict], spot: float, window_pct: float) -> list[dict]:
-    lo, hi = spot * (1 - window_pct / 100), spot * (1 + window_pct / 100)
-    rows = [
-        {"strike": k, **v} for k, v in book.items() if lo <= k <= hi
-    ]
-    if not rows:
-        return rows
-    rows.sort(key=lambda r: r["strike"])
-    max_abs = max(abs(r["gex"]) for r in rows) or 1.0
-
-    # Detect flips: consecutive strikes whose GEX changes sign
-    for i, r in enumerate(rows):
-        tag = ""
-        ratio = abs(r["gex"]) / max_abs
-        if ratio >= KING_THRESHOLD:
-            tag = "KING"
-        elif ratio >= GATE_THRESHOLD:
-            tag = "GATE"
-        # spot proximity tag
-        if abs(r["strike"] - spot) <= max(0.5, spot * 0.002):
-            tag = ("SPOT " + tag).strip()
-        # flip detection
-        if i > 0 and rows[i - 1]["gex"] * r["gex"] < 0:
-            tag = ("FLIP " + tag).strip()
-        r["tag"] = tag
-    return rows
-
-
 def fmt_gex(x: float) -> str:
     sign = "+" if x >= 0 else "-"
     a = abs(x)
@@ -109,55 +56,64 @@ def fmt_gex(x: float) -> str:
     return f"{sign}{a:.0f}"
 
 
-def render(rows: list[dict], spot: float, ticker: str, snap: Path) -> None:
-    print(f"\n  {ticker.upper()}   spot≈{spot:.2f}   ({snap.name})\n")
-    print(f"  {'STRIKE':>7}  {'NET GEX':>10}  {'CALL OI':>8}  {'PUT OI':>8}   TAG")
+def render(summary: gamma.GammaSummary, snap_name: str) -> None:
+    spot = summary.spot.price
+    print()
+    print(f"  {summary.ticker}   spot≈{spot:.2f} ({summary.spot.method})   "
+          f"flip={'%.2f' % summary.flip if summary.flip else 'n/a'}   "
+          f"regime={summary.regime}   ({snap_name})")
+    if summary.spot.note:
+        print(f"  spot detail: {summary.spot.note}")
+    print()
+    print(f"  {'STRIKE':>7}  {'NET GEX':>10}  {'CALL OI':>8}  {'PUT OI':>8}   TAGS")
     print(f"  {'-'*7}  {'-'*10}  {'-'*8}  {'-'*8}   {'-'*16}")
-    for r in rows:
-        marker = "►" if abs(r["strike"] - spot) <= max(0.5, spot * 0.002) else " "
+
+    for lv in summary.levels:
+        marker = "►" if "spot" in lv.tags else " "
+        tags_str = " ".join(t.upper() for t in lv.tags) or ""
         print(
-            f"{marker} {r['strike']:>7.2f}  {fmt_gex(r['gex']):>10}  "
-            f"{r['call_oi']:>8,}  {r['put_oi']:>8,}   {r['tag']}"
+            f"{marker} {lv.strike:>7.2f}  {fmt_gex(lv.gex):>10}  "
+            f"{lv.call_oi:>8,}  {lv.put_oi:>8,}   {tags_str}"
         )
 
-    kings = [r for r in rows if "KING" in r["tag"]]
-    gates = [r for r in rows if "GATE" in r["tag"]]
-    flips = [r for r in rows if "FLIP" in r["tag"]]
     print()
-    def _join(items: list[dict]) -> str:
-        return ", ".join(f"{r['strike']:.2f}" for r in items)
-    if kings:
-        print(f"  KINGS:  {_join(kings)}")
-    if gates:
-        print(f"  GATES:  {_join(gates)}")
-    if flips:
-        print(f"  FLIPS:  {_join(flips)}")
+    if summary.kings:
+        print(f"  KINGS:  {', '.join(f'{l.strike:.2f}' for l in summary.kings)}")
+    if summary.gates:
+        print(f"  GATES:  {', '.join(f'{l.strike:.2f}' for l in summary.gates)}")
+    if summary.flip_levels:
+        print(f"  FLIPS:  {', '.join(f'{l.strike:.2f}' for l in summary.flip_levels)}")
+    print(f"  TOTAL GEX: {fmt_gex(summary.total_gex)}")
+    if summary.warnings:
+        print()
+        for w in summary.warnings:
+            print(f"  ⚠ {w}")
     print()
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("ticker", help="qqq | iwm | spy")
-    ap.add_argument("--date", help="YYYYMMDD; default = latest")
-    ap.add_argument("--window", type=float, default=10.0,
-                    help="percent +/- spot to display (default 10)")
+    ap.add_argument("--date", help="YYYYMMDD; default = latest snapshot")
+    ap.add_argument("--window", type=float, default=8.0,
+                    help="percent +/- spot to display (default 8)")
     ap.add_argument("--expiry", help="restrict to one expiration YYYY-MM-DD")
+    ap.add_argument("--spot", type=float, help="override estimated spot price")
     args = ap.parse_args()
 
     snap = latest_snapshot(args.ticker, args.date)
     payload = json.loads(snap.read_text())
-    options = payload["options"]
-    if args.expiry:
-        options = [o for o in options if o["expiration"] == args.expiry]
-        if not options:
-            sys.exit(f"no contracts for expiry {args.expiry}")
+    snapshot_date = payload.get("date", snap.stem.split("_")[-1])
 
-    spot = estimate_spot(options)
-    if spot == 0:
-        sys.exit("could not estimate spot")
-    book = aggregate_gex(options, spot)
-    rows = classify(book, spot, args.window)
-    render(rows, spot, args.ticker, snap)
+    summary = gamma.build_summary(
+        ticker=args.ticker,
+        snapshot_date=snapshot_date,
+        options=payload["options"],
+        spot_override=args.spot,
+        window_pct=args.window,
+        expiry_filter=args.expiry,
+    )
+    render(summary, snap.name)
 
 
 if __name__ == "__main__":
