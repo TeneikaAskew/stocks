@@ -91,6 +91,33 @@ deploy_insight_pipeline() {
         --quiet
 }
 
+# ── Auto-refresh top-N (Cloud Run Job) ───────────────────────────────────────
+# Pre-warms the AI insight cache for the highest-scoring ranker tickers.
+# Calls lib.agents.ranker.rank_tickers, picks top N, enqueues a Cloud
+# Tasks message per ticker that triggers the existing insight-pipeline
+# job in on-demand mode. Cost is bounded by INSIGHT_AUTO_REFRESH_TOP_N
+# (default 3 → ~$0.30-1.50/day at typical model costs).
+deploy_auto_refresh_top_n() {
+    echo "Deploying auto-refresh-top-n job..."
+    local env
+    env="$(_env_string),INSIGHT_AUTO_REFRESH_TOP_N=3"
+
+    gcloud run jobs create auto-refresh-top-n \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.auto_refresh_top_n" \
+        --set-env-vars "${env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update auto-refresh-top-n \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,gcp.auto_refresh_top_n" \
+        --set-env-vars "${env}" \
+        --quiet
+}
+
 # ── Cloud Tasks queue for on-demand pipeline runs ────────────────────────────
 # The refresh endpoint enqueues a task that triggers this Cloud Run job with
 # INSIGHT_RUN_ID / INSIGHT_TICKER env overrides. Queue creation is idempotent.
@@ -548,6 +575,12 @@ deploy_schedulers() {
     # (which seeds the strat + daily indicators the pipeline consumes).
     _schedule "insight-pipeline-daily"   "45 8 * * 1-5"  "insight-pipeline"
 
+    # Auto-refresh top-N — 8:10 AM ET weekdays.
+    # Runs after news fetchers (8:00, 8:05) so catalyst data is fresh,
+    # and before premarket-brief at 8:30 so the warmed reports are
+    # ready by the time the user opens the platform.
+    _schedule "auto-refresh-top-n"       "10 8 * * 1-5"  "auto-refresh-top-n"
+
     echo "All schedulers configured."
 }
 
@@ -560,7 +593,7 @@ case "${1:-help}" in
     monitor)     build_image && deploy_monitor ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers ;;
-    insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline ;;
+    insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_auto_refresh_top_n ;;
     schedulers)  deploy_schedulers ;;
     all)
         build_image
@@ -570,6 +603,7 @@ case "${1:-help}" in
         deploy_fetchers
         setup_insight_tasks_queue
         deploy_insight_pipeline
+        deploy_auto_refresh_top_n
         deploy_schedulers
         echo "All components deployed."
         ;;
