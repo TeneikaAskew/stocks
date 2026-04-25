@@ -385,12 +385,54 @@ def process_ticker(ticker: str, fetch_date: str, bucket: str, av_api_key: str):
         )
 
 
+def _earnings_tickers_in_window(days_back: int, days_ahead: int) -> list[str]:
+    """Resolve tickers reporting earnings within [today-back, today+ahead].
+
+    Used to extend the always-on watchlist with single-name catalyst
+    tickers so the historical-earnings-reaction signal in the ranker
+    has daily bars to measure against.
+
+    The window is symmetric by default (e.g. 7/7) to capture both
+    pre-earnings setup days and post-earnings reaction days.
+    """
+    if days_back <= 0 and days_ahead <= 0:
+        return []
+    try:
+        from gcp.database import query_to_dataframe
+    except ImportError:
+        return []
+
+    sql = """
+        SELECT DISTINCT ticker
+        FROM earnings_calendar
+        WHERE earnings_date BETWEEN
+            CURRENT_DATE - (:back || ' days')::interval AND
+            CURRENT_DATE + (:ahead || ' days')::interval
+        ORDER BY ticker
+    """
+    try:
+        df = query_to_dataframe(sql, {'back': days_back, 'ahead': days_ahead})
+    except Exception as e:
+        log.warning("earnings ticker lookup failed: %s", e)
+        return []
+    if df is None or df.empty:
+        return []
+    return [str(t).upper() for t in df['ticker'].tolist()]
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch daily market data to Cloud SQL + GCS')
     parser.add_argument('--tickers', default='ALL',
                         help='Space-separated tickers or ALL')
     parser.add_argument('--date', default=None,
                         help='Date to fetch (YYYY-MM-DD). Defaults to today.')
+    parser.add_argument('--earnings-window-days', type=int,
+                        default=int(os.environ.get('EARNINGS_WINDOW_DAYS', '0')),
+                        help=('Augment ticker list with anyone reporting earnings within N '
+                              'days before AND after today (symmetric window). 0 disables.'))
+    parser.add_argument('--max-tickers', type=int,
+                        default=int(os.environ.get('MAX_TICKERS', '300')),
+                        help='Safety cap on total ticker count (default: 300).')
     args = parser.parse_args()
 
     fetch_date = args.date or date.today().strftime('%Y-%m-%d')
@@ -398,12 +440,30 @@ def main():
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
 
+    if args.earnings_window_days > 0:
+        earnings = _earnings_tickers_in_window(
+            args.earnings_window_days, args.earnings_window_days,
+        )
+        added = [t for t in earnings if t not in tickers]
+        if added:
+            log.info("  Adding %d earnings tickers (±%dd window): %s",
+                     len(added), args.earnings_window_days,
+                     added[:10] + (['...'] if len(added) > 10 else []))
+            tickers.extend(added)
+
+    if len(tickers) > args.max_tickers:
+        log.warning("  Ticker count %d exceeds max-tickers cap %d; truncating",
+                    len(tickers), args.max_tickers)
+        tickers = tickers[:args.max_tickers]
+
     log.info("Fetch Market Data Job")
-    log.info("  Date      : %s", fetch_date)
-    log.info("  Tickers   : %s", tickers)
-    log.info("  SQL       : %s", 'yes' if is_cloud_sql_configured() else 'NO (env vars missing)')
-    log.info("  GCS       : %s", bucket or 'disabled')
-    log.info("  AV key    : %s", 'yes' if av_api_key else 'NO (required for all data sources)')
+    log.info("  Date          : %s", fetch_date)
+    log.info("  Total tickers : %d", len(tickers))
+    log.info("  Earnings win  : %s",
+             f"±{args.earnings_window_days}d" if args.earnings_window_days else "off")
+    log.info("  SQL           : %s", 'yes' if is_cloud_sql_configured() else 'NO (env vars missing)')
+    log.info("  GCS           : %s", bucket or 'disabled')
+    log.info("  AV key        : %s", 'yes' if av_api_key else 'NO (required for all data sources)')
 
     errors = []
     for ticker in tickers:

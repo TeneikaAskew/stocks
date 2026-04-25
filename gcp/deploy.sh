@@ -181,17 +181,25 @@ deploy_weekend() {
 # ── Data-fetching jobs ────────────────────────────────────────────────────────
 deploy_fetch_market_data() {
     echo "Deploying fetch-market-data job..."
+    # 1800s timeout: with EARNINGS_WINDOW_DAYS=7 we may pull bars for
+    # ~100 tickers; at 150 RPM that's ~80s of AV calls plus per-ticker
+    # indicator computation. 30 min leaves comfortable headroom.
+    local env
+    env="$(_env_string),EARNINGS_WINDOW_DAYS=7"
+
     gcloud run jobs create fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 2 \
+        --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${env}" \
         --quiet
 }
 
