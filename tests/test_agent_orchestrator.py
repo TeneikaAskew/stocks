@@ -272,9 +272,10 @@ def test_pipeline_end_to_end_green(canned_bundle, seven_role_snapshot):
     assert report.conviction == "medium"
     assert report.run_cost_usd > 0
     assert report.run_latency_ms >= 0
-    # Full topology = 4 analysts + 2 researchers + 1 judge + 1 trader + 3 risk + 1 PM = 12 calls
-    # (But orchestrator counts 11 distinct node roles; the mock records every call.)
-    assert len(mock.calls) == 12
+    # Full topology = 5 analysts (market, strat, options, catalyst,
+    # sentiment) + 2 researchers + 1 judge + 1 trader + 3 risk +
+    # 1 PM = 13 calls.
+    assert len(mock.calls) == 13
     assert report.model_versions["trader"] == "vertex:gemini-2.0-flash"
     # No analyst failures in the happy path
     assert report.failed_sections == []
@@ -310,8 +311,12 @@ def test_pipeline_blocks_direction_when_risk_blocks(canned_bundle, seven_role_sn
 
 
 def test_pipeline_aborts_when_all_analysts_fail(canned_bundle, seven_role_snapshot):
+    # Orchestrator runs five analyst sections — market, strat, options,
+    # catalyst, sentiment. All five have to fail to trigger the abort.
     mock = _MockLLM(
-        failing_analyst_sections=frozenset({"market", "strat", "options", "catalyst"})
+        failing_analyst_sections=frozenset(
+            {"market", "strat", "options", "catalyst", "sentiment"}
+        )
     )
     with pytest.raises(RuntimeError, match="all analyst nodes failed"):
         asyncio.run(

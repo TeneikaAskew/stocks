@@ -131,12 +131,15 @@ def test_strat_alignment_no_data(patch_signal_query):
 def test_news_topic_score_counts_catalyst_articles(patch_signal_query):
     from lib.agents.ranker.signals import signal_news_topic_score
 
+    # AV NEWS_SENTIMENT topics arrive as lowercase snake_case slugs;
+    # CATALYST_TOPICS was tightened to that set so only real catalysts
+    # (M&A / earnings / IPO / FOMC / energy_transportation) score.
     patch_signal_query("FROM news_sentiment", pd.DataFrame([
-        {"topics": ["Mergers & Acquisitions", "Technology"],
+        {"topics": ["mergers_and_acquisitions", "technology"],
          "overall_sentiment_score": 0.4, "relevance_score": 0.9},
-        {"topics": ["Earnings"],
+        {"topics": ["earnings"],
          "overall_sentiment_score": 0.2, "relevance_score": 0.8},
-        {"topics": ["Energy & Transportation"],  # not a catalyst topic
+        {"topics": ["technology"],  # sector tag only; not a catalyst
          "overall_sentiment_score": 0.1, "relevance_score": 0.5},
     ]))
     res = signal_news_topic_score("AVGO")
@@ -150,7 +153,7 @@ def test_news_topic_score_zero_when_no_catalyst_topics(patch_signal_query):
     from lib.agents.ranker.signals import signal_news_topic_score
 
     patch_signal_query("FROM news_sentiment", pd.DataFrame([
-        {"topics": ["Energy & Transportation"],
+        {"topics": ["technology"],   # sector-only, no catalyst tag
          "overall_sentiment_score": 0.0, "relevance_score": 0.5},
     ]))
     res = signal_news_topic_score("XOM")
@@ -197,8 +200,11 @@ def test_historical_earnings_reaction_no_data(patch_signal_query):
     assert res["available"] is False
 
 
-def test_insider_cluster_three_insiders(patch_signal_query):
-    from lib.agents.ranker.signals import signal_insider_cluster
+def test_insider_buying_three_insiders(patch_signal_query):
+    """signal_insider_cluster was split into _buying / _selling so the
+    ranker can reward buys and penalize sells separately. This covers
+    the buying side."""
+    from lib.agents.ranker.signals import signal_insider_buying, signal_insider_selling
 
     patch_signal_query("insider_transactions", pd.DataFrame([
         {"executive": "Alice", "transaction_type": "A",
@@ -208,11 +214,38 @@ def test_insider_cluster_three_insiders(patch_signal_query):
         {"executive": "Carol", "transaction_type": "A",
          "shares": 200,  "share_price": 100, "value": 20_000},
     ]))
-    res = signal_insider_cluster("AVGO")
+    buy = signal_insider_buying("AVGO")
+    sell = signal_insider_selling("AVGO")
+    # 3 buyers → cluster_pts maxed (0.6); no big txn → big_pts = 0
+    assert buy["raw"]["unique_insiders"] == 3
+    assert buy["score_0_to_1"] == 0.6
+    assert buy["raw"]["side"] == "buy"
+    # No sells in the window — selling signal returns 0 with the
+    # 'no insider selling' reason from the side-specific helper.
+    assert sell["score_0_to_1"] == 0.0
+    assert "no insider selling" in sell["reason"]
+
+
+def test_insider_selling_penalizes_disposals(patch_signal_query):
+    """The AVGO Apr 2026 case: 5 insiders disposing several million
+    each. Selling signal should fire at full strength so the ranker's
+    negative weight subtracts from total score."""
+    from lib.agents.ranker.signals import signal_insider_selling
+
+    patch_signal_query("insider_transactions", pd.DataFrame([
+        {"executive": "Alice", "transaction_type": "D",
+         "shares": 5000, "share_price": 350, "value": 1_750_000},
+        {"executive": "Bob",   "transaction_type": "D",
+         "shares": 4000, "share_price": 350, "value": 1_400_000},
+        {"executive": "Carol", "transaction_type": "D",
+         "shares": 3000, "share_price": 350, "value": 1_050_000},
+    ]))
+    res = signal_insider_selling("AVGO")
+    assert res["raw"]["side"] == "sell"
     assert res["raw"]["unique_insiders"] == 3
-    # 3 insiders → cluster_pts maxed (0.6); no big txn → big_pts = 0
-    assert res["score_0_to_1"] == 0.6
-    assert res["raw"]["direction"] == "buy"
+    assert res["raw"]["big_transactions"] == 3
+    # 3 distinct sellers → cluster_pts 0.6, ≥1 big sale → big_pts 0.4
+    assert res["score_0_to_1"] == 1.0
 
 
 def test_recent_8k_high_impact_items(patch_signal_query):
