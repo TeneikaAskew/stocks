@@ -1,25 +1,64 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import {
   TrendingUp, Phone, Target, DollarSign, Scissors, Rocket,
   GitMerge, Shield, Star, Globe, Calendar, RefreshCw, Filter,
   Lock, ArrowUpRight, Users, Building, Presentation, Monitor,
-  Video, Briefcase,
+  Video, Briefcase, Flame, ChevronRight,
 } from 'lucide-react';
 import { useThemeStore } from '@/stores/themeStore';
+import { useTickerStore } from '@/stores/tickerStore';
+import type { Ticker } from '@/types';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface CatalystEvent {
   date: string;
   ticker: string;
-  company_name: string;
+  company_name?: string;
   catalyst_type: string;
-  event: string;
-  expected_impact: string;
-  confirmed: boolean;
-  source: string;
+  // Benzinga uses `event`; DB-sourced events use `title`. Renderer
+  // prefers `title` then falls back to `event`.
+  event?: string;
+  title?: string;
+  // Benzinga: `expected_impact` ('Very High'|'High'|'Medium'|'Low').
+  // DB: `impact` (same vocabulary). Renderer accepts either.
+  expected_impact?: string;
+  impact?: string;
+  confirmed?: boolean;
+  source?: string;
   details?: Record<string, unknown>;
+  // News-specific
+  sentiment_score?: number;
+  sentiment_label?: string;
+  relevance_score?: number;
+  url?: string;
+  // SEC-specific
+  items?: string[];
+  primary_doc?: string;
+  // Insider-specific
+  insiders?: number;
+  total_value?: number;
+}
+
+const IMPACT_RANK: Record<string, number> = {
+  'Very High': 4,
+  'High': 3,
+  'Medium': 2,
+  'Low': 1,
+};
+
+function impactKey(e: CatalystEvent): string {
+  return (e.impact || e.expected_impact || 'Medium').trim() || 'Medium';
+}
+
+function impactScore(e: CatalystEvent): number {
+  return IMPACT_RANK[impactKey(e)] ?? 2;
+}
+
+function eventTitle(e: CatalystEvent): string {
+  return e.title || e.event || `${e.ticker} ${e.catalyst_type}`;
 }
 
 interface CatalystsResponse {
@@ -163,27 +202,96 @@ function CatalystBadge({ type }: { type: string }) {
   );
 }
 
-function EventRow({ event }: { event: CatalystEvent }) {
-  const impactClass = IMPACT_COLORS[event.expected_impact] || 'text-[var(--on-surface-variant)]';
+function ImpactDot({ event }: { event: CatalystEvent }) {
+  const k = impactKey(event);
+  const cls =
+    k === 'Very High' ? 'bg-[var(--bear)]' :
+    k === 'High'      ? 'bg-[var(--warn)]' :
+    k === 'Medium'    ? 'bg-[var(--brand)]' :
+                        'bg-[var(--on-surface-variant)]';
   return (
-    <div className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-[var(--surface-2)] transition-colors">
-      <span className="w-14 shrink-0 text-xs font-bold text-[var(--brand)]">
-        {event.ticker || '---'}
-      </span>
+    <span
+      className={`inline-block h-2 w-2 rounded-full ${cls}`}
+      title={`${k} impact`}
+      aria-label={`${k} impact`}
+    />
+  );
+}
+
+function SentimentIndicator({ event }: { event: CatalystEvent }) {
+  if (typeof event.sentiment_score !== 'number') return null;
+  const s = event.sentiment_score;
+  if (Math.abs(s) < 0.1) return null;
+  const cls = s > 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]';
+  const symbol = s > 0 ? '▲' : '▼';
+  return (
+    <span
+      className={`text-[10px] font-bold ${cls} tabular-nums`}
+      title={`Sentiment ${s.toFixed(2)} (${event.sentiment_label || ''})`}
+    >
+      {symbol} {Math.abs(s).toFixed(2)}
+    </span>
+  );
+}
+
+function EventRow({ event, onOpenTicker }: {
+  event: CatalystEvent;
+  onOpenTicker: (ticker: string) => void;
+}) {
+  const macro = event.ticker === 'MACRO' || !event.ticker;
+  return (
+    <div className="group flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-[var(--surface-2)] transition-colors">
+      <ImpactDot event={event} />
+      {macro ? (
+        <span className="w-16 shrink-0 text-xs font-bold text-[var(--on-surface-variant)]">
+          MACRO
+        </span>
+      ) : (
+        <button
+          onClick={() => onOpenTicker(event.ticker)}
+          className="w-16 shrink-0 text-left text-xs font-bold text-[var(--brand)] hover:underline"
+          title={`Open ${event.ticker} insight report`}
+        >
+          {event.ticker || '---'}
+        </button>
+      )}
       <CatalystBadge type={event.catalyst_type} />
       <span className="flex-1 truncate text-sm text-[var(--on-surface)]">
-        {event.event}
+        {eventTitle(event)}
       </span>
-      <span className={`text-[10px] font-semibold ${impactClass}`}>
-        {event.confirmed ? '' : '?'}
-      </span>
+      <SentimentIndicator event={event} />
+      {event.source && (
+        <span className="hidden md:inline text-[10px] text-[var(--on-surface-variant)] truncate max-w-[110px]">
+          {event.source}
+        </span>
+      )}
+      {!macro && (
+        <button
+          onClick={() => onOpenTicker(event.ticker)}
+          className="opacity-0 group-hover:opacity-100 inline-flex items-center gap-0.5 text-[11px] text-[var(--brand)] transition-opacity"
+          title="Open insight report"
+        >
+          View
+          <ChevronRight size={12} />
+        </button>
+      )}
     </div>
   );
 }
 
-function DateGroup({ date, events }: { date: string; events: CatalystEvent[] }) {
+function DateGroup({ date, events, onOpenTicker }: {
+  date: string;
+  events: CatalystEvent[];
+  onOpenTicker: (ticker: string) => void;
+}) {
   const relative = getRelativeLabel(date);
   const isToday = relative === 'TODAY';
+  // Sort within group: impact desc, then ticker
+  const sorted = [...events].sort((a, b) => {
+    const di = impactScore(b) - impactScore(a);
+    if (di) return di;
+    return (a.ticker || '').localeCompare(b.ticker || '');
+  });
   return (
     <div className={`rounded-xl p-4 ${isToday ? 'bg-[var(--surface-2)] ring-1 ring-[var(--brand)]' : 'bg-[var(--surface-1)]'}`}>
       <div className="flex items-center justify-between mb-2">
@@ -195,11 +303,17 @@ function DateGroup({ date, events }: { date: string; events: CatalystEvent[] }) 
             </span>
           )}
         </div>
-        <span className="text-xs text-[var(--on-surface-variant)]">{relative}</span>
+        <span className="text-xs text-[var(--on-surface-variant)]">
+          {relative} &middot; {events.length} events
+        </span>
       </div>
       <div className="space-y-1">
-        {events.map((e, i) => (
-          <EventRow key={`${e.date}-${e.ticker}-${e.catalyst_type}-${i}`} event={e} />
+        {sorted.map((e, i) => (
+          <EventRow
+            key={`${e.date}-${e.ticker}-${e.catalyst_type}-${i}`}
+            event={e}
+            onOpenTicker={onOpenTicker}
+          />
         ))}
       </div>
     </div>
@@ -267,9 +381,17 @@ export default function CatalystsPage() {
   };
   const [refreshing, setRefreshing] = useState(false);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
+  const [minImpact, setMinImpact] = useState<'All' | 'Medium' | 'High'>('All');
 
   const { data, isLoading, error, refetch } = useCatalystEvents(dateFrom, dateTo, false);
   const { data: typesData } = useCatalystTypes();
+  const navigate = useNavigate();
+  const setTicker = useTickerStore(s => s.setTicker);
+  const handleOpenTicker = (ticker: string) => {
+    if (!ticker || ticker === 'MACRO') return;
+    setTicker(ticker.toUpperCase() as Ticker);
+    navigate('/insights');
+  };
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -277,21 +399,63 @@ export default function CatalystsPage() {
     setRefreshing(false);
   };
 
-  // Filter events
+  // Pull events into a single list so we can compute summary stats
+  // before grouping back by date (drives the filter chips, the "hot
+  // now" panel, and the impact-tier counters).
   const eventsByDate = data?.events_by_date || {};
+  const allEvents: CatalystEvent[] = useMemo(
+    () => Object.values(eventsByDate).flat(),
+    [eventsByDate],
+  );
+
+  const passes = (e: CatalystEvent): boolean => {
+    if (activeFilter && e.catalyst_type !== activeFilter) return false;
+    if (minImpact === 'High' && impactScore(e) < 3) return false;
+    if (minImpact === 'Medium' && impactScore(e) < 2) return false;
+    return true;
+  };
+
   const filteredDates = Object.entries(eventsByDate)
-    .map(([date, events]) => {
-      const filtered = activeFilter
-        ? events.filter(e => e.catalyst_type === activeFilter)
-        : events;
-      return [date, filtered] as const;
-    })
+    .map(([date, events]) => [date, events.filter(passes)] as const)
     .filter(([, events]) => events.length > 0)
     .sort(([a], [b]) => a.localeCompare(b));
 
+  // Today's hot catalysts: high-impact items in today + tomorrow.
+  // This is the "actionable" panel — the user lands here, sees what
+  // could move price in the next 24-48h, clicks straight to /insights.
+  const isoToday = today.toISOString().slice(0, 10);
+  const isoTomorrow = (() => {
+    const t = new Date(today); t.setDate(t.getDate() + 1);
+    return t.toISOString().slice(0, 10);
+  })();
+  const hotEvents: CatalystEvent[] = useMemo(() => {
+    return allEvents
+      .filter(e => (e.date === isoToday || e.date === isoTomorrow))
+      .filter(e => impactScore(e) >= 3)
+      .sort((a, b) => {
+        const di = impactScore(b) - impactScore(a);
+        if (di) return di;
+        return (a.date || '').localeCompare(b.date || '');
+      })
+      .slice(0, 10);
+  }, [allEvents, isoToday, isoTomorrow]);
+
+  // Counts for the impact + type chip badges
+  const impactCounts = useMemo(() => {
+    const c = { Total: 0, High: 0, Medium: 0, Low: 0 };
+    for (const e of allEvents) {
+      c.Total += 1;
+      const k = impactKey(e);
+      if (k === 'High' || k === 'Very High') c.High += 1;
+      else if (k === 'Medium') c.Medium += 1;
+      else c.Low += 1;
+    }
+    return c;
+  }, [allEvents]);
+
   // Unique types in data for filter chips
   const allTypes = new Set<string>();
-  Object.values(eventsByDate).flat().forEach(e => allTypes.add(e.catalyst_type));
+  allEvents.forEach(e => allTypes.add(e.catalyst_type));
 
   return (
     <div className="space-y-4 p-4">
@@ -300,7 +464,11 @@ export default function CatalystsPage() {
         <div>
           <h1 className="text-lg font-bold text-[var(--on-surface)]">Catalysts</h1>
           <p className="text-xs text-[var(--on-surface-variant)]">
-            {data?.total ?? 0} events &middot; {data?.source ?? 'Benzinga'}
+            {impactCounts.Total} events
+            {' '}<span className="text-[var(--bear)] font-semibold">{impactCounts.High}H</span>{' / '}
+            <span className="text-[var(--brand)] font-semibold">{impactCounts.Medium}M</span>{' / '}
+            <span className="text-[var(--on-surface-variant)]">{impactCounts.Low}L</span>
+            {' · '}{data?.source ?? 'Benzinga'}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -342,7 +510,51 @@ export default function CatalystsPage() {
         </div>
       </div>
 
-      {/* Filter chips */}
+      {/* Hot Now — high-impact catalysts in today/tomorrow window */}
+      {hotEvents.length > 0 && (
+        <div className="rounded-xl bg-[var(--surface-1)] p-3 ring-1 ring-[var(--warn)]/30">
+          <div className="flex items-center gap-2 mb-2">
+            <Flame size={14} className="text-[var(--warn)]" />
+            <span className="text-xs font-bold uppercase tracking-wide text-[var(--warn)]">
+              Hot now
+            </span>
+            <span className="text-[10px] text-[var(--on-surface-variant)]">
+              high-impact, today + tomorrow
+            </span>
+          </div>
+          <div className="space-y-0.5">
+            {hotEvents.map((e, i) => (
+              <EventRow
+                key={`hot-${e.date}-${e.ticker}-${e.catalyst_type}-${i}`}
+                event={e}
+                onOpenTicker={handleOpenTicker}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Impact tier filter */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[10px] uppercase tracking-wide text-[var(--on-surface-variant)] mr-1">
+          Min impact:
+        </span>
+        {(['All', 'Medium', 'High'] as const).map(t => (
+          <button
+            key={t}
+            onClick={() => setMinImpact(t)}
+            className={`rounded-full px-3 py-1 text-[10px] font-semibold transition-colors ${
+              minImpact === t
+                ? 'bg-[var(--brand)] text-[var(--on-brand)]'
+                : 'bg-[var(--surface-2)] text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)]'
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {/* Type filter chips */}
       {allTypes.size > 0 && (
         <div className="flex flex-wrap gap-1.5">
           <button
@@ -400,7 +612,12 @@ export default function CatalystsPage() {
       {/* Event timeline */}
       <div className="space-y-3">
         {filteredDates.map(([date, events]) => (
-          <DateGroup key={date} date={date} events={events as CatalystEvent[]} />
+          <DateGroup
+            key={date}
+            date={date}
+            events={events as CatalystEvent[]}
+            onOpenTicker={handleOpenTicker}
+          />
         ))}
       </div>
 
