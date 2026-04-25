@@ -238,7 +238,7 @@ function ReportView({
   }
   if (error) {
     return (
-      <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-300">
+      <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-[var(--bear)]">
         Failed to load report: {error.message}
       </div>
     );
@@ -268,11 +268,11 @@ function ReportView({
   return (
     <div className="space-y-3">
       {historical && (
-        <div className="flex items-center justify-between rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+        <div className="flex items-center justify-between rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-[var(--warn)]">
           <span>Viewing historical report — not the current latest.</span>
           <button
             onClick={onBackToLatest}
-            className="flex items-center gap-1 rounded border border-amber-500/40 px-2 py-0.5 text-[10px] text-amber-200 hover:bg-amber-500/10"
+            className="flex items-center gap-1 rounded border border-amber-500/40 px-2 py-0.5 text-[10px] text-[var(--warn)] hover:bg-amber-500/10"
           >
             <ArrowLeft size={10} /> Back to latest
           </button>
@@ -346,9 +346,9 @@ function HistoryView({
               <span
                 className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase ${
                   r.direction === 'long'
-                    ? 'border-green-500/40 bg-green-500/20 text-green-400'
+                    ? 'border-green-500/40 bg-green-500/20 text-[var(--bull)]'
                     : r.direction === 'short'
-                    ? 'border-red-500/40 bg-red-500/20 text-red-400'
+                    ? 'border-red-500/40 bg-red-500/20 text-[var(--bear)]'
                     : 'border-zinc-500/40 bg-zinc-500/20 text-zinc-400'
                 }`}
               >

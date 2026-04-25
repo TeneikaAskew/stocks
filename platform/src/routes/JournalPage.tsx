@@ -225,8 +225,8 @@ export default function JournalPage() {
           </h1>
           <div className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
             {source === 'cloud_sql'
-              ? <><Database size={11} className="text-green-400" /> Persisted in Cloud SQL</>
-              : <><HardDrive size={11} className="text-amber-400" /> Local storage (set CLOUD_SQL_CONNECTION_NAME for persistence)</>
+              ? <><Database size={11} className="text-[var(--bull)]" /> Persisted in Cloud SQL</>
+              : <><HardDrive size={11} className="text-[var(--warn)]" /> Local storage (set CLOUD_SQL_CONNECTION_NAME for persistence)</>
             }
           </div>
         </div>
@@ -257,13 +257,13 @@ export default function JournalPage() {
       </div>
 
       {exportStatus && (
-        <div className="flex items-center gap-2 rounded-lg border border-green-500/30 bg-green-500/10 p-3 text-xs text-green-400">
+        <div className="flex items-center gap-2 rounded-lg border border-green-500/30 bg-green-500/10 p-3 text-xs text-[var(--bull)]">
           <AlertCircle size={14} /> {exportStatus}
         </div>
       )}
 
       {addTrade.isError && (
-        <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-400">
+        <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-[var(--bear)]">
           <AlertCircle size={14} /> Failed to save trade — check API connection.
         </div>
       )}
@@ -302,8 +302,8 @@ export default function JournalPage() {
                     className={`flex items-center gap-1.5 rounded border px-4 py-1.5 text-sm font-bold transition-colors ${
                       form.direction === d
                         ? d === 'CALL'
-                          ? 'border-green-500 bg-green-500/20 text-green-400'
-                          : 'border-red-500 bg-red-500/20 text-red-400'
+                          ? 'border-green-500 bg-green-500/20 text-[var(--bull)]'
+                          : 'border-red-500 bg-red-500/20 text-[var(--bear)]'
                         : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-bg-tertiary)]'
                     }`}
                   >
@@ -418,7 +418,7 @@ export default function JournalPage() {
                     <tr key={e.id} className="hover:bg-[var(--color-bg-tertiary)]">
                       <td className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-secondary)]">{entry.date}</td>
                       <td className="px-3 py-1.5">
-                        <span className={`text-xs font-bold ${e.direction === 'CALL' ? 'text-green-400' : 'text-red-400'}`}>
+                        <span className={`text-xs font-bold ${e.direction === 'CALL' ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
                           {e.direction}
                         </span>
                       </td>
@@ -427,7 +427,7 @@ export default function JournalPage() {
                       <td className="px-3 py-1.5 font-mono text-[10px] text-[var(--color-text-muted)]">{exit.time}</td>
                       <td className="px-3 py-1.5 font-mono text-xs text-[var(--color-text-primary)]">${e.exit_price.toFixed(2)}</td>
                       <td className="px-3 py-1.5">
-                        <span className={`font-mono text-xs font-medium ${ret >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        <span className={`font-mono text-xs font-medium ${ret >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
                           {ret >= 0 ? '+' : ''}{ret.toFixed(2)}%
                         </span>
                       </td>
@@ -436,7 +436,7 @@ export default function JournalPage() {
                         <button
                           onClick={() => deleteTrade.mutate(e.id)}
                           disabled={deleteTrade.isPending}
-                          className="text-[var(--color-text-muted)] hover:text-red-400 disabled:opacity-40"
+                          className="text-[var(--color-text-muted)] hover:text-[var(--bear)] disabled:opacity-40"
                         >
                           <Trash2 size={12} />
                         </button>

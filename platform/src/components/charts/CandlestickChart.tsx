@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { chartTheme } from '@/lib/chartTheme';
+import { chartTheme, useChartTheme } from '@/lib/chartTheme';
 import {
   createChart,
   createSeriesMarkers,
@@ -67,6 +67,7 @@ export function CandlestickChart({
   onChartClick,
   onCrosshairMove,
 }: CandlestickChartProps) {
+  const theme = useChartTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -181,6 +182,26 @@ export function CandlestickChart({
       visible: showVolume,
     });
   }, [showVolume]);
+
+  // Re-apply theme on toggle. The chart is created once; mutating options
+  // here keeps user pan/zoom state across light/dark switches.
+  useEffect(() => {
+    if (!chartRef.current || !candleSeriesRef.current) return;
+    chartRef.current.applyOptions({
+      layout: { background: { color: theme.bg }, textColor: theme.axis },
+      grid: { vertLines: { color: theme.grid }, horzLines: { color: theme.grid } },
+      timeScale: { borderColor: theme.border },
+      rightPriceScale: { borderColor: theme.border },
+    });
+    candleSeriesRef.current.applyOptions({
+      upColor: theme.bull,
+      downColor: theme.bear,
+      borderUpColor: theme.bull,
+      borderDownColor: theme.bear,
+      wickUpColor: theme.bull,
+      wickDownColor: theme.bear,
+    });
+  }, [theme.bg, theme.axis, theme.grid, theme.border, theme.bull, theme.bear]);
 
   // Markers (v5: use plugin API)
   useEffect(() => {

@@ -90,7 +90,7 @@ function TokenGate({ onAuthed }: { onAuthed: (token: string) => void }) {
         data-testid="admin-token-input"
         className="mb-3 w-full rounded border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-2 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent-blue)] focus:outline-none"
       />
-      {error && <div className="mb-3 text-xs text-rose-400" data-testid="admin-error">{error}</div>}
+      {error && <div className="mb-3 text-xs text-[var(--bear)]" data-testid="admin-error">{error}</div>}
       <button
         type="submit"
         disabled={checking}
@@ -250,7 +250,7 @@ function RoutingPanel({ onLogout }: { onLogout: () => void }) {
         </table>
       </div>
       {updateMut.error && (
-        <div className="text-xs text-rose-400">
+        <div className="text-xs text-[var(--bear)]">
           {updateMut.error.message}
         </div>
       )}
