@@ -202,17 +202,24 @@ async def get_catalysts_for_ticker(
     }
 
 
-@router.get("/api/catalysts/snapshot/{ticker}")
+@router.get("/api/catalysts/asof/{ticker}")
+@router.get("/api/catalysts/snapshot/{ticker}", include_in_schema=False)
 async def get_catalyst_snapshot(
     ticker: str,
     as_of: Optional[str] = Query(
-        None, description="Point-in-time snapshot date YYYY-MM-DD (default: today)"
+        None, description="Point-in-time view date YYYY-MM-DD (default: today)"
     ),
     window_days: int = Query(
         7, description="Lookback window for news/SEC/insider events (default 7d)"
     ),
 ):
-    """Unified point-in-time catalyst snapshot for a ticker.
+    """Unified point-in-time catalyst view for a ticker.
+
+    Note on naming: the canonical path is /api/catalysts/asof/{ticker}.
+    The /snapshot/ alias is preserved for back-compat — the word
+    'snapshot' otherwise refers to the etf_options_snapshots table
+    (live intraday options chain capture, currently paused), and they
+    are unrelated.
 
     Returns *only* data that would have been visible on or before `as_of`,
     pulled from news_sentiment, sec_filings, insider_transactions,

@@ -103,6 +103,41 @@ class RiskFlag(BaseModel):
     message: str
 
 
+class PersonaPlan(BaseModel):
+    """Concrete trade plan emitted by one of the three risk-debate personas.
+
+    Each persona returns the same plan shape (entry, stop, targets,
+    sizing) but with different price levels reflecting their risk
+    tolerance:
+
+      * aggressive   — wider stops, further targets, higher sizing,
+                       OK with tighter entries on momentum.
+      * conservative — tighter stops at structural levels, closer
+                       targets, halved sizing into catalyst windows.
+      * neutral      — base case, ~1 ATR stop, balanced sizing.
+
+    Rendered as a side-by-side table in the UI so the user can pick
+    which persona's plan matches their own risk profile.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    persona: Literal["aggressive", "conservative", "neutral"]
+    entry_zone: EntryZone
+    stop: float
+    targets: list[float] = Field(
+        default_factory=list,
+        description="Up to 3 price targets, ordered T1 → T3.",
+    )
+    position_size_pct: float = Field(
+        ..., ge=0.0, le=2.0,
+        description="Sizing as a fraction of normal allocation (1.0 = normal).",
+    )
+    rationale: str = Field(
+        ..., description="One-sentence justification for these levels."
+    )
+
+
 class SignalRef(BaseModel):
     """Reference to a signal_alerts row that supports the thesis."""
 
@@ -161,6 +196,10 @@ class InsightReport(BaseModel):
     bull_case: str
     bear_case: str
     risk_flags: list[RiskFlag] = Field(default_factory=list)
+    persona_plans: list[PersonaPlan] = Field(
+        default_factory=list,
+        description="Per-persona concrete trade plans (entry, stop, targets, sizing).",
+    )
     supporting_signals: list[SignalRef] = Field(default_factory=list)
     similar_past_trades: list[JournalRef] = Field(default_factory=list)
     confidence_score: float = Field(..., ge=0.0, le=1.0)
@@ -234,13 +273,23 @@ class TraderOutput(BaseModel):
 
 
 class RiskPersonaOutput(BaseModel):
-    """One of three risk debate personas."""
+    """One of three risk debate personas.
+
+    Each persona returns both qualitative flags AND a concrete trade
+    plan (entry/stop/targets/sizing) reflecting how *they* would size
+    and risk this trade. Plan is optional — a persona may decline to
+    issue one if they overall_severity='block' (i.e. won't take it).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     persona: Literal["aggressive", "conservative", "neutral"]
     flags: list[RiskFlag] = Field(default_factory=list)
     overall_severity: Literal["info", "warn", "block"]
+    plan: Optional[PersonaPlan] = Field(
+        default=None,
+        description="Concrete entry/stop/targets/sizing for this persona's risk profile.",
+    )
 
 
 class PortfolioManagerOutput(BaseModel):

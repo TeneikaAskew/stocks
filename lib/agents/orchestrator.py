@@ -461,10 +461,13 @@ async def run_insight_pipeline(
     catalysts = _build_catalysts(bundle.get("catalysts", {}))
     signals_refs = _build_signal_refs(bundle.get("signals", {}))
 
-    # Flatten all risk flags from all personas
+    # Flatten all risk flags from all personas + collect their concrete plans
     all_flags: list[RiskFlag] = []
+    persona_plans: list = []
     for r in risk_outputs:
         all_flags.extend(r.flags)
+        if r.plan is not None:
+            persona_plans.append(r.plan)
 
     similar: list[JournalRef] = []
     if query_embedding:
@@ -494,6 +497,7 @@ async def run_insight_pipeline(
         bull_case=pm.bull_case,
         bear_case=pm.bear_case,
         risk_flags=all_flags,
+        persona_plans=persona_plans,
         supporting_signals=signals_refs,
         similar_past_trades=similar,
         confidence_score=pm.confidence_score,
