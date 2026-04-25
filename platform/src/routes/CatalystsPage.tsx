@@ -244,16 +244,23 @@ function WSHUpgradeBanner({ types }: { types: CatalystTypesResponse | undefined 
 
 export default function CatalystsPage() {
   const today = new Date();
-  const [dateFrom] = useState(() => {
+  const [dateFrom, setDateFrom] = useState(() => {
     const d = new Date(today);
     d.setDate(d.getDate() - 3);
     return d.toISOString().slice(0, 10);
   });
-  const [dateTo] = useState(() => {
+  const [dateTo, setDateTo] = useState(() => {
     const d = new Date(today);
     d.setDate(d.getDate() + 14);
     return d.toISOString().slice(0, 10);
   });
+  const resetDates = () => {
+    const t = new Date();
+    const from = new Date(t); from.setDate(from.getDate() - 3);
+    const to   = new Date(t); to.setDate(to.getDate() + 14);
+    setDateFrom(from.toISOString().slice(0, 10));
+    setDateTo(to.toISOString().slice(0, 10));
+  };
   const [refreshing, setRefreshing] = useState(false);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
 
@@ -285,21 +292,50 @@ export default function CatalystsPage() {
   return (
     <div className="space-y-4 p-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-lg font-bold text-[var(--on-surface)]">Catalysts</h1>
           <p className="text-xs text-[var(--on-surface-variant)]">
             {data?.total ?? 0} events &middot; {data?.source ?? 'Benzinga'}
           </p>
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing || isLoading}
-          className="flex items-center gap-1.5 rounded-lg bg-[var(--surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)] hover:text-[var(--on-surface)] transition-colors disabled:opacity-50"
-        >
-          <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="flex items-center gap-1.5 text-[11px] text-[var(--on-surface-variant)]">
+            From
+            <input
+              type="date"
+              value={dateFrom}
+              max={dateTo}
+              onChange={e => setDateFrom(e.target.value)}
+              className="rounded-md bg-[var(--surface-2)] px-2 py-1 text-xs text-[var(--on-surface)] outline-none ring-1 ring-transparent focus:ring-[var(--brand)]"
+            />
+          </label>
+          <label className="flex items-center gap-1.5 text-[11px] text-[var(--on-surface-variant)]">
+            To
+            <input
+              type="date"
+              value={dateTo}
+              min={dateFrom}
+              onChange={e => setDateTo(e.target.value)}
+              className="rounded-md bg-[var(--surface-2)] px-2 py-1 text-xs text-[var(--on-surface)] outline-none ring-1 ring-transparent focus:ring-[var(--brand)]"
+            />
+          </label>
+          <button
+            onClick={resetDates}
+            className="rounded-md bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)] hover:text-[var(--on-surface)] transition-colors"
+            title="Reset to default range (today-3 → today+14)"
+          >
+            Today
+          </button>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing || isLoading}
+            className="flex items-center gap-1.5 rounded-lg bg-[var(--surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)] hover:text-[var(--on-surface)] transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Filter chips */}
