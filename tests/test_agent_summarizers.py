@@ -192,29 +192,64 @@ def test_signals_history_empty_is_available(patch_query):
 
 
 # ---------------------------------------------------------------------------
-# summarize_backtest_metrics
+# summarize_backtest_metrics — replaced from a `trades`-table win-rate
+# aggregator with a catalyst-analog matcher (see lib/agents/summarizers.py).
+# Tests now check the new shape: pattern features, analog count, forward-
+# return statistics, and top analogs.
 # ---------------------------------------------------------------------------
 
 
-def test_backtest_metrics_win_rate_and_profit_factor(patch_query):
-    patch_query(
-        "trades",
-        pd.DataFrame([
-            {"return_pct": 2.0, "direction": "CALL", "exit_reason": "target"},
-            {"return_pct": 1.5, "direction": "CALL", "exit_reason": "target"},
-            {"return_pct": 3.0, "direction": "PUT", "exit_reason": "target"},
-            {"return_pct": -1.0, "direction": "CALL", "exit_reason": "stop"},
-            {"return_pct": -0.5, "direction": "PUT", "exit_reason": "stop"},
-        ]),
-    )
+def _synth_daily_bars(n: int = 200) -> pd.DataFrame:
+    """Build a synthetic OHLCV series long enough for the analog matcher
+    (>=60 rows + 20-day exclusion buffer)."""
+    import numpy as np
+    rng = np.random.default_rng(42)
+    base = 100.0
+    rows = []
+    from datetime import date, timedelta
+    d = date(2024, 1, 1)
+    for i in range(n):
+        # Weekday-only series
+        while d.weekday() >= 5:
+            d = d + timedelta(days=1)
+        change = rng.normal(0.0, 0.01)
+        gap_up = (i in {30, 80, 130, 170})  # plant 4 gap-up "analogs"
+        prev_close = base
+        open_px = base * (1 + (0.04 if gap_up else change))
+        close_px = open_px * (1 + rng.normal(0.0, 0.01))
+        high_px = max(open_px, close_px) * (1 + abs(rng.normal(0, 0.005)))
+        low_px = min(open_px, close_px) * (1 - abs(rng.normal(0, 0.005)))
+        volume = int(1_000_000 * (3 if gap_up else 1) * (1 + abs(rng.normal(0, 0.1))))
+        rows.append({
+            "date": d, "open": open_px, "high": high_px, "low": low_px,
+            "close": close_px, "volume": volume,
+        })
+        base = close_px
+        d = d + timedelta(days=1)
+    return pd.DataFrame(rows)
+
+
+def test_backtest_metrics_returns_analog_pattern(patch_query):
+    """Analog backtest should compute today's pattern features, find
+    historical matches in the same series, and report forward returns."""
+    patch_query("market_data_daily", _synth_daily_bars())
     out = summarizers.summarize_backtest_metrics("SPY")
-    assert out["trade_count"] == 5
-    assert out["win_rate"] == 0.6  # 3 of 5
-    # wins = 2.0 + 1.5 + 3.0 = 6.5, losses = 1.5, pf = 6.5 / 1.5 ~= 4.33
-    assert out["profit_factor"] == 4.33
+    assert out["available"] is True
+    # Engineered pattern features for "today" (last bar)
+    pattern = out["pattern_today"]
+    for k in ("gap_pct", "vol_ratio", "rsi_14", "close_vs_sma200_pct",
+              "close_vs_ema20_pct"):
+        assert k in pattern
+    # We planted 4 gap-up days far enough apart to surface as analogs
+    # under at least one of the progressive tolerance bands.
+    assert out["analog_count"] >= 1
+    assert "forward_returns" in out
+    # cross_ticker_used flag is always present in the new schema
+    assert "cross_ticker_used" in out
 
 
 def test_backtest_metrics_unavailable_empty(patch_query):
+    """No bars in market_data_daily → analog backtest unavailable."""
     out = summarizers.summarize_backtest_metrics("SPY")
     assert out["available"] is False
 
