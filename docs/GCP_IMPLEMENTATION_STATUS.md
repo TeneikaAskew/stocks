@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-04-13 (session 10)
+**Last Updated**: 2026-04-25 (session 11)
 
 ---
 
@@ -430,6 +430,9 @@ Pre-existing failures (unrelated to dashboard work):
 - 2026-02-22: options_pnl_translation.py — Greeks-approximation 0DTE P&L estimator using daily options chains
 - 2026-02-22: phase6_playbook_combined.md — appendix with multi-TF filtered win rates (1m+30m 56–59%, 5m+15m ~62%)
 - 2026-02-23: trade_analysis_pipeline.py — fix market-hours filter (allow 4:00 PM exits), add Trade_Profitable fallback for 6-month comparison; IWM report updated with 6-month window analysis
+- 2026-04-25: Deploy `platform/` to Cloud Run as `trading-platform` with auto-managed IAP SSO scoped to bictech.org; add `/dev` diagnostic page gated to teneika@bictech.org; Playwright `iap-setup`/`cloud` projects + storage-state cookies for E2E against deployed URL
+- 2026-04-25: Fix WCAG button contrast (8 occurrences) and TypeScript build errors (5 files) blocking the multi-stage Docker build
+- 2026-04-25: Ranker — split insider_cluster into insider_buying (+1.5) / insider_selling (-1.5); weighted_score now allows negative weights with abs()-normalized max
 - 2026-02-23: GCS sync completed — 7.61 GiB backed up to gs://adept-mountain-474619-d4-trading-data/raw/data/
 - 2026-02-23: data/ removed from git tracking (f287259b); GCS is now source of truth; .gitignore updated
 - 2026-02-23: Cloud SQL intraday migration complete — SPY 2.3M, IWM 1.86M, QQQ 2.14M rows (exact parquet match)
