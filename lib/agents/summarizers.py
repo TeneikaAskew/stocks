@@ -433,15 +433,33 @@ def summarize_backtest_metrics(
 
 
 def summarize_catalysts(
-    ticker: str, as_of: Optional[date_type] = None, lookahead_days: int = 14
+    ticker: str, as_of: Optional[date_type] = None,
+    lookahead_days: int = 14, news_lookback_days: int = 3,
+    sec_lookback_days: int = 5,
 ) -> dict:
-    """Next N days of economic events + earnings dates.
+    """Catalysts surrounding the as_of date.
 
-    Economic events are market-wide (no ticker filter); earnings are
-    ticker-specific. Merged, sorted by date, capped at 5 entries.
+    Combines four sources:
+      * `economic_events` — high/medium-impact prints in the next N days.
+      * `earnings_calendar` — the ticker's next scheduled report.
+      * `news_sentiment`   — articles in the last `news_lookback_days`
+                             whose topics intersect catalyst tags AND
+                             whose relevance >= 0.7. Surfaces the
+                             actual M&A / earnings-beat headline that
+                             drove the move (e.g. AVGO/Google deal).
+      * `sec_filings`      — 8-Ks in the last `sec_lookback_days` with
+                             material item codes (1.01 acquisition,
+                             2.01 completion, 5.02 leadership change,
+                             7.01 reg-FD selective disclosure, 8.01
+                             other events).
+
+    All four merged, deduped by (kind, date, name), sorted by date,
+    capped at 8 entries (was 5 — news + SEC need more headroom).
     """
     today = as_of or datetime.now(timezone.utc).date()
     end = today + timedelta(days=lookahead_days)
+    news_start = today - timedelta(days=news_lookback_days)
+    sec_start = today - timedelta(days=sec_lookback_days)
 
     econ_sql = (
         "SELECT event_date, event_name, importance "
@@ -463,34 +481,112 @@ def summarize_catalysts(
         earn_sql, {"ticker": ticker.upper(), "start": str(today), "end": str(end)}
     )
 
-    out: list[dict] = []
-    if not econ_df.empty:
-        for _, r in econ_df.iterrows():
-            out.append(
-                {
-                    "name": str(r["event_name"]),
-                    "date": str(r["event_date"]),
-                    "impact": str(r.get("importance") or "medium"),
-                    "kind": "economic",
-                }
-            )
-    if not earn_df.empty:
-        for _, r in earn_df.iterrows():
-            out.append(
-                {
-                    "name": f"Earnings — {r.get('company_name') or ticker.upper()}",
-                    "date": str(r["earnings_date"]),
-                    "impact": "high",
-                    "kind": "earnings",
-                }
-            )
+    # Catalyst-tagged news. Topics are stored as TEXT[] of AV's
+    # snake_case slugs. Filter to high-conviction articles only.
+    news_sql = (
+        "SELECT published_ts, title, topics, relevance_score, "
+        "       overall_sentiment_score, overall_sentiment_label "
+        "FROM news_sentiment "
+        "WHERE ticker = :ticker "
+        "  AND published_ts >= CAST(:start AS timestamptz) "
+        "  AND published_ts <= CAST(:end AS timestamptz) + INTERVAL '23 hours 59 minutes' "
+        "  AND relevance_score >= 0.7 "
+        "  AND topics && ARRAY['mergers_and_acquisitions','earnings','ipo','economy_monetary']::TEXT[] "
+        "ORDER BY published_ts DESC LIMIT 6"
+    )
+    news_df = _query(
+        news_sql,
+        {"ticker": ticker.upper(), "start": str(news_start), "end": str(today)},
+    )
 
-    out.sort(key=lambda e: e["date"])
+    sec_sql = (
+        "SELECT filing_date, form, items "
+        "FROM sec_filings "
+        "WHERE ticker = :ticker "
+        "  AND form = '8-K' "
+        "  AND filing_date >= CAST(:start AS date) "
+        "  AND filing_date <= CAST(:end AS date) "
+        "  AND items && ARRAY['1.01','2.01','5.02','7.01','8.01']::TEXT[] "
+        "ORDER BY filing_date DESC LIMIT 5"
+    )
+    sec_df = _query(
+        sec_sql,
+        {"ticker": ticker.upper(), "start": str(sec_start), "end": str(today)},
+    )
+
+    out: list[dict] = []
+    if econ_df is not None and not econ_df.empty:
+        for _, r in econ_df.iterrows():
+            out.append({
+                "name": str(r["event_name"]),
+                "date": str(r["event_date"]),
+                "impact": str(r.get("importance") or "medium"),
+                "kind": "economic",
+            })
+    if earn_df is not None and not earn_df.empty:
+        for _, r in earn_df.iterrows():
+            out.append({
+                "name": f"Earnings — {r.get('company_name') or ticker.upper()}",
+                "date": str(r["earnings_date"]),
+                "impact": "high",
+                "kind": "earnings",
+            })
+    if news_df is not None and not news_df.empty:
+        for _, r in news_df.iterrows():
+            rel = float(r.get("relevance_score") or 0.0)
+            sent = float(r.get("overall_sentiment_score") or 0.0)
+            # impact = high if both relevance + |sentiment| are strong
+            if rel >= 0.9 and abs(sent) >= 0.4:
+                impact = "high"
+            elif rel >= 0.7 and abs(sent) >= 0.2:
+                impact = "medium"
+            else:
+                impact = "low"
+            title = str(r.get("title") or "")[:140]
+            out.append({
+                "name": title,
+                "date": str(r["published_ts"])[:10],
+                "impact": impact,
+                "kind": "news_topic",
+            })
+    if sec_df is not None and not sec_df.empty:
+        # 8-K item code → human label. Material items only.
+        ITEM_LABELS = {
+            "1.01": "Material Definitive Agreement",
+            "2.01": "Completed Acquisition / Disposition",
+            "5.02": "Departure / Election of Officers",
+            "7.01": "Regulation FD Disclosure",
+            "8.01": "Other Events",
+        }
+        for _, r in sec_df.iterrows():
+            items = r.get("items") or []
+            labels = [ITEM_LABELS.get(it, it) for it in items if it in ITEM_LABELS]
+            if not labels:
+                continue
+            # Highest impact: 1.01 / 2.01 (deal-related); others medium
+            heavy = any(it in ("1.01", "2.01") for it in items)
+            out.append({
+                "name": f"8-K — {', '.join(labels)}",
+                "date": str(r["filing_date"]),
+                "impact": "high" if heavy else "medium",
+                "kind": "sec_8k",
+            })
+
+    # Dedupe by (kind, date, name)
+    seen: set[tuple] = set()
+    deduped: list[dict] = []
+    for e in out:
+        key = (e["kind"], e["date"], e["name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(e)
+    deduped.sort(key=lambda e: e["date"])
     return {
         "available": True,
-        "window_start": str(today),
+        "window_start": str(news_start),
         "window_end": str(end),
-        "events": out[:5],
+        "events": deduped[:8],
     }
 
 
