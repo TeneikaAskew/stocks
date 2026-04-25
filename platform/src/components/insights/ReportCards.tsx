@@ -25,8 +25,8 @@ function fmt(n: number | null | undefined, digits = 2): string {
 
 function DirectionBadge({ direction, conviction }: { direction: Direction; conviction: string }) {
   const colors: Record<Direction, string> = {
-    long: 'bg-green-500/20 text-green-400 border-green-500/40',
-    short: 'bg-red-500/20 text-red-400 border-red-500/40',
+    long: 'bg-green-500/20 text-[var(--bull)] border-green-500/40',
+    short: 'bg-red-500/20 text-[var(--bear)] border-red-500/40',
     flat: 'bg-zinc-500/20 text-zinc-400 border-zinc-500/40',
   };
   const Icon = direction === 'long' ? TrendingUp : direction === 'short' ? TrendingDown : Minus;
@@ -120,11 +120,11 @@ export function TradePlanCard({ report }: { report: InsightReport }) {
         </div>
         <div>
           <div className="text-[10px] uppercase text-[var(--color-text-muted)]">Stop</div>
-          <div className="font-mono text-red-400">{fmt(report.stop)}</div>
+          <div className="font-mono text-[var(--bear)]">{fmt(report.stop)}</div>
         </div>
         <div className="col-span-2">
           <div className="text-[10px] uppercase text-[var(--color-text-muted)]">Targets</div>
-          <div className="flex items-center gap-3 font-mono text-green-400">
+          <div className="flex items-center gap-3 font-mono text-[var(--bull)]">
             {report.targets.length === 0 ? (
               <span className="text-[var(--color-text-muted)]">—</span>
             ) : (
@@ -152,9 +152,9 @@ export function TradePlanCard({ report }: { report: InsightReport }) {
 export function StratCard({ strat }: { strat: StratSnapshot }) {
   const dirColor =
     strat.ftfc_direction === 'bullish'
-      ? 'text-green-400'
+      ? 'text-[var(--bull)]'
       : strat.ftfc_direction === 'bearish'
-      ? 'text-red-400'
+      ? 'text-[var(--bear)]'
       : 'text-zinc-400';
   return (
     <Card title="Strat Status">
@@ -292,9 +292,9 @@ export function RiskFlagsCard({ flags }: { flags: RiskFlag[] }) {
               size={12}
               className={`mt-0.5 flex-shrink-0 ${
                 f.severity === 'block'
-                  ? 'text-red-400'
+                  ? 'text-[var(--bear)]'
                   : f.severity === 'warn'
-                  ? 'text-amber-400'
+                  ? 'text-[var(--warn)]'
                   : 'text-zinc-400'
               }`}
             />
@@ -328,7 +328,7 @@ export function SignalsCard({ signals }: { signals: SignalRef[] }) {
             <li key={i} className="flex items-center justify-between">
               <span
                 className={`font-mono ${
-                  s.direction === 'CALL' ? 'text-green-400' : 'text-red-400'
+                  s.direction === 'CALL' ? 'text-[var(--bull)]' : 'text-[var(--bear)]'
                 }`}
               >
                 {s.direction}
@@ -361,7 +361,7 @@ export function SimilarTradesCard({ trades }: { trades: JournalRef[] }) {
             <li key={t.id} className="flex items-center justify-between">
               <span
                 className={`font-mono ${
-                  t.direction === 'CALL' ? 'text-green-400' : 'text-red-400'
+                  t.direction === 'CALL' ? 'text-[var(--bull)]' : 'text-[var(--bear)]'
                 }`}
               >
                 {t.ticker} {t.direction}
@@ -387,7 +387,7 @@ export function SimilarTradesCard({ trades }: { trades: JournalRef[] }) {
 export function DegradationBanner({ failedSections }: { failedSections: string[] }) {
   if (failedSections.length === 0) return null;
   return (
-    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-[var(--warn)]">
       <AlertTriangle size={12} className="mr-1 inline" />
       Partial report — the following sections were unavailable:{' '}
       <span className="font-mono">{failedSections.join(', ')}</span>

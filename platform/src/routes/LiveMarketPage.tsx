@@ -51,7 +51,7 @@ function ConditionRow({ label, met, current, threshold, operator, direction }: {
   const isCall = direction === 'CALL';
   const metBg = isCall ? 'bg-green-500/10' : 'bg-red-500/10';
   const metDot = isCall ? 'bg-green-400' : 'bg-red-400';
-  const metText = isCall ? 'text-green-400' : 'text-red-400';
+  const metText = isCall ? 'text-[var(--bull)]' : 'text-[var(--bear)]';
   return (
     <div className={`flex items-center justify-between rounded px-2 py-1 text-xs ${met ? metBg : 'bg-[var(--color-bg-tertiary)]'}`}>
       <div className="flex items-center gap-2">
@@ -82,10 +82,10 @@ function SignalCard({ direction, strength, conditions, fired }: {
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-2">
           {isCall
-            ? <TrendingUp size={16} className="text-green-400" />
-            : <TrendingDown size={16} className="text-red-400" />
+            ? <TrendingUp size={16} className="text-[var(--bull)]" />
+            : <TrendingDown size={16} className="text-[var(--bear)]" />
           }
-          <span className={`font-bold text-sm ${isCall ? 'text-green-400' : 'text-red-400'}`}>
+          <span className={`font-bold text-sm ${isCall ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
             {direction} SETUP
           </span>
           {fired && (
@@ -236,15 +236,15 @@ export default function LiveMarketPage() {
     status?.session === 'after' ? 'After Hours' : 'Market Closed';
 
   const sessionColor =
-    status?.session === 'regular' ? 'text-green-400' :
-    status?.session === 'pre' || status?.session === 'after' ? 'text-amber-400' : 'text-red-400';
+    status?.session === 'regular' ? 'text-[var(--bull)]' :
+    status?.session === 'pre' || status?.session === 'after' ? 'text-[var(--warn)]' : 'text-[var(--bear)]';
 
   return (
     <div className="space-y-4">
       {/* Top bar (DateSelector is in Header) */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2 rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-1.5">
-          <Circle size={8} className={`fill-current ${isReview ? 'text-amber-400' : sessionColor}`} />
+          <Circle size={8} className={`fill-current ${isReview ? 'text-[var(--warn)]' : sessionColor}`} />
           <span className="text-xs text-[var(--color-text-secondary)]">
             {isReview
               ? `Historical: ${reviewDate}${reviewTime ? ` @ ${reviewTime} ET` : ''}`
@@ -285,7 +285,7 @@ export default function LiveMarketPage() {
 
       {/* Quote card */}
       {quoteError ? (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400">
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-[var(--warn)]">
           Live data unavailable — API key not configured or rate limited. Indicators will populate once history loads.
         </div>
       ) : quote ? (
@@ -296,7 +296,7 @@ export default function LiveMarketPage() {
               <div className="text-3xl font-bold font-mono text-[var(--color-text-primary)]">
                 ${quote.price.toFixed(2)}
               </div>
-              <div className={`text-sm font-mono ${quote.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              <div className={`text-sm font-mono ${quote.change >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
                 {quote.change >= 0 ? '+' : ''}{quote.change.toFixed(2)}
                 {' '}({quote.change_pct >= 0 ? '+' : ''}{quote.change_pct.toFixed(2)}%)
               </div>
@@ -306,13 +306,13 @@ export default function LiveMarketPage() {
                 Open: <span className="font-mono text-[var(--color-text-primary)]">${quote.open.toFixed(2)}</span>
               </span>
               <span className="text-[var(--color-text-muted)]">
-                High: <span className="font-mono text-green-400">${quote.high.toFixed(2)}</span>
+                High: <span className="font-mono text-[var(--bull)]">${quote.high.toFixed(2)}</span>
               </span>
               <span className="text-[var(--color-text-muted)]">
                 Prev: <span className="font-mono text-[var(--color-text-primary)]">${quote.prev_close.toFixed(2)}</span>
               </span>
               <span className="text-[var(--color-text-muted)]">
-                Low: <span className="font-mono text-red-400">${quote.low.toFixed(2)}</span>
+                Low: <span className="font-mono text-[var(--bear)]">${quote.low.toFixed(2)}</span>
               </span>
             </div>
             <div className="text-xs text-[var(--color-text-muted)]">
@@ -371,8 +371,8 @@ export default function LiveMarketPage() {
       {lastFired && (
         <div className={`rounded border p-2 text-xs ${
           lastFired.direction === 'CALL'
-            ? 'border-green-500/30 bg-green-500/10 text-green-400'
-            : 'border-red-500/30 bg-red-500/10 text-red-400'
+            ? 'border-green-500/30 bg-green-500/10 text-[var(--bull)]'
+            : 'border-red-500/30 bg-red-500/10 text-[var(--bear)]'
         }`}>
           Last signal: <strong>{lastFired.direction}</strong> at {lastFired.time}
         </div>

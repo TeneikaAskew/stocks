@@ -87,8 +87,8 @@ function pct(v: number | undefined, digits = 1): string {
 }
 
 function biasIcon(bias: string) {
-  if (bias === 'bullish') return <TrendingUp size={28} className="text-green-400" />;
-  if (bias === 'bearish') return <TrendingDown size={28} className="text-red-400" />;
+  if (bias === 'bullish') return <TrendingUp size={28} className="text-[var(--bull)]" />;
+  if (bias === 'bearish') return <TrendingDown size={28} className="text-[var(--bear)]" />;
   return <Minus size={28} className="text-[var(--color-text-muted)]" />;
 }
 
@@ -464,8 +464,8 @@ export default function DashboardPage() {
 
           {/* Cloud SQL status pill — stacked under the market status */}
           <div className="inline-flex items-center gap-1.5 rounded-full bg-[var(--surface-2)] px-3 py-1.5">
-            <Database size={12} className={cloudSqlOk ? 'text-[var(--color-brand)]' : 'text-amber-400'} />
-            <span className={`text-xs font-medium ${cloudSqlOk ? 'text-[var(--color-brand)]' : 'text-amber-400'}`}>
+            <Database size={12} className={cloudSqlOk ? 'text-[var(--color-brand)]' : 'text-[var(--warn)]'} />
+            <span className={`text-xs font-medium ${cloudSqlOk ? 'text-[var(--color-brand)]' : 'text-[var(--warn)]'}`}>
               {cloudSqlOk ? 'Cloud SQL' : 'Cloud SQL Disconnected'}
             </span>
           </div>
@@ -475,8 +475,8 @@ export default function DashboardPage() {
       {/* Cloud SQL alert banner — prominent when disconnected */}
       {!cloudSqlOk && (
         <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5">
-          <AlertTriangle size={16} className="text-amber-400 shrink-0" />
-          <span className="text-xs text-amber-300">
+          <AlertTriangle size={16} className="text-[var(--warn)] shrink-0" />
+          <span className="text-xs text-[var(--warn)]">
             Cloud SQL not connected — premarket analysis and daily indicators unavailable. Check <code className="font-mono bg-amber-500/20 px-1 rounded">CLOUD_SQL_CONNECTION_NAME</code> env var.
           </span>
         </div>
@@ -485,8 +485,8 @@ export default function DashboardPage() {
       {/* Brief source alert — when Cloud SQL is connected but brief endpoint reports unavailable */}
       {cloudSqlOk && brief?.source === 'unavailable' && (
         <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2.5">
-          <AlertTriangle size={16} className="text-amber-400 shrink-0" />
-          <span className="text-xs text-amber-300">{brief.reason}</span>
+          <AlertTriangle size={16} className="text-[var(--warn)] shrink-0" />
+          <span className="text-xs text-[var(--warn)]">{brief.reason}</span>
         </div>
       )}
 
@@ -504,7 +504,7 @@ export default function DashboardPage() {
           {/* Change + OHLV grouped, vertically centered against price */}
           {quote && (
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-              <div className={quote.change >= 0 ? 'text-green-400' : 'text-red-400'}>
+              <div className={quote.change >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}>
                 <p className="text-xl font-bold font-mono leading-tight">
                   {quote.change >= 0 ? '+' : ''}{quote.change.toFixed(2)}
                 </p>
@@ -515,8 +515,8 @@ export default function DashboardPage() {
 
               <div className="flex gap-4 text-xs">
                 <span className="text-[var(--color-text-muted)]">O <span className="text-[var(--color-accent-blue)] font-mono font-semibold">${quote.open.toFixed(2)}</span></span>
-                <span className="text-[var(--color-text-muted)]">H <span className="text-green-400 font-mono font-semibold">${quote.high.toFixed(2)}</span></span>
-                <span className="text-[var(--color-text-muted)]">L <span className="text-amber-400 font-mono font-semibold">${quote.low.toFixed(2)}</span></span>
+                <span className="text-[var(--color-text-muted)]">H <span className="text-[var(--bull)] font-mono font-semibold">${quote.high.toFixed(2)}</span></span>
+                <span className="text-[var(--color-text-muted)]">L <span className="text-[var(--warn)] font-mono font-semibold">${quote.low.toFixed(2)}</span></span>
                 <span className="text-[var(--color-text-muted)]">Vol <span className="text-[var(--color-text-secondary)] font-mono font-semibold">{(quote.volume / 1e6).toFixed(1)}M</span></span>
               </div>
             </div>
@@ -537,7 +537,7 @@ export default function DashboardPage() {
               <span className="flex items-center gap-2">
                 Previous Day Range
                 {reference.source === 'cloud_sql' && (reference.stale_days ?? 0) > 3 && (
-                  <span className="inline-flex items-center gap-0.5 text-amber-400 normal-case" title="AlphaVantage unavailable — using Cloud SQL fallback which may be outdated">
+                  <span className="inline-flex items-center gap-0.5 text-[var(--warn)] normal-case" title="AlphaVantage unavailable — using Cloud SQL fallback which may be outdated">
                     <AlertTriangle size={10} /> stale
                   </span>
                 )}
@@ -545,9 +545,9 @@ export default function DashboardPage() {
               {quote && (
                 <span>
                   {quote.price > reference.high
-                    ? <span className="text-green-400">Above prev high</span>
+                    ? <span className="text-[var(--bull)]">Above prev high</span>
                     : quote.price < reference.low
-                    ? <span className="text-amber-400">Below prev low</span>
+                    ? <span className="text-[var(--warn)]">Below prev low</span>
                     : `${((quote.price - reference.low) / (reference.high - reference.low) * 100).toFixed(0)}% of range`}
                 </span>
               )}
@@ -561,7 +561,7 @@ export default function DashboardPage() {
               {/* Low marker */}
               <div className="absolute left-0 top-0 flex flex-col items-center">
                 <div className="h-full w-0.5 bg-amber-400" />
-                <span className="mt-0 font-mono text-[10px] text-amber-400 whitespace-nowrap">L ${reference.low.toFixed(2)}</span>
+                <span className="mt-0 font-mono text-[10px] text-[var(--warn)] whitespace-nowrap">L ${reference.low.toFixed(2)}</span>
               </div>
 
               {/* Close marker */}
@@ -579,7 +579,7 @@ export default function DashboardPage() {
               {/* High marker */}
               <div className="absolute right-0 top-0 flex flex-col items-center">
                 <div className="h-full w-0.5 bg-green-400" />
-                <span className="font-mono text-[10px] text-green-400 whitespace-nowrap">H ${reference.high.toFixed(2)}</span>
+                <span className="font-mono text-[10px] text-[var(--bull)] whitespace-nowrap">H ${reference.high.toFixed(2)}</span>
               </div>
 
               {/* Current price marker (circle on line) */}
@@ -607,9 +607,9 @@ export default function DashboardPage() {
               {quote && (
                 <span>
                   {quote.price > reference.week.high
-                    ? <span className="text-green-400">Above week high</span>
+                    ? <span className="text-[var(--bull)]">Above week high</span>
                     : quote.price < reference.week.low
-                    ? <span className="text-amber-400">Below week low</span>
+                    ? <span className="text-[var(--warn)]">Below week low</span>
                     : `${((quote.price - reference.week.low) / (reference.week.high - reference.week.low) * 100).toFixed(0)}% of range`}
                 </span>
               )}
@@ -622,13 +622,13 @@ export default function DashboardPage() {
               {/* Low marker */}
               <div className="absolute left-0 top-0 flex flex-col items-center">
                 <div className="h-full w-0.5 bg-amber-400" />
-                <span className="mt-0 font-mono text-[10px] text-amber-400 whitespace-nowrap">L ${reference.week.low.toFixed(2)}</span>
+                <span className="mt-0 font-mono text-[10px] text-[var(--warn)] whitespace-nowrap">L ${reference.week.low.toFixed(2)}</span>
               </div>
 
               {/* High marker */}
               <div className="absolute right-0 top-0 flex flex-col items-center">
                 <div className="h-full w-0.5 bg-green-400" />
-                <span className="font-mono text-[10px] text-green-400 whitespace-nowrap">H ${reference.week.high.toFixed(2)}</span>
+                <span className="font-mono text-[10px] text-[var(--bull)] whitespace-nowrap">H ${reference.week.high.toFixed(2)}</span>
               </div>
 
               {/* Current price marker (circle on line) */}
@@ -695,24 +695,16 @@ export default function DashboardPage() {
                 type="button"
                 onClick={() => setTfOpen((v) => !v)}
                 onBlur={() => setTimeout(() => setTfOpen(false), 120)}
-                className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[10px] font-medium transition-colors"
-                style={{
-                  background: 'rgba(139, 206, 255, 0.08)',
-                  color: '#8bceff',
-                  border: '1px solid rgba(139, 206, 255, 0.20)',
-                }}
+                className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[10px] font-medium transition-colors text-[var(--brand)] border border-[var(--outline)]"
+                style={{ background: 'color-mix(in oklab, var(--brand) 8%, transparent)' }}
               >
                 {timeframe}min bars
                 <ChevronDown size={12} className={tfOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
               </button>
               {tfOpen && (
                 <div
-                  className="absolute right-0 top-full z-20 mt-1 min-w-[120px] overflow-hidden rounded-lg py-1 text-[11px]"
-                  style={{
-                    background: 'rgba(10, 12, 16, 0.97)',
-                    border: '1px solid rgba(139, 206, 255, 0.20)',
-                    backdropFilter: 'blur(8px)',
-                  }}
+                  className="absolute right-0 top-full z-20 mt-1 min-w-[120px] overflow-hidden rounded-lg py-1 text-[11px] bg-[var(--surface-lowest)] border border-[var(--outline)]"
+                  style={{ backdropFilter: 'blur(8px)' }}
                 >
                   {([1, 5, 15, 30, 60] as const).map((tf) => (
                     <button
@@ -721,10 +713,10 @@ export default function DashboardPage() {
                       onMouseDown={(e) => { e.preventDefault(); setTimeframe(tf); setTfOpen(false); }}
                       className={`block w-full px-3 py-1.5 text-left transition-colors ${
                         tf === timeframe
-                          ? 'font-semibold'
+                          ? 'font-semibold text-[var(--brand)]'
                           : 'text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)]'
                       }`}
-                      style={tf === timeframe ? { color: '#8bceff', background: 'rgba(139, 206, 255, 0.08)' } : undefined}
+                      style={tf === timeframe ? { background: 'color-mix(in oklab, var(--brand) 8%, transparent)' } : undefined}
                     >
                       {tf}min bars
                     </button>
@@ -750,10 +742,10 @@ export default function DashboardPage() {
             <Activity size={14} className="text-[var(--color-accent-blue)]" />
             <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Daily Bias</h2>
             {brief?.source === 'unavailable' && (
-              <span className="ml-auto text-xs text-amber-400">Cloud SQL unavailable</span>
+              <span className="ml-auto text-xs text-[var(--warn)]">Cloud SQL unavailable</span>
             )}
             {!isReview && brief?.live && (
-              <span className="ml-auto inline-flex items-center gap-1.5 text-[10px] font-semibold text-green-400" title={`Live overlay from ${brief.live.source}`}>
+              <span className="ml-auto inline-flex items-center gap-1.5 text-[10px] font-semibold text-[var(--bull)]" title={`Live overlay from ${brief.live.source}`}>
                 <span className="relative flex h-2 w-2">
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75"></span>
                   <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500"></span>
@@ -762,7 +754,7 @@ export default function DashboardPage() {
               </span>
             )}
             {!isReview && !brief?.live && brief?.source === 'cloud_sql' && (di.stale_days ?? 0) >= 1 && (
-              <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-amber-400" title="Cloud SQL market_data_daily backfill needed">
+              <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-[var(--warn)]" title="Cloud SQL market_data_daily backfill needed">
                 <AlertTriangle size={11} /> {di.stale_days}d stale
               </span>
             )}
@@ -775,8 +767,8 @@ export default function DashboardPage() {
                 {biasIcon(brief.bias)}
                 <div>
                   <p className={`text-lg font-bold ${
-                    brief.bias === 'bullish' ? 'text-green-400' :
-                    brief.bias === 'bearish' ? 'text-red-400' :
+                    brief.bias === 'bullish' ? 'text-[var(--bull)]' :
+                    brief.bias === 'bearish' ? 'text-[var(--bear)]' :
                     'text-[var(--color-text-primary)]'
                   }`}>
                     {brief.bias.toUpperCase()}
@@ -838,13 +830,13 @@ export default function DashboardPage() {
               {(di.price_vs_ema9 != null || di.price_vs_ema20 != null) && (
                 <div className="flex gap-4 text-xs text-[var(--color-text-muted)]">
                   {di.price_vs_ema9 != null && (
-                    <span>vs EMA9: <span className={`font-mono font-semibold ${di.price_vs_ema9 >= 0 ? 'text-green-400' : 'text-red-400'}`}>{pct(di.price_vs_ema9, 2)}</span></span>
+                    <span>vs EMA9: <span className={`font-mono font-semibold ${di.price_vs_ema9 >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>{pct(di.price_vs_ema9, 2)}</span></span>
                   )}
                   {di.price_vs_ema20 != null && (
-                    <span>vs EMA20: <span className={`font-mono font-semibold ${di.price_vs_ema20 >= 0 ? 'text-green-400' : 'text-red-400'}`}>{pct(di.price_vs_ema20, 2)}</span></span>
+                    <span>vs EMA20: <span className={`font-mono font-semibold ${di.price_vs_ema20 >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>{pct(di.price_vs_ema20, 2)}</span></span>
                   )}
                   {di.sma_200 != null && di.close != null && (
-                    <span>vs SMA200: <span className={`font-mono font-semibold ${di.close >= di.sma_200 ? 'text-green-400' : 'text-red-400'}`}>
+                    <span>vs SMA200: <span className={`font-mono font-semibold ${di.close >= di.sma_200 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
                       {pct(((di.close - di.sma_200) / di.sma_200) * 100, 1)}
                     </span></span>
                   )}
@@ -852,7 +844,7 @@ export default function DashboardPage() {
               )}
             </div>
           ) : (
-            <div className="flex items-center gap-2 text-xs text-amber-400">
+            <div className="flex items-center gap-2 text-xs text-[var(--warn)]">
               <AlertTriangle size={14} />
               <span>Daily bias unavailable — Cloud SQL not connected</span>
             </div>
@@ -875,9 +867,9 @@ export default function DashboardPage() {
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 {topCard.direction === 'CALL'
-                  ? <TrendingUp size={16} className="text-green-400" />
+                  ? <TrendingUp size={16} className="text-[var(--bull)]" />
                   : topCard.direction === 'PUT'
-                  ? <TrendingDown size={16} className="text-red-400" />
+                  ? <TrendingDown size={16} className="text-[var(--bear)]" />
                   : <Minus size={16} className="text-[var(--color-text-muted)]" />
                 }
                 <span className="text-sm font-semibold text-[var(--color-text-primary)] truncate">
@@ -894,7 +886,7 @@ export default function DashboardPage() {
                   Win rate: <span className="font-mono font-semibold text-[var(--color-text-primary)]">{topCard.win_rate}%</span>
                 </span>
                 <span className="text-[var(--color-text-muted)]">
-                  Avg: <span className={`font-mono font-semibold ${topCard.avg_return >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  Avg: <span className={`font-mono font-semibold ${topCard.avg_return >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
                     {returnPct(topCard.avg_return)}
                   </span>
                 </span>
@@ -934,7 +926,7 @@ export default function DashboardPage() {
       {/* ── SECTION 4: Performance KPIs ──────────────────────────────────── */}
       {isReview && filteredTrades.length === 0 ? (
         <div className="flex items-center gap-2 rounded-xl bg-[var(--surface-2)] px-4 py-6">
-          <AlertTriangle size={16} className="text-amber-400 shrink-0" />
+          <AlertTriangle size={16} className="text-[var(--warn)] shrink-0" />
           <span className="text-sm text-[var(--color-text-muted)]">
             No backtest trades before {reviewDate}{reviewTime ? ` ${reviewTime} ET` : ''}. Earliest trade: {(btData?.trades?.[0] as { entry_time?: string } | undefined)?.entry_time ?? 'N/A'}
           </span>
@@ -1011,12 +1003,12 @@ export default function DashboardPage() {
               </div>
               {[...signals].reverse().slice(0, 10).map((s, i) => (
                 <div key={i} className="grid grid-cols-[40px_60px_1fr_70px] gap-1 items-center rounded px-2 py-1 hover:bg-[var(--color-bg-tertiary)]">
-                  <span className={`text-xs font-bold ${s.direction === 'CALL' ? 'text-green-400' : 'text-red-400'}`}>
+                  <span className={`text-xs font-bold ${s.direction === 'CALL' ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
                     {s.direction === 'CALL' ? '▲' : '▼'}
                   </span>
                   <span className="text-xs text-[var(--color-text-secondary)] font-mono">{s.conditions_met ?? `${s.score}/5`}</span>
                   <span className="font-mono text-[10px] text-[var(--color-text-muted)] truncate">{s.time.slice(5, 16)}</span>
-                  <span className={`text-right font-mono text-xs font-semibold ${s.return_pct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  <span className={`text-right font-mono text-xs font-semibold ${s.return_pct >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
                     {returnPct(s.return_pct)}
                   </span>
                 </div>
@@ -1039,33 +1031,33 @@ export default function DashboardPage() {
             <div className="space-y-2">
               {/* Best */}
               <div>
-                <p className="text-[10px] uppercase tracking-wider text-green-400 mb-1 px-2">Top Winners</p>
+                <p className="text-[10px] uppercase tracking-wider text-[var(--bull)] mb-1 px-2">Top Winners</p>
                 {bestTrades.map((t, i) => (
                   <div key={`w${i}`} className="flex items-center justify-between rounded px-2 py-0.5 hover:bg-[var(--color-bg-tertiary)]">
                     <div className="flex items-center gap-2 text-xs">
-                      <span className={t.direction === 'CALL' ? 'text-green-400' : 'text-red-400'}>
+                      <span className={t.direction === 'CALL' ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}>
                         {t.direction === 'CALL' ? '▲' : '▼'}
                       </span>
                       <span className="font-mono text-[10px] text-[var(--color-text-muted)]">{t.entry_time.slice(5, 16)}</span>
                       <span className="text-[10px] text-[var(--color-text-muted)]">{t.exit_reason}</span>
                     </div>
-                    <span className="font-mono text-xs font-semibold text-green-400">{returnPct(t.return_pct)}</span>
+                    <span className="font-mono text-xs font-semibold text-[var(--bull)]">{returnPct(t.return_pct)}</span>
                   </div>
                 ))}
               </div>
               {/* Worst */}
               <div>
-                <p className="text-[10px] uppercase tracking-wider text-red-400 mb-1 px-2">Worst Losers</p>
+                <p className="text-[10px] uppercase tracking-wider text-[var(--bear)] mb-1 px-2">Worst Losers</p>
                 {worstTrades.map((t, i) => (
                   <div key={`l${i}`} className="flex items-center justify-between rounded px-2 py-0.5 hover:bg-[var(--color-bg-tertiary)]">
                     <div className="flex items-center gap-2 text-xs">
-                      <span className={t.direction === 'CALL' ? 'text-green-400' : 'text-red-400'}>
+                      <span className={t.direction === 'CALL' ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}>
                         {t.direction === 'CALL' ? '▲' : '▼'}
                       </span>
                       <span className="font-mono text-[10px] text-[var(--color-text-muted)]">{t.entry_time.slice(5, 16)}</span>
                       <span className="text-[10px] text-[var(--color-text-muted)]">{t.exit_reason}</span>
                     </div>
-                    <span className="font-mono text-xs font-semibold text-red-400">{returnPct(t.return_pct)}</span>
+                    <span className="font-mono text-xs font-semibold text-[var(--bear)]">{returnPct(t.return_pct)}</span>
                   </div>
                 ))}
               </div>

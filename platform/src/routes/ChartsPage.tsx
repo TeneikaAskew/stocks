@@ -381,12 +381,12 @@ export default function ChartsPage() {
             title={isReview ? 'Controlled by global historical mode — clear review mode to edit' : undefined}
           />
           {snappedFromReview && (
-            <span className="text-xs text-amber-400" title={`${reviewDate} was not a trading day`}>
+            <span className="text-xs text-[var(--warn)]" title={`${reviewDate} was not a trading day`}>
               ⓘ Snapped to {toInputFormat(selectedDate)}
             </span>
           )}
           {hiddenTradesCount > 0 && (
-            <span className="text-xs text-amber-400" title="Trades after review cutoff are hidden">
+            <span className="text-xs text-[var(--warn)]" title="Trades after review cutoff are hidden">
               {hiddenTradesCount} trade{hiddenTradesCount > 1 ? 's' : ''} hidden
             </span>
           )}
@@ -663,7 +663,7 @@ function TradeCard({
       <div className="flex items-center justify-between">
         <span
           className={`rounded px-1.5 py-0.5 text-xs font-bold ${
-            isCall ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+            isCall ? 'bg-green-500/20 text-[var(--bull)]' : 'bg-red-500/20 text-[var(--bear)]'
           }`}
         >
           {trade.optionType}
@@ -711,7 +711,7 @@ function TradeCard({
         </div>
       )}
       {trade.pnl !== undefined && trade.pnl !== null && (
-        <div className={`mt-1 text-xs font-medium ${trade.pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+        <div className={`mt-1 text-xs font-medium ${trade.pnl >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
           {trade.pnl >= 0 ? '+' : ''}${trade.pnl.toFixed(2)} ({trade.pnlPercent?.toFixed(2)}%)
         </div>
       )}

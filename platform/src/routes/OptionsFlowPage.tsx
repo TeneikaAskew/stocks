@@ -380,11 +380,11 @@ export default function OptionsFlowPage() {
 
       {/* Error surfacing — show the real message from the API when present */}
       {datesError && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400">
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-[var(--warn)]">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />
           <div>
             <div className="font-semibold">No options dates available for {activeTicker}</div>
-            <div className="mt-1 text-xs text-amber-300/90">
+            <div className="mt-1 text-xs text-[var(--warn)]/90">
               {(datesErrorObj as Error | undefined)?.message ?? 'Unknown error'}
             </div>
           </div>
@@ -392,11 +392,11 @@ export default function OptionsFlowPage() {
       )}
 
       {isError && !datesError && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400">
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-[var(--warn)]">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />
           <div>
             <div className="font-semibold">Options chain unavailable</div>
-            <div className="mt-1 text-xs text-amber-300/90">
+            <div className="mt-1 text-xs text-[var(--warn)]/90">
               {(optionsErrorObj as Error | undefined)?.message ?? 'Unknown error'}
             </div>
           </div>
@@ -438,16 +438,16 @@ export default function OptionsFlowPage() {
       {/* Node summary */}
       {nodes.kingNode && (
         <div className="flex flex-wrap gap-2 text-xs">
-          <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-amber-400">
+          <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[var(--warn)]">
             ★ King: ${nodes.kingNode.strike.toFixed(0)} ({nodes.kingNode.distance_percent >= 0 ? '+' : ''}{nodes.kingNode.distance_percent.toFixed(1)}%)
           </span>
           {nodes.gatekeepers.slice(0, 3).map((gk, i) => (
-            <span key={i} className="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-400">
+            <span key={i} className="rounded border border-[var(--brand)]/30 bg-[var(--brand)]/10 px-2 py-1 text-[var(--brand)]">
               ◆ GK: ${gk.strike.toFixed(0)}
             </span>
           ))}
           {nodes.midpoints.slice(0, 2).map((mp, i) => (
-            <span key={i} className="rounded border border-orange-500/30 bg-orange-500/10 px-2 py-1 text-orange-400">
+            <span key={i} className="rounded border border-[var(--warn)]/30 bg-[var(--warn)]/10 px-2 py-1 text-[var(--warn)]">
               ● Mid: ${mp.strike.toFixed(0)}
             </span>
           ))}
@@ -462,9 +462,9 @@ export default function OptionsFlowPage() {
               {metric.toUpperCase()} by Strike — {filter === 'net' ? 'Net' : filter === 'calls' ? 'Calls Only' : 'Puts Only'} — ±15% range ({focusedGex.length} strikes)
             </span>
             <div className="flex gap-3 text-[10px] text-[var(--color-text-muted)]">
-              <span className="text-emerald-400">■ Positive</span>
-              <span className="text-violet-400">■ Negative</span>
-              <span className="text-red-400">— Spot</span>
+              <span className="text-[var(--bull)]">■ Positive</span>
+              <span className="text-[var(--brand)]">■ Negative</span>
+              <span className="text-[var(--bear)]">— Spot</span>
             </div>
           </div>
           <GEXHeatmap
