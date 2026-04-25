@@ -82,14 +82,15 @@ class StratSnapshot(BaseModel):
 
 
 class Catalyst(BaseModel):
-    """Upcoming event from the economic calendar or earnings calendar."""
+    """A surfaced catalyst — economic event, scheduled earnings, recent
+    high-relevance news, or material SEC filing."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
     date: str = Field(..., description="ISO date (YYYY-MM-DD)")
     impact: Literal["high", "medium", "low"]
-    kind: Literal["economic", "earnings"]
+    kind: Literal["economic", "earnings", "news_topic", "sec_8k"]
 
 
 class RiskFlag(BaseModel):
