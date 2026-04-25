@@ -18,7 +18,7 @@ import {
   Tooltip,
   ReferenceLine,
 } from 'recharts';
-import { chartTheme } from '@/lib/chartTheme';
+import { useChartTheme } from '@/lib/chartTheme';
 
 export interface PricePoint {
   /** Unix seconds for the bar open */
@@ -50,21 +50,22 @@ interface PriceTooltipProps {
   label?: string;
 }
 
-/** Custom dark tooltip matching the Obsidian Analyst design system. */
+/** Custom tooltip matching the Obsidian Analyst design system (theme-aware). */
 function PriceTooltip({ active, payload, label }: PriceTooltipProps) {
+  const theme = useChartTheme();
   if (!active || !payload || !payload.length) return null;
   const value = payload[0].value;
   return (
     <div
       className="rounded-lg px-3 py-2 text-xs"
       style={{
-        background: 'rgba(10, 12, 16, 0.95)',
-        border: `1px solid ${chartTheme.border}`,
+        background: theme.tooltipBg,
+        border: `1px solid ${theme.border}`,
         backdropFilter: 'blur(8px)',
       }}
     >
-      <div style={{ color: chartTheme.textMuted, marginBottom: 2 }}>{label}</div>
-      <div style={{ color: '#e2e2e8', fontWeight: 600 }}>
+      <div style={{ color: theme.textMuted, marginBottom: 2 }}>{label}</div>
+      <div style={{ color: theme.tooltipText, fontWeight: 600 }}>
         ${Number(value ?? 0).toFixed(2)}
       </div>
     </div>
@@ -78,6 +79,7 @@ export function PriceAreaChart({
   sessionBoundary = null,
   showDots = true,
 }: PriceAreaChartProps) {
+  const theme = useChartTheme();
   // Compute Y-axis domain with 2% padding so the line doesn't hug the card edges
   const yDomain = useMemo<[number, number]>(() => {
     if (!data.length) return [0, 1];
@@ -95,7 +97,7 @@ export function PriceAreaChart({
     return (
       <div
         className="flex items-center justify-center rounded-lg text-xs"
-        style={{ height, color: chartTheme.textLabel }}
+        style={{ height, color: theme.textLabel }}
       >
         No price data available
       </div>
@@ -111,23 +113,23 @@ export function PriceAreaChart({
         >
           <defs>
             <linearGradient id="priceGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={chartTheme.brand} stopOpacity={0.35} />
-              <stop offset="100%" stopColor={chartTheme.brand} stopOpacity={0} />
+              <stop offset="0%" stopColor={theme.brand} stopOpacity={0.35} />
+              <stop offset="100%" stopColor={theme.brand} stopOpacity={0} />
             </linearGradient>
           </defs>
 
           {/* Subtle horizontal-only grid */}
           <CartesianGrid
             vertical={false}
-            stroke={chartTheme.grid}
+            stroke={theme.grid}
             strokeDasharray="3 4"
           />
 
           <XAxis
             dataKey="label"
             tick={{
-              fontSize: chartTheme.axisSize,
-              fill: chartTheme.axis,
+              fontSize: theme.axisSize,
+              fill: theme.axis,
               fontFamily: 'Montserrat, sans-serif',
             }}
             axisLine={false}
@@ -142,8 +144,8 @@ export function PriceAreaChart({
             domain={yDomain}
             orientation="left"
             tick={{
-              fontSize: chartTheme.axisSize,
-              fill: chartTheme.axis,
+              fontSize: theme.axisSize,
+              fill: theme.axis,
               fontFamily: 'Montserrat, sans-serif',
             }}
             axisLine={false}
@@ -155,7 +157,7 @@ export function PriceAreaChart({
           <Tooltip
             content={<PriceTooltip />}
             cursor={{
-              stroke: chartTheme.brand,
+              stroke: theme.brand,
               strokeWidth: 1,
               strokeDasharray: '3 3',
             }}
@@ -165,13 +167,13 @@ export function PriceAreaChart({
           {sessionBoundary && (
             <ReferenceLine
               x={data.find((d) => d.time === sessionBoundary.time)?.label}
-              stroke={chartTheme.textLabel}
+              stroke={theme.textLabel}
               strokeDasharray="4 4"
               strokeOpacity={0.6}
               label={{
                 value: sessionBoundary.label,
                 position: 'top',
-                fill: chartTheme.textMuted,
+                fill: theme.textMuted,
                 fontSize: 10,
                 fontFamily: 'Montserrat, sans-serif',
               }}
@@ -181,18 +183,18 @@ export function PriceAreaChart({
           <Area
             type="monotone"
             dataKey="price"
-            stroke={chartTheme.brand}
+            stroke={theme.brand}
             strokeWidth={2}
             fill="url(#priceGrad)"
             dot={
               renderDots
-                ? { r: 3, fill: chartTheme.brand, stroke: chartTheme.brand, strokeWidth: 0 }
+                ? { r: 3, fill: theme.brand, stroke: theme.brand, strokeWidth: 0 }
                 : false
             }
             activeDot={{
               r: 5,
-              fill: chartTheme.brand,
-              stroke: '#0a0c10',
+              fill: theme.brand,
+              stroke: theme.bg,
               strokeWidth: 2,
             }}
           />
@@ -201,25 +203,25 @@ export function PriceAreaChart({
 
       {/* Legend row under the chart — matches NVDA reference */}
       <div className="mt-2 flex items-center gap-5 text-xs">
-        <span className="flex items-center gap-2" style={{ color: chartTheme.textMuted }}>
+        <span className="flex items-center gap-2" style={{ color: theme.textMuted }}>
           <span
             className="inline-block"
             style={{
               width: 14,
               height: 2,
-              background: chartTheme.brand,
+              background: theme.brand,
               borderRadius: 1,
             }}
           />
           {seriesLabel}
         </span>
         {sessionBoundary && (
-          <span className="flex items-center gap-2" style={{ color: chartTheme.textMuted }}>
+          <span className="flex items-center gap-2" style={{ color: theme.textMuted }}>
             <span
               className="inline-block"
               style={{
                 width: 14,
-                borderTop: `1px dashed ${chartTheme.textLabel}`,
+                borderTop: `1px dashed ${theme.textLabel}`,
               }}
             />
             Session boundary

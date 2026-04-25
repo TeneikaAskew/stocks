@@ -67,24 +67,24 @@ function useReference(ticker: string) {
 function dirColors(dir: PlaybookCard['direction']) {
   if (dir === 'CALL') {
     return {
-      text: 'text-green-400',
+      text: 'text-[var(--bull)]',
       bg: 'bg-green-500/20',
       bgSoft: 'bg-green-500/5',
       border: 'border-green-500/40',
       borderIdle: 'border-green-500/10',
       bar: 'bg-green-400',
-      icon: 'text-green-400',
+      icon: 'text-[var(--bull)]',
     };
   }
   if (dir === 'PUT') {
     return {
-      text: 'text-red-400',
+      text: 'text-[var(--bear)]',
       bg: 'bg-red-500/20',
       bgSoft: 'bg-red-500/5',
       border: 'border-red-500/40',
       borderIdle: 'border-red-500/10',
       bar: 'bg-red-400',
-      icon: 'text-red-400',
+      icon: 'text-[var(--bear)]',
     };
   }
   return {
@@ -166,8 +166,8 @@ function PlaybookCardUI({ card, results, hasLiveData }: {
       <div className="mb-3 flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            {isCall && <TrendingUp size={14} className="text-green-400 shrink-0" />}
-            {isPut && <TrendingDown size={14} className="text-red-400 shrink-0" />}
+            {isCall && <TrendingUp size={14} className="text-[var(--bull)] shrink-0" />}
+            {isPut && <TrendingDown size={14} className="text-[var(--bear)] shrink-0" />}
             <span className="text-sm font-semibold text-[var(--color-text-primary)]">
               {card.name}
             </span>
@@ -225,7 +225,7 @@ function PlaybookCardUI({ card, results, hasLiveData }: {
           )}
           {card.avg_return !== null && (
             <span>
-              Avg Return: <span className={card.avg_return >= 0 ? 'text-green-400' : 'text-red-400'}>
+              Avg Return: <span className={card.avg_return >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}>
                 {card.avg_return >= 0 ? '+' : ''}{card.avg_return.toFixed(1)}%
               </span>
             </span>
@@ -307,7 +307,7 @@ export default function PlaybookPage() {
       </div>
 
       {isError && (
-        <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400">
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-[var(--warn)]">
           <AlertTriangle size={16} />
           Playbook not found — run the phase 6 playbook generation for {activeTicker} first.
         </div>

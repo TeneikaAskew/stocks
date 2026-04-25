@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { chartTheme } from '@/lib/chartTheme';
+import { chartTheme, useChartTheme } from '@/lib/chartTheme';
 import { useMarketHours } from '@/hooks/useConfig';
 import {
   createChart,
@@ -87,6 +87,7 @@ export function CandlestickChart({
   const { data: marketHours } = useMarketHours();
   const rthStart = parseMinutes(marketHours?.regular.open, 9 * 60 + 30);
   const rthEnd = parseMinutes(marketHours?.regular.close, 16 * 60);
+  const theme = useChartTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -201,6 +202,33 @@ export function CandlestickChart({
       visible: showVolume,
     });
   }, [showVolume]);
+
+  // Re-apply theme colors when the global theme toggles. The chart and series
+  // are created once; on theme change we mutate options in place rather than
+  // tearing down the chart so user pan/zoom state is preserved.
+  useEffect(() => {
+    if (!chartRef.current || !candleSeriesRef.current) return;
+    chartRef.current.applyOptions({
+      layout: {
+        background: { color: theme.bg },
+        textColor: theme.axis,
+      },
+      grid: {
+        vertLines: { color: theme.grid },
+        horzLines: { color: theme.grid },
+      },
+      timeScale: { borderColor: theme.border },
+      rightPriceScale: { borderColor: theme.border },
+    });
+    candleSeriesRef.current.applyOptions({
+      upColor: theme.bull,
+      downColor: theme.bear,
+      borderUpColor: theme.bull,
+      borderDownColor: theme.bear,
+      wickUpColor: theme.bull,
+      wickDownColor: theme.bear,
+    });
+  }, [theme.bg, theme.axis, theme.grid, theme.border, theme.bull, theme.bear]);
 
   // Markers (v5: use plugin API)
   useEffect(() => {
