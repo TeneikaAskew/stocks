@@ -370,6 +370,39 @@ CREATE INDEX IF NOT EXISTS idx_earnings_history_reported
 
 
 -- ─────────────────────────────────────────────────────────
+-- SEC EDGAR FILINGS (8-K material events, 10-Q/10-K, etc.)
+-- Free real-time material-event catalyst stream. Each row is one
+-- form filing per (cik, accession_number). The `items` array holds
+-- 8-K item codes (e.g. ['1.01','7.01']) — used by the ranker's
+-- catalyst signal to detect M&A (1.01), exec changes (5.02), etc.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS sec_filings (
+    id                  BIGSERIAL PRIMARY KEY,
+    ticker              VARCHAR(10),               -- nullable: not every CIK has a public ticker
+    cik                 VARCHAR(20)   NOT NULL,
+    accession_number    VARCHAR(30)   NOT NULL,
+    form                VARCHAR(20)   NOT NULL,    -- '8-K', '10-Q', '10-K', etc.
+    filing_date         DATE          NOT NULL,
+    report_date         DATE,                       -- event date (often == filing_date)
+    items               TEXT[],                     -- 8-K item codes
+    primary_doc         VARCHAR(200),
+    inserted_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_sec_filings UNIQUE (cik, accession_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sec_filings_ticker_date
+    ON sec_filings (ticker, filing_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sec_filings_form_date
+    ON sec_filings (form, filing_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sec_filings_items
+    ON sec_filings USING GIN (items);
+
+
+-- ─────────────────────────────────────────────────────────
 -- SIGNALS & TRADES
 -- ─────────────────────────────────────────────────────────
 
