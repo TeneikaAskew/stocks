@@ -42,6 +42,32 @@ const MOCK_REPORT = {
     risk_flags: [
       { persona: 'conservative', severity: 'warn', message: 'CPI release within holding period.' },
     ],
+    persona_plans: [
+      {
+        persona: 'aggressive',
+        entry_zone: { low: 220.0, high: 222.5 },
+        stop: 215.0,
+        targets: [228.0, 234.0, 240.0],
+        position_size_pct: 1.5,
+        rationale: 'Wider stop, extended targets on high-conviction setup.',
+      },
+      {
+        persona: 'neutral',
+        entry_zone: { low: 220.0, high: 221.5 },
+        stop: 218.0,
+        targets: [223.0, 226.0, 229.0],
+        position_size_pct: 1.0,
+        rationale: '~1 ATR stop with 1R/2R/3R targets.',
+      },
+      {
+        persona: 'conservative',
+        entry_zone: { low: 220.5, high: 221.0 },
+        stop: 219.0,
+        targets: [222.5, 224.0],
+        position_size_pct: 0.4,
+        rationale: 'Reduced size + tight stop into CPI window.',
+      },
+    ],
     supporting_signals: [
       { alert_ts: '2026-04-15T14:30:00Z', direction: 'CALL', strength: 'strong', score: 4.5 },
     ],
@@ -91,6 +117,16 @@ test.describe('AI Insights (structured)', () => {
 
     // Risk flag
     await expect(page.getByText(/CPI release within holding period/)).toBeVisible();
+
+    // Persona plans card with all three personas
+    await expect(page.getByText('Persona Plans')).toBeVisible();
+    await expect(page.getByText('Aggressive')).toBeVisible();
+    await expect(page.getByText('Neutral')).toBeVisible();
+    await expect(page.getByText(/^Conservative$/)).toBeVisible();
+    // Aggressive plan numbers
+    await expect(page.getByText('$220.00 – $222.50')).toBeVisible();
+    await expect(page.getByText('1.50× normal')).toBeVisible();
+    await expect(page.getByText(/Wider stop, extended targets/)).toBeVisible();
 
     // Footer model versions line
     await expect(page.getByText(/trader: vertex:gemini-2.0-flash/)).toBeVisible();

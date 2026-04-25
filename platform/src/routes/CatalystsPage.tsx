@@ -50,7 +50,11 @@ const IMPACT_RANK: Record<string, number> = {
 };
 
 function impactKey(e: CatalystEvent): string {
-  return (e.impact || e.expected_impact || 'Medium').trim() || 'Medium';
+  // Benzinga sends lowercase ('high'), DB sources send Title Case
+  // ('High'); normalize so IMPACT_RANK lookups match either input.
+  const raw = (e.impact || e.expected_impact || 'Medium').trim() || 'Medium';
+  if (raw.toLowerCase() === 'very high') return 'Very High';
+  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
 }
 
 function impactScore(e: CatalystEvent): number {
