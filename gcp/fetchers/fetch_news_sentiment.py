@@ -250,10 +250,12 @@ def main():
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     topics = [t.strip().lower() for t in args.topics.split(",") if t.strip()]
 
-    # If neither mode specified, fall back to default ticker watchlist for
-    # backwards compatibility with the prior CLI default.
+    # If neither mode specified, fall back to the curated watchlist
+    # (alert_config.json → "watchlist"), then DEFAULT_TICKERS.
     if not tickers and not topics:
-        tickers = [t.strip().upper() for t in DEFAULT_TICKERS.split(",") if t.strip()]
+        from gcp.fetchers._watchlist import load_watchlist
+        wl = load_watchlist()
+        tickers = wl or [t.strip().upper() for t in DEFAULT_TICKERS.split(",") if t.strip()]
         logger.info("no --tickers or --topics provided; defaulting to %s", tickers)
 
     frames: list[pd.DataFrame] = []

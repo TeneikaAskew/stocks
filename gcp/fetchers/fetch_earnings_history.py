@@ -152,9 +152,14 @@ def main():
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     else:
-        tickers = _earnings_calendar_tickers(args.lookahead_days)
-        log.info("Resolved %d tickers from earnings_calendar (next %d days)",
-                 len(tickers), args.lookahead_days)
+        from gcp.fetchers._watchlist import load_watchlist
+
+        ec = _earnings_calendar_tickers(args.lookahead_days)
+        wl = load_watchlist()
+        seen: set[str] = set(ec)
+        tickers = list(ec) + [t for t in wl if t not in seen]
+        log.info("Resolved %d tickers (%d earnings %dd ∪ %d watchlist)",
+                 len(tickers), len(ec), args.lookahead_days, len(wl))
 
     if not tickers:
         log.info("No tickers to process — exiting")
