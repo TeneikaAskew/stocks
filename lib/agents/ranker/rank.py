@@ -149,29 +149,24 @@ def rank_tickers(
 def _persist_audit(run_id: str, result: dict) -> None:
     """Write one row per ranker run for later reproducibility."""
     try:
-        from gcp.database import connect
+        from gcp.database import execute_sql
 
-        conn = connect()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT INTO ranker_runs
-                    (id, run_at, candidate_count, excluded_count,
-                     weights_used, results, duration_ms)
-                VALUES (%s, NOW(), %s, %s, %s::jsonb, %s::jsonb, %s)
-                """,
-                (
-                    run_id,
-                    result["candidate_count"],
-                    result["excluded_count"],
-                    json.dumps(result["weights_used"]),
-                    json.dumps(result["ranked"]),
-                    result["duration_ms"],
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        execute_sql(
+            """
+            INSERT INTO ranker_runs
+                (id, run_at, candidate_count, excluded_count,
+                 weights_used, results, duration_ms)
+            VALUES (CAST(:id AS uuid), NOW(), :cand, :excl,
+                    CAST(:weights AS jsonb), CAST(:results AS jsonb), :ms)
+            """,
+            {
+                "id": run_id,
+                "cand": result["candidate_count"],
+                "excl": result["excluded_count"],
+                "weights": json.dumps(result["weights_used"]),
+                "results": json.dumps(result["ranked"]),
+                "ms": result["duration_ms"],
+            },
+        )
     except Exception as exc:
         logger.warning("ranker_runs audit write failed: %s", exc)
