@@ -126,11 +126,10 @@
   },
 
   "watchlist": [
-    "SPY",
     "IWM",
     "QQQ",
-    "TLT",
-    "XLY",
+    "SPY",
+    "SPX",
     "AVGO"
   ]
 }
