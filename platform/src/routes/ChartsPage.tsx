@@ -9,6 +9,8 @@ import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import BacktesterSection from '@/components/backtest/BacktesterSection';
+import { StrategyConditionsCard } from '@/components/charts/StrategyConditionsCard';
+import { computeIndicators, calculateVWAP, type Bar } from '@/lib/indicators';
 import type { Timeframe, TradeEntry, TradeDirection } from '@/types';
 import type { CandlestickBar } from '@/hooks/useMarketData';
 import type { SeriesMarker, Time, LineWidth } from 'lightweight-charts';
@@ -214,6 +216,24 @@ export default function ChartsPage() {
 
     return lines;
   }, [currentTrades, showRefLevels, refLevels]);
+
+  // Strategy condition evaluation: build a Bar[] from the candlestick + volume
+  // arrays the API returns and compute indicators + VWAP. Need ≥14 bars before
+  // RSI is meaningful, so the card hides itself below that threshold.
+  const strategyState = useMemo(() => {
+    if (!marketData || marketData.candlestick.length < 14) return null;
+    const bars: Bar[] = marketData.candlestick.map((c, i) => ({
+      time: String(c.time),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: marketData.volume[i]?.value ?? 0,
+    }));
+    const indicators = computeIndicators(bars);
+    const vwap = calculateVWAP(bars);
+    return { bars, indicators, vwap };
+  }, [marketData]);
 
   // Chart click handler
   const handleChartClick = useCallback(
@@ -636,6 +656,15 @@ export default function ChartsPage() {
         </div>
       </div>
     </div>
+
+    {/* Live strategy conditions — actionable readout matching trading_analysis.py voter */}
+    {strategyState && (
+      <StrategyConditionsCard
+        bars={strategyState.bars}
+        indicators={strategyState.indicators}
+        vwap={strategyState.vwap}
+      />
+    )}
 
     {/* Backtester section (merged from former /backtest page) */}
     <BacktesterSection ticker={activeTicker} />

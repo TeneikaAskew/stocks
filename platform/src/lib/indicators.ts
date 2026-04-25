@@ -131,6 +131,159 @@ export interface Signal {
   fired: boolean; // true if strength >= 70
 }
 
+// ── Strategy voter (mirrors trading_analysis.py:generate_technical_signals) ─
+// trading_analysis.py runs a 5-condition voter per bar:
+//   CALL fires when ≥3 of: 3 consecutive up moves, RSI in (25,50),
+//   StochRSI K < 80, price > VWAP, price > EMA9 — AND beats PUT count.
+//   PUT mirrors with consecutive downs, RSI in (50,75), StochRSI > 20,
+//   price < VWAP, price < EMA9.
+//
+// Keep this function the SINGLE source of truth for the voter so the live
+// Charts checklist and the historical signals parquet/table stay aligned.
+
+export interface StrategyCondition {
+  id: string;
+  label: string;
+  met: boolean;
+  detail: string; // human-readable current value for UI
+}
+
+export interface StrategySignal {
+  direction: 'CALL' | 'PUT';
+  conditions: StrategyCondition[];
+  metCount: number; // 0..5
+  totalCount: number; // 5
+  fires: boolean; // ≥3 met AND beats the other direction
+}
+
+export function computeStrategySignals(
+  bars: Bar[],
+  ind: Indicators,
+  vwap: number | null,
+): { call: StrategySignal; put: StrategySignal; firing: 'CALL' | 'PUT' | null } {
+  const last = bars.length > 0 ? bars[bars.length - 1].close : null;
+  const closes = bars.map((b) => b.close);
+
+  // Last 3 bars' direction: count up (close > previous close) and down moves
+  // matching trading_analysis.py's `pct_change > 0` semantics.
+  let upRun = 0;
+  let downRun = 0;
+  for (let i = closes.length - 3; i < closes.length; i += 1) {
+    if (i <= 0) continue;
+    const diff = closes[i] - closes[i - 1];
+    if (diff > 0) upRun += 1;
+    if (diff < 0) downRun += 1;
+  }
+
+  const fmt = (n: number | null, digits = 2) =>
+    n == null || !Number.isFinite(n) ? '--' : n.toFixed(digits);
+
+  const callConds: StrategyCondition[] = [
+    {
+      id: 'call_consec_up',
+      label: '3 consecutive up moves',
+      met: upRun >= 3,
+      detail: `${upRun}/3 last bars up`,
+    },
+    {
+      id: 'call_rsi_band',
+      label: 'RSI 25–50 (bullish band)',
+      met: ind.rsi != null && ind.rsi > 25 && ind.rsi < 50,
+      detail: `RSI ${fmt(ind.rsi, 1)}`,
+    },
+    {
+      id: 'call_stoch_room',
+      label: 'StochRSI K < 80 (room to run)',
+      met: ind.stochK != null && ind.stochK < 80,
+      detail: `K ${fmt(ind.stochK, 1)}`,
+    },
+    {
+      id: 'call_above_vwap',
+      label: 'Price > VWAP',
+      met: last != null && vwap != null && last > vwap,
+      detail:
+        last != null && vwap != null
+          ? `${fmt(last)} ${last > vwap ? '>' : '<'} VWAP ${fmt(vwap)}`
+          : '--',
+    },
+    {
+      id: 'call_above_ema9',
+      label: 'Price > EMA9',
+      met: last != null && ind.ema9 != null && last > ind.ema9,
+      detail:
+        last != null && ind.ema9 != null
+          ? `${fmt(last)} ${last > ind.ema9 ? '>' : '<'} EMA9 ${fmt(ind.ema9)}`
+          : '--',
+    },
+  ];
+
+  const putConds: StrategyCondition[] = [
+    {
+      id: 'put_consec_down',
+      label: '3 consecutive down moves',
+      met: downRun >= 3,
+      detail: `${downRun}/3 last bars down`,
+    },
+    {
+      id: 'put_rsi_band',
+      label: 'RSI 50–75 (bearish band)',
+      met: ind.rsi != null && ind.rsi > 50 && ind.rsi < 75,
+      detail: `RSI ${fmt(ind.rsi, 1)}`,
+    },
+    {
+      id: 'put_stoch_room',
+      label: 'StochRSI K > 20 (room to fall)',
+      met: ind.stochK != null && ind.stochK > 20,
+      detail: `K ${fmt(ind.stochK, 1)}`,
+    },
+    {
+      id: 'put_below_vwap',
+      label: 'Price < VWAP',
+      met: last != null && vwap != null && last < vwap,
+      detail:
+        last != null && vwap != null
+          ? `${fmt(last)} ${last < vwap ? '<' : '>'} VWAP ${fmt(vwap)}`
+          : '--',
+    },
+    {
+      id: 'put_below_ema9',
+      label: 'Price < EMA9',
+      met: last != null && ind.ema9 != null && last < ind.ema9,
+      detail:
+        last != null && ind.ema9 != null
+          ? `${fmt(last)} ${last < ind.ema9 ? '<' : '>'} EMA9 ${fmt(ind.ema9)}`
+          : '--',
+    },
+  ];
+
+  const callMet = callConds.filter((c) => c.met).length;
+  const putMet = putConds.filter((c) => c.met).length;
+
+  // trading_analysis.py: fires only if ≥3 met AND that side strictly beats the other
+  const callFires = callMet >= 3 && callMet > putMet;
+  const putFires = putMet >= 3 && putMet > callMet;
+
+  const firing: 'CALL' | 'PUT' | null = callFires ? 'CALL' : putFires ? 'PUT' : null;
+
+  return {
+    call: {
+      direction: 'CALL',
+      conditions: callConds,
+      metCount: callMet,
+      totalCount: 5,
+      fires: callFires,
+    },
+    put: {
+      direction: 'PUT',
+      conditions: putConds,
+      metCount: putMet,
+      totalCount: 5,
+      fires: putFires,
+    },
+    firing,
+  };
+}
+
 export function computeSignals(
   price: number | null,
   vwap: number | null,
