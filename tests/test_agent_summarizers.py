@@ -199,22 +199,25 @@ def test_signals_history_empty_is_available(patch_query):
 # ---------------------------------------------------------------------------
 
 
-def _synth_daily_bars(n: int = 200) -> pd.DataFrame:
-    """Build a synthetic OHLCV series long enough for the analog matcher
-    (>=60 rows + 20-day exclusion buffer)."""
+def _synth_daily_bars(n: int = 400) -> pd.DataFrame:
+    """Build a synthetic OHLCV series long enough for the analog matcher.
+    Need >= 220 rows (sma_200 warm-up of 200 + 20-row tail exclusion)
+    so the historical window has any rows with non-NaN
+    close_vs_sma200_pct."""
     import numpy as np
     rng = np.random.default_rng(42)
     base = 100.0
     rows = []
     from datetime import date, timedelta
-    d = date(2024, 1, 1)
+    d = date(2023, 1, 1)
     for i in range(n):
         # Weekday-only series
         while d.weekday() >= 5:
             d = d + timedelta(days=1)
         change = rng.normal(0.0, 0.01)
-        gap_up = (i in {30, 80, 130, 170})  # plant 4 gap-up "analogs"
-        prev_close = base
+        # Plant gap-up "analogs" every 50 bars after the SMA200 warm-up
+        # so the matcher always has multiple windowed candidates.
+        gap_up = i >= 220 and ((i - 220) % 30 == 0)
         open_px = base * (1 + (0.04 if gap_up else change))
         close_px = open_px * (1 + rng.normal(0.0, 0.01))
         high_px = max(open_px, close_px) * (1 + abs(rng.normal(0, 0.005)))
@@ -233,19 +236,21 @@ def test_backtest_metrics_returns_analog_pattern(patch_query):
     """Analog backtest should compute today's pattern features, find
     historical matches in the same series, and report forward returns."""
     patch_query("market_data_daily", _synth_daily_bars())
-    out = summarizers.summarize_backtest_metrics("SPY")
+    # cross_ticker=False keeps the test focused on same-ticker matching;
+    # the cross-ticker path is exercised separately in
+    # test_backtest_metrics_cross_ticker_disabled.
+    out = summarizers.summarize_backtest_metrics("SPY", cross_ticker=False)
     assert out["available"] is True
     # Engineered pattern features for "today" (last bar)
     pattern = out["pattern_today"]
     for k in ("gap_pct", "vol_ratio", "rsi_14", "close_vs_sma200_pct",
               "close_vs_ema20_pct"):
         assert k in pattern
-    # We planted 4 gap-up days far enough apart to surface as analogs
-    # under at least one of the progressive tolerance bands.
+    # We planted gap-up bars on a fixed cadence — the matcher should
+    # always surface at least one under the progressive tolerance bands.
     assert out["analog_count"] >= 1
     assert "forward_returns" in out
-    # cross_ticker_used flag is always present in the new schema
-    assert "cross_ticker_used" in out
+    assert out["cross_ticker_used"] is False
 
 
 def test_backtest_metrics_unavailable_empty(patch_query):

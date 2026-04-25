@@ -186,10 +186,21 @@ def canned_bundle(monkeypatch):
     """Install summarizer fixtures matching what the orchestrator needs."""
 
     def fake_query(sql: str, params=None):
+        # Cross-ticker analog matcher pulls every other ticker; return
+        # empty so the same-ticker matches are sufficient and we don't
+        # have to fake a multi-ticker fixture.
+        if "ticker <> :ticker" in sql:
+            return pd.DataFrame()
         if "market_data_daily" in sql:
-            # Covers both summarize_market_context (1 row) and
-            # summarize_strat_status (2 rows)
-            return pd.DataFrame([
+            # The orchestrator now has three consumers of market_data_daily
+            # with different SQL shapes. Dispatch by sniffing the query so
+            # each gets a row layout it can actually use.
+            #
+            #   - summarize_backtest_metrics (analog matcher) needs ≥60
+            #     rows in ASCENDING date order (it does iloc[-1] for "today").
+            #   - summarize_strat_status uses ORDER BY date DESC LIMIT 2.
+            #   - summarize_market_context uses ORDER BY date DESC LIMIT 1.
+            recent = [
                 {
                     "date": date(2026, 4, 15),
                     "open": 500.0, "high": 505.0, "low": 499.0, "close": 504.0,
@@ -216,6 +227,59 @@ def canned_bundle(monkeypatch):
                     "strat_setup": False, "ftfc_score": 0.3,
                     "ftfc_direction": "mixed",
                 },
+            ]
+            if "ORDER BY date ASC" in sql:
+                # Analog backtest: synthesize ~420 weekday bars in a
+                # mean-reverting band so close_vs_sma200_pct stays
+                # close to zero across the series and the matcher
+                # always finds historical matches. Need >=220 rows so
+                # sma_200 has non-NaN values inside the iloc[:-20]
+                # history window.
+                #
+                # We don't override the last bar to match strat's
+                # "today" — strat uses a separate ORDER BY date DESC
+                # LIMIT 2 SQL shape, and an out-of-distribution
+                # override here would put close_vs_sma200_pct out of
+                # match range against the rest of the series.
+                import math
+                from datetime import timedelta
+                rows = []
+                d = date(2024, 1, 1)
+                anchor = 500.0
+                for i in range(420):
+                    while d.weekday() >= 5:
+                        d = d + timedelta(days=1)
+                    open_px = anchor * (1 + 0.005 * math.sin(i * 0.13))
+                    close_px = anchor * (1 + 0.005 * math.sin(i * 0.13 + 0.5))
+                    high_px = max(open_px, close_px) * 1.002
+                    low_px = min(open_px, close_px) * 0.998
+                    rows.append({
+                        "date": d, "open": open_px, "high": high_px,
+                        "low": low_px, "close": close_px,
+                        "volume": 50_000_000,
+                    })
+                    d = d + timedelta(days=1)
+                return pd.DataFrame(rows)
+            return pd.DataFrame(recent)
+        if "FROM news_sentiment" in sql:
+            # summarize_news_sentiment (sentiment summary) and
+            # signal-style queries; either consumer is happy with a
+            # short list of bullish-leaning recent articles.
+            return pd.DataFrame([
+                {"published_ts": "2026-04-15T13:30:00Z",
+                 "title": "Bullish breakout above prior-day high",
+                 "topics": ["earnings"],
+                 "overall_sentiment_score": 0.4,
+                 "overall_sentiment_label": "Bullish",
+                 "relevance_score": 0.85,
+                 "sentiment_score": 0.4},
+                {"published_ts": "2026-04-15T11:10:00Z",
+                 "title": "Volume surge on supportive catalyst flow",
+                 "topics": ["mergers_and_acquisitions"],
+                 "overall_sentiment_score": 0.3,
+                 "overall_sentiment_label": "Somewhat-Bullish",
+                 "relevance_score": 0.78,
+                 "sentiment_score": 0.3},
             ])
         if "etf_options_snapshots" in sql:
             return pd.DataFrame([
