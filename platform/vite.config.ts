@@ -21,6 +21,12 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      // /dev is served by FastAPI (not part of the SPA). Proxy it so
+      // the page is reachable through Vite during local development.
+      '/dev': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 })
