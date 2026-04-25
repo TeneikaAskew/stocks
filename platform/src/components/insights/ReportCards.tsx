@@ -9,7 +9,9 @@ import type {
   Direction,
   InsightReport,
   JournalRef,
+  PersonaPlan,
   RiskFlag,
+  RiskPersona,
   SignalRef,
   StratSnapshot,
 } from '@/types/insights';
@@ -307,6 +309,82 @@ export function RiskFlagsCard({ flags }: { flags: RiskFlag[] }) {
           </li>
         ))}
       </ul>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Persona plans — concrete entry/stop/targets per risk persona
+// ---------------------------------------------------------------------------
+
+const PERSONA_LABELS: Record<RiskPersona, { label: string; tone: string }> = {
+  aggressive:   { label: 'Aggressive',   tone: 'text-[var(--bull)] border-green-500/40 bg-green-500/10' },
+  conservative: { label: 'Conservative', tone: 'text-[var(--bear)] border-red-500/40 bg-red-500/10' },
+  neutral:      { label: 'Neutral',      tone: 'text-zinc-300 border-zinc-500/40 bg-zinc-500/10' },
+};
+
+function PersonaCol({ plan }: { plan: PersonaPlan }) {
+  const meta = PERSONA_LABELS[plan.persona];
+  const targets = plan.targets || [];
+  return (
+    <div className={`rounded-md border p-2.5 ${meta.tone} space-y-1.5`}>
+      <div className="text-[11px] font-semibold uppercase tracking-wide">
+        {meta.label}
+      </div>
+      <dl className="space-y-1 text-[11px] tabular-nums">
+        <div className="flex justify-between gap-2">
+          <dt className="text-[var(--color-text-muted)]">Entry</dt>
+          <dd className="text-[var(--color-text-primary)] font-medium">
+            ${fmt(plan.entry_zone.low)} – ${fmt(plan.entry_zone.high)}
+          </dd>
+        </div>
+        <div className="flex justify-between gap-2">
+          <dt className="text-[var(--color-text-muted)]">Stop</dt>
+          <dd className="text-[var(--color-text-primary)] font-medium">
+            ${fmt(plan.stop)}
+          </dd>
+        </div>
+        {targets.map((t, i) => (
+          <div key={i} className="flex justify-between gap-2">
+            <dt className="text-[var(--color-text-muted)]">T{i + 1}</dt>
+            <dd className="text-[var(--color-text-primary)] font-medium">${fmt(t)}</dd>
+          </div>
+        ))}
+        <div className="flex justify-between gap-2 pt-1 border-t border-zinc-700/40">
+          <dt className="text-[var(--color-text-muted)]">Size</dt>
+          <dd className="text-[var(--color-text-primary)] font-semibold">
+            {plan.position_size_pct.toFixed(2)}× normal
+          </dd>
+        </div>
+      </dl>
+      <div className="text-[10px] leading-snug text-[var(--color-text-muted)] pt-1 border-t border-zinc-700/40">
+        {plan.rationale}
+      </div>
+    </div>
+  );
+}
+
+export function PersonaPlansCard({ plans }: { plans: PersonaPlan[] }) {
+  if (!plans || plans.length === 0) {
+    return (
+      <Card title="Persona Plans">
+        <div className="text-xs text-[var(--color-text-muted)]">
+          No persona plans available — risk debate did not produce concrete trade plans.
+        </div>
+      </Card>
+    );
+  }
+  // Order: aggressive → neutral → conservative
+  const ordered: PersonaPlan[] = ['aggressive', 'neutral', 'conservative']
+    .map(p => plans.find(x => x.persona === p))
+    .filter((p): p is PersonaPlan => Boolean(p));
+  return (
+    <Card title="Persona Plans">
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+        {ordered.map(p => (
+          <PersonaCol key={p.persona} plan={p} />
+        ))}
+      </div>
     </Card>
   );
 }
