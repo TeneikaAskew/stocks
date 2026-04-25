@@ -78,8 +78,8 @@ export function DateSelector() {
         </>
       ) : (
         <>
-          <Calendar size={14} className="text-amber-400 shrink-0" />
-          <span className="text-xs font-semibold text-amber-400 whitespace-nowrap">HISTORICAL</span>
+          <Calendar size={14} className="text-[var(--warn)] shrink-0" />
+          <span className="text-xs font-semibold text-[var(--warn)] whitespace-nowrap">HISTORICAL</span>
         </>
       )}
 
@@ -93,7 +93,7 @@ export function DateSelector() {
         className={`rounded border bg-[var(--color-bg-primary)] px-2 py-1 text-xs focus:outline-none ${
           isLive
             ? 'border-[var(--color-border)] text-[var(--color-text-secondary)] focus:border-[var(--color-accent-blue)]'
-            : 'border-amber-500/40 text-amber-300 focus:border-amber-400'
+            : 'border-amber-500/40 text-[var(--warn)] focus:border-amber-400'
         }`}
       />
       {/* Time input — disabled until a draft date is set */}
@@ -107,10 +107,10 @@ export function DateSelector() {
         className={`rounded border bg-[var(--color-bg-primary)] px-2 py-1 text-xs focus:outline-none disabled:opacity-40 ${
           isLive
             ? 'border-[var(--color-border)] text-[var(--color-text-secondary)] focus:border-[var(--color-accent-blue)]'
-            : 'border-amber-500/40 text-amber-300 focus:border-amber-400'
+            : 'border-amber-500/40 text-[var(--warn)] focus:border-amber-400'
         }`}
       />
-      <span className={`text-[10px] ${isLive ? 'text-[var(--color-text-muted)]' : 'text-amber-400/70'}`}>ET</span>
+      <span className={`text-[10px] ${isLive ? 'text-[var(--color-text-muted)]' : 'text-[var(--warn)]/70'}`}>ET</span>
 
       {/* Apply button — blue, commits draft to store */}
       <button
@@ -126,7 +126,7 @@ export function DateSelector() {
       {!isLive && (
         <button
           onClick={handleClear}
-          className="flex items-center gap-1 rounded bg-amber-500/20 px-2 py-0.5 text-xs font-medium text-amber-300 hover:bg-amber-500/30"
+          className="flex items-center gap-1 rounded bg-amber-500/20 px-2 py-0.5 text-xs font-medium text-[var(--warn)] hover:bg-amber-500/30"
           title="Return to live mode"
         >
           <X size={12} />

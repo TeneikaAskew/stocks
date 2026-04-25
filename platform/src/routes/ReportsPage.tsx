@@ -70,7 +70,7 @@ function ReportViewer({ ticker, phase }: { ticker: string; phase: string }) {
 
   if (isError || !content) {
     return (
-      <div className="flex items-center gap-2 p-4 text-sm text-amber-400">
+      <div className="flex items-center gap-2 p-4 text-sm text-[var(--warn)]">
         <AlertTriangle size={16} />
         Report not available.
       </div>
@@ -102,7 +102,7 @@ export default function ReportsPage() {
         </h2>
 
         {listError && (
-          <div className="px-2 text-xs text-amber-400">No reports found</div>
+          <div className="px-2 text-xs text-[var(--warn)]">No reports found</div>
         )}
         {listLoading && (
           <div className="px-2 text-xs text-[var(--color-text-muted)]">Loading…</div>

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { MetricCard } from '@/components/shared/MetricCard';
-import { chartTheme } from '@/lib/chartTheme';
+import { useChartTheme } from '@/lib/chartTheme';
 import {
   AreaChart,
   Area,
@@ -134,6 +134,7 @@ function useEquity(ticker: string, enabled: boolean) {
 // ── Equity Chart ──────────────────────────────────────────────────────────
 
 function EquityCurve({ equity }: { equity: EquityResponse }) {
+  const theme = useChartTheme();
   const chartData = equity.dates.map((d, i) => ({
     date: String(d).slice(0, 10),
     value: equity.values[i],
@@ -146,10 +147,10 @@ function EquityCurve({ equity }: { equity: EquityResponse }) {
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-sm font-medium text-[var(--color-text-primary)]">Equity Curve</h3>
         <div className="flex gap-4 text-xs">
-          <span className={total_return_pct >= 0 ? 'text-green-400' : 'text-red-400'}>
+          <span className={total_return_pct >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}>
             Total: {total_return_pct >= 0 ? '+' : ''}{total_return_pct.toFixed(1)}%
           </span>
-          <span className="text-red-400">
+          <span className="text-[var(--bear)]">
             Max DD: -{Math.abs(max_drawdown_pct).toFixed(1)}%
           </span>
         </div>
@@ -158,31 +159,32 @@ function EquityCurve({ equity }: { equity: EquityResponse }) {
         <AreaChart data={chartData}>
           <defs>
             <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor={chartTheme.brand} stopOpacity={0.25} />
-              <stop offset="95%" stopColor={chartTheme.brand} stopOpacity={0} />
+              <stop offset="5%" stopColor={theme.brand} stopOpacity={0.25} />
+              <stop offset="95%" stopColor={theme.brand} stopOpacity={0} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} />
+          <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} />
           <XAxis
             dataKey="date"
-            tick={{ fontSize: chartTheme.axisSize, fill: chartTheme.axis }}
+            tick={{ fontSize: theme.axisSize, fill: theme.axis }}
             tickFormatter={d => String(d).slice(5)}
             interval="preserveStartEnd"
           />
           <YAxis
-            tick={{ fontSize: chartTheme.axisSize, fill: chartTheme.axis }}
+            tick={{ fontSize: theme.axisSize, fill: theme.axis }}
             tickFormatter={v => `$${Number(v).toFixed(0)}`}
           />
           <Tooltip
-            contentStyle={{ background: '#0f0f1a', border: `1px solid ${chartTheme.border}`, fontSize: 11 }}
-            labelStyle={{ color: '#9898b0' }}
+            contentStyle={{ background: theme.tooltipBg, border: `1px solid ${theme.border}`, fontSize: 11, color: theme.tooltipText }}
+            labelStyle={{ color: theme.textMuted }}
+            itemStyle={{ color: theme.tooltipText }}
             formatter={(v) => [`$${(Number(v) || 0).toFixed(2)}`, 'Value' as const]}
           />
-          <ReferenceLine y={peak_value} stroke={chartTheme.warn} strokeDasharray="4 2" strokeWidth={1} />
+          <ReferenceLine y={peak_value} stroke={theme.warn} strokeDasharray="4 2" strokeWidth={1} />
           <Area
             type="monotone"
             dataKey="value"
-            stroke={chartTheme.brand}
+            stroke={theme.brand}
             strokeWidth={1.5}
             fill="url(#eqGrad)"
             dot={false}
@@ -205,7 +207,7 @@ const columns = [
   columnHelper.accessor('direction', {
     header: 'Dir',
     cell: i => (
-      <span className={`text-xs font-bold ${String(i.getValue()) === 'CALL' ? 'text-green-400' : 'text-red-400'}`}>
+      <span className={`text-xs font-bold ${String(i.getValue()) === 'CALL' ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
         {String(i.getValue())}
       </span>
     ),
@@ -223,7 +225,7 @@ const columns = [
     cell: i => {
       const v = Number(i.getValue());
       return (
-        <span className={`font-mono text-xs font-medium ${v >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+        <span className={`font-mono text-xs font-medium ${v >= 0 ? 'text-[var(--bull)]' : 'text-[var(--bear)]'}`}>
           {v >= 0 ? '+' : ''}{v.toFixed(2)}%
         </span>
       );
@@ -327,7 +329,7 @@ export default function BacktesterSection({ ticker }: { ticker: string }) {
       </div>
 
       {(listError || resultsError) && (
-        <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-400">
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-[var(--warn)]">
           <AlertTriangle size={16} />
           No backtest results for {ticker}. Run{' '}
           <code className="font-mono">scripts/run_backtest.py --ticker {ticker}</code> first.
