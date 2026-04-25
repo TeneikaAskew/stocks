@@ -314,6 +314,47 @@ def _is_local_dev() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Watchlist (deterministic ranker)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/insights/watchlist")
+async def get_watchlist(
+    catalyst: Optional[str] = None,
+    limit: int = 10,
+):
+    """Return today's ranked candidate tickers with score breakdowns.
+
+    No LLM calls — pure deterministic SQL + Python ranker.
+
+    Query params:
+        catalyst: comma-separated catalyst types to filter by, or None
+            for all. Valid types: earnings, sec_8k, insider, top_mover,
+            economic_event, manual.
+        limit: max number of ranked tickers to return (default 10).
+
+    The full breakdown per ticker includes every signal's score, weight,
+    contribution, and human-readable reason — so the UI can show *why*
+    each ticker ranks where it does.
+    """
+    from lib.agents.ranker import rank_tickers
+    from lib.config import RankerConfig
+
+    catalyst_filter: Optional[set[str]] = None
+    if catalyst:
+        catalyst_filter = {c.strip() for c in catalyst.split(",") if c.strip()}
+
+    cfg = RankerConfig.from_alert_config()
+    weights = cfg.weights or None  # falsy → use DEFAULT_WEIGHTS
+
+    return rank_tickers(
+        weights=weights,
+        catalyst_filter=catalyst_filter,
+        limit=max(1, min(limit, 50)),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 

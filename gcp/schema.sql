@@ -456,6 +456,28 @@ CREATE INDEX IF NOT EXISTS idx_top_movers_date_category
 
 
 -- ─────────────────────────────────────────────────────────
+-- RANKER AUDIT
+-- One row per call to lib.agents.ranker.rank_tickers. Captures inputs
+-- (weights, candidate count) and outputs (ranked list with full score
+-- breakdown) so any past ranking decision is reproducible without
+-- having to re-run the SQL signals.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS ranker_runs (
+    id                 UUID         PRIMARY KEY,
+    run_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    candidate_count    INTEGER      NOT NULL,
+    excluded_count     INTEGER      NOT NULL,
+    weights_used       JSONB        NOT NULL,
+    results            JSONB        NOT NULL,    -- the ranked list with breakdowns
+    duration_ms        INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_ranker_runs_run_at
+    ON ranker_runs (run_at DESC);
+
+
+-- ─────────────────────────────────────────────────────────
 -- SIGNALS & TRADES
 -- ─────────────────────────────────────────────────────────
 
