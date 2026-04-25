@@ -25,13 +25,22 @@ export interface Catalyst {
   name: string;
   date: string;
   impact: 'high' | 'medium' | 'low';
-  kind: 'economic' | 'earnings';
+  kind: 'economic' | 'earnings' | 'news_topic' | 'sec_8k';
 }
 
 export interface RiskFlag {
   persona: RiskPersona;
   severity: RiskSeverity;
   message: string;
+}
+
+export interface PersonaPlan {
+  persona: RiskPersona;
+  entry_zone: EntryZone;
+  stop: number;
+  targets: number[];
+  position_size_pct: number;
+  rationale: string;
 }
 
 export interface SignalRef {
@@ -66,6 +75,7 @@ export interface InsightReport {
   bull_case: string;
   bear_case: string;
   risk_flags: RiskFlag[];
+  persona_plans: PersonaPlan[];
   supporting_signals: SignalRef[];
   similar_past_trades: JournalRef[];
   confidence_score: number;

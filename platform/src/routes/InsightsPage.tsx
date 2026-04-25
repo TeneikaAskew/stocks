@@ -14,6 +14,7 @@ import {
   DegradationBanner,
   HeaderCard,
   KeyLevelsCard,
+  PersonaPlansCard,
   RiskFlagsCard,
   SignalsCard,
   SimilarTradesCard,
@@ -292,6 +293,7 @@ function ReportView({
         <CatalystsCard catalysts={report.catalysts} />
       </div>
       <DebateCard bullCase={report.bull_case} bearCase={report.bear_case} />
+      <PersonaPlansCard plans={report.persona_plans ?? []} />
       <div className="grid gap-3 md:grid-cols-2">
         <RiskFlagsCard flags={report.risk_flags} />
         <SignalsCard signals={report.supporting_signals} />
