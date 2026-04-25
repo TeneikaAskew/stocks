@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CLOUD_RUN_URL =
   process.env.CLOUD_RUN_URL ?? 'https://trading-platform-5sjtb3yl7a-ue.a.run.app';
@@ -9,6 +12,18 @@ export default defineConfig({
   testDir: './tests',
   fullyParallel: false,
   timeout: 30_000,
+  // For local-dev specs (project=chromium), Playwright reuses an already-running
+  // Vite server. If you don't have one up, set PLAYWRIGHT_START_VITE=1 to have
+  // Playwright boot it. The cloud project hits Cloud Run directly so this is a
+  // no-op there.
+  webServer: process.env.PLAYWRIGHT_START_VITE
+    ? {
+        command: 'npm run dev',
+        url: 'http://localhost:5173',
+        reuseExistingServer: true,
+        timeout: 60_000,
+      }
+    : undefined,
   projects: [
     // Default: existing local-dev tests against http://localhost:5173.
     {
