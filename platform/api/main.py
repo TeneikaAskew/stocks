@@ -11,7 +11,7 @@ from typing import Optional
 
 import httpx
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -117,6 +117,99 @@ async def health_check():
         "gcs_bucket": "adept-mountain-474619-d4-trading-data",
         "lib_dir_exists": (PROJECT_ROOT / "lib").is_dir(),
     }
+
+
+# ── /dev — test-account info page (behind IAP in prod) ─────────────────────
+# Shows the Playwright tester service account, IAP audience, and ready-to-run
+# curl/gcloud snippets. Visible only to humans who already passed IAP, so the
+# page itself is fine to expose publicly within the deployed service.
+
+_DEV_ALLOWED_EMAIL = os.environ.get("DEV_ALLOWED_EMAIL", "teneika@bictech.org").lower()
+
+
+def _iap_user_email(request: Request) -> Optional[str]:
+    """Extract the authenticated user's email from the IAP-injected header.
+
+    IAP sets `X-Goog-Authenticated-User-Email` as `accounts.google.com:user@domain`.
+    Returns None when the header is absent (e.g. local dev without IAP).
+    """
+    raw = request.headers.get("x-goog-authenticated-user-email")
+    if not raw:
+        return None
+    return raw.split(":", 1)[-1].strip().lower()
+
+
+@app.get("/dev", include_in_schema=False)
+async def dev_info(request: Request):
+    from fastapi.responses import HTMLResponse, PlainTextResponse
+
+    email = _iap_user_email(request)
+    # Local dev (no IAP header) → allow. Cloud Run with IAP → require allow-list match.
+    if email is not None and email != _DEV_ALLOWED_EMAIL:
+        return PlainTextResponse("Forbidden", status_code=403)
+
+    project_id = os.environ.get("GCP_PROJECT_ID", "adept-mountain-474619-d4")
+    sa_email = os.environ.get(
+        "PLAYWRIGHT_TESTER_SA",
+        f"playwright-tester@{project_id}.iam.gserviceaccount.com",
+    )
+    iap_audience = os.environ.get("IAP_OAUTH_CLIENT_ID", "<unset — see notes>")
+    revision = os.environ.get("K_REVISION", "local")
+    service_url = str(request.base_url).rstrip("/")
+    viewer = email or "(local dev — no IAP)"
+
+    html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>/dev — test accounts</title>
+<style>
+  body {{ font-family: ui-monospace,Menlo,monospace; background:#111318; color:#e2e2e8;
+         max-width: 880px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.5; }}
+  h1 {{ color:#8bceff; margin-bottom: 0.25rem; }}
+  h2 {{ color:#bdc8d2; margin-top: 2rem; border-bottom: 1px solid #282a2e; padding-bottom: .25rem; }}
+  code, pre {{ background:#1a1c20; padding: 0.15rem 0.4rem; border-radius: 4px; }}
+  pre {{ padding: .8rem 1rem; overflow-x:auto; white-space: pre-wrap; word-break: break-word; }}
+  .k {{ color:#6e7781; }}
+  .v {{ color:#e2e2e8; }}
+  .warn {{ color:#ffb86b; }}
+</style></head>
+<body>
+<h1>/dev — test accounts &amp; auth</h1>
+<p class="k">Internal page. Visible only to authenticated IAP users.</p>
+
+<h2>Environment</h2>
+<pre><span class="k">viewer         </span><span class="v">{viewer}</span>
+<span class="k">service_url    </span><span class="v">{service_url}</span>
+<span class="k">revision       </span><span class="v">{revision}</span>
+<span class="k">project_id     </span><span class="v">{project_id}</span>
+<span class="k">cloud_sql      </span><span class="v">{_CLOUD_SQL}</span></pre>
+
+<h2>Playwright tester service account</h2>
+<pre><span class="k">email          </span><span class="v">{sa_email}</span>
+<span class="k">iap_audience   </span><span class="v">{iap_audience}</span></pre>
+
+<p class="warn">Note: programmatic auth against this IAP-on-Cloud-Run service
+is currently broken (both for SA keys and gcloud user tokens). The legacy
+OAuth-brand admin API was sunset in March 2026 and the auto-managed IAP
+audience does not accept programmatically minted JWTs. Browser SSO is the
+only working path right now; curl/CI flows return 401.</p>
+
+<h2>Browser access (works today)</h2>
+<pre># Sign into bictech.org in your browser, then open:
+{service_url}/
+
+# IAP redirects to Google OAuth, then routes you to the app.</pre>
+
+<h2>If you need a local terminal session</h2>
+<pre>gcloud run services proxy trading-platform --region us-east1
+# then http://localhost:8080 — the proxy authenticates as your gcloud user.</pre>
+
+<h2>Run Playwright locally</h2>
+<pre>cd platform &amp;&amp; npm run test
+# E2E tests target http://localhost:5173 (see playwright.config.ts).
+# To probe the deployed Cloud Run instance use the gcloud token recipe above —
+# the SA path will return 401 until OAuth-brand replacement ships.</pre>
+
+</body></html>"""
+    return HTMLResponse(html)
 
 
 @app.get("/api/market/dates/{ticker}")

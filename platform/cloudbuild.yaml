@@ -1,0 +1,15 @@
+# Build context is the repo root; Dockerfile lives under platform/.
+# Invoked via: gcloud builds submit --config platform/cloudbuild.yaml --substitutions _IMAGE=... .
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file
+      - platform/Dockerfile
+      - --tag
+      - ${_IMAGE}
+      - .
+images:
+  - ${_IMAGE}
+options:
+  logging: CLOUD_LOGGING_ONLY

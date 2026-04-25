@@ -32,9 +32,21 @@ docs/
 
 # Development containers and local dev setup
 .devcontainer/
-Dockerfile
-Dockerfile.claude
+# Use anchored paths so platform/Dockerfile is preserved
+/Dockerfile
+/Dockerfile.claude
 docker-compose.yml
+
+# Frontend build artifacts — rebuilt inside the container by the multi-stage Dockerfile
+platform/node_modules/
+platform/dist/
+platform/test-results/
+platform/playwright-report/
+
+# Generated venvs / caches anywhere in the tree
+**/node_modules/
+.venv/
+venv/
 
 # Python cache
 __pycache__/
