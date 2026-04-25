@@ -81,6 +81,7 @@ Thumbs.db
 
 # Python
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -119,3 +120,6 @@ nul
 # Keep the README stub tracked so contributors see where the files live.
 reports/
 !reports/README.md
+
+# Local Claude scheduler state
+.claude/scheduled_tasks.lock
