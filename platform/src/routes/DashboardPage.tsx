@@ -5,7 +5,10 @@ import { useReviewDateStore } from '@/stores/reviewDateStore';
 import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote, type LiveQuote } from '@/hooks/useLiveQuote';
 import { useLiveHistory, useAvgVolume } from '@/hooks/useLiveHistory';
-import { buildSnapshot, evalConditions, type EvalResult } from '@/lib/playbookEvaluator';
+import { useLiveIndicators } from '@/hooks/useLiveIndicators';
+import { buildSnapshot, type EvalResult } from '@/lib/playbookEvaluator';
+import { usePlaybookEvaluation } from '@/hooks/usePlaybookEvaluation';
+import { useIndicatorConfig, classifyRsiZone } from '@/hooks/useConfig';
 import { to12h } from '@/lib/time';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
@@ -104,6 +107,9 @@ export default function DashboardPage() {
   const { activeTicker } = useTickerStore();
   const { reviewDate, reviewTime } = useReviewDateStore();
   const isReview = reviewDate !== null;
+
+  // Server-sourced indicator config (RSI zones, thresholds, periods).
+  const { data: indicatorCfg } = useIndicatorConfig();
 
   const { data: health } = useFetch<HealthResponse>(['health'], '/api/health', { staleTime: 300_000 });
   const { data: status } = useLiveStatus();
@@ -275,13 +281,12 @@ export default function DashboardPage() {
       return `${p >= 0 ? '+' : ''}${p.toFixed(2)}% vs ${label}`;
     };
 
+    // Zone labels come from /api/config/indicators — the same thresholds
+    // Python uses. See useIndicatorConfig. indicatorCfg is read from the
+    // outer scope where the hook is called.
     const rsiZone = (v: number | undefined): string => {
       if (v === undefined) return '—';
-      if (v < 30) return 'Oversold zone';
-      if (v < 45) return 'Weak';
-      if (v < 55) return 'Neutral zone';
-      if (v < 70) return 'Strong';
-      return 'Overbought zone';
+      return classifyRsiZone(v, indicatorCfg?.rsi.zones);
     };
     const rsiTone = (v: number | undefined): 'bull' | 'bear' | 'warn' | 'default' => {
       if (v === undefined) return 'default';
@@ -345,6 +350,16 @@ export default function DashboardPage() {
   const isMarketOpenish = !isReview && (!!status?.is_open || status?.session === 'pre-market' || status?.session === 'after-hours');
   const { data: liveHistory } = useLiveHistory(activeTicker, isMarketOpenish);
   const { data: avgVol } = useAvgVolume(activeTicker);
+  // Indicators computed server-side (lib/indicators.py) — never duplicated in TS.
+  const indicatorsQuery = useLiveIndicators(
+    {
+      bars: liveHistory?.bars ?? [],
+      current_price: liveQuote?.price ?? null,
+      current_volume: liveQuote?.volume ?? null,
+      avg_volume_20d: avgVol?.avg_volume_20d ?? null,
+    },
+    !isReview && !!liveHistory?.bars && liveHistory.bars.length > 0,
+  );
 
   const snapshot = useMemo(
     () =>
@@ -355,8 +370,9 @@ export default function DashboardPage() {
             quote: liveQuote,
             avgVolume20d: avgVol?.avg_volume_20d ?? null,
             reference,
+            indicators: indicatorsQuery.data?.indicators,
           }),
-    [isReview, liveHistory, liveQuote, avgVol, reference],
+    [isReview, liveHistory, liveQuote, avgVol, reference, indicatorsQuery.data],
   );
 
   // Top playbook match: pick card matching bias with best win_rate
@@ -367,11 +383,18 @@ export default function DashboardPage() {
     return (candidates.length ? candidates : cards).reduce((best, c) => (c.win_rate > best.win_rate ? c : best));
   }, [cards, brief?.bias]);
 
+  // Server-evaluated conditions for the top playbook card.
+  const topConditions = topCard?.conditions;
+  const topEvalQuery = usePlaybookEvaluation(topConditions, snapshot);
   const topCardResults = useMemo<EvalResult[]>(() => {
     if (!topCard) return [];
-    if (!snapshot) return topCard.conditions.map(() => ({ status: 'unknown', reason: 'no live data' }));
-    return evalConditions(topCard.conditions, snapshot);
-  }, [topCard, snapshot]);
+    if (topEvalQuery.data) return topEvalQuery.data;
+    // Placeholder while loading / when snapshot isn't ready.
+    return topCard.conditions.map(() => ({
+      status: 'unknown' as const,
+      reason: snapshot ? 'evaluating' : 'no live data',
+    }));
+  }, [topCard, topEvalQuery.data, snapshot]);
 
   // Filter backtest trades by review date (frontend-only — trades are bounded, already fetched)
   const filteredTrades = useMemo(() => {

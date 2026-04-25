@@ -4,12 +4,13 @@ import { useTickerStore } from '@/stores/tickerStore';
 import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote } from '@/hooks/useLiveQuote';
 import { useLiveHistory, useAvgVolume } from '@/hooks/useLiveHistory';
+import { useLiveIndicators } from '@/hooks/useLiveIndicators';
 import {
-  evalConditions,
   buildSnapshot,
   type MarketSnapshot,
   type EvalResult,
 } from '@/lib/playbookEvaluator';
+import { usePlaybookBatch } from '@/hooks/usePlaybookEvaluation';
 import { CheckCircle, Circle, HelpCircle, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';
 
 interface PlaybookCard {
@@ -248,6 +249,16 @@ export default function PlaybookPage() {
   const { data: quote } = useLiveQuote(activeTicker, isMarketOpenish);
   const { data: avgVol } = useAvgVolume(activeTicker);
   const { data: reference } = useReference(activeTicker);
+  // Indicators computed server-side — lib/indicators.py is the single source of truth.
+  const indicatorsQuery = useLiveIndicators(
+    {
+      bars: history?.bars ?? [],
+      current_price: quote?.price ?? null,
+      current_volume: quote?.volume ?? null,
+      avg_volume_20d: avgVol?.avg_volume_20d ?? null,
+    },
+    !!history?.bars && history.bars.length > 0,
+  );
 
   const snapshot = useMemo<MarketSnapshot | null>(
     () =>
@@ -256,21 +267,24 @@ export default function PlaybookPage() {
         quote,
         avgVolume20d: avgVol?.avg_volume_20d ?? null,
         reference: reference ?? undefined,
+        indicators: indicatorsQuery.data?.indicators,
       }),
-    [history, quote, avgVol, reference],
+    [history, quote, avgVol, reference, indicatorsQuery.data],
   );
 
   const cards = data?.cards ?? [];
   const hasLiveData = snapshot !== null;
 
-  const cardResults = useMemo(() => {
-    if (!snapshot) return new Map<string, EvalResult[]>();
-    const m = new Map<string, EvalResult[]>();
-    for (const card of cards) {
-      m.set(card.id, evalConditions(card.conditions, snapshot));
-    }
-    return m;
-  }, [cards, snapshot]);
+  // Server-side evaluation (platform/api/routers/playbook.py). One batched
+  // POST per snapshot/card-set combination, results keyed by card id.
+  const batches = useMemo<Record<string, string[]> | undefined>(() => {
+    if (cards.length === 0) return undefined;
+    const b: Record<string, string[]> = {};
+    for (const card of cards) b[card.id] = card.conditions;
+    return b;
+  }, [cards]);
+  const batchQuery = usePlaybookBatch(batches, snapshot);
+  const cardResults = batchQuery.data ?? new Map<string, EvalResult[]>();
 
   return (
     <div className="space-y-6">

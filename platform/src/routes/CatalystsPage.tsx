@@ -67,11 +67,11 @@ const TYPE_CONFIG: Record<string, { label: string; color: string; icon: typeof T
 };
 
 const IMPACT_COLORS: Record<string, string> = {
-  'Very High': 'text-red-400',
-  'High': 'text-orange-400',
-  'Medium': 'text-amber-400',
+  'Very High': 'text-[var(--bear)]',
+  'High': 'text-[var(--warn)]',
+  'Medium': 'text-[var(--warn)]',
   'Low': 'text-[var(--on-surface-variant)]',
-  'Variable': 'text-purple-400',
+  'Variable': 'text-[var(--brand)]',
 };
 
 // ── Hooks ──────────────────────────────────────────────────────────────────
@@ -140,10 +140,15 @@ function CatalystBadge({ type }: { type: string }) {
   );
 }
 
-function EventRow({ event }: { event: CatalystEvent }) {
+function EventRow({ event, isToday }: { event: CatalystEvent; isToday: boolean }) {
   const impactClass = IMPACT_COLORS[event.expected_impact] || 'text-[var(--on-surface-variant)]';
+  // Inside today's surface-2 DateGroup, rows need surface-3 to stand out.
+  // Inside normal surface-1 DateGroup, rows use surface-2.
+  const bgClass = isToday
+    ? 'bg-[var(--surface-3)] hover:brightness-110'
+    : 'bg-[var(--surface-2)] hover:bg-[var(--surface-3)]';
   return (
-    <div className="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-[var(--surface-2)] transition-colors">
+    <div className={`flex items-center gap-4 rounded-lg px-4 py-2.5 transition-colors ${bgClass}`}>
       <span className="w-14 shrink-0 text-xs font-bold text-[var(--brand)]">
         {event.ticker || '---'}
       </span>
@@ -162,21 +167,21 @@ function DateGroup({ date, events }: { date: string; events: CatalystEvent[] }) 
   const relative = getRelativeLabel(date);
   const isToday = relative === 'TODAY';
   return (
-    <div className={`rounded-xl p-4 ${isToday ? 'bg-[var(--surface-2)] ring-1 ring-[var(--brand)]' : 'bg-[var(--surface-1)]'}`}>
-      <div className="flex items-center justify-between mb-2">
+    <div className={`rounded-xl p-6 ${isToday ? 'bg-[var(--surface-2)] ring-1 ring-[var(--brand)]' : 'bg-[var(--surface-1)]'}`}>
+      <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-[var(--on-surface)]">{formatDate(date)}</span>
           {isToday && (
-            <span className="rounded bg-[var(--brand)] px-2 py-0.5 text-[10px] font-bold text-[var(--on-brand)]">
+            <span className="rounded-lg bg-[var(--brand)] px-2 py-0.5 text-[10px] font-bold text-[var(--on-brand)]">
               TODAY
             </span>
           )}
         </div>
-        <span className="text-xs text-[var(--on-surface-variant)]">{relative}</span>
+        <span className="label-micro">{relative}</span>
       </div>
-      <div className="space-y-1">
+      <div className="space-y-2">
         {events.map((e, i) => (
-          <EventRow key={`${e.date}-${e.ticker}-${e.catalyst_type}-${i}`} event={e} />
+          <EventRow key={`${e.date}-${e.ticker}-${e.catalyst_type}-${i}`} event={e} isToday={isToday} />
         ))}
       </div>
     </div>
@@ -187,15 +192,15 @@ function WSHUpgradeBanner({ types }: { types: CatalystTypesResponse | undefined 
   if (!types) return null;
   const wshTypes = Object.values(types.wsh_only_types);
   return (
-    <div className="rounded-xl bg-[var(--surface-1)] p-4 border border-dashed border-[var(--brand)]">
-      <div className="flex items-center gap-2 mb-2">
+    <div className="rounded-xl bg-[var(--surface-1)] p-6 border border-dashed border-[var(--brand)]">
+      <div className="mb-3 flex items-center gap-2">
         <Lock size={14} className="text-[var(--brand)]" />
         <span className="text-sm font-semibold text-[var(--brand)]">Wall Street Horizon Upgrade</span>
       </div>
-      <p className="text-xs text-[var(--on-surface-variant)] mb-3">
+      <p className="mb-4 text-xs text-[var(--on-surface-variant)]">
         These event types require WSH via IBKR TWS API ($49-149/mo):
       </p>
-      <div className="flex flex-wrap gap-2 mb-3">
+      <div className="mb-4 flex flex-wrap gap-2">
         {wshTypes.map(t => (
           <span
             key={t.label}
@@ -262,13 +267,13 @@ export default function CatalystsPage() {
   Object.values(eventsByDate).flat().forEach(e => allTypes.add(e.catalyst_type));
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-lg font-bold text-[var(--on-surface)]">Catalysts</h1>
-          <p className="text-xs text-[var(--on-surface-variant)]">
-            {data?.total ?? 0} events &middot; {data?.source ?? 'Benzinga'}
+          <h1 className="text-4xl font-bold tracking-tight text-[var(--color-brand)]">Catalysts</h1>
+          <p className="label-micro mt-2">
+            {data?.total ?? 0} events · {data?.source ?? 'Benzinga'}
           </p>
         </div>
         <button
@@ -302,10 +307,18 @@ export default function CatalystsPage() {
                 onClick={() => setActiveFilter(activeFilter === type ? null : type)}
                 className={`rounded-full px-3 py-1 text-[10px] font-semibold transition-colors ${
                   activeFilter === type
-                    ? 'text-white'
+                    ? ''
                     : 'bg-[var(--surface-2)] text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)]'
                 }`}
-                style={activeFilter === type && config ? { backgroundColor: config.color } : undefined}
+                style={
+                  activeFilter === type && config
+                    ? {
+                        backgroundColor: config.color + '33',
+                        color: config.color,
+                        border: `1px solid ${config.color}55`,
+                      }
+                    : undefined
+                }
               >
                 {config?.label || type}
               </button>
@@ -321,19 +334,19 @@ export default function CatalystsPage() {
         </div>
       )}
       {error && (
-        <div className="rounded-lg bg-red-500/10 p-4 text-sm text-red-400">
+        <div className="rounded-xl border border-[var(--bear)]/40 bg-[var(--bear)]/10 px-4 py-2.5 text-sm text-[var(--bear)]">
           Failed to load catalysts: {(error as Error).message}
         </div>
       )}
       {data?.status === 'no_data' && (
-        <div className="rounded-lg bg-amber-500/10 p-4 text-sm text-amber-400">
-          <Filter size={14} className="inline mr-1" />
+        <div className="rounded-lg border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-4 py-2.5 text-sm text-[var(--warn)]">
+          <Filter size={14} className="mr-1 inline" />
           {data.message}
         </div>
       )}
 
       {/* Event timeline */}
-      <div className="space-y-3">
+      <div className="space-y-4">
         {filteredDates.map(([date, events]) => (
           <DateGroup key={date} date={date} events={events as CatalystEvent[]} />
         ))}

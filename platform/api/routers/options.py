@@ -31,9 +31,12 @@ from datetime import date, datetime
 from pathlib import Path
 import sys
 
+import math
+
 import pandas as pd
 from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 # Project root so we can import gcp.database the same way the journal router does.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -313,3 +316,247 @@ async def get_options(ticker: str, date_str: str):
     }
     _CHAIN_CACHE[cache_key] = response
     return {**response, "cached": False}
+
+
+# ── Greeks + Nodes (canonical compute, single source of truth) ──────────────
+#
+# The frontend used to run this math in TypeScript (greeksCalculator.ts,
+# nodeAnalyzer.ts). That meant every tuning change had to be replicated in
+# two languages. These endpoints consolidate the math server-side — the
+# frontend posts the chain + spot and receives computed metrics.
+
+# Config constants — if we ever want to tune these per-ticker or per-strategy,
+# move them into a config table. For now they mirror the values used by the
+# original heatseeker implementation.
+SPOT_MULTIPLIER = 100
+GEX_MULTIPLIER = 0.01
+VEX_MULTIPLIER = 0.01
+ATM_TOLERANCE = 0.02           # 2% band used for implied-move vega avg
+NODE_MIN_GAMMA = 500.0         # absolute net-gamma floor for "significant"
+NODE_TOP_COUNT = 5             # king + gatekeepers
+MIDPOINT_RATIO = 0.5           # gamma balance band for midpoint detection
+DEFAULT_STRIKE_RANGE_PCT = 0.15  # ±15% display range around spot
+
+
+class _OptionRecord(BaseModel):
+    type: str  # 'call' | 'put'
+    strike: float
+    open_interest: float | None = None
+    gamma: float | None = None
+    vega: float | None = None
+    delta: float | None = None
+    volume: float | None = None
+
+
+class _GreeksRequest(BaseModel):
+    options: list[_OptionRecord]
+    spot_price: float
+    strike_range_pct: float | None = None  # optional display filter
+
+
+def _aggregate_by_strike(options: list[_OptionRecord]) -> list[dict]:
+    """Group the chain by strike and net gamma (calls positive, puts negative)."""
+    agg: dict[float, dict] = {}
+    for opt in options:
+        s = opt.strike
+        if s not in agg:
+            agg[s] = {
+                "strike": s,
+                "net_gamma": 0.0,
+                "call_gamma": 0.0,
+                "put_gamma": 0.0,
+                "call_oi": 0.0,
+                "put_oi": 0.0,
+                "call_volume": 0.0,
+                "put_volume": 0.0,
+            }
+        gamma_oi = (opt.gamma or 0.0) * (opt.open_interest or 0.0)
+        if opt.type == "call":
+            agg[s]["call_gamma"] += gamma_oi
+            agg[s]["call_oi"] += opt.open_interest or 0.0
+            agg[s]["call_volume"] += opt.volume or 0.0
+            agg[s]["net_gamma"] += gamma_oi
+        else:
+            agg[s]["put_gamma"] += gamma_oi
+            agg[s]["put_oi"] += opt.open_interest or 0.0
+            agg[s]["put_volume"] += opt.volume or 0.0
+            agg[s]["net_gamma"] -= gamma_oi
+    return sorted(agg.values(), key=lambda r: r["strike"])
+
+
+def _gex_by_strike(strikes: list[dict], spot: float) -> list[dict]:
+    spot_sq = spot * spot
+    return [
+        {
+            "strike": s["strike"],
+            "gex": s["net_gamma"] * spot_sq * GEX_MULTIPLIER,
+            "call_gex": s["call_gamma"] * spot_sq * GEX_MULTIPLIER,
+            "put_gex": -s["put_gamma"] * spot_sq * GEX_MULTIPLIER,
+        }
+        for s in strikes
+    ]
+
+
+def _total_gex(options: list[_OptionRecord], spot: float) -> float:
+    spot_sq = spot * spot
+    total = 0.0
+    for o in options:
+        if not o.gamma or not o.open_interest:
+            continue
+        dealer_gamma = -o.gamma
+        total += dealer_gamma * o.open_interest * SPOT_MULTIPLIER * spot_sq * GEX_MULTIPLIER
+    return total
+
+
+def _total_vex(options: list[_OptionRecord], spot: float) -> float:
+    total = 0.0
+    for o in options:
+        if not o.vega or not o.open_interest:
+            continue
+        dealer_vanna = -o.vega
+        total += dealer_vanna * o.open_interest * SPOT_MULTIPLIER * spot * VEX_MULTIPLIER
+    return total
+
+
+def _zero_gamma(strikes: list[dict]) -> float | None:
+    for i in range(len(strikes) - 1):
+        g1 = strikes[i]["net_gamma"]
+        g2 = strikes[i + 1]["net_gamma"]
+        if g1 * g2 < 0:
+            s1 = strikes[i]["strike"]
+            s2 = strikes[i + 1]["strike"]
+            return s1 + (0 - g1) * (s2 - s1) / (g2 - g1)
+    return None
+
+
+def _max_pain(strikes: list[dict]) -> float | None:
+    if not strikes:
+        return None
+    min_pain = math.inf
+    best = strikes[0]["strike"]
+    for target in strikes:
+        pain = 0.0
+        for s in strikes:
+            pain += max(0.0, target["strike"] - s["strike"]) * s["call_oi"]
+            pain += max(0.0, s["strike"] - target["strike"]) * s["put_oi"]
+        if pain < min_pain:
+            min_pain = pain
+            best = target["strike"]
+    return best
+
+
+def _implied_move(options: list[_OptionRecord], spot: float) -> float | None:
+    atm = [o for o in options if abs(o.strike - spot) / spot < ATM_TOLERANCE]
+    if not atm:
+        return None
+    vegas = [o.vega for o in atm if o.vega is not None]
+    if not vegas:
+        return None
+    avg_vega = sum(vegas) / len(vegas)
+    return avg_vega * math.sqrt(252) * spot * 0.01
+
+
+def _detect_nodes(strikes: list[dict], spot: float) -> dict:
+    significant = [s for s in strikes if abs(s["net_gamma"]) >= NODE_MIN_GAMMA]
+    if not significant:
+        return {"kingNode": None, "gatekeepers": [], "midpoints": [], "allNodes": []}
+
+    by_gamma = sorted(significant, key=lambda r: abs(r["net_gamma"]), reverse=True)
+
+    def _node(s: dict, node_type: str) -> dict:
+        return {
+            "type": node_type,
+            "strike": s["strike"],
+            "gamma": s["net_gamma"],
+            "distance_from_spot": s["strike"] - spot,
+            "distance_percent": ((s["strike"] - spot) / spot) * 100,
+        }
+
+    king = _node(by_gamma[0], "king")
+    gatekeepers = [_node(s, "gatekeeper") for s in by_gamma[1:NODE_TOP_COUNT]]
+
+    midpoints: list[dict] = []
+    for i in range(len(by_gamma) - 1):
+        cur = by_gamma[i]
+        nxt = by_gamma[i + 1]
+        if cur["net_gamma"] * nxt["net_gamma"] < 0 and nxt["net_gamma"] != 0:
+            ratio = abs(cur["net_gamma"] / nxt["net_gamma"])
+            if MIDPOINT_RATIO <= ratio <= (1 / MIDPOINT_RATIO):
+                mid_strike = (cur["strike"] + nxt["strike"]) / 2
+                midpoints.append({
+                    "type": "midpoint",
+                    "strike": mid_strike,
+                    "gamma": 0.0,
+                    "distance_from_spot": mid_strike - spot,
+                    "distance_percent": ((mid_strike - spot) / spot) * 100,
+                    "lower_bound": min(cur["strike"], nxt["strike"]),
+                    "upper_bound": max(cur["strike"], nxt["strike"]),
+                })
+
+    all_nodes = [king] + gatekeepers + midpoints
+    return {
+        "kingNode": king,
+        "gatekeepers": gatekeepers,
+        "midpoints": midpoints,
+        "allNodes": all_nodes,
+    }
+
+
+@router.post("/api/options/greeks")
+def compute_options_greeks(req: _GreeksRequest) -> dict:
+    """Single source of truth for GEX/VEX/max-pain/implied-move/nodes.
+
+    The frontend previously computed all of this in TypeScript. Centralizing
+    it here means config tweaks (multipliers, thresholds) change in one place.
+    """
+    if req.spot_price <= 0 or not req.options:
+        empty = {
+            "aggregated": [],
+            "gex_by_strike": [],
+            "metrics": {
+                "total_gex": 0.0,
+                "total_vex": 0.0,
+                "zero_gamma": None,
+                "max_pain": None,
+                "implied_move": None,
+                "put_call_ratio": 0.0,
+            },
+            "nodes": {"kingNode": None, "gatekeepers": [], "midpoints": [], "allNodes": []},
+            "config": {
+                "strike_range_pct": req.strike_range_pct or DEFAULT_STRIKE_RANGE_PCT,
+                "atm_tolerance": ATM_TOLERANCE,
+                "node_min_gamma": NODE_MIN_GAMMA,
+            },
+        }
+        return empty
+
+    aggregated = _aggregate_by_strike(req.options)
+    gex_by_strike = _gex_by_strike(aggregated, req.spot_price)
+
+    calls = [o for o in req.options if o.type == "call"]
+    puts = [o for o in req.options if o.type == "put"]
+    call_oi = sum(o.open_interest or 0.0 for o in calls)
+    put_oi = sum(o.open_interest or 0.0 for o in puts)
+
+    metrics = {
+        "total_gex": _total_gex(req.options, req.spot_price),
+        "total_vex": _total_vex(req.options, req.spot_price),
+        "zero_gamma": _zero_gamma(aggregated),
+        "max_pain": _max_pain(aggregated),
+        "implied_move": _implied_move(req.options, req.spot_price),
+        "put_call_ratio": (put_oi / call_oi) if call_oi > 0 else 0.0,
+    }
+
+    nodes = _detect_nodes(aggregated, req.spot_price)
+
+    return {
+        "aggregated": aggregated,
+        "gex_by_strike": gex_by_strike,
+        "metrics": metrics,
+        "nodes": nodes,
+        "config": {
+            "strike_range_pct": req.strike_range_pct or DEFAULT_STRIKE_RANGE_PCT,
+            "atm_tolerance": ATM_TOLERANCE,
+            "node_min_gamma": NODE_MIN_GAMMA,
+        },
+    }
