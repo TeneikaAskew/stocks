@@ -292,6 +292,30 @@ deploy_fetch_earnings_calendar() {
 # The list-valued env vars are set via a follow-up --update-env-vars
 # call using gcloud's "^@^" delimiter syntax, because the default
 # comma delimiter would split SPY,IWM,QQQ into three separate vars.
+deploy_fetch_earnings_history() {
+    echo "Deploying fetch-earnings-history job..."
+    # 1800s timeout: pulls ~100-300 tickers (anyone reporting in next 90d).
+    # AV rate limit at 150 RPM means ~2-3 minutes of API time at peak.
+    local av_key av_env
+    av_key="$(_secret av-api-key 2>/dev/null || true)"
+    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
+
+    gcloud run jobs create fetch-earnings-history \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_earnings_history" \
+        --set-env-vars "${av_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-earnings-history \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.fetchers.fetch_earnings_history" \
+        --set-env-vars "${av_env}" \
+        --quiet
+}
+
 deploy_fetch_news_sentiment() {
     echo "Deploying fetch-news-sentiment (ticker mode) job..."
     local av_key av_env
@@ -349,6 +373,7 @@ deploy_fetchers() {
     deploy_fetch_alphavantage
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
+    deploy_fetch_earnings_history
     deploy_fetch_news_sentiment
     deploy_fetch_news_sentiment_topics
 }
@@ -403,6 +428,10 @@ deploy_schedulers() {
 
     # Earnings calendar (UW + EW) — 7:15 AM ET weekdays
     _schedule "earnings-calendar-daily"  "15 7 * * 1-5"  "fetch-earnings-calendar"
+
+    # Earnings history (AV EARNINGS, per-ticker quarterly EPS) — Sunday 6 AM ET.
+    # Weekly cadence is enough since past quarters never change.
+    _schedule "earnings-history-weekly"  "0 6 * * 0"  "fetch-earnings-history"
 
     # News sentiment — 3x per trading day (pre-market, midday, post-close)
     # Ticker mode: always-on watchlist (SPY/IWM/QQQ).

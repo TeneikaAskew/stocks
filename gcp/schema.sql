@@ -341,6 +341,35 @@ CREATE TRIGGER trg_earnings_calendar_updated
 
 
 -- ─────────────────────────────────────────────────────────
+-- EARNINGS HISTORY (AlphaVantage EARNINGS endpoint, per-ticker)
+-- Backward-looking quarterly EPS history, separate from the
+-- forward-looking earnings_calendar table. Used by the ranker to
+-- compute historical post-earnings reaction stats (avg T+1 move,
+-- direction consistency, surprise vs. price reaction correlation).
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS earnings_history (
+    id                  BIGSERIAL PRIMARY KEY,
+    ticker              VARCHAR(10)  NOT NULL,
+    fiscal_date_ending  DATE         NOT NULL,
+    reported_date       DATE,
+    reported_eps        DOUBLE PRECISION,
+    estimated_eps       DOUBLE PRECISION,
+    surprise            DOUBLE PRECISION,
+    surprise_pct        DOUBLE PRECISION,
+    inserted_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_earnings_history UNIQUE (ticker, fiscal_date_ending)
+);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_history_ticker_reported
+    ON earnings_history (ticker, reported_date DESC NULLS LAST);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_history_reported
+    ON earnings_history (reported_date DESC NULLS LAST);
+
+
+-- ─────────────────────────────────────────────────────────
 -- SIGNALS & TRADES
 -- ─────────────────────────────────────────────────────────
 
