@@ -410,7 +410,7 @@ Existing indicators in `tradingview-pine-scripts/`:
 | `trading_analysis.py` | Primary: 195+ features, ML feature importance, signal generation |
 | `trade_analysis_pipeline.py` | Validation: Matches real trades against historical patterns, tests 100+ criteria |
 | `morning_checklist_analysis.ipynb` | Daily: Scores current conditions against your patterns |
-| `iwm_trading_alerts.py` | Real-time: Contrarian alerts with audio notifications |
+| `trading_alerts.py` | Real-time: Ticker-agnostic alerts with audio notifications (Windows-only) |
 
 ---
 
