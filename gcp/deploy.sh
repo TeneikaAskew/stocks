@@ -559,17 +559,24 @@ deploy_schedulers() {
     # reflects the full session.
     _schedule "top-movers-daily"  "15 16 * * 1-5"  "fetch-top-movers"
 
-    # News sentiment — 3x per trading day (pre-market, midday, post-close)
-    # Ticker mode: always-on watchlist (SPY/IWM/QQQ).
-    _schedule "news-sentiment-0800"  "0 8 * * 1-5"   "fetch-news-sentiment"
-    _schedule "news-sentiment-1200"  "0 12 * * 1-5"  "fetch-news-sentiment"
-    _schedule "news-sentiment-1600"  "0 16 * * 1-5"  "fetch-news-sentiment"
+    # News sentiment — HOURLY during the trading day so catalysts can't
+    # age out of AV's 50-article window before we capture them. The
+    # Apr-7-2026 Broadcom-Google deal hit at 13:46 ET; with the prior
+    # 3x schedule (08:00/12:00/16:00) it would have been captured at
+    # the 16:00 run only — risking the article aging out under heavy
+    # syndication. Hourly cadence keeps AV calls well under the 150
+    # RPM plan: 10 runs/day × 5 watchlist tickers = 50 calls/day.
+    # Ticker mode reads alert_config.json["watchlist"] when no
+    # --tickers arg is passed (see fetch_news_sentiment.main()).
+    for h in 08 09 10 11 12 13 14 15 16 17; do
+        _schedule "news-sentiment-${h}00"  "0 ${h} * * 1-5"  "fetch-news-sentiment"
+    done
 
-    # Topic mode: catalyst stream across all tickers AV tracks. Offset
-    # by 5 min from the ticker schedules so AV quota usage is staggered.
-    _schedule "news-topics-0805"     "5 8 * * 1-5"   "fetch-news-sentiment-topics"
-    _schedule "news-topics-1205"     "5 12 * * 1-5"  "fetch-news-sentiment-topics"
-    _schedule "news-topics-1605"     "5 16 * * 1-5"  "fetch-news-sentiment-topics"
+    # Topic mode: catalyst stream across all tickers AV tracks. Same
+    # hourly cadence, offset 5 min so AV calls stagger.
+    for h in 08 09 10 11 12 13 14 15 16 17; do
+        _schedule "news-topics-${h}05"  "5 ${h} * * 1-5"  "fetch-news-sentiment-topics"
+    done
 
     # AI Insights daily report — 8:45 AM ET weekdays, after premarket-brief
     # (which seeds the strat + daily indicators the pipeline consumes).
