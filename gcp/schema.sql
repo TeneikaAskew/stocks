@@ -622,19 +622,34 @@ CREATE INDEX IF NOT EXISTS idx_insight_runs_status
 -- ─────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS news_sentiment (
-    id              BIGSERIAL    PRIMARY KEY,
-    ticker          VARCHAR(10)  NOT NULL,
-    published_ts    TIMESTAMPTZ  NOT NULL,
-    title           TEXT,
-    url             TEXT,
-    summary         TEXT,
-    sentiment_score DOUBLE PRECISION,
-    relevance_score DOUBLE PRECISION,
-    source          VARCHAR(100),
-    inserted_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    id                       BIGSERIAL    PRIMARY KEY,
+    ticker                   VARCHAR(10)  NOT NULL,
+    published_ts             TIMESTAMPTZ  NOT NULL,
+    title                    TEXT,
+    url                      TEXT,
+    summary                  TEXT,
+    sentiment_score          DOUBLE PRECISION,   -- per-ticker (ticker_sentiment_score)
+    relevance_score          DOUBLE PRECISION,   -- per-ticker
+    overall_sentiment_score  DOUBLE PRECISION,   -- article-level
+    overall_sentiment_label  VARCHAR(20),        -- Bullish/Bearish/Neutral/etc.
+    topics                   TEXT[],             -- AV catalyst topics
+    source                   VARCHAR(100),
+    inserted_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_news UNIQUE (ticker, published_ts, url)
 );
 
 CREATE INDEX IF NOT EXISTS idx_news_sentiment_ticker_ts
     ON news_sentiment (ticker, published_ts DESC);
+
+-- GIN index for fast `topics @> ARRAY['mergers_and_acquisitions']` lookups.
+CREATE INDEX IF NOT EXISTS idx_news_sentiment_topics
+    ON news_sentiment USING GIN (topics);
+
+-- Live migration for existing deployments: add the topics + overall
+-- sentiment columns introduced alongside the multi-ticker capture
+-- rebuild of fetch_news_sentiment.py. Idempotent.
+ALTER TABLE news_sentiment
+    ADD COLUMN IF NOT EXISTS overall_sentiment_score DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS overall_sentiment_label VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS topics TEXT[];

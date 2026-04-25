@@ -274,8 +274,18 @@ deploy_fetch_earnings_calendar() {
         --quiet
 }
 
+# News sentiment is split into two Cloud Run jobs sharing the same image:
+# `fetch-news-sentiment` queries by ticker (always-on watchlist), while
+# `fetch-news-sentiment-topics` queries by AV catalyst topic to capture
+# single-name catalysts outside the watchlist. Selection is driven by
+# env vars (NEWS_TICKERS / NEWS_TOPICS) so the --command stays identical
+# across both jobs.
+#
+# The list-valued env vars are set via a follow-up --update-env-vars
+# call using gcloud's "^@^" delimiter syntax, because the default
+# comma delimiter would split SPY,IWM,QQQ into three separate vars.
 deploy_fetch_news_sentiment() {
-    echo "Deploying fetch-news-sentiment job..."
+    echo "Deploying fetch-news-sentiment (ticker mode) job..."
     local av_key av_env
     av_key="$(_secret av-api-key 2>/dev/null || true)"
     av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
@@ -284,13 +294,44 @@ deploy_fetch_news_sentiment() {
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
-        --command "python,-m,gcp.fetchers.fetch_news_sentiment,--tickers,SPY,IWM,QQQ" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --set-env-vars "${av_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment \
         --image "${IMAGE}" --region "${REGION}" \
-        --command "python,-m,gcp.fetchers.fetch_news_sentiment,--tickers,SPY,IWM,QQQ" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --set-env-vars "${av_env}" \
+        --quiet
+
+    gcloud run jobs update fetch-news-sentiment \
+        --region "${REGION}" \
+        --update-env-vars "^@^NEWS_TICKERS=SPY,IWM,QQQ" \
+        --quiet
+}
+
+deploy_fetch_news_sentiment_topics() {
+    echo "Deploying fetch-news-sentiment-topics (topic mode) job..."
+    local av_key av_env
+    av_key="$(_secret av-api-key 2>/dev/null || true)"
+    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
+
+    gcloud run jobs create fetch-news-sentiment-topics \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        --set-env-vars "${av_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-news-sentiment-topics \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        --set-env-vars "${av_env}" \
+        --quiet
+
+    # 5 catalyst-rich topics — AV's hard cap per call.
+    gcloud run jobs update fetch-news-sentiment-topics \
+        --region "${REGION}" \
+        --update-env-vars "^@^NEWS_TOPICS=mergers_and_acquisitions,technology,financial_markets,earnings,life_sciences" \
         --quiet
 }
 
@@ -301,6 +342,7 @@ deploy_fetchers() {
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
     deploy_fetch_news_sentiment
+    deploy_fetch_news_sentiment_topics
 }
 
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
@@ -355,9 +397,16 @@ deploy_schedulers() {
     _schedule "earnings-calendar-daily"  "15 7 * * 1-5"  "fetch-earnings-calendar"
 
     # News sentiment — 3x per trading day (pre-market, midday, post-close)
+    # Ticker mode: always-on watchlist (SPY/IWM/QQQ).
     _schedule "news-sentiment-0800"  "0 8 * * 1-5"   "fetch-news-sentiment"
     _schedule "news-sentiment-1200"  "0 12 * * 1-5"  "fetch-news-sentiment"
     _schedule "news-sentiment-1600"  "0 16 * * 1-5"  "fetch-news-sentiment"
+
+    # Topic mode: catalyst stream across all tickers AV tracks. Offset
+    # by 5 min from the ticker schedules so AV quota usage is staggered.
+    _schedule "news-topics-0805"     "5 8 * * 1-5"   "fetch-news-sentiment-topics"
+    _schedule "news-topics-1205"     "5 12 * * 1-5"  "fetch-news-sentiment-topics"
+    _schedule "news-topics-1605"     "5 16 * * 1-5"  "fetch-news-sentiment-topics"
 
     # AI Insights daily report — 8:45 AM ET weekdays, after premarket-brief
     # (which seeds the strat + daily indicators the pipeline consumes).
