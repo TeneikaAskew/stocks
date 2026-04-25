@@ -245,7 +245,7 @@ def _portfolio_payload(
             "bear_case": bear.case,
             "failed_sections": bundle.get("failed_sections", []),
             "summaries": {
-                k: bundle.get(k, {}).get("available") for k in ("market", "strat", "options", "catalysts", "sentiment")
+                k: bundle.get(k, {}).get("available") for k in ("market", "strat", "options", "gamma", "catalysts", "sentiment")
             },
         },
         default=str,
@@ -297,7 +297,7 @@ async def run_insight_pipeline(
         snapshot = load_routes_snapshot()
 
     # 3. Parallel analyst tier — one per section
-    analyst_sections = ("market", "strat", "options", "catalyst", "sentiment")
+    analyst_sections = ("market", "strat", "options", "gamma", "catalyst", "sentiment")
     analyst_tasks = [
         _run_node(
             role="analyst",

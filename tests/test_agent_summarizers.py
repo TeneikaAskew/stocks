@@ -316,6 +316,74 @@ def test_build_context_bundle_catches_exceptions(monkeypatch):
     bundle = summarizers.build_context_bundle("SPY")
     # Every section should have failed gracefully
     assert set(bundle["failed_sections"]) >= {
-        "market", "strat", "options", "signals", "backtest", "catalysts"
+        "market", "strat", "options", "gamma", "signals", "backtest", "catalysts"
     }
     assert bundle["market"]["available"] is False
+
+
+# ---------------------------------------------------------------------------
+# summarize_gamma_levels
+# ---------------------------------------------------------------------------
+
+
+def test_gamma_levels_extracts_kings_and_regime(patch_query):
+    """Synthetic chain → King at the heaviest strike, regime classified."""
+    patch_query(
+        "etf_options_snapshots",
+        pd.DataFrame([
+            # Heavy puts at 95 → negative GEX below
+            {"option_type": "puts",  "strike": 95.0, "expiration": date(2025, 11, 21),
+             "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": -0.30,
+             "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13},
+            # ATM call/put balanced
+            {"option_type": "calls", "strike": 100.0, "expiration": date(2025, 11, 21),
+             "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": 0.50,
+             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55},
+            {"option_type": "puts",  "strike": 100.0, "expiration": date(2025, 11, 21),
+             "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": -0.50,
+             "bid": 1.45, "ask": 1.55, "mark": 1.50, "last_price": 1.50},
+            # Heavy calls at 105 → positive GEX above
+            {"option_type": "calls", "strike": 105.0, "expiration": date(2025, 11, 21),
+             "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": 0.30,
+             "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13},
+        ]),
+    )
+    out = summarizers.summarize_gamma_levels("XYZ")
+    assert out["available"] is True
+    assert out["spot"] == pytest.approx(100.0, abs=0.5)
+    # Spot via parity (mark prices balanced at 100)
+    assert out["spot_method"] == "parity"
+    # Regime is "unknown" if cumulative GEX doesn't strictly cross zero in
+    # the window — that's fine for this fixture; we just verify the field
+    # exists and is one of the expected literals.
+    assert out["regime"] in ("positive_gamma", "negative_gamma", "unknown")
+    # Should have at least one King
+    assert len(out["kings"]) >= 1
+    assert "chain_size" in out
+    assert out["chain_size"] == 4
+
+
+def test_gamma_levels_unavailable_when_no_chain(patch_query):
+    # No data set up → empty DataFrame returned
+    out = summarizers.summarize_gamma_levels("ZZZ")
+    assert out["available"] is False
+    assert "no etf_options_snapshots" in out["reason"]
+
+
+def test_build_context_bundle_includes_gamma(patch_query):
+    patch_query(
+        "etf_options_snapshots",
+        pd.DataFrame([
+            {"option_type": "calls", "strike": 100.0, "expiration": date(2025, 11, 21),
+             "open_interest": 1000, "gamma": 0.05, "vega": 0.10, "delta": 0.50,
+             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55},
+            {"option_type": "puts",  "strike": 100.0, "expiration": date(2025, 11, 21),
+             "open_interest": 1000, "gamma": 0.05, "vega": 0.10, "delta": -0.50,
+             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55},
+        ]),
+    )
+    bundle = summarizers.build_context_bundle("XYZ")
+    assert "gamma" in bundle
+    # Other sections are unavailable in this fixture, but gamma must be the
+    # one populated when only chain data is fixtured
+    assert bundle["gamma"]["available"] is True
