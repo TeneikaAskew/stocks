@@ -584,6 +584,27 @@ deploy_schedulers() {
     echo "All schedulers configured."
 }
 
+# ── Watchlist backfill ────────────────────────────────────────────────────────
+# Idempotent: only fetches what's missing per ticker. Safe to run after
+# any edit to alert_config.json["watchlist"]; safe to run nightly. Runs
+# locally (not in Cloud Run) because the script is small enough that a
+# Cloud Run job is overhead.
+backfill_watchlist() {
+    echo "Backfilling watchlist data (idempotent)..."
+    local args=("$@")
+    if [ ! -f .env ]; then
+        echo "WARN: no .env at repo root — fetchers may fail without AV_API_KEY" >&2
+    else
+        # shellcheck disable=SC1091
+        set -a; . ./.env; set +a
+        export ALPHA_VANTAGE_API_KEY="${AV_API_KEY:-${ALPHA_VANTAGE_API_KEY:-}}"
+    fi
+    if [ -f .gcp-key.json ]; then
+        export GOOGLE_APPLICATION_CREDENTIALS="$PWD/.gcp-key.json"
+    fi
+    python3 -m scripts.backfill_watchlist_data "${args[@]}"
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 case "${1:-help}" in
     setup)       setup ;;
@@ -592,9 +613,10 @@ case "${1:-help}" in
     premarket)   build_image && deploy_premarket ;;
     monitor)     build_image && deploy_monitor ;;
     weekend)     build_image && deploy_weekend ;;
-    fetchers)    build_image && deploy_fetchers ;;
+    fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
     insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_auto_refresh_top_n ;;
     schedulers)  deploy_schedulers ;;
+    backfill)    shift; backfill_watchlist "$@" ;;
     all)
         build_image
         deploy_premarket
@@ -605,6 +627,7 @@ case "${1:-help}" in
         deploy_insight_pipeline
         deploy_auto_refresh_top_n
         deploy_schedulers
+        backfill_watchlist
         echo "All components deployed."
         ;;
     help|*)
@@ -619,6 +642,9 @@ case "${1:-help}" in
         echo "  fetchers   Deploy all data-fetching Cloud Run jobs"
         echo "  insights   Deploy AI insight pipeline job + Cloud Tasks queue"
         echo "  schedulers Create/update all Cloud Scheduler triggers"
-        echo "  all        Build + deploy everything (jobs + schedulers)"
+        echo "  backfill   Idempotently backfill data for every watchlist ticker."
+        echo "             Pass --tickers AVGO,NVDA to override. Runs automatically"
+        echo "             after \`fetchers\` and \`all\`."
+        echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac
