@@ -5,7 +5,6 @@ import {
   computeORB,
   minutesSinceOpen,
   type MarketSnapshot,
-  type EvalResult,
 } from './playbookEvaluator';
 import type { Indicators, Bar } from './indicators';
 

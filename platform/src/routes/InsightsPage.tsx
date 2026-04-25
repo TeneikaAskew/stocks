@@ -125,7 +125,7 @@ export default function InsightsPage() {
           <button
             onClick={onRefresh}
             disabled={refreshMut.isPending || isRunning}
-            className="flex items-center gap-1.5 rounded-lg bg-[var(--color-accent-blue)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-[var(--color-accent-blue)] px-3 py-1.5 text-xs font-medium text-[var(--on-brand)] disabled:opacity-50"
           >
             {refreshMut.isPending || isRunning ? (
               <Loader2 size={14} className="animate-spin" />
@@ -198,7 +198,7 @@ function TabButton({
       onClick={onClick}
       className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
         active
-          ? 'bg-[var(--color-accent-blue)] text-white'
+          ? 'bg-[var(--color-accent-blue)] text-[var(--on-brand)]'
           : 'border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
       }`}
     >
@@ -256,7 +256,7 @@ function ReportView({
         <button
           onClick={onRefresh}
           disabled={refreshing}
-          className="flex items-center gap-1.5 rounded-lg bg-[var(--color-accent-blue)] px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-lg bg-[var(--color-accent-blue)] px-4 py-2 text-xs font-medium text-[var(--on-brand)] disabled:opacity-50"
         >
           {refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
           Generate Report
@@ -455,7 +455,7 @@ function ChatView({ ticker }: { ticker: string }) {
             onClick={() => setMode(m)}
             className={`rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wide transition-colors ${
               mode === m
-                ? 'bg-[var(--color-accent-blue)] text-white'
+                ? 'bg-[var(--color-accent-blue)] text-[var(--on-brand)]'
                 : 'border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
             }`}
           >
@@ -507,7 +507,7 @@ function ChatView({ ticker }: { ticker: string }) {
         <button
           type="submit"
           disabled={!input.trim() || streaming}
-          className="flex items-center gap-1 rounded-lg bg-[var(--color-accent-blue)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+          className="flex items-center gap-1 rounded-lg bg-[var(--color-accent-blue)] px-3 py-2 text-xs font-medium text-[var(--on-brand)] disabled:opacity-50"
         >
           <Send size={12} />
         </button>

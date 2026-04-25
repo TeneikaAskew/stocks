@@ -37,13 +37,6 @@ interface CatalystTypesResponse {
   upgrade_note: string;
 }
 
-// ── Icon mapping ───────────────────────────────────────────────────────────
-
-const ICON_MAP: Record<string, typeof TrendingUp> = {
-  TrendingUp, Phone, Target, DollarSign, Scissors, Rocket,
-  GitMerge, Shield, Star, Globe,
-};
-
 // Tone palette: each tone has a (dark, light) hex pair tuned so the badge
 // text reads at WCAG AA against both the dark and light surface-2 cards.
 // Replaces the original flat-UI palette which was tuned for dark surfaces
