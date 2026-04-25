@@ -292,6 +292,48 @@ deploy_fetch_earnings_calendar() {
 # The list-valued env vars are set via a follow-up --update-env-vars
 # call using gcloud's "^@^" delimiter syntax, because the default
 # comma delimiter would split SPY,IWM,QQQ into three separate vars.
+deploy_fetch_insider_transactions() {
+    echo "Deploying fetch-insider-transactions job..."
+    local av_key av_env
+    av_key="$(_secret av-api-key 2>/dev/null || true)"
+    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
+
+    gcloud run jobs create fetch-insider-transactions \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
+        --set-env-vars "${av_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-insider-transactions \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
+        --set-env-vars "${av_env}" \
+        --quiet
+}
+
+deploy_fetch_top_movers() {
+    echo "Deploying fetch-top-movers job..."
+    local av_key av_env
+    av_key="$(_secret av-api-key 2>/dev/null || true)"
+    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
+
+    gcloud run jobs create fetch-top-movers \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_top_movers" \
+        --set-env-vars "${av_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-top-movers \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_top_movers" \
+        --set-env-vars "${av_env}" \
+        --quiet
+}
+
 deploy_fetch_sec_filings() {
     echo "Deploying fetch-sec-filings job..."
     # SEC requires a descriptive User-Agent identifying the organization
@@ -400,6 +442,8 @@ deploy_fetchers() {
     deploy_fetch_earnings_calendar
     deploy_fetch_earnings_history
     deploy_fetch_sec_filings
+    deploy_fetch_insider_transactions
+    deploy_fetch_top_movers
     deploy_fetch_news_sentiment
     deploy_fetch_news_sentiment_topics
 }
@@ -479,6 +523,14 @@ deploy_schedulers() {
     _schedule "sec-filings-1700"  "0 17 * * 1-5"   "fetch-sec-filings"
     _schedule "sec-filings-2000"  "0 20 * * 1-5"   "fetch-sec-filings"
     _schedule "sec-filings-0700"  "0 7 * * 1-5"    "fetch-sec-filings"
+
+    # Insider transactions — daily at 7 AM ET. AV refreshes Form 4 data
+    # overnight from EDGAR; daily cadence catches everything new.
+    _schedule "insider-transactions-daily"  "0 7 * * 1-5"  "fetch-insider-transactions"
+
+    # Top movers — daily at 4:15 PM ET, after the close so AV's snapshot
+    # reflects the full session.
+    _schedule "top-movers-daily"  "15 16 * * 1-5"  "fetch-top-movers"
 
     # News sentiment — 3x per trading day (pre-market, midday, post-close)
     # Ticker mode: always-on watchlist (SPY/IWM/QQQ).

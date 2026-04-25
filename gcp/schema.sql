@@ -403,6 +403,59 @@ CREATE INDEX IF NOT EXISTS idx_sec_filings_items
 
 
 -- ─────────────────────────────────────────────────────────
+-- INSIDER TRANSACTIONS (AlphaVantage INSIDER_TRANSACTIONS endpoint)
+-- Form 4 filings: every officer/director/10%-owner buy or sell.
+-- The ranker derives a "cluster" signal from these (3+ insiders in
+-- 30 days, single insider >$1M, etc.) — strong directional tell on
+-- single names.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS insider_transactions (
+    id                  BIGSERIAL PRIMARY KEY,
+    ticker              VARCHAR(10)  NOT NULL,
+    transaction_date    DATE         NOT NULL,
+    executive           VARCHAR(200),
+    title               VARCHAR(200),
+    transaction_type    VARCHAR(20),     -- 'A' = acquired (buy), 'D' = disposed (sell)
+    shares              DOUBLE PRECISION,
+    share_price         DOUBLE PRECISION,
+    transaction_value   DOUBLE PRECISION, -- shares × share_price (computed)
+    inserted_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    -- Same insider can have multiple same-day transactions at different prices;
+    -- include the type so we can distinguish a partial sell from a partial buy.
+    CONSTRAINT uq_insider_transactions
+        UNIQUE (ticker, transaction_date, executive, transaction_type, shares, share_price)
+);
+
+CREATE INDEX IF NOT EXISTS idx_insider_transactions_ticker_date
+    ON insider_transactions (ticker, transaction_date DESC);
+
+
+-- ─────────────────────────────────────────────────────────
+-- TOP MOVERS (AlphaVantage TOP_GAINERS_LOSERS, daily snapshot)
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS top_movers_daily (
+    id                BIGSERIAL PRIMARY KEY,
+    snapshot_date     DATE         NOT NULL,
+    ticker            VARCHAR(10)  NOT NULL,
+    category          VARCHAR(20)  NOT NULL,  -- 'top_gainers' | 'top_losers' | 'most_active'
+    rank              INTEGER,
+    price             DOUBLE PRECISION,
+    change_amount     DOUBLE PRECISION,
+    change_pct        DOUBLE PRECISION,
+    volume            BIGINT,
+    inserted_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_top_movers_daily UNIQUE (snapshot_date, ticker, category)
+);
+
+CREATE INDEX IF NOT EXISTS idx_top_movers_date_category
+    ON top_movers_daily (snapshot_date DESC, category);
+
+
+-- ─────────────────────────────────────────────────────────
 -- SIGNALS & TRADES
 -- ─────────────────────────────────────────────────────────
 
