@@ -94,9 +94,12 @@ def weighted_score(
             )
         )
 
-        if available and weight > 0:
+        # Negative weights are allowed — they let a signal *penalize* the
+        # ticker (e.g. heavy insider selling). max_possible still uses
+        # abs(weight) so pct_of_max remains a [-1, 1] interpretable ratio.
+        if available and weight != 0:
             total += points
-            max_possible += weight
+            max_possible += abs(weight)
 
         # Gate: if the gate signal fails (score_0_to_1 == 0 with
         # available=True), the whole ticker is dropped.
@@ -123,7 +126,8 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "historical_earnings_reaction":  2.0,
     "iv_signals":                    2.0,
     "has_recent_8k":                 2.0,
-    "insider_cluster":               1.5,
+    "insider_buying":                1.5,   # cluster of insider acquisitions
+    "insider_selling":              -1.5,   # heavy disposals are bearish
     "news_topic_score":              1.5,
     "sentiment_shift":               1.0,
     "is_top_mover_today":            1.0,
