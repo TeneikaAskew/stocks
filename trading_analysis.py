@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-IWM Historical Stock Price Analysis with Technical Indicators and Trading Signals
-Implements various technical indicators and generates put/call signals based on price movements
+Historical Stock Price Analysis with Technical Indicators and Trading Signals.
+
+Ticker-agnostic — pass any of IWM/QQQ/SPY (or other tickers loaded into
+``data/{ticker}/intraday/``) via ``--symbol``. Generates put/call signals
+based on a 5-condition voter over price movements + indicators.
 """
 
 import pandas as pd
@@ -16,7 +19,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-class IWMAnalyzer:
+class MarketAnalyzer:
     def __init__(self):
         self.df = None
         self.signals_df = None
@@ -1539,7 +1542,7 @@ def main():
     else:
         print(f"Analyzing last {months_limit} months of {symbol} data...")
 
-    analyzer = IWMAnalyzer()
+    analyzer = MarketAnalyzer()
 
     # Define paths based on symbol - using relative paths for compatibility
     symbol_lower = symbol.lower()

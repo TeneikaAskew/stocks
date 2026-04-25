@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-IWM Trading Alert System
-Monitors real-time conditions and generates trading alerts based on validated patterns
+Trading Alert System.
+
+Ticker-agnostic real-time monitor that generates audio alerts when the
+configured 5-condition voter fires for the symbol passed on construction.
+Originally written for IWM; the rules generalize to any liquid ETF/stock
+covered by AlphaVantage's 1-min intraday endpoint.
+
+Note: this is a Windows-only desktop tool — it imports ``winsound`` for
+the audio cue. The cloud equivalent is ``gcp/signal_monitor.py``, which
+runs as a Cloud Run job and writes to Cloud SQL ``signal_alerts``.
 """
 
 import pandas as pd
@@ -34,7 +42,7 @@ class TradingSignal:
     stop_price: float
     time_stop: int  # minutes
 
-class IWMAlertSystem:
+class TradingAlertSystem:
     def __init__(self, api_key: str = None):
         self.api_key = api_key
         self.current_data = {}
@@ -331,7 +339,7 @@ Conditions Met:
 # Example usage
 def main():
     # Initialize alert system
-    alert_system = IWMAlertSystem()
+    alert_system = TradingAlertSystem()
     
     # Simulated data for testing
     test_data = {
@@ -347,7 +355,7 @@ def main():
         'obv_percentile': 15
     }
     
-    print("IWM Trading Alert System Started...")
+    print("Trading Alert System Started...")
     print(f"Current Time Period: {alert_system.get_time_period()}")
     print(f"Market Hours: {'OPEN' if alert_system.check_market_hours() else 'CLOSED'}")
     print("-" * 50)
