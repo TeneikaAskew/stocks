@@ -95,7 +95,7 @@ function TokenGate({ onAuthed }: { onAuthed: (token: string) => void }) {
         type="submit"
         disabled={checking}
         data-testid="admin-submit"
-        className="flex w-full items-center justify-center gap-1.5 rounded bg-[var(--color-accent-blue)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+        className="flex w-full items-center justify-center gap-1.5 rounded bg-[var(--color-accent-blue)] px-4 py-2 text-sm font-medium text-[var(--on-brand)] disabled:opacity-50"
       >
         {checking ? <Loader2 size={14} className="animate-spin" /> : null}
         Unlock
@@ -237,7 +237,7 @@ function RoutingPanel({ onLogout }: { onLogout: () => void }) {
                       onClick={() => onSave(r.role)}
                       disabled={!isDirty(r.role) || updateMut.isPending}
                       data-testid={`save-${r.role}`}
-                      className="inline-flex items-center gap-1 rounded bg-[var(--color-accent-blue)] px-2 py-1 text-[10px] text-white disabled:opacity-40"
+                      className="inline-flex items-center gap-1 rounded bg-[var(--color-accent-blue)] px-2 py-1 text-[10px] text-[var(--on-brand)] disabled:opacity-40"
                     >
                       <Save size={11} />
                       Save

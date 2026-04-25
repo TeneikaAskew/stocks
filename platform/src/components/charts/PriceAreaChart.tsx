@@ -18,7 +18,7 @@ import {
   Tooltip,
   ReferenceLine,
 } from 'recharts';
-import { chartTheme, useChartTheme } from '@/lib/chartTheme';
+import { useChartTheme } from '@/lib/chartTheme';
 
 export interface PricePoint {
   /** Unix seconds for the bar open */

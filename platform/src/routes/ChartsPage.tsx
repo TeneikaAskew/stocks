@@ -487,14 +487,14 @@ export default function ChartsPage() {
                 <div className="flex gap-1">
                   <button
                     onClick={() => selectOptionType('CALL')}
-                    className="flex items-center gap-1 rounded bg-green-600 px-2 py-1 text-xs text-white"
+                    className="flex items-center gap-1 rounded bg-[var(--bull)] px-2 py-1 text-xs text-black"
                   >
                     <ArrowUpCircle size={12} />
                     CALL
                   </button>
                   <button
                     onClick={() => selectOptionType('PUT')}
-                    className="flex items-center gap-1 rounded bg-red-600 px-2 py-1 text-xs text-white"
+                    className="flex items-center gap-1 rounded bg-[var(--bear)] px-2 py-1 text-xs text-white"
                   >
                     <ArrowDownCircle size={12} />
                     PUT

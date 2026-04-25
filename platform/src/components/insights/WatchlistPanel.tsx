@@ -231,7 +231,7 @@ function RankedRow({
         <button
           onClick={() => void onGenerate()}
           disabled={isGenerating}
-          className="ml-auto flex items-center gap-1 rounded bg-[var(--color-accent-blue)] px-2 py-1 text-[10px] font-medium text-white disabled:opacity-50"
+          className="ml-auto flex items-center gap-1 rounded bg-[var(--color-accent-blue)] px-2 py-1 text-[10px] font-medium text-[var(--on-brand)] disabled:opacity-50"
         >
           {isGenerating ? (
             <Loader2 size={10} className="animate-spin" />
