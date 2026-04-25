@@ -440,6 +440,15 @@ def main():
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
 
+    # Union watchlist (alert_config.json → "watchlist") so curated names get
+    # daily bars even when their earnings are out of window.
+    if args.tickers == 'ALL':
+        from gcp.fetchers._watchlist import load_watchlist
+        wl_added = [t for t in load_watchlist() if t not in tickers]
+        if wl_added:
+            log.info("  Adding %d watchlist tickers: %s", len(wl_added), wl_added)
+            tickers.extend(wl_added)
+
     if args.earnings_window_days > 0:
         earnings = _earnings_tickers_in_window(
             args.earnings_window_days, args.earnings_window_days,
