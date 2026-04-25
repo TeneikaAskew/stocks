@@ -4,26 +4,40 @@ Every ticker has a list of catalyst tags attached so the ranker can
 filter by catalyst type (e.g. 'just earnings names today') and the UI
 can display *why* this ticker is a candidate.
 
+Default scope: only tickers on the configured watchlist
+(`alert_config.json` → `"watchlist"`). Catalyst sources are still
+queried so each watchlist ticker carries its catalyst tags + reasons,
+but tickers not on the watchlist are dropped. This keeps the candidate
+set small enough that scoring runs in seconds rather than minutes.
+
+Set `expand_universe=True` to lift the watchlist gate and pull every
+catalyst-tagged ticker (the legacy behavior — slow at any real scale).
+
+`extras` is a one-shot way to inject names without editing the
+watchlist file (e.g. add AVGO for a single ranker run).
+
 Sources merged here:
   * earnings_calendar     — anyone reporting in the next N days
   * sec_filings (8-K)     — recent material event filings
   * insider_transactions  — recent insider activity
   * top_movers_daily      — today's biggest movers
   * economic_events       — only the affected ETFs (small static map)
-  * Manual watchlist      — INSIGHT_TICKERS env / config
-
-Returns CandidateTicker objects. Duplicates across sources are merged
-and the source list grows.
+  * Watchlist             — alert_config.json `watchlist` (always included)
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import date as date_type
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 CatalystType = str   # 'earnings' | 'sec_8k' | 'insider' | 'top_mover'
@@ -202,15 +216,34 @@ def _candidates_from_economic(
                 break
 
 
-def _candidates_from_manual(
-    out: dict[str, CandidateTicker], manual_tickers: list[str]
+def _candidates_from_watchlist(
+    out: dict[str, CandidateTicker], watchlist: list[str]
 ) -> None:
-    for tk in manual_tickers:
+    """Seed every watchlist ticker. They show up even if no catalyst hit
+    today — that way the dashboard always renders the names you care
+    about, ranked by their non-catalyst signals (volatility, IV, etc.)."""
+    for tk in watchlist:
         tk = tk.upper().strip()
         if not tk:
             continue
         cand = out.setdefault(tk, CandidateTicker(ticker=tk))
-        cand.add_catalyst("manual")
+        cand.add_catalyst("watchlist")
+
+
+def _load_watchlist() -> list[str]:
+    """Read `watchlist` from alert_config.json (project root). Falls back
+    to INSIGHT_TICKERS env var, then to SPY/IWM/QQQ."""
+    cfg_path = Path(__file__).resolve().parents[3] / "alert_config.json"
+    try:
+        if cfg_path.exists():
+            data = json.loads(cfg_path.read_text())
+            wl = data.get("watchlist") or []
+            if isinstance(wl, list) and wl:
+                return [str(t).upper().strip() for t in wl if str(t).strip()]
+    except Exception as exc:
+        logger.warning("watchlist load failed (%s); falling back to env", exc)
+    env = os.environ.get("INSIGHT_TICKERS", "SPY,IWM,QQQ")
+    return [t.strip().upper() for t in env.split(",") if t.strip()]
 
 
 def gather_candidates(
@@ -220,15 +253,26 @@ def gather_candidates(
     sec_8k_days: int = 3,
     insider_days: int = 30,
     economic_days_ahead: int = 5,
-    manual_tickers: Optional[list[str]] = None,
+    expand_universe: bool = False,
+    extras: Optional[list[str]] = None,
+    watchlist: Optional[list[str]] = None,
 ) -> list[CandidateTicker]:
     """Build the day's candidate list.
 
+    Default scope (`expand_universe=False`): the result is constrained to
+    tickers on the configured watchlist plus anything in `extras`.
+    Catalyst tags still attach so the score breakdown can explain
+    *why* a ticker ranks where it does.
+
+    Set `expand_universe=True` to drop the watchlist gate and return
+    every catalyst-tagged ticker (slow — legacy behavior).
+
     Args:
-        catalyst_filter: if provided, only include tickers that have at
-            least one catalyst tag in this set. None = include everyone.
-        manual_tickers: explicit list to always include (e.g. SPY/IWM/QQQ
-            from INSIGHT_TICKERS env).
+        catalyst_filter: keep only tickers with at least one matching
+            catalyst tag. `None` = no filter.
+        expand_universe: bypass the watchlist gate.
+        extras: ad-hoc additions (always included regardless of gate).
+        watchlist: override the configured watchlist for this call.
     """
     out: dict[str, CandidateTicker] = {}
 
@@ -237,10 +281,20 @@ def gather_candidates(
     _candidates_from_insiders(out, insider_days)
     _candidates_from_top_movers(out)
     _candidates_from_economic(out, economic_days_ahead)
-    if manual_tickers is None:
-        env_default = os.environ.get("INSIGHT_TICKERS", "SPY,IWM,QQQ")
-        manual_tickers = [t.strip() for t in env_default.split(",") if t.strip()]
-    _candidates_from_manual(out, manual_tickers)
+
+    wl = watchlist if watchlist is not None else _load_watchlist()
+    _candidates_from_watchlist(out, wl)
+
+    extras_set: set[str] = {
+        t.strip().upper() for t in (extras or []) if t.strip()
+    }
+    for tk in extras_set:
+        cand = out.setdefault(tk, CandidateTicker(ticker=tk))
+        cand.add_catalyst("manual")
+
+    if not expand_universe:
+        keep: set[str] = {t.upper() for t in wl} | extras_set
+        out = {tk: c for tk, c in out.items() if tk in keep}
 
     if catalyst_filter:
         out = {

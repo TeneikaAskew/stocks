@@ -322,6 +322,8 @@ def _is_local_dev() -> bool:
 async def get_watchlist(
     catalyst: Optional[str] = None,
     limit: int = 10,
+    expand: bool = False,
+    extras: Optional[str] = None,
 ):
     """Return today's ranked candidate tickers with score breakdowns.
 
@@ -330,8 +332,12 @@ async def get_watchlist(
     Query params:
         catalyst: comma-separated catalyst types to filter by, or None
             for all. Valid types: earnings, sec_8k, insider, top_mover,
-            economic_event, manual.
+            economic_event, watchlist, manual.
         limit: max number of ranked tickers to return (default 10).
+        expand: when true, ranks every catalyst-tagged ticker instead
+            of constraining to the watchlist (slow — use carefully).
+        extras: comma-separated tickers to inject for this call only
+            (e.g. ``extras=AVGO,NVDA``).
 
     The full breakdown per ticker includes every signal's score, weight,
     contribution, and human-readable reason — so the UI can show *why*
@@ -344,6 +350,10 @@ async def get_watchlist(
     if catalyst:
         catalyst_filter = {c.strip() for c in catalyst.split(",") if c.strip()}
 
+    extras_list: Optional[list[str]] = None
+    if extras:
+        extras_list = [t.strip().upper() for t in extras.split(",") if t.strip()]
+
     cfg = RankerConfig.from_alert_config()
     weights = cfg.weights or None  # falsy → use DEFAULT_WEIGHTS
 
@@ -351,6 +361,8 @@ async def get_watchlist(
         weights=weights,
         catalyst_filter=catalyst_filter,
         limit=max(1, min(limit, 50)),
+        expand_universe=expand,
+        extras=extras_list,
     )
 
 
