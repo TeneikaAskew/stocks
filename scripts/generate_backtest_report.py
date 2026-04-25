@@ -37,6 +37,7 @@ from lib.insights import (
     insight_base_vs_strat,
     insight_filter_stats,
     insight_signal_strength,
+    insight_hold_time_win_rate,
     insight_key_findings,
 )
 
@@ -319,6 +320,15 @@ def _section_duration(trade_dfs: dict[str, pd.DataFrame]) -> list[str]:
 
     # 5. Direction table
     lines += insight_direction_table(all_dir)
+
+    # 6. Hold-time Win Rate (theta cliff narrative) — Phase 2 will add a
+    # parallel Contract WR column once contract premium math is wired in.
+    for ticker, df in trade_dfs.items():
+        block = insight_hold_time_win_rate(df)
+        if block:
+            lines.append(f"#### {ticker} — Win Rate by Hold Duration")
+            lines.append("")
+            lines += block
 
     return lines
 

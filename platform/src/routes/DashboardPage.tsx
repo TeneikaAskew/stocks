@@ -12,6 +12,8 @@ import { useIndicatorConfig, classifyRsiZone } from '@/hooks/useConfig';
 import { to12h } from '@/lib/time';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
+import { LeverageCard } from '@/components/insights/LeverageCard';
+import { LeverageCurveChart } from '@/components/insights/LeverageCurveChart';
 import {
   TrendingUp, TrendingDown, Minus, Activity, BookOpen,
   AlertTriangle, Database, CheckCircle, Circle, HelpCircle, ChevronDown,
@@ -957,18 +959,18 @@ export default function DashboardPage() {
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <MetricCard
-            label="Win Rate"
+            label="Direction Win Rate"
             value={summary ? `${(summary.win_rate * 100).toFixed(1)}%` : '--'}
             direction={summary ? (summary.win_rate >= 0.5 ? 'up' : summary.win_rate >= 0.4 ? 'neutral' : 'down') : undefined}
-            subtitle={summary ? `${Math.round(summary.win_rate * 10)} in 10 trades win${isReview ? ` (${summary.total_trades.toLocaleString()} trades)` : ''}` : undefined}
+            subtitle={summary ? `Stock moved your way ${Math.round(summary.win_rate * 10)} in 10 trades${isReview ? ` (${summary.total_trades.toLocaleString()} trades)` : ''}` : undefined}
           />
           <MetricCard
-            label="Avg Win / Loss"
+            label="Avg Win / Loss (stock)"
             value={summary ? `+${(summary.avg_win_pct * 100).toFixed(2)}% / ${(summary.avg_loss_pct * 100).toFixed(2)}%` : '--'}
             direction={summary ? (Math.abs(summary.avg_win_pct) > Math.abs(summary.avg_loss_pct) ? 'up' : 'down') : undefined}
             subtitle={
               summary && summary.avg_loss_pct !== 0
-                ? `Winners are ${(Math.abs(summary.avg_win_pct / summary.avg_loss_pct)).toFixed(1)}x larger than losers`
+                ? `Winners ${(Math.abs(summary.avg_win_pct / summary.avg_loss_pct)).toFixed(1)}x larger · ≈ ${(summary.avg_win_pct * 100 * 0.35).toFixed(2)}% on a slightly-OTM option`
                 : summary ? 'No losses in period' : undefined
             }
           />
@@ -1001,6 +1003,25 @@ export default function DashboardPage() {
                 : summary ? 'Insufficient data' : undefined
             }
           />
+        </div>
+      )}
+
+      {/* Leverage translation — explains how the small stock-move % above
+          maps to a meaningful option return. Phase 2 will replace the linear
+          delta estimate with real contract premium math. */}
+      {summary && summary.total_trades > 0 && (
+        <div className="grid gap-3 lg:grid-cols-2">
+          <LeverageCard
+            label="Avg Win"
+            stockMovePct={summary.avg_win_pct}
+          />
+          <LeverageCard
+            label="Avg Loss"
+            stockMovePct={summary.avg_loss_pct}
+          />
+          <div className="lg:col-span-2">
+            <LeverageCurveChart highlightStockMovePct={summary.avg_win_pct} />
+          </div>
         </div>
       )}
 

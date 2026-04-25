@@ -6,6 +6,12 @@ describe what the numbers mean in plain English.  Used by
 ``scripts/generate_backtest_report.py`` to build BACKTEST_RESULTS.md.
 
 Every public function returns a list of Markdown strings (lines).
+
+Wording rules (locked in v3 of the insights pipeline):
+- Always say "stock price" — never "underlying".
+- Show percentages as ``+0.41%`` — never ``+41 bps`` in user-facing text.
+- "Direction Win Rate" = strat truth (stock moved your way).
+- "Contract Win Rate" = trader truth (option printed money).
 """
 
 from __future__ import annotations
@@ -13,6 +19,14 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
+
+from lib.copy import (
+    DELTA_SLIGHTLY_OTM,
+    HOLD_BUCKETS_MIN,
+    HOLD_BUCKET_LABELS,
+    format_option_translation,
+    format_stock_move,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +36,16 @@ import numpy as np
 def _pct(val: float, digits: int = 1) -> str:
     return f"{val * 100:.{digits}f}%"
 
+def _stock_move(val: float) -> str:
+    """User-facing stock-price-movement formatter (replaces ``_bps``)."""
+    return format_stock_move(val)
+
+def _option_translation(val: float, delta: float = DELTA_SLIGHTLY_OTM) -> str:
+    """Inline ``≈ +2.0% on a slightly-OTM option`` string for a stock move."""
+    return format_option_translation(val, delta)
+
+# Legacy bps formatters — kept for raw CSV exports only. Do NOT use in
+# user-facing markdown; prefer ``_stock_move`` above.
 def _bps(val: float) -> str:
     return f"{val * 10000:+.0f} bps"
 
@@ -35,12 +59,45 @@ def _range_str(lo: float, hi: float) -> str:
     return f"{lo:.0f}–{hi:.0f}"
 
 
+def _hold_time_bucket_stats(df: pd.DataFrame) -> List[dict]:
+    """Win rate by hold-duration bucket — exposes the theta cliff.
+
+    Returns one row per bucket in ``lib.copy.HOLD_BUCKETS_MIN`` with count,
+    direction win rate, and average stock-price return. Phase 2 will add a
+    parallel ``contract_wr`` column once contract premium math is wired in.
+    """
+    df = df.copy()
+    df["duration_min"] = (
+        pd.to_datetime(df["exit_time"]) - pd.to_datetime(df["entry_time"])
+    ).dt.total_seconds() / 60.0
+    df["direction_won"] = df["return_pct"] > 0
+    rows = []
+    for (lo, hi), label in zip(HOLD_BUCKETS_MIN, HOLD_BUCKET_LABELS):
+        sub = df[(df["duration_min"] >= lo) & (df["duration_min"] < hi)]
+        if len(sub) == 0:
+            continue
+        rows.append({
+            "bucket": label,
+            "count": len(sub),
+            "direction_wr": sub["direction_won"].mean(),
+            "avg_return": sub["return_pct"].mean(),
+        })
+    return rows
+
+
 def _exit_stats(df: pd.DataFrame) -> Dict[str, dict]:
-    """Per-exit-reason stats from a trades DataFrame."""
+    """Per-exit-reason stats from a trades DataFrame.
+
+    The ``won`` column is preserved for backwards-compatible internal use; in
+    user-facing copy this is rendered as "Direction Win Rate" because it
+    measures whether the stock moved in the trade's favor (not whether the
+    option contract printed money).
+    """
     df = df.copy()
     df['duration_min'] = (pd.to_datetime(df['exit_time']) -
                           pd.to_datetime(df['entry_time'])).dt.total_seconds() / 60.0
     df['won'] = df['return_pct'] > 0
+    df['direction_won'] = df['won']
     n = len(df)
     stats = {}
     for reason in ['target', 'stop_loss', 'time_stop', 'rsi_extreme', 'eod_close']:
@@ -66,6 +123,7 @@ def _direction_stats(df: pd.DataFrame) -> Dict[str, dict]:
     df['duration_min'] = (pd.to_datetime(df['exit_time']) -
                           pd.to_datetime(df['entry_time'])).dt.total_seconds() / 60.0
     df['won'] = df['return_pct'] > 0
+    df['direction_won'] = df['won']
     stats = {}
     for d in ['CALL', 'PUT']:
         sub = df[df['direction'] == d]
@@ -132,7 +190,7 @@ def insight_exit_reason_table(ticker: str, es: Dict[str, dict]) -> List[str]:
         if reason not in es:
             continue
         d = es[reason]
-        ret_str = f"**{_bps(d['avg_ret'])}**" if reason == 'target' else _bps(d['avg_ret'])
+        ret_str = f"**{_stock_move(d['avg_ret'])}**" if reason == 'target' else _stock_move(d['avg_ret'])
         lines.append(
             f"| {reason} "
             f"| {d['count']} "
@@ -148,12 +206,21 @@ def insight_exit_reason_table(ticker: str, es: Dict[str, dict]) -> List[str]:
 
 
 def insight_direction_table(all_dir_stats: Dict[str, Dict[str, dict]]) -> List[str]:
-    """Direction breakdown table across tickers."""
+    """Direction breakdown table across tickers.
+
+    "Direction Win Rate" = % of trades where the stock moved in the trade's
+    favor. "Avg Win/Loss" columns show the stock-price movement; the option
+    translation alongside is computed at a slightly-OTM delta anchor.
+    """
     lines = [
         "### Direction Breakdown",
         "",
-        "| Ticker | Dir | Trades | Win Rate | Avg Hold | Avg Hold (W) | Avg Hold (L) | Avg Win | Avg Loss |",
-        "|--------|-----|--------|----------|----------|--------------|--------------|---------|----------|",
+        "*Win rate measures whether the **stock moved your way**. "
+        "Avg Win/Loss columns show the stock-price movement plus the "
+        "approximate option-equivalent return at a slightly-OTM delta.*",
+        "",
+        "| Ticker | Dir | Trades | Direction Win Rate | Avg Hold | Avg Hold (W) | Avg Hold (L) | Avg Win (stock) | Avg Win (option) | Avg Loss (stock) | Avg Loss (option) |",
+        "|--------|-----|--------|--------------------|----------|--------------|--------------|-----------------|------------------|------------------|-------------------|",
     ]
     for ticker, dirs in all_dir_stats.items():
         for d in ['CALL', 'PUT']:
@@ -167,8 +234,10 @@ def insight_direction_table(all_dir_stats: Dict[str, Dict[str, dict]]) -> List[s
                 f"| {s['avg_dur']:.0f} min "
                 f"| {s['avg_dur_w']:.0f} min "
                 f"| {s['avg_dur_l']:.0f} min "
-                f"| {_bps(s['avg_win'])} "
-                f"| {_bps(s['avg_loss'])} |"
+                f"| {_stock_move(s['avg_win'])} "
+                f"| {_option_translation(s['avg_win'])} "
+                f"| {_stock_move(s['avg_loss'])} "
+                f"| {_option_translation(s['avg_loss'])} |"
             )
     lines.append("")
     return lines
@@ -191,14 +260,16 @@ def insight_narrative_exit_reasons(all_exit: Dict[str, Dict[str, dict]]) -> List
         lines.append(
             f"**Target hit ({pct_lo:.0%}–{pct_hi:.0%} of trades)** — "
             f"These are the clean winners. Resolve in **{dur_lo:.0f}–{dur_hi:.0f} minutes median**. "
-            f"Avg return: **{_bps(ret_lo)} to {_bps(ret_hi)}** on the underlying."
+            f"Avg stock-price movement: **{_stock_move(ret_lo)} to {_stock_move(ret_hi)}** "
+            f"({_option_translation(ret_lo)} to {_option_translation(ret_hi)})."
         )
         # Per-ticker detail
         for t, d in targets.items():
             lines.append(
                 f"- *{t}*: {d['med_dur']:.0f} min median "
                 f"({d['q25_dur']:.0f}–{d['q75_dur']:.0f} min IQR), "
-                f"avg {_bps(d['avg_ret'])}"
+                f"avg {_stock_move(d['avg_ret'])} stock move "
+                f"({_option_translation(d['avg_ret'])})"
             )
         lines.append("")
 
@@ -223,7 +294,8 @@ def insight_narrative_exit_reasons(all_exit: Dict[str, Dict[str, dict]]) -> List
             lines.append(
                 f"- *{t}*: {d['med_dur']:.0f} min median "
                 f"({d['q25_dur']:.0f}–{d['q75_dur']:.0f} min IQR), "
-                f"avg {_bps(d['avg_ret'])}"
+                f"avg {_stock_move(d['avg_ret'])} stock move "
+                f"({_option_translation(d['avg_ret'])})"
             )
         lines.append("")
 
@@ -240,8 +312,11 @@ def insight_narrative_exit_reasons(all_exit: Dict[str, Dict[str, dict]]) -> List
             f"**Time stop ({pct_lo:.0%}–{pct_hi:.0%} of trades)** — "
             f"The trade drifts sideways, never hitting target or stop. "
             f"Held the full 30–35 minutes. But these still "
-            f"**win {wr_lo:.0%}–{wr_hi:.0%}** of the time with small positive returns "
-            f"({_bps(ret_lo)} to {_bps(ret_hi)})."
+            f"**win {wr_lo:.0%}–{wr_hi:.0%}** of the time with small positive stock-price moves "
+            f"({_stock_move(ret_lo)} to {_stock_move(ret_hi)}). "
+            f"Note: option contracts may still lose money on these because of "
+            f"theta decay over the long hold — Phase 2 contract math will "
+            f"quantify this drag."
         )
         lines.append("")
 
@@ -501,7 +576,7 @@ def insight_signal_strength(strat_dfs: Dict[str, pd.DataFrame]) -> List[str]:
                 f"| {int(score)}/8 "
                 f"| {len(sub)} "
                 f"| {wr:.1%} "
-                f"| {avg_ret * 10000:+.1f} bps "
+                f"| {_stock_move(avg_ret)} "
                 f"| {pos:.0%} |"
             )
 
@@ -639,28 +714,98 @@ def _compute_core_stats(df: pd.DataFrame) -> dict:
 
 
 def insight_what_numbers_mean() -> List[str]:
-    """Static explainer for how to read the metrics."""
+    """Static explainer for how to read the metrics.
+
+    Phase 1 wording: every metric describes whether it's about the **stock**
+    or about the **option contract**, with an option-equivalent translation
+    inline. Phase 2 will add a parallel "Contract Win Rate" column once
+    real option-premium math is wired in.
+    """
     return [
         "### How to Read These Numbers",
         "",
-        "| Metric | What It Means | Good Value |",
-        "|--------|--------------|------------|",
-        "| **Win Rate** | % of trades that are profitable | >50% with filters |",
-        "| **Avg Win / Avg Loss** | Move on the *underlying* (not options) | Win > Loss in absolute terms |",
-        "| **Avg Hold** | How long you're in the trade | Shorter = less exposure |",
+        "*The strat predicts **stock-price movement**. Below, every number "
+        "tells you which is being measured — the stock or a single option "
+        "contract — and translates between them so you never have to do the "
+        "math in your head.*",
+        "",
+        "| Metric | What It Means | What's Good |",
+        "|--------|---------------|-------------|",
+        "| **Direction Win Rate** | % of trades where the **stock moved your way** — this is the strat's truth metric | >50% with filters |",
+        "| **Avg Win (stock)** | Average **stock-price movement** on winning trades | Bigger absolute value than Avg Loss |",
+        "| **Avg Win (option)** | Same move translated to an option's % return at a slightly-OTM delta | — |",
+        "| **Avg Loss** | Same idea for losers, on stock and option | Smaller absolute value than Avg Win |",
+        "| **Avg Hold** | How long you're in the trade | Shorter = less theta exposure |",
         "| **Target Hit %** | Trades that reach profit target | Higher = cleaner entries |",
         "| **Time Stop %** | Trades that expire without hitting target or stop | Lower = more decisive |",
         "| **Sharpe** | Risk-adjusted return (return / volatility) | >1 tradeable, >3 strong |",
         "| **PF** | Gross wins / gross losses | >1.5 good, >2.0 exceptional |",
-        "| **Expectancy** | Average P/L per trade on the underlying | Must be positive |",
+        "| **Expectancy** | Average stock-price P/L per trade | Must be positive |",
         "",
-        "#### Options Leverage Translation",
+        "#### How a stock move turns into option profit",
         "",
-        "| Underlying Move | ATM Options (~5x delta) | OTM Options (~10x) |",
-        "|-----------------|------------------------|-------------------|",
-        "| +15 bps (+0.15%) | ~0.75% gain | ~1.5% gain |",
-        "| +30 bps (+0.30%) | ~1.5% gain | ~3.0% gain |",
-        "| +40 bps (+0.40%) | ~2.0% gain | ~4.0% gain |",
-        "| -15 bps (-0.15%) | ~0.75% loss | ~1.5% loss |",
+        "*Approximate translation. A real option's return depends on its "
+        "delta (which itself depends on strike-vs-spot and time to expiry), "
+        "plus theta decay over the hold. Phase 2 of the insights pipeline "
+        "computes this against real option premium — the table below is a "
+        "linear delta-based estimate.*",
+        "",
+        "| Stock price movement | ATM option (~0.50Δ) | Slightly OTM (~0.35Δ, default) | OTM (~0.20Δ) |",
+        "|----------------------|---------------------|--------------------------------|---------------|",
+        "| +0.15% | +0.08% | +0.05% | +0.03% |",
+        "| +0.30% | +0.15% | +0.11% | +0.06% |",
+        "| +0.41% | +0.21% | +0.14% | +0.08% |",
+        "| +0.50% | +0.25% | +0.18% | +0.10% |",
+        "| −0.41% | −0.21% | −0.14% | −0.08% |",
+        "",
+        "**Why the option number is smaller than you'd expect for a 0.41% "
+        "stock move:** these are intraday hold-period returns, not "
+        "annualized, and the multiplier is delta — not the leverage ratio "
+        "you'd see on a full expiry. Phase 2 will replace this estimate with "
+        "real contract premium from a 5–10-strike-OTM contract at trade time.",
+        "",
+        "#### What 'Contract Win Rate' will mean (Phase 2, coming soon)",
+        "",
+        "Today the win rate measures whether the **stock** moved your way. "
+        "Phase 2 adds a second column — **Contract Win Rate** — that "
+        "measures whether the **option contract** actually printed money "
+        "after theta and IV crush. The gap between the two is the cost of "
+        "using options to express the strat. Both will be shown side-by-side "
+        "with a method badge (real / greek-estimated) on every figure.",
         "",
     ]
+
+
+def insight_hold_time_win_rate(df: pd.DataFrame) -> List[str]:
+    """Hold-time Win Rate — exposes the theta cliff.
+
+    Splits trades into duration buckets (0–10, 10–30, 30–60, 60+ minutes) and
+    reports Direction Win Rate per bucket. Phase 2 will add a parallel
+    Contract Win Rate per bucket so the widening gap (= theta drag) becomes
+    visible at a glance.
+    """
+    rows = _hold_time_bucket_stats(df)
+    if not rows:
+        return []
+    lines = [
+        "### Win Rate by Hold Duration",
+        "",
+        "*Direction Win Rate stays roughly stable as hold time grows — "
+        "the stock either moves your way or it doesn't, regardless of how "
+        "long you wait. Contract Win Rate (Phase 2) will tell a different "
+        "story: theta is a clock, and longer holds bleed premium even when "
+        "the stock cooperates.*",
+        "",
+        "| Hold Bucket | Trades | Direction Win Rate | Avg Stock Move | Slightly-OTM Option |",
+        "|-------------|--------|--------------------|----------------|---------------------|",
+    ]
+    for r in rows:
+        lines.append(
+            f"| {r['bucket']} "
+            f"| {r['count']} "
+            f"| {r['direction_wr']:.0%} "
+            f"| {_stock_move(r['avg_return'])} "
+            f"| {_option_translation(r['avg_return'])} |"
+        )
+    lines.append("")
+    return lines
