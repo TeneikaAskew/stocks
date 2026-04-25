@@ -167,18 +167,27 @@ def signal_iv(ticker: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# AV NEWS_SENTIMENT returns topics as lowercase snake_case strings. The
+# catalyst set below is intentionally narrow — sector tags like
+# `financial_markets` and `technology` appear on almost every article and
+# would dilute the signal. We want topics that genuinely move price.
 CATALYST_TOPICS = {
-    "Mergers & Acquisitions",
-    "Earnings",
-    "Financial Markets",
-    "Technology",
-    "Life Sciences",
-    "IPO",
+    "mergers_and_acquisitions",
+    "earnings",
+    "ipo",
+    "economy_monetary",          # FOMC / rate decisions
+    "energy_transportation",     # for energy/transport-sensitive names
 }
 
 
 def signal_news_topic_score(ticker: str, lookback_hours: int = 24) -> dict:
-    """Recent news activity weighted by catalyst topic + sentiment magnitude."""
+    """Recent news activity weighted by catalyst topic + sentiment magnitude.
+
+    A single high-relevance article tagged with a real catalyst topic (e.g.
+    M&A) should be a meaningful score on its own — that's the kind of
+    headline that drives short-DTE option P&L. Score = 0.6 * density (capped
+    at 2 articles for full credit) + 0.4 * relevance-weighted abs sentiment.
+    """
     df = _query(
         """
         SELECT topics, overall_sentiment_score, relevance_score, published_ts
@@ -193,41 +202,50 @@ def signal_news_topic_score(ticker: str, lookback_hours: int = 24) -> dict:
                 "reason": "no recent news", "raw": {"article_count": 0}}
 
     catalyst_count = 0
-    sentiment_sum = 0.0
-    relevant_count = 0
+    weighted_sentiment = 0.0
+    weight_sum = 0.0
+    matched_topics: set[str] = set()
     for _, row in df.iterrows():
         topics = row.get("topics") or []
         if not isinstance(topics, (list, tuple)):
             continue
-        is_catalyst = any(t in CATALYST_TOPICS for t in topics)
-        if is_catalyst:
-            catalyst_count += 1
-            rel = float(row.get("relevance_score") or 0.0)
-            sentiment = float(row.get("overall_sentiment_score") or 0.0)
-            sentiment_sum += abs(sentiment) * rel
-            relevant_count += 1
+        hit = [t for t in topics if t in CATALYST_TOPICS]
+        if not hit:
+            continue
+        catalyst_count += 1
+        matched_topics.update(hit)
+        rel = float(row.get("relevance_score") or 0.0)
+        sentiment = float(row.get("overall_sentiment_score") or 0.0)
+        # Weight by relevance: a relevance-1.0 article counts fully, a 0.3
+        # passing-mention counts ~third.
+        weighted_sentiment += abs(sentiment) * rel
+        weight_sum += rel
 
     if catalyst_count == 0:
         return {"available": True, "score_0_to_1": 0.0,
                 "reason": f"{len(df)} articles but none tagged as catalyst",
                 "raw": {"article_count": len(df), "catalyst_count": 0}}
 
-    # Score: catalyst-article density (capped at 5 in window) + sentiment magnitude
-    density = min(catalyst_count / 5.0, 1.0) * 0.6
-    avg_sentiment_mag = (sentiment_sum / max(relevant_count, 1)) if relevant_count else 0.0
-    sentiment_pts = min(avg_sentiment_mag * 2, 1.0) * 0.4
+    # Density: 2+ catalyst articles in window = full credit. The Apr-7
+    # AVGO/Google headlines fired *two* M&A-tagged articles in <2 minutes,
+    # which the prior `/5` divisor undervalued.
+    density = min(catalyst_count / 2.0, 1.0) * 0.6
+    avg_weighted_sent = (weighted_sentiment / weight_sum) if weight_sum else 0.0
+    sentiment_pts = min(avg_weighted_sent * 2, 1.0) * 0.4
     score = density + sentiment_pts
 
     return {
         "available": True, "score_0_to_1": round(min(score, 1.0), 3),
         "reason": (
-            f"{catalyst_count}/{len(df)} catalyst articles, "
-            f"avg|sentiment|={avg_sentiment_mag:.2f}"
+            f"{catalyst_count}/{len(df)} catalyst articles "
+            f"({','.join(sorted(matched_topics))}), "
+            f"weighted|sentiment|={avg_weighted_sent:.2f}"
         ),
         "raw": {
             "article_count": len(df),
             "catalyst_count": catalyst_count,
-            "avg_sentiment_magnitude": round(avg_sentiment_mag, 3),
+            "matched_topics": sorted(matched_topics),
+            "weighted_avg_sentiment": round(avg_weighted_sent, 3),
         },
     }
 

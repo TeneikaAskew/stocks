@@ -124,19 +124,32 @@ def _article_to_rows(article: dict) -> list[dict]:
     return rows
 
 
-def fetch_by_tickers(tickers: list[str], api_key: str, limit: int) -> pd.DataFrame:
+def fetch_by_tickers(
+    tickers: list[str], api_key: str, limit: int,
+    time_from: str | None = None, time_to: str | None = None,
+) -> pd.DataFrame:
     """Ticker-mode pull — one AV call per ticker, exploded across all
-    tickers each article mentions."""
+    tickers each article mentions.
+
+    `time_from` / `time_to` accept AV's `YYYYMMDDTHHMM` format and let
+    callers backfill historical news rather than only the most recent
+    50 articles.
+    """
     rows: list[dict] = []
     for tk in tickers:
-        feed = _fetch(
-            {
-                "function": "NEWS_SENTIMENT",
-                "tickers": tk,
-                "limit": limit,
-                "apikey": api_key,
-            }
-        )
+        params: dict[str, str | int] = {
+            "function": "NEWS_SENTIMENT",
+            "tickers": tk,
+            "limit": limit,
+            "apikey": api_key,
+        }
+        if time_from:
+            params["time_from"] = time_from
+        if time_to:
+            params["time_to"] = time_to
+        if time_from or time_to:
+            params["sort"] = "EARLIEST"
+        feed = _fetch(params)
         if not feed:
             logger.info("no articles for ticker %s", tk)
             continue
@@ -238,6 +251,14 @@ def main():
     )
     parser.add_argument("--limit", type=int, default=200,
                         help="Max articles per AV call (default: 200)")
+    parser.add_argument(
+        "--time-from", default=None,
+        help="Backfill: AV time_from filter, format YYYYMMDDTHHMM (e.g. 20260407T0000)",
+    )
+    parser.add_argument(
+        "--time-to", default=None,
+        help="Backfill: AV time_to filter, format YYYYMMDDTHHMM",
+    )
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and print without writing to DB")
     args = parser.parse_args()
@@ -260,7 +281,10 @@ def main():
 
     frames: list[pd.DataFrame] = []
     if tickers:
-        df = fetch_by_tickers(tickers, api_key, limit=args.limit)
+        df = fetch_by_tickers(
+            tickers, api_key, limit=args.limit,
+            time_from=args.time_from, time_to=args.time_to,
+        )
         if not df.empty:
             frames.append(df)
     if topics:
