@@ -791,3 +791,61 @@ ALTER TABLE news_sentiment
 -- GIN index for fast `topics @> ARRAY['mergers_and_acquisitions']` lookups.
 CREATE INDEX IF NOT EXISTS idx_news_sentiment_topics
     ON news_sentiment USING GIN (topics);
+
+
+-- ============================================================================
+-- HISTORICAL_SIGNALS — idempotent home for trading_analysis.py output
+-- ============================================================================
+-- Each row is one fired setup as defined by the 5-condition voter in
+-- trading_analysis.py:generate_technical_signals. Replaces the GCS
+-- parquet (data/signals/historical_{ticker}_*_signals.parquet).
+--
+-- Idempotency: PRIMARY KEY (ticker, entry_time) + INSERT ... ON CONFLICT
+-- DO NOTHING. Re-running trading_analysis.py over a date range that's
+-- already been processed is a no-op.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS historical_signals (
+    ticker            VARCHAR(10)      NOT NULL,
+    entry_time        TIMESTAMPTZ      NOT NULL,
+    trade_type        VARCHAR(4)       NOT NULL,    -- 'call' | 'put'
+    entry_price       DOUBLE PRECISION,
+    signal_strength   SMALLINT,                     -- 3..5 (count of conditions met)
+    conditions_met    VARCHAR(8),                   -- e.g. '4/5'
+    duration_minutes  SMALLINT,                     -- bars from entry to MFE peak
+    return_pct        DOUBLE PRECISION,             -- 20-min Maximum Favorable Excursion
+    best_return       DOUBLE PRECISION,
+    best_window_min   SMALLINT,
+    return_5min       DOUBLE PRECISION,
+    return_10min      DOUBLE PRECISION,
+    return_15min      DOUBLE PRECISION,
+    return_20min      DOUBLE PRECISION,
+    return_30min      DOUBLE PRECISION,
+    return_45min      DOUBLE PRECISION,
+    return_60min      DOUBLE PRECISION,
+
+    -- Indicators at entry (the ones the API + Charts page need flat)
+    entry_rsi         DOUBLE PRECISION,
+    entry_ema9        DOUBLE PRECISION,
+    entry_ema20       DOUBLE PRECISION,
+    entry_vwap        DOUBLE PRECISION,
+    entry_volume      BIGINT,
+
+    -- ORB / order-block / prior-period levels — kept in JSONB so the
+    -- ~30 less-queried columns from the parquet don't bloat the table
+    -- and additions don't need migrations.
+    extra             JSONB,
+
+    inserted_at       TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (ticker, entry_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_historical_signals_ticker_time
+    ON historical_signals (ticker, entry_time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_historical_signals_strength
+    ON historical_signals (ticker, signal_strength DESC);
+
+CREATE INDEX IF NOT EXISTS idx_historical_signals_direction
+    ON historical_signals (ticker, trade_type, entry_time DESC);

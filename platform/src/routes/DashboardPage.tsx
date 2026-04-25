@@ -530,8 +530,10 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Previous Day Levels — inline visual range bar */}
-        {reference && (
+        {/* Previous Day Levels — inline visual range bar.
+            Hide entirely if the response is missing the OHLC numerics —
+            the layout assumes all four (high/low/close/open) are numbers. */}
+        {reference && reference.high != null && reference.low != null && reference.close != null && (
           <div className="mt-4 border-t border-[var(--color-border)] pt-3">
             <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
               <span className="flex items-center gap-2">
@@ -597,8 +599,9 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Previous Week Range — matching visual style under the Day Range */}
-        {reference?.week && (
+        {/* Previous Week Range — matching visual style under the Day Range.
+            Hide if the week summary lacks the OHLC numerics. */}
+        {reference?.week && reference.week.high != null && reference.week.low != null && (
           <div className="mt-4 pt-3">
             <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
               <span>
@@ -955,17 +958,23 @@ export default function DashboardPage() {
               // In review mode use filtered summary (eqData is lifetime, misleading)
               isReview
                 ? (summary ? pct(summary.total_return_pct) : '--')
-                : (eqData ? pct(eqData.summary.total_return_pct) : summary ? pct(summary.total_return_pct) : '--')
+                : (eqData?.summary?.total_return_pct != null
+                    ? pct(eqData.summary.total_return_pct)
+                    : summary
+                      ? pct(summary.total_return_pct)
+                      : '--')
             }
             direction={
               isReview
                 ? ((summary?.total_return_pct ?? 0) >= 0 ? 'up' : 'down')
-                : ((eqData?.summary.total_return_pct ?? summary?.total_return_pct ?? 0) >= 0 ? 'up' : 'down')
+                : ((eqData?.summary?.total_return_pct ?? summary?.total_return_pct ?? 0) >= 0 ? 'up' : 'down')
             }
             subtitle={
               isReview
                 ? `Filtered sum of ${summary?.total_trades ?? 0} trades`
-                : (eqData ? `Worst drawdown: ${eqData.summary.max_drawdown_pct.toFixed(1)}%` : undefined)
+                : (eqData?.summary?.max_drawdown_pct != null
+                    ? `Worst drawdown: ${eqData.summary.max_drawdown_pct.toFixed(1)}%`
+                    : undefined)
             }
           />
           <MetricCard
