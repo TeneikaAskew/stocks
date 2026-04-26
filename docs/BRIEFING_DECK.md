@@ -38,24 +38,27 @@ A full-stack equity trading research and execution platform centered on four pri
 | Metric | Value |
 | --- | --- |
 | Frontend routes | 12 (Dashboard, Live, Charts, Options, Playbook, Backtest-in-Charts, Reports, Signals, Journal, Insights, Catalysts, Admin, Help) |
-| FastAPI routers | 10 |
-| Python `lib/` modules | 11 (+ `lib/agents/` package with 11 modules + `ranker/` subpackage) |
-| GCP fetchers | 11 |
-| Cloud SQL tables | 29 (incl. `archive_yahoo_*` quartet, `historical_signals`, `earnings_calendar` w/ UW liquidity columns) |
-| Cloud Run jobs | 9+ scheduled |
-| GitHub Actions workflows | 14 (all use shared failure handler) |
+| FastAPI routers | 14 (live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, **analytics**, **config**, **health**, plus `__init__`) |
+| Python `lib/` modules | 12 (+ `lib/agents/` package with 11 modules + `ranker/` subpackage). Adds `lib/gamma.py` — canonical Greeks/GEX/VEX/King-Gate-Spot-Flip math |
+| GCP fetchers | 11 (composition shifted: `fetch_etf_options.py` deleted, `fetch_fred_rates.py` added) |
+| Cloud SQL tables | 30 (adds `daily_rates` for FRED-driven historical Greeks; `earnings_calendar` now 47–48 cols incl. UW liquidity) |
+| Cloud Run jobs | 17 (15 scheduled + `apply-schema-migrations` one-shot + `compute-spx-greeks-backfill` on-demand) |
+| GitHub Actions workflows | 14 (composition: `fetch_etf_options.yml` removed, `freshness-watchdog.yml` added) |
 | Standalone web tools | 4 (heatseeker, success-report, chart-viewer, website) |
 | Google Apps Script files | 33 |
-| Test files | 23 (~452 unit/integration tests, 28 E2E, 18 script regression) |
-| Plans logged Apr 10–26 | 14 (9 ✅ shipped, 4 🟡 partial, 1 investigation) |
+| Test files | ~35 Python (`make test` ~703 tests after PR #94's +251), 33+ E2E specs, 18 script regression |
+| Plans logged Apr 10–26 | 14 (10 ✅ shipped, 3 🟡 partial, 1 📋 investigation) |
 | Production URL | `trading-platform-5sjtb3yl7a-ue.a.run.app` (Cloud Run + IAP SSO, bictech.org) |
 
 **Key architectural achievements (Apr 2026):**
+- **Canonical gamma/Greeks math server-side** (`lib/gamma.py` ~568 lines + `lib/options_greeks.py` ~470-line BSM IV solver). Client-side `greeksCalculator.ts` and `nodeAnalyzer.ts` deleted. New endpoints `POST /api/options/greeks` and `GET /api/options/{ticker}/{date}/levels` drive heatmap + King/Gate/Spot/Flip taxonomy.
+- **FRED daily-rates pipeline** (`daily_rates` table + `fetch_fred_rates.py` Cloud Run Job) feeds historical BSM Greeks with time-varying risk-free + dividend yield instead of constants.
+- **7 Claude Code reliability agents** (debug-local, impact-analyzer, infra-drift-detector, pre-deploy-check, security-scan, test-coverage-analyzer, trading-logic-reviewer) plus 100-point audit-review scorecard.
 - Server-side math enforcement (Python ↔ TypeScript drift eliminated for Greeks, indicators, playbook conditions).
-- Multi-provider LLM client (Vertex / Anthropic / OpenAI) with per-role routing in `model_routing` table.
+- Multi-provider LLM client (Vertex / Anthropic / OpenAI) with per-role routing in `model_routing` table; gamma analyst now part of the pipeline.
 - Cloud Run deployment with IAP-managed Google SSO; production `/dev` diagnostic endpoint.
-- Comprehensive freshness watchdog (hourly + nightly, auto-creates GitHub issues).
-- Cloud Run job failure notifier (Pub/Sub → Discord + GitHub issue).
+- Comprehensive freshness watchdog (`scripts/audit_data_freshness.py` + `freshness-watchdog.yml` + `/api/health/freshness` + Dashboard `DataPipelineStatus` widget).
+- Cloud Run job failure notifier (Pub/Sub → Discord + GitHub issue) — `gcp/failure_notifier.py` + `FAILURE_NOTIFIER_DEPLOYMENT.md` runbook.
 - Historical Review Mode (global DateSelector with trading-day snapping, `end_date`/`end_time` API params).
 - Catalyst-analog matching backtest (replaces empty-trades backtest for thin-data tickers).
 - Phase 3 deterministic ticker ranker (insider buying vs selling split, news-topic match, watchlist scoping).
@@ -192,18 +195,18 @@ The standalone `/backtest` route was **merged into Charts** as a Backtester sect
 | File | Role |
 | --- | --- |
 | `chartTheme.ts` | Recharts theme: colors, fonts, responsive sizing |
-| `indicators.ts` | Frontend indicator helpers (EMA, RSI, MACD, Stochastic, BB) — used for chart overlays only; canonical math lives server-side |
-| `greeksCalculator.ts` | Client-side Greeks aggregation (GEX, VEX, net gamma per strike). Ported from `options-heatseeker/`. **Note:** plan `glistening-munching-willow` proposed deletion in favor of a server endpoint; the file is still present and active, so that plan is partial — see §14 |
-| `nodeAnalyzer.ts` | King-node / gatekeeper detection from aggregated strikes. Same partial-shipped status as above |
+| `indicators.ts` | Frontend indicator helpers (EMA, RSI, MACD, Stochastic, BB) for chart overlays + per-bar voter `computeStrategySignalsForSeries()`. Canonical math lives server-side |
 | `marketSession.ts` | Premarket/regular/after-hours classification with holiday calendar (`MARKET_HOLIDAYS_2026`) — paired with `marketSession.test.ts` |
 | `time.ts` | Timezone + 12 h time formatting (`formatEasternTime12h`, etc.) |
-| `playbookEvaluator.ts` | Rules engine for playbook condition evaluation — paired with `playbookEvaluator.test.ts`. Exposes `buildSnapshot` reused on Dashboard |
+| `playbookEvaluator.ts` | Thin client-side wrapper exposing `buildSnapshot` reused on Dashboard. Condition-eval math moved to `POST /api/playbook/evaluate` (PR #81 / plan #4) |
 | `strategySignals.ts` | CALL/PUT scoring + strength labeling — paired with `strategySignals.test.ts` |
+
+**Removed in plan #4 closure (PR #81):** `greeksCalculator.ts` and `nodeAnalyzer.ts` were both deleted — their math lives in `lib/gamma.py` server-side, accessed via `POST /api/options/greeks` and `GET /api/options/{ticker}/{date_str}/levels`.
 
 #### `platform/src/components/`
 
 - `layout/` — `AppShell.tsx`, `Header.tsx` (with global DateSelector for review mode), `Sidebar.tsx`
-- `shared/` — `Tabs`, `Modal`, `DateSelector`, `LoadingSpinner`, `MetricCard`, `DataTable`, `RouteErrorBoundary`
+- `shared/` — `Tabs`, `Modal`, `DateSelector`, `LoadingSpinner`, `MetricCard`, `DataTable`, `RouteErrorBoundary`, `DataPipelineStatus` (freshness widget — PR #85)
 - `charts/` — `PriceAreaChart`, `CandlestickChart`, `StrategyConditionsCard`, `SimilarSetupsCard`
 - `backtest/` — `BacktesterSection` (extracted from the old standalone BacktestPage)
 - `insights/` — `WatchlistPanel`, `ReportCards`, persona plan tables
@@ -213,25 +216,31 @@ The standalone `/backtest` route was **merged into Charts** as a Backtester sect
 - `stores/marketStore.ts` — minimal Zustand store; `isMarketOpen`/`setMarketOpen` removed in `velvety-booping-kazoo` (those fields were never written to)
 - `stores/reviewDateStore.ts` — global review-mode date/time, consumed by Dashboard, Charts, Signals
 - `hooks/useLiveStatus.ts` — shared TanStack Query hook for `/api/live/status`. Single cache entry across Header + Dashboard + Live pages
+- `hooks/useGammaLevels.ts` — fetches `GET /api/options/{ticker}/{date_str}/levels` (PR #81). Replaced client-side `nodeAnalyzer.ts` aggregation
+- `hooks/useOptionsGreeks.ts` — POSTs to `/api/options/greeks` (PR #86)
+- `hooks/useConfig.ts` — fetches `/api/config/indicators` and `/api/config/market-hours` (closes BRIEFING §16.2 drift)
+- `hooks/useLiveIndicators.ts` — server-computed intraday indicators
+- `hooks/useSimilarSetups.ts` — fetches `/api/signals/{ticker}/similar` for the Charts page Similar Setups card (PR #80)
 
 ### 4.3 FastAPI routers and endpoints
 
-Files in `platform/api/routers/`. The 10 active routers:
+Files in `platform/api/routers/`. The 13 active routers (+ `__init__.py`):
 
 | Router | File | Key endpoints | Notes |
 | --- | --- | --- | --- |
-| Live quote | `live.py` | `GET /api/quote/{ticker}`, `GET /api/live/status` | Live AV quote, ORB levels (5 m/15 m), market session detection |
-| Options | `options.py` | `GET /api/options/dates/{ticker}`, `GET /api/options/{ticker}?date=...` | Cloud SQL reader (`data_source='alphavantage'`), 12 h TTL cache, widening-range scan for dates |
+| Live quote | `live.py` | `GET /api/quote/{ticker}`, `GET /api/live/status`, `POST /api/live/indicators` | Live AV quote, ORB levels (5 m/15 m), market session detection, server-computed indicators |
+| Options | `options.py` | `GET /api/options/dates/{ticker}`, `GET /api/options/{ticker}/{date_str}`, **`POST /api/options/greeks`**, **`GET /api/options/{ticker}/{date_str}/levels`** | Cloud SQL reader (`data_source='alphavantage'`), 12 h TTL cache. Greeks + levels endpoints (PR #81) drive the heatmap and King/Gate/Spot/Flip taxonomy via `lib/gamma.py` |
 | Playbook | `playbook.py` | `GET /api/playbook/eval`, `POST /api/playbook/evaluate` | Server-side condition evaluation against live/historical |
 | Backtest | `backtest.py` | `GET /api/backtest/results/{ticker}`, `GET /api/backtest/all/{ticker}` | Reads CSVs from GCS with TTL cache. Returns `runs[]`, `win_rate` (0-1), `avg_return_pct` |
-| Signals | `signals.py` | `GET /api/signals/history/{ticker}`, params: `end_date`, `end_time`, `dateFrom`, `dateTo` | Historical signal alerts; review-mode aware |
+| Signals | `signals.py` | `GET /api/signals/{ticker}`, `GET /api/signals/{ticker}/similar`, params: `end_date`, `end_time`, `direction`, `min_score` | Cloud SQL `historical_signals` reader (legacy parquet fallback). `/similar` returns prior bars in same direction + score + RSI bucket (PR #80) |
 | Insights | `insights.py` | `GET /api/insights/{ticker}`, `POST /api/insights/refresh/{ticker}`, `GET /api/insights/runs/...` | Cached agent reports (Cloud SQL `insight_reports`), refresh trigger queues a Cloud Run Job |
 | Journal | `journal.py` | `GET/POST/PATCH/DELETE /api/journal/{ticker}`, `GET /api/journal/{ticker}/{id}` | Cloud SQL `journal_entries` (UUID PK) primary; local JSON fallback for offline/dev |
 | Dashboard | `dashboard.py` | `GET /api/dashboard/brief/{ticker}` | Live overlay applied during market hours; trading-day stale calculation; `live: { price, session, updated_at, source }` block |
 | Catalysts | `catalysts.py` | `GET /api/catalysts/{ticker}`, `GET /api/catalysts/snapshot/{ticker}?as_of=...` | Unified feed: news, 8-K, insider, economic events, earnings; point-in-time snapshots |
 | Admin | `admin.py` | `GET/POST /admin/model-routing`, `/admin/...` | Model provider/version per role; gated by `ADMIN_TOKEN` env var |
-
-There is no `analytics.py` or `config.py` router currently, despite the `glistening-munching-willow` plan calling for them. Math centralization is partially achieved through `dashboard.py`, `playbook.py`, and `options.py`.
+| **Analytics** | `analytics.py` | `GET /api/analytics/summary/{ticker}`, `POST /api/analytics/trade-stats` | Server-side trade analytics aggregation (PR #92). Replaces frontend `useTradeAnalytics` math |
+| **Config** | `config.py` | `GET /api/config/indicators`, `GET /api/config/market-hours` | Single source of truth for thresholds + market hours. Closes BRIEFING §16.2 plan #4 drift |
+| **Health** | `health.py` | `GET /api/health/freshness`, `GET /api/health` | Per-source last-synced timestamps. Backs the Dashboard `DataPipelineStatus` widget + the `freshness-watchdog.yml` workflow (PR #85) |
 
 ### 4.4 Build & dev workflow
 
@@ -293,12 +302,13 @@ Files in `lib/`. Pure-Python, no FastAPI/database imports — testable in isolat
 | `backtest.py` | Event-driven backtester. Sequential bar iteration, risk caps (max trades/day, daily loss limit, concurrent positions), entry signal evaluation, exit rules (time, target, stop, RSI extreme), strat bonus integration |
 | `signals.py` | 3-of-5 condition voter for CALL/PUT setups. Conditions: consecutive periods of trend, RSI zone, EMA proximity, Stochastic RSI threshold, MACD confirmation. Optional strat bonus (+0…+3) |
 | `indicators.py` | Canonical indicator math. SMA, EMA, RSI (fast/slow), Stochastic RSI, MACD, ATR, Bollinger Bands, VWAP, OBV, RVOL, 20 d / 5 d annualized volatility |
-| `strat.py` | FTFC scoring (multi-timeframe alignment); candle pattern classification (1, 2, 2u, 2d, 3 — Strat candle types); engulfing/doji/inside-bar tagging; combo/setup labeling |
+| `strat.py` | FTFC scoring (multi-timeframe alignment); candle pattern classification (1, 2, 2u, 2d, 3); engulfing/doji/inside-bar tagging; combo/setup labeling. PR #81 added Failed_2U / Failed_2D detection + simple 2-bar continuations |
 | `walk_forward.py` | Anchored walk-forward validation. Expanding training window + fixed test window; per-fold metric aggregation; stability scoring across folds |
-| `data_loader.py` | Unified data loader. Cloud SQL primary; local parquet fallback. Handles `data_source` filtering (`alphavantage` vs Yahoo), resampling rules, missing-data validation. `load_options(data_source=...)` parameter |
+| `data_loader.py` | Unified data loader. Cloud SQL primary; local parquet fallback. Handles `data_source` filtering, resampling rules, missing-data validation. `load_options(data_source=...)`, `get_close_price()` helper (PR #92), `load_data_sources()` helper for tests |
 | `config.py` | Typed dataclasses: `IndicatorConfig`, `SignalConfig`, `RiskConfig`, `ExitConfig`, `StratConfig`, `BacktestConfig`, `WalkForwardConfig`, `AlphaVantageConfig(rpm=150)` |
 | `insights.py` | Template-driven narrative generation from backtest output. Markdown reports with win rate, Sharpe, drawdown, expectancy |
-| `options_greeks.py` | Black-Scholes-Merton Greeks. Used to enrich SPX options chains where AV doesn't supply Greeks (cash-settled index limitation). `enrich_av_chain_with_greeks()` orchestrator |
+| **`gamma.py`** | **Canonical Greeks/gamma math (PR #81, ~568 lines).** `aggregate_by_strike`, `gex_by_strike`, `total_vex`, `put_call_ratio`, `estimate_spot` (3-tier: parity → delta-proxy → median-strike), `zero_gamma`, `compute_gamma_flip`, `max_pain`, `implied_move`, `detect_nodes`, `classify_levels`, `build_summary`. `SpotEstimate`, `Level`, `GammaSummary` dataclasses. Single source of truth replacing the deleted `greeksCalculator.ts`/`nodeAnalyzer.ts`. See `docs/gamma_levels.md` |
+| `options_greeks.py` | Black-Scholes-Merton Greeks (PR #86, ~470 lines). `py_vollib_vectorized` IV solver from AV mid prices, computes 5 Greeks analytically, writes sidecar `_computed` columns (`delta_computed`, `gamma_computed`, etc.). `get_rate_and_yield()` reads `daily_rates`. `enrich_av_chain_with_greeks()` orchestrator for SPX/NDX/RUT/XSP |
 | `api_client.py` | HTTP helpers for AlphaVantage, Yahoo, FRED |
 | `logging_config.py` | Centralized logging setup for CLI + Cloud Run jobs |
 
@@ -307,8 +317,8 @@ Files in `lib/`. Pure-Python, no FastAPI/database imports — testable in isolat
 | File | Role |
 | --- | --- |
 | `schema.py` | Pydantic models for `InsightReport`, `AnalystReport`, `Debate`, `TradePlan`, `PortfolioRecommendation` |
-| `prompts.py` | Per-role prompt templates (analyst, bull, bear, judge, trader, risk, portfolio_manager, sentiment) |
-| `summarizers.py` | SQL→narrative summarizers per analyst (market, strat, options, catalyst, sentiment). Largest file — 38 KB |
+| `prompts.py` | Per-role prompt templates (analyst, bull, bear, judge, trader, risk, portfolio_manager, sentiment, **gamma**) |
+| `summarizers.py` | SQL→narrative summarizers per analyst (market, strat, options, catalyst, sentiment, gamma). Largest file — 38+ KB. `summarize_gamma_levels` reads `lib/gamma.build_summary()` for the gamma analyst (PR #81) |
 | `orchestrator.py` | Top-level run: load context → run analysts → debate → judge → trade plan → persist `InsightReport` |
 | `llm_client.py` | Provider-agnostic interface (`Adapter` abstract) |
 | `vertex_adapter.py` | Vertex AI Gemini implementation |
@@ -354,10 +364,10 @@ Files in `lib/`. Pure-Python, no FastAPI/database imports — testable in isolat
 | --- | --- | --- | --- |
 | `fetch_market_data.py` | AlphaVantage daily + Cloud SQL daily series (for indicators) | `market_data_daily` (OHLCV + 30+ indicators), VWAP from intraday. Earnings-window fan-out **capped at top-25 by `has_options` + `market_cap`** (`MAX_EARNINGS_TICKERS` env, `--max-earnings-tickers` flag) so AV's 150-rpm budget always covers core IWM/SPY/QQQ/SPX | Daily Cloud Run Job |
 | `fetch_alphavantage_intraday.py` | AlphaVantage `TIME_SERIES_INTRADAY` 1 min | `market_data_intraday` (partitioned), GCS parquet | Monthly Cloud Run + GH Actions |
-| `fetch_etf_options.py` | AlphaVantage `HISTORICAL_OPTIONS` | `etf_options_snapshots` (with Greeks), GCS parquet | Daily Cloud Run + workflow |
-| `fetch_av_historical_options.py` | AlphaVantage historical options (back-dated) | `etf_options_snapshots` with `data_source='alphavantage'` | Backfill / catch-up |
+| `fetch_av_historical_options.py` | AlphaVantage historical options (back-dated) | `etf_options_snapshots` with `data_source='alphavantage'` | Daily Cloud Run + backfill / catch-up |
 | `fetch_earnings_history.py` | AlphaVantage `EARNINGS` | `earnings_history` (quarterly EPS with surprise) | Weekly Cloud Run |
 | `fetch_economic_events.py` | ForexFactory + FRED backup | `economic_events` (with release times) | Daily |
+| `fetch_fred_rates.py` | FRED `DGS3MO` (3-month Treasury) | `daily_rates` (date PK, dgs3mo, sp500_div_yld, fetched_at). Feeds `lib/options_greeks.get_rate_and_yield()` for historical BSM Greeks (PR #93) | Daily |
 | `fetch_news_sentiment.py` | AlphaVantage `NEWS_SENTIMENT` | `news_sentiment` (per-ticker scores, topics, overall sentiment) | Hourly (in-window catalysts) |
 | `fetch_sec_filings.py` | SEC EDGAR | `sec_filings` (ticker, cik, form, items array) | Daily |
 | `fetch_insider_transactions.py` | AlphaVantage / Form 4 | `insider_transactions` | Daily |
@@ -365,11 +375,11 @@ Files in `lib/`. Pure-Python, no FastAPI/database imports — testable in isolat
 | `_watchlist.py` | (utility) | Shared watchlist loader unioning to ticker pool | (imported by others) |
 | `scripts/fetch_earnings_calendar.py` (CLI) | UnusualWhales `upcoming_earnings_v2` + Earnings Whispers + AlphaVantage `EARNINGS_CALENDAR` | `earnings_calendar` (incl. UW liquidity enrichments — `is_s_p_500`, `stock_volume`, `options_volume`, `open_interest`, `rv_1d_last_12q`, `last_1d_reactions`) | Daily Cloud Run via `fetch-earnings-calendar` |
 
-The legacy `gcp/fetchers/fetch_earnings_options.py` was removed (commit `5abfc89`). Earnings options now flow through the same `etf_options_snapshots` table via the daily AV fetcher.
+The legacy `gcp/fetchers/fetch_earnings_options.py` was removed (commit `5abfc89`); earnings options now flow through `fetch_av_historical_options.py`. The legacy `gcp/fetchers/fetch_etf_options.py` (intraday yahooquery) was removed in PR #95 (commit `aea5a7c`); historical AV is the sole options writer.
 
 ### 6.3 Cloud SQL schema
 
-29 tables total. PostgreSQL 15 on Cloud SQL `db-g1-small` (1.7 GB cache; tier upgrade deferred — see `INFRASTRUCTURE_NOTES.md`).
+30 tables total. PostgreSQL 15 on Cloud SQL `db-g1-small` (1.7 GB cache; tier upgrade deferred — see `INFRASTRUCTURE_NOTES.md` at repo root).
 
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
@@ -380,7 +390,8 @@ The legacy `gcp/fetchers/fetch_earnings_options.py` was removed (commit `5abfc89
 | `market_data_intraday_qqq` | Partition |  |
 | `market_data_intraday_spx` | Partition |  |
 | `market_data_intraday_other` | Catch-all partition |  |
-| `etf_options_snapshots` | Options chains | `data_source`, `mark`, `bid`/`ask`, Greeks (with sidecar `_computed` planned for SPX) |
+| `etf_options_snapshots` | Options chains | `data_source`, `mark`, `bid`/`ask`, Greeks. **Sidecar `_computed` columns** (`delta_computed`, `gamma_computed`, `theta_computed`, `vega_computed`, `rho_computed`, `iv_computed`) for SPX/NDX/RUT/XSP via `lib/options_greeks.enrich_av_chain_with_greeks()` (PR #86) |
+| `daily_rates` | FRED daily rates for historical Greeks | `date PK`, `dgs3mo` (3-month Treasury), `sp500_div_yld`, `fetched_at`. Indexed `(date DESC)`. Populated by `fetch_fred_rates.py` (PR #93) |
 | `earnings_options_snapshots` | Earnings-week chains (legacy) | (mirrors etf_options_snapshots) |
 | `archive_yahoo_market_data_daily` | Yahoo data archive | `LIKE` source INCLUDING ALL |
 | `archive_yahoo_market_data_intraday` | Yahoo data archive |  |
@@ -457,7 +468,7 @@ GCP project: `adept-mountain-474619-d4`. Region: `us-east1`.
 | Job | What it does | Trigger |
 | --- | --- | --- |
 | `fetch-market-data` | Daily OHLCV + indicators (SPY/IWM/QQQ + watchlist union) | Cloud Scheduler — daily |
-| `fetch-etf-options` | AV historical options EOD | Cloud Scheduler — daily |
+| `fetch-av-historical-options` | AV historical options EOD writer | Cloud Scheduler — daily |
 | `fetch-av-options-backfill` | Historical options backfill (AV) | Manual / one-shot |
 | `fetch-alphavantage-intraday` | 1-min bars monthly | Cloud Scheduler — monthly + manual |
 | `fetch-economic-events` | ForexFactory + FRED → `economic_events` | Cloud Scheduler — daily |
@@ -466,13 +477,17 @@ GCP project: `adept-mountain-474619-d4`. Region: `us-east1`.
 | `fetch-sec-filings` | SEC EDGAR 8-K → `sec_filings` | Cloud Scheduler — daily |
 | `fetch-insider-transactions` | Form 4 → `insider_transactions` | Cloud Scheduler — daily |
 | `fetch-top-movers` | AV TOP_GAINERS_LOSERS → `top_movers_daily` | Cloud Scheduler — daily |
-| `premarket-brief` | 3-embed Discord message + persist to `premarket_analysis` (32 cols). Earnings list ranked by `(date, tier, is_s_p_500, options_volume, stock_volume, market_cap)` and **capped at top-25** (`BRIEF_MAX_EARNINGS` env) so the embed surfaces the same names the daily fetcher actually writes bars for | Cloud Scheduler — 8:30 AM ET weekdays |
+| `fetch-fred-rates` | FRED `DGS3MO` → `daily_rates` (PR #93) | Cloud Scheduler — daily |
+| `premarket-brief` | 3-embed Discord message + persist to `premarket_analysis` (32 cols). Earnings list ranked by `(date, tier, is_s_p_500, options_volume, stock_volume, market_cap)` and **capped at top-25** (`BRIEF_MAX_EARNINGS` env) | Cloud Scheduler — 8:30 AM ET weekdays |
 | `signal-monitor` | Real-time signal alerts → `signal_alerts` + `trades` | Cloud Scheduler — every 5 min during market hours |
 | `daily-insight-reports` | Multi-agent pipeline for SPY/IWM/QQQ → `insight_reports` | Cloud Scheduler — 8:45 AM ET weekdays (after premarket-brief) |
 | `auto-refresh-top-n` | Pre-warm insights for top-N ranker tickers | Cloud Scheduler — daily |
 | `weekend-review` | Weekly market review aggregation | Cloud Scheduler — weekly |
+| `apply-schema-migrations` | One-shot idempotent `gcp/schema.sql` runner via `gcp/apply_schema.py` (PR #84). Lets schema rollouts happen without a Codespace | Manual |
+| `compute-spx-greeks-backfill` | SPX historical Greeks via `scripts/maintenance/compute_spx_greeks.py` (PR #89). Idempotent (skips rows with `gamma_computed IS NOT NULL`) | Manual / on-demand |
+| `failure-notifier` | Cloud Logging Sink → Pub/Sub → Cloud Run Service `gcp/failure_notifier.py` (PR #82). Discord embed + GitHub issue with dedup. See `docs/FAILURE_NOTIFIER_DEPLOYMENT.md` | Pub/Sub push |
 
-The original `fetch-earnings-options` job was removed (commit `5abfc89`); earnings options flow through the same daily AV fetcher.
+The original `fetch-earnings-options` job was removed (commit `5abfc89`) and `fetch-etf-options` (intraday yahooquery) was removed in PR #95; both flowed through `fetch-av-historical-options` which is the sole options writer now.
 
 ### 7.2 Cloud Scheduler triggers
 
@@ -556,7 +571,7 @@ Pre-deploy verification (per `dreamy-churning-lovelace`): `pre-deploy-check` age
 | `fetch-alphavantage-intraday-monthly.yml` | Monthly + manual | 1-min intraday backfill from AV |
 | `fetch-alphavantage-options-daily.yml` | Daily 01:00 UTC + manual | ETF options EOD → Cloud SQL + GCS |
 | `fetch-news-sentiment.yml` | Daily + manual | AV news sentiment per ticker |
-| `fetch_etf_options.yml` | Scheduled + manual | Legacy options pipeline (deprecated; superseded by daily AV writer) |
+| `freshness-watchdog.yml` | Hourly + nightly | Comprehensive data-pipeline freshness audit (PR #85). Runs `scripts/audit_data_freshness.py`; auto-creates labeled GitHub issues on staleness; backs Dashboard `DataPipelineStatus` widget via `/api/health/freshness` |
 | `handle-workflow-failure.yml` | Reusable (called via `uses:`) | Auto-create GitHub issues + draft PRs on workflow failure; extracts last 50 lines of logs |
 | `test-failure-handler.yml` | Manual | Smoke-test the failure handler |
 | `update_economic_events_calendar.yml` | Daily + manual | Economic calendar refresh |
@@ -565,6 +580,8 @@ Pre-deploy verification (per `dreamy-churning-lovelace`): `pre-deploy-check` age
 Two `.disabled` files exist alongside (intentionally retired):
 - `fetch-market-data.yml.disabled` — Cloud Run Job is sole source of truth
 - `fetch-economic-events-calendar.yml.disabled` — superseded by Cloud Run
+
+The legacy `fetch_etf_options.yml` (intraday yahooquery options) was deleted entirely in PR #95 (commit `aea5a7c`).
 
 ### Reusable failure handler pattern
 
@@ -651,6 +668,7 @@ Per plan `clever-forging-bear` (Apr 15 2026). Replaces the original ad-hoc Gemin
 | **Options analyst** | Options chain + flow + Greeks | `etf_options_snapshots` | `AnalystReport` |
 | **Catalyst analyst** | News, earnings, 8-K, insider, economic events | Catalysts feed (news_sentiment, sec_filings, insider_transactions, economic_events, earnings_history) | `AnalystReport` |
 | **Sentiment analyst** | News sentiment + topic match | `news_sentiment` with AV topic slugs | `AnalystReport` |
+| **Gamma analyst** | King/Gate/Spot/Flip levels + regime read | `lib/gamma.build_summary()` against today's options chain (PR #81) | `AnalystReport` (level magnets, flip distance, vol regime) |
 | **Bull researcher** | Bull case from analyst reports | Analyst reports | `Position` |
 | **Bear researcher** | Bear case | Analyst reports | `Position` |
 | **Research manager (judge)** | Adjudicate debate | Bull + bear positions | `Verdict` |
@@ -717,6 +735,10 @@ The Rob Smith "Strat" candle classification system. Each bar is one of:
 - **2u** (directional up) — high > prev high, low ≥ prev low. Trend continuation up.
 - **2d** (directional down) — high ≤ prev high, low < prev low. Trend continuation down.
 - **3** (outside bar) — high > prev high AND low < prev low. Two-sided sweep.
+- **Failed_2U** (PR #81) — bar broke prior high but closed below the breakout level (bearish reversal signal). `lib/strat.detect_failed_2u()`.
+- **Failed_2D** (PR #81) — bar broke prior low but closed above the breakdown level (bullish reversal signal). `lib/strat.detect_failed_2d()`.
+
+`lib/strat.detect_combos()` already labels 212/312 reversals, 212 continuations, and 32 reversals. PR #81 added simple 2-bar continuation labels alongside Failed_2 detection.
 
 **FTFC (Full Timeframe Continuity)** scores how aligned multiple timeframes are. Weights:
 
@@ -832,8 +854,8 @@ Per `BACKTEST_RESULTS.md` (1-min entries, 3-of-5 conditions, 1-day window).
 ### 13.1 Make targets
 
 ```bash
-make test            # Unit + integration (~452 tests, ~50s, excludes E2E)
-make test-e2e        # Playwright E2E (28 tests, ~15s)
+make test            # Unit + integration (~703 tests after PR #94's +251 alignment, ~80s, excludes E2E)
+make test-e2e        # Playwright E2E (33+ specs, ~30s)
 make test-scripts    # CLI regression for scripts/ (18 tests, ~40s)
 ```
 
@@ -864,23 +886,37 @@ python -m playwright install chromium
 | `test_agent_pricing.py` | Cost tracking |
 | `test_agent_vertex_adapter.py` | Vertex adapter |
 | `test_phase2_fetchers.py` | GCP fetcher integration |
-| `test_production_readiness.py` | Production environment checks |
+| `test_production_readiness.py` | Production environment checks (100-pt scorecard) |
 | `test_e2e.py` | Playwright E2E (28 scenarios) |
 | `test_scripts.py` | CLI regression for scripts |
 | `test_integration.py` | Cross-module integration |
+| `test_gamma.py` | `lib/gamma.py` — sign convention, GEX/VEX, King/Gate/Spot/Flip classification (PR #81) |
+| `test_options_greeks.py` | `lib/options_greeks.py` — BSM IV solver, sidecar columns, FRED rate lookup (PR #86) |
+| `test_options_router.py` | `POST /api/options/greeks` and `GET .../levels` (PR #88) |
+| `test_failure_notifier.py` | Pub/Sub envelope parsing, Discord shape, GitHub dedup (PR #82) |
+| `test_apply_schema.py` | One-shot schema migration job (PR #84) |
+| `test_audit_data_freshness.py` | Per-table freshness watchdog (PR #85) |
+| `test_fetch_av_historical_options.py` | AV options backfill fetcher (PR #94) |
+| `test_historical_signals.py` | Multi-row VALUES bulk insert path (PR #94) |
+| `test_playbook_evaluate.py` | Server-side playbook condition evaluation (PR #94) |
+| `test_premarket_brief.py` | Premarket-brief job: tier sort, top-N cap, Discord embed (PR #94) |
+| `test_watchlist_helper.py` | Watchlist union utilities (PR #94) |
+| `test_agent_anthropic_adapter.py`, `test_agent_embeddings.py` | Multi-agent expansion (PR #94) |
 
 Frontend unit tests (Vitest) — colocated with source:
 - `platform/src/lib/playbookEvaluator.test.ts`
 - `platform/src/lib/strategySignals.test.ts`
 - `platform/src/lib/marketSession.test.ts`
+- `platform/src/lib/strategySignalsForSeries.test.ts` (PR #80 per-bar voter)
 
 ### 13.3 Pre-existing failures on main (NOT regressions)
 
-Per memory `MEMORY.md` (verified 2026-04-25):
+Per `MEMORY.md` and re-verified on main 2026-04-26:
 
 - `test_pipeline_end_to_end_green` — LLM call count drift 12 → 13 (count expectation stale)
 - `test_health_returns_ok` — asserts `data_dir_exists` field, missing in current `/api/health` response
 - Most `test_platform_api.py` cases — Cloud SQL not reachable from sandbox
+- `test_data_loader.py::TestLoadIntraday::test_returns_empty_when_no_data` — premise invalidated when Cloud SQL gained real IWM data; should be deleted/rewritten, not perpetually waved through
 
 Always switch to main and re-run a failing test before treating it as a branch regression.
 
@@ -888,6 +924,13 @@ Always switch to main and re-run a failing test before treating it as a branch r
 
 Local mode (default): `npm run e2e` against `localhost:5173` + `:8000`.
 Cloud mode (against deployed): `npm run e2e:cloud:auth` (one-time interactive Google sign-in) then `npm run e2e:cloud`.
+
+Specs added since BRIEFING write:
+- `gamma-levels.spec.ts` — gamma overlay + heatmap + admin gamma flow (PR #81)
+- `data-pipeline-status.spec.ts` — DataPipelineStatus widget (PR #85)
+- `api-smoke.spec.ts` — endpoint smoke (PR #88)
+- `navigation.spec.ts` — route navigation smoke (PR #88)
+- `charts-cards.spec.ts` — Strategy Conditions + Similar Setups + Sig overlay (PR #80)
 
 Coverage includes per-route smoke tests for Dashboard, Charts, Insights, Admin, Catalysts, Signals, Journal — added in commit `8639b63` and `413830b`.
 
@@ -906,7 +949,7 @@ Fourteen named plans live in `~/.claude/plans/`. All have been validated against
 | 1 | `clever-forging-bear` | AI Insights Tab — Multi-Agent Analyst Pipeline | 2026-04-15 | ✅ Shipped |
 | 2 | `crystalline-puzzling-clock` | Dashboard + Charts UI cleanup | 2026-04-13 | ✅ Shipped |
 | 3 | `dreamy-churning-lovelace` | Port AWS agents → GCP & harden deploy pipeline | 2026-04-14 | ✅ Shipped |
-| 4 | `glistening-munching-willow` | Eliminate Hardcoded Values — Move All Math/Config to GCP | 2026-04-18 | 🟡 Partial |
+| 4 | `glistening-munching-willow` | Eliminate Hardcoded Values — Move All Math/Config to GCP | 2026-04-18 | ✅ Shipped |
 | 5 | `glowing-popping-thimble` | Options Flow Data Pipeline — Production Fix | 2026-04-13 | 🟡 Partial |
 | 6 | `golden-zooming-newell` | Daily Bias Card — Fix & Redesign | 2026-04-14 | ✅ Shipped |
 | 7 | `goofy-yawning-rain` | SPX Backfill + Comprehensive Freshness Watchdog | 2026-04-14 | ✅ Shipped |
@@ -945,17 +988,33 @@ Fourteen named plans live in `~/.claude/plans/`. All have been validated against
 
 **Problem:** 21 hardcoded values across the frontend (Greeks multipliers, node thresholds, RSI zones, market hours). Drift between Python `lib/indicators.py` and TypeScript.
 **Approach:** Delete client-side `greeksCalculator.ts` and `nodeAnalyzer.ts`; move math to server endpoints. Add `/api/config/indicators` and `/api/config/market-hours` for thresholds.
-**Status correction:** despite the plan calling for deletion, **`greeksCalculator.ts` and `nodeAnalyzer.ts` are still present** in `platform/src/lib/`. The aggregation logic for the heatseeker visualization is client-side. Server-side endpoints `POST /api/options/greeks` and `POST /api/options/nodes` are NOT in the routers list. The `analytics.py` and `config.py` routers also don't exist.
-**What did ship:** `playbook.py` server-side evaluation, `dashboard.py` server-side indicator overlay, `options.py` Cloud SQL reader (no more client-computed Greeks for individual contracts).
-**Recommendation:** treat the shipped pieces as the new baseline, retire the deletion target, or schedule a follow-up to actually delete the two .ts files and route their math through `/api/options/aggregated/{ticker}`.
+**Closed by PR #81 ("Consolidate gamma analytics into lib/gamma.py as single source of truth") and PR #92.** Evidence:
+- `platform/src/lib/greeksCalculator.ts` — **DELETED** ✓
+- `platform/src/lib/nodeAnalyzer.ts` — **DELETED** ✓
+- `lib/gamma.py` — **NEW**, ~568 lines, canonical math (GEX, VEX, King/Gate/Spot/Flip taxonomy, max-pain, implied move) ✓
+- `POST /api/options/greeks` endpoint — **LIVE** at [platform/api/routers/options.py:359](platform/api/routers/options.py#L359) ✓
+- `GET /api/options/{ticker}/{date_str}/levels` endpoint — **LIVE** at [platform/api/routers/options.py:415](platform/api/routers/options.py#L415) ✓
+- `useGammaLevels.ts` hook + `useOptionsGreeks.ts` hook — **LIVE**, OptionsFlowPage rewired ✓
+- `analytics.py` router — **LIVE** (PR #92): `/api/analytics/summary/{ticker}`, `/api/analytics/trade-stats` ✓
+- `config.py` router — **LIVE** (PR #92): `/api/config/indicators`, `/api/config/market-hours` ✓
+- `docs/HARDCODED_VALUES_REMEDIATION.md` declares Parts 1A, 1A.1, 1B, 1C, 1D, 1E, 2A, 2B, 2C all ✅ DONE; only 1F (chart take-profit default) deferred per user preference, and Part 3 (LOW severity cosmetic) deferred ✓
+- `docs/gamma_levels.md` provides the canonical King/Gate/Spot/Flip reference ✓
+- `tradingview-pine-scripts/gamma-levels-overlay-v2` — Pine companion shipped ✓
 
-#### 5. `glowing-popping-thimble` — Options Flow Pipeline Phase 1 + Phase 2 🟡
+#### 5. `glowing-popping-thimble` — Options Flow Pipeline Phase 1 + Phase 2 🟡 (infra ✅, exec pending)
 
 **Phase 1 (✅ shipped):** Reader was a live AV proxy that 404'd on today's date. Rewritten as Cloud SQL reader with 12 h TTL cache. Workflow `fetch-alphavantage-options-daily.yml` writes to Cloud SQL via `gcp/fetchers/fetch_av_historical_options.py`. AV historical backfill (~7,500 calls, 8,389 parquet files) completed Apr 13. SPX 10-year coverage in.
-**Phase 2 (🟡 staged):** SPX Greeks computation. AV doesn't provide Greeks for cash-settled SPX; compute via `py_vollib_vectorized` (BSM IV solve from mid prices). Sidecar columns (`delta_computed`, `gamma_computed`, etc.) preserve AV provenance. Three-tier spot derivation: FRED SP500 (tier 1), put-call parity (tier 2), SPY×10 (tier 3).
-**Files shipped:** `lib/options_greeks.py` ✓, `requirements.txt` += py_vollib_vectorized ✓, `etf_options_snapshots` schema (sidecar columns) ✓.
-**Files NOT YET shipped:** `gcp/fetchers/fetch_fred_rates.py`, `daily_rates` table, `scripts/maintenance/compute_spx_greeks.py` backfill execution.
-**Blocker:** sequencing — Yahoo cleanup must finish first (per audit A3).
+**Phase 2 infra (✅ shipped via PRs #86, #89, #93):** SPX Greeks computation. AV doesn't provide Greeks for cash-settled SPX; compute via `py_vollib_vectorized` (BSM IV solve from mid prices). Sidecar columns (`delta_computed`, `gamma_computed`, etc.) preserve AV provenance. Three-tier spot derivation: FRED SP500 (tier 1), put-call parity (tier 2), SPY×10 (tier 3).
+**Files shipped:**
+- `lib/options_greeks.py` ✓ (470 lines, PR #86)
+- `requirements.txt` += `py_vollib_vectorized` ✓
+- `etf_options_snapshots` sidecar columns ✓
+- `gcp/fetchers/fetch_fred_rates.py` ✓ (PR #93)
+- `daily_rates` Cloud SQL table ✓ (PR #93)
+- `scripts/maintenance/compute_spx_greeks.py` ✓ (PR #89)
+- `scripts/backfill_spx_from_options.py` ✓ (PR #89)
+- Cloud Run Job `compute-spx-greeks-backfill` ✓
+**Still pending:** backfill execution. Sequenced after Yahoo options cleanup completes.
 
 #### 6. `golden-zooming-newell` — Daily Bias Card Redesign ✅
 
@@ -983,12 +1042,12 @@ Fourteen named plans live in `~/.claude/plans/`. All have been validated against
 **Approach:** Cloud Logging sink → Pub/Sub topic → Cloud Run Service notifier → Discord embed + GitHub issue (with duplicate detection). Notifier is a FastAPI app deployed alongside main image with alternate `--command` entrypoint.
 **Files shipped:** `gcp/failure_notifier.py`, `gcp/deploy.sh` (notifier setup functions), `tests/test_failure_notifier.py`, secrets `github-pat` + `github-repo`.
 
-#### 10. `lovely-riding-quiche` — SPX Options Greeks 🟡
+#### 10. `lovely-riding-quiche` — SPX Options Greeks 🟡 (infra ✅, exec pending)
 
 **Phase 2 distillation of #5.** Architectural decision: sidecar columns. Reader aliases `_computed` Greeks for tickers in `COMPUTE_GREEKS_TICKERS = {SPX, SPXW, NDX, RUT, XSP}`.
-**Shipped:** `lib/options_greeks.py`, `py_vollib_vectorized` in requirements.
-**Not yet shipped:** `gcp/fetchers/fetch_fred_rates.py`, backfill execution, `greeks_source` field on response.
-**Blocker:** Yahoo cleanup completion.
+**Shipped (PRs #86, #89, #93):** `lib/options_greeks.py` (470 lines), `py_vollib_vectorized` in requirements, `gcp/fetchers/fetch_fred_rates.py`, `daily_rates` Cloud SQL table, `scripts/maintenance/compute_spx_greeks.py`, Cloud Run Job `compute-spx-greeks-backfill`, `daily_rates` table indexed on `(date DESC)`.
+**Still pending:** backfill execution and `greeks_source` field on response.
+**Blocker:** Yahoo options cleanup completion (running `fetch-av-options-backfill` Cloud Run Job).
 
 #### 11. `mutable-churning-map` — Historical Review Mode ✅
 
@@ -1012,6 +1071,7 @@ Fourteen named plans live in `~/.claude/plans/`. All have been validated against
 **Approach:** Create `archive_yahoo_*` tables via `CREATE TABLE ... (LIKE src INCLUDING ALL)`. Chunked copy + delete using primary-key batching (NOT ctid — partition-local ctids would collide on LIST-partitioned tables and delete AV rows).
 **Files shipped:** `gcp/schema.sql` (4 archive tables ✓), `scripts/archive_yahoo_data.py` (✓ with dry-run + per-table `--confirm`).
 **Status:** intraday cleanup completed (with one ctid bug + AV recovery). Options cleanup pending — must wait for `fetch-av-options-backfill` to finish to avoid I/O contention.
+**Update (PR #95, 2026-04-26):** the legacy `fetch_etf_options.yml` workflow + `gcp/fetchers/fetch_etf_options.py` + `scripts/fetch_etf_options_intraday.py` were removed entirely (yahooquery intraday options pipeline retired). One less blocker; the writer surface for options is now AV-only.
 
 ---
 
@@ -1075,6 +1135,26 @@ Summarized from `docs/changelog/CHANGELOG_2026-04-20_to_2026-04-26.md`.
 - Added 6 columns to `earnings_calendar` populated from UW's `upcoming_earnings_v2`: `is_s_p_500`, `stock_volume`, `options_volume` (= `call_vol+put_vol`), `open_interest`, `rv_1d_last_12q`, `last_1d_reactions` (JSONB array). UW's response is 30 fields total — we now capture the 9 we already had plus these 6 ranking signals; the rest (logo URL, country code, etc.) skipped intentionally.
 - Heavy earnings days (e.g. Wed 2026-04-29 with 251 calendar rows) now surface 25 SP500 / tier-1 names — MSFT, META, GOOGL, QCOM, ABBV, etc. — instead of falling back to alphabetical AV-only long-tail (ALWIF, BUSEL).
 
+**Session 3 — Post-Merge Cascade (2026-04-26 morning UTC, PRs #81–#95):**
+
+After PR #80 merged into main, 14 follow-on PRs landed in the same morning:
+
+- **Gamma consolidation** (#81) — `lib/gamma.py` (568 lines) becomes single source of truth for GEX/VEX/King-Gate-Spot-Flip math. Deletes `greeksCalculator.ts`, `nodeAnalyzer.ts`. Adds `POST /api/options/greeks` and `GET /api/options/{ticker}/{date_str}/levels` endpoints. New `useGammaLevels.ts` hook. Charts page gamma overlay toggle. Gamma analyst added to AI pipeline. Pine Script `gamma-levels-overlay-v2`. Tests `test_gamma.py` (323 lines) + `gamma-levels.spec.ts` (244 lines).
+- **Failure notifier** (#82) — `gcp/failure_notifier.py` (333 lines): Cloud Logging Sink → Pub/Sub → Cloud Run Service → Discord embed + GitHub issue (with dedup). `FAILURE_NOTIFIER_DEPLOYMENT.md` runbook (351 lines).
+- **7 reliability agents** (#83) — debug-local, impact-analyzer, infra-drift-detector, pre-deploy-check, security-scan, test-coverage-analyzer, trading-logic-reviewer added to `.claude/agents/`. Closes plan #3 in code (BRIEFING was premature).
+- **Schema migrations job** (#84) — `gcp/apply_schema.py` + `apply-schema-migrations` Cloud Run Job. Schema rollouts no longer need a Codespace.
+- **Pipeline freshness widget + watchdog** (#85) — `scripts/audit_data_freshness.py` (575 lines), `platform/api/routers/health.py`, `.github/workflows/freshness-watchdog.yml` (121 lines), Dashboard `DataPipelineStatus.tsx` widget.
+- **`lib/options_greeks.py` BSM module** (#86) — 470 lines, `py_vollib_vectorized` IV solver, sidecar columns, `enrich_av_chain_with_greeks()` orchestrator.
+- **Data pipeline + codespaces auth + April incident docs** (#87) — `docs/DATA_PIPELINE.md` (435 lines), `docs/claude-code-codespaces-auth.md` (70 lines), `docs/incidents/2026-04-14-market-data-daily-gap.md` (76 lines, first postmortem).
+- **E2E smoke specs** (#88) — `navigation.spec.ts`, `data-pipeline-status.spec.ts`, `api-smoke.spec.ts`.
+- **SPX Greeks backfill scripts** (#89) — `scripts/maintenance/compute_spx_greeks.py` (277 lines), `scripts/backfill_spx_from_options.py` (209 lines, put-call-parity SPX OHLC backfill).
+- **Makefile convenience** (#90) — `make setup-notifier`, `make notifier`.
+- **100-point audit scorecard + pre-deploy gate** (#91) — `.claude/commands/audit-review.md` upgraded; `.claude/commands/gcp-deploy.md` adds pre-deploy gate (closes plan #3 hardening).
+- **Misc fixes** (#92) — `lib/data_loader.get_close_price()` helper, `gcp/signal_monitor.py` fail-fast on missing env, `MetricCard` subtitle color fix. Adds `analytics.py` and `config.py` routers (closes BRIEFING §16.2 plan #4 drift entry).
+- **FRED daily rates pipeline** (#93) — `gcp/fetchers/fetch_fred_rates.py` (213 lines), `daily_rates` Cloud SQL table, scheduler trigger. Closes the last infra gap in plans #5 and #10 — only backfill execution pending.
+- **Test suite alignment** (#94) — +251 net additions across 18 test files; new test files for failure notifier, schema migrations, freshness audit, AV options backfill, historical_signals, playbook evaluate, premarket brief, watchlist helper, anthropic adapter, embeddings.
+- **Remove fetch-etf-options pipeline** (#95) — workflow `.yml` (186 lines), fetcher `.py` (293 lines), CLI script (616 lines) all deleted. Yahooquery intraday options retired. AV-only writer surface.
+
 ### 15.3 Themes from last 50 commits
 
 | Theme | Commits |
@@ -1098,15 +1178,15 @@ Summarized from `docs/changelog/CHANGELOG_2026-04-20_to_2026-04-26.md`.
 
 | Item | Blocker | ETA |
 | --- | --- | --- |
-| **SPX Greeks backfill execution** (`compute_spx_greeks.py`) | Yahoo cleanup of `etf_options_snapshots` must finish first | After Yahoo archival completes |
+| **SPX Greeks backfill execution** (`compute-spx-greeks-backfill` Cloud Run Job) | Yahoo cleanup of `etf_options_snapshots` must finish first; infra is ready | After Yahoo archival completes |
 | **Yahoo options archive** (chunked delete from prod) | `fetch-av-options-backfill` Cloud Run Job active executions | After backfill quiesces |
-| **`gcp/fetchers/fetch_fred_rates.py`** + `daily_rates` table | Required for SPX BSM (risk-free rate, dividend yield) | Step 5 of `lovely-riding-quiche` execution order |
+| **`greeks_source` field on options response** | Wait for SPX Greeks backfill to populate `_computed` columns first | After backfill |
 
 ### 16.2 Plan-vs-code drift
 
 | Plan | Drift |
 | --- | --- |
-| `glistening-munching-willow` (#4) | `greeksCalculator.ts` and `nodeAnalyzer.ts` were NOT deleted as planned. `analytics.py` and `config.py` routers don't exist. The plan's "deletion" target should be retired or re-scoped. |
+| (none) | Plan #4 `glistening-munching-willow` was the only outstanding drift; closed by PRs #81 (gamma consolidation) and #92 (analytics + config routers). All TS deletions confirmed; both server endpoints live. See `docs/HARDCODED_VALUES_REMEDIATION.md` for the per-item closure log. |
 
 ### 16.3 README gaps
 
@@ -1135,16 +1215,18 @@ Recommended sections to add:
 Always verify against main before treating as branch issues:
 - `test_pipeline_end_to_end_green` — LLM call count drift 12 → 13
 - `test_health_returns_ok` — asserts `data_dir_exists`, missing in current API response
+- `test_data_loader.py::TestLoadIntraday::test_returns_empty_when_no_data` — premise broken once Cloud SQL has real IWM data; should be deleted/rewritten, not perpetually waved through
 - `test_platform_api.py` — most cases require Cloud SQL not reachable from sandbox
 
 ### 16.5 TradingView Pine Scripts
 
-`tradingview-pine-scripts/` directory exists but no `.pine` files are tracked in git currently. CLAUDE.md / MEMORY.md reference v1 (originals) and v2 (upgraded) versions. Either:
-- The Pine scripts live elsewhere (TradingView cloud) and are version-controlled there only
-- They were removed in a prior cleanup
-- They should be re-added under `tradingview-pine-scripts/`
+`tradingview-pine-scripts/` directory now contains the gamma-levels companion landed via PR #81:
+- `gamma-levels-overlay-v2` — Pine v6 indicator that consumes `lib/gamma.py` outputs (King/Gate/Spot/Flip levels) for on-chart display
+- `gamma-levels-overlay.md` — companion documentation
 
-Compliance rules (when re-adding) per memory `pine-script-rules.md`:
+The original v1/v2 indicator pairs referenced in MEMORY.md still live in TradingView cloud, not in git. If/when re-imported, follow the same compliance rules below.
+
+Compliance rules per memory `pine-script-rules.md`:
 - Use `indicator()` not `study()` (v6 API)
 - `ta.*`, `math.*`, `str.tostring()` namespaces; no `iff()`, no `transp`
 - Line continuation indent must NOT be a multiple of 4 spaces
@@ -1321,26 +1403,36 @@ Per CLAUDE.md and memory:
 
 | Doc | Use it for |
 | --- | --- |
-| `README.md` | Quickstart, backtest mechanics, lib/scripts overview |
-| `QUICK_REFERENCE.md` | Strat candles, FTFC weights, signal scoring, position sizing |
-| `BACKTEST_RESULTS.md` | Full 10-year backtest table |
-| `INFRASTRUCTURE_NOTES.md` | Cloud SQL tier decisions, query performance, scaling triggers |
-| `CLAUDE.md` | Project rules, automation, GH workflow patterns |
+| `README.md` (repo root) | Quickstart, backtest mechanics, lib/scripts overview |
+| `QUICK_REFERENCE.md` (repo root) | Strat candles, FTFC weights, signal scoring, position sizing, gamma quick-reference |
+| `BACKTEST_RESULTS.md` (repo root) | Full 10-year backtest table |
+| `INFRASTRUCTURE_NOTES.md` (repo root) | Cloud SQL tier decisions, query performance, scaling triggers |
+| `CLAUDE.md` (repo root) | Project rules, automation, GH workflow patterns |
 | `docs/GCP_IMPLEMENTATION_GUIDE.md` | GCP architecture deep-dive, schema, costs |
 | `docs/GCP_IMPLEMENTATION_STATUS.md` | Phase-by-phase migration tracker |
 | `docs/INVESTMENT_MODELS_SUMMARY.md` | 5-model system, 195 features breakdown |
 | `docs/MODEL_SUMMARY.md` | Concise model overview |
 | `docs/DESIGN_SYSTEM.md` | "The Obsidian Analyst" theme, color tokens, typography |
+| `docs/API.md` | FastAPI router/endpoint catalog (PR #92) |
+| `docs/DATA_PIPELINE.md` | Per-table freshness plan, canonical writers, watchdog (PR #87) |
+| `docs/FAILURE_NOTIFIER_DEPLOYMENT.md` | Pub/Sub failure-notifier deployment + smoke test (PR #82) |
+| `docs/HARDCODED_VALUES_REMEDIATION.md` | Plan #4 closure log, server-side math architecture (PR #81) |
+| `docs/gamma_levels.md` | King/Gate/Spot/Flip canonical reference, sign convention, spot estimation (PR #81) |
+| `docs/claude-code-codespaces-auth.md` | Codespaces + Claude Code OAuth setup (PR #87) |
+| `docs/incidents/` | Postmortems — currently `2026-04-14-market-data-daily-gap.md` (PR #87) |
 | `docs/alpha-vantage-*.md` | AV fetcher quickstart + workflow guides |
 | `docs/options_chain_guide.md` | yahooquery vs yfinance, options data format |
 | `docs/trading_rules_and_alerts.md` | Time windows, conditions, position sizing |
 | `docs/quick_reference_card.md` | Compact decision flow |
+| `docs/QUICK_START_OPTIONS.md` | Options analytics quickstart |
+| `docs/README_OPTIONS.md` | Options module overview |
+| `docs/GOOGLE_SHEETS_SETUP.md` | Google Sheets API credentials |
 | `docs/Morning Checklist Updated.md` | Pre-market routine + probability stats |
 | `docs/changelog/` | Weekly session notes (commit-anchored) |
-| `BRIEFING_DECK.md` | This document — full system reference |
+| `docs/BRIEFING_DECK.md` | This document — full system reference |
 
 ---
 
 **End of briefing deck.**
 
-Compiled from: 14 plans (`~/.claude/plans/`), 2 changelog files, source code as of 2026-04-26 (branch `claude/fix-gcp-errors-Gueox`), `gcp/schema.sql`, all 14 GitHub workflow YAMLs, `MEMORY.md`, and the 12 `docs/` reference files.
+Compiled from: 14 plans (`~/.claude/plans/`), 2 changelog files, source code as of 2026-04-26 post-PR-#95 (branch `main`, HEAD `aea5a7c`), `gcp/schema.sql` (30 tables), all 14 GitHub workflow YAMLs, `MEMORY.md`, `HARDCODED_VALUES_REMEDIATION.md`, `gamma_levels.md`, and the 22 `docs/` reference files.
