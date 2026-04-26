@@ -15,6 +15,7 @@ from lib.indicators import (
     calculate_bollinger_bands,
     calculate_macd,
     calculate_consecutive_moves,
+    calculate_historical_levels,
     add_all_indicators,
 )
 
@@ -214,3 +215,51 @@ class TestAddAllIndicators:
         assert 'ORB_10m_Trend' in result.columns
         # Default labels should NOT be present
         assert 'ORB_5m_High' not in result.columns
+
+
+class TestHistoricalLevels:
+    """calculate_historical_levels output, including Quarter (added v2)."""
+
+    def _frame(self):
+        # 12 months of weekly bars covering Q1 + Q2 of 2024.
+        dates = pd.date_range('2024-01-05', '2024-06-28', freq='W-FRI')
+        n = len(dates)
+        np.random.seed(7)
+        close = 200 + np.cumsum(np.random.normal(0, 0.5, n))
+        high = close + 1
+        low = close - 1
+        open_ = close
+        return pd.Series(dates), pd.Series(high), pd.Series(low), pd.Series(open_), pd.Series(close)
+
+    def test_emits_quarter_columns(self):
+        times, high, low, open_, close = self._frame()
+        result = calculate_historical_levels(times, high, low, open_, close)
+        for col in [
+            'Prev_Quarter_High', 'Prev_Quarter_Low',
+            'Prev_Quarter_Open', 'Prev_Quarter_Close',
+            'Prev_Quarter_HL_Mid', 'Prev_Quarter_OC_Mid',
+            'Broke_Prev_Quarter_High', 'Broke_Prev_Quarter_Low',
+        ]:
+            assert col in result.columns, f'{col} missing from historical levels'
+
+    def test_quarter_high_matches_prior_quarter_max(self):
+        """Q2 rows should have Prev_Quarter_High equal to max(High) over Q1."""
+        times, high, low, open_, close = self._frame()
+        result = calculate_historical_levels(times, high, low, open_, close)
+
+        ts = pd.to_datetime(times)
+        is_q1 = ts.dt.to_period('Q') == ts.dt.to_period('Q').iloc[0]
+        is_q2 = ts.dt.to_period('Q') > ts.dt.to_period('Q').iloc[0]
+
+        expected_q1_high = high[is_q1].max()
+        q2_prev_quarter_high = result.loc[is_q2.values, 'Prev_Quarter_High'].dropna()
+        assert (q2_prev_quarter_high == expected_q1_high).all()
+
+    def test_first_quarter_has_nan(self):
+        """Q1 has no prior quarter, so Prev_Quarter_* must be NaN there."""
+        times, high, low, open_, close = self._frame()
+        result = calculate_historical_levels(times, high, low, open_, close)
+
+        ts = pd.to_datetime(times)
+        is_q1 = ts.dt.to_period('Q') == ts.dt.to_period('Q').iloc[0]
+        assert result.loc[is_q1.values, 'Prev_Quarter_High'].isna().all()

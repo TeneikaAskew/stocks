@@ -850,6 +850,24 @@ CREATE INDEX IF NOT EXISTS idx_news_sentiment_topics
 
 
 -- ============================================================================
+-- Forward-looking columns for Strat Quarter levels. The columns are added
+-- idempotently so that when a future fetcher writes calculate_historical_levels()
+-- output the table is ready. Existing rows stay NULL until backfilled.
+-- ============================================================================
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS prev_quarter_high     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS prev_quarter_low      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS prev_quarter_open     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS prev_quarter_close    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS prev_quarter_hl_mid   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS prev_quarter_oc_mid   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS at_prev_quarter_high  SMALLINT,
+    ADD COLUMN IF NOT EXISTS at_prev_quarter_low   SMALLINT,
+    ADD COLUMN IF NOT EXISTS broke_prev_quarter_high SMALLINT,
+    ADD COLUMN IF NOT EXISTS broke_prev_quarter_low  SMALLINT;
+
+
+-- ============================================================================
 -- Live migration: rename premarket_analysis.strat_daily -> strat_candle.
 -- The methodology doc renames every "candle classification" surface to
 -- a single column name. Idempotent.
