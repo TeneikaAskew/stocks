@@ -48,7 +48,10 @@ class TestHealth:
         data = r.json()
         assert data["status"] == "ok"
         assert "cloud_sql" in data
-        assert "data_dir_exists" in data
+        # `data/` is gitignored (removed in f287259b); GCS is the source of
+        # truth for raw files and Cloud SQL for structured queries. The
+        # liveness check therefore reports lib/ presence, not data/.
+        assert "lib_dir_exists" in data
 
     def test_live_status(self, client):
         r = client.get("/api/live/status")
@@ -92,8 +95,14 @@ class TestSignalsAPI:
             assert s["time"] <= "2025-06-02 10:00:00", f"Signal {s['time']} is after cutoff"
 
     def test_signals_empty_for_old_date(self, client):
-        """Dates before the parquet range should return 0 signals honestly."""
-        r = client.get("/api/signals/IWM?limit=5&end_date=2020-01-01")
+        """Dates before the Cloud SQL `historical_signals` range should return
+        0 signals honestly (router queries Cloud SQL via lib/data_loader,
+        falling back to GCS parquet if Cloud SQL is unreachable).
+
+        IWM signals start 2015-01-02 in `historical_signals`; pick a date
+        comfortably before that to assert the empty-result contract.
+        """
+        r = client.get("/api/signals/IWM?limit=5&end_date=2014-01-01")
         assert r.status_code == 200
         data = r.json()
         assert data["count"] == 0

@@ -3,7 +3,8 @@
 Uses a mocked LLMClient factory so no provider SDK is touched, and
 monkey-patches `lib.agents.summarizers._query` to return canned
 DataFrames. Exercises:
-- Full 11-node topology succeeds with valid outputs
+- Full 14-call topology succeeds with valid outputs (6 analysts +
+  2 researchers + 1 judge + 1 trader + 3 risk personas + 1 PM)
 - Model version snapshot lands in the report
 - Cost is accumulated across every call
 - Analyst failures are captured in failed_sections but the pipeline
@@ -282,6 +283,35 @@ def canned_bundle(monkeypatch):
                  "sentiment_score": 0.3},
             ])
         if "etf_options_snapshots" in sql:
+            # The orchestrator now has two consumers of etf_options_snapshots
+            # with different SQL shapes — both filter by data_source =
+            # 'alphavantage' so we discriminate by the SELECT columns:
+            #   - summarize_options_flow selects volume/OI/IV/delta.
+            #   - summarize_gamma_levels selects expiration/gamma/vega/bid/
+            #     ask/mark/last_price (no `volume` column).
+            # Dispatch on the gamma-only column "gamma" so each consumer
+            # gets the columns it needs and the gamma summarizer's
+            # `min(expiration)` doesn't blow up.
+            if "gamma, vega" in sql:
+                from datetime import timedelta
+                near_exp = (date(2026, 4, 15) + timedelta(days=14)).strftime("%Y-%m-%d")
+                far_exp = (date(2026, 4, 15) + timedelta(days=45)).strftime("%Y-%m-%d")
+                rows = []
+                for strike in (490, 495, 500, 505, 510):
+                    for opt_type in ("calls", "puts"):
+                        for exp in (near_exp, far_exp):
+                            rows.append({
+                                "option_type": opt_type,
+                                "strike": float(strike),
+                                "expiration": exp,
+                                "open_interest": 10_000 if opt_type == "calls" else 8_000,
+                                "gamma": 0.02,
+                                "vega": 0.15,
+                                "delta": 0.5 if opt_type == "calls" else -0.45,
+                                "bid": 1.10, "ask": 1.20, "mark": 1.15,
+                                "last_price": 1.15,
+                            })
+                return pd.DataFrame(rows)
             return pd.DataFrame([
                 {"option_type": "calls", "strike": 500, "volume": 10_000,
                  "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5},
@@ -336,10 +366,12 @@ def test_pipeline_end_to_end_green(canned_bundle, seven_role_snapshot):
     assert report.conviction == "medium"
     assert report.run_cost_usd > 0
     assert report.run_latency_ms >= 0
-    # Full topology = 5 analysts (market, strat, options, catalyst,
-    # sentiment) + 2 researchers + 1 judge + 1 trader + 3 risk +
-    # 1 PM = 13 calls.
-    assert len(mock.calls) == 13
+    # Full topology = 6 analysts (market, strat, options, gamma,
+    # catalyst, sentiment) + 2 researchers + 1 judge + 1 trader +
+    # 3 risk personas + 1 PM = 14 calls. The gamma analyst was added
+    # to align with `lib/gamma.py` as the single source of truth for
+    # gamma analytics (per CLAUDE.md "Architectural rules").
+    assert len(mock.calls) == 14
     assert report.model_versions["trader"] == "vertex:gemini-2.0-flash"
     # No analyst failures in the happy path
     assert report.failed_sections == []
@@ -375,11 +407,13 @@ def test_pipeline_blocks_direction_when_risk_blocks(canned_bundle, seven_role_sn
 
 
 def test_pipeline_aborts_when_all_analysts_fail(canned_bundle, seven_role_snapshot):
-    # Orchestrator runs five analyst sections — market, strat, options,
-    # catalyst, sentiment. All five have to fail to trigger the abort.
+    # Orchestrator runs six analyst sections — market, strat, options,
+    # gamma, catalyst, sentiment. All six have to fail to trigger the
+    # abort (otherwise downstream researchers can still synthesize from
+    # whichever analyst returned).
     mock = _MockLLM(
         failing_analyst_sections=frozenset(
-            {"market", "strat", "options", "catalyst", "sentiment"}
+            {"market", "strat", "options", "gamma", "catalyst", "sentiment"}
         )
     )
     with pytest.raises(RuntimeError, match="all analyst nodes failed"):
