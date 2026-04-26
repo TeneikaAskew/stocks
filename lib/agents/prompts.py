@@ -80,6 +80,28 @@ ANALYST_PROMPTS: dict[str, str] = {
         "Bias follows the sentiment tilt unless the signal is clearly "
         "crowded (contrarian opportunity)."
     ),
+    "gamma": (
+        "You are a dealer-positioning analyst. You will receive the "
+        "ticker's current spot, the gamma flip price, the regime "
+        "(positive_gamma = above flip, pinning / range-bound vs. "
+        "negative_gamma = below flip, trending / vol-amplifying), the "
+        "King strike (highest absolute net GEX in the window), Gate "
+        "strikes (secondary high-gamma resistances/supports), and the "
+        "total net GEX. "
+        "Interpret what the dealer book implies for today's tape. In "
+        "positive gamma, expect mean reversion around Kings and Gates; "
+        "first touches react ~80% of the time. In negative gamma, "
+        "Kings act as magnets and breakouts trend. Call out the "
+        "single most relevant level for the current spot — the King "
+        "directly above or below — and what triggers a regime change "
+        "(price crossing the flip with volume). "
+        "Bullish if spot is in positive gamma above a clear support "
+        "King. Bearish if spot is in negative gamma below a heavy "
+        "Gate. Neutral inside a tight Gate-King-Gate cluster (chop). "
+        "Confidence is lower when the regime is unknown (no flip "
+        "detected in window) or when warnings indicate the spot was "
+        "estimated from the median strike fallback."
+    ),
 }
 
 

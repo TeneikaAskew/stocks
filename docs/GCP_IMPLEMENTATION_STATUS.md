@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-04-26 (session 12)
+**Last Updated**: 2026-04-26 (session 12 + notifier + high-risk test coverage)
 
 ---
 
@@ -397,7 +397,8 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 | Suite | Status | Tests | Date |
 |-------|--------|-------|------|
 | Unit/Integration (`make test`) | ⚠️ 1 pre-existing failure | 247/248 (10 skipped) | 2026-04-26 |
-| Platform API (`tests/test_platform_api.py`) | ⚠️ 1 pre-existing failure | 30/31 | 2026-04-13 |
+| Post-merge audit coverage suite (commit `c7ee564`) | ✅ PASS | 119 new (suite 531 → 650) | 2026-04-26 |
+| Platform API (`tests/test_platform_api.py`) | ⚠️ Cloud SQL gated in sandbox | 17 pre-existing fail / 156 pass | 2026-04-26 |
 | E2E Playwright (`make test-e2e`) | Not run | 28 | — |
 | Scripts CLI (`make test-scripts`) | ✅ PASS | 18/18 | 2026-02-22 |
 
@@ -411,6 +412,8 @@ Pre-existing failures (unrelated to dashboard work):
 
 ## Change Log
 
+- 2026-04-26: Add GCP Cloud Run Job failure notifier — stdlib Cloud Run service triggered by Cloud Logging sink → Pub/Sub push; fans out to Discord webhook + GitHub issue (with dedup on repeat failures)
+- 2026-04-26: Add high-risk-gap test coverage (commit `c7ee564`) — 119 new tests across 8 HIGH-risk + 3 MEDIUM-risk gaps surfaced by post-merge audit. Suite 531 → 650 passing
 - 2026-02-22: Pre-migration cleanup — add .gcloudignore + .dockerignore, create requirements-gcp.txt (prod-only), update gcp/Dockerfile, delete orphaned root files
 - 2026-02-22: Fix indicator warmup periods — StochRSI→SMA, MACD/EMA/SMA min_periods=period, BB ddof=0 (matches TradingView/AV spec)
 - 2026-02-22: DataLoader gains Cloud SQL priority-0 for load_intraday/load_daily; new load_options/load_trades methods

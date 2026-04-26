@@ -1,0 +1,102 @@
+// Gamma Levels Overlay v2 — Pine v6 companion to lib/gamma.py
+//
+// Companion to the King/Gate/Spot/Flip levels exposed by
+// /api/options/{ticker}/{date}/levels in this repo's platform API.
+// Copy values from the OptionsFlow page (or the show_gamma_levels.py CLI)
+// into this script's inputs, and it'll overlay them on any TradingView
+// chart. Useful for back-testing gamma-aware setups against historical
+// price action without a custom data feed.
+//
+// See docs/gamma_levels.md for the taxonomy:
+//   ★ KING : highest |GEX| node — primary support/resistance magnet
+//   ◆ GATE : secondary high-gamma — must break before reaching the King
+//   ⇅ FLIP : cumulative-GEX zero crossing — regime divider
+//   Above flip = positive gamma (pinning, range-bound)
+//   Below flip = negative gamma (trending, vol-amplifying)
+
+//@version=6
+indicator("Gamma Levels Overlay v2", overlay=true,
+          max_lines_count=20, max_labels_count=20,
+          shorttitle="Gamma v2")
+
+// ── Inputs ─────────────────────────────────────────────────────────────────
+
+g_meta = "Levels (paste from /options page)"
+ticker_label = input.string("", "Ticker label",                    group=g_meta,
+    tooltip="Optional. Just shown next to the King label.")
+levels_date  = input.string("", "Levels date (YYYY-MM-DD)",        group=g_meta,
+    tooltip="Optional. Reminds you which snapshot the levels came from.")
+
+g_kings = "Kings (★)"
+king1 = input.float(0.0, "King 1 strike", group=g_kings)
+king2 = input.float(0.0, "King 2 strike", group=g_kings)
+king3 = input.float(0.0, "King 3 strike", group=g_kings)
+
+g_gates = "Gates (◆)"
+gate1 = input.float(0.0, "Gate 1 strike", group=g_gates)
+gate2 = input.float(0.0, "Gate 2 strike", group=g_gates)
+gate3 = input.float(0.0, "Gate 3 strike", group=g_gates)
+gate4 = input.float(0.0, "Gate 4 strike", group=g_gates)
+gate5 = input.float(0.0, "Gate 5 strike", group=g_gates)
+
+g_flip = "Gamma Flip (⇅)"
+flip = input.float(0.0, "Flip price", group=g_flip,
+    tooltip="The cumulative-GEX zero crossing nearest spot.")
+shade_regime = input.bool(true, "Shade positive/negative gamma regime", group=g_flip,
+    tooltip="Light green tint above flip (positive gamma / pinning), light red below (negative gamma / trending).")
+
+g_style = "Style"
+king_color = input.color(color.new(color.orange, 0),  "King color",  group=g_style)
+gate_color = input.color(color.new(color.blue,   0),  "Gate color",  group=g_style)
+flip_color = input.color(color.new(color.purple, 0),  "Flip color",  group=g_style)
+king_width = input.int(2, "King line width", minval=1, maxval=4, group=g_style)
+gate_width = input.int(1, "Gate line width", minval=1, maxval=4, group=g_style)
+flip_width = input.int(2, "Flip line width", minval=1, maxval=4, group=g_style)
+show_labels = input.bool(true, "Show level labels", group=g_style)
+
+// ── Drawing helpers ────────────────────────────────────────────────────────
+
+draw_level(level, clr, width, lstyle, tag, lbl_text) =>
+    if level > 0 and barstate.islast
+        line.new(bar_index - 200, level, bar_index + 50, level,
+                 xloc=xloc.bar_index, color=clr, style=lstyle, width=width,
+                 extend=extend.right)
+        if show_labels
+            label.new(bar_index + 5, level, lbl_text,
+                      xloc=xloc.bar_index, color=color.new(clr, 80),
+                      textcolor=color.white, style=label.style_label_left,
+                      size=size.small)
+
+// Kings (solid)
+draw_level(king1, king_color, king_width, line.style_solid, "★",
+    "★ King " + str.tostring(king1, "#.##") +
+    (ticker_label != "" ? " " + ticker_label : ""))
+draw_level(king2, king_color, king_width, line.style_solid, "★",
+    "★ King " + str.tostring(king2, "#.##"))
+draw_level(king3, king_color, king_width, line.style_solid, "★",
+    "★ King " + str.tostring(king3, "#.##"))
+
+// Gates (dotted)
+draw_level(gate1, gate_color, gate_width, line.style_dotted, "◆", "◆ Gate " + str.tostring(gate1, "#.##"))
+draw_level(gate2, gate_color, gate_width, line.style_dotted, "◆", "◆ Gate " + str.tostring(gate2, "#.##"))
+draw_level(gate3, gate_color, gate_width, line.style_dotted, "◆", "◆ Gate " + str.tostring(gate3, "#.##"))
+draw_level(gate4, gate_color, gate_width, line.style_dotted, "◆", "◆ Gate " + str.tostring(gate4, "#.##"))
+draw_level(gate5, gate_color, gate_width, line.style_dotted, "◆", "◆ Gate " + str.tostring(gate5, "#.##"))
+
+// Flip (dashed)
+draw_level(flip, flip_color, flip_width, line.style_dashed, "⇅",
+    "⇅ Flip " + str.tostring(flip, "#.##") +
+    (levels_date != "" ? "  (" + levels_date + ")" : ""))
+
+// ── Regime tint ────────────────────────────────────────────────────────────
+
+bgcolor(shade_regime and flip > 0 and close > flip ? color.new(color.green, 92) : na, title="Positive gamma regime")
+bgcolor(shade_regime and flip > 0 and close < flip ? color.new(color.red,   92) : na, title="Negative gamma regime")
+
+// ── Alerts ─────────────────────────────────────────────────────────────────
+// Trigger when price crosses a level. Useful for "King defended" and
+// "regime change at flip" notifications.
+
+alertcondition(king1 > 0 and ta.cross(close, king1), title="King 1 crossed", message="Price crossed King 1")
+alertcondition(king2 > 0 and ta.cross(close, king2), title="King 2 crossed", message="Price crossed King 2")
+alertcondition(flip  > 0 and ta.cross(close, flip),  title="Flip crossed",   message="Regime change: price crossed gamma flip")

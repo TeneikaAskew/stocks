@@ -1,16 +1,12 @@
 /**
  * Shared chart theme for lightweight-charts and Recharts instances.
+ * Reads CSS variables from :root / [data-theme="light"] so charts swap
+ * with the global theme. See docs/DESIGN_SYSTEM.md.
  *
- * Reads CSS variables from :root / [data-theme="light"] (defined in
- * src/index.css) so charts swap with the global theme rather than
- * showing the dark palette over a light surface (a WCAG hazard:
- * the previous static `textMuted: '#bdc8d2'` collapsed to ~1.6:1
- * contrast on the light surface-2).
- *
- * Use `useChartTheme()` inside React components — it subscribes to
- * the theme store so the chart re-renders on toggle. The static
- * `chartTheme` export is preserved for non-reactive callers and is
- * a Proxy that resolves CSS vars at every property access.
+ * Use `useChartTheme()` inside components so they re-render on toggle.
+ * The static `chartTheme` export remains for non-reactive callers
+ * (e.g. one-time chart setup) but resolves at the time of access from
+ * whatever theme is current on document.documentElement.
  */
 import { useThemeStore } from '@/stores/themeStore';
 
@@ -41,6 +37,8 @@ function readVar(name: string, fallback: string): string {
 }
 
 function buildChartTheme(): ChartTheme {
+  // Fallbacks match the dark palette in case CSS vars are not yet computed
+  // (e.g. during SSR or the very first paint before stylesheet load).
   return {
     bg: readVar('--surface-0', '#111318'),
     cardBg: readVar('--surface-2', '#282a2e'),
@@ -64,15 +62,19 @@ function buildChartTheme(): ChartTheme {
 
 /** Reactive hook — re-evaluates whenever the global theme toggles. */
 export function useChartTheme(): ChartTheme {
+  // Subscribe to theme so the host component re-renders on toggle.
+  // The actual values still come from CSS vars (single source of truth).
   useThemeStore((s) => s.theme);
   return buildChartTheme();
 }
 
 /**
- * Non-reactive accessor preserved for backwards compatibility. Each
- * property read resolves the current CSS-var value, so initial chart
- * setup picks up the right palette even if the component does not
- * subscribe to the theme store.
+ * Non-reactive accessor. Returns the theme as it stands at call time.
+ * Prefer `useChartTheme()` in React components; this is for one-time
+ * setup paths where rebuilding the chart on toggle isn't desired.
+ *
+ * Implemented as a Proxy so existing `chartTheme.bull` access still works
+ * but resolves against the current theme each read.
  */
 export const chartTheme = new Proxy({} as ChartTheme, {
   get(_t, prop: string) {

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { chartTheme, useChartTheme } from '@/lib/chartTheme';
+import { useMarketHours } from '@/hooks/useConfig';
 import {
   createChart,
   createSeriesMarkers,
@@ -42,15 +43,28 @@ interface CandlestickChartProps {
   onCrosshairMove?: (data: { time: number; price: number; ohlc?: CandlestickBar } | null) => void;
 }
 
-const RTH_START = 9 * 60 + 30; // 9:30 AM in minutes
-const RTH_END = 16 * 60; // 4:00 PM in minutes
-
-function filterRTH(bars: CandlestickBar[]): CandlestickBar[] {
+// RTH window comes from /api/config/market-hours via useMarketHours().
+// We accept `rthStart`/`rthEnd` as injected minute-of-day values so the
+// component stays presentational and we don't issue an extra fetch here.
+function filterRTH(
+  bars: CandlestickBar[],
+  rthStart: number,
+  rthEnd: number,
+): CandlestickBar[] {
   return bars.filter((bar) => {
     const d = new Date(bar.time * 1000);
     const minutes = d.getUTCHours() * 60 + d.getUTCMinutes();
-    return minutes >= RTH_START && minutes < RTH_END;
+    return minutes >= rthStart && minutes < rthEnd;
   });
+}
+
+// Parse "HH:MM" → minutes-of-day. Falls back to standard NYSE hours if
+// the server response is missing.
+function parseMinutes(s: string | undefined, fallback: number): number {
+  if (!s) return fallback;
+  const m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return fallback;
+  return Number(m[1]) * 60 + Number(m[2]);
 }
 
 function filterRTHVolume(bars: VolumeBar[], rthTimes: Set<number>): VolumeBar[] {
@@ -67,6 +81,12 @@ export function CandlestickChart({
   onChartClick,
   onCrosshairMove,
 }: CandlestickChartProps) {
+  // Server-sourced market hours so the RTH filter mirrors Python.
+  // Falls back to standard NYSE 09:30-16:00 ET when the config query is
+  // still loading or fails — the constants here mirror lib/config defaults.
+  const { data: marketHours } = useMarketHours();
+  const rthStart = parseMinutes(marketHours?.regular.open, 9 * 60 + 30);
+  const rthEnd = parseMinutes(marketHours?.regular.close, 16 * 60);
   const theme = useChartTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -151,7 +171,7 @@ export function CandlestickChart({
     let displayVolume = volume;
 
     if (rthOnly) {
-      displayCandles = filterRTH(candlestick);
+      displayCandles = filterRTH(candlestick, rthStart, rthEnd);
       const rthTimes = new Set(displayCandles.map((c) => c.time));
       displayVolume = filterRTHVolume(volume, rthTimes);
     }
@@ -173,7 +193,7 @@ export function CandlestickChart({
     candleSeriesRef.current.setData(candleData);
     volumeSeriesRef.current.setData(volumeData);
     chartRef.current?.timeScale().fitContent();
-  }, [candlestick, volume, rthOnly]);
+  }, [candlestick, volume, rthOnly, rthStart, rthEnd]);
 
   // Toggle volume visibility
   useEffect(() => {
@@ -183,13 +203,20 @@ export function CandlestickChart({
     });
   }, [showVolume]);
 
-  // Re-apply theme on toggle. The chart is created once; mutating options
-  // here keeps user pan/zoom state across light/dark switches.
+  // Re-apply theme colors when the global theme toggles. The chart and series
+  // are created once; on theme change we mutate options in place rather than
+  // tearing down the chart so user pan/zoom state is preserved.
   useEffect(() => {
     if (!chartRef.current || !candleSeriesRef.current) return;
     chartRef.current.applyOptions({
-      layout: { background: { color: theme.bg }, textColor: theme.axis },
-      grid: { vertLines: { color: theme.grid }, horzLines: { color: theme.grid } },
+      layout: {
+        background: { color: theme.bg },
+        textColor: theme.axis,
+      },
+      grid: {
+        vertLines: { color: theme.grid },
+        horzLines: { color: theme.grid },
+      },
       timeScale: { borderColor: theme.border },
       rightPriceScale: { borderColor: theme.border },
     });

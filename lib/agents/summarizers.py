@@ -274,6 +274,98 @@ def summarize_options_flow(
 
 
 # ---------------------------------------------------------------------------
+# 3b. Gamma levels (King / Gate / Spot / Flip taxonomy + regime)
+# ---------------------------------------------------------------------------
+
+
+def summarize_gamma_levels(
+    ticker: str, as_of: Optional[date_type] = None
+) -> dict:
+    """Stratalyst-style gamma analytics: King / Gate / Spot / Flip + regime.
+
+    Pulls the latest AlphaVantage chain for the ticker (or the most recent
+    snapshot on or before `as_of`) and runs lib.gamma.build_summary. The
+    output feeds the gamma analyst prompt; any consumer wanting a richer
+    response should call the /api/options/{ticker}/{date}/levels endpoint
+    directly instead of consuming this summary.
+    """
+    from lib import gamma  # local import to avoid circular at module load
+
+    sql = (
+        "SELECT option_type, strike, expiration, "
+        "       open_interest, gamma, vega, delta, "
+        "       bid, ask, mark, last_price "
+        "FROM etf_options_snapshots "
+        "WHERE ticker = :ticker "
+        "  AND data_source = 'alphavantage' "
+        + ("AND snapshot_date <= :as_of " if as_of else "")
+        + "  AND snapshot_date = ("
+        "      SELECT MAX(snapshot_date) FROM etf_options_snapshots "
+        "      WHERE ticker = :ticker AND data_source = 'alphavantage'"
+        + ("      AND snapshot_date <= :as_of" if as_of else "")
+        + "  )"
+    )
+    params: dict[str, Any] = {"ticker": ticker.upper()}
+    if as_of:
+        params["as_of"] = str(as_of)
+    df = _query(sql, params)
+    if df.empty:
+        return _unavailable(f"no etf_options_snapshots for {ticker}")
+
+    # Map the chain rows to the dict shape lib.gamma accepts.
+    type_map = {"calls": "call", "puts": "put"}
+    options = []
+    for row in df.to_dict(orient="records"):
+        exp = row.get("expiration")
+        if hasattr(exp, "strftime"):
+            exp = exp.strftime("%Y-%m-%d")
+        options.append({
+            "type": type_map.get(row.get("option_type"), row.get("option_type")),
+            "strike": row.get("strike"),
+            "expiration": exp,
+            "open_interest": row.get("open_interest"),
+            "gamma": row.get("gamma"),
+            "vega": row.get("vega"),
+            "delta": row.get("delta"),
+            "bid": row.get("bid"),
+            "ask": row.get("ask"),
+            "mark": row.get("mark"),
+            "last": row.get("last_price"),
+        })
+
+    snapshot_date = str(as_of) if as_of else "latest"
+    summary = gamma.build_summary(
+        ticker=ticker,
+        snapshot_date=snapshot_date,
+        options=options,
+    )
+
+    # Compact shape for the analyst — full GammaSummary is too verbose.
+    def _level_brief(lv: gamma.Level) -> dict:
+        return {
+            "strike": lv.strike,
+            "gex": round(lv.gex, 0),
+            "distance_pct": round(lv.distance_pct, 2),
+            "call_oi": lv.call_oi,
+            "put_oi": lv.put_oi,
+        }
+
+    return {
+        "available": True,
+        "spot": round(summary.spot.price, 2),
+        "spot_method": summary.spot.method,
+        "flip": round(summary.flip, 2) if summary.flip else None,
+        "regime": summary.regime,
+        "total_gex": round(summary.total_gex, 0),
+        "kings": [_level_brief(lv) for lv in summary.kings[:3]],
+        "gates": [_level_brief(lv) for lv in summary.gates[:5]],
+        "flip_levels": [_level_brief(lv) for lv in summary.flip_levels],
+        "warnings": summary.warnings,
+        "chain_size": len(options),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 4. Signal history
 # ---------------------------------------------------------------------------
 
@@ -969,6 +1061,7 @@ def build_context_bundle(
         "market": lambda: summarize_market_context(ticker, as_of),
         "strat": lambda: summarize_strat_status(ticker, as_of),
         "options": lambda: summarize_options_flow(ticker, as_of),
+        "gamma": lambda: summarize_gamma_levels(ticker, as_of),
         "signals": lambda: summarize_signals_history(ticker, as_of=as_of),
         "backtest": lambda: summarize_backtest_metrics(ticker, as_of=as_of),
         "catalysts": lambda: summarize_catalysts(ticker, as_of),

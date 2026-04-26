@@ -5,6 +5,7 @@ import { useTradeStore } from '@/stores/tradeStore';
 import { useReviewDateStore } from '@/stores/reviewDateStore';
 import { useMarketData, useAvailableDates, useReferenceLevels } from '@/hooks/useMarketData';
 import { useTradeAnalytics } from '@/hooks/useTradeAnalytics';
+import { useGammaLevels } from '@/hooks/useGammaLevels';
 import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
@@ -28,7 +29,13 @@ import {
   LogOut,
   Download,
   Trash2,
+  Zap,
 } from 'lucide-react';
+
+// Tickers for which we have an options chain in Cloud SQL (matches
+// VALID_TICKERS in platform/api/routers/options.py). The Gamma toggle
+// is hidden for any other ticker because the /levels endpoint will 400.
+const GAMMA_LEVELS_TICKERS = new Set(['SPY', 'IWM', 'QQQ', 'SPX']);
 
 const TIMEFRAMES: { value: Timeframe; label: string }[] = [
   { value: '1', label: '1m' },
@@ -76,6 +83,7 @@ export default function ChartsPage() {
   const [showVolume, setShowVolume] = useState(true);
   const [rthOnly, setRthOnly] = useState(true);
   const [showRefLevels, setShowRefLevels] = useState(false);
+  const [showGamma, setShowGamma] = useState(false);
   const [showSignals, setShowSignals] = useState(false);
   const [activeTab, setActiveTab] = useState<'trades' | 'analytics'>('trades');
 
@@ -134,6 +142,18 @@ export default function ChartsPage() {
 
   // Reference levels (prev day OHLC)
   const { data: refLevels } = useReferenceLevels(activeTicker, selectedDate);
+
+  // Gamma levels — King/Gate/Spot/Flip from lib.gamma. Only fetched for
+  // tickers we have options chains for, and only when the user toggles
+  // the overlay on. selectedDate is YYYYMMDD; the endpoint wants YYYY-MM-DD.
+  const gammaLevelsEnabled =
+    showGamma && GAMMA_LEVELS_TICKERS.has(activeTicker.toUpperCase()) && !!selectedDate;
+  const gammaIsoDate = selectedDate
+    ? `${selectedDate.slice(0, 4)}-${selectedDate.slice(4, 6)}-${selectedDate.slice(6, 8)}`
+    : '';
+  const { data: gammaLevels } = useGammaLevels(activeTicker, gammaIsoDate, {
+    enabled: gammaLevelsEnabled,
+  });
 
   // Trades for current date/ticker — filter out trades after reviewTs in review mode
   const reviewCutoffTs = useMemo(() => {
@@ -257,8 +277,40 @@ export default function ChartsPage() {
       );
     }
 
+    // Gamma levels — King (gold solid), Gate (blue dashed), Flip (violet dashed).
+    // Lines are clipped to the visible window of strikes so we don't pollute
+    // the chart with deep OTM levels. See lib/gamma.py for the taxonomy.
+    if (showGamma && gammaLevels) {
+      for (const k of gammaLevels.kings) {
+        lines.push({
+          price: k.strike,
+          color: '#f59e0b',
+          title: `★ King ${k.strike.toFixed(2)}`,
+          lineStyle: 0, // Solid
+          lineWidth: 2 as LineWidth,
+        });
+      }
+      for (const g of gammaLevels.gates) {
+        lines.push({
+          price: g.strike,
+          color: '#3b82f6',
+          title: `◆ Gate ${g.strike.toFixed(2)}`,
+          lineStyle: 2, // Dotted
+        });
+      }
+      if (gammaLevels.flip !== null) {
+        lines.push({
+          price: gammaLevels.flip,
+          color: '#a78bfa',
+          title: `⇅ Flip ${gammaLevels.flip.toFixed(2)}`,
+          lineStyle: 1, // Dashed
+          lineWidth: 2 as LineWidth,
+        });
+      }
+    }
+
     return lines;
-  }, [currentTrades, showRefLevels, refLevels]);
+  }, [currentTrades, showRefLevels, refLevels, showGamma, gammaLevels]);
 
   // Chart click handler
   const handleChartClick = useCallback(
@@ -483,6 +535,21 @@ export default function ChartsPage() {
             <Ruler size={14} />
             Ref
           </button>
+
+          {GAMMA_LEVELS_TICKERS.has(activeTicker.toUpperCase()) && (
+            <button
+              onClick={() => setShowGamma(!showGamma)}
+              title="Show King/Gate/Flip gamma levels for this date"
+              className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs ${
+                showGamma
+                  ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]'
+                  : 'text-[var(--color-text-muted)]'
+              }`}
+            >
+              <Zap size={14} />
+              Gamma
+            </button>
+          )}
 
           <button
             onClick={() => setShowSignals(!showSignals)}

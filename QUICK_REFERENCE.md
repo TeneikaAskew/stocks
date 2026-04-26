@@ -1,5 +1,21 @@
 # Stock Market Analysis - Quick Reference Guide
 
+## Gamma Analytics (King / Gate / Spot / Flip)
+
+```bash
+# CLI: print gamma levels from local JSON snapshots
+python3 scripts/show_gamma_levels.py qqq
+python3 scripts/show_gamma_levels.py iwm --window 4
+python3 scripts/show_gamma_levels.py qqq --date 20251121 --spot 590.50
+
+# API endpoints (running locally):
+#   POST /api/options/greeks               # heatmap-driving math
+#   GET  /api/options/{ticker}/{date}/levels   # full GammaSummary
+curl 'http://localhost:8000/api/options/QQQ/2025-11-21/levels?window_pct=8'
+```
+
+Full reference: [`docs/gamma_levels.md`](docs/gamma_levels.md).
+
 ## Backtesting & Strat Commands
 
 ### Run Backtests

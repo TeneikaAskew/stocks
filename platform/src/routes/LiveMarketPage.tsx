@@ -5,8 +5,9 @@ import { useReviewDateStore } from '@/stores/reviewDateStore';
 import { useLiveStatus } from '@/hooks/useLiveStatus';
 import { useLiveQuote, type LiveQuote } from '@/hooks/useLiveQuote';
 import { useLiveHistory, useAvgVolume } from '@/hooks/useLiveHistory';
+import { useLiveIndicators } from '@/hooks/useLiveIndicators';
 import { MetricCard } from '@/components/shared/MetricCard';
-import { computeIndicators, computeSignals } from '@/lib/indicators';
+import { EMPTY_INDICATORS, EMPTY_SIGNALS } from '@/lib/indicators';
 import type { Bar } from '@/lib/indicators';
 import { to12h } from '@/lib/time';
 import {
@@ -68,7 +69,7 @@ function ConditionRow({ label, met, current, threshold, operator, direction }: {
 function SignalCard({ direction, strength, conditions, fired }: {
   direction: 'CALL' | 'PUT';
   strength: number;
-  conditions: ReturnType<typeof computeSignals>['call']['conditions'];
+  conditions: import('@/lib/indicators').SignalCondition[];
   fired: boolean;
 }) {
   const isCall = direction === 'CALL';
@@ -199,14 +200,19 @@ export default function LiveMarketPage() {
     };
   }, [isReview, bars, liveQuote, activeTicker, reviewDate, reviewTime]);
 
-  const indicators = computeIndicators(bars);
-  const signals = computeSignals(
-    quote?.price ?? null,
-    indicators.vwap,
-    indicators,
-    quote?.volume ?? null,
-    avgVolData?.avg_volume_20d ?? null,
+  // Indicators and signals are computed server-side (lib/indicators.py).
+  // The app never duplicates this math — there is no client-side fallback.
+  const indicatorsQuery = useLiveIndicators(
+    {
+      bars,
+      current_price: quote?.price ?? null,
+      current_volume: quote?.volume ?? null,
+      avg_volume_20d: avgVolData?.avg_volume_20d ?? null,
+    },
+    bars.length > 0,
   );
+  const indicators = indicatorsQuery.data?.indicators ?? EMPTY_INDICATORS;
+  const signals = indicatorsQuery.data?.signals ?? EMPTY_SIGNALS;
 
   // Sound alert on signal (disabled in review mode)
   useEffect(() => {

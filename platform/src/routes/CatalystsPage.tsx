@@ -130,12 +130,14 @@ const TYPE_CONFIG: Record<string, { label: string; tone: Tone; icon: typeof Tren
   SEC_8K:             { label: '8-K',         tone: 'amber',   icon: Briefcase },
 };
 
+// Impact → bg-color class lookup (single source of truth for the impact dot
+// + any future text-color usage via the matching `text-[var(--…)]` class).
 const IMPACT_COLORS: Record<string, string> = {
-  'Very High': 'text-[var(--bear)]',
-  'High': 'text-[var(--warn)]',
-  'Medium': 'text-[var(--warn)]',
-  'Low': 'text-[var(--on-surface-variant)]',
-  'Variable': 'text-[var(--brand)]',
+  'Very High': 'var(--bear)',
+  'High': 'var(--warn)',
+  'Medium': 'var(--brand)',
+  'Low': 'var(--on-surface-variant)',
+  'Variable': 'var(--brand)',
 };
 
 // ── Hooks ──────────────────────────────────────────────────────────────────
@@ -208,14 +210,11 @@ function CatalystBadge({ type }: { type: string }) {
 
 function ImpactDot({ event }: { event: CatalystEvent }) {
   const k = impactKey(event);
-  const cls =
-    k === 'Very High' ? 'bg-[var(--bear)]' :
-    k === 'High'      ? 'bg-[var(--warn)]' :
-    k === 'Medium'    ? 'bg-[var(--brand)]' :
-                        'bg-[var(--on-surface-variant)]';
+  const color = IMPACT_COLORS[k] || IMPACT_COLORS.Low;
   return (
     <span
-      className={`inline-block h-2 w-2 rounded-full ${cls}`}
+      className="inline-block h-2 w-2 rounded-full"
+      style={{ backgroundColor: color }}
       title={`${k} impact`}
       aria-label={`${k} impact`}
     />
@@ -297,12 +296,12 @@ function DateGroup({ date, events, onOpenTicker }: {
     return (a.ticker || '').localeCompare(b.ticker || '');
   });
   return (
-    <div className={`rounded-xl p-4 ${isToday ? 'bg-[var(--surface-2)] ring-1 ring-[var(--brand)]' : 'bg-[var(--surface-1)]'}`}>
-      <div className="flex items-center justify-between mb-2">
+    <div className={`rounded-xl p-6 ${isToday ? 'bg-[var(--surface-2)] ring-1 ring-[var(--brand)]' : 'bg-[var(--surface-1)]'}`}>
+      <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-sm font-semibold text-[var(--on-surface)]">{formatDate(date)}</span>
           {isToday && (
-            <span className="rounded bg-[var(--brand)] px-2 py-0.5 text-[10px] font-bold text-[var(--on-brand)]">
+            <span className="rounded-lg bg-[var(--brand)] px-2 py-0.5 text-[10px] font-bold text-[var(--on-brand)]">
               TODAY
             </span>
           )}
@@ -328,15 +327,15 @@ function WSHUpgradeBanner({ types }: { types: CatalystTypesResponse | undefined 
   if (!types) return null;
   const wshTypes = Object.values(types.wsh_only_types);
   return (
-    <div className="rounded-xl bg-[var(--surface-1)] p-4 border border-dashed border-[var(--brand)]">
-      <div className="flex items-center gap-2 mb-2">
+    <div className="rounded-xl bg-[var(--surface-1)] p-6 border border-dashed border-[var(--brand)]">
+      <div className="mb-3 flex items-center gap-2">
         <Lock size={14} className="text-[var(--brand)]" />
         <span className="text-sm font-semibold text-[var(--brand)]">Wall Street Horizon Upgrade</span>
       </div>
-      <p className="text-xs text-[var(--on-surface-variant)] mb-3">
+      <p className="mb-4 text-xs text-[var(--on-surface-variant)]">
         These event types require WSH via IBKR TWS API ($49-149/mo):
       </p>
-      <div className="flex flex-wrap gap-2 mb-3">
+      <div className="mb-4 flex flex-wrap gap-2">
         {/* Server-supplied hex colors are dark-tuned and would fail WCAG on
             the light surface; render as theme-neutral "locked" chips so the
             upsell preview is readable in both modes. */}
@@ -365,6 +364,7 @@ function WSHUpgradeBanner({ types }: { types: CatalystTypesResponse | undefined 
 // ── Main page ──────────────────────────────────────────────────────────────
 
 export default function CatalystsPage() {
+  const theme = useThemeStore((s) => s.theme);
   const today = new Date();
   const [dateFrom, setDateFrom] = useState(() => {
     const d = new Date(today);
@@ -462,12 +462,12 @@ export default function CatalystsPage() {
   allEvents.forEach(e => allTypes.add(e.catalyst_type));
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-lg font-bold text-[var(--on-surface)]">Catalysts</h1>
-          <p className="text-xs text-[var(--on-surface-variant)]">
+          <h1 className="text-4xl font-bold tracking-tight text-[var(--color-brand)]">Catalysts</h1>
+          <p className="label-micro mt-2">
             {impactCounts.Total} events
             {' '}<span className="text-[var(--bear)] font-semibold">{impactCounts.High}H</span>{' / '}
             <span className="text-[var(--brand)] font-semibold">{impactCounts.Medium}M</span>{' / '}
@@ -573,10 +573,12 @@ export default function CatalystsPage() {
           </button>
           {Array.from(allTypes).sort().map(type => {
             const config = TYPE_CONFIG[type];
-            // Use the deeper "light"-variant hex as the active background so
-            // white text reads at WCAG AA in both themes (the dark-variant
-            // pastels would only get ~3:1 against white).
+            // Active background uses the deeper "light"-variant hex so white
+            // text reads at WCAG AA in both themes; the theme-aware
+            // `chipColor` is layered on top as the border accent so the chip
+            // still tracks the user's active theme.
             const activeBg = config ? TONE_PALETTE[config.tone].light : undefined;
+            const chipColor = config ? toneColor(config.tone, theme) : null;
             return (
               <button
                 key={type}
@@ -586,7 +588,11 @@ export default function CatalystsPage() {
                     ? 'text-white'
                     : 'bg-[var(--surface-2)] text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)]'
                 }`}
-                style={activeFilter === type && activeBg ? { backgroundColor: activeBg } : undefined}
+                style={
+                  activeFilter === type && activeBg
+                    ? { backgroundColor: activeBg, border: chipColor ? `1px solid ${chipColor}` : undefined }
+                    : undefined
+                }
               >
                 {config?.label || type}
               </button>
@@ -602,19 +608,19 @@ export default function CatalystsPage() {
         </div>
       )}
       {error && (
-        <div className="rounded-lg bg-red-500/10 p-4 text-sm text-[var(--bear)]">
+        <div className="rounded-xl border border-[var(--bear)]/40 bg-[var(--bear)]/10 px-4 py-2.5 text-sm text-[var(--bear)]">
           Failed to load catalysts: {(error as Error).message}
         </div>
       )}
       {data?.status === 'no_data' && (
-        <div className="rounded-lg bg-amber-500/10 p-4 text-sm text-[var(--warn)]">
-          <Filter size={14} className="inline mr-1" />
+        <div className="rounded-lg border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-4 py-2.5 text-sm text-[var(--warn)]">
+          <Filter size={14} className="mr-1 inline" />
           {data.message}
         </div>
       )}
 
       {/* Event timeline */}
-      <div className="space-y-3">
+      <div className="space-y-4">
         {filteredDates.map(([date, events]) => (
           <DateGroup
             key={date}

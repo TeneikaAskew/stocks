@@ -148,6 +148,25 @@ class StratClassifier:
         mask_312_bear = (prev2 == '3') & (prev1 == '1') & (df['Low'] < one_bar_low)
         result.loc[mask_312_bear, 'strat_combo'] = '3-1-2D_reversal'
 
+        # --- Failed 2U / Failed 2D (RevStrat reversals) ---
+        #
+        # The current bar prints as a directional 2 but closes back inside the
+        # PRIOR bar's range — i.e. the breakout failed and reversed. These are
+        # the highest-prob single-bar reversal signals in the community recaps
+        # (see tradingview-pine-scripts/strat-assistant-v2 for the Pine
+        # equivalents named 122_RevStrat_Bull/Bear). Locked definition:
+        #   Failed_2U: bar prints higher high than prior bar but closes back
+        #              inside prior bar's range (close <= prev_high).
+        #   Failed_2D: bar prints lower low than prior bar but closes back
+        #              inside prior bar's range (close >= prev_low).
+        prev_high = df['High'].shift(1)
+        prev_low = df['Low'].shift(1)
+        mask_failed_2u = (labels == '2U') & (close <= prev_high)
+        mask_failed_2d = (labels == '2D') & (close >= prev_low)
+        # Failed reversals override prior tags — they are the actionable signal
+        result.loc[mask_failed_2u, 'strat_combo'] = 'Failed_2U'
+        result.loc[mask_failed_2d, 'strat_combo'] = 'Failed_2D'
+
         # --- Continuation combos ---
 
         # 2U-1-2U Continuation (Bullish)
@@ -160,6 +179,14 @@ class StratClassifier:
         mask_cont_bear = (prev2 == '2D') & (prev1 == '1') & (df['Low'] < one_bar_low)
         cont_bear_only = mask_cont_bear & (result['strat_combo'] == 'none')
         result.loc[cont_bear_only, 'strat_combo'] = '2D-1-2D_continuation'
+
+        # Simple two-bar continuations (used in community recaps as plain
+        # "2U continuation" / "2D continuation" — distinct from the 3-bar
+        # variants above which require a compressed inside bar between).
+        mask_22u = (prev1 == '2U') & (labels == '2U')
+        mask_22d = (prev1 == '2D') & (labels == '2D')
+        result.loc[mask_22u & (result['strat_combo'] == 'none'), 'strat_combo'] = '2U_continuation'
+        result.loc[mask_22d & (result['strat_combo'] == 'none'), 'strat_combo'] = '2D_continuation'
 
         # --- 3-bar exhaustion / reversal ---
 
@@ -276,12 +303,19 @@ class StratClassifier:
         bonus = 0
 
         # +combo_bonus for aligned Strat combo
+        # Failed_2U is a bearish reversal signal (rejected breakout) → favors PUT.
+        # Failed_2D is a bullish reversal signal (rejected breakdown) → favors CALL.
+        # Plain 2U/2D continuations align with their direction.
         if signal_direction == 'CALL' and combo in (
             '2D-1-2U_reversal', '3-1-2U_reversal', '3-2U_reversal',
+            '2U-1-2U_continuation', '2U_continuation',
+            'Failed_2D',
         ):
             bonus += combo_bonus
         elif signal_direction == 'PUT' and combo in (
             '2U-1-2D_reversal', '3-1-2D_reversal', '3-2D_reversal',
+            '2D-1-2D_continuation', '2D_continuation',
+            'Failed_2U',
         ):
             bonus += combo_bonus
 

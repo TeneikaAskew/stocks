@@ -9,8 +9,17 @@ from lib.data_loader import DataLoader, COLUMN_MAP, RESAMPLE_RULES
 
 
 @pytest.fixture
-def loader(tmp_path):
-    """DataLoader pointing to a temp directory."""
+def loader(tmp_path, monkeypatch):
+    """DataLoader pointing to a temp directory.
+
+    Tests in this file exercise the file-system fallback code paths.
+    With Cloud SQL credentials in env (`CLOUD_SQL_CONNECTION_NAME`
+    set, e.g. when running locally with `.env` sourced) DataLoader
+    queries Cloud SQL first and bypasses `data_dir` entirely, which
+    breaks "empty when no local data" assertions. Clear the env var
+    so the loader takes the parquet/CSV path the tests expect.
+    """
+    monkeypatch.delenv("CLOUD_SQL_CONNECTION_NAME", raising=False)
     return DataLoader(data_dir=str(tmp_path))
 
 

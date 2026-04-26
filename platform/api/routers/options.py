@@ -31,9 +31,12 @@ from datetime import date, datetime
 from pathlib import Path
 import sys
 
+import math
+
 import pandas as pd
 from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 # Project root so we can import gcp.database the same way the journal router does.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -313,3 +316,139 @@ async def get_options(ticker: str, date_str: str):
     }
     _CHAIN_CACHE[cache_key] = response
     return {**response, "cached": False}
+
+
+# ── Greeks + Nodes (canonical compute, single source of truth) ──────────────
+#
+# All math delegates to lib.gamma so the API, AI gamma analyst, CLI, and
+# Pine-companion exports share one implementation. See lib/gamma.py for the
+# locked sign convention and taxonomy. The /api/options/greeks response
+# preserves its existing contract; /api/options/{ticker}/{date}/levels is
+# the new chain-source-aware GET that returns the full GammaSummary
+# (King/Gate/Spot/Flip taxonomy, regime classification, layered spot
+# estimation) without requiring the client to send the chain.
+
+from lib import gamma  # noqa: E402
+
+DEFAULT_STRIKE_RANGE_PCT = gamma.DEFAULT_STRIKE_RANGE_PCT
+ATM_TOLERANCE = gamma.ATM_TOLERANCE
+NODE_MIN_GAMMA = gamma.NODE_MIN_GAMMA
+
+
+class _OptionRecord(BaseModel):
+    type: str  # 'call' | 'put'
+    strike: float
+    open_interest: float | None = None
+    gamma: float | None = None
+    vega: float | None = None
+    delta: float | None = None
+    volume: float | None = None
+
+
+class _GreeksRequest(BaseModel):
+    options: list[_OptionRecord]
+    spot_price: float
+    strike_range_pct: float | None = None  # optional display filter
+
+
+def _opts_to_dicts(options: list[_OptionRecord]) -> list[dict]:
+    """Turn pydantic option records into the plain-dict shape lib.gamma accepts."""
+    return [o.model_dump() for o in options]
+
+
+@router.post("/api/options/greeks")
+def compute_options_greeks(req: _GreeksRequest) -> dict:
+    """Single source of truth for GEX/VEX/max-pain/implied-move/nodes.
+
+    The frontend previously computed all of this in TypeScript. Centralizing
+    it here means config tweaks (multipliers, thresholds) change in one place.
+    Math lives in lib/gamma.py.
+    """
+    config = {
+        "strike_range_pct": req.strike_range_pct or DEFAULT_STRIKE_RANGE_PCT,
+        "atm_tolerance": ATM_TOLERANCE,
+        "node_min_gamma": NODE_MIN_GAMMA,
+    }
+
+    if req.spot_price <= 0 or not req.options:
+        return {
+            "aggregated": [],
+            "gex_by_strike": [],
+            "metrics": {
+                "total_gex": 0.0,
+                "total_vex": 0.0,
+                "zero_gamma": None,
+                "max_pain": None,
+                "implied_move": None,
+                "put_call_ratio": 0.0,
+            },
+            "nodes": {"kingNode": None, "gatekeepers": [], "midpoints": [], "allNodes": []},
+            "config": config,
+        }
+
+    opts = _opts_to_dicts(req.options)
+    aggregated = gamma.aggregate_by_strike(opts)
+    gex_strikes = gamma.gex_by_strike(aggregated, req.spot_price)
+
+    metrics = {
+        # Total GEX is summed from per-strike values so the sign is consistent
+        # with the per-strike rows the heatmap displays.
+        "total_gex": gamma.total_gex_from_strikes(gex_strikes),
+        "total_vex": gamma.total_vex(opts, req.spot_price),
+        "zero_gamma": gamma.zero_gamma(aggregated),
+        "max_pain": gamma.max_pain(aggregated),
+        "implied_move": gamma.implied_move(opts, req.spot_price),
+        "put_call_ratio": gamma.put_call_ratio(opts),
+    }
+
+    nodes = gamma.detect_nodes(aggregated, req.spot_price)
+
+    return {
+        "aggregated": aggregated,
+        "gex_by_strike": gex_strikes,
+        "metrics": metrics,
+        "nodes": nodes,
+        "config": config,
+    }
+
+
+@router.get("/api/options/{ticker}/{date_str}/levels")
+async def get_gamma_levels(
+    ticker: str,
+    date_str: str,
+    window_pct: float = 8.0,
+    spot: float | None = None,
+):
+    """Stratalyst-style King/Gate/Spot/Flip taxonomy for a Cloud SQL snapshot.
+
+    Loads the chain from etf_options_snapshots, runs lib.gamma.build_summary,
+    returns the full GammaSummary (spot estimate w/ method, gamma flip,
+    regime, classified levels with composite scores, warnings).
+
+    Unlike POST /api/options/greeks (which the heatmap UI uses), this is a
+    chain-source-aware GET — useful for the AI gamma analyst, Pine companion
+    export, and any client that wants levels without shipping the chain
+    upstream. Spot is estimated server-side via put-call parity (with delta
+    + median-strike fallbacks); pass ?spot=... to override.
+    """
+    ticker_upper = _validate_ticker(ticker)
+    parsed_date = _validate_date(date_str)
+    _require_cloud_sql()
+
+    # Reuse the existing chain endpoint logic to load + normalize the chain.
+    chain_response = await get_options(ticker, date_str)
+    options = chain_response.get("options", [])
+
+    summary = gamma.build_summary(
+        ticker=ticker_upper,
+        snapshot_date=date_str,
+        options=options,
+        spot_override=spot,
+        window_pct=window_pct,
+    )
+
+    return {
+        **summary.to_dict(),
+        "snapshot_timestamp": chain_response.get("snapshot_timestamp"),
+        "chain_size": len(options),
+    }

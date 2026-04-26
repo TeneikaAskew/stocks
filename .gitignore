@@ -92,8 +92,9 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-!platform/src/lib/
+# NOTE: Project source modules live in lib/ — do NOT ignore the top-level
+# lib directory. Python venvs should use .venv/ instead, which is already
+# covered by the venv/.venv/env entries below.
 lib64/
 parts/
 sdist/

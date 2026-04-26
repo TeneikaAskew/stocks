@@ -90,7 +90,15 @@ export default function InsightsPage() {
   const isRunning = !!currentRunId && runStatus.data?.status !== 'done' && runStatus.data?.status !== 'failed';
 
   return (
-    <div className="flex h-full flex-col gap-3" style={{ maxHeight: 'calc(100vh - 120px)' }}>
+    <div className="flex h-full flex-col gap-6" style={{ maxHeight: 'calc(100vh - 180px)' }}>
+      {/* Page header */}
+      <div>
+        <h1 className="text-4xl font-bold tracking-tight text-[var(--color-brand)]">
+          {activeTicker}
+        </h1>
+        <p className="label-micro mt-2">AI Insights</p>
+      </div>
+
       {/* Tab bar */}
       <div className="flex items-center gap-2">
         <TabButton
@@ -118,7 +126,7 @@ export default function InsightsPage() {
 
         <div className="ml-auto flex items-center gap-3">
           {isRunning && (
-            <span className="flex items-center gap-1 text-xs text-[var(--color-text-muted)]">
+            <span className="flex items-center gap-1 text-xs text-[var(--on-surface-muted)]">
               <Loader2 size={12} className="animate-spin" />
               {runStatus.data?.status ?? 'queued'}…
             </span>
@@ -126,7 +134,7 @@ export default function InsightsPage() {
           <button
             onClick={onRefresh}
             disabled={refreshMut.isPending || isRunning}
-            className="flex items-center gap-1.5 rounded-lg bg-[var(--color-accent-blue)] px-3 py-1.5 text-xs font-medium text-[var(--on-brand)] disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-[var(--brand-container)] px-3 py-1.5 text-xs font-medium text-[var(--on-brand)] hover:brightness-110 disabled:opacity-50"
           >
             {refreshMut.isPending || isRunning ? (
               <Loader2 size={14} className="animate-spin" />
@@ -197,10 +205,10 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
+      className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
         active
-          ? 'bg-[var(--color-accent-blue)] text-[var(--on-brand)]'
-          : 'border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+          ? 'bg-[var(--brand)]/15 text-[var(--brand)]'
+          : 'bg-[var(--surface-2)] text-[var(--on-surface-variant)] hover:text-[var(--on-surface)] hover:bg-[var(--surface-3)]'
       }`}
     >
       {icon}
@@ -233,13 +241,13 @@ function ReportView({
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <Loader2 size={24} className="animate-spin text-[var(--color-text-muted)]" />
+        <Loader2 size={24} className="animate-spin text-[var(--on-surface-muted)]" />
       </div>
     );
   }
   if (error) {
     return (
-      <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-sm text-[var(--bear)]">
+      <div className="rounded-xl border border-[var(--bear)]/40 bg-[var(--bear)]/10 p-6 text-sm text-[var(--bear)]">
         Failed to load report: {error.message}
       </div>
     );
@@ -247,17 +255,17 @@ function ReportView({
   if (!envelope) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-        <FileText size={32} className="text-[var(--color-text-muted)]" />
+        <FileText size={32} className="text-[var(--on-surface-muted)]" />
         <div>
-          <div className="text-sm font-medium text-[var(--color-text-primary)]">No report yet</div>
-          <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+          <div className="text-sm font-medium text-[var(--on-surface)]">No report yet</div>
+          <div className="mt-1 text-xs text-[var(--on-surface-muted)]">
             Generate the first AI insight report for this ticker.
           </div>
         </div>
         <button
           onClick={onRefresh}
           disabled={refreshing}
-          className="flex items-center gap-1.5 rounded-lg bg-[var(--color-accent-blue)] px-4 py-2 text-xs font-medium text-[var(--on-brand)] disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-lg bg-[var(--brand-container)] px-4 py-2 text-xs font-medium text-[var(--on-brand)] hover:brightness-110 disabled:opacity-50"
         >
           {refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
           Generate Report
@@ -267,13 +275,13 @@ function ReportView({
   }
   const report = envelope.report;
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {historical && (
-        <div className="flex items-center justify-between rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-[var(--warn)]">
+        <div className="flex items-center justify-between rounded-lg border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-4 py-2.5 text-xs text-[var(--warn)]">
           <span>Viewing historical report — not the current latest.</span>
           <button
             onClick={onBackToLatest}
-            className="flex items-center gap-1 rounded border border-amber-500/40 px-2 py-0.5 text-[10px] text-[var(--warn)] hover:bg-amber-500/10"
+            className="flex items-center gap-1 rounded border border-[var(--warn)]/40 px-2 py-0.5 text-[10px] text-[var(--warn)] hover:bg-[var(--warn)]/10"
           >
             <ArrowLeft size={10} /> Back to latest
           </button>
@@ -286,7 +294,7 @@ function ReportView({
         costUsd={envelope.cost_usd}
         latencyMs={envelope.latency_ms}
       />
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-2">
         <TradePlanCard report={report} />
         <KeyLevelsCard levels={report.key_levels} />
         <StratCard strat={report.strat_status} />
@@ -294,12 +302,12 @@ function ReportView({
       </div>
       <DebateCard bullCase={report.bull_case} bearCase={report.bear_case} />
       <PersonaPlansCard plans={report.persona_plans ?? []} />
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-2">
         <RiskFlagsCard flags={report.risk_flags} />
         <SignalsCard signals={report.supporting_signals} />
       </div>
       <SimilarTradesCard trades={report.similar_past_trades} />
-      <div className="text-center text-[10px] text-[var(--color-text-muted)]">
+      <div className="text-center text-[10px] text-[var(--on-surface-muted)]">
         {Object.entries(report.model_versions)
           .map(([role, v]) => `${role}: ${v}`)
           .join(' · ')}
@@ -324,49 +332,49 @@ function HistoryView({
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <Loader2 size={24} className="animate-spin text-[var(--color-text-muted)]" />
+        <Loader2 size={24} className="animate-spin text-[var(--on-surface-muted)]" />
       </div>
     );
   }
   if (!data || data.reports.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-[var(--color-text-muted)]">
+      <div className="flex h-full items-center justify-center text-xs text-[var(--on-surface-muted)]">
         No history yet.
       </div>
     );
   }
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {data.reports.map((r) => (
         <button
           key={r.id}
           onClick={() => onSelect(r.id)}
-          className="block w-full rounded border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-3 text-left transition-colors hover:border-[var(--color-accent-blue)]"
+          className="block w-full rounded-xl bg-[var(--surface-2)] p-4 text-left transition-colors hover:bg-[var(--surface-3)]"
         >
-          <div className="mb-1 flex items-center justify-between">
+          <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span
-                className={`rounded border px-2 py-0.5 text-[10px] font-semibold uppercase ${
+                className={`rounded-lg border px-2 py-0.5 text-[10px] font-semibold uppercase ${
                   r.direction === 'long'
-                    ? 'border-green-500/40 bg-green-500/20 text-[var(--bull)]'
+                    ? 'border-[var(--bull)]/40 bg-[var(--bull)]/20 text-[var(--bull)]'
                     : r.direction === 'short'
-                    ? 'border-red-500/40 bg-red-500/20 text-[var(--bear)]'
-                    : 'border-zinc-500/40 bg-zinc-500/20 text-zinc-400'
+                    ? 'border-[var(--bear)]/40 bg-[var(--bear)]/20 text-[var(--bear)]'
+                    : 'border-[var(--outline-variant)] bg-[var(--surface-3)] text-[var(--on-surface-muted)]'
                 }`}
               >
                 {r.direction} · {r.conviction}
               </span>
-              <span className="text-xs text-[var(--color-text-muted)]">
+              <span className="text-xs text-[var(--on-surface-muted)]">
                 {new Date(r.as_of).toLocaleString()}
               </span>
             </div>
             {r.cost_usd !== null && (
-              <span className="text-[10px] text-[var(--color-text-muted)]">
+              <span className="text-[10px] text-[var(--on-surface-muted)]">
                 ${r.cost_usd.toFixed(4)}
               </span>
             )}
           </div>
-          <p className="text-xs leading-relaxed text-[var(--color-text-secondary)]">{r.thesis}</p>
+          <p className="text-xs leading-relaxed text-[var(--on-surface-variant)]">{r.thesis}</p>
         </button>
       ))}
     </div>
@@ -450,15 +458,15 @@ function ChatView({ ticker }: { ticker: string }) {
   return (
     <div className="flex h-full flex-col">
       {/* Mode selector */}
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-3 flex items-center gap-2">
         {CHAT_MODES.map((m) => (
           <button
             key={m}
             onClick={() => setMode(m)}
-            className={`rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wide transition-colors ${
+            className={`rounded-lg px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide transition-colors ${
               mode === m
-                ? 'bg-[var(--color-accent-blue)] text-[var(--on-brand)]'
-                : 'border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]'
+                ? 'bg-[var(--brand)]/15 text-[var(--brand)]'
+                : 'bg-[var(--surface-2)] text-[var(--on-surface-muted)] hover:text-[var(--on-surface-variant)] hover:bg-[var(--surface-3)]'
             }`}
           >
             {m}
@@ -467,26 +475,26 @@ function ChatView({ ticker }: { ticker: string }) {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 space-y-3 overflow-y-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] p-3">
+      <div className="flex-1 flex flex-col gap-3 overflow-y-auto rounded-xl bg-[var(--surface-1)] p-4">
         {messages.length === 0 && (
-          <div className="flex h-full items-center justify-center text-xs text-[var(--color-text-muted)]">
+          <div className="flex h-full items-center justify-center text-xs text-[var(--on-surface-muted)]">
             Ask a question about {ticker} in {mode} mode.
           </div>
         )}
         {messages.map((msg, i) => (
           <div
             key={i}
-            className={`rounded-lg px-3 py-2 text-xs leading-relaxed ${
+            className={`max-w-[85%] rounded-xl px-4 py-2.5 text-sm leading-relaxed ${
               msg.role === 'user'
-                ? 'ml-8 bg-[var(--color-accent-blue)]/15 text-[var(--color-text-primary)]'
-                : 'mr-8 bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)]'
+                ? 'ml-auto bg-[var(--brand)]/10 text-[var(--on-surface)]'
+                : 'mr-auto bg-[var(--surface-2)] text-[var(--on-surface-variant)]'
             }`}
           >
             <div className="prose-report whitespace-pre-wrap">{msg.content}</div>
           </div>
         ))}
         {streaming && (
-          <Loader2 size={14} className="animate-spin text-[var(--color-text-muted)]" />
+          <Loader2 size={14} className="animate-spin text-[var(--on-surface-muted)]" />
         )}
         <div ref={bottomRef} />
       </div>
@@ -497,19 +505,19 @@ function ChatView({ ticker }: { ticker: string }) {
           e.preventDefault();
           send();
         }}
-        className="mt-2 flex items-center gap-2"
+        className="mt-3 flex items-center gap-2"
       >
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder={`Ask about ${ticker}...`}
           disabled={streaming}
-          className="flex-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-blue)] focus:outline-none disabled:opacity-50"
+          className="flex-1 rounded-lg border border-[var(--outline-variant)] bg-[var(--surface-lowest)] px-3 py-2 text-sm text-[var(--on-surface)] placeholder:text-[var(--on-surface-muted)] focus:border-[var(--brand)] focus:outline-none disabled:opacity-50"
         />
         <button
           type="submit"
           disabled={!input.trim() || streaming}
-          className="flex items-center gap-1 rounded-lg bg-[var(--color-accent-blue)] px-3 py-2 text-xs font-medium text-[var(--on-brand)] disabled:opacity-50"
+          className="flex items-center gap-1 rounded-lg bg-[var(--brand-container)] px-3 py-2 text-xs font-medium text-[var(--on-brand)] hover:brightness-110 disabled:opacity-50"
         >
           <Send size={12} />
         </button>

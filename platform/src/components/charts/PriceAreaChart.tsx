@@ -50,7 +50,7 @@ interface PriceTooltipProps {
   label?: string;
 }
 
-/** Theme-aware tooltip — pulls colors from CSS vars so it adapts to light mode. */
+/** Custom tooltip matching the Obsidian Analyst design system (theme-aware). */
 function PriceTooltip({ active, payload, label }: PriceTooltipProps) {
   const theme = useChartTheme();
   if (!active || !payload || !payload.length) return null;

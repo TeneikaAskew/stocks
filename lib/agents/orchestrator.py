@@ -245,7 +245,7 @@ def _portfolio_payload(
             "bear_case": bear.case,
             "failed_sections": bundle.get("failed_sections", []),
             "summaries": {
-                k: bundle.get(k, {}).get("available") for k in ("market", "strat", "options", "catalysts", "sentiment")
+                k: bundle.get(k, {}).get("available") for k in ("market", "strat", "options", "gamma", "catalysts", "sentiment")
             },
         },
         default=str,
@@ -297,7 +297,7 @@ async def run_insight_pipeline(
         snapshot = load_routes_snapshot()
 
     # 3. Parallel analyst tier — one per section
-    analyst_sections = ("market", "strat", "options", "catalyst", "sentiment")
+    analyst_sections = ("market", "strat", "options", "gamma", "catalyst", "sentiment")
     analyst_tasks = [
         _run_node(
             role="analyst",
@@ -539,6 +539,43 @@ def _analyst_section_key(section: str) -> str:
     `catalysts` (plural) in the bundle but the analyst prompt uses
     `catalyst` (role name) — keep them in sync."""
     return "catalysts" if section == "catalyst" else section
+
+
+def _derive_key_levels(bundle: dict) -> dict[str, float]:
+    """Populate key_levels deterministically from the context bundle.
+
+    The PM agent frequently leaves ``key_levels`` empty. Rather than adding
+    a new SQL query, synthesize the levels from data the bundle already
+    carries: prior day high/low (strat section), 200 SMA and 20 EMA
+    (market section), and max-pain proxy (options section).
+    """
+    levels: dict[str, float] = {}
+
+    strat = bundle.get("strat", {}) or {}
+    if strat.get("available"):
+        th = strat.get("trigger_high")
+        tl = strat.get("trigger_low")
+        if isinstance(th, (int, float)):
+            levels["Prev High"] = float(th)
+        if isinstance(tl, (int, float)):
+            levels["Prev Low"] = float(tl)
+
+    market = bundle.get("market", {}) or {}
+    if market.get("available"):
+        sma_200 = market.get("sma_200")
+        ema_20 = market.get("ema_20")
+        if isinstance(sma_200, (int, float)):
+            levels["SMA 200"] = float(sma_200)
+        if isinstance(ema_20, (int, float)):
+            levels["EMA 20"] = float(ema_20)
+
+    options = bundle.get("options", {}) or {}
+    if options.get("available"):
+        mp = options.get("max_pain_strike_proxy")
+        if isinstance(mp, (int, float)):
+            levels["Max Pain"] = float(mp)
+
+    return levels
 
 
 def _build_strat_snapshot(section: dict) -> StratSnapshot:

@@ -27,6 +27,7 @@ from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from google.api_core import exceptions as gapi_exc
+from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -298,3 +299,276 @@ async def get_report(ticker: str, phase: str):
     content = _download_markdown(blob_path_relative)
     _REPORT_TEXT_CACHE[cache_key] = content
     return content
+
+
+# ── POST /api/playbook/evaluate ─────────────────────────────────────────────
+#
+# Evaluates a list of playbook condition strings against a live market
+# snapshot server-side. Previously this logic lived in
+# platform/src/lib/playbookEvaluator.ts — moved here so thresholds and
+# regexes don't drift from the Python analysis stack.
+
+# Thresholds that were hardcoded in the TS file. Centralized here so one edit
+# covers Dashboard, PlaybookPage, and any future caller.
+PRICE_PROXIMITY_PCT = 0.005       # "price at/near support/resistance" within 0.5%
+ORB_WINDOW_MINUTES = 30           # opening-range default window
+STOCH_OVERSOLD_DEFAULT = 20
+STOCH_OVERBOUGHT_DEFAULT = 80
+
+
+class _Bar(BaseModel):
+    time: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+class _Indicators(BaseModel):
+    ema9: float | None = None
+    ema20: float | None = None
+    ema50: float | None = None
+    rsi: float | None = None
+    stochK: float | None = None
+    stochD: float | None = None
+    atr: float | None = None
+    vwap: float | None = None
+    stochKPrev: float | None = None
+
+
+class _Snapshot(BaseModel):
+    price: float | None = None
+    prevClose: float | None = None
+    prevHigh: float | None = None
+    prevLow: float | None = None
+    volumeToday: float | None = None
+    avgVolume20d: float | None = None
+    orbHigh: float | None = None
+    orbLow: float | None = None
+    lastBar: _Bar | None = None
+    minutesSinceOpen: float | None = None
+    stochKPrev: float | None = None
+    indicators: _Indicators
+
+
+class _EvaluateRequest(BaseModel):
+    snapshot: _Snapshot
+    # Flat conditions — returns `results` in the same order
+    conditions: list[str] | None = None
+    # Batched conditions per key (typically a card id) — returns
+    # `results_by_key` keyed identically. Preferred by PlaybookPage so it
+    # doesn't have to interleave and split a flat array.
+    batches: dict[str, list[str]] | None = None
+
+
+class _EvalResult(BaseModel):
+    status: str                     # 'met' | 'unmet' | 'unknown'
+    detail: str | None = None
+    reason: str | None = None
+
+
+def _cmp(lhs: float | None, op: str, rhs: float | None, label: str) -> _EvalResult:
+    if lhs is None or rhs is None:
+        return _EvalResult(status="unknown", reason="missing data")
+    if op == ">":
+        met = lhs > rhs
+    elif op == "<":
+        met = lhs < rhs
+    elif op == ">=":
+        met = lhs >= rhs
+    else:  # "<="
+        met = lhs <= rhs
+    return _EvalResult(status="met" if met else "unmet", detail=label)
+
+
+def _eval_condition(raw: str, s: _Snapshot) -> _EvalResult:
+    c = raw.strip()
+    lower = c.lower()
+    ind = s.indicators
+
+    # RSI range: "RSI between 40-65"
+    m = re.search(r"RSI between\s+(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)", c, re.I)
+    if m:
+        lo = float(m.group(1)); hi = float(m.group(2))
+        if ind.rsi is None:
+            return _EvalResult(status="unknown", reason="RSI n/a")
+        met = lo <= ind.rsi <= hi
+        return _EvalResult(status="met" if met else "unmet",
+                           detail=f"RSI {ind.rsi:.1f} in [{lo}, {hi}]")
+
+    # "RSI < N", "RSI > N" — exclude StochRSI
+    m = re.search(r"RSI[^<>]*(<|>)\s*(\d+(?:\.\d+)?)", c, re.I)
+    if m and re.search(r"rsi", c, re.I) and "stochrsi" not in lower:
+        op = m.group(1); n = float(m.group(2))
+        label = f"RSI {ind.rsi:.1f} {op} {n}" if ind.rsi is not None else ""
+        return _cmp(ind.rsi, op, n, label)
+
+    # Price above/below VWAP
+    if re.search(r"price\s+(above|>)\s+vwap", c, re.I):
+        lbl = (f"{s.price:.2f} > VWAP {ind.vwap:.2f}"
+               if s.price is not None and ind.vwap is not None else "")
+        return _cmp(s.price, ">", ind.vwap, lbl)
+    if re.search(r"price\s+(below|<)\s+vwap", c, re.I):
+        lbl = (f"{s.price:.2f} < VWAP {ind.vwap:.2f}"
+               if s.price is not None and ind.vwap is not None else "")
+        return _cmp(s.price, "<", ind.vwap, lbl)
+
+    # Price above/below EMA{N}
+    m = re.search(r"price\s+(above|below|>|<)\s+ema\s*(\d+)", c, re.I)
+    if m:
+        direction = m.group(1).lower()
+        n = int(m.group(2))
+        ema = {9: ind.ema9, 20: ind.ema20, 50: ind.ema50}.get(n)
+        if ema is None:
+            return _EvalResult(status="unknown", reason=f"EMA{n} n/a")
+        op = ">" if direction in ("above", ">") else "<"
+        lbl = f"{s.price:.2f} {op} EMA{n} {ema:.2f}" if s.price is not None else ""
+        return _cmp(s.price, op, ema, lbl)
+
+    # EMA cross: "EMA9 > EMA20"
+    m = re.search(r"ema\s*(\d+)\s*(>|<)\s*ema\s*(\d+)", c, re.I)
+    if m:
+        n1 = int(m.group(1)); op = m.group(2); n2 = int(m.group(3))
+        e_map = {9: ind.ema9, 20: ind.ema20, 50: ind.ema50}
+        e1 = e_map.get(n1); e2 = e_map.get(n2)
+        lbl = (f"EMA{n1} {e1:.2f} {op} EMA{n2} {e2:.2f}"
+               if e1 is not None and e2 is not None else "")
+        return _cmp(e1, op, e2, lbl)
+
+    # RVOL > N
+    m = re.search(r"rvol\s*(>|<)\s*(\d+(?:\.\d+)?)", c, re.I)
+    if m:
+        op = m.group(1); n = float(m.group(2))
+        rvol_val: float | None = None
+        if (s.volumeToday is not None and s.avgVolume20d is not None
+                and s.avgVolume20d > 0):
+            rvol_val = s.volumeToday / s.avgVolume20d
+        lbl = f"RVOL {rvol_val:.2f} {op} {n}" if rvol_val is not None else ""
+        return _cmp(rvol_val, op, n, lbl)
+
+    # StochRSI oversold turning up
+    if re.search(r"stochrsi was oversold.*turning up", c, re.I):
+        if ind.stochK is None or s.stochKPrev is None:
+            return _EvalResult(status="unknown", reason="StochRSI n/a")
+        thr_m = re.search(r"<\s*(\d+)", c)
+        thr = int(thr_m.group(1)) if thr_m else STOCH_OVERSOLD_DEFAULT
+        was_oversold = s.stochKPrev < thr
+        turning_up = ind.stochK > s.stochKPrev
+        met = was_oversold and turning_up
+        return _EvalResult(
+            status="met" if met else "unmet",
+            detail=f"StochK {s.stochKPrev:.0f}→{ind.stochK:.0f}",
+        )
+
+    # StochRSI overbought turning down
+    if re.search(r"stochrsi was overbought.*turning down", c, re.I):
+        if ind.stochK is None or s.stochKPrev is None:
+            return _EvalResult(status="unknown", reason="StochRSI n/a")
+        thr_m = re.search(r">\s*(\d+)", c)
+        thr = int(thr_m.group(1)) if thr_m else STOCH_OVERBOUGHT_DEFAULT
+        was_overbought = s.stochKPrev > thr
+        turning_down = ind.stochK < s.stochKPrev
+        met = was_overbought and turning_down
+        return _EvalResult(
+            status="met" if met else "unmet",
+            detail=f"StochK {s.stochKPrev:.0f}→{ind.stochK:.0f}",
+        )
+
+    # ORB breaks
+    if re.search(r"broken above.*opening range high|above\s+orb\s+high|orb\s+high\s+break", c, re.I):
+        lbl = (f"{s.price:.2f} > ORB-H {s.orbHigh:.2f}"
+               if s.price is not None and s.orbHigh is not None else "")
+        return _cmp(s.price, ">", s.orbHigh, lbl)
+    if re.search(r"broken below.*opening range low|below\s+orb\s+low|orb\s+low\s+break", c, re.I):
+        lbl = (f"{s.price:.2f} < ORB-L {s.orbLow:.2f}"
+               if s.price is not None and s.orbLow is not None else "")
+        return _cmp(s.price, "<", s.orbLow, lbl)
+
+    # ORB 30m trend
+    if re.search(r"orb\s*30m\s*trend is bullish", c, re.I):
+        if s.price is None or s.orbHigh is None or s.orbLow is None:
+            return _EvalResult(status="unknown", reason="ORB n/a")
+        mid = (s.orbHigh + s.orbLow) / 2
+        met = s.price > mid
+        return _EvalResult(status="met" if met else "unmet",
+                           detail=f"{s.price:.2f} {'>' if met else '<'} ORB-mid {mid:.2f}")
+    if re.search(r"orb\s*30m\s*trend is bearish", c, re.I):
+        if s.price is None or s.orbHigh is None or s.orbLow is None:
+            return _EvalResult(status="unknown", reason="ORB n/a")
+        mid = (s.orbHigh + s.orbLow) / 2
+        met = s.price < mid
+        return _EvalResult(status="met" if met else "unmet",
+                           detail=f"{s.price:.2f} {'<' if met else '>'} ORB-mid {mid:.2f}")
+
+    # Minutes since open
+    m = re.search(r"at least\s+(\d+)\s*min(?:ute)?s?\s+after\s+market\s+open", c, re.I)
+    if m:
+        n = int(m.group(1))
+        if s.minutesSinceOpen is None:
+            return _EvalResult(status="unknown", reason="market closed")
+        met = s.minutesSinceOpen >= n
+        return _EvalResult(status="met" if met else "unmet",
+                           detail=f"{int(s.minutesSinceOpen)} min since open")
+
+    # Close in upper/lower half
+    if re.search(r"close in upper half", c, re.I):
+        if s.lastBar is None:
+            return _EvalResult(status="unknown", reason="no bar")
+        mid = (s.lastBar.high + s.lastBar.low) / 2
+        met = s.lastBar.close > mid
+        return _EvalResult(status="met" if met else "unmet",
+                           detail=f"close {s.lastBar.close:.2f} vs mid {mid:.2f}")
+    if re.search(r"close in lower half", c, re.I):
+        if s.lastBar is None:
+            return _EvalResult(status="unknown", reason="no bar")
+        mid = (s.lastBar.high + s.lastBar.low) / 2
+        met = s.lastBar.close < mid
+        return _EvalResult(status="met" if met else "unmet",
+                           detail=f"close {s.lastBar.close:.2f} vs mid {mid:.2f}")
+
+    # Price at/near support/resistance — within PRICE_PROXIMITY_PCT
+    if re.search(r"price at or near (support|resistance)", c, re.I):
+        is_support = bool(re.search(r"support", c, re.I))
+        anchor = s.prevLow if is_support else s.prevHigh
+        if s.price is None or anchor is None or anchor == 0:
+            return _EvalResult(status="unknown", reason="no reference level")
+        pct = abs(s.price - anchor) / anchor
+        met = pct <= PRICE_PROXIMITY_PCT
+        return _EvalResult(status="met" if met else "unmet",
+                           detail=f"{pct * 100:.2f}% from prev {'low' if is_support else 'high'}")
+
+    # Subjective / strat patterns fall through
+    if re.search(r"higher timeframe supports", lower):
+        return _EvalResult(status="unknown", reason="subjective")
+    if re.search(r"type\s*3|strat|outside bar|inside bar|2u-?2u|2d-?2d", lower):
+        return _EvalResult(status="unknown", reason="strat pattern")
+
+    return _EvalResult(status="unknown", reason="unrecognized")
+
+
+@router.post("/api/playbook/evaluate")
+def evaluate_playbook(req: _EvaluateRequest) -> dict:
+    """Evaluate playbook condition strings against a live snapshot.
+
+    Accepts either a flat ``conditions`` list (returns ``results``) or a
+    ``batches`` dict keyed by card id (returns ``results_by_key``). Thresholds
+    and regex patterns live here, not in TS, so the same rules feed both the
+    UI and any future Python caller (backtest replay, reports, etc.).
+    """
+    payload: dict = {}
+    if req.conditions is not None:
+        payload["results"] = [
+            _eval_condition(c, req.snapshot).model_dump() for c in req.conditions
+        ]
+    if req.batches is not None:
+        payload["results_by_key"] = {
+            key: [_eval_condition(c, req.snapshot).model_dump() for c in conds]
+            for key, conds in req.batches.items()
+        }
+    if not payload:
+        raise HTTPException(
+            status_code=400,
+            detail="Supply either `conditions` (flat) or `batches` (per-key).",
+        )
+    return payload

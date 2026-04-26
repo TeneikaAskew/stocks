@@ -160,3 +160,106 @@ class TestAddStratColumns:
         assert 'strat_combo' in result.columns
         assert 'strat_setup' in result.columns
         assert len(result) == len(sample_ohlcv)
+
+
+# ── Failed 2U / Failed 2D detection (community RevStrat patterns) ─────────
+
+
+class TestFailedTwoPatterns:
+    def _frame(self, bars):
+        """Build OHLC DataFrame from list of (H, L, O, C) tuples."""
+        df = pd.DataFrame(
+            bars, columns=['High', 'Low', 'Open', 'Close']
+        )
+        df['Volume'] = 1000
+        return df
+
+    def test_failed_2u_detected(self, classifier):
+        """Bar 1 prints higher high than bar 0 but closes back inside bar 0's range."""
+        # Bar 0: H=100 L=95 (range 95-100)
+        # Bar 1: H=101 (HH) L=97 close=99 (back inside [95,100])
+        df = self._frame([(100, 95, 97, 98), (101, 97, 100, 99)])
+        result = classifier.detect_combos(df)
+        assert result.iloc[1]['strat_type'] == '2U'
+        assert result.iloc[1]['strat_combo'] == 'Failed_2U'
+
+    def test_failed_2u_not_triggered_when_close_above_prev_high(self, classifier):
+        """A clean 2U breakout (close above prev high) is NOT a failed 2U."""
+        df = self._frame([(100, 95, 97, 98), (102, 97, 99, 101.5)])
+        result = classifier.detect_combos(df)
+        assert result.iloc[1]['strat_type'] == '2U'
+        assert result.iloc[1]['strat_combo'] != 'Failed_2U'
+
+    def test_failed_2d_detected(self, classifier):
+        """Bar 1 prints lower low than bar 0 but closes back inside bar 0's range."""
+        # Bar 0: H=100 L=95
+        # Bar 1: H=99 L=94 (LL) close=96 (back inside [95,100])
+        df = self._frame([(100, 95, 97, 98), (99, 94, 97, 96)])
+        result = classifier.detect_combos(df)
+        assert result.iloc[1]['strat_type'] == '2D'
+        assert result.iloc[1]['strat_combo'] == 'Failed_2D'
+
+    def test_failed_2d_not_triggered_when_close_below_prev_low(self, classifier):
+        """A clean 2D breakdown (close below prev low) is NOT a failed 2D."""
+        df = self._frame([(100, 95, 97, 98), (99, 93, 97, 94)])
+        result = classifier.detect_combos(df)
+        assert result.iloc[1]['strat_type'] == '2D'
+        assert result.iloc[1]['strat_combo'] != 'Failed_2D'
+
+    def test_simple_2u_continuation(self, classifier):
+        """Two consecutive 2U bars → 2U_continuation."""
+        # Bar 0: H=100 L=95
+        # Bar 1: H=102 L=97 (2U)
+        # Bar 2: H=104 L=98 (2U after 2U)
+        df = self._frame([
+            (100, 95, 97, 99),
+            (102, 97, 99, 101),
+            (104, 98, 101, 103),
+        ])
+        result = classifier.detect_combos(df)
+        assert result.iloc[2]['strat_combo'] == '2U_continuation'
+
+    def test_simple_2d_continuation(self, classifier):
+        """Two consecutive 2D bars → 2D_continuation."""
+        df = self._frame([
+            (100, 95, 99, 97),
+            (99,  93, 97, 94),
+            (98,  91, 94, 92),
+        ])
+        result = classifier.detect_combos(df)
+        assert result.iloc[2]['strat_combo'] == '2D_continuation'
+
+
+class TestNewPatternBonusScoring:
+    def test_failed_2u_scores_for_put(self, classifier):
+        """Failed 2U is a bearish reversal — should bonus PUT signals."""
+        bonus = classifier.get_strat_bonus(
+            signal_direction='PUT', combo='Failed_2U',
+            ftfc_score=-0.7, ftfc_threshold=0.6, orb_trend=-1,
+        )
+        # combo + ftfc + orb = 3
+        assert bonus == 3
+
+    def test_failed_2d_scores_for_call(self, classifier):
+        """Failed 2D is a bullish reversal — should bonus CALL signals."""
+        bonus = classifier.get_strat_bonus(
+            signal_direction='CALL', combo='Failed_2D',
+            ftfc_score=0.7, ftfc_threshold=0.6, orb_trend=1,
+        )
+        assert bonus == 3
+
+    def test_failed_2u_does_not_bonus_call(self, classifier):
+        """Failed 2U should NOT bonus a CALL signal (wrong direction)."""
+        bonus = classifier.get_strat_bonus(
+            signal_direction='CALL', combo='Failed_2U',
+            ftfc_score=0.0, orb_trend=0,
+        )
+        assert bonus == 0
+
+    def test_2u_continuation_bonuses_call(self, classifier):
+        bonus = classifier.get_strat_bonus(
+            signal_direction='CALL', combo='2U_continuation',
+            ftfc_score=0.0, orb_trend=0,
+        )
+        # Just the combo bonus
+        assert bonus > 0

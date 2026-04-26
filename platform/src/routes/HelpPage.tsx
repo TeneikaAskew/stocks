@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Search } from 'lucide-react';
+import { useIndicatorConfig, type IndicatorConfig } from '@/hooks/useConfig';
 
 interface GlossaryEntry {
   term: string;
@@ -8,7 +9,22 @@ interface GlossaryEntry {
   category: string;
 }
 
-const GLOSSARY: GlossaryEntry[] = [
+// Build the glossary array from the live indicator config so periods and
+// thresholds match what Python is actually using. When the config query is
+// still loading we substitute the documented defaults from lib/config.py
+// so the page never looks broken on first paint.
+function buildGlossary(cfg: IndicatorConfig | undefined): GlossaryEntry[] {
+  const rsiPeriod = cfg?.rsi.period ?? 14;
+  const rsiOversold = cfg?.rsi.oversold ?? 30;
+  const rsiOverbought = cfg?.rsi.overbought ?? 70;
+  const emaFast = cfg?.ema.periods[0] ?? 9;
+  const emaMid = cfg?.ema.periods[1] ?? 20;
+  const stochOversold = cfg?.stoch_rsi.oversold ?? 20;
+  const stochOverbought = cfg?.stoch_rsi.overbought ?? 80;
+  const rvolThreshold = cfg?.rvol.signal_threshold ?? 1.0;
+  const minConditions = cfg?.signal.min_conditions ?? 3;
+
+  return [
   // Strategy & Signals
   { term: 'Win Rate', short: 'Percentage of trades that were profitable.', detail: 'A 41% win rate means roughly 4 out of every 10 trades made money. Win rate alone doesn\'t determine profitability — if winners are larger than losers, you can profit with a low win rate.', category: 'Performance' },
   { term: 'Profit Factor', short: 'Total gains divided by total losses.', detail: 'A profit factor of 1.03 means for every $1 lost, the strategy made $1.03. Above 1.0 = profitable. Above 1.5 = strong. Below 1.0 = losing money.', category: 'Performance' },
@@ -25,17 +41,23 @@ const GLOSSARY: GlossaryEntry[] = [
   { term: 'FTFC (Full Timeframe Continuity)', short: 'All timeframes aligned in the same direction.', detail: 'When the 5min, 15min, 30min, hourly, and daily charts all show the same direction (e.g., all bullish 2U), there is full timeframe continuity. Higher FTFC score = stronger directional conviction.', category: 'The Strat' },
   { term: 'FTFC Score', short: 'Numeric measure of timeframe alignment (-1 to +1).', detail: 'Positive = bullish alignment across timeframes. Negative = bearish. Near zero = mixed/no clear direction. Calculated by weighting each timeframe\'s direction.', category: 'The Strat' },
   { term: 'RevStrat', short: 'Reversal Strat — a 3-bar reversal pattern.', detail: 'Occurs when a 3 (outside bar) reverses the prior direction. For example, a bearish move followed by a 3 that takes out the prior high signals a potential bullish reversal.', category: 'The Strat' },
+  { term: 'Failed 2U', short: 'A 2U bar that closes back inside the prior bar\'s range.', detail: 'High broke above the prior bar (printing 2U) but the candle closed back at or below the prior high. Bearish reversal signal — the breakout failed and is rejecting. Favors PUT setups. One of the highest-probability single-bar patterns in community recaps.', category: 'The Strat' },
+  { term: 'Failed 2D', short: 'A 2D bar that closes back inside the prior bar\'s range.', detail: 'Low broke below the prior bar (printing 2D) but the candle closed back at or above the prior low. Bullish reversal signal — the breakdown failed. Favors CALL setups. The mirror of Failed 2U.', category: 'The Strat' },
+  { term: '2U Continuation', short: 'Two consecutive 2U bars — bullish trend continuation.', detail: 'Each bar makes a higher high than the prior bar. Plain two-bar version (distinct from the 3-bar 2U-1-2U_continuation which requires a compressed inside bar between).', category: 'The Strat' },
+  { term: '2D Continuation', short: 'Two consecutive 2D bars — bearish trend continuation.', detail: 'Each bar makes a lower low than the prior bar. Mirror of 2U continuation.', category: 'The Strat' },
+  { term: 'Inside Bar Setup', short: 'A 1 (inside bar) following a directional move — compression before the next leg.', detail: 'Inside bars compress the prior range and signal indecision. The breakout direction usually leans with the prior bar\'s direction (continuation) or opposite (reversal). Wait for the breakout, don\'t guess.', category: 'The Strat' },
+  { term: 'Trigger Level', short: 'The breakout price that confirms a Strat setup.', detail: 'The prior bar\'s high (for bullish triggers) or low (for bearish). A candle that takes out the trigger with volume confirms the pattern. Used as the entry reference point.', category: 'The Strat' },
 
   // Technical Indicators
-  { term: 'RSI (Relative Strength Index)', short: 'Momentum oscillator measuring speed of price changes (0-100).', detail: 'Below 30 = oversold (potential bounce). Above 70 = overbought (potential pullback). The strategy uses RSI 14 (14-period) as the primary. RSI between 40-60 is neutral.', category: 'Indicators' },
-  { term: 'EMA (Exponential Moving Average)', short: 'A moving average that weights recent prices more heavily.', detail: 'EMA 9 (fast) and EMA 20 (slow) are used. Price above EMA = bullish. EMA 9 crossing above EMA 20 = bullish signal. The strategy tracks "price vs EMA" as a percentage distance.', category: 'Indicators' },
+  { term: 'RSI (Relative Strength Index)', short: 'Momentum oscillator measuring speed of price changes (0-100).', detail: `Below ${rsiOversold} = oversold (potential bounce). Above ${rsiOverbought} = overbought (potential pullback). The strategy uses RSI ${rsiPeriod} (${rsiPeriod}-period) as the primary. RSI between 40-60 is neutral.`, category: 'Indicators' },
+  { term: 'EMA (Exponential Moving Average)', short: 'A moving average that weights recent prices more heavily.', detail: `EMA ${emaFast} (fast) and EMA ${emaMid} (slow) are used. Price above EMA = bullish. EMA ${emaFast} crossing above EMA ${emaMid} = bullish signal. The strategy tracks "price vs EMA" as a percentage distance.`, category: 'Indicators' },
   { term: 'SMA 200', short: '200-day Simple Moving Average — the long-term trend line.', detail: 'Price above SMA 200 = long-term uptrend. Price below = downtrend. Institutional traders watch this level closely.', category: 'Indicators' },
   { term: 'VWAP (Volume Weighted Average Price)', short: 'Average price weighted by volume throughout the day.', detail: 'Resets daily. Price above VWAP = buyers are in control. Below = sellers. Day traders use VWAP as a key level for entries and exits.', category: 'Indicators' },
   { term: 'MACD', short: 'Moving Average Convergence Divergence — trend and momentum indicator.', detail: 'Shows the relationship between two EMAs (12 and 26 period). MACD line crossing above signal line = bullish. Histogram shows the gap between them.', category: 'Indicators' },
   { term: 'ATR (Average True Range)', short: 'Measures average price volatility over N periods.', detail: 'Higher ATR = more volatility = bigger potential moves (and bigger risk). Used for setting stop losses and profit targets proportional to current volatility.', category: 'Indicators' },
-  { term: 'RVOL (Relative Volume)', short: 'Current volume compared to the average for this time of day.', detail: 'RVOL 1.5 = 50% more volume than usual. High RVOL confirms that a move has participation. Low RVOL moves are more likely to reverse. The strategy requires RVOL > 1.5 for signals.', category: 'Indicators' },
+  { term: 'RVOL (Relative Volume)', short: 'Current volume compared to the average for this time of day.', detail: `RVOL 1.5 = 50% more volume than usual. High RVOL confirms that a move has participation. Low RVOL moves are more likely to reverse. The strategy requires RVOL > ${rvolThreshold.toFixed(1)} for signals.`, category: 'Indicators' },
   { term: 'Bollinger Bands', short: 'Volatility bands plotted 2 standard deviations from a moving average.', detail: 'Price touching the upper band = extended/overbought. Lower band = oversold. Band width expanding = increasing volatility. Squeezing = low vol, potential breakout coming.', category: 'Indicators' },
-  { term: 'StochRSI', short: 'RSI applied to RSI — a more sensitive momentum oscillator.', detail: 'Ranges from 0 to 100. Below 20 = oversold. Above 80 = overbought. More responsive than regular RSI, so it gives earlier signals but more false positives.', category: 'Indicators' },
+  { term: 'StochRSI', short: 'RSI applied to RSI — a more sensitive momentum oscillator.', detail: `Ranges from 0 to 100. Below ${stochOversold} = oversold. Above ${stochOverbought} = overbought. More responsive than regular RSI, so it gives earlier signals but more false positives.`, category: 'Indicators' },
 
   // ORB
   { term: 'ORB (Opening Range Breakout)', short: 'Trading strategy based on the first N minutes of the session.', detail: 'The opening range is defined by the high and low of the first 5, 15, or 30 minutes. A breakout above the ORB high is bullish; below the ORB low is bearish. Used with volume confirmation.', category: 'ORB' },
@@ -49,11 +71,28 @@ const GLOSSARY: GlossaryEntry[] = [
   { term: 'Delta', short: 'How much the option price moves per $1 move in the stock.', detail: 'A call with delta 0.50 gains $0.50 when the stock goes up $1. Delta also approximates the probability of expiring in-the-money.', category: 'Options' },
   { term: 'Gamma', short: 'Rate of change of delta — how fast delta changes.', detail: 'High gamma means delta changes rapidly as the stock moves. 0DTE options have very high gamma, making them explosive in both directions.', category: 'Options' },
   { term: 'Theta', short: 'Time decay — how much value the option loses per day.', detail: 'Always negative for option buyers. 0DTE options have massive theta — they lose value rapidly as expiration approaches. This is why timing matters.', category: 'Options' },
-  { term: 'GEX (Gamma Exposure)', short: 'Net gamma exposure of market makers at each strike.', detail: 'Positive GEX = market makers hedge by selling rallies and buying dips (dampens moves). Negative GEX = they amplify moves. Key for predicting intraday volatility.', category: 'Options' },
+  { term: 'Vega', short: 'Sensitivity to changes in implied volatility.', detail: 'A vega of 0.10 means the option price moves $0.10 for every 1 percentage point change in IV. Long options are long vega; their value rises when IV rises.', category: 'Options' },
+  { term: 'Open Interest (OI)', short: 'Number of outstanding option contracts at a strike.', detail: 'High OI = more dealer hedging required at that strike, which is what makes it a gamma node. Volume is daily activity; OI is total open positions.', category: 'Options' },
+  { term: 'Put/Call Ratio', short: 'Total put open interest divided by total call open interest.', detail: 'Above 1.0 = more puts than calls (bearish hedging or bearish bet). Below 1.0 = call-dominated (bullish skew). Extreme readings can be contrarian.', category: 'Options' },
+  { term: 'Max Pain', short: 'Strike where the most option holders lose value at expiration.', detail: 'Theory: price tends to gravitate toward max pain on expiry days because dealers benefit. Used as a rough magnet level alongside gamma analysis.', category: 'Options' },
+  { term: 'Implied Move', short: 'Expected price range through expiration based on option premiums.', detail: 'Computed from the at-the-money straddle. If implied move is $5 with spot at $250, the market is pricing a one-standard-deviation move into a $245-$255 range by expiry.', category: 'Options' },
+
+  // Gamma Levels (Stratalyst-style taxonomy — see docs/gamma_levels.md)
+  { term: 'GEX (Gamma Exposure)', short: 'Net dollar gamma dealers carry at each strike.', detail: 'Net GEX per strike = (call_gamma × call_OI − put_gamma × put_OI) × spot². Positive GEX = call-dominated (resistance / pinning). Negative GEX = put-dominated (support / vol-amplifying). Total GEX is the sum across the chain.', category: 'Gamma Levels' },
+  { term: 'Spot Price', short: 'Current price of the underlying.', detail: 'Estimated server-side via three fallbacks: (1) put-call parity at the smallest |C−P| pair (most accurate), (2) the call closest to delta 0.5, (3) the median strike. The chip next to the spot input shows which method was used. You can override manually if the chain is too thin to estimate from.', category: 'Gamma Levels' },
+  { term: 'Gamma Flip', short: 'The price level where dealer net gamma flips sign.', detail: 'Computed as the cumulative-GEX zero crossing nearest spot. Above the flip = positive gamma regime (pinning, range-bound). Below = negative gamma regime (trending, vol-amplifying). Crossing the flip with volume signals a regime change.', category: 'Gamma Levels' },
+  { term: 'Regime — Positive Gamma', short: 'Price is above the flip — dealers suppress volatility.', detail: 'Dealers buy dips and sell rips to hedge their short-gamma position, which damps moves. Expect range-bound action, mean reversion at high-gamma strikes, and ~80% reaction rate on first touches of Kings.', category: 'Gamma Levels' },
+  { term: 'Regime — Negative Gamma', short: 'Price is below the flip — dealers amplify volatility.', detail: 'Dealers sell dips and buy rips, which accelerates moves. Expect trending, breakouts that follow through, and Kings acting as magnets that pull price toward them.', category: 'Gamma Levels' },
+  { term: 'King Node (★)', short: 'The strike with the largest absolute net GEX in the visible window.', detail: 'Primary support or resistance magnet. Dealers hedge most aggressively here, so first touches typically react. In positive gamma, expect a bounce; in negative gamma, expect price to be pulled toward it. Marked with a star and gold line on the chart.', category: 'Gamma Levels' },
+  { term: 'Gate Node (◆)', short: 'A secondary high-gamma strike (≥20% of the King\'s |GEX|).', detail: 'Acts as resistance the King is hiding behind — price has to break the Gate before reaching the King. Multiple gates often form a corridor around the King. Marked with a diamond and blue dotted line on the chart.', category: 'Gamma Levels' },
+  { term: 'Spot Tag', short: 'Strikes within 0.2% of the current spot price.', detail: 'Pure visual marker showing which strike(s) are at-the-money on the gamma ladder. No trading meaning by itself, but useful for orienting where price sits relative to the Kings and Gates.', category: 'Gamma Levels' },
+  { term: 'Flip Tag (⇅)', short: 'The two strikes immediately bracketing the gamma flip price.', detail: 'These are the strikes you want to watch for a regime change. If price is sitting on a Flip-tagged strike and volume picks up in the direction of the cross, the dealer hedge flow flips with it.', category: 'Gamma Levels' },
+  { term: 'Total GEX', short: 'Sum of net GEX across the visible window.', detail: 'Positive total = call concentration dominates (typically pinning bias). Negative total = put concentration dominates (typically trending bias). The metric card uses the same sign convention as the per-strike heatmap, derived from the per-strike sum.', category: 'Gamma Levels' },
+  { term: 'Zero Gamma', short: 'Legacy field — first per-strike GEX sign change in the chain.', detail: 'Older naming for what gamma flip approximates. The modern Gamma Flip metric uses the cumulative-GEX zero crossing near spot, which is more meaningful than the first sign change.', category: 'Gamma Levels' },
 
   // Signals & Scoring
-  { term: 'Signal Score', short: 'Number of conditions met out of 5 for a trade entry.', detail: 'The system checks 5 conditions (RSI range, EMA alignment, VWAP position, RVOL threshold, StochRSI). A score of 3/5 is the minimum for a signal. Higher = stronger conviction.', category: 'Signals' },
-  { term: 'Base Score', short: 'Score from the 5 core signal conditions.', detail: 'Each met condition adds 1 point. Range: 0-5. The minimum threshold for a valid signal is 3.', category: 'Signals' },
+  { term: 'Signal Score', short: 'Number of conditions met out of 5 for a trade entry.', detail: `The system checks 5 conditions (RSI range, EMA alignment, VWAP position, RVOL threshold, StochRSI). A score of ${minConditions}/5 is the minimum for a signal. Higher = stronger conviction.`, category: 'Signals' },
+  { term: 'Base Score', short: 'Score from the 5 core signal conditions.', detail: `Each met condition adds 1 point. Range: 0-5. The minimum threshold for a valid signal is ${minConditions}.`, category: 'Signals' },
   { term: 'Strat Bonus', short: 'Extra score points from Strat pattern alignment.', detail: 'Added to the base score when the Strat candle pattern and FTFC alignment support the signal direction. Can push a marginal signal into a strong one.', category: 'Signals' },
   { term: 'Conditions Met', short: 'Which of the 5 signal conditions are currently true.', detail: 'Displayed as "3/5" or "4/5". The conditions are: RSI in range, price vs EMA alignment, VWAP position, RVOL above minimum, and StochRSI confirmation.', category: 'Signals' },
 
@@ -68,16 +107,20 @@ const GLOSSARY: GlossaryEntry[] = [
   { term: 'Previous Day Levels', short: 'Yesterday\'s high, low, and close — key support/resistance.', detail: 'Price tends to react at these levels. Previous high = resistance (sellers may appear). Previous low = support (buyers may step in). Previous close = neutral pivot.', category: 'Dashboard' },
   { term: 'Consecutive Up/Down', short: 'Number of days in a row the stock closed higher (or lower).', detail: 'A streak of 3+ consecutive up days may signal overextension. Useful for mean-reversion and continuation setups.', category: 'Dashboard' },
   { term: 'Cloud SQL', short: 'The cloud database storing all market data and analysis.', detail: 'When connected, the dashboard pulls daily indicators, premarket analysis, and trade history from Google Cloud SQL. When disconnected, some features are unavailable.', category: 'Dashboard' },
-];
-
-const CATEGORIES = [...new Set(GLOSSARY.map(g => g.category))];
+  ];
+}
 
 export default function HelpPage() {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const filtered = GLOSSARY.filter(g => {
+  // Indicator config powers the periods/thresholds shown in the glossary.
+  const { data: indicatorCfg } = useIndicatorConfig();
+  const glossary = useMemo(() => buildGlossary(indicatorCfg), [indicatorCfg]);
+  const categories = useMemo(() => [...new Set(glossary.map((g) => g.category))], [glossary]);
+
+  const filtered = glossary.filter(g => {
     const matchesSearch = !search || g.term.toLowerCase().includes(search.toLowerCase()) || g.short.toLowerCase().includes(search.toLowerCase());
     const matchesCat = !activeCategory || g.category === activeCategory;
     return matchesSearch && matchesCat;
@@ -114,10 +157,10 @@ export default function HelpPage() {
               : 'border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]'
           }`}
         >
-          All ({GLOSSARY.length})
+          All ({glossary.length})
         </button>
-        {CATEGORIES.map(cat => {
-          const count = GLOSSARY.filter(g => g.category === cat).length;
+        {categories.map(cat => {
+          const count = glossary.filter(g => g.category === cat).length;
           return (
             <button
               key={cat}
