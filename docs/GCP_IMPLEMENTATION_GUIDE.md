@@ -1045,6 +1045,7 @@ UPSERT earnings_calendar → Cloud SQL (42 columns)
 | `archive_yahoo_market_data_intraday` | Legacy Yahoo 1-min bars | same as source | ~51K |
 | `archive_yahoo_etf_options_snapshots` | Legacy Yahoo options chains | same as source | ~24M (pending) |
 | `archive_yahoo_earnings_options_snapshots` | Legacy Yahoo earnings options | same as source | ~0 (was clean) |
+| `ticker_info` | AV OVERVIEW cache (name, sector, industry) | `(ticker)` | ~50 |
 
 ### Archive tables
 
