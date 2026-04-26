@@ -520,6 +520,29 @@ deploy_apply_schema_migrations() {
         --quiet
 }
 
+# One-shot SPX Greeks backfill. Walks every historical SPX snapshot_date in
+# etf_options_snapshots and writes computed Greeks into the *_computed
+# sidecar columns. AV columns are NEVER touched. 12h timeout (typical run
+# 3-5h on db-g1-small for ~22.5M rows). Idempotent: skips dates whose
+# gamma_computed is already finite, unless --force is passed at execute time.
+deploy_compute_spx_greeks_backfill() {
+    echo "Deploying compute-spx-greeks-backfill job..."
+    gcloud run jobs create compute-spx-greeks-backfill \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 0 --task-timeout 43200 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.maintenance.compute_spx_greeks" \
+        --args "--ticker,SPX" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update compute-spx-greeks-backfill \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,scripts.maintenance.compute_spx_greeks" \
+        --args "--ticker,SPX" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 
 # ── Failure notifier (Cloud Run Service) ─────────────────────────────────────
 # Receives Cloud Logging entries about failed Cloud Run Jobs via Pub/Sub push
@@ -863,6 +886,7 @@ case "${1:-help}" in
     backfill)    shift; backfill_watchlist "$@" ;;
     apply-schema) build_image && deploy_apply_schema_migrations ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
+    spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     all)
@@ -897,6 +921,8 @@ case "${1:-help}" in
         echo "  apply-schema Deploy one-shot job that re-applies gcp/schema.sql"
         echo "             (idempotent — every statement is IF NOT EXISTS / OR REPLACE)"
         echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
+        echo "  spx-greeks Deploy one-shot SPX Greeks backfill job (12h timeout)"
+        echo "             python -m scripts.maintenance.compute_spx_greeks --ticker SPX"
         echo "  setup-notifier-secrets  One-time: store GitHub PAT + repo in Secret Manager"
         echo "  notifier   Deploy failure-notifier Cloud Run service + log sink"
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
