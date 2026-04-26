@@ -110,10 +110,13 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         mode = 'daily'
 
     # Pull all rows, then dedupe + tier in Python
-    # Pull market_cap too so we can break tier ties by liquidity.
+    # Pull liquidity/quality signals too so we can break tier ties.
+    # Most are UW-only; AV/EW rows leave them NULL → sort gates handle that.
     sql = """
         SELECT ticker, earnings_date, company_name, earnings_time,
                eps_estimate, expected_move, sector, market_cap,
+               is_s_p_500, stock_volume, options_volume, open_interest,
+               rv_1d_last_12q,
                strategy, strike, premium, score, data_source
         FROM earnings_calendar
         WHERE earnings_date BETWEEN :start AND :end
@@ -153,16 +156,30 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
             return 5
         return 6   # AV only (long tail)
 
+    def _max_non_null(rows, key):
+        """Largest non-null value of `key` across a row group, or None."""
+        vals = [r.get(key) for r in rows if r.get(key) is not None and not pd.isna(r.get(key))]
+        return max(vals) if vals else None
+
+    def _any_true(rows, key):
+        """True if any row has the key set truthy."""
+        return any(bool(r.get(key)) for r in rows)
+
     earnings = []
     for (ticker, earnings_date), group in groups.items():
         best = min(group['rows'], key=lambda r: row_prio.get(r['data_source'], 99))
-        # Use the largest market_cap seen across the source rows for this
-        # (ticker, date). UW often omits market_cap; we don't want a NULL
-        # from one source to outrank a real value from another.
-        mcap = max(
-            (r.get('market_cap') for r in group['rows'] if r.get('market_cap') is not None),
-            default=None,
-        )
+        # Coalesce per-row signals across the (ticker, date) group. UW omits
+        # market_cap on some rows; AV omits everything except the date. We
+        # don't want a NULL from one source to outrank a real value from
+        # another.
+        rows_list = group['rows']
+        mcap = _max_non_null(rows_list, 'market_cap')
+        stock_vol = _max_non_null(rows_list, 'stock_volume')
+        options_vol = _max_non_null(rows_list, 'options_volume')
+        oi = _max_non_null(rows_list, 'open_interest')
+        rv_12q = _max_non_null(rows_list, 'rv_1d_last_12q')
+        sp500 = _any_true(rows_list, 'is_s_p_500')
+
         earnings.append({
             'ticker': ticker,
             'date': earnings_date,
@@ -172,6 +189,11 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
             'expected_move': best.get('expected_move'),
             'sector': best.get('sector') or '',
             'market_cap': mcap,
+            'is_s_p_500': sp500,
+            'stock_volume': stock_vol,
+            'options_volume': options_vol,
+            'open_interest': oi,
+            'rv_1d_last_12q': rv_12q,
             'strategy': best.get('strategy') or '',
             'strike': best.get('strike'),
             'premium': best.get('premium'),
@@ -181,13 +203,19 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
             'tier': _tier(group['sources']),
         })
 
-    # Sort by date FIRST (so weekly grouping stays chronological), then by
-    # tier (lower = better), then market_cap DESC (NULLs last via -inf), then
-    # alphabetically — each day's rendering shows top-tier, biggest names first.
+    # Sort: date → tier → SP500 first → options_volume DESC → stock_volume
+    # DESC → market_cap DESC → ticker. Negative-with-fallback yields NULLS
+    # LAST. SP500 truthy sorts before False/None via the int cast.
+    def _neg(v):
+        return -(v if v is not None else float('-inf'))
+
     earnings.sort(key=lambda r: (
         r['date'],
         r['tier'],
-        -(r.get('market_cap') or float('-inf')),
+        -int(bool(r.get('is_s_p_500'))),     # True (1) sorts before False (0)
+        _neg(r.get('options_volume')),
+        _neg(r.get('stock_volume')),
+        _neg(r.get('market_cap')),
         r['ticker'],
     ))
 

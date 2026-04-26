@@ -476,19 +476,30 @@ def _earnings_tickers_in_window(
     except ImportError:
         return []
 
-    # Aggregate per ticker: prefer rows with market_cap. Order by has_options
-    # first (true sorts AFTER false in PG ASC, so DESC) then market_cap DESC.
-    # NULLS LAST on market_cap so unranked tickers sink without disappearing.
+    # Aggregate per ticker. UW liquidity signals (stock_volume,
+    # options_volume, is_s_p_500) outrank market_cap because market_cap is
+    # only filled on UW rows, while many UW rows ALSO have stock_volume.
+    # An SP500 name with high options volume is the canonical "tradeable
+    # earnings ticker" — exactly what we want the daily fetcher to backfill.
+    # NULLS LAST on every signal so AV-only / EW-only rows sink without
+    # disappearing entirely.
     sql = """
-        SELECT ticker, MAX(market_cap) AS market_cap,
-               BOOL_OR(COALESCE(has_options, false)) AS optionable
+        SELECT ticker,
+               BOOL_OR(COALESCE(has_options, false))   AS optionable,
+               BOOL_OR(COALESCE(is_s_p_500, false))    AS sp500,
+               MAX(stock_volume)                       AS stock_volume,
+               MAX(options_volume)                     AS options_volume,
+               MAX(market_cap)                         AS market_cap
         FROM earnings_calendar
         WHERE earnings_date BETWEEN
             CURRENT_DATE - (:back || ' days')::interval AND
             CURRENT_DATE + (:ahead || ' days')::interval
         GROUP BY ticker
-        ORDER BY optionable DESC,
-                 market_cap DESC NULLS LAST,
+        ORDER BY optionable      DESC,
+                 sp500           DESC NULLS LAST,
+                 options_volume  DESC NULLS LAST,
+                 stock_volume    DESC NULLS LAST,
+                 market_cap      DESC NULLS LAST,
                  ticker
     """
     if top_n and top_n > 0:
