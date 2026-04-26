@@ -850,6 +850,29 @@ CREATE INDEX IF NOT EXISTS idx_news_sentiment_topics
 
 
 -- ============================================================================
+-- STRAT_LEVELS — long table of horizontal price markers per ticker per as_of.
+-- Populated by lib.strat_levels.persist_level_map(). Used by the premarket
+-- brief and signal_monitor for trigger / stop / target rendering.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS strat_levels (
+    ticker         VARCHAR(10)               NOT NULL,
+    as_of          TIMESTAMPTZ               NOT NULL,
+    level_name     VARCHAR(50)               NOT NULL,
+    price          NUMERIC(12,4)             NOT NULL,
+    timeframe      VARCHAR(8),
+    level_type     VARCHAR(20),
+    strat_class    VARCHAR(8),
+    is_current     BOOLEAN     DEFAULT FALSE,
+    period_label   VARCHAR(40),
+    inserted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, as_of, level_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strat_levels_ticker_as_of_price
+    ON strat_levels (ticker, as_of, price);
+
+
+-- ============================================================================
 -- Forward-looking columns for Strat Quarter levels. The columns are added
 -- idempotently so that when a future fetcher writes calculate_historical_levels()
 -- output the table is ready. Existing rows stay NULL until backfilled.
