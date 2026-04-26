@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-04-26 (session 12)
+**Last Updated**: 2026-04-26 (session 12 + notifier)
 
 ---
 
@@ -411,6 +411,7 @@ Pre-existing failures (unrelated to dashboard work):
 
 ## Change Log
 
+- 2026-04-26: Add GCP Cloud Run Job failure notifier — stdlib Cloud Run service triggered by Cloud Logging sink → Pub/Sub push; fans out to Discord webhook + GitHub issue (with dedup on repeat failures)
 - 2026-02-22: Pre-migration cleanup — add .gcloudignore + .dockerignore, create requirements-gcp.txt (prod-only), update gcp/Dockerfile, delete orphaned root files
 - 2026-02-22: Fix indicator warmup periods — StochRSI→SMA, MACD/EMA/SMA min_periods=period, BB ddof=0 (matches TradingView/AV spec)
 - 2026-02-22: DataLoader gains Cloud SQL priority-0 for load_intraday/load_daily; new load_options/load_trades methods
