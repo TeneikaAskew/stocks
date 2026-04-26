@@ -122,6 +122,17 @@ async def health_check():
     }
 
 
+@app.get("/api/me")
+async def get_current_user(request: Request):
+    """Return the current user's email from IAP headers.
+
+    In production (behind IAP), returns the authenticated email.
+    In local dev (no IAP), returns None.
+    """
+    email = _iap_user_email(request)
+    return {"email": email}
+
+
 # ── /dev — test-account info page (behind IAP in prod) ─────────────────────
 # Shows the Playwright tester service account, IAP audience, and ready-to-run
 # curl/gcloud snippets. Visible only to humans who already passed IAP, so the
