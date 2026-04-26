@@ -284,6 +284,91 @@ export function computeStrategySignals(
   };
 }
 
+// ── Series voter — evaluate the 5-condition rule at every bar ──────────────
+// Used by the Charts page to overlay green/red triangles wherever the
+// strategy would have fired. Mirrors trading_analysis.py's per-bar loop
+// but works on the bar slice currently rendered (not historical_signals).
+//
+// O(n × indicator_window) — for a 1-day 1-min chart (~390 bars) this is
+// well under 10ms in practice. Re-runs on every bars change via useMemo.
+
+export interface SeriesSignal {
+  /** Index into the input ``bars`` array for this signal's bar */
+  index: number;
+  /** Bar.time pass-through (string — the chart converts to Time later) */
+  time: string;
+  direction: 'CALL' | 'PUT';
+  /** 3..5 — count of conditions met for the firing side */
+  metCount: number;
+  /** Bar close at signal time, useful for marker positioning */
+  price: number;
+}
+
+export function computeStrategySignalsForSeries(bars: Bar[]): SeriesSignal[] {
+  // Need at least 14 bars for a meaningful RSI; voter starts at index 3.
+  if (bars.length < 15) return [];
+
+  const closes = bars.map((b) => b.close);
+  const out: SeriesSignal[] = [];
+
+  // Pre-allocate cumulative VWAP so we don't recompute the full sum each step.
+  // VWAP resets per session in real markets but for a single chart slice the
+  // cumulative form matches what trading_analysis.py does within a day.
+  let pvSum = 0;
+  let volSum = 0;
+  const vwapSeries: (number | null)[] = new Array(bars.length).fill(null);
+  for (let i = 0; i < bars.length; i += 1) {
+    const typical = (bars[i].high + bars[i].low + bars[i].close) / 3;
+    pvSum += typical * bars[i].volume;
+    volSum += bars[i].volume;
+    vwapSeries[i] = volSum > 0 ? pvSum / volSum : null;
+  }
+
+  // Walk forward. At each bar i (≥ 14), evaluate the voter using a slice
+  // ending at i. Skip the most recent bar because the voter wants 3
+  // *prior* moves — at the chart's right edge there's no future to verify.
+  for (let i = 14; i < bars.length; i += 1) {
+    // 3 consecutive direction count from bars[i-2..i]
+    let upRun = 0;
+    let downRun = 0;
+    for (let j = i - 2; j <= i; j += 1) {
+      const diff = closes[j] - closes[j - 1];
+      if (diff > 0) upRun += 1;
+      if (diff < 0) downRun += 1;
+    }
+
+    const slice = closes.slice(0, i + 1);
+    const rsi = calculateRSI(slice);
+    const stoch = calculateStochRSI(slice);
+    const ema9 = calculateEMA(slice, 9);
+    const last = closes[i];
+    const vwap = vwapSeries[i];
+
+    // 5-condition voter (matches computeStrategySignals)
+    const callMet =
+      (upRun >= 3 ? 1 : 0) +
+      (rsi != null && rsi > 25 && rsi < 50 ? 1 : 0) +
+      (stoch.k != null && stoch.k < 80 ? 1 : 0) +
+      (vwap != null && last > vwap ? 1 : 0) +
+      (ema9 != null && last > ema9 ? 1 : 0);
+
+    const putMet =
+      (downRun >= 3 ? 1 : 0) +
+      (rsi != null && rsi > 50 && rsi < 75 ? 1 : 0) +
+      (stoch.k != null && stoch.k > 20 ? 1 : 0) +
+      (vwap != null && last < vwap ? 1 : 0) +
+      (ema9 != null && last < ema9 ? 1 : 0);
+
+    if (callMet >= 3 && callMet > putMet) {
+      out.push({ index: i, time: bars[i].time, direction: 'CALL', metCount: callMet, price: last });
+    } else if (putMet >= 3 && putMet > callMet) {
+      out.push({ index: i, time: bars[i].time, direction: 'PUT', metCount: putMet, price: last });
+    }
+  }
+
+  return out;
+}
+
 export function computeSignals(
   price: number | null,
   vwap: number | null,
