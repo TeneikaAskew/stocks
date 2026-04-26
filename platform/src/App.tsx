@@ -3,6 +3,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppShell } from '@/components/layout/AppShell';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
+import { RouteErrorBoundary } from '@/components/shared/RouteErrorBoundary';
 
 const DashboardPage = lazy(() => import('@/routes/DashboardPage'));
 const LiveMarketPage = lazy(() => import('@/routes/LiveMarketPage'));
@@ -34,22 +35,27 @@ function PageLoader() {
   );
 }
 
+// Per-route errorElement isolates a single page's render crash from the
+// AppShell — sidebar + header stay rendered, the bad page shows a card.
+const errorElement = <RouteErrorBoundary />;
+
 const router = createBrowserRouter([
   {
     element: <AppShell />,
+    errorElement,
     children: [
-      { path: '/', element: <Suspense fallback={<PageLoader />}><DashboardPage /></Suspense> },
-      { path: '/live', element: <Suspense fallback={<PageLoader />}><LiveMarketPage /></Suspense> },
-      { path: '/charts', element: <Suspense fallback={<PageLoader />}><ChartsPage /></Suspense> },
-      { path: '/options', element: <Suspense fallback={<PageLoader />}><OptionsFlowPage /></Suspense> },
-      { path: '/playbook', element: <Suspense fallback={<PageLoader />}><PlaybookPage /></Suspense> },
-      { path: '/reports', element: <Suspense fallback={<PageLoader />}><ReportsPage /></Suspense> },
-      { path: '/signals', element: <Suspense fallback={<PageLoader />}><SignalsPage /></Suspense> },
-      { path: '/journal', element: <Suspense fallback={<PageLoader />}><JournalPage /></Suspense> },
-      { path: '/insights', element: <Suspense fallback={<PageLoader />}><InsightsPage /></Suspense> },
-      { path: '/catalysts', element: <Suspense fallback={<PageLoader />}><CatalystsPage /></Suspense> },
-      { path: '/admin', element: <Suspense fallback={<PageLoader />}><AdminPage /></Suspense> },
-      { path: '/help', element: <Suspense fallback={<PageLoader />}><HelpPage /></Suspense> },
+      { path: '/', errorElement, element: <Suspense fallback={<PageLoader />}><DashboardPage /></Suspense> },
+      { path: '/live', errorElement, element: <Suspense fallback={<PageLoader />}><LiveMarketPage /></Suspense> },
+      { path: '/charts', errorElement, element: <Suspense fallback={<PageLoader />}><ChartsPage /></Suspense> },
+      { path: '/options', errorElement, element: <Suspense fallback={<PageLoader />}><OptionsFlowPage /></Suspense> },
+      { path: '/playbook', errorElement, element: <Suspense fallback={<PageLoader />}><PlaybookPage /></Suspense> },
+      { path: '/reports', errorElement, element: <Suspense fallback={<PageLoader />}><ReportsPage /></Suspense> },
+      { path: '/signals', errorElement, element: <Suspense fallback={<PageLoader />}><SignalsPage /></Suspense> },
+      { path: '/journal', errorElement, element: <Suspense fallback={<PageLoader />}><JournalPage /></Suspense> },
+      { path: '/insights', errorElement, element: <Suspense fallback={<PageLoader />}><InsightsPage /></Suspense> },
+      { path: '/catalysts', errorElement, element: <Suspense fallback={<PageLoader />}><CatalystsPage /></Suspense> },
+      { path: '/admin', errorElement, element: <Suspense fallback={<PageLoader />}><AdminPage /></Suspense> },
+      { path: '/help', errorElement, element: <Suspense fallback={<PageLoader />}><HelpPage /></Suspense> },
     ],
   },
 ]);
