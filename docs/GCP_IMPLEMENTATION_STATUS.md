@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-04-26 (session 12 + notifier + high-risk test coverage)
+**Last Updated**: 2026-04-26 (session 13 + ticker info API + news feed probes + admin IAP bypass)
 
 ---
 
