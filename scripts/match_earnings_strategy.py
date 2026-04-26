@@ -8,7 +8,6 @@ and matches them with options chain data from AlphaVantage HISTORICAL_OPTIONS to
 profit/loss and other metrics.
 
 Designed for MULTI-DAY holds around earnings (Day 0-5 tracking).
-For ETF SCALPING, use fetch_etf_options_intraday.py and its analysis function.
 
 Usage:
     python match_earnings_strategy.py --strategy longcalls --limit 5
@@ -410,7 +409,6 @@ Examples:
   python match_earnings_strategy.py --strategy bullspreads --output data/matched_bullspreads.csv
 
 Note: This is for EARNINGS strategies (multi-day holds).
-For ETF SCALPING, use fetch_etf_options_intraday.py --analyze
         """
     )
 

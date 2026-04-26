@@ -96,13 +96,12 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 3. **IV evolution studies** (for future ML training) need the full time-series of IV per strike/expiration
 4. **Intraday snapshots** (multiple per day) capture how chains evolve with underlying price — essential for gamma scalping / 0DTE strategies
 
-**What you CAN drop** — The **intraday 9x/day snapshots** from `fetch-etf-options` Cloud Run job (see issue below). Daily EOD snapshots from `fetch-av-options-backfill` are sufficient for the vast majority of use cases, and AV can be queried live for "current chain" via the existing OptionsFlowPage fallback.
+**What was dropped (2026-04-26)** — the intraday 9x/day `fetch-etf-options` Cloud Run job. Daily EOD snapshots from `fetch-av-options-backfill` are sufficient for the vast majority of use cases, and AV is queried live for "current chain" via the existing OptionsFlowPage fallback. See "Deprecated path" below.
 
 **ML value** — High. This is one of the most valuable tables for future options strategy models because options history is hard to buy and AV gives it for free.
 
-**Current writers (TWO — needs consolidation)**
+**Current writer — single canonical path**
 
-**Writer A — Daily EOD (canonical, keep)**:
 - Script: [`gcp/fetchers/fetch_av_historical_options.py`](../gcp/fetchers/fetch_av_historical_options.py)
 - Cloud Run job: `fetch-av-options-backfill`
 - Source: AlphaVantage `HISTORICAL_OPTIONS` endpoint
@@ -110,20 +109,9 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 - Writes: one snapshot per ticker per trading day with `data_source='alphavantage'`
 - **~40k contracts per day across all 4 tickers**
 
-**Writer B — Intraday 9x/day (buggy, propose to disable)**:
-- Script: [`gcp/fetchers/fetch_etf_options.py`](../gcp/fetchers/fetch_etf_options.py)
-- Cloud Run job: `fetch-etf-options`
-- Cloud Scheduler: 9 jobs during market hours (9:30, 9:35, 9:40, 10:00, 11:30, 13:00, 14:30, 15:30, 16:05 ET)
-- **Bug found during audit**: when invoked with `--tickers ALL`, it writes rows with the literal string `'ALL'` as the ticker column instead of expanding to per-ticker rows. Also writes `snapshot_date` = today even when `--date` overrides are supplied.
-
 **Freshness budget** — 30h from EOD run
 
-**Proposed changes**
-1. 🔴 **Disable the intraday `fetch-etf-options` Cloud Run job** (9x/day) until the fetcher bugs are fixed. Per the user's own assessment ("intraday snapshots should no longer be needed with a live api"), the Options UI can query AV directly when the user wants "right now" data, and the daily EOD snapshot covers backtest needs.
-2. ✅ **Keep `fetch-av-options-backfill` as canonical** for daily EOD writes
-3. 🟡 **TODO**: fix the Cloud Run job dates — verify `fetch-av-options-backfill` runs on the expected schedule daily (the latest execution I saw was 2026-04-12; not clear if 4/13 ran automatically or only after my manual backfill today)
-4. 🟡 **TODO**: add `fetch-av-options-backfill` to the Cloud Run job list + ensure its Cloud Scheduler entry exists and fires daily at 01:00 UTC
-5. 🟡 **If intraday snapshots ARE needed later** for 0DTE strategies: rewrite the fetcher to fix the `'ALL'` bug, add a distinct `market_session` column to distinguish snapshots within the same day, and re-enable with proper per-snapshot rows
+**Deprecated path (removed 2026-04-26)** — the intraday 9x/day `fetch-etf-options` Cloud Run job (yahooquery) was deleted along with `gcp/fetchers/fetch_etf_options.py`, `scripts/fetch_etf_options_intraday.py`, and `.github/workflows/fetch_etf_options.yml`. The Strat signals on the underlying's OHLC bars across timeframes, so per-option intraday chain snapshots don't add signal — and AV `HISTORICAL_OPTIONS` returns one per-day snapshot per call, not intraday bars, so the 9x/day approach couldn't answer intraday-high/dwell questions anyway. The Options UI queries AV directly for "current chain" when the user wants "right now" data; daily EOD snapshots cover backtest needs.
 
 ---
 
@@ -370,7 +358,7 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 ### P1 — This week
 - [ ] Add the `daily_rates` table to schema + migrate + backfill via FRED + create Cloud Run job
 - [ ] Create a Cloud Monitoring alert policy on Cloud Run job execution failures for: `fetch-market-data`, `fetch-earnings-options`, `signal-monitor`, `premarket-brief`, `fetch-av-options-backfill`. Alert to Discord webhook.
-- [ ] Disable the buggy `fetch-etf-options` 9x/day intraday Cloud Run job (the one with the `ticker='ALL'` bug). Daily EOD via `fetch-av-options-backfill` is sufficient.
+- [x] **Done 2026-04-26**: removed `fetch-etf-options` (the 9x/day intraday Cloud Run job with the `ticker='ALL'` bug) along with the fetcher + workflow files. Daily EOD via `fetch-av-options-backfill` is the canonical writer.
 - [ ] Investigate the SPX 4-month gap in `market_data_daily` (separate incident)
 - [ ] Verify `fetch_earnings_options.py` uses AV, not yahooquery, for ticker resolution
 
