@@ -34,7 +34,7 @@ def load_watchlist() -> list[str]:
     """Return the configured watchlist (uppercased, deduped, order preserved)."""
     try:
         if _CFG_PATH.exists():
-            data = json.loads(_CFG_PATH.read_text())
+            data = json.loads(_CFG_PATH.read_text(encoding="utf-8"))
             wl = data.get("watchlist") or []
             if isinstance(wl, list) and wl:
                 return _dedupe_upper(wl)
