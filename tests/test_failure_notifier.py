@@ -227,3 +227,199 @@ def test_handle_notification_fires_both_channels(monkeypatch):
     mock_gh.assert_called_once()
     details = mock_gh.call_args[0][2]
     assert details["job_name"] == "fetch-etf-options"
+
+
+# ── Tenacity retry behaviour ────────────────────────────────────────────────
+
+
+def test_send_discord_retries_on_transient_failure(monkeypatch):
+    """First two attempts fail, third succeeds. Tenacity must retry
+    rather than abort on the first 5xx."""
+    call_log = []
+
+    def fake_post(url, json=None, timeout=None):
+        call_log.append(url)
+        resp = MagicMock()
+        if len(call_log) < 3:
+            resp.raise_for_status.side_effect = RuntimeError("502 transient")
+        else:
+            resp.raise_for_status.return_value = None
+            resp.status_code = 204
+        return resp
+
+    monkeypatch.setattr(fn.requests, "post", fake_post)
+    # Speed up the test — replace the wait with no-op
+    monkeypatch.setattr(fn, "wait_exponential", lambda *a, **k: lambda *a2, **k2: 0)
+
+    fn.send_discord("https://discord.example/hook", {"content": "hi"})
+    assert len(call_log) == 3, "tenacity must retry until success"
+
+
+def test_send_discord_reraises_after_max_attempts(monkeypatch):
+    """All 3 attempts fail → tenacity reraises (we don't want to swallow
+    a persistently failing webhook silently)."""
+    def fake_post(*a, **k):
+        resp = MagicMock()
+        resp.raise_for_status.side_effect = RuntimeError("503 still down")
+        return resp
+
+    monkeypatch.setattr(fn.requests, "post", fake_post)
+    with pytest.raises(RuntimeError, match="503"):
+        fn.send_discord("https://x", {"content": "hi"})
+
+
+def test_create_issue_retries_on_transient_failure(monkeypatch):
+    """Same retry contract on the GitHub side."""
+    call_log = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        call_log.append(url)
+        resp = MagicMock()
+        if len(call_log) < 2:
+            resp.raise_for_status.side_effect = RuntimeError("500 transient")
+        else:
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {"number": 1234}
+        return resp
+
+    monkeypatch.setattr(fn.requests, "post", fake_post)
+    n = fn.create_issue("owner/repo", "title", "body", ["bug"], token="ghp_xxx")
+    assert n == 1234
+    assert len(call_log) == 2
+
+
+def test_find_existing_issue_swallows_request_exception(monkeypatch):
+    """The lookup is best-effort — if GitHub is down, returning None and
+    creating a new issue is preferable to crashing the notifier loop."""
+    def fake_get(*a, **k):
+        raise fn.requests.RequestException("github unreachable")
+
+    monkeypatch.setattr(fn.requests, "get", fake_get)
+    assert fn.find_existing_issue("owner/repo", ["x"], token="t") is None
+
+
+# ── HTTP Handler — do_POST / do_GET ─────────────────────────────────────────
+
+
+class _MockSocket:
+    """Stand-in for the BaseHTTPRequestHandler socket layer. Captures
+    response bytes so tests can assert what the handler sent back."""
+    def __init__(self, request_bytes: bytes):
+        self._req = request_bytes
+        self.sent: list = []
+
+    def makefile(self, mode, *args, **kwargs):
+        import io
+        if mode == "rb":
+            return io.BytesIO(self._req)
+        # The handler writes to wfile; we use a BytesIO that records
+        # everything for assertion
+        buf = io.BytesIO()
+        self.sent.append(buf)
+        return buf
+
+
+def _invoke_handler(http_method: str, body: bytes, monkeypatch=None,
+                    handle_returns=(204, "")):
+    """Drive the BaseHTTPRequestHandler synchronously without spawning
+    a real HTTP server. Patches `handle_notification` so we test the
+    HTTP layer in isolation."""
+    if monkeypatch is not None:
+        monkeypatch.setattr(fn, "handle_notification",
+                            lambda raw: handle_returns)
+
+    request_line = (
+        f"{http_method} / HTTP/1.1\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        f"\r\n"
+    ).encode() + body
+
+    class _ConnectingHandler(fn.Handler):
+        # The base class auto-calls handle() in __init__; we let it run
+        # and capture via the mock socket above.
+        pass
+
+    sock = _MockSocket(request_line)
+    handler = _ConnectingHandler.__new__(_ConnectingHandler)
+    handler.request = sock
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.server = None
+    handler.rfile = sock.makefile("rb")
+
+    import io
+    handler.wfile = io.BytesIO()
+    # Manually parse the request line + headers (BaseHTTPRequestHandler does this)
+    handler.raw_requestline = handler.rfile.readline(65537)
+    handler.parse_request()
+    if http_method == "POST":
+        handler.do_POST()
+    else:
+        handler.do_GET()
+    return handler.wfile.getvalue()
+
+
+def test_handler_get_returns_health_check(monkeypatch):
+    """GET / → 200 ok body. Used by Cloud Run health probes."""
+    out = _invoke_handler("GET", b"")
+    assert b"HTTP/1.0 200" in out or b"HTTP/1.1 200" in out
+    assert out.endswith(b"ok")
+
+
+def test_handler_post_proxies_to_handle_notification(monkeypatch):
+    """POST body is passed through to handle_notification; the returned
+    (status, message) tuple becomes the HTTP response."""
+    out = _invoke_handler(
+        "POST", b'{"message":{"data":"abc"}}',
+        monkeypatch=monkeypatch, handle_returns=(204, ""),
+    )
+    assert b"HTTP/1.0 204" in out or b"HTTP/1.1 204" in out
+
+
+def test_handler_post_writes_error_message_in_body(monkeypatch):
+    """500 from handle_notification → message is written as the response
+    body so log readers can see why."""
+    out = _invoke_handler(
+        "POST", b'{"x":1}',
+        monkeypatch=monkeypatch,
+        handle_returns=(500, "discord webhook failed"),
+    )
+    assert b"500" in out
+    assert b"discord webhook failed" in out
+
+
+def test_handler_post_clamps_oversized_body(monkeypatch):
+    """`MAX_BODY` clamps `Content-Length` so a malicious / runaway client
+    can't tie up the worker reading 100 MB. The handler must read AT MOST
+    MAX_BODY bytes and then dispatch normally."""
+    received_lengths: list[int] = []
+
+    def fake_handle(raw):
+        received_lengths.append(len(raw))
+        return (204, "")
+
+    # Send Content-Length = MAX_BODY + 1000, but only MAX_BODY bytes
+    # of actual body — handler should read MAX_BODY-sized window
+    body = b"x" * (fn.MAX_BODY + 1000)
+    monkeypatch.setattr(fn, "handle_notification", fake_handle)
+
+    request_line = (
+        f"POST / HTTP/1.1\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        f"\r\n"
+    ).encode() + body
+
+    import io
+    sock = _MockSocket(request_line)
+    handler = fn.Handler.__new__(fn.Handler)
+    handler.request = sock
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.server = None
+    handler.rfile = sock.makefile("rb")
+    handler.wfile = io.BytesIO()
+    handler.raw_requestline = handler.rfile.readline(65537)
+    handler.parse_request()
+    handler.do_POST()
+
+    assert received_lengths == [fn.MAX_BODY], (
+        "handler must clamp the read at MAX_BODY"
+    )

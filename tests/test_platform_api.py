@@ -557,6 +557,113 @@ class TestPlaybookAPI:
         assert "reports" in data
 
 
+# ── /api/health/freshness ───────────────────────────────────────────────────
+
+class TestHealthFreshnessAPI:
+    """`GET /api/health/freshness` — wraps `scripts/audit_data_freshness.py`.
+
+    The endpoint has a module-level 5-minute TTL cache. Tests must reset
+    `_cache_value` between cases or stale results leak across.
+    """
+
+    def _reset_cache(self):
+        from api.routers import health as health_module
+        health_module._cache_value = None
+        health_module._cache_expires_at = 0.0
+
+    def test_freshness_returns_audit_dict(self, client, monkeypatch):
+        from api.routers import health as health_module
+        self._reset_cache()
+
+        # Build a fake report via the real dataclass so the to_dict()
+        # call inside the route matches production shape.
+        import audit_data_freshness as audit_mod
+
+        rows = [audit_mod.FreshnessRow(
+            table="market_data_daily", ticker="IWM",
+            last_row_at="2026-04-13", expected_latest="2026-04-13",
+            lag_hours=2.5, expected_max_hours=24,
+            status="ok", row_count_recent=1,
+        )]
+        rep = audit_mod.FreshnessReport(
+            checked_at="2026-04-14T03:30:00.000Z",
+            expected_market_close="2026-04-13",
+            rows=rows,
+        )
+        monkeypatch.setattr(audit_mod, "audit_all", lambda: rep)
+
+        r = client.get("/api/health/freshness")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["overall_status"] == "ok"
+        assert data["expected_market_close"] == "2026-04-13"
+        assert len(data["tables"]) == 1
+        assert data["tables"][0]["table"] == "market_data_daily"
+
+    def test_freshness_caches_for_ttl(self, client, monkeypatch):
+        """Second call within TTL doesn't re-run the audit (the audit
+        touches Cloud SQL — caching avoids a hit per dashboard render)."""
+        from api.routers import health as health_module
+        self._reset_cache()
+
+        import audit_data_freshness as audit_mod
+
+        call_count = {"n": 0}
+
+        def fake_audit():
+            call_count["n"] += 1
+            return audit_mod.FreshnessReport(
+                checked_at="x", expected_market_close="y", rows=[],
+            )
+
+        monkeypatch.setattr(audit_mod, "audit_all", fake_audit)
+
+        r1 = client.get("/api/health/freshness")
+        r2 = client.get("/api/health/freshness")
+        assert r1.status_code == 200 and r2.status_code == 200
+        assert call_count["n"] == 1, "second call must hit the TTL cache"
+
+    def test_freshness_500_on_audit_exception(self, client, monkeypatch):
+        """If `audit_all` raises, the route surfaces a 500 with detail —
+        not a silent 200 with stale data."""
+        from api.routers import health as health_module
+        self._reset_cache()
+
+        import audit_data_freshness as audit_mod
+        monkeypatch.setattr(
+            audit_mod, "audit_all",
+            lambda: (_ for _ in ()).throw(RuntimeError("DB down")),
+        )
+
+        r = client.get("/api/health/freshness")
+        assert r.status_code == 500
+        assert "DB down" in r.json()["detail"]
+
+    def test_freshness_cache_does_not_persist_500(self, client, monkeypatch):
+        """An exception from `audit_all` must NOT poison the cache —
+        the next request after recovery should re-run the audit."""
+        from api.routers import health as health_module
+        self._reset_cache()
+
+        import audit_data_freshness as audit_mod
+        rep = audit_mod.FreshnessReport(
+            checked_at="x", expected_market_close="y", rows=[],
+        )
+
+        # First call raises
+        monkeypatch.setattr(
+            audit_mod, "audit_all",
+            lambda: (_ for _ in ()).throw(RuntimeError("transient")),
+        )
+        r1 = client.get("/api/health/freshness")
+        assert r1.status_code == 500
+
+        # Second call succeeds — cache must not have stored the failure
+        monkeypatch.setattr(audit_mod, "audit_all", lambda: rep)
+        r2 = client.get("/api/health/freshness")
+        assert r2.status_code == 200
+
+
 # ── Phase-report markdown fetch ─────────────────────────────────────────────
 
 class TestReportMarkdownAPI:

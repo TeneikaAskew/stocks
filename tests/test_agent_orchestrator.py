@@ -428,6 +428,156 @@ def test_pipeline_isolates_individual_analyst_failures(
     assert report.run_cost_usd > 0
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Helper-builder unit tests — cover the bundle-payload extraction
+# helpers directly so wrong AI prompts don't slip through with no
+# error surface.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_derive_key_levels_extracts_strat_market_options():
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat":   {"available": True, "trigger_high": 510.0, "trigger_low": 495.0},
+        "market":  {"available": True, "sma_200": 480.0, "ema_20": 500.0},
+        "options": {"available": True, "max_pain_strike_proxy": 505.0},
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels == {
+        "Prev High": 510.0, "Prev Low": 495.0,
+        "SMA 200": 480.0, "EMA 20": 500.0,
+        "Max Pain": 505.0,
+    }
+
+
+def test_derive_key_levels_skips_unavailable_sections():
+    from lib.agents.orchestrator import _derive_key_levels
+
+    # Only market is available — strat/options are dropped without error
+    bundle = {
+        "strat":   {"available": False, "trigger_high": 999, "trigger_low": 0},
+        "market":  {"available": True, "sma_200": 480.0, "ema_20": 500.0},
+        "options": None,  # missing entirely
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels == {"SMA 200": 480.0, "EMA 20": 500.0}
+
+
+def test_derive_key_levels_drops_non_numeric_values():
+    """A summarizer that emits a string for `trigger_high` (because of
+    a SQL coercion bug) must NOT be included — wrong levels would feed
+    the AI prompt silently."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat": {"available": True,
+                  "trigger_high": "510.0",  # str, not number
+                  "trigger_low": None},
+    }
+    assert _derive_key_levels(bundle) == {}
+
+
+def test_derive_key_levels_empty_bundle_returns_empty_dict():
+    from lib.agents.orchestrator import _derive_key_levels
+
+    assert _derive_key_levels({}) == {}
+
+
+def test_build_strat_snapshot_default_when_unavailable():
+    from lib.agents.orchestrator import _build_strat_snapshot
+
+    snap = _build_strat_snapshot({"available": False})
+    assert snap.last_candle == "1"
+    assert snap.in_force_combo is None
+    assert snap.ftfc_score == 0.0
+    assert snap.ftfc_direction == "mixed"
+
+
+def test_build_strat_snapshot_populates_from_section():
+    from lib.agents.orchestrator import _build_strat_snapshot
+
+    snap = _build_strat_snapshot({
+        "available": True,
+        "last_candle": "2U",
+        "in_force_combo": "2D-1-2U_reversal",
+        "ftfc_score": 0.75,
+        "ftfc_direction": "bullish",
+        "trigger_high": 510.0,
+        "trigger_low": 500.0,
+    })
+    assert snap.last_candle == "2U"
+    assert snap.in_force_combo == "2D-1-2U_reversal"
+    assert snap.ftfc_score == 0.75
+    assert snap.ftfc_direction == "bullish"
+    assert snap.trigger_high == 510.0
+    assert snap.trigger_low == 500.0
+
+
+def test_build_strat_snapshot_coerces_falsy_strings_to_defaults():
+    """The summarizer can emit `last_candle=''` when classification
+    fails. Don't propagate a blank — fall back to '1' (mixed)."""
+    from lib.agents.orchestrator import _build_strat_snapshot
+
+    snap = _build_strat_snapshot({
+        "available": True,
+        "last_candle": "",
+        "ftfc_score": None,
+        "ftfc_direction": None,
+    })
+    assert snap.last_candle == "1"
+    assert snap.ftfc_score == 0.0
+    assert snap.ftfc_direction == "mixed"
+
+
+def test_build_catalysts_filters_malformed_events():
+    """A catalyst row missing `name` or `date` must be dropped without
+    aborting the whole list (raised inside the loop, caught by `except`)."""
+    from lib.agents.orchestrator import _build_catalysts
+
+    out = _build_catalysts({
+        "available": True,
+        "events": [
+            {"name": "FOMC", "date": "2026-04-30", "impact": "high",
+             "kind": "economic"},
+            {"name": "AAPL Earnings"},  # missing date — dropped
+            {"date": "2026-05-01"},      # missing name — dropped
+            {"name": "GDP Q1", "date": "2026-05-15"},  # impact/kind defaults
+        ],
+    })
+    names = [c.name for c in out]
+    assert names == ["FOMC", "GDP Q1"]
+    # Defaults applied to the second
+    assert out[1].impact == "medium"
+    assert out[1].kind == "economic"
+
+
+def test_build_catalysts_unavailable_returns_empty():
+    from lib.agents.orchestrator import _build_catalysts
+
+    assert _build_catalysts({"available": False}) == []
+    assert _build_catalysts({}) == []
+
+
+def test_build_signal_refs_skips_malformed_rows():
+    """A signal row missing `alert_ts` or `direction` is dropped silently
+    — the rest of the list still surfaces."""
+    from lib.agents.orchestrator import _build_signal_refs
+
+    out = _build_signal_refs({
+        "available": True,
+        "recent": [
+            {"alert_ts": "2026-04-25 14:30:00", "direction": "CALL",
+             "strength": "strong", "score": 4.5},
+            {"direction": "PUT"},  # no alert_ts — dropped
+            {"alert_ts": "x", "direction": "CALL", "score": "not-a-number"},
+        ],
+    })
+    # Last row drops because float('not-a-number') raises
+    assert len(out) == 1
+    assert out[0].direction == "CALL"
+
+
 def test_pipeline_isolates_multiple_partial_failures(
     canned_bundle, seven_role_snapshot
 ):
