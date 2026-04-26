@@ -427,3 +427,89 @@ def test_build_context_bundle_includes_gamma(patch_query):
     # Other sections are unavailable in this fixture, but gamma must be the
     # one populated when only chain data is fixtured
     assert bundle["gamma"]["available"] is True
+
+
+# ---------------------------------------------------------------------------
+# summarize_news_sentiment
+# ---------------------------------------------------------------------------
+
+
+def test_news_sentiment_classifies_bullish_bearish_neutral(patch_query):
+    """The ±0.15 thresholds are the load-bearing classification — wrong
+    bins → wrong AI sentiment-analyst prompt."""
+    patch_query("FROM news_sentiment", pd.DataFrame([
+        {"title": "very bullish",   "sentiment_score": 0.5,  "relevance_score": 0.9, "source": "AV", "published_ts": "2026-04-25T10:00:00Z"},
+        {"title": "mildly bullish", "sentiment_score": 0.16, "relevance_score": 0.7, "source": "AV", "published_ts": "2026-04-25T11:00:00Z"},
+        {"title": "edge bullish",   "sentiment_score": 0.15, "relevance_score": 0.8, "source": "AV", "published_ts": "2026-04-25T12:00:00Z"},  # NOT bullish (>, not >=)
+        {"title": "neutral",        "sentiment_score": 0.0,  "relevance_score": 0.5, "source": "AV", "published_ts": "2026-04-25T13:00:00Z"},
+        {"title": "edge bearish",   "sentiment_score": -0.15,"relevance_score": 0.6, "source": "AV", "published_ts": "2026-04-25T14:00:00Z"},  # NOT bearish (<, not <=)
+        {"title": "mildly bearish", "sentiment_score": -0.20,"relevance_score": 0.4, "source": "AV", "published_ts": "2026-04-25T15:00:00Z"},
+        {"title": "very bearish",   "sentiment_score": -0.6, "relevance_score": 0.95,"source": "AV", "published_ts": "2026-04-25T16:00:00Z"},
+    ]))
+    res = summarizers.summarize_news_sentiment("SPY")
+    assert res["available"] is True
+    assert res["bullish_count"] == 2  # 0.5 and 0.16 only
+    assert res["bearish_count"] == 2  # -0.20 and -0.60 only
+    assert res["neutral_count"] == 3  # 0.15, 0.0, -0.15
+    assert res["article_count"] == 7
+
+
+def test_news_sentiment_unavailable_when_no_rows(patch_query):
+    """Empty DataFrame → unavailable + reason; downstream tier knows
+    to skip the sentiment analyst rather than feed it junk."""
+    patch_query("FROM news_sentiment", pd.DataFrame())
+    res = summarizers.summarize_news_sentiment("SPY")
+    assert res["available"] is False
+    assert "no news_sentiment" in res["reason"]
+
+
+def test_news_sentiment_returns_top5_by_relevance(patch_query):
+    """`headlines` must be the 5 highest-relevance rows, not just the
+    first 5 returned."""
+    rows = [
+        {"title": f"art {i}", "sentiment_score": 0.1,
+         "relevance_score": float(i), "source": "AV",
+         "published_ts": f"2026-04-25T{i:02d}:00:00Z"}
+        for i in range(10)
+    ]
+    patch_query("FROM news_sentiment", pd.DataFrame(rows))
+    res = summarizers.summarize_news_sentiment("SPY")
+    titles = [h["title"] for h in res["headlines"]]
+    # Top 5 = relevance 9, 8, 7, 6, 5
+    assert titles == ["art 9", "art 8", "art 7", "art 6", "art 5"]
+
+
+def test_news_sentiment_avg_score_drops_none_values(patch_query):
+    """One bad row with sentiment_score=None must NOT poison the mean
+    or crash the call. The column gets `.dropna().astype(float)` first."""
+    patch_query("FROM news_sentiment", pd.DataFrame([
+        {"title": "a", "sentiment_score": 0.4,  "relevance_score": 0.9, "source": "AV", "published_ts": "x"},
+        {"title": "b", "sentiment_score": None, "relevance_score": 0.5, "source": "AV", "published_ts": "y"},
+        {"title": "c", "sentiment_score": 0.0,  "relevance_score": 0.7, "source": "AV", "published_ts": "z"},
+    ]))
+    res = summarizers.summarize_news_sentiment("SPY")
+    # avg of [0.4, 0.0] = 0.2 (None dropped before mean)
+    assert res["avg_sentiment_score"] == 0.2
+    assert res["article_count"] == 3  # all rows still counted
+
+
+def test_news_sentiment_as_of_uses_bounded_window(monkeypatch):
+    """When `as_of` is set, the SQL switches to the bounded form so
+    historical replay (insight reports) doesn't pull future articles."""
+    captured: dict = {}
+
+    def fake_query(sql, params=None):
+        captured["sql"] = sql
+        captured["params"] = params
+        return pd.DataFrame()
+
+    monkeypatch.setattr(summarizers, "_query", fake_query)
+    summarizers.summarize_news_sentiment(
+        "spy", as_of=date(2026, 4, 25), lookback_hours=72
+    )
+    assert "CAST(:end_ts AS timestamptz)" in captured["sql"]
+    assert captured["params"]["ticker"] == "SPY"  # uppercased
+    assert captured["params"]["hours"] == 72
+    # end_exclusive = as_of + 1 day = 2026-04-26 (so intraday articles
+    # on the as_of date itself are still included via the `<` bound)
+    assert "2026-04-26" in captured["params"]["end_ts"]

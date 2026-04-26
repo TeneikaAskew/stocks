@@ -3,7 +3,8 @@
 Uses a mocked LLMClient factory so no provider SDK is touched, and
 monkey-patches `lib.agents.summarizers._query` to return canned
 DataFrames. Exercises:
-- Full 11-node topology succeeds with valid outputs
+- Full 14-call topology succeeds with valid outputs (6 analysts +
+  2 researchers + 1 judge + 1 trader + 3 risk personas + 1 PM)
 - Model version snapshot lands in the report
 - Cost is accumulated across every call
 - Analyst failures are captured in failed_sections but the pipeline
@@ -282,6 +283,35 @@ def canned_bundle(monkeypatch):
                  "sentiment_score": 0.3},
             ])
         if "etf_options_snapshots" in sql:
+            # The orchestrator now has two consumers of etf_options_snapshots
+            # with different SQL shapes — both filter by data_source =
+            # 'alphavantage' so we discriminate by the SELECT columns:
+            #   - summarize_options_flow selects volume/OI/IV/delta.
+            #   - summarize_gamma_levels selects expiration/gamma/vega/bid/
+            #     ask/mark/last_price (no `volume` column).
+            # Dispatch on the gamma-only column "gamma" so each consumer
+            # gets the columns it needs and the gamma summarizer's
+            # `min(expiration)` doesn't blow up.
+            if "gamma, vega" in sql:
+                from datetime import timedelta
+                near_exp = (date(2026, 4, 15) + timedelta(days=14)).strftime("%Y-%m-%d")
+                far_exp = (date(2026, 4, 15) + timedelta(days=45)).strftime("%Y-%m-%d")
+                rows = []
+                for strike in (490, 495, 500, 505, 510):
+                    for opt_type in ("calls", "puts"):
+                        for exp in (near_exp, far_exp):
+                            rows.append({
+                                "option_type": opt_type,
+                                "strike": float(strike),
+                                "expiration": exp,
+                                "open_interest": 10_000 if opt_type == "calls" else 8_000,
+                                "gamma": 0.02,
+                                "vega": 0.15,
+                                "delta": 0.5 if opt_type == "calls" else -0.45,
+                                "bid": 1.10, "ask": 1.20, "mark": 1.15,
+                                "last_price": 1.15,
+                            })
+                return pd.DataFrame(rows)
             return pd.DataFrame([
                 {"option_type": "calls", "strike": 500, "volume": 10_000,
                  "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5},
@@ -336,10 +366,12 @@ def test_pipeline_end_to_end_green(canned_bundle, seven_role_snapshot):
     assert report.conviction == "medium"
     assert report.run_cost_usd > 0
     assert report.run_latency_ms >= 0
-    # Full topology = 5 analysts (market, strat, options, catalyst,
-    # sentiment) + 2 researchers + 1 judge + 1 trader + 3 risk +
-    # 1 PM = 13 calls.
-    assert len(mock.calls) == 13
+    # Full topology = 6 analysts (market, strat, options, gamma,
+    # catalyst, sentiment) + 2 researchers + 1 judge + 1 trader +
+    # 3 risk personas + 1 PM = 14 calls. The gamma analyst was added
+    # to align with `lib/gamma.py` as the single source of truth for
+    # gamma analytics (per CLAUDE.md "Architectural rules").
+    assert len(mock.calls) == 14
     assert report.model_versions["trader"] == "vertex:gemini-2.0-flash"
     # No analyst failures in the happy path
     assert report.failed_sections == []
@@ -359,6 +391,213 @@ def test_pipeline_marks_failed_analysts(canned_bundle, seven_role_snapshot):
     assert report.direction == "long"
 
 
+@pytest.mark.parametrize("failing_section", [
+    "gamma",       # Added in PR #80; lib/gamma.py SoT consolidation
+    "sentiment",   # Added in PR #80; news_sentiment topic-based scoring
+    "catalyst",
+    "strat",
+    "market",
+])
+def test_pipeline_isolates_individual_analyst_failures(
+    canned_bundle, seven_role_snapshot, failing_section
+):
+    """A single analyst section raising must not abort the pipeline.
+    The orchestrator records the failure in `failed_sections` and the
+    downstream tier (researchers, judge, trader, risk, PM) continues
+    to synthesize from whichever analysts succeeded.
+
+    Covers each of the 6 analyst sections individually so we don't
+    silently regress when adding a new section."""
+    mock = _MockLLM(failing_analyst_sections=frozenset({failing_section}))
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    # The failed section is recorded
+    assert failing_section in report.failed_sections
+    # Pipeline still produced a directional report (didn't abort)
+    assert report.direction in ("long", "short", "flat")
+    # All 14 LLM calls are still attempted (the mock raises *during*
+    # the call, after `self.calls.append(...)`); the orchestrator
+    # records the failed section but downstream nodes proceed.
+    assert len(mock.calls) == 14
+    # Cost still accumulates from the surviving 13 successful responses
+    assert report.run_cost_usd > 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Helper-builder unit tests — cover the bundle-payload extraction
+# helpers directly so wrong AI prompts don't slip through with no
+# error surface.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_derive_key_levels_extracts_strat_market_options():
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat":   {"available": True, "trigger_high": 510.0, "trigger_low": 495.0},
+        "market":  {"available": True, "sma_200": 480.0, "ema_20": 500.0},
+        "options": {"available": True, "max_pain_strike_proxy": 505.0},
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels == {
+        "Prev High": 510.0, "Prev Low": 495.0,
+        "SMA 200": 480.0, "EMA 20": 500.0,
+        "Max Pain": 505.0,
+    }
+
+
+def test_derive_key_levels_skips_unavailable_sections():
+    from lib.agents.orchestrator import _derive_key_levels
+
+    # Only market is available — strat/options are dropped without error
+    bundle = {
+        "strat":   {"available": False, "trigger_high": 999, "trigger_low": 0},
+        "market":  {"available": True, "sma_200": 480.0, "ema_20": 500.0},
+        "options": None,  # missing entirely
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels == {"SMA 200": 480.0, "EMA 20": 500.0}
+
+
+def test_derive_key_levels_drops_non_numeric_values():
+    """A summarizer that emits a string for `trigger_high` (because of
+    a SQL coercion bug) must NOT be included — wrong levels would feed
+    the AI prompt silently."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat": {"available": True,
+                  "trigger_high": "510.0",  # str, not number
+                  "trigger_low": None},
+    }
+    assert _derive_key_levels(bundle) == {}
+
+
+def test_derive_key_levels_empty_bundle_returns_empty_dict():
+    from lib.agents.orchestrator import _derive_key_levels
+
+    assert _derive_key_levels({}) == {}
+
+
+def test_build_strat_snapshot_default_when_unavailable():
+    from lib.agents.orchestrator import _build_strat_snapshot
+
+    snap = _build_strat_snapshot({"available": False})
+    assert snap.last_candle == "1"
+    assert snap.in_force_combo is None
+    assert snap.ftfc_score == 0.0
+    assert snap.ftfc_direction == "mixed"
+
+
+def test_build_strat_snapshot_populates_from_section():
+    from lib.agents.orchestrator import _build_strat_snapshot
+
+    snap = _build_strat_snapshot({
+        "available": True,
+        "last_candle": "2U",
+        "in_force_combo": "2D-1-2U_reversal",
+        "ftfc_score": 0.75,
+        "ftfc_direction": "bullish",
+        "trigger_high": 510.0,
+        "trigger_low": 500.0,
+    })
+    assert snap.last_candle == "2U"
+    assert snap.in_force_combo == "2D-1-2U_reversal"
+    assert snap.ftfc_score == 0.75
+    assert snap.ftfc_direction == "bullish"
+    assert snap.trigger_high == 510.0
+    assert snap.trigger_low == 500.0
+
+
+def test_build_strat_snapshot_coerces_falsy_strings_to_defaults():
+    """The summarizer can emit `last_candle=''` when classification
+    fails. Don't propagate a blank — fall back to '1' (mixed)."""
+    from lib.agents.orchestrator import _build_strat_snapshot
+
+    snap = _build_strat_snapshot({
+        "available": True,
+        "last_candle": "",
+        "ftfc_score": None,
+        "ftfc_direction": None,
+    })
+    assert snap.last_candle == "1"
+    assert snap.ftfc_score == 0.0
+    assert snap.ftfc_direction == "mixed"
+
+
+def test_build_catalysts_filters_malformed_events():
+    """A catalyst row missing `name` or `date` must be dropped without
+    aborting the whole list (raised inside the loop, caught by `except`)."""
+    from lib.agents.orchestrator import _build_catalysts
+
+    out = _build_catalysts({
+        "available": True,
+        "events": [
+            {"name": "FOMC", "date": "2026-04-30", "impact": "high",
+             "kind": "economic"},
+            {"name": "AAPL Earnings"},  # missing date — dropped
+            {"date": "2026-05-01"},      # missing name — dropped
+            {"name": "GDP Q1", "date": "2026-05-15"},  # impact/kind defaults
+        ],
+    })
+    names = [c.name for c in out]
+    assert names == ["FOMC", "GDP Q1"]
+    # Defaults applied to the second
+    assert out[1].impact == "medium"
+    assert out[1].kind == "economic"
+
+
+def test_build_catalysts_unavailable_returns_empty():
+    from lib.agents.orchestrator import _build_catalysts
+
+    assert _build_catalysts({"available": False}) == []
+    assert _build_catalysts({}) == []
+
+
+def test_build_signal_refs_skips_malformed_rows():
+    """A signal row missing `alert_ts` or `direction` is dropped silently
+    — the rest of the list still surfaces."""
+    from lib.agents.orchestrator import _build_signal_refs
+
+    out = _build_signal_refs({
+        "available": True,
+        "recent": [
+            {"alert_ts": "2026-04-25 14:30:00", "direction": "CALL",
+             "strength": "strong", "score": 4.5},
+            {"direction": "PUT"},  # no alert_ts — dropped
+            {"alert_ts": "x", "direction": "CALL", "score": "not-a-number"},
+        ],
+    })
+    # Last row drops because float('not-a-number') raises
+    assert len(out) == 1
+    assert out[0].direction == "CALL"
+
+
+def test_pipeline_isolates_multiple_partial_failures(
+    canned_bundle, seven_role_snapshot
+):
+    """Two analysts failing simultaneously — pipeline still proceeds
+    as long as at least one analyst returned (the abort gate at
+    `lib/agents/orchestrator.py:327` only fires on full collapse)."""
+    mock = _MockLLM(
+        failing_analyst_sections=frozenset({"gamma", "sentiment"})
+    )
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    assert {"gamma", "sentiment"}.issubset(set(report.failed_sections))
+    assert report.direction in ("long", "short", "flat")
+
+
 def test_pipeline_blocks_direction_when_risk_blocks(canned_bundle, seven_role_snapshot):
     mock = _MockLLM(risk_block=True)
     report = asyncio.run(
@@ -375,11 +614,13 @@ def test_pipeline_blocks_direction_when_risk_blocks(canned_bundle, seven_role_sn
 
 
 def test_pipeline_aborts_when_all_analysts_fail(canned_bundle, seven_role_snapshot):
-    # Orchestrator runs five analyst sections — market, strat, options,
-    # catalyst, sentiment. All five have to fail to trigger the abort.
+    # Orchestrator runs six analyst sections — market, strat, options,
+    # gamma, catalyst, sentiment. All six have to fail to trigger the
+    # abort (otherwise downstream researchers can still synthesize from
+    # whichever analyst returned).
     mock = _MockLLM(
         failing_analyst_sections=frozenset(
-            {"market", "strat", "options", "catalyst", "sentiment"}
+            {"market", "strat", "options", "gamma", "catalyst", "sentiment"}
         )
     )
     with pytest.raises(RuntimeError, match="all analyst nodes failed"):

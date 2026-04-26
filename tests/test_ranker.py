@@ -382,3 +382,206 @@ def test_ranker_config_returns_defaults_when_file_missing(tmp_path):
     cfg = RankerConfig.from_alert_config(str(missing))
     assert cfg.weights == {}  # falls back to in-code DEFAULT_WEIGHTS
     assert cfg.liquidity_min_volume == 500_000
+
+
+# ──────────────────────────────────────────────────────────────────────
+# gather_candidates — watchlist scope gate
+#
+# Memory note: "default ranker to curated watchlist, not full catalyst
+# universe (1871-ticker pool times out)". This is the entire reason the
+# morning brief returns inside Discord's 30 s budget — the gate at
+# `lib/agents/ranker/candidates.py:295-297` clips the candidate set to
+# `watchlist ∪ extras` whenever `expand_universe=False` (the default).
+# Tests below exercise that gate directly.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def patch_candidates_query(monkeypatch):
+    """Install a fake _query that dispatches by table name in SQL."""
+    from lib.agents.ranker import candidates as cand_mod
+
+    table_to_df: dict[str, pd.DataFrame] = {}
+
+    def fake_query(sql: str, params=None):
+        for needle, df in table_to_df.items():
+            if needle in sql:
+                return df.copy()
+        return pd.DataFrame()
+
+    monkeypatch.setattr(cand_mod, "_query", fake_query)
+
+    def register(needle: str, df: pd.DataFrame):
+        table_to_df[needle] = df
+
+    return register
+
+
+def test_gather_candidates_default_clips_to_watchlist(patch_candidates_query):
+    """Non-watchlist tickers from any catalyst source are dropped when
+    expand_universe=False (the default). This is the load-bearing
+    invariant for the morning brief — without it, the candidate pool
+    balloons to ~1871 tickers and times out."""
+    from lib.agents.ranker.candidates import gather_candidates
+
+    # Earnings has both watchlist (SPY) and non-watchlist (XYZ) tickers
+    patch_candidates_query("earnings_calendar", pd.DataFrame([
+        {"ticker": "SPY", "next_date": "2026-05-01", "earnings_time": "BMO"},
+        {"ticker": "XYZ", "next_date": "2026-05-01", "earnings_time": "AMC"},
+    ]))
+    # SEC 8-K with another non-watchlist ticker
+    patch_candidates_query("sec_filings", pd.DataFrame([
+        {"ticker": "ABC", "filing_date": "2026-04-25", "items": ["1.01"]},
+    ]))
+    # Top mover that isn't on the watchlist
+    patch_candidates_query("top_movers_daily", pd.DataFrame([
+        {"ticker": "FOO", "category": "gainers", "rank": 1, "change_pct": 8.2},
+    ]))
+
+    cands = gather_candidates(watchlist=["SPY", "IWM", "QQQ"])
+    tickers = {c.ticker for c in cands}
+
+    assert "SPY" in tickers, "watchlist ticker with earnings must survive"
+    assert "XYZ" not in tickers, "non-watchlist earnings dropped by gate"
+    assert "ABC" not in tickers, "non-watchlist 8-K filer dropped by gate"
+    assert "FOO" not in tickers, "non-watchlist top-mover dropped by gate"
+
+
+def test_gather_candidates_expand_universe_returns_everything(patch_candidates_query):
+    """When the brief explicitly asks for the full universe (e.g. an
+    ad-hoc deep scan) the gate is bypassed and every catalyst-tagged
+    ticker is returned."""
+    from lib.agents.ranker.candidates import gather_candidates
+
+    patch_candidates_query("earnings_calendar", pd.DataFrame([
+        {"ticker": "SPY", "next_date": "2026-05-01", "earnings_time": "BMO"},
+        {"ticker": "XYZ", "next_date": "2026-05-01", "earnings_time": "AMC"},
+    ]))
+    patch_candidates_query("top_movers_daily", pd.DataFrame([
+        {"ticker": "FOO", "category": "gainers", "rank": 1, "change_pct": 8.2},
+    ]))
+
+    cands = gather_candidates(
+        watchlist=["SPY"], expand_universe=True
+    )
+    tickers = {c.ticker for c in cands}
+    assert {"SPY", "XYZ", "FOO"}.issubset(tickers)
+
+
+def test_gather_candidates_extras_bypass_gate_with_manual_tag(patch_candidates_query):
+    """`extras` is for ad-hoc additions that should always make it
+    through the gate, tagged so the score breakdown can explain why
+    they appeared."""
+    from lib.agents.ranker.candidates import gather_candidates
+
+    # No catalyst tables seeded — extras must still appear
+    cands = gather_candidates(
+        watchlist=["SPY"], extras=["NVDA", "TSLA"]
+    )
+    by_ticker = {c.ticker: c for c in cands}
+    assert "NVDA" in by_ticker
+    assert "TSLA" in by_ticker
+    # Both are tagged 'manual' (memory.add_catalyst("manual"))
+    assert "manual" in by_ticker["NVDA"].catalyst_types
+    assert "manual" in by_ticker["TSLA"].catalyst_types
+
+
+def test_gather_candidates_catalyst_filter_post_filter(patch_candidates_query):
+    """`catalyst_filter` runs AFTER the watchlist gate so the brief can
+    say "only show me earnings tickers from my watchlist"."""
+    from lib.agents.ranker.candidates import gather_candidates
+
+    patch_candidates_query("earnings_calendar", pd.DataFrame([
+        {"ticker": "SPY", "next_date": "2026-05-01", "earnings_time": "BMO"},
+    ]))
+    patch_candidates_query("top_movers_daily", pd.DataFrame([
+        {"ticker": "IWM", "category": "gainers", "rank": 1, "change_pct": 5.0},
+    ]))
+
+    cands = gather_candidates(
+        watchlist=["SPY", "IWM"],
+        catalyst_filter={"earnings"},
+    )
+    tickers = {c.ticker for c in cands}
+    assert tickers == {"SPY"}, "only the earnings-tagged watchlist ticker survives"
+
+
+def test_load_watchlist_reads_alert_config(monkeypatch):
+    """`_load_watchlist` is the production fallback chain:
+    alert_config.json (project root) → INSIGHT_TICKERS env → SPY/IWM/QQQ."""
+    from lib.agents.ranker import candidates as cand_mod
+
+    captured = {}
+
+    class FakePath:
+        """Stand-in for the resolved alert_config.json path."""
+        def __init__(self, exists_=True, content='{"watchlist": ["aapl", " msft ", "GOOG"]}'):
+            self._exists = exists_
+            self._content = content
+
+        def exists(self):
+            captured["exists_called"] = True
+            return self._exists
+
+        def read_text(self):
+            return self._content
+
+    # Patch the path resolution in _load_watchlist so we don't depend
+    # on the real alert_config.json on disk.
+    monkeypatch.setattr(
+        cand_mod.Path,
+        "resolve",
+        lambda self: cand_mod.Path("/project_root/lib/agents/ranker/candidates.py"),
+    )
+    # Then replace `parents[3] / "alert_config.json"` with our fake.
+    real_truediv = cand_mod.Path.__truediv__
+    def fake_truediv(self, other):
+        if str(other) == "alert_config.json":
+            return FakePath()
+        return real_truediv(self, other)
+    monkeypatch.setattr(cand_mod.Path, "__truediv__", fake_truediv)
+
+    wl = cand_mod._load_watchlist()
+    assert wl == ["AAPL", "MSFT", "GOOG"], "uppercased + stripped"
+
+
+def test_load_watchlist_falls_back_to_env(monkeypatch):
+    """If alert_config.json is missing, `INSIGHT_TICKERS` env var is
+    the next stop. Critical for Cloud Run deployments where the JSON
+    config isn't shipped in the image."""
+    from lib.agents.ranker import candidates as cand_mod
+
+    class MissingPath:
+        def exists(self):
+            return False
+
+    real_truediv = cand_mod.Path.__truediv__
+    def fake_truediv(self, other):
+        if str(other) == "alert_config.json":
+            return MissingPath()
+        return real_truediv(self, other)
+    monkeypatch.setattr(cand_mod.Path, "__truediv__", fake_truediv)
+    monkeypatch.setenv("INSIGHT_TICKERS", "TSLA, NVDA ,amzn")
+
+    wl = cand_mod._load_watchlist()
+    assert wl == ["TSLA", "NVDA", "AMZN"]
+
+
+def test_load_watchlist_default_when_no_config_or_env(monkeypatch):
+    """Final fallback is the SPY/IWM/QQQ trio."""
+    from lib.agents.ranker import candidates as cand_mod
+
+    class MissingPath:
+        def exists(self):
+            return False
+
+    real_truediv = cand_mod.Path.__truediv__
+    def fake_truediv(self, other):
+        if str(other) == "alert_config.json":
+            return MissingPath()
+        return real_truediv(self, other)
+    monkeypatch.setattr(cand_mod.Path, "__truediv__", fake_truediv)
+    monkeypatch.delenv("INSIGHT_TICKERS", raising=False)
+
+    wl = cand_mod._load_watchlist()
+    assert wl == ["SPY", "IWM", "QQQ"]
