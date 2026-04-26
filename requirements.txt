@@ -30,6 +30,9 @@ scipy>=1.11.4
 
 # Options Greeks calculation
 py_vollib>=1.0.1
+# Vectorized BSM IV solver — used by lib/options_greeks.py to compute Greeks
+# for SPX (AV does not provide Greeks for cash-settled index options).
+py_vollib_vectorized>=0.1.1
 
 # Date and time handling
 python-dateutil>=2.8.0
