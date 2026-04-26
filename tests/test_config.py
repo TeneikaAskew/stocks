@@ -222,13 +222,16 @@ class TestStratConfigDefaults:
 
     def test_timeframes_default(self):
         cfg = StratConfig()
-        assert cfg.timeframes == ['5m', '15m', '1h', 'D', 'W']
+        assert cfg.timeframes == ['5m', '15m', '1h', '4h', '12h', '1d', '1w']
 
     def test_ftfc_weights_default(self):
         cfg = StratConfig()
         assert cfg.ftfc_weights == {
-            '5m': 0.10, '15m': 0.20, '1h': 0.25, 'D': 0.35, 'W': 0.10,
+            '5m':  0.05, '15m': 0.10, '1h': 0.15,
+            '4h':  0.15, '12h': 0.15,
+            '1d':  0.30, '1w':  0.10,
         }
+        assert abs(sum(cfg.ftfc_weights.values()) - 1.0) < 1e-9
 
 
 class TestSignalConfigDefaults:
