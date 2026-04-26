@@ -29,11 +29,74 @@ This is a stocks/trading application project that includes Google Apps Script co
 - Keep commit messages concise and focused on the change itself
 
 ### 2. Branching Strategy
-- **ALWAYS** start major changes on a new feature branch
-- Branch naming convention: `feature/description` or `fix/description`
-- Never commit directly to `main` for non-trivial changes
-- Create branches using: `git checkout -b feature/your-feature-name`
-- Push branches with: `git push -u origin feature/your-feature-name`
+
+**REMINDER: never edit on `main` directly. Always start on a feature branch.**
+This is a guardrail for consistency and reliability — `main` is shared,
+deployed, and reviewed; commits there bypass CI / PR review and create
+drift between local and origin.
+
+#### First action of every session
+
+Before touching ANY file, run:
+```bash
+git status                    # confirm current branch
+git rev-parse --abbrev-ref HEAD
+```
+
+If the result is `main`, STOP and create a feature branch first:
+```bash
+git checkout -b feature/short-description    # for new features
+git checkout -b fix/short-description        # for bug fixes
+git checkout -b docs/short-description       # for doc-only changes
+```
+
+Then push with upstream tracking on the first push:
+```bash
+git push -u origin feature/short-description
+```
+
+#### Naming convention
+
+- `feature/<description>` — new features
+- `fix/<description>` — bug fixes
+- `docs/<description>` — doc-only changes
+- `chore/<description>` — refactors, deps, build tooling
+- `fix/workflow-{name}-{run-number}` — auto-created failure-handler branches
+
+Use kebab-case, keep under ~40 chars, no emoji, no PR/issue numbers.
+
+#### Hard rules (no exceptions without explicit user authorization)
+
+- **Never commit directly to `main`** for any non-trivial change
+- **Never `git push origin main`** without explicit user authorization
+- **Never `git push --force` to `main`** under any circumstances
+- **Never `git rebase` or `git reset --hard` on `main`** when others may pull
+- All non-trivial changes go through a PR to `main`, even one-author repos
+
+#### What "trivial" means (the only acceptable direct-to-main edits)
+
+Only these may go straight to `main`:
+- Single-line typo fixes in markdown
+- README link corrections
+- `.gitignore` additions for already-ignored locally-generated files
+- The auto-status-tracker bumps that the `/commit` skill writes
+
+Everything else — code, schema, workflows, agent docs, briefing deck
+edits, dependency bumps — goes through a feature branch + PR.
+
+#### How to recover when work has accidentally landed on `main`
+
+If you've already committed to `main` locally (haven't pushed):
+```bash
+git branch feature/short-description    # save the work
+git reset --hard origin/main             # rewind main locally
+git checkout feature/short-description   # switch to the saved branch
+git push -u origin feature/short-description
+gh pr create --base main --head feature/short-description ...
+```
+
+Never `git push origin main` to "just publish what I already did" — that
+defeats the entire purpose of the branch protection.
 
 ### 3. Planning & Approval Process
 For major changes:
