@@ -33,6 +33,36 @@ gets back `{aggregated, gex_by_strike, metrics, nodes, config}`.
 - [x] OptionsFlowPage refactored to consume the hook
 - [x] `platform/src/lib/greeksCalculator.ts` deleted
 
+### 1A.1. Gamma math consolidation into `lib/gamma.py` — ✅ DONE
+
+**Follow-up to 1A:** the math was server-side, but still inline in
+`platform/api/routers/options.py` (functions `_aggregate_by_strike`,
+`_total_gex`, `_zero_gamma`, `_detect_nodes`, etc.). That meant the
+AI insights pipeline, the CLI, and the Pine companion all couldn't
+reuse it — they'd have to reimplement.
+
+Worse: `_total_gex` used `dealer_gamma = -gamma` unconditional while
+`_aggregate_by_strike` used calls-add / puts-subtract — opposite signs
+on the same data, so the metrics card and the heatmap displayed
+contradictory totals.
+
+**Fix:** New module `lib/gamma.py` is the canonical implementation.
+`options.py` now imports from it, and total GEX is derived from the
+sum of per-strike values (algebraically guaranteed consistent).
+
+- [x] `lib/gamma.py` created with full taxonomy (King/Gate/Spot/Flip,
+      regime classification, layered spot estimation)
+- [x] Sign-bug fix: per-strike sign convention is the only one used
+- [x] `platform/api/routers/options.py` refactored to import from `lib.gamma`
+- [x] New endpoint `GET /api/options/{ticker}/{date}/levels` for the
+      AI agent / CLI / Pine consumers (chain-source-aware)
+- [x] `lib/agents/summarizers.summarize_gamma_levels` + new "gamma"
+      analyst role in the AI pipeline
+- [x] CLI `scripts/show_gamma_levels.py` refactored to import `lib.gamma`
+- [x] `tradingview-pine-scripts/gamma-levels-overlay-v2` Pine companion
+- [x] Documentation: `docs/gamma_levels.md`
+- [x] Tests: 25 in `tests/test_gamma.py`, 12 in `tests/test_options_router.py`
+
 ### 1B. Node detection — ✅ DONE
 
 **Was:** `platform/src/lib/nodeAnalyzer.ts` had hardcoded
