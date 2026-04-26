@@ -481,6 +481,8 @@ Pre-existing failures (unrelated to dashboard work):
 - 2026-04-13: chore(workflows) — `.github/workflows/fetch-market-data.yml` renamed to `.disabled`. `fetch-market-data` Cloud Run Job is now sole source of truth for `market_data_daily`.
 - 2026-04-26: feat(gcp) — cap earnings-ticker fan-out at top-25 by tier+market_cap in `fetch_market_data._earnings_tickers_in_window` and `premarket_brief.load_earnings_for_brief`. Old behaviour returned 200+ tickers per day, blowing through AV's 150 RPM budget before IWM/QQQ/SPY ran (silently empty for ~2 weeks). Brief embed and daily fetcher now surface the same names.
 - 2026-04-26: feat(gcp) — `gcp/historical_signals.py` `bulk_insert()` rewritten to build one multi-row `VALUES (...), (...), ...` per chunk (chunk_size 5000→1000). pg8000 executemany was sending one statement per row over the wire — ~6 rows/sec; multi-row form does ~600. New `scripts/backfill_historical_signals.sh` orchestrates monthly backfills (one symbol × one calendar month per `run_historical_signals.py` invocation) so peak memory stays bounded; ON CONFLICT DO NOTHING makes resume safe.
+- 2026-04-26: feat(platform-api) — `platform/api/routers/signals.py` migrated to Cloud SQL `historical_signals` (indexed `(ticker, entry_time)`). New `_query_signals_sql()` does ticker/direction/min_score/end_date filtering server-side; legacy GCS parquet path retained as fallback when `CLOUD_SQL_CONNECTION_NAME` is unset. New endpoint `GET /api/signals/{ticker}/similar?direction&rsi&score&rsi_band&limit` returns prior bars in the same direction + score + RSI bucket plus aggregate stats (count, percentile MFE, pct profitable, return at 5min/20min) — backs the Charts page Similar Setups card.
+
 
 ---
 
