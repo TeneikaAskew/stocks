@@ -475,6 +475,26 @@ deploy_fetchers() {
     deploy_fetch_news_sentiment_topics
 }
 
+# ── One-shot maintenance jobs ─────────────────────────────────────────────────
+# Apply gcp/schema.sql — adds new tables / columns / indexes. Safe to re-run;
+# every statement is IF NOT EXISTS / OR REPLACE. Run via:
+#   gcloud run jobs execute apply-schema-migrations --region us-east1 --wait
+deploy_apply_schema_migrations() {
+    echo "Deploying apply-schema-migrations job..."
+    gcloud run jobs create apply-schema-migrations \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.apply_schema" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update apply-schema-migrations \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.apply_schema" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
 _job_uri() {
     echo "https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${1}:run"
@@ -624,6 +644,7 @@ case "${1:-help}" in
     insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_auto_refresh_top_n ;;
     schedulers)  deploy_schedulers ;;
     backfill)    shift; backfill_watchlist "$@" ;;
+    apply-schema) build_image && deploy_apply_schema_migrations ;;
     all)
         build_image
         deploy_premarket
@@ -652,6 +673,8 @@ case "${1:-help}" in
         echo "  backfill   Idempotently backfill data for every watchlist ticker."
         echo "             Pass --tickers AVGO,NVDA to override. Runs automatically"
         echo "             after \`fetchers\` and \`all\`."
+        echo "  apply-schema Deploy one-shot job that re-applies gcp/schema.sql"
+        echo "             (idempotent — every statement is IF NOT EXISTS / OR REPLACE)"
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac
