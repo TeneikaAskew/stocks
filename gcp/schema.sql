@@ -891,6 +891,14 @@ ALTER TABLE market_data_daily
 
 
 -- ============================================================================
+-- Catalyst-aware ORB recommendation persisted by gcp/premarket_brief.py.
+-- ============================================================================
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS recommended_orb_window VARCHAR(8),
+    ADD COLUMN IF NOT EXISTS recommended_orb_reason TEXT;
+
+
+-- ============================================================================
 -- Live migration: rename premarket_analysis.strat_daily -> strat_candle.
 -- The methodology doc renames every "candle classification" surface to
 -- a single column name. Idempotent.

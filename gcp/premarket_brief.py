@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.data_loader import DataLoader
 from lib.indicators import add_all_indicators
 from lib.strat import StratClassifier, compute_strat_status
+from lib.strat_levels import build_level_map, format_levels_for_brief
 from lib.signals import check_call_conditions, check_put_conditions
 from lib.config import load_config
 
@@ -283,6 +284,33 @@ def load_economic_events(today: date, days_ahead: int = 5) -> dict:
     return {'today': today_events, 'week': week_events}
 
 
+# ── Catalyst-aware ORB window selection ─────────────────────────────────────
+
+def select_orb_window(today_events: list) -> dict:
+    """Pick the ORB window based on the day's economic calendar.
+
+    Per docs/STRAT_METHODOLOGY.md §8:
+      - 8:30 ET high-impact event   -> 15m
+      - 10:00 ET high-impact event  -> 30m
+      - No high-impact event before 10:30 ET -> 5m
+
+    Returns ``{'window': '5m'|'15m'|'30m', 'reason': str}``.
+    """
+    high_impact = [
+        e for e in (today_events or [])
+        if (e.get('importance') or '').lower() == 'high'
+    ]
+    for ev in high_impact:
+        t = (ev.get('time') or '')[:5]
+        name = ev.get('name') or ''
+        if t == '08:30':
+            return {'window': '15m', 'reason': f'15-min ORB recommended (08:30 {name})'}
+        if t == '10:00':
+            return {'window': '30m', 'reason': f'30-min ORB recommended (10:00 {name})'}
+
+    return {'window': '5m', 'reason': '5-min ORB (default scalp window, no high-impact catalyst)'}
+
+
 # ── Brief Generation ────────────────────────────────────────────────────────
 
 def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
@@ -432,6 +460,39 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
 
     # Economic events: Sunday brief needs a full week lookahead, weekday needs ~5 days
     brief['events'] = load_economic_events(today, days_ahead=7 if is_sunday else 5)
+
+    # Catalyst-aware ORB window — applies to every ticker in this brief.
+    orb_choice = select_orb_window(brief['events'].get('today', []))
+    brief['recommended_orb_window'] = orb_choice['window']
+    brief['recommended_orb_reason'] = orb_choice['reason']
+
+    # Per-ticker level map + playbook string. Skip silently for NO DATA tickers.
+    for ticker, d in brief.get('tickers', {}).items():
+        if d.get('status') == 'NO DATA':
+            continue
+        try:
+            df = loader.load_daily(ticker)
+            if df.empty:
+                continue
+            close_col = 'Close' if 'Close' in df.columns else 'Last'
+            from lib.indicators import calculate_historical_levels
+            ts = df['Time'] if 'Time' in df.columns else pd.Series(df.index)
+            levels_df = calculate_historical_levels(
+                ts, df['High'], df['Low'], df['Open'], df[close_col],
+            )
+            for col in levels_df.columns:
+                df[col] = levels_df[col].values
+            level_map = build_level_map(
+                ticker=ticker, daily_df=df, current_price=d['price'],
+            )
+            d['playbook'] = format_levels_for_brief(
+                level_map=level_map, bias=d.get('ftfc_direction', 'mixed'),
+                combo=d.get('strat_combo'), daily_strat_class=d.get('strat_candle'),
+            )
+            d['recommended_orb_window'] = orb_choice['window']
+            d['recommended_orb_reason'] = orb_choice['reason']
+        except Exception as e:
+            logger.warning("Playbook generation failed for %s: %s", ticker, e)
 
     return brief
 
@@ -785,13 +846,45 @@ def _build_calendar_embed(events: dict, mode: str = 'daily') -> dict:
     return embed
 
 
+def _build_playbook_embed(brief: dict) -> dict:
+    """Embed: per-ticker Strat playbook with trigger, stop, T1/T2 + R:R.
+
+    Each ticker gets one field with the multiline format produced by
+    lib.strat_levels.format_levels_for_brief, plus the catalyst-aware
+    ORB recommendation as a single header line.
+    """
+    fields = []
+    orb_window = brief.get('recommended_orb_window') or '5m'
+    orb_reason = brief.get('recommended_orb_reason') or ''
+
+    for ticker, d in brief.get('tickers', {}).items():
+        if not d.get('playbook'):
+            continue
+        value = d['playbook']
+        if len(value) > MAX_FIELD_VALUE:
+            value = value[:MAX_FIELD_VALUE - 3] + '...'
+        fields.append({
+            'name': f'{ticker} Playbook',
+            'value': f'```\n{value}\n```',
+            'inline': False,
+        })
+
+    return {
+        'title': f'Strat Playbook — {orb_window} ORB',
+        'description': orb_reason,
+        'fields': fields,
+        'color': 0x9b59b6,
+    }
+
+
 def format_discord_message(brief: dict) -> dict:
-    """Format brief as a Discord webhook payload with up to 4 embeds."""
+    """Format brief as a Discord webhook payload with up to 5 embeds."""
     overview = _build_overview_embed(brief)
     ticker_fields = _build_ticker_fields(brief)
     mode = brief.get('earnings', {}).get('mode', 'daily')
     calendar = _build_calendar_embed(brief.get('events', {}), mode=mode)
     earnings = _build_earnings_embed(brief.get('earnings', {}))
+    playbook = _build_playbook_embed(brief)
 
     ticker_embed = {
         'title': 'Ticker Analysis',
@@ -799,7 +892,10 @@ def format_discord_message(brief: dict) -> dict:
         'color': overview.get('color', 0x3498db),
     }
 
-    embeds = [overview, ticker_embed, earnings, calendar]
+    embeds = [overview, ticker_embed, playbook, earnings, calendar]
+    # Drop empty playbook embed if no tickers produced one
+    if not playbook.get('fields'):
+        embeds.remove(playbook)
 
     # Safety: drop lower-priority embeds if over Discord's 6000-char limit
     while embeds and sum(len(json.dumps(e)) for e in embeds) > MAX_EMBED_CHARS:
@@ -840,6 +936,8 @@ def persist_to_cloud_sql(brief: dict) -> int:
             'signal_status': data.get('signal_status'),
             'strat_candle': str(data.get('strat_candle', '')),
             'strat_combo': str(data.get('strat_combo', '')),
+            'recommended_orb_window': str(data.get('recommended_orb_window', '')),
+            'recommended_orb_reason': str(data.get('recommended_orb_reason', '')),
             'strat_setup': data.get('strat_setup', False),
             'ftfc_score': data.get('ftfc_score'),
             'ftfc_direction': data.get('ftfc_direction'),
