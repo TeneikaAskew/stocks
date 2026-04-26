@@ -91,7 +91,7 @@ function SignalCard({ direction, strength, conditions, fired }: {
           </span>
           {fired && (
             <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold animate-pulse ${
-              isCall ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
+              isCall ? 'bg-[var(--bull)] text-black' : 'bg-[var(--bear)] text-white'
             }`}>
               SIGNAL
             </span>
@@ -160,17 +160,19 @@ export default function LiveMarketPage() {
   const { data: avgVolData } = useAvgVolume(activeTicker);
 
   // Bars: live → last 100 1-min bars; review → bars from historical day, sliced to review time
+  // Live API returns `time` as a string (e.g. "2026-04-25 15:30:00"); review API returns unix
+  // seconds. Bar.time is typed as string, so coerce review timestamps before storing.
   const bars: Bar[] = useMemo(() => {
     if (isReview) {
-      const all = (histDay?.candlestick ?? []).map((c, i) => ({
-        time: c.time,
+      const all: Bar[] = (histDay?.candlestick ?? []).map((c, i) => ({
+        time: String(c.time),
         open: c.open,
         high: c.high,
         low: c.low,
         close: c.close,
         volume: histDay?.volume[i]?.value ?? 0,
       }));
-      return reviewTs !== null ? all.filter(b => b.time <= reviewTs) : all;
+      return reviewTs !== null ? all.filter(b => Number(b.time) <= reviewTs) : all;
     }
     return liveHistory?.bars ?? [];
   }, [isReview, histDay, liveHistory, reviewTs]);

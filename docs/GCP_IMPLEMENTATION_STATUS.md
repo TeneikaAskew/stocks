@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-04-13 (session 10)
+**Last Updated**: 2026-04-26 (session 12)
 
 ---
 
@@ -292,22 +292,24 @@ A production-grade React/TypeScript web app that replaces 4 separate vanilla JS 
 | AI | Vertex AI Gemini 2.0 Flash (streaming, 4 modes) |
 | Data | Cloud SQL PostgreSQL 15 (primary) + GCS parquets (fallback) |
 
-### Routes (10 pages)
+### Routes (12 pages)
 | Route | Page | Status |
 |-------|------|--------|
-| `/` | Dashboard — backtest KPIs, recent signals, playbook summary | ✅ Live |
+| `/` | Dashboard — Daily Bias card with live overlay, top setup, KPIs, watchlist mini-table | ✅ Live |
 | `/live` | Live Market — Alpha Vantage quotes, EMA/RSI/StochRSI/ATR, signal detection, sound alerts | ✅ Live |
-| `/charts` | Chart Viewer — TradingView candlesticks, trade marking, multi-TF (1/5/15/30/60) | ✅ Live |
+| `/charts` | Charts — TradingView candlesticks, embedded Backtester, Strategy Conditions + Similar Setups cards, Sig overlay | ✅ Live |
 | `/options` | Options Flow — D3.js GEX/VEX heatmap, king nodes, gatekeepers, midpoints, date navigation | ✅ Live |
 | `/playbook` | Playbook — 12 decision cards per ticker, interactive condition checklists | ✅ Live |
-| `/backtest` | Backtester — equity curve (Recharts), trade table (TanStack Table), summary metrics | ✅ Live |
-| `/reports` | Reports — markdown report browser (6 phases) with sidebar navigation | ✅ Live |
-| `/signals` | Signal Explorer — 330K+ signals, filter by direction/score/date | ✅ Live |
+| `/reports` | Reports — phase-grouped markdown reports with sidebar navigation | ✅ Live |
+| `/signals` | Signal Explorer — Cloud SQL-backed history, filter by direction/score/date | ✅ Live |
 | `/journal` | Trade Journal — Cloud SQL-backed (local JSON fallback) | ✅ Live |
-| `/insights` | AI Insights — Vertex AI Gemini streaming chat, 4 modes (Chat/Market/Strategy/Trade Review) | ✅ Live |
+| `/insights` | AI Insights — multi-agent analyst pipeline (DirectionCard, TradePlanCard, DebateCard, persona plans) + Watchlist tab | ✅ Live |
+| `/catalysts` | Catalysts — unified actionable feed (news + 8-K + economic + earnings + insider), date-range picker | ✅ Live |
+| `/admin` | Admin — model routing dashboard, gated by `ADMIN_TOKEN` | ✅ Live |
+| `/help` | Help — user docs, feature guides | ✅ Live |
 
 ### FastAPI Backend (`platform/api/`)
-8 routers: `live`, `options`, `playbook`, `backtest`, `signals`, `insights`, `journal`
+10 routers: `live`, `options`, `playbook`, `backtest`, `signals`, `insights`, `journal`, `dashboard`, `catalysts`, `admin`
 
 Key data flows:
 - **Chart data**: Cloud SQL `market_data_intraday` (3,115 dates, 2015–2026) with local parquet fallback
@@ -316,7 +318,7 @@ Key data flows:
 - **Options flow**: Alpha Vantage HISTORICAL_OPTIONS proxy (replaces Cloudflare Worker)
 - **Journal**: Cloud SQL `journal_entries` table (CRUD) with local JSON fallback
 - **Backtest results**: reads `data/backtest_results/backtest_{TICKER}_*.csv`
-- **Signals**: reads `data/signals/historical_{TICKER}_*_signals.parquet`
+- **Signals**: Cloud SQL `historical_signals` (indexed on `(ticker, entry_time)`) when configured; legacy GCS parquet fallback otherwise. `/api/signals/{ticker}/similar` returns prior bars in the same direction + score + RSI bucket for the Charts page "Similar Setups" card
 - **AI chat**: Vertex AI Gemini 2.0 Flash via `google.genai` SDK, SSE streaming
 
 ### Cloud SQL Integration ✅ 2026-02-23
@@ -394,7 +396,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 
 | Suite | Status | Tests | Date |
 |-------|--------|-------|------|
-| Unit/Integration (`make test`) | ⚠️ 1 pre-existing failure | 222/223 | 2026-04-13 |
+| Unit/Integration (`make test`) | ⚠️ 1 pre-existing failure | 247/248 (10 skipped) | 2026-04-26 |
 | Platform API (`tests/test_platform_api.py`) | ⚠️ 1 pre-existing failure | 30/31 | 2026-04-13 |
 | E2E Playwright (`make test-e2e`) | Not run | 28 | — |
 | Scripts CLI (`make test-scripts`) | ✅ PASS | 18/18 | 2026-02-22 |
@@ -430,6 +432,9 @@ Pre-existing failures (unrelated to dashboard work):
 - 2026-02-22: options_pnl_translation.py — Greeks-approximation 0DTE P&L estimator using daily options chains
 - 2026-02-22: phase6_playbook_combined.md — appendix with multi-TF filtered win rates (1m+30m 56–59%, 5m+15m ~62%)
 - 2026-02-23: trade_analysis_pipeline.py — fix market-hours filter (allow 4:00 PM exits), add Trade_Profitable fallback for 6-month comparison; IWM report updated with 6-month window analysis
+- 2026-04-25: Deploy `platform/` to Cloud Run as `trading-platform` with auto-managed IAP SSO scoped to bictech.org; add `/dev` diagnostic page gated to teneika@bictech.org; Playwright `iap-setup`/`cloud` projects + storage-state cookies for E2E against deployed URL
+- 2026-04-25: Fix WCAG button contrast (8 occurrences) and TypeScript build errors (5 files) blocking the multi-stage Docker build
+- 2026-04-25: Ranker — split insider_cluster into insider_buying (+1.5) / insider_selling (-1.5); weighted_score now allows negative weights with abs()-normalized max
 - 2026-02-23: GCS sync completed — 7.61 GiB backed up to gs://adept-mountain-474619-d4-trading-data/raw/data/
 - 2026-02-23: data/ removed from git tracking (f287259b); GCS is now source of truth; .gitignore updated
 - 2026-02-23: Cloud SQL intraday migration complete — SPY 2.3M, IWM 1.86M, QQQ 2.14M rows (exact parquet match)
@@ -476,6 +481,12 @@ Pre-existing failures (unrelated to dashboard work):
 - 2026-04-13: fix(gcp) — `gcp/deploy.sh` `_env_string()` now injects `AV_API_KEY` + `ALPHA_VANTAGE_API_KEY` (both names) and `FRED_API_KEY` from Secret Manager into every Cloud Run job. Closes a footgun where a fresh `deploy.sh fetchers` push would create jobs missing the AV key. Existing jobs already had the keys set out-of-band.
 - 2026-04-13: ops — rebuilt `trading-system` container image (digest `78035eb7…` → `10200d2c…`) with the post-AlphaVantage-migration fetch_market_data.py code path. Old image had a yfinance fallback that wrote pandas float `1.0` into INTEGER columns (`consecutive_up`, `consecutive_down`), causing silent daily failures since 2026-04-06. Backfilled IWM/SPY/QQQ rows for 2026-04-06..04-10 via 5 manual `gcloud run jobs execute` calls (Cloud SQL now current through Friday 04-10).
 - 2026-04-13: chore(workflows) — `.github/workflows/fetch-market-data.yml` renamed to `.disabled`. `fetch-market-data` Cloud Run Job is now sole source of truth for `market_data_daily`.
+- 2026-04-26: feat(gcp) — cap earnings-ticker fan-out at top-25 by tier+market_cap in `fetch_market_data._earnings_tickers_in_window` and `premarket_brief.load_earnings_for_brief`. Old behaviour returned 200+ tickers per day, blowing through AV's 150 RPM budget before IWM/QQQ/SPY ran (silently empty for ~2 weeks). Brief embed and daily fetcher now surface the same names.
+- 2026-04-26: feat(gcp) — `gcp/historical_signals.py` `bulk_insert()` rewritten to build one multi-row `VALUES (...), (...), ...` per chunk (chunk_size 5000→1000). pg8000 executemany was sending one statement per row over the wire — ~6 rows/sec; multi-row form does ~600. New `scripts/backfill_historical_signals.sh` orchestrates monthly backfills (one symbol × one calendar month per `run_historical_signals.py` invocation) so peak memory stays bounded; ON CONFLICT DO NOTHING makes resume safe.
+- 2026-04-26: feat(platform-api) — `platform/api/routers/signals.py` migrated to Cloud SQL `historical_signals` (indexed `(ticker, entry_time)`). New `_query_signals_sql()` does ticker/direction/min_score/end_date filtering server-side; legacy GCS parquet path retained as fallback when `CLOUD_SQL_CONNECTION_NAME` is unset. New endpoint `GET /api/signals/{ticker}/similar?direction&rsi&score&rsi_band&limit` returns prior bars in the same direction + score + RSI bucket plus aggregate stats (count, percentile MFE, pct profitable, return at 5min/20min) — backs the Charts page Similar Setups card.
+- 2026-04-26: feat(platform-ui) — `RouteErrorBoundary` wired into every route via React Router `errorElement`. A render crash on one page (e.g. the recurring `reference.high.toFixed(...)` when the API returns a partial payload) now shows a contained themed card with reload + back-to-dashboard actions and a collapsible technical-details panel; AppShell sidebar + header stay rendered.
+- 2026-04-26: feat(platform-ui) — Charts page gains (a) `Sig` toolbar toggle that overlays green/red 5-condition voter fires on top of trade markers, computed client-side via new `computeStrategySignalsForSeries()` in `lib/indicators.ts` (mirrors `trading_analysis.py`'s per-bar loop with one cumulative VWAP pass); (b) Similar Setups card in the right rail driven by `useSimilarSetups` hook + `/api/signals/{ticker}/similar`. Hidden until the voter fires on the latest bar. Includes Vitest coverage for the new function and a Playwright spec exercising both Strategy Conditions + Similar Setups under mocked API responses.
+- 2026-04-26: docs — `docs/BRIEFING_DECK.md` added: 1300-line full-system reference covering executive summary, architecture, all 12 routes + 10 routers, Python engine (`lib/`), data pipeline + Cloud SQL schema (29 tables), GCP infrastructure (Cloud Run jobs catalog, scheduler, failure notifier), GitHub Actions, standalone web tools, Google Apps Script, multi-agent AI pipeline, strategy methodology, testing strategy, all 14 plans validated against code (9 ✅ / 4 🟡 / 1 📋), changelog digest, outstanding work, runbook, glossary. STATUS routes table corrected from 10 → 12 (catalysts + admin + help) and FastAPI backend from 8 → 10 routers.
 
 ---
 

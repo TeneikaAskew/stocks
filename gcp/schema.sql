@@ -334,10 +334,163 @@ CREATE INDEX IF NOT EXISTS idx_earnings_calendar_date
 CREATE INDEX IF NOT EXISTS idx_earnings_calendar_source
     ON earnings_calendar (data_source, earnings_date DESC);
 
+-- ── UW liquidity / quality enrichments (added 2026-04-26) ──────────────────
+-- Idempotent ALTERs so existing deployments pick these up without a rebuild.
+-- Populated by the UnusualWhales path in scripts/fetch_earnings_calendar.py;
+-- AV-only and EW-only rows leave them NULL, which is fine for ranking
+-- (sort uses NULLS LAST) and for the brief's within-tier ordering.
+ALTER TABLE earnings_calendar
+    ADD COLUMN IF NOT EXISTS is_s_p_500          BOOLEAN,
+    ADD COLUMN IF NOT EXISTS stock_volume        BIGINT,
+    ADD COLUMN IF NOT EXISTS options_volume      BIGINT,           -- call_vol + put_vol
+    ADD COLUMN IF NOT EXISTS open_interest       BIGINT,           -- UW: oi
+    ADD COLUMN IF NOT EXISTS rv_1d_last_12q      DOUBLE PRECISION, -- realized vol over last 12 quarters
+    ADD COLUMN IF NOT EXISTS last_1d_reactions   JSONB;            -- array of past 1-day post-earnings moves
+
+CREATE INDEX IF NOT EXISTS idx_earnings_calendar_sp500_date
+    ON earnings_calendar (earnings_date DESC, is_s_p_500 DESC NULLS LAST);
+
 DROP TRIGGER IF EXISTS trg_earnings_calendar_updated ON earnings_calendar;
 CREATE TRIGGER trg_earnings_calendar_updated
     BEFORE UPDATE ON earnings_calendar
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- ─────────────────────────────────────────────────────────
+-- EARNINGS HISTORY (AlphaVantage EARNINGS endpoint, per-ticker)
+-- Backward-looking quarterly EPS history, separate from the
+-- forward-looking earnings_calendar table. Used by the ranker to
+-- compute historical post-earnings reaction stats (avg T+1 move,
+-- direction consistency, surprise vs. price reaction correlation).
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS earnings_history (
+    id                  BIGSERIAL PRIMARY KEY,
+    ticker              VARCHAR(10)  NOT NULL,
+    fiscal_date_ending  DATE         NOT NULL,
+    reported_date       DATE,
+    reported_eps        DOUBLE PRECISION,
+    estimated_eps       DOUBLE PRECISION,
+    surprise            DOUBLE PRECISION,
+    surprise_pct        DOUBLE PRECISION,
+    inserted_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_earnings_history UNIQUE (ticker, fiscal_date_ending)
+);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_history_ticker_reported
+    ON earnings_history (ticker, reported_date DESC NULLS LAST);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_history_reported
+    ON earnings_history (reported_date DESC NULLS LAST);
+
+
+-- ─────────────────────────────────────────────────────────
+-- SEC EDGAR FILINGS (8-K material events, 10-Q/10-K, etc.)
+-- Free real-time material-event catalyst stream. Each row is one
+-- form filing per (cik, accession_number). The `items` array holds
+-- 8-K item codes (e.g. ['1.01','7.01']) — used by the ranker's
+-- catalyst signal to detect M&A (1.01), exec changes (5.02), etc.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS sec_filings (
+    id                  BIGSERIAL PRIMARY KEY,
+    ticker              VARCHAR(10),               -- nullable: not every CIK has a public ticker
+    cik                 VARCHAR(20)   NOT NULL,
+    accession_number    VARCHAR(30)   NOT NULL,
+    form                VARCHAR(20)   NOT NULL,    -- '8-K', '10-Q', '10-K', etc.
+    filing_date         DATE          NOT NULL,
+    report_date         DATE,                       -- event date (often == filing_date)
+    items               TEXT[],                     -- 8-K item codes
+    primary_doc         VARCHAR(200),
+    inserted_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_sec_filings UNIQUE (cik, accession_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sec_filings_ticker_date
+    ON sec_filings (ticker, filing_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sec_filings_form_date
+    ON sec_filings (form, filing_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sec_filings_items
+    ON sec_filings USING GIN (items);
+
+
+-- ─────────────────────────────────────────────────────────
+-- INSIDER TRANSACTIONS (AlphaVantage INSIDER_TRANSACTIONS endpoint)
+-- Form 4 filings: every officer/director/10%-owner buy or sell.
+-- The ranker derives a "cluster" signal from these (3+ insiders in
+-- 30 days, single insider >$1M, etc.) — strong directional tell on
+-- single names.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS insider_transactions (
+    id                  BIGSERIAL PRIMARY KEY,
+    ticker              VARCHAR(10)  NOT NULL,
+    transaction_date    DATE         NOT NULL,
+    executive           VARCHAR(200),
+    title               VARCHAR(200),
+    transaction_type    VARCHAR(20),     -- 'A' = acquired (buy), 'D' = disposed (sell)
+    shares              DOUBLE PRECISION,
+    share_price         DOUBLE PRECISION,
+    transaction_value   DOUBLE PRECISION, -- shares × share_price (computed)
+    inserted_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    -- Same insider can have multiple same-day transactions at different prices;
+    -- include the type so we can distinguish a partial sell from a partial buy.
+    CONSTRAINT uq_insider_transactions
+        UNIQUE (ticker, transaction_date, executive, transaction_type, shares, share_price)
+);
+
+CREATE INDEX IF NOT EXISTS idx_insider_transactions_ticker_date
+    ON insider_transactions (ticker, transaction_date DESC);
+
+
+-- ─────────────────────────────────────────────────────────
+-- TOP MOVERS (AlphaVantage TOP_GAINERS_LOSERS, daily snapshot)
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS top_movers_daily (
+    id                BIGSERIAL PRIMARY KEY,
+    snapshot_date     DATE         NOT NULL,
+    ticker            VARCHAR(10)  NOT NULL,
+    category          VARCHAR(20)  NOT NULL,  -- 'top_gainers' | 'top_losers' | 'most_active'
+    rank              INTEGER,
+    price             DOUBLE PRECISION,
+    change_amount     DOUBLE PRECISION,
+    change_pct        DOUBLE PRECISION,
+    volume            BIGINT,
+    inserted_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_top_movers_daily UNIQUE (snapshot_date, ticker, category)
+);
+
+CREATE INDEX IF NOT EXISTS idx_top_movers_date_category
+    ON top_movers_daily (snapshot_date DESC, category);
+
+
+-- ─────────────────────────────────────────────────────────
+-- RANKER AUDIT
+-- One row per call to lib.agents.ranker.rank_tickers. Captures inputs
+-- (weights, candidate count) and outputs (ranked list with full score
+-- breakdown) so any past ranking decision is reproducible without
+-- having to re-run the SQL signals.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS ranker_runs (
+    id                 UUID         PRIMARY KEY,
+    run_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    candidate_count    INTEGER      NOT NULL,
+    excluded_count     INTEGER      NOT NULL,
+    weights_used       JSONB        NOT NULL,
+    results            JSONB        NOT NULL,    -- the ranked list with breakdowns
+    duration_ms        INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_ranker_runs_run_at
+    ON ranker_runs (run_at DESC);
 
 
 -- ─────────────────────────────────────────────────────────
@@ -430,10 +583,10 @@ CREATE TABLE IF NOT EXISTS journal_entries (
 CREATE INDEX IF NOT EXISTS idx_journal_entries_ticker_ts
     ON journal_entries (ticker, entry_ts DESC);
 
--- Reuse the existing update_updated_at_column() trigger function
+-- Reuse the existing set_updated_at() trigger function defined below
 CREATE OR REPLACE TRIGGER set_journal_updated_at
     BEFORE UPDATE ON journal_entries
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 
 -- ─────────────────────────────────────────────────────────
@@ -622,19 +775,93 @@ CREATE INDEX IF NOT EXISTS idx_insight_runs_status
 -- ─────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS news_sentiment (
-    id              BIGSERIAL    PRIMARY KEY,
-    ticker          VARCHAR(10)  NOT NULL,
-    published_ts    TIMESTAMPTZ  NOT NULL,
-    title           TEXT,
-    url             TEXT,
-    summary         TEXT,
-    sentiment_score DOUBLE PRECISION,
-    relevance_score DOUBLE PRECISION,
-    source          VARCHAR(100),
-    inserted_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    id                       BIGSERIAL    PRIMARY KEY,
+    ticker                   VARCHAR(10)  NOT NULL,
+    published_ts             TIMESTAMPTZ  NOT NULL,
+    title                    TEXT,
+    url                      TEXT,
+    summary                  TEXT,
+    sentiment_score          DOUBLE PRECISION,   -- per-ticker (ticker_sentiment_score)
+    relevance_score          DOUBLE PRECISION,   -- per-ticker
+    overall_sentiment_score  DOUBLE PRECISION,   -- article-level
+    overall_sentiment_label  VARCHAR(20),        -- Bullish/Bearish/Neutral/etc.
+    topics                   TEXT[],             -- AV catalyst topics
+    source                   VARCHAR(100),
+    inserted_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_news UNIQUE (ticker, published_ts, url)
 );
 
 CREATE INDEX IF NOT EXISTS idx_news_sentiment_ticker_ts
     ON news_sentiment (ticker, published_ts DESC);
+
+-- Live migration for existing deployments: add the topics + overall
+-- sentiment columns introduced alongside the multi-ticker capture
+-- rebuild of fetch_news_sentiment.py. Idempotent. Must run BEFORE the
+-- GIN index below, because pre-existing deployments lack `topics`.
+ALTER TABLE news_sentiment
+    ADD COLUMN IF NOT EXISTS overall_sentiment_score DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS overall_sentiment_label VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS topics TEXT[];
+
+-- GIN index for fast `topics @> ARRAY['mergers_and_acquisitions']` lookups.
+CREATE INDEX IF NOT EXISTS idx_news_sentiment_topics
+    ON news_sentiment USING GIN (topics);
+
+
+-- ============================================================================
+-- HISTORICAL_SIGNALS — idempotent home for trading_analysis.py output
+-- ============================================================================
+-- Each row is one fired setup as defined by the 5-condition voter in
+-- trading_analysis.py:generate_technical_signals. Replaces the GCS
+-- parquet (data/signals/historical_{ticker}_*_signals.parquet).
+--
+-- Idempotency: PRIMARY KEY (ticker, entry_time) + INSERT ... ON CONFLICT
+-- DO NOTHING. Re-running trading_analysis.py over a date range that's
+-- already been processed is a no-op.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS historical_signals (
+    ticker            VARCHAR(10)      NOT NULL,
+    entry_time        TIMESTAMPTZ      NOT NULL,
+    trade_type        VARCHAR(4)       NOT NULL,    -- 'call' | 'put'
+    entry_price       DOUBLE PRECISION,
+    signal_strength   SMALLINT,                     -- 3..5 (count of conditions met)
+    conditions_met    VARCHAR(8),                   -- e.g. '4/5'
+    duration_minutes  SMALLINT,                     -- bars from entry to MFE peak
+    return_pct        DOUBLE PRECISION,             -- 20-min Maximum Favorable Excursion
+    best_return       DOUBLE PRECISION,
+    best_window_min   SMALLINT,
+    return_5min       DOUBLE PRECISION,
+    return_10min      DOUBLE PRECISION,
+    return_15min      DOUBLE PRECISION,
+    return_20min      DOUBLE PRECISION,
+    return_30min      DOUBLE PRECISION,
+    return_45min      DOUBLE PRECISION,
+    return_60min      DOUBLE PRECISION,
+
+    -- Indicators at entry (the ones the API + Charts page need flat)
+    entry_rsi         DOUBLE PRECISION,
+    entry_ema9        DOUBLE PRECISION,
+    entry_ema20       DOUBLE PRECISION,
+    entry_vwap        DOUBLE PRECISION,
+    entry_volume      BIGINT,
+
+    -- ORB / order-block / prior-period levels — kept in JSONB so the
+    -- ~30 less-queried columns from the parquet don't bloat the table
+    -- and additions don't need migrations.
+    extra             JSONB,
+
+    inserted_at       TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (ticker, entry_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_historical_signals_ticker_time
+    ON historical_signals (ticker, entry_time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_historical_signals_strength
+    ON historical_signals (ticker, signal_strength DESC);
+
+CREATE INDEX IF NOT EXISTS idx_historical_signals_direction
+    ON historical_signals (ticker, trade_type, entry_time DESC);

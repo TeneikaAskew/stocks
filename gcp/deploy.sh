@@ -91,6 +91,33 @@ deploy_insight_pipeline() {
         --quiet
 }
 
+# ── Auto-refresh top-N (Cloud Run Job) ───────────────────────────────────────
+# Pre-warms the AI insight cache for the highest-scoring ranker tickers.
+# Calls lib.agents.ranker.rank_tickers, picks top N, enqueues a Cloud
+# Tasks message per ticker that triggers the existing insight-pipeline
+# job in on-demand mode. Cost is bounded by INSIGHT_AUTO_REFRESH_TOP_N
+# (default 3 → ~$0.30-1.50/day at typical model costs).
+deploy_auto_refresh_top_n() {
+    echo "Deploying auto-refresh-top-n job..."
+    local env
+    env="$(_env_string),INSIGHT_AUTO_REFRESH_TOP_N=3"
+
+    gcloud run jobs create auto-refresh-top-n \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.auto_refresh_top_n" \
+        --set-env-vars "${env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update auto-refresh-top-n \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,gcp.auto_refresh_top_n" \
+        --set-env-vars "${env}" \
+        --quiet
+}
+
 # ── Cloud Tasks queue for on-demand pipeline runs ────────────────────────────
 # The refresh endpoint enqueues a task that triggers this Cloud Run job with
 # INSIGHT_RUN_ID / INSIGHT_TICKER env overrides. Queue creation is idempotent.
@@ -181,17 +208,25 @@ deploy_weekend() {
 # ── Data-fetching jobs ────────────────────────────────────────────────────────
 deploy_fetch_market_data() {
     echo "Deploying fetch-market-data job..."
+    # 1800s timeout: with EARNINGS_WINDOW_DAYS=7 we may pull bars for
+    # ~100 tickers; at 150 RPM that's ~80s of AV calls plus per-ticker
+    # indicator computation. 30 min leaves comfortable headroom.
+    local env
+    env="$(_env_string),EARNINGS_WINDOW_DAYS=7"
+
     gcloud run jobs create fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 2 \
+        --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${env}" \
         --quiet
 }
 
@@ -207,22 +242,6 @@ deploy_fetch_etf_options() {
     gcloud run jobs update fetch-etf-options \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_etf_options" \
-        --set-env-vars "$(_env_string)" \
-        --quiet
-}
-
-deploy_fetch_earnings_options() {
-    echo "Deploying fetch-earnings-options job..."
-    gcloud run jobs create fetch-earnings-options \
-        --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 1 \
-        --service-account "${SA_EMAIL}" \
-        --command "python,-m,gcp.fetchers.fetch_earnings_options" \
-        --set-env-vars "$(_env_string)" \
-        --quiet 2>/dev/null || \
-    gcloud run jobs update fetch-earnings-options \
-        --image "${IMAGE}" --region "${REGION}" \
-        --command "python,-m,gcp.fetchers.fetch_earnings_options" \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -290,8 +309,109 @@ deploy_fetch_earnings_calendar() {
         --quiet
 }
 
+# News sentiment is split into two Cloud Run jobs sharing the same image:
+# `fetch-news-sentiment` queries by ticker (always-on watchlist), while
+# `fetch-news-sentiment-topics` queries by AV catalyst topic to capture
+# single-name catalysts outside the watchlist. Selection is driven by
+# env vars (NEWS_TICKERS / NEWS_TOPICS) so the --command stays identical
+# across both jobs.
+#
+# The list-valued env vars are set via a follow-up --update-env-vars
+# call using gcloud's "^@^" delimiter syntax, because the default
+# comma delimiter would split SPY,IWM,QQQ into three separate vars.
+deploy_fetch_insider_transactions() {
+    echo "Deploying fetch-insider-transactions job..."
+    local av_key av_env
+    av_key="$(_secret av-api-key 2>/dev/null || true)"
+    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
+
+    gcloud run jobs create fetch-insider-transactions \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
+        --set-env-vars "${av_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-insider-transactions \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
+        --set-env-vars "${av_env}" \
+        --quiet
+}
+
+deploy_fetch_top_movers() {
+    echo "Deploying fetch-top-movers job..."
+    local av_key av_env
+    av_key="$(_secret av-api-key 2>/dev/null || true)"
+    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
+
+    gcloud run jobs create fetch-top-movers \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_top_movers" \
+        --set-env-vars "${av_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-top-movers \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_top_movers" \
+        --set-env-vars "${av_env}" \
+        --quiet
+}
+
+deploy_fetch_sec_filings() {
+    echo "Deploying fetch-sec-filings job..."
+    # SEC requires a descriptive User-Agent identifying the organization
+    # and a contact email. Pulled from Secret Manager so individual
+    # operators can set their own without touching the deploy script.
+    local sec_ua env
+    sec_ua="$(_secret sec-user-agent 2>/dev/null || true)"
+    env="$(_env_string)${sec_ua:+,SEC_USER_AGENT=${sec_ua}}"
+
+    gcloud run jobs create fetch-sec-filings \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_sec_filings" \
+        --set-env-vars "${env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-sec-filings \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.fetchers.fetch_sec_filings" \
+        --set-env-vars "${env}" \
+        --quiet
+}
+
+deploy_fetch_earnings_history() {
+    echo "Deploying fetch-earnings-history job..."
+    # 1800s timeout: pulls ~100-300 tickers (anyone reporting in next 90d).
+    # AV rate limit at 150 RPM means ~2-3 minutes of API time at peak.
+    local av_key av_env
+    av_key="$(_secret av-api-key 2>/dev/null || true)"
+    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
+
+    gcloud run jobs create fetch-earnings-history \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_earnings_history" \
+        --set-env-vars "${av_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-earnings-history \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.fetchers.fetch_earnings_history" \
+        --set-env-vars "${av_env}" \
+        --quiet
+}
+
 deploy_fetch_news_sentiment() {
-    echo "Deploying fetch-news-sentiment job..."
+    echo "Deploying fetch-news-sentiment (ticker mode) job..."
     local av_key av_env
     av_key="$(_secret av-api-key 2>/dev/null || true)"
     av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
@@ -300,24 +420,59 @@ deploy_fetch_news_sentiment() {
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
-        --command "python,-m,gcp.fetchers.fetch_news_sentiment,--tickers,SPY,IWM,QQQ" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --set-env-vars "${av_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment \
         --image "${IMAGE}" --region "${REGION}" \
-        --command "python,-m,gcp.fetchers.fetch_news_sentiment,--tickers,SPY,IWM,QQQ" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --set-env-vars "${av_env}" \
+        --quiet
+
+    gcloud run jobs update fetch-news-sentiment \
+        --region "${REGION}" \
+        --update-env-vars "^@^NEWS_TICKERS=SPY,IWM,QQQ" \
+        --quiet
+}
+
+deploy_fetch_news_sentiment_topics() {
+    echo "Deploying fetch-news-sentiment-topics (topic mode) job..."
+    local av_key av_env
+    av_key="$(_secret av-api-key 2>/dev/null || true)"
+    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
+
+    gcloud run jobs create fetch-news-sentiment-topics \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        --set-env-vars "${av_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-news-sentiment-topics \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        --set-env-vars "${av_env}" \
+        --quiet
+
+    # 5 catalyst-rich topics — AV's hard cap per call.
+    gcloud run jobs update fetch-news-sentiment-topics \
+        --region "${REGION}" \
+        --update-env-vars "^@^NEWS_TOPICS=mergers_and_acquisitions,technology,financial_markets,earnings,life_sciences" \
         --quiet
 }
 
 deploy_fetchers() {
     deploy_fetch_market_data
     deploy_fetch_etf_options
-    deploy_fetch_earnings_options
     deploy_fetch_alphavantage
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
+    deploy_fetch_earnings_history
+    deploy_fetch_sec_filings
+    deploy_fetch_insider_transactions
+    deploy_fetch_top_movers
     deploy_fetch_news_sentiment
+    deploy_fetch_news_sentiment_topics
 }
 
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
@@ -362,14 +517,6 @@ deploy_schedulers() {
     _schedule "etf-options-1530"  "30 15 * * 1-5"  "fetch-etf-options"
     _schedule "etf-options-1605"  "5 16 * * 1-5"   "fetch-etf-options"
 
-    # Earnings options — 6 snapshots per trading day
-    _schedule "earnings-opts-0900"  "0 9 * * 1-5"    "fetch-earnings-options"
-    _schedule "earnings-opts-0935"  "35 9 * * 1-5"   "fetch-earnings-options"
-    _schedule "earnings-opts-1000"  "0 10 * * 1-5"   "fetch-earnings-options"
-    _schedule "earnings-opts-1200"  "0 12 * * 1-5"   "fetch-earnings-options"
-    _schedule "earnings-opts-1550"  "50 15 * * 1-5"  "fetch-earnings-options"
-    _schedule "earnings-opts-1630"  "30 16 * * 1-5"  "fetch-earnings-options"
-
     # AlphaVantage monthly intraday — 1st of each month 9 PM ET
     _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
 
@@ -379,16 +526,90 @@ deploy_schedulers() {
     # Earnings calendar (UW + EW) — 7:15 AM ET weekdays
     _schedule "earnings-calendar-daily"  "15 7 * * 1-5"  "fetch-earnings-calendar"
 
-    # News sentiment — 3x per trading day (pre-market, midday, post-close)
-    _schedule "news-sentiment-0800"  "0 8 * * 1-5"   "fetch-news-sentiment"
-    _schedule "news-sentiment-1200"  "0 12 * * 1-5"  "fetch-news-sentiment"
-    _schedule "news-sentiment-1600"  "0 16 * * 1-5"  "fetch-news-sentiment"
+    # Earnings history (AV EARNINGS, per-ticker quarterly EPS) — Sunday 6 AM ET.
+    # Weekly cadence is enough since past quarters never change.
+    _schedule "earnings-history-weekly"  "0 6 * * 0"  "fetch-earnings-history"
+
+    # SEC EDGAR filings — every 30min during market hours, hourly otherwise.
+    # 8-Ks (material events) hit at any time; M&A and earnings preannouncements
+    # are the highest-impact catalysts and appear only here at zero cost.
+    _schedule "sec-filings-0930"  "30 9 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1000"  "0 10 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1030"  "30 10 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1100"  "0 11 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1130"  "30 11 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1200"  "0 12 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1230"  "30 12 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1300"  "0 13 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1330"  "30 13 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1400"  "0 14 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1430"  "30 14 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1500"  "0 15 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1530"  "30 15 * * 1-5"  "fetch-sec-filings"
+    _schedule "sec-filings-1600"  "0 16 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1700"  "0 17 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-2000"  "0 20 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-0700"  "0 7 * * 1-5"    "fetch-sec-filings"
+
+    # Insider transactions — daily at 7 AM ET. AV refreshes Form 4 data
+    # overnight from EDGAR; daily cadence catches everything new.
+    _schedule "insider-transactions-daily"  "0 7 * * 1-5"  "fetch-insider-transactions"
+
+    # Top movers — daily at 4:15 PM ET, after the close so AV's snapshot
+    # reflects the full session.
+    _schedule "top-movers-daily"  "15 16 * * 1-5"  "fetch-top-movers"
+
+    # News sentiment — HOURLY during the trading day so catalysts can't
+    # age out of AV's 50-article window before we capture them. The
+    # Apr-7-2026 Broadcom-Google deal hit at 13:46 ET; with the prior
+    # 3x schedule (08:00/12:00/16:00) it would have been captured at
+    # the 16:00 run only — risking the article aging out under heavy
+    # syndication. Hourly cadence keeps AV calls well under the 150
+    # RPM plan: 10 runs/day × 5 watchlist tickers = 50 calls/day.
+    # Ticker mode reads alert_config.json["watchlist"] when no
+    # --tickers arg is passed (see fetch_news_sentiment.main()).
+    for h in 08 09 10 11 12 13 14 15 16 17; do
+        _schedule "news-sentiment-${h}00"  "0 ${h} * * 1-5"  "fetch-news-sentiment"
+    done
+
+    # Topic mode: catalyst stream across all tickers AV tracks. Same
+    # hourly cadence, offset 5 min so AV calls stagger.
+    for h in 08 09 10 11 12 13 14 15 16 17; do
+        _schedule "news-topics-${h}05"  "5 ${h} * * 1-5"  "fetch-news-sentiment-topics"
+    done
 
     # AI Insights daily report — 8:45 AM ET weekdays, after premarket-brief
     # (which seeds the strat + daily indicators the pipeline consumes).
     _schedule "insight-pipeline-daily"   "45 8 * * 1-5"  "insight-pipeline"
 
+    # Auto-refresh top-N — 8:10 AM ET weekdays.
+    # Runs after news fetchers (8:00, 8:05) so catalyst data is fresh,
+    # and before premarket-brief at 8:30 so the warmed reports are
+    # ready by the time the user opens the platform.
+    _schedule "auto-refresh-top-n"       "10 8 * * 1-5"  "auto-refresh-top-n"
+
     echo "All schedulers configured."
+}
+
+# ── Watchlist backfill ────────────────────────────────────────────────────────
+# Idempotent: only fetches what's missing per ticker. Safe to run after
+# any edit to alert_config.json["watchlist"]; safe to run nightly. Runs
+# locally (not in Cloud Run) because the script is small enough that a
+# Cloud Run job is overhead.
+backfill_watchlist() {
+    echo "Backfilling watchlist data (idempotent)..."
+    local args=("$@")
+    if [ ! -f .env ]; then
+        echo "WARN: no .env at repo root — fetchers may fail without AV_API_KEY" >&2
+    else
+        # shellcheck disable=SC1091
+        set -a; . ./.env; set +a
+        export ALPHA_VANTAGE_API_KEY="${AV_API_KEY:-${ALPHA_VANTAGE_API_KEY:-}}"
+    fi
+    if [ -f .gcp-key.json ]; then
+        export GOOGLE_APPLICATION_CREDENTIALS="$PWD/.gcp-key.json"
+    fi
+    python3 -m scripts.backfill_watchlist_data "${args[@]}"
 }
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
@@ -399,9 +620,10 @@ case "${1:-help}" in
     premarket)   build_image && deploy_premarket ;;
     monitor)     build_image && deploy_monitor ;;
     weekend)     build_image && deploy_weekend ;;
-    fetchers)    build_image && deploy_fetchers ;;
-    insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline ;;
+    fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
+    insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_auto_refresh_top_n ;;
     schedulers)  deploy_schedulers ;;
+    backfill)    shift; backfill_watchlist "$@" ;;
     all)
         build_image
         deploy_premarket
@@ -410,7 +632,9 @@ case "${1:-help}" in
         deploy_fetchers
         setup_insight_tasks_queue
         deploy_insight_pipeline
+        deploy_auto_refresh_top_n
         deploy_schedulers
+        backfill_watchlist
         echo "All components deployed."
         ;;
     help|*)
@@ -425,6 +649,9 @@ case "${1:-help}" in
         echo "  fetchers   Deploy all data-fetching Cloud Run jobs"
         echo "  insights   Deploy AI insight pipeline job + Cloud Tasks queue"
         echo "  schedulers Create/update all Cloud Scheduler triggers"
-        echo "  all        Build + deploy everything (jobs + schedulers)"
+        echo "  backfill   Idempotently backfill data for every watchlist ticker."
+        echo "             Pass --tickers AVGO,NVDA to override. Runs automatically"
+        echo "             after \`fetchers\` and \`all\`."
+        echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac

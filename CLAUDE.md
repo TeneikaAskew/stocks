@@ -260,7 +260,6 @@ The system consists of two main components:
 
 All major workflows in this project use automated failure handling:
 - `fetch_etf_options.yml` - ETF options data fetching
-- `fetch-earnings-options.yml` - Earnings options data fetching
 - `fetch-market-data.yml` - Daily market data updates
 - `earnings-options-analytics.yml` - Analytics pipeline
 - `update_economic_events_calendar.yml` - Economic calendar updates

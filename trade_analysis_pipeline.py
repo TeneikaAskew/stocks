@@ -19,7 +19,7 @@ import multiprocessing
 class TradeAnalysisPipeline:
     def __init__(self):
         self.trades_df = None
-        self.iwm_df = None
+        self.bar_df = None
         self.pivoted_trades = None
         self.symbol = 'IWM'  # Default symbol
         self.search_months = 1  # Default to 1 month
@@ -131,7 +131,7 @@ class TradeAnalysisPipeline:
         if not os.path.exists(tracker_path):
             raise FileNotFoundError(
                 f"No trade tracker found for {self.symbol} at {tracker_path}\n"
-                f"Create it by copying iwm_trade_tracker.csv as a template and "
+                f"Create it by copying {self.symbol.lower()}_trade_tracker.csv as a template and "
                 f"filling in your {self.symbol} trades."
             )
         self.trades_df = pd.read_csv(tracker_path)
@@ -219,39 +219,39 @@ class TradeAnalysisPipeline:
             indicator_file = parquet_files[0]
             self.data_format = 'parquet'
             print(f"Detected parquet format: {indicator_file}")
-            self.iwm_df = pd.read_parquet(indicator_file)
+            self.bar_df = pd.read_parquet(indicator_file)
         elif csv_files:
             indicator_file = csv_files[0]
             self.data_format = 'csv'
             print(f"Detected CSV format: {indicator_file}")
-            self.iwm_df = pd.read_csv(indicator_file)
+            self.bar_df = pd.read_csv(indicator_file)
         else:
             raise FileNotFoundError(
                 "No indicator files found! This should have been handled by _ensure_indicator_files(). "
                 "If you see this error, try running: python trading_analysis.py -symbol IWM -months 2"
             )
 
-        self.iwm_df['Time'] = pd.to_datetime(self.iwm_df['Time'])
+        self.bar_df['Time'] = pd.to_datetime(self.bar_df['Time'])
         
         # Filter to market hours only (9:30 AM to 4:00 PM)
-        self.iwm_df['Hour'] = self.iwm_df['Time'].dt.hour
-        self.iwm_df['Minute'] = self.iwm_df['Time'].dt.minute
-        self.iwm_df['TimeOfDay'] = self.iwm_df['Hour'] * 100 + self.iwm_df['Minute']
+        self.bar_df['Hour'] = self.bar_df['Time'].dt.hour
+        self.bar_df['Minute'] = self.bar_df['Time'].dt.minute
+        self.bar_df['TimeOfDay'] = self.bar_df['Hour'] * 100 + self.bar_df['Minute']
         
         # Keep only market hours: 9:30 (930) to 16:00 (1600)
-        original_len = len(self.iwm_df)
-        self.iwm_df = self.iwm_df[(self.iwm_df['TimeOfDay'] >= 930) & (self.iwm_df['TimeOfDay'] <= 1600)].copy()
+        original_len = len(self.bar_df)
+        self.bar_df = self.bar_df[(self.bar_df['TimeOfDay'] >= 930) & (self.bar_df['TimeOfDay'] <= 1600)].copy()
         
         # Drop helper columns
-        self.iwm_df = self.iwm_df.drop(['Hour', 'Minute', 'TimeOfDay'], axis=1)
+        self.bar_df = self.bar_df.drop(['Hour', 'Minute', 'TimeOfDay'], axis=1)
         
-        print(f"Loaded IWM data: {original_len} rows")
-        print(f"After filtering to market hours (9:30-16:00): {len(self.iwm_df)} rows")
+        print(f"Loaded {self.symbol} data: {original_len} rows")
+        print(f"After filtering to market hours (9:30-16:00): {len(self.bar_df)} rows")
         
         # Join entry data
         entry_data = pd.merge(
             self.pivoted_trades,
-            self.iwm_df,
+            self.bar_df,
             left_on='Entry_Time',
             right_on='Time',
             how='left',
@@ -315,7 +315,7 @@ class TradeAnalysisPipeline:
         enriched = pd.merge(
             entry_data[['ID', 'Entry_Time', 'Trade_Type', 'Exit_Type', 'Exit_Time', 'Duration'] +
                       [f'Entry_{col}' for col in entry_cols if f'Entry_{col}' in entry_data.columns]],
-            self.iwm_df,
+            self.bar_df,
             left_on='Exit_Time',
             right_on='Time',
             how='left',
@@ -577,12 +577,12 @@ class TradeAnalysisPipeline:
         # Filter data based on search_months parameter
         if self.search_months is None:
             # Search all data
-            search_df = self.iwm_df.copy()
+            search_df = self.bar_df.copy()
             print(f"Searching ALL {len(search_df)} data points (market hours only)")
         else:
             # Search last N months
-            cutoff_date = self.iwm_df['Time'].max() - pd.DateOffset(months=self.search_months)
-            search_df = self.iwm_df[self.iwm_df['Time'] >= cutoff_date].copy()
+            cutoff_date = self.bar_df['Time'].max() - pd.DateOffset(months=self.search_months)
+            search_df = self.bar_df[self.bar_df['Time'] >= cutoff_date].copy()
             print(f"Searching {len(search_df)} data points in last {self.search_months} month(s) (market hours only)")
         
         # Calculate 1-minute price changes

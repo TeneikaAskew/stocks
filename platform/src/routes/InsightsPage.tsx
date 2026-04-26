@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Loader2, RefreshCw, History as HistoryIcon, FileText, MessageCircle, Send } from 'lucide-react';
+import { ArrowLeft, Loader2, RefreshCw, History as HistoryIcon, FileText, MessageCircle, Send, ListChecks } from 'lucide-react';
 import { useTickerStore } from '@/stores/tickerStore';
 import {
   useInsightHistory,
@@ -14,19 +14,24 @@ import {
   DegradationBanner,
   HeaderCard,
   KeyLevelsCard,
+  PersonaPlansCard,
   RiskFlagsCard,
   SignalsCard,
   SimilarTradesCard,
   StratCard,
   TradePlanCard,
 } from '@/components/insights/ReportCards';
+import { WatchlistPanel } from '@/components/insights/WatchlistPanel';
 
-type Tab = 'report' | 'history' | 'chat';
+type Tab = 'report' | 'history' | 'chat' | 'watchlist';
 
 export default function InsightsPage() {
-  const { activeTicker } = useTickerStore();
+  const { activeTicker, setTicker } = useTickerStore();
   const [tab, setTab] = useState<Tab>('report');
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  // Track which ticker the in-flight refresh was for so the watchlist
+  // row can show its spinner only for the row the user clicked.
+  const [refreshingTicker, setRefreshingTicker] = useState<string | null>(null);
   // When non-null, the Report tab shows a past report instead of latest.
   const [viewingHistoricalId, setViewingHistoricalId] = useState<string | null>(null);
 
@@ -47,19 +52,39 @@ export default function InsightsPage() {
     if (runStatus.data && (runStatus.data.status === 'done' || runStatus.data.status === 'failed')) {
       // Keep the id for a beat so the banner can show the final state,
       // then clear.
-      const t = setTimeout(() => setCurrentRunId(null), 1500);
+      const t = setTimeout(() => {
+        setCurrentRunId(null);
+        setRefreshingTicker(null);
+      }, 1500);
       return () => clearTimeout(t);
     }
     return undefined;
   }, [runStatus.data]);
 
-  const onRefresh = async () => {
+  const refreshFor = async (ticker: string) => {
     try {
-      const res = await refreshMut.mutateAsync(activeTicker);
+      setRefreshingTicker(ticker);
+      const res = await refreshMut.mutateAsync(ticker);
       setCurrentRunId(res.run_id);
     } catch (e) {
       console.error('refresh failed', e);
+      setRefreshingTicker(null);
     }
+  };
+
+  const onRefresh = () => refreshFor(activeTicker);
+
+  // Watchlist row click: switch the active ticker, jump to Report tab,
+  // and trigger a refresh on the selected ticker. The cast widens the
+  // strict Ticker union ('IWM'|'SPY'|'QQQ') to accept any ticker the
+  // ranker surfaces — the Sidebar's typed `availableTickers` list is
+  // unaffected; downstream consumers of activeTicker treat it as a
+  // string anyway.
+  const onWatchlistGenerate = async (ticker: string) => {
+    setTicker(ticker as import('@/types').Ticker);
+    setTab('report');
+    setViewingHistoricalId(null);
+    await refreshFor(ticker);
   };
 
   const isRunning = !!currentRunId && runStatus.data?.status !== 'done' && runStatus.data?.status !== 'failed';
@@ -91,6 +116,9 @@ export default function InsightsPage() {
         </TabButton>
         <TabButton active={tab === 'history'} onClick={() => setTab('history')} icon={<HistoryIcon size={14} />}>
           History
+        </TabButton>
+        <TabButton active={tab === 'watchlist'} onClick={() => setTab('watchlist')} icon={<ListChecks size={14} />}>
+          Watchlist
         </TabButton>
         <TabButton active={tab === 'chat'} onClick={() => setTab('chat')} icon={<MessageCircle size={14} />}>
           Chat
@@ -148,6 +176,12 @@ export default function InsightsPage() {
               setViewingHistoricalId(id);
               setTab('report');
             }}
+          />
+        ) : tab === 'watchlist' ? (
+          <WatchlistPanel
+            onSelectTicker={onWatchlistGenerate}
+            refreshing={refreshMut.isPending || isRunning}
+            refreshingTicker={refreshingTicker}
           />
         ) : (
           <ChatView ticker={activeTicker} />
@@ -267,6 +301,7 @@ function ReportView({
         <CatalystsCard catalysts={report.catalysts} />
       </div>
       <DebateCard bullCase={report.bull_case} bearCase={report.bear_case} />
+      <PersonaPlansCard plans={report.persona_plans ?? []} />
       <div className="grid gap-4 md:grid-cols-2">
         <RiskFlagsCard flags={report.risk_flags} />
         <SignalsCard signals={report.supporting_signals} />

@@ -24,17 +24,20 @@ test.describe('Phase 1: Chart Viewer', () => {
   test('can navigate to /charts route', async ({ page }) => {
     await page.click('a[href="/charts"]');
     await page.waitForURL('**/charts');
-    await expect(page.locator('select')).toBeVisible();
+    // Header date input is the canonical "we landed on charts" signal
+    await expect(page.locator('input[type="date"]').first()).toBeVisible();
   });
 
   // ── Chart toolbar ────────────────────────────────────────────────────────
-  test('charts page: date selector is populated', async ({ page }) => {
+  test('charts page: date input is populated', async ({ page }) => {
     await page.goto('/charts');
-    // Wait for API call to resolve
-    const select = page.locator('select').first();
-    await expect(select).toBeVisible();
-    // Should have at least one option
-    await expect(select.locator('option')).not.toHaveCount(0);
+    // DateSelector renders <input type="date"> + <input type="time"> + Apply.
+    const dateInput = page.locator('input[type="date"]').first();
+    await expect(dateInput).toBeVisible();
+    // The input is wired to the draft state; at minimum a `max` attribute is
+    // set to the latest available trading date — confirms the API resolved.
+    const max = await dateInput.getAttribute('max');
+    expect(max).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
   test('charts page: timeframe buttons render', async ({ page }) => {

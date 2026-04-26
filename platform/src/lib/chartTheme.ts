@@ -30,33 +30,33 @@ interface ChartTheme {
   tooltipText: string;
 }
 
-function readVar(name: string): string {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return '';
+function readVar(name: string, fallback: string): string {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return fallback;
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return v;
+  return v || fallback;
 }
 
 function buildChartTheme(): ChartTheme {
   // Fallbacks match the dark palette in case CSS vars are not yet computed
   // (e.g. during SSR or the very first paint before stylesheet load).
   return {
-    bg: readVar('--surface-0') || '#111318',
-    cardBg: readVar('--surface-2') || '#282a2e',
-    grid: readVar('--chart-grid') || '#1f2127',
-    gridLight: readVar('--surface-1') || '#14141c',
-    border: readVar('--outline-variant') || '#2a2a3a',
-    axis: readVar('--chart-axis') || '#6e7781',
+    bg: readVar('--surface-0', '#111318'),
+    cardBg: readVar('--surface-2', '#282a2e'),
+    grid: readVar('--chart-grid', '#1f2127'),
+    gridLight: readVar('--surface-1', '#14141c'),
+    border: readVar('--outline-variant', '#2a2a3a'),
+    axis: readVar('--chart-axis', '#6e7781'),
     axisSize: 10,
-    textMuted: readVar('--on-surface-variant') || '#bdc8d2',
-    textLabel: readVar('--on-surface-label') || '#5a6670',
-    bull: readVar('--bull') || '#22c55e',
-    bear: readVar('--bear') || '#ef4444',
-    brand: readVar('--brand') || '#8bceff',
-    brandGlow: readVar('--brand-glow') || '#60b8ff',
-    brandContainer: readVar('--brand-container') || '#00b2ff',
-    warn: readVar('--warn') || '#ffb86b',
-    tooltipBg: readVar('--surface-lowest') || '#0c0e12',
-    tooltipText: readVar('--on-surface') || '#e2e2e8',
+    textMuted: readVar('--on-surface-variant', '#bdc8d2'),
+    textLabel: readVar('--on-surface-label', '#5a6670'),
+    bull: readVar('--bull', '#22c55e'),
+    bear: readVar('--bear', '#ef4444'),
+    brand: readVar('--brand', '#8bceff'),
+    brandGlow: readVar('--brand-glow', '#60b8ff'),
+    brandContainer: readVar('--brand-container', '#00b2ff'),
+    warn: readVar('--warn', '#ffb86b'),
+    tooltipBg: readVar('--surface-lowest', '#0c0e12'),
+    tooltipText: readVar('--on-surface', '#e2e2e8'),
   };
 }
 
