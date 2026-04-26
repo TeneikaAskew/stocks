@@ -211,7 +211,7 @@ def canned_bundle(monkeypatch):
                     "bb_upper": 510.0, "bb_lower": 490.0, "bb_pct": 0.75,
                     "atr_14": 4.2, "rvol": 1.2, "volatility_20d": 0.15,
                     "price_vs_ema20": 0.008,
-                    "strat_candle": "2U", "strat_combo": "2D-1-2U_reversal",
+                    "strat_candle": "2U", "strat_combo": "212_bull_reversal",
                     "strat_setup": True, "ftfc_score": 0.6,
                     "ftfc_direction": "bullish",
                 },
@@ -500,14 +500,14 @@ def test_build_strat_snapshot_populates_from_section():
     snap = _build_strat_snapshot({
         "available": True,
         "last_candle": "2U",
-        "in_force_combo": "2D-1-2U_reversal",
+        "in_force_combo": "212_bull_reversal",
         "ftfc_score": 0.75,
         "ftfc_direction": "bullish",
         "trigger_high": 510.0,
         "trigger_low": 500.0,
     })
     assert snap.last_candle == "2U"
-    assert snap.in_force_combo == "2D-1-2U_reversal"
+    assert snap.in_force_combo == "212_bull_reversal"
     assert snap.ftfc_score == 0.75
     assert snap.ftfc_direction == "bullish"
     assert snap.trigger_high == 510.0

@@ -90,7 +90,8 @@ def test_market_context_unavailable_when_empty(patch_query):
 
 def test_strat_status_extracts_trigger_levels(monkeypatch):
     """summarize_strat_status delegates to lib.strat.compute_strat_status —
-    the same helper premarket_brief calls. Patch the helper directly."""
+    the same helper premarket_brief calls. Patch the helper directly.
+    Uses the new v2 combo naming (212_bull_reversal) introduced in this PR."""
     import lib.strat as strat_mod
 
     def fake_compute(ticker, **kwargs):
@@ -99,7 +100,7 @@ def test_strat_status_extracts_trigger_levels(monkeypatch):
             "ticker": ticker,
             "date": "2026-04-15",
             "last_candle": "2U",
-            "in_force_combo": "2D-1-2U_reversal",
+            "in_force_combo": "212_bull_reversal",
             "strat_setup": True,
             "ftfc_score": 0.6,
             "ftfc_direction": "bullish",
@@ -112,7 +113,7 @@ def test_strat_status_extracts_trigger_levels(monkeypatch):
     out = summarizers.summarize_strat_status("SPY")
     assert out["available"] is True
     assert out["last_candle"] == "2U"
-    assert out["in_force_combo"] == "2D-1-2U_reversal"
+    assert out["in_force_combo"] == "212_bull_reversal"
     assert out["trigger_high"] == 503.5
     assert out["trigger_low"] == 498.2
     assert out["ftfc_direction"] == "bullish"

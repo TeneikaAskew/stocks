@@ -625,7 +625,7 @@ CREATE TABLE IF NOT EXISTS premarket_analysis (
     consecutive_up    INTEGER,
     consecutive_down  INTEGER,
     signal_status     VARCHAR(50),
-    strat_daily       VARCHAR(10),
+    strat_candle      VARCHAR(10),
     strat_combo       VARCHAR(30),
     strat_setup       BOOLEAN,
     ftfc_score        DOUBLE PRECISION,
@@ -847,6 +847,25 @@ ALTER TABLE news_sentiment
 -- GIN index for fast `topics @> ARRAY['mergers_and_acquisitions']` lookups.
 CREATE INDEX IF NOT EXISTS idx_news_sentiment_topics
     ON news_sentiment USING GIN (topics);
+
+
+-- ============================================================================
+-- Live migration: rename premarket_analysis.strat_daily -> strat_candle.
+-- The methodology doc renames every "candle classification" surface to
+-- a single column name. Idempotent.
+-- ============================================================================
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'premarket_analysis' AND column_name = 'strat_daily'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'premarket_analysis' AND column_name = 'strat_candle'
+    ) THEN
+        ALTER TABLE premarket_analysis RENAME COLUMN strat_daily TO strat_candle;
+    END IF;
+END $$;
 
 
 -- ============================================================================
