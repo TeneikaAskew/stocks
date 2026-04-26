@@ -227,6 +227,28 @@ CREATE INDEX IF NOT EXISTS idx_earnings_options_symbol_date
 
 
 -- ─────────────────────────────────────────────────────────
+-- DAILY RATES (FRED-sourced macro inputs for BSM Greeks)
+-- ─────────────────────────────────────────────────────────
+-- Populated by gcp.fetchers.fetch_fred_rates. Used by
+-- lib.options_greeks.get_rate_and_yield to look up the risk-free
+-- rate (DGS3MO 3-month Treasury) and dividend yield per snapshot
+-- date so historical backfills don't all share one constant.
+-- The fetcher writes the FRED DGS3MO series; sp500_div_yld is a
+-- configurable constant (FRED doesn't publish a clean S&P 500
+-- dividend-yield series).
+
+CREATE TABLE IF NOT EXISTS daily_rates (
+    date           DATE PRIMARY KEY,
+    dgs3mo         DOUBLE PRECISION,
+    sp500_div_yld  DOUBLE PRECISION,
+    fetched_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_rates_date
+    ON daily_rates (date DESC);
+
+
+-- ─────────────────────────────────────────────────────────
 -- ARCHIVE TABLES (Yahoo Finance legacy data)
 -- ─────────────────────────────────────────────────────────
 -- Yahoo data was moved here when the system cut over to AlphaVantage.
