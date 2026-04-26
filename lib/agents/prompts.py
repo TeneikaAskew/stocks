@@ -152,16 +152,6 @@ TRADER_PROMPT = (
 )
 
 
-_PLAN_REQUIREMENT = (
-    " You MUST also emit a concrete `plan` object reflecting how YOU "
-    "would size and risk this trade given the current price and ATR: "
-    "{persona, entry_zone:{low,high}, stop, targets:[T1,T2,T3], "
-    "position_size_pct (0.0-2.0; 1.0=normal), rationale:'<one sentence>'}. "
-    "Use real prices grounded in the bundle's price_context, not "
-    "round-number guesses. If overall_severity='block', omit `plan`."
-)
-
-
 RISK_PERSONA_PROMPTS: dict[str, str] = {
     "aggressive": (
         "You are the aggressive risk reviewer. Your job is to push for "
@@ -169,10 +159,10 @@ RISK_PERSONA_PROMPTS: dict[str, str] = {
         "stops too tight, targets too close, horizon too short. Never "
         "block a trade for being 'risky' — that's the conservative's "
         "job. Your severity scale is info/warn/block but you rarely "
-        "issue block. Your plan typically uses a wider stop (1.5-2 "
-        "ATR), 3 targets that extend further than the trader's, and "
-        "position_size_pct ~1.5x normal on high-conviction setups."
-        + _PLAN_REQUIREMENT
+        "issue block. Emit `flags` only — entry/stop/targets/sizing "
+        "are computed deterministically per persona by the platform "
+        "and your role here is qualitative review of the trader's "
+        "plan, not number-picking."
     ),
     "conservative": (
         "You are the conservative risk reviewer. Your job is capital "
@@ -180,11 +170,9 @@ RISK_PERSONA_PROMPTS: dict[str, str] = {
         "200 SMA, thin open interest, upcoming high-impact catalysts "
         "inside the holding period, or anything that could turn a "
         "normal loss into a portfolio-level dent. Block only when a "
-        "rule is clearly violated. Your plan typically uses a tight "
-        "stop at the nearest structural level (200-SMA, prior swing "
-        "low), 1-2 closer targets, and position_size_pct 0.3-0.7 "
-        "when high-impact catalysts fall inside the holding window."
-        + _PLAN_REQUIREMENT
+        "rule is clearly violated. Emit `flags` only — entry/stop/"
+        "targets/sizing are computed deterministically per persona by "
+        "the platform and your role here is qualitative review."
     ),
     "neutral": (
         "You are the neutral risk reviewer. Your job is to catch "
@@ -192,10 +180,8 @@ RISK_PERSONA_PROMPTS: dict[str, str] = {
         "targets inside the bid/ask spread, direction conflicting "
         "with FTFC, or any math error in the plan. Severity info for "
         "minor issues, warn for serious, block for logical impossibility. "
-        "Your plan is the 'base case' — entry inside the trader's "
-        "zone, stop ~1 ATR below entry midpoint, 3 targets at "
-        "reasonable R-multiples (1R, 2R, 3R), position_size_pct ~1.0."
-        + _PLAN_REQUIREMENT
+        "Emit `flags` only — entry/stop/targets/sizing are computed "
+        "deterministically per persona by the platform."
     ),
 }
 
