@@ -334,6 +334,22 @@ CREATE INDEX IF NOT EXISTS idx_earnings_calendar_date
 CREATE INDEX IF NOT EXISTS idx_earnings_calendar_source
     ON earnings_calendar (data_source, earnings_date DESC);
 
+-- ── UW liquidity / quality enrichments (added 2026-04-26) ──────────────────
+-- Idempotent ALTERs so existing deployments pick these up without a rebuild.
+-- Populated by the UnusualWhales path in scripts/fetch_earnings_calendar.py;
+-- AV-only and EW-only rows leave them NULL, which is fine for ranking
+-- (sort uses NULLS LAST) and for the brief's within-tier ordering.
+ALTER TABLE earnings_calendar
+    ADD COLUMN IF NOT EXISTS is_s_p_500          BOOLEAN,
+    ADD COLUMN IF NOT EXISTS stock_volume        BIGINT,
+    ADD COLUMN IF NOT EXISTS options_volume      BIGINT,           -- call_vol + put_vol
+    ADD COLUMN IF NOT EXISTS open_interest       BIGINT,           -- UW: oi
+    ADD COLUMN IF NOT EXISTS rv_1d_last_12q      DOUBLE PRECISION, -- realized vol over last 12 quarters
+    ADD COLUMN IF NOT EXISTS last_1d_reactions   JSONB;            -- array of past 1-day post-earnings moves
+
+CREATE INDEX IF NOT EXISTS idx_earnings_calendar_sp500_date
+    ON earnings_calendar (earnings_date DESC, is_s_p_500 DESC NULLS LAST);
+
 DROP TRIGGER IF EXISTS trg_earnings_calendar_updated ON earnings_calendar;
 CREATE TRIGGER trg_earnings_calendar_updated
     BEFORE UPDATE ON earnings_calendar
