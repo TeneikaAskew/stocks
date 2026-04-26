@@ -275,10 +275,11 @@ class TraderOutput(BaseModel):
 class RiskPersonaOutput(BaseModel):
     """One of three risk debate personas.
 
-    Each persona returns both qualitative flags AND a concrete trade
-    plan (entry/stop/targets/sizing) reflecting how *they* would size
-    and risk this trade. Plan is optional — a persona may decline to
-    issue one if they overall_severity='block' (i.e. won't take it).
+    Persona returns *qualitative* flags only. The concrete numbers
+    (entry / stop / targets / sizing) used to live here too but are
+    now computed deterministically by lib.agents.trade_planner using
+    explicit per-persona recipes — this gives reproducible plans
+    across runs while the LLM still owns the narrative review.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -286,10 +287,6 @@ class RiskPersonaOutput(BaseModel):
     persona: Literal["aggressive", "conservative", "neutral"]
     flags: list[RiskFlag] = Field(default_factory=list)
     overall_severity: Literal["info", "warn", "block"]
-    plan: Optional[PersonaPlan] = Field(
-        default=None,
-        description="Concrete entry/stop/targets/sizing for this persona's risk profile.",
-    )
 
 
 class PortfolioManagerOutput(BaseModel):
