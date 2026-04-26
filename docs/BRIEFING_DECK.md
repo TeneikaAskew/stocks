@@ -41,7 +41,7 @@ A full-stack equity trading research and execution platform centered on four pri
 | FastAPI routers | 10 |
 | Python `lib/` modules | 11 (+ `lib/agents/` package with 11 modules + `ranker/` subpackage) |
 | GCP fetchers | 11 |
-| Cloud SQL tables | 29 (incl. `archive_yahoo_*` quartet) |
+| Cloud SQL tables | 29 (incl. `archive_yahoo_*` quartet, `historical_signals`, `earnings_calendar` w/ UW liquidity columns) |
 | Cloud Run jobs | 9+ scheduled |
 | GitHub Actions workflows | 14 (all use shared failure handler) |
 | Standalone web tools | 4 (heatseeker, success-report, chart-viewer, website) |
@@ -59,6 +59,8 @@ A full-stack equity trading research and execution platform centered on four pri
 - Historical Review Mode (global DateSelector with trading-day snapping, `end_date`/`end_time` API params).
 - Catalyst-analog matching backtest (replaces empty-trades backtest for thin-data tickers).
 - Phase 3 deterministic ticker ranker (insider buying vs selling split, news-topic match, watchlist scoping).
+- Historical signals migrated from GCS parquet to Cloud SQL `historical_signals` table; bulk insert ~130× faster via multi-row VALUES; new `/api/signals/{ticker}/similar` endpoint backs the Charts "Similar Setups" card.
+- Earnings ticker fan-out capped at top-25 by tier + market cap in both the daily fetcher and the premarket brief, fixing a silent ~2-week stale-bars regression on IWM/SPY/QQQ caused by AV rate-limit budget exhaustion. UW liquidity columns (SP500 flag, stock/options volume, open interest, realized vol, past reactions) now flow into `earnings_calendar` and drive the within-tier sort.
 
 ---
 
@@ -350,7 +352,7 @@ Files in `lib/`. Pure-Python, no FastAPI/database imports — testable in isolat
 
 | File | Source | Target | Schedule |
 | --- | --- | --- | --- |
-| `fetch_market_data.py` | AlphaVantage daily + Cloud SQL daily series (for indicators) | `market_data_daily` (OHLCV + 30+ indicators), VWAP from intraday | Daily Cloud Run Job |
+| `fetch_market_data.py` | AlphaVantage daily + Cloud SQL daily series (for indicators) | `market_data_daily` (OHLCV + 30+ indicators), VWAP from intraday. Earnings-window fan-out **capped at top-25 by `has_options` + `market_cap`** (`MAX_EARNINGS_TICKERS` env, `--max-earnings-tickers` flag) so AV's 150-rpm budget always covers core IWM/SPY/QQQ/SPX | Daily Cloud Run Job |
 | `fetch_alphavantage_intraday.py` | AlphaVantage `TIME_SERIES_INTRADAY` 1 min | `market_data_intraday` (partitioned), GCS parquet | Monthly Cloud Run + GH Actions |
 | `fetch_etf_options.py` | AlphaVantage `HISTORICAL_OPTIONS` | `etf_options_snapshots` (with Greeks), GCS parquet | Daily Cloud Run + workflow |
 | `fetch_av_historical_options.py` | AlphaVantage historical options (back-dated) | `etf_options_snapshots` with `data_source='alphavantage'` | Backfill / catch-up |
@@ -361,6 +363,7 @@ Files in `lib/`. Pure-Python, no FastAPI/database imports — testable in isolat
 | `fetch_insider_transactions.py` | AlphaVantage / Form 4 | `insider_transactions` | Daily |
 | `fetch_top_movers.py` | AlphaVantage `TOP_GAINERS_LOSERS` | `top_movers_daily` | Daily |
 | `_watchlist.py` | (utility) | Shared watchlist loader unioning to ticker pool | (imported by others) |
+| `scripts/fetch_earnings_calendar.py` (CLI) | UnusualWhales `upcoming_earnings_v2` + Earnings Whispers + AlphaVantage `EARNINGS_CALENDAR` | `earnings_calendar` (incl. UW liquidity enrichments — `is_s_p_500`, `stock_volume`, `options_volume`, `open_interest`, `rv_1d_last_12q`, `last_1d_reactions`) | Daily Cloud Run via `fetch-earnings-calendar` |
 
 The legacy `gcp/fetchers/fetch_earnings_options.py` was removed (commit `5abfc89`). Earnings options now flow through the same `etf_options_snapshots` table via the daily AV fetcher.
 
@@ -383,7 +386,7 @@ The legacy `gcp/fetchers/fetch_earnings_options.py` was removed (commit `5abfc89
 | `archive_yahoo_market_data_intraday` | Yahoo data archive |  |
 | `archive_yahoo_etf_options_snapshots` | Yahoo data archive |  |
 | `archive_yahoo_earnings_options_snapshots` | Yahoo data archive |  |
-| `earnings_calendar` | Forward earnings + strategy picks | 42 cols incl. tier (AV/UW/EW), strategy, strike, premium, score, hit tracking |
+| `earnings_calendar` | Forward earnings + strategy picks | 48 cols incl. tier (AV/UW/EW), strategy, strike, premium, score, hit tracking, **UW liquidity enrichments** (`is_s_p_500`, `stock_volume`, `options_volume`, `open_interest`, `rv_1d_last_12q`, `last_1d_reactions`) |
 | `earnings_history` | Backward EPS history | `fiscal_date_ending`, `reported_eps`, `estimated_eps`, `surprise` |
 | `sec_filings` | 8-K material events | `cik`, `form`, `filing_date`, `items` array |
 | `insider_transactions` | Form 4 buys/sells | `executive`, `transaction_type`, `shares`, `value` |
@@ -463,7 +466,7 @@ GCP project: `adept-mountain-474619-d4`. Region: `us-east1`.
 | `fetch-sec-filings` | SEC EDGAR 8-K → `sec_filings` | Cloud Scheduler — daily |
 | `fetch-insider-transactions` | Form 4 → `insider_transactions` | Cloud Scheduler — daily |
 | `fetch-top-movers` | AV TOP_GAINERS_LOSERS → `top_movers_daily` | Cloud Scheduler — daily |
-| `premarket-brief` | 3-embed Discord message + persist to `premarket_analysis` (32 cols) | Cloud Scheduler — 8:30 AM ET weekdays |
+| `premarket-brief` | 3-embed Discord message + persist to `premarket_analysis` (32 cols). Earnings list ranked by `(date, tier, is_s_p_500, options_volume, stock_volume, market_cap)` and **capped at top-25** (`BRIEF_MAX_EARNINGS` env) so the embed surfaces the same names the daily fetcher actually writes bars for | Cloud Scheduler — 8:30 AM ET weekdays |
 | `signal-monitor` | Real-time signal alerts → `signal_alerts` + `trades` | Cloud Scheduler — every 5 min during market hours |
 | `daily-insight-reports` | Multi-agent pipeline for SPY/IWM/QQQ → `insight_reports` | Cloud Scheduler — 8:45 AM ET weekdays (after premarket-brief) |
 | `auto-refresh-top-n` | Pre-warm insights for top-N ranker tickers | Cloud Scheduler — daily |
@@ -1059,6 +1062,18 @@ Summarized from `docs/changelog/CHANGELOG_2026-04-20_to_2026-04-26.md`.
 - Insider buying (+1.5) and selling (-1.5) tracked separately.
 - `weighted_score()` allows negative weights; `pct_of_max` normalizes via `abs(weight)`.
 - Shared `_insider_window()` extraction.
+
+**Historical signals → Cloud SQL:**
+- New `historical_signals` table (PK `(ticker, entry_time)`, indexed on score / direction).
+- `gcp/historical_signals.py` helper + `scripts/run_historical_signals.py` CLI (`--start-date` / `--end-date` / `--force` / `--backfill-from`); month-by-month bash driver in `scripts/backfill_historical_signals.sh`.
+- Bulk INSERT switched from pg8000 executemany to one multi-row `VALUES (...), (...)` per chunk: ~6 rows/sec → ~800 rows/sec (~130×). 11-year IWM/QQQ/SPY backfill now runs in ~10 min/ticker instead of ~9 hr.
+- `signals.py` router primary path moved to Cloud SQL with parquet kept as a local-dev fallback. New `GET /api/signals/{ticker}/similar?direction&rsi&score&rsi_band&limit` powers the Charts "Similar Setups" card with server-side aggregation (count, mean/median/p25/p75 MFE pct, mean return at 5/20 min, pct profitable).
+
+**Earnings cap + UW enrichment:**
+- `_earnings_tickers_in_window` (daily fetcher) and `load_earnings_for_brief` (premarket Discord) both capped at top-25 ranked by `optionable → SP500 → options_volume → stock_volume → market_cap → ticker`. Configurable via `MAX_EARNINGS_TICKERS` / `--max-earnings-tickers` / `BRIEF_MAX_EARNINGS`.
+- Root cause for the cap: AV's 150-rpm budget was being spent on a 200+ ticker fan-out, silently skipping IWM/SPY/QQQ when the loop ran out of quota. The four core tickers were stale for ~2 weeks before anyone noticed.
+- Added 6 columns to `earnings_calendar` populated from UW's `upcoming_earnings_v2`: `is_s_p_500`, `stock_volume`, `options_volume` (= `call_vol+put_vol`), `open_interest`, `rv_1d_last_12q`, `last_1d_reactions` (JSONB array). UW's response is 30 fields total — we now capture the 9 we already had plus these 6 ranking signals; the rest (logo URL, country code, etc.) skipped intentionally.
+- Heavy earnings days (e.g. Wed 2026-04-29 with 251 calendar rows) now surface 25 SP500 / tier-1 names — MSFT, META, GOOGL, QCOM, ABBV, etc. — instead of falling back to alphabetical AV-only long-tail (ALWIF, BUSEL).
 
 ### 15.3 Themes from last 50 commits
 
