@@ -67,7 +67,7 @@ def _macd_cross(macd, macd_signal):
 
 # ── Earnings Calendar ───────────────────────────────────────────────────────
 
-def load_earnings_for_brief(today: date, weekly: bool = False) -> dict:
+def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) -> dict:
     """Query earnings_calendar for the premarket brief.
 
     On weekdays (weekly=False): returns today's earnings only.
@@ -84,6 +84,12 @@ def load_earnings_for_brief(today: date, weekly: bool = False) -> dict:
 
     Within each tier, display row prefers EW > AV > UW so strategy details
     (strike/premium/score) surface when available.
+
+    The result is capped at ``top_n`` rows AFTER tier-then-market-cap sort —
+    so the cut keeps the most-confirmed, most-liquid names. Pass ``top_n=0``
+    for legacy unbounded behaviour. Default 25 matches
+    ``fetch_market_data --max-earnings-tickers`` so the morning Discord
+    embed surfaces the same names the daily fetcher prioritises.
     """
     try:
         from gcp.database import is_cloud_sql_configured, query_to_dataframe
@@ -104,9 +110,10 @@ def load_earnings_for_brief(today: date, weekly: bool = False) -> dict:
         mode = 'daily'
 
     # Pull all rows, then dedupe + tier in Python
+    # Pull market_cap too so we can break tier ties by liquidity.
     sql = """
         SELECT ticker, earnings_date, company_name, earnings_time,
-               eps_estimate, expected_move, sector,
+               eps_estimate, expected_move, sector, market_cap,
                strategy, strike, premium, score, data_source
         FROM earnings_calendar
         WHERE earnings_date BETWEEN :start AND :end
@@ -149,6 +156,13 @@ def load_earnings_for_brief(today: date, weekly: bool = False) -> dict:
     earnings = []
     for (ticker, earnings_date), group in groups.items():
         best = min(group['rows'], key=lambda r: row_prio.get(r['data_source'], 99))
+        # Use the largest market_cap seen across the source rows for this
+        # (ticker, date). UW often omits market_cap; we don't want a NULL
+        # from one source to outrank a real value from another.
+        mcap = max(
+            (r.get('market_cap') for r in group['rows'] if r.get('market_cap') is not None),
+            default=None,
+        )
         earnings.append({
             'ticker': ticker,
             'date': earnings_date,
@@ -157,6 +171,7 @@ def load_earnings_for_brief(today: date, weekly: bool = False) -> dict:
             'eps_estimate': best.get('eps_estimate'),
             'expected_move': best.get('expected_move'),
             'sector': best.get('sector') or '',
+            'market_cap': mcap,
             'strategy': best.get('strategy') or '',
             'strike': best.get('strike'),
             'premium': best.get('premium'),
@@ -167,9 +182,19 @@ def load_earnings_for_brief(today: date, weekly: bool = False) -> dict:
         })
 
     # Sort by date FIRST (so weekly grouping stays chronological), then by
-    # tier, then alphabetically — this lets each day's rendering show top
-    # tier tickers first.
-    earnings.sort(key=lambda r: (r['date'], r['tier'], r['ticker']))
+    # tier (lower = better), then market_cap DESC (NULLs last via -inf), then
+    # alphabetically — each day's rendering shows top-tier, biggest names first.
+    earnings.sort(key=lambda r: (
+        r['date'],
+        r['tier'],
+        -(r.get('market_cap') or float('-inf')),
+        r['ticker'],
+    ))
+
+    # Cap at top_n AFTER the tier sort so the cut keeps the highest-quality
+    # rows. ``top_n=0`` disables the cap (legacy behaviour).
+    if top_n and top_n > 0:
+        earnings = earnings[:top_n]
 
     return {'mode': mode, 'start': start, 'end': end, 'earnings': earnings}
 
@@ -358,10 +383,13 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'ftfc_labels': {k: v for k, v in ftfc_labels.items()},
         }
 
-    # Earnings: weekday → today's; Sunday → upcoming week's
+    # Earnings: weekday → today's; Sunday → upcoming week's. Cap aligned
+    # with the daily fetch job so the brief surfaces the same names that
+    # actually have intraday bars in Cloud SQL.
     today = date.today()
     is_sunday = today.weekday() == 6
-    brief['earnings'] = load_earnings_for_brief(today, weekly=is_sunday)
+    brief_top_n = int(os.environ.get('BRIEF_MAX_EARNINGS', '25'))
+    brief['earnings'] = load_earnings_for_brief(today, weekly=is_sunday, top_n=brief_top_n)
 
     # Economic events: Sunday brief needs a full week lookahead, weekday needs ~5 days
     brief['events'] = load_economic_events(today, days_ahead=7 if is_sunday else 5)

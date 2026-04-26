@@ -316,7 +316,7 @@ Key data flows:
 - **Options flow**: Alpha Vantage HISTORICAL_OPTIONS proxy (replaces Cloudflare Worker)
 - **Journal**: Cloud SQL `journal_entries` table (CRUD) with local JSON fallback
 - **Backtest results**: reads `data/backtest_results/backtest_{TICKER}_*.csv`
-- **Signals**: reads `data/signals/historical_{TICKER}_*_signals.parquet`
+- **Signals**: Cloud SQL `historical_signals` (indexed on `(ticker, entry_time)`) when configured; legacy GCS parquet fallback otherwise. `/api/signals/{ticker}/similar` returns prior bars in the same direction + score + RSI bucket for the Charts page "Similar Setups" card
 - **AI chat**: Vertex AI Gemini 2.0 Flash via `google.genai` SDK, SSE streaming
 
 ### Cloud SQL Integration ✅ 2026-02-23
@@ -479,6 +479,7 @@ Pre-existing failures (unrelated to dashboard work):
 - 2026-04-13: fix(gcp) — `gcp/deploy.sh` `_env_string()` now injects `AV_API_KEY` + `ALPHA_VANTAGE_API_KEY` (both names) and `FRED_API_KEY` from Secret Manager into every Cloud Run job. Closes a footgun where a fresh `deploy.sh fetchers` push would create jobs missing the AV key. Existing jobs already had the keys set out-of-band.
 - 2026-04-13: ops — rebuilt `trading-system` container image (digest `78035eb7…` → `10200d2c…`) with the post-AlphaVantage-migration fetch_market_data.py code path. Old image had a yfinance fallback that wrote pandas float `1.0` into INTEGER columns (`consecutive_up`, `consecutive_down`), causing silent daily failures since 2026-04-06. Backfilled IWM/SPY/QQQ rows for 2026-04-06..04-10 via 5 manual `gcloud run jobs execute` calls (Cloud SQL now current through Friday 04-10).
 - 2026-04-13: chore(workflows) — `.github/workflows/fetch-market-data.yml` renamed to `.disabled`. `fetch-market-data` Cloud Run Job is now sole source of truth for `market_data_daily`.
+- 2026-04-26: feat(gcp) — cap earnings-ticker fan-out at top-25 by tier+market_cap in `fetch_market_data._earnings_tickers_in_window` and `premarket_brief.load_earnings_for_brief`. Old behaviour returned 200+ tickers per day, blowing through AV's 150 RPM budget before IWM/QQQ/SPY ran (silently empty for ~2 weeks). Brief embed and daily fetcher now surface the same names.
 
 ---
 
