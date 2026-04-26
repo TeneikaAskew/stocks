@@ -230,22 +230,6 @@ deploy_fetch_market_data() {
         --quiet
 }
 
-deploy_fetch_etf_options() {
-    echo "Deploying fetch-etf-options job..."
-    gcloud run jobs create fetch-etf-options \
-        --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 1 \
-        --service-account "${SA_EMAIL}" \
-        --command "python,-m,gcp.fetchers.fetch_etf_options" \
-        --set-env-vars "$(_env_string)" \
-        --quiet 2>/dev/null || \
-    gcloud run jobs update fetch-etf-options \
-        --image "${IMAGE}" --region "${REGION}" \
-        --command "python,-m,gcp.fetchers.fetch_etf_options" \
-        --set-env-vars "$(_env_string)" \
-        --quiet
-}
-
 deploy_fetch_alphavantage() {
     echo "Deploying fetch-alphavantage-intraday job..."
     local av_key av_env
@@ -487,7 +471,6 @@ deploy_fetch_news_sentiment_topics() {
 
 deploy_fetchers() {
     deploy_fetch_market_data
-    deploy_fetch_etf_options
     deploy_fetch_alphavantage
     deploy_fetch_fred_rates
     deploy_fetch_economic_events
@@ -763,16 +746,10 @@ deploy_schedulers() {
     # Market data — 5 PM ET weekdays
     _schedule "fetch-market-data-daily"  "0 17 * * 1-5"   "fetch-market-data"
 
-    # ETF options — 9 snapshots per trading day
-    _schedule "etf-options-0930"  "30 9 * * 1-5"   "fetch-etf-options"
-    _schedule "etf-options-0935"  "35 9 * * 1-5"   "fetch-etf-options"
-    _schedule "etf-options-0940"  "40 9 * * 1-5"   "fetch-etf-options"
-    _schedule "etf-options-1000"  "0 10 * * 1-5"   "fetch-etf-options"
-    _schedule "etf-options-1130"  "30 11 * * 1-5"  "fetch-etf-options"
-    _schedule "etf-options-1300"  "0 13 * * 1-5"   "fetch-etf-options"
-    _schedule "etf-options-1430"  "30 14 * * 1-5"  "fetch-etf-options"
-    _schedule "etf-options-1530"  "30 15 * * 1-5"  "fetch-etf-options"
-    _schedule "etf-options-1605"  "5 16 * * 1-5"   "fetch-etf-options"
+    # ETF options intraday (9x/day) was REMOVED — see commit message.
+    # Daily EOD snapshots come from fetch-av-options-backfill (with real Greeks)
+    # and the Options UI queries AV live for "current chain" via the existing
+    # OptionsFlowPage fallback. See docs/DATA_PIPELINE.md.
 
     # AlphaVantage monthly intraday — 1st of each month 9 PM ET
     _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
