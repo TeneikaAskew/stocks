@@ -1,12 +1,30 @@
 # GCP Deploy Command
 
 This command runs the full GCP deployment pipeline:
+0. **Pre-deploy gate** — invoke the `pre-deploy-check` agent and refuse to proceed on any CRITICAL blocker
 1. Run the test suite and capture results
 2. Stage and commit all GCP-related changes with a proper commit message
 3. Update the implementation status tracker and guide
 4. Submit the Docker image to Cloud Build
+5. **Post-deploy verification** — confirm the new Cloud Run revision is actually serving, surface any errors from the first 2 minutes of runtime, and print the rollback command on failure
 
 ## Steps to Execute
+
+### Step 0 — Pre-Deploy Gate
+
+Invoke the `pre-deploy-check` agent via the Agent tool:
+
+```
+Agent(subagent_type="pre-deploy-check", prompt="Run pre-deploy-check against the current repo state. Deploy target: trading-pipeline on Cloud Run us-east1.")
+```
+
+Parse the agent output for the final `PRE_DEPLOY_EXIT=<N>` line:
+
+- **Exit 0 (clean)** — proceed to Step 1.
+- **Exit 1 (warnings)** — print the warnings, ask the user for explicit confirmation ("warnings found — continue? [y/N]"), proceed only on `y`.
+- **Exit 2 (blockers)** — STOP. Print the blocker list. Do NOT proceed unless the user explicitly passes `--force` to `/gcp-deploy` (in which case log `[pre-deploy-check overridden: <reason>]` into the commit body).
+
+The most common blocker this gate catches: **stale `platform/dist/`** (the exact regression from 2026-04-14). In that case, the gate tells the user to run `cd platform && npm run build` — do that, then re-run the gate.
 
 ### Step 1 — Run Tests
 
@@ -92,6 +110,45 @@ After a successful commit and pre-deploy validation, run the deploy build comman
 This submits the Docker image to Cloud Build using the project `adept-mountain-474619-d4`. Report the build URL and status when complete.
 
 If the build fails, report the Cloud Build log URL and the error output. Do NOT force-push or attempt destructive git operations.
+
+### Step 7 — Post-Deploy Verification
+
+After Cloud Build completes successfully and Cloud Run has rolled out the new revision, verify the deployment actually works:
+
+1. **Wait for rollout** — poll until the new revision is serving:
+   ```bash
+   gcloud run services describe trading-pipeline \
+     --region=us-east1 --project=adept-mountain-474619-d4 \
+     --format='value(status.latestReadyRevisionName,status.traffic[0].revisionName)'
+   ```
+   Both values should match and point to the new revision.
+
+2. **Health check** — hit `/api/health`:
+   ```bash
+   SERVICE_URL=$(gcloud run services describe trading-pipeline \
+     --region=us-east1 --project=adept-mountain-474619-d4 \
+     --format='value(status.url)')
+   curl -sS -o /tmp/health.json -w "HTTP:%{http_code}\n" "$SERVICE_URL/api/health"
+   cat /tmp/health.json
+   ```
+   Expect HTTP 200. If non-200, do NOT mark the deploy successful.
+
+3. **Verify new bundle is serving** — hit `/` and confirm the HTML references the new revision's build hash:
+   ```bash
+   curl -sS "$SERVICE_URL/" | grep -oE '<script[^>]*src="/assets/index-[^"]+\.js"' | head -1
+   ```
+   Compare the bundle filename against the one in the newly committed `platform/dist/index.html`. A mismatch means Cloud Run is still serving the old revision — wait 30s and retry, then bail.
+
+4. **Check for runtime errors in the first 2 minutes**:
+   ```bash
+   gcloud logging read 'resource.type=cloud_run_revision AND resource.labels.service_name=trading-pipeline AND severity>=ERROR' \
+     --limit=20 --freshness=2m \
+     --project=adept-mountain-474619-d4 \
+     --format='value(textPayload,jsonPayload.message)'
+   ```
+   If any ERROR-severity logs appear, surface them loudly in the summary and consider rollback.
+
+5. **On any failure in steps 1-4**, print the rollback command below AND do NOT mark the deploy as successful. Leave it to the user to decide whether to roll back.
 
 ### Rollback Guidance
 
