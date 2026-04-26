@@ -100,6 +100,18 @@ def _safe_num(val):
         return None
 
 
+def _safe_int(val):
+    """Return int(val) or None — tolerates UW's numeric-string fields
+    ("281404632") and floats with trailing zeros."""
+    f = _safe_num(val)
+    if f is None:
+        return None
+    try:
+        return int(f)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
 # ── AV date attach helper ───────────────────────────────────────────────────
 
 def _attach_av_date(df: pd.DataFrame, av_dates: dict) -> int:
@@ -524,6 +536,16 @@ def persist_to_cloud_sql(df: pd.DataFrame) -> int:
             lambda x: x.date() if pd.notna(x) else None
         )
 
+    # JSONB columns need JSON strings, not Python lists/dicts — pg8000
+    # rejects raw lists when the column is JSONB. Convert before NaN scrub
+    # (json.dumps(None) is the literal string "null", which we don't want;
+    # do it conditionally).
+    import json as _json
+    if 'last_1d_reactions' in db_df.columns:
+        db_df['last_1d_reactions'] = db_df['last_1d_reactions'].apply(
+            lambda v: _json.dumps(v) if isinstance(v, (list, dict)) else v
+        )
+
     # Replace NaN/NaT with None across all columns so PostgreSQL gets NULL
     import numpy as np
     db_df = db_df.replace({np.nan: None, float('nan'): None})
@@ -616,6 +638,14 @@ class EarningsCalendarFetcher:
                 if earnings_date > cutoff_date:
                     continue
 
+                # UW returns numeric strings for several fields ("82.73",
+                # "414846040000"); coerce to native ints/floats so downstream
+                # SQL casts (BIGINT/DOUBLE PRECISION) don't choke. Helpers
+                # already exist for safe numeric casting.
+                call_vol = _safe_int(item.get("call_vol"))
+                put_vol = _safe_int(item.get("put_vol"))
+                options_vol = (call_vol + put_vol) if (call_vol is not None and put_vol is not None) else None
+
                 earnings_list.append(
                     {
                         "date": earnings_date.strftime("%Y-%m-%d"),
@@ -627,6 +657,16 @@ class EarningsCalendarFetcher:
                         "sector": item.get("sector", ""),
                         "has_options": item.get("has_options", False),
                         "expected_move": item.get("expected_move"),
+                        # ── UW liquidity / quality enrichments ──────────────
+                        # Map straight to the new earnings_calendar columns.
+                        # Fields are 100% filled in the UW response except
+                        # eps_mean_est / sector (~98%); we tolerate None.
+                        "is_s_p_500": item.get("is_s_p_500"),
+                        "stock_volume": _safe_int(item.get("stock_volume")),
+                        "options_volume": options_vol,
+                        "open_interest": _safe_int(item.get("oi")),
+                        "rv_1d_last_12q": _safe_num(item.get("rv_1d_last_12q")),
+                        "last_1d_reactions": item.get("last_1d_reactions"),
                         "source": "UnusualWhales",
                         "fetched_at": datetime.now().isoformat(),
                     }

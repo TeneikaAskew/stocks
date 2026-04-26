@@ -116,10 +116,15 @@ def download_csv(blob_name: str) -> pd.DataFrame:
     return pd.read_csv(io.BytesIO(data))
 
 
-def download_parquet(blob_name: str) -> pd.DataFrame:
-    """Download a Parquet blob from GCS as a DataFrame. Raises on failure."""
+def download_parquet(blob_name: str, columns: Optional[list[str]] = None) -> pd.DataFrame:
+    """Download a Parquet blob from GCS as a DataFrame. Raises on failure.
+
+    Pass `columns=[...]` to project — pyarrow only deserializes those columns,
+    cutting CPU/memory on large parquets (e.g. signals files have ~30 cols of
+    which the API uses ~10).
+    """
     data = _download_bytes(blob_name)
-    return pd.read_parquet(io.BytesIO(data))
+    return pd.read_parquet(io.BytesIO(data), columns=columns)
 
 
 def download_text(blob_path: str) -> str:

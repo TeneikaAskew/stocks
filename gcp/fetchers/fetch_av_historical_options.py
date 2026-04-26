@@ -213,6 +213,15 @@ def main():
     api_key = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
 
+    # Union watchlist when running in ALL mode so curated single-name tickers
+    # (e.g. AVGO) get options chains for the iv_signals ranker input.
+    if args.tickers == 'ALL':
+        from gcp.fetchers._watchlist import load_watchlist
+        wl_added = [t for t in load_watchlist() if t not in tickers]
+        if wl_added:
+            log.info("  Adding %d watchlist tickers: %s", len(wl_added), wl_added)
+            tickers.extend(wl_added)
+
     log.info("Fetch AV Historical Options Job")
     log.info("  Dates   : %d date(s)", len(fetch_dates))
     log.info("  Tickers : %s", tickers)

@@ -554,12 +554,12 @@ export default function OptionsFlowPage() {
             ★ King: ${nodes.kingNode.strike.toFixed(0)} ({nodes.kingNode.distance_percent >= 0 ? '+' : ''}{nodes.kingNode.distance_percent.toFixed(1)}%)
           </span>
           {nodes.gatekeepers.slice(0, 3).map((gk, i) => (
-            <span key={i} className="rounded border border-blue-500/30 bg-blue-500/10 px-2 py-1 text-blue-400">
+            <span key={i} className="rounded border border-[var(--brand)]/30 bg-[var(--brand)]/10 px-2 py-1 text-[var(--brand)]">
               ◆ GK: ${gk.strike.toFixed(0)}
             </span>
           ))}
           {nodes.midpoints.slice(0, 2).map((mp, i) => (
-            <span key={i} className="rounded border border-orange-500/30 bg-orange-500/10 px-2 py-1 text-orange-400">
+            <span key={i} className="rounded border border-[var(--warn)]/30 bg-[var(--warn)]/10 px-2 py-1 text-[var(--warn)]">
               ● Mid: ${mp.strike.toFixed(0)}
             </span>
           ))}
@@ -575,7 +575,7 @@ export default function OptionsFlowPage() {
             </span>
             <div className="flex gap-3 text-[10px] text-[var(--color-text-muted)]">
               <span className="text-[var(--bull)]">■ Positive</span>
-              <span className="text-violet-400">■ Negative</span>
+              <span className="text-[var(--brand)]">■ Negative</span>
               <span className="text-[var(--bear)]">— Spot</span>
             </div>
           </div>

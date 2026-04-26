@@ -282,6 +282,56 @@ class ConfigValidationError(ValueError):
     """Raised when config values fail validation checks."""
 
 
+# ---------------------------------------------------------------------------
+# Deterministic ranker
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RankerConfig:
+    """Weights and tunables for lib.agents.ranker.
+
+    Loaded from `alert_config.json` under the `ranker` key. Empty dict
+    means "use the in-code DEFAULT_WEIGHTS" so a fresh install works
+    without touching JSON.
+    """
+    weights: Dict[str, float] = field(default_factory=dict)
+    liquidity_min_volume: int = 500_000
+    earnings_history_lookback: int = 4
+    news_lookback_hours: int = 24
+    insider_cluster_days: int = 30
+    sec_8k_lookback_days: int = 3
+    default_limit: int = 10
+
+    @classmethod
+    def from_alert_config(cls, path: str = "alert_config.json") -> "RankerConfig":
+        """Load ranker section from alert_config.json. Returns defaults
+        on missing file or missing key."""
+        cfg = cls()
+        p = Path(path)
+        if not p.exists():
+            return cfg
+        try:
+            with open(p) as f:
+                data = json.load(f)
+        except Exception:
+            return cfg
+        rk = data.get("ranker") or {}
+        cfg.weights = dict(rk.get("weights") or {})
+        cfg.liquidity_min_volume = int(rk.get("liquidity_min_volume",
+                                              cfg.liquidity_min_volume))
+        cfg.earnings_history_lookback = int(rk.get("earnings_history_lookback",
+                                                   cfg.earnings_history_lookback))
+        cfg.news_lookback_hours = int(rk.get("news_lookback_hours",
+                                             cfg.news_lookback_hours))
+        cfg.insider_cluster_days = int(rk.get("insider_cluster_days",
+                                              cfg.insider_cluster_days))
+        cfg.sec_8k_lookback_days = int(rk.get("sec_8k_lookback_days",
+                                              cfg.sec_8k_lookback_days))
+        cfg.default_limit = int(rk.get("default_limit", cfg.default_limit))
+        return cfg
+
+
 @dataclass
 class AppConfig:
     """Top-level container for all configuration."""

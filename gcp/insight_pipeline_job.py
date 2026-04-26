@@ -194,35 +194,9 @@ async def _run_on_demand() -> int:
     return 0 if ok else 1
 
 
-def _earnings_tickers_next_7d() -> list[str]:
-    """Query earnings_calendar for tickers with earnings in the next 7 days."""
-    try:
-        from gcp.database import query_to_dataframe
-
-        df = query_to_dataframe(
-            "SELECT DISTINCT ticker FROM earnings_calendar "
-            "WHERE earnings_date BETWEEN CURRENT_DATE AND CURRENT_DATE + interval '7 days'",
-            {},
-        )
-        if df.empty:
-            return []
-        return [str(t).upper() for t in df["ticker"].tolist()]
-    except Exception as e:
-        logger.warning("earnings ticker lookup failed: %s", e)
-        return []
-
-
 async def _run_scheduled() -> int:
     tickers_env = os.environ.get("INSIGHT_TICKERS", ",".join(DEFAULT_TICKERS))
     tickers = [t.strip().upper() for t in tickers_env.split(",") if t.strip()]
-
-    # Dynamically add tickers with earnings in the next 7 days
-    earnings = _earnings_tickers_next_7d()
-    if earnings:
-        added = [t for t in earnings if t not in tickers]
-        if added:
-            logger.info("adding earnings tickers: %s", added)
-            tickers.extend(added)
 
     logger.info("scheduled run for tickers: %s", tickers)
 

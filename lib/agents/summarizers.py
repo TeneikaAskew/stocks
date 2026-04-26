@@ -25,6 +25,9 @@ import math
 from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Any, Optional
 
+import numpy as np
+import pandas as pd
+
 from .embeddings import format_vector_literal
 from .schema import JournalRef
 
@@ -454,69 +457,301 @@ def summarize_backtest_metrics(
     ticker: str,
     lookback_days: int = 90,
     as_of: Optional[date_type] = None,
+    *,
+    cross_ticker: bool = True,
 ) -> dict:
-    """Aggregate metrics over pipeline trades in the lookback window
-    ending at `as_of` (defaults to today when None).
+    """Catalyst-analog 'backtest' for the ticker's current pattern.
 
-    Computes win rate, avg return, profit factor (sum of wins / abs
-    sum of losses), and raw trade count. Sharpe is intentionally
-    omitted — it needs a longer horizon than 90 days of intraday
-    trades to be meaningful.
+    Walk-forward backtests of a single discretionary trade aren't
+    meaningful (one trade). Instead, this function answers the
+    question a Wall-Street analyst would ask: *given the price
+    pattern visible today (gap, volume, RSI, regime), find prior
+    days where the same pattern appeared and report what happened
+    over the next 1, 3, 5, 10 trading days*.
 
-    Historical runs pass `as_of` so the metrics reflect what the
-    platform's trade log *looked like* on that date, not today.
+    `cross_ticker=True` (default) extends the analog universe to
+    every other ticker in `market_data_daily`. Same-ticker matches
+    are tried first; cross-ticker is appended only if fewer than
+    10 same-ticker matches exist (or if same-ticker is empty). Each
+    analog row carries the source ticker so the user can see
+    whether the historical move came from AVGO itself or e.g. SPY.
+
+    No `trades` table dependency. Runs entirely against
+    `market_data_daily` (which we already backfill).
+
+    Output (when available=True):
+        pattern_today: dict — features describing today's setup
+        analog_count: int   — how many historical matches
+        cross_ticker_used: bool — whether cross-ticker analogs were merged
+        forward_returns: dict — day_1/3/5/10 stats (median, mean,
+                                win_rate, p25, p75, max, min)
+        top_analogs: list[dict] — up to 5 closest historical
+                                   examples with their forward moves
     """
-    if as_of is None:
-        sql = (
-            "SELECT return_pct, direction, exit_reason "
-            "FROM trades "
-            "WHERE ticker = :ticker "
-            "  AND trade_date >= CURRENT_DATE - (:days || ' days')::interval"
-        )
-        params: dict[str, Any] = {"ticker": ticker.upper(), "days": lookback_days}
-    else:
-        # Same pg8000-vs-psycopg2 + SQLAlchemy cast-parser story as
-        # summarize_signals_history — use CAST() not ::.
-        sql = (
-            "SELECT return_pct, direction, exit_reason "
-            "FROM trades "
-            "WHERE ticker = :ticker "
-            "  AND trade_date <= CAST(:end_date AS date) "
-            "  AND trade_date >= CAST(:end_date AS date) - (:days || ' days')::interval"
-        )
-        params = {
-            "ticker": ticker.upper(),
-            "days": lookback_days,
-            "end_date": str(as_of),
-        }
-    df = _query(sql, params)
-    if df.empty:
-        return _unavailable(f"no trades for {ticker} in last {lookback_days}d")
+    cutoff = as_of or datetime.now(timezone.utc).date()
 
-    returns = df["return_pct"].dropna().astype(float)
-    if returns.empty:
-        return _unavailable("trades exist but have no return_pct")
-
-    wins = returns[returns > 0]
-    losses = returns[returns < 0]
-    win_rate = float(len(wins)) / float(len(returns))
-
-    gross_wins = float(wins.sum())
-    gross_losses = float(-losses.sum())
-    profit_factor = (
-        round(gross_wins / gross_losses, 2) if gross_losses > 0 else None
+    # 1. Pull raw OHLCV history. We compute indicators inline below
+    #    rather than reading rsi_14 / sma_200 / ema_20 from the table —
+    #    those columns are only populated for the most recent bar by
+    #    compute_and_upsert_daily_indicators(), so a bulk-backfilled
+    #    ticker (e.g. AVGO via outputsize=full) has NULLs everywhere
+    #    else and analog matching would silently return nothing.
+    df = _query(
+        "SELECT date, open, high, low, close, volume "
+        "FROM market_data_daily "
+        "WHERE ticker = :ticker "
+        "  AND date <= CAST(:cutoff AS date) "
+        "ORDER BY date ASC",
+        {"ticker": ticker.upper(), "cutoff": str(cutoff)},
     )
+    if df is None or len(df) < 60:
+        return _unavailable(
+            f"only {0 if df is None else len(df)} daily bars for {ticker} — "
+            "need >= 60 to compute analog backtest"
+        )
+
+    # 2. Compute indicators + match features.
+    df = df.reset_index(drop=True)
+    df["close"] = df["close"].astype(float)
+    df["open"] = df["open"].astype(float)
+    df["high"] = df["high"].astype(float)
+    df["low"] = df["low"].astype(float)
+    df["volume"] = df["volume"].astype(float)
+
+    # RSI(14) — Wilder
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    rs = gain / loss.replace(0, np.nan)
+    df["rsi_14"] = 100 - (100 / (1 + rs))
+    # SMA200 + EMA20
+    df["sma_200"] = df["close"].rolling(200).mean()
+    df["ema_20"] = df["close"].ewm(span=20, adjust=False).mean()
+
+    df["prev_close"] = df["close"].shift(1)
+    df["gap_pct"] = (df["open"] - df["prev_close"]) / df["prev_close"] * 100
+    df["range_pct"] = (df["high"] - df["low"]) / df["prev_close"] * 100
+    df["close_pct"] = (df["close"] - df["prev_close"]) / df["prev_close"] * 100
+    df["vol_20d_avg"] = df["volume"].rolling(20).mean()
+    df["vol_ratio"] = df["volume"] / df["vol_20d_avg"]
+    df["close_vs_sma200_pct"] = (df["close"] - df["sma_200"]) / df["sma_200"] * 100
+    df["close_vs_ema20_pct"] = (df["close"] - df["ema_20"]) / df["ema_20"] * 100
+
+    # 3. Forward returns for every historical row (close-to-close).
+    for n in (1, 3, 5, 10):
+        df[f"fwd_{n}d"] = (df["close"].shift(-n) - df["close"]) / df["close"] * 100
+
+    # 4. Today's pattern.
+    today = df.iloc[-1]
+    if any(pd.isna(today[c]) for c in
+           ["gap_pct", "vol_ratio", "rsi_14", "close_vs_sma200_pct"]):
+        return _unavailable("today's row has missing indicator features")
+
+    pattern = {
+        "date": str(today["date"]),
+        "gap_pct": round(float(today["gap_pct"]), 2),
+        "vol_ratio": round(float(today["vol_ratio"]), 2),
+        "close_pct": round(float(today["close_pct"]), 2),
+        "rsi_14": round(float(today["rsi_14"]), 1),
+        "close_vs_sma200_pct": round(float(today["close_vs_sma200_pct"]), 2),
+        "close_vs_ema20_pct": round(float(today["close_vs_ema20_pct"]), 2),
+    }
+
+    # 5. Match historical rows. Drop the current row + any rows in last
+    #    20d to avoid trivial overlap. Match each feature within a
+    #    tolerance band; widen progressively if matches are sparse.
+    df["ticker"] = ticker.upper()
+    history = df.iloc[:-20].dropna(subset=[
+        "gap_pct", "vol_ratio", "rsi_14", "close_vs_sma200_pct",
+        "fwd_1d", "fwd_5d",
+    ])
+    if history.empty:
+        return _unavailable("not enough complete history for analog match")
+
+    def _matches_in(frame, tol_gap, tol_vol, tol_rsi, tol_sma):
+        return frame[
+            (frame["gap_pct"].between(pattern["gap_pct"] - tol_gap,
+                                      pattern["gap_pct"] + tol_gap))
+            & (frame["vol_ratio"].between(pattern["vol_ratio"] - tol_vol,
+                                          pattern["vol_ratio"] + tol_vol))
+            & (frame["rsi_14"].between(pattern["rsi_14"] - tol_rsi,
+                                       pattern["rsi_14"] + tol_rsi))
+            & (frame["close_vs_sma200_pct"].between(
+                pattern["close_vs_sma200_pct"] - tol_sma,
+                pattern["close_vs_sma200_pct"] + tol_sma,
+            ))
+        ]
+
+    # Tolerance bands progressively widen until we have ≥5 matches.
+    bands = [
+        (1.0, 0.5, 5.0, 5.0),    # tight
+        (2.0, 1.0, 8.0, 10.0),   # medium
+        (3.0, 1.5, 12.0, 15.0),  # loose
+        (5.0, 2.0, 20.0, 25.0),  # very loose
+    ]
+    matched = pd.DataFrame()
+    band_used = None
+    for band in bands:
+        matched = _matches_in(history, *band)
+        if len(matched) >= 5:
+            band_used = band
+            break
+
+    cross_used = False
+    # If same-ticker matches are sparse, expand to every other ticker
+    # in the table at the *same* tolerance band — keeps match quality
+    # comparable while widening the analog universe.
+    if cross_ticker and len(matched) < 10:
+        cross_history = _build_cross_ticker_history(ticker, str(cutoff))
+        if cross_history is not None and not cross_history.empty:
+            target_band = band_used or bands[-1]
+            cross_matched = _matches_in(cross_history, *target_band)
+            if not cross_matched.empty:
+                matched = pd.concat([matched, cross_matched], ignore_index=True)
+                cross_used = True
+
+    if len(matched) < 3:
+        return {
+            "available": True,
+            "pattern_today": pattern,
+            "analog_count": int(len(matched)),
+            "tolerance_bands_used": band_used or bands[-1],
+            "cross_ticker_used": cross_used,
+            "forward_returns": None,
+            "top_analogs": [],
+            "note": (
+                f"only {len(matched)} historical analog(s) — too few for "
+                "stable forward-return statistics"
+            ),
+        }
+
+    def stats(col: str) -> dict:
+        s = matched[col].dropna()
+        if s.empty:
+            return {"n": 0}
+        return {
+            "n": int(len(s)),
+            "median_pct": round(float(s.median()), 2),
+            "mean_pct": round(float(s.mean()), 2),
+            "p25_pct": round(float(s.quantile(0.25)), 2),
+            "p75_pct": round(float(s.quantile(0.75)), 2),
+            "max_pct": round(float(s.max()), 2),
+            "min_pct": round(float(s.min()), 2),
+            "win_rate": round(float((s > 0).mean()), 3),
+        }
+
+    forward = {f"day_{n}": stats(f"fwd_{n}d") for n in (1, 3, 5, 10)}
+
+    # 6. Top 5 closest analogs by Euclidean distance over normalized features.
+    feat_cols = ["gap_pct", "vol_ratio", "rsi_14", "close_vs_sma200_pct"]
+    pattern_vec = np.array([pattern[c] for c in feat_cols], dtype=float)
+    feat_arr = matched[feat_cols].to_numpy(dtype=float)
+    # normalize each feature by its std across the match set so no
+    # single feature dominates distance
+    std = feat_arr.std(axis=0)
+    std[std == 0] = 1.0
+    diffs = (feat_arr - pattern_vec) / std
+    matched = matched.assign(_dist=np.linalg.norm(diffs, axis=1))
+    closest = matched.nsmallest(5, "_dist")
+
+    top = [
+        {
+            "ticker": str(r.get("ticker", ticker.upper())),
+            "date": str(r["date"]),
+            "gap_pct": round(float(r["gap_pct"]), 2),
+            "vol_ratio": round(float(r["vol_ratio"]), 2),
+            "rsi_14": round(float(r["rsi_14"]), 1),
+            "close": round(float(r["close"]), 2),
+            "fwd_1d": _round_or_none(r.get("fwd_1d")),
+            "fwd_3d": _round_or_none(r.get("fwd_3d")),
+            "fwd_5d": _round_or_none(r.get("fwd_5d")),
+            "fwd_10d": _round_or_none(r.get("fwd_10d")),
+        }
+        for _, r in closest.iterrows()
+    ]
 
     return {
         "available": True,
-        "lookback_days": lookback_days,
-        "trade_count": int(len(returns)),
-        "win_rate": round(win_rate, 3),
-        "avg_return_pct": round(float(returns.mean()), 3),
-        "profit_factor": profit_factor,
-        "gross_wins_pct": round(gross_wins, 3),
-        "gross_losses_pct": round(gross_losses, 3),
+        "pattern_today": pattern,
+        "analog_count": int(len(matched)),
+        "tolerance_bands_used": band_used,
+        "cross_ticker_used": cross_used,
+        "forward_returns": forward,
+        "top_analogs": top,
     }
+
+
+def _round_or_none(v):
+    if v is None or pd.isna(v):
+        return None
+    return round(float(v), 2)
+
+
+def _build_cross_ticker_history(target_ticker: str, cutoff: str):
+    """Pull every other ticker's daily history and engineer the same
+    feature set used for analog matching. Returned frame has a `ticker`
+    column so each match can be attributed to its source.
+
+    Implementation: a single SQL pull (orders ticker, date so groupby
+    is contiguous), then a per-ticker pandas pipeline. This is fine for
+    the current ~5-ticker analog universe — if we ever need to scale
+    past 50 tickers, push the gap/vol/RSI math into SQL window
+    functions instead.
+    """
+    df = _query(
+        "SELECT ticker, date, open, high, low, close, volume "
+        "FROM market_data_daily "
+        "WHERE ticker <> :ticker "
+        "  AND date <= CAST(:cutoff AS date) "
+        "ORDER BY ticker ASC, date ASC",
+        {"ticker": target_ticker.upper(), "cutoff": cutoff},
+    )
+    if df is None or df.empty:
+        return None
+
+    out_frames: list[pd.DataFrame] = []
+    for tk, group in df.groupby("ticker", sort=False):
+        if len(group) < 60:
+            continue
+        g = group.reset_index(drop=True).copy()
+        g["close"] = g["close"].astype(float)
+        g["open"] = g["open"].astype(float)
+        g["high"] = g["high"].astype(float)
+        g["low"] = g["low"].astype(float)
+        g["volume"] = g["volume"].astype(float)
+
+        delta = g["close"].diff()
+        gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+        loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+        rs = gain / loss.replace(0, np.nan)
+        g["rsi_14"] = 100 - (100 / (1 + rs))
+        g["sma_200"] = g["close"].rolling(200).mean()
+        g["ema_20"] = g["close"].ewm(span=20, adjust=False).mean()
+
+        g["prev_close"] = g["close"].shift(1)
+        g["gap_pct"] = (g["open"] - g["prev_close"]) / g["prev_close"] * 100
+        g["range_pct"] = (g["high"] - g["low"]) / g["prev_close"] * 100
+        g["close_pct"] = (g["close"] - g["prev_close"]) / g["prev_close"] * 100
+        g["vol_20d_avg"] = g["volume"].rolling(20).mean()
+        g["vol_ratio"] = g["volume"] / g["vol_20d_avg"]
+        g["close_vs_sma200_pct"] = (g["close"] - g["sma_200"]) / g["sma_200"] * 100
+        g["close_vs_ema20_pct"] = (g["close"] - g["ema_20"]) / g["ema_20"] * 100
+        for n in (1, 3, 5, 10):
+            g[f"fwd_{n}d"] = (g["close"].shift(-n) - g["close"]) / g["close"] * 100
+
+        # Drop the most recent 20 days so the analog window mirrors
+        # the same-ticker logic and we don't include trivially-recent
+        # patterns from peer tickers either.
+        g = g.iloc[:-20].dropna(subset=[
+            "gap_pct", "vol_ratio", "rsi_14",
+            "close_vs_sma200_pct", "fwd_1d", "fwd_5d",
+        ])
+        if not g.empty:
+            out_frames.append(g)
+
+    if not out_frames:
+        return None
+    return pd.concat(out_frames, ignore_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -525,15 +760,33 @@ def summarize_backtest_metrics(
 
 
 def summarize_catalysts(
-    ticker: str, as_of: Optional[date_type] = None, lookahead_days: int = 14
+    ticker: str, as_of: Optional[date_type] = None,
+    lookahead_days: int = 14, news_lookback_days: int = 3,
+    sec_lookback_days: int = 5,
 ) -> dict:
-    """Next N days of economic events + earnings dates.
+    """Catalysts surrounding the as_of date.
 
-    Economic events are market-wide (no ticker filter); earnings are
-    ticker-specific. Merged, sorted by date, capped at 5 entries.
+    Combines four sources:
+      * `economic_events` — high/medium-impact prints in the next N days.
+      * `earnings_calendar` — the ticker's next scheduled report.
+      * `news_sentiment`   — articles in the last `news_lookback_days`
+                             whose topics intersect catalyst tags AND
+                             whose relevance >= 0.7. Surfaces the
+                             actual M&A / earnings-beat headline that
+                             drove the move (e.g. AVGO/Google deal).
+      * `sec_filings`      — 8-Ks in the last `sec_lookback_days` with
+                             material item codes (1.01 acquisition,
+                             2.01 completion, 5.02 leadership change,
+                             7.01 reg-FD selective disclosure, 8.01
+                             other events).
+
+    All four merged, deduped by (kind, date, name), sorted by date,
+    capped at 8 entries (was 5 — news + SEC need more headroom).
     """
     today = as_of or datetime.now(timezone.utc).date()
     end = today + timedelta(days=lookahead_days)
+    news_start = today - timedelta(days=news_lookback_days)
+    sec_start = today - timedelta(days=sec_lookback_days)
 
     econ_sql = (
         "SELECT event_date, event_name, importance "
@@ -555,34 +808,112 @@ def summarize_catalysts(
         earn_sql, {"ticker": ticker.upper(), "start": str(today), "end": str(end)}
     )
 
-    out: list[dict] = []
-    if not econ_df.empty:
-        for _, r in econ_df.iterrows():
-            out.append(
-                {
-                    "name": str(r["event_name"]),
-                    "date": str(r["event_date"]),
-                    "impact": str(r.get("importance") or "medium"),
-                    "kind": "economic",
-                }
-            )
-    if not earn_df.empty:
-        for _, r in earn_df.iterrows():
-            out.append(
-                {
-                    "name": f"Earnings — {r.get('company_name') or ticker.upper()}",
-                    "date": str(r["earnings_date"]),
-                    "impact": "high",
-                    "kind": "earnings",
-                }
-            )
+    # Catalyst-tagged news. Topics are stored as TEXT[] of AV's
+    # snake_case slugs. Filter to high-conviction articles only.
+    news_sql = (
+        "SELECT published_ts, title, topics, relevance_score, "
+        "       overall_sentiment_score, overall_sentiment_label "
+        "FROM news_sentiment "
+        "WHERE ticker = :ticker "
+        "  AND published_ts >= CAST(:start AS timestamptz) "
+        "  AND published_ts <= CAST(:end AS timestamptz) + INTERVAL '23 hours 59 minutes' "
+        "  AND relevance_score >= 0.7 "
+        "  AND topics && ARRAY['mergers_and_acquisitions','earnings','ipo','economy_monetary']::TEXT[] "
+        "ORDER BY published_ts DESC LIMIT 6"
+    )
+    news_df = _query(
+        news_sql,
+        {"ticker": ticker.upper(), "start": str(news_start), "end": str(today)},
+    )
 
-    out.sort(key=lambda e: e["date"])
+    sec_sql = (
+        "SELECT filing_date, form, items "
+        "FROM sec_filings "
+        "WHERE ticker = :ticker "
+        "  AND form = '8-K' "
+        "  AND filing_date >= CAST(:start AS date) "
+        "  AND filing_date <= CAST(:end AS date) "
+        "  AND items && ARRAY['1.01','2.01','5.02','7.01','8.01']::TEXT[] "
+        "ORDER BY filing_date DESC LIMIT 5"
+    )
+    sec_df = _query(
+        sec_sql,
+        {"ticker": ticker.upper(), "start": str(sec_start), "end": str(today)},
+    )
+
+    out: list[dict] = []
+    if econ_df is not None and not econ_df.empty:
+        for _, r in econ_df.iterrows():
+            out.append({
+                "name": str(r["event_name"]),
+                "date": str(r["event_date"]),
+                "impact": str(r.get("importance") or "medium"),
+                "kind": "economic",
+            })
+    if earn_df is not None and not earn_df.empty:
+        for _, r in earn_df.iterrows():
+            out.append({
+                "name": f"Earnings — {r.get('company_name') or ticker.upper()}",
+                "date": str(r["earnings_date"]),
+                "impact": "high",
+                "kind": "earnings",
+            })
+    if news_df is not None and not news_df.empty:
+        for _, r in news_df.iterrows():
+            rel = float(r.get("relevance_score") or 0.0)
+            sent = float(r.get("overall_sentiment_score") or 0.0)
+            # impact = high if both relevance + |sentiment| are strong
+            if rel >= 0.9 and abs(sent) >= 0.4:
+                impact = "high"
+            elif rel >= 0.7 and abs(sent) >= 0.2:
+                impact = "medium"
+            else:
+                impact = "low"
+            title = str(r.get("title") or "")[:140]
+            out.append({
+                "name": title,
+                "date": str(r["published_ts"])[:10],
+                "impact": impact,
+                "kind": "news_topic",
+            })
+    if sec_df is not None and not sec_df.empty:
+        # 8-K item code → human label. Material items only.
+        ITEM_LABELS = {
+            "1.01": "Material Definitive Agreement",
+            "2.01": "Completed Acquisition / Disposition",
+            "5.02": "Departure / Election of Officers",
+            "7.01": "Regulation FD Disclosure",
+            "8.01": "Other Events",
+        }
+        for _, r in sec_df.iterrows():
+            items = r.get("items") or []
+            labels = [ITEM_LABELS.get(it, it) for it in items if it in ITEM_LABELS]
+            if not labels:
+                continue
+            # Highest impact: 1.01 / 2.01 (deal-related); others medium
+            heavy = any(it in ("1.01", "2.01") for it in items)
+            out.append({
+                "name": f"8-K — {', '.join(labels)}",
+                "date": str(r["filing_date"]),
+                "impact": "high" if heavy else "medium",
+                "kind": "sec_8k",
+            })
+
+    # Dedupe by (kind, date, name)
+    seen: set[tuple] = set()
+    deduped: list[dict] = []
+    for e in out:
+        key = (e["kind"], e["date"], e["name"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(e)
+    deduped.sort(key=lambda e: e["date"])
     return {
         "available": True,
-        "window_start": str(today),
+        "window_start": str(news_start),
         "window_end": str(end),
-        "events": out[:5],
+        "events": deduped[:8],
     }
 
 

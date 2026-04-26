@@ -311,8 +311,63 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
         if val is not None and pd.notna(val):
             row[dst] = int(val) if dst in _INT_COLS else float(val)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Strat fields: classify the latest daily candle, detect any in-force
+    # combo, compute a daily+weekly FTFC score. Without these, the LLM
+    # pipeline's strat snapshot returns ftfc_score=0.0 for any ticker
+    # whose `premarket-brief` Cloud Run job hasn't run (e.g. one-off
+    # backfills like AVGO).
+    try:
+        from lib.strat import StratClassifier
+
+        # Build OHLC frame the classifier expects.
+        ohlc = enriched.rename(columns={'Open': 'Open', 'High': 'High',
+                                        'Low': 'Low', 'Close': 'Close'})
+        clf = StratClassifier()
+        # Daily candle
+        labels = clf.classify_series(ohlc[['Open', 'High', 'Low', 'Close']])
+        last_candle = labels.iloc[-1]
+        # Combo detection
+        combos = clf.detect_combos(ohlc[['Open', 'High', 'Low', 'Close']], labels)
+        last_combo = None
+        if not combos.empty:
+            last_combo_row = combos.iloc[-1]
+            last_combo = (last_combo_row.get('combo')
+                          if isinstance(last_combo_row, pd.Series)
+                          else None)
+
+        # Weekly resample for FTFC. With daily-only data we can build
+        # 'D' and 'W'; intraday timeframes ('5m','15m','1h') are absent
+        # here. Override weights so D + W sum to 1.0.
+        df_dt = enriched.copy()
+        df_dt['date'] = df['date'].values  # retain date col from raw frame
+        df_dt = df_dt.set_index(pd.to_datetime(df_dt['date']))
+        weekly = df_dt[['Open', 'High', 'Low', 'Close']].resample('W').agg({
+            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last',
+        }).dropna()
+        ftfc_inputs = {'D': df_dt[['Open', 'High', 'Low', 'Close']]}
+        if len(weekly) >= 2:
+            ftfc_inputs['W'] = weekly
+        ftfc_score, ftfc_dir, _labels = clf.calculate_ftfc(
+            ftfc_inputs, weights={'D': 0.7, 'W': 0.3},
+        )
+
+        if last_candle and last_candle != 'X':
+            row['strat_candle'] = str(last_candle)
+        if last_combo:
+            row['strat_combo'] = str(last_combo)[:30]
+        row['ftfc_score'] = float(ftfc_score) if ftfc_score is not None else 0.0
+        row['ftfc_direction'] = str(ftfc_dir or 'mixed')[:10]
+        # `strat_setup` is true when FTFC aligns directionally and a
+        # combo is in force — the `premarket-brief` definition.
+        row['strat_setup'] = bool(
+            last_combo and abs(ftfc_score or 0.0) >= 0.3
+        )
+    except Exception as e:
+        log.warning("    Strat compute failed for %s: %s", ticker, e)
+
     upsert_dataframe(pd.DataFrame([row]), 'market_data_daily', ['ticker', 'date'])
-    log.info("    ✓ daily indicators computed (%d bars context)", len(df))
+    log.info("    ✓ daily indicators + strat computed (%d bars context)", len(df))
 
 
 def write_intraday_to_sql(ticker: str, df: pd.DataFrame, fetch_date: str):
@@ -385,12 +440,104 @@ def process_ticker(ticker: str, fetch_date: str, bucket: str, av_api_key: str):
         )
 
 
+def _earnings_tickers_in_window(
+    days_back: int,
+    days_ahead: int,
+    top_n: int = 25,
+) -> list[str]:
+    """Resolve **top-N** tickers reporting earnings within [today-back, today+ahead].
+
+    Used to extend the always-on watchlist with single-name catalyst
+    tickers so the historical-earnings-reaction signal in the ranker
+    has daily bars to measure against.
+
+    Ranking — optionable names by market cap descending. Non-optionable
+    earnings names (no listed contracts) and rows missing market_cap fall
+    to the bottom; we still keep them if there's room under ``top_n`` so
+    a thin earnings week doesn't starve the union.
+
+    Why a cap: AlphaVantage allows 150 req/min on the current tier, and
+    each ticker costs ~3 calls (intraday + daily + supporting). The full
+    earnings calendar can return 200+ tickers, blowing through the
+    minute budget before the loop reaches IWM/QQQ/SPY — those silently
+    skip with empty AV responses, leaving the core tickers stale. The
+    cap stays well under the budget.
+
+    Args:
+        days_back / days_ahead: symmetric window around today.
+        top_n: max tickers to return. Default 25; ``0`` disables the
+            cap and returns the full set (legacy behaviour, NOT
+            recommended for the daily Cloud Run Job).
+    """
+    if days_back <= 0 and days_ahead <= 0:
+        return []
+    try:
+        from gcp.database import query_to_dataframe
+    except ImportError:
+        return []
+
+    # Aggregate per ticker. UW liquidity signals (stock_volume,
+    # options_volume, is_s_p_500) outrank market_cap because market_cap is
+    # only filled on UW rows, while many UW rows ALSO have stock_volume.
+    # An SP500 name with high options volume is the canonical "tradeable
+    # earnings ticker" — exactly what we want the daily fetcher to backfill.
+    # NULLS LAST on every signal so AV-only / EW-only rows sink without
+    # disappearing entirely.
+    sql = """
+        SELECT ticker,
+               BOOL_OR(COALESCE(has_options, false))   AS optionable,
+               BOOL_OR(COALESCE(is_s_p_500, false))    AS sp500,
+               MAX(stock_volume)                       AS stock_volume,
+               MAX(options_volume)                     AS options_volume,
+               MAX(market_cap)                         AS market_cap
+        FROM earnings_calendar
+        WHERE earnings_date BETWEEN
+            CURRENT_DATE - (:back || ' days')::interval AND
+            CURRENT_DATE + (:ahead || ' days')::interval
+        GROUP BY ticker
+        ORDER BY optionable      DESC,
+                 sp500           DESC NULLS LAST,
+                 options_volume  DESC NULLS LAST,
+                 stock_volume    DESC NULLS LAST,
+                 market_cap      DESC NULLS LAST,
+                 ticker
+    """
+    if top_n and top_n > 0:
+        sql += '\n        LIMIT :top_n'
+
+    params: dict = {'back': days_back, 'ahead': days_ahead}
+    if top_n and top_n > 0:
+        params['top_n'] = top_n
+
+    try:
+        df = query_to_dataframe(sql, params)
+    except Exception as e:
+        log.warning("earnings ticker lookup failed: %s", e)
+        return []
+    if df is None or df.empty:
+        return []
+    return [str(t).upper() for t in df['ticker'].tolist()]
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch daily market data to Cloud SQL + GCS')
     parser.add_argument('--tickers', default='ALL',
                         help='Space-separated tickers or ALL')
     parser.add_argument('--date', default=None,
                         help='Date to fetch (YYYY-MM-DD). Defaults to today.')
+    parser.add_argument('--earnings-window-days', type=int,
+                        default=int(os.environ.get('EARNINGS_WINDOW_DAYS', '0')),
+                        help=('Augment ticker list with anyone reporting earnings within N '
+                              'days before AND after today (symmetric window). 0 disables.'))
+    parser.add_argument('--max-tickers', type=int,
+                        default=int(os.environ.get('MAX_TICKERS', '300')),
+                        help='Safety cap on total ticker count (default: 300).')
+    parser.add_argument('--max-earnings-tickers', type=int,
+                        default=int(os.environ.get('MAX_EARNINGS_TICKERS', '25')),
+                        help=('Within --earnings-window-days, only the top N earnings '
+                              'names by market cap (optionable first) are added. Keeps '
+                              'AV rate-limit budget reserved for core + watchlist. 0 = '
+                              'no cap (legacy unbounded behaviour). Default: 25.'))
     args = parser.parse_args()
 
     fetch_date = args.date or date.today().strftime('%Y-%m-%d')
@@ -398,12 +545,41 @@ def main():
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
 
+    # Union watchlist (alert_config.json → "watchlist") so curated names get
+    # daily bars even when their earnings are out of window.
+    if args.tickers == 'ALL':
+        from gcp.fetchers._watchlist import load_watchlist
+        wl_added = [t for t in load_watchlist() if t not in tickers]
+        if wl_added:
+            log.info("  Adding %d watchlist tickers: %s", len(wl_added), wl_added)
+            tickers.extend(wl_added)
+
+    if args.earnings_window_days > 0:
+        earnings = _earnings_tickers_in_window(
+            args.earnings_window_days,
+            args.earnings_window_days,
+            top_n=args.max_earnings_tickers,
+        )
+        added = [t for t in earnings if t not in tickers]
+        if added:
+            log.info("  Adding %d earnings tickers (±%dd window): %s",
+                     len(added), args.earnings_window_days,
+                     added[:10] + (['...'] if len(added) > 10 else []))
+            tickers.extend(added)
+
+    if len(tickers) > args.max_tickers:
+        log.warning("  Ticker count %d exceeds max-tickers cap %d; truncating",
+                    len(tickers), args.max_tickers)
+        tickers = tickers[:args.max_tickers]
+
     log.info("Fetch Market Data Job")
-    log.info("  Date      : %s", fetch_date)
-    log.info("  Tickers   : %s", tickers)
-    log.info("  SQL       : %s", 'yes' if is_cloud_sql_configured() else 'NO (env vars missing)')
-    log.info("  GCS       : %s", bucket or 'disabled')
-    log.info("  AV key    : %s", 'yes' if av_api_key else 'NO (required for all data sources)')
+    log.info("  Date          : %s", fetch_date)
+    log.info("  Total tickers : %d", len(tickers))
+    log.info("  Earnings win  : %s",
+             f"±{args.earnings_window_days}d" if args.earnings_window_days else "off")
+    log.info("  SQL           : %s", 'yes' if is_cloud_sql_configured() else 'NO (env vars missing)')
+    log.info("  GCS           : %s", bucket or 'disabled')
+    log.info("  AV key        : %s", 'yes' if av_api_key else 'NO (required for all data sources)')
 
     errors = []
     for ticker in tickers:

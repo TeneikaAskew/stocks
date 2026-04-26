@@ -10,6 +10,9 @@ import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner';
 import BacktesterSection from '@/components/backtest/BacktesterSection';
+import { StrategyConditionsCard } from '@/components/charts/StrategyConditionsCard';
+import { SimilarSetupsCard } from '@/components/charts/SimilarSetupsCard';
+import { computeIndicators, calculateVWAP, computeStrategySignals, computeStrategySignalsForSeries, type Bar } from '@/lib/indicators';
 import type { Timeframe, TradeEntry, TradeDirection } from '@/types';
 import type { CandlestickBar } from '@/hooks/useMarketData';
 import type { SeriesMarker, Time, LineWidth } from 'lightweight-charts';
@@ -22,6 +25,7 @@ import {
   ArrowDownCircle,
   X,
   Ruler,
+  Activity,
   LogOut,
   Download,
   Trash2,
@@ -80,6 +84,7 @@ export default function ChartsPage() {
   const [rthOnly, setRthOnly] = useState(true);
   const [showRefLevels, setShowRefLevels] = useState(false);
   const [showGamma, setShowGamma] = useState(false);
+  const [showSignals, setShowSignals] = useState(false);
   const [activeTab, setActiveTab] = useState<'trades' | 'analytics'>('trades');
 
   // Drawing mode state
@@ -172,8 +177,26 @@ export default function ChartsPage() {
   }, [trades, activeTicker, reviewCutoffTs]);
   const stats = useTradeAnalytics(currentTrades);
 
+  // Strategy condition evaluation: build a Bar[] from the candlestick + volume
+  // arrays the API returns and compute indicators + VWAP. Need ≥14 bars before
+  // RSI is meaningful, so dependent UI hides itself below that threshold.
+  const strategyState = useMemo(() => {
+    if (!marketData || marketData.candlestick.length < 14) return null;
+    const bars: Bar[] = marketData.candlestick.map((c, i) => ({
+      time: String(c.time),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: marketData.volume[i]?.value ?? 0,
+    }));
+    const indicators = computeIndicators(bars);
+    const vwap = calculateVWAP(bars);
+    return { bars, indicators, vwap };
+  }, [marketData]);
+
   // Build chart markers from trades
-  const markers: SeriesMarker<Time>[] = useMemo(() => {
+  const tradeMarkers: SeriesMarker<Time>[] = useMemo(() => {
     return currentTrades.flatMap((trade) => {
       const m: SeriesMarker<Time>[] = [];
       m.push({
@@ -196,6 +219,28 @@ export default function ChartsPage() {
       return m;
     });
   }, [currentTrades]);
+
+  // Strategy signal overlay — green up triangles for CALL fires, red down
+  // for PUT fires. Computed client-side from the loaded bars via the same
+  // 5-condition voter as trading_analysis.py. Toggled by the Sig button.
+  const signalMarkers: SeriesMarker<Time>[] = useMemo(() => {
+    if (!showSignals || !strategyState) return [];
+    const fires = computeStrategySignalsForSeries(strategyState.bars);
+    return fires.map((s) => ({
+      time: Number(s.time) as Time,
+      position: s.direction === 'CALL' ? 'belowBar' : 'aboveBar',
+      color: s.direction === 'CALL' ? '#22c55e' : '#ef4444',
+      shape: s.direction === 'CALL' ? 'arrowUp' : 'arrowDown',
+      text: `${s.direction} ${s.metCount}/5`,
+    }));
+  }, [showSignals, strategyState]);
+
+  // Trade markers on top of signal markers so user trades win the visual
+  // priority (and re-render last in the chart's marker plugin).
+  const markers: SeriesMarker<Time>[] = useMemo(
+    () => [...signalMarkers, ...tradeMarkers],
+    [signalMarkers, tradeMarkers],
+  );
 
   // Build price lines from trades (TP/SL) + reference levels
   const priceLines: PriceLineConfig[] = useMemo(() => {
@@ -506,6 +551,17 @@ export default function ChartsPage() {
             </button>
           )}
 
+          <button
+            onClick={() => setShowSignals(!showSignals)}
+            title="Overlay 5-condition voter signals on the chart"
+            className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs ${
+              showSignals ? 'bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'
+            }`}
+          >
+            <Activity size={14} />
+            Sig
+          </button>
+
           <div className="flex-1" />
 
           {/* Export buttons */}
@@ -554,14 +610,14 @@ export default function ChartsPage() {
                 <div className="flex gap-1">
                   <button
                     onClick={() => selectOptionType('CALL')}
-                    className="flex items-center gap-1 rounded bg-green-600 px-2 py-1 text-xs text-white"
+                    className="flex items-center gap-1 rounded bg-[var(--bull)] px-2 py-1 text-xs text-black"
                   >
                     <ArrowUpCircle size={12} />
                     CALL
                   </button>
                   <button
                     onClick={() => selectOptionType('PUT')}
-                    className="flex items-center gap-1 rounded bg-red-600 px-2 py-1 text-xs text-white"
+                    className="flex items-center gap-1 rounded bg-[var(--bear)] px-2 py-1 text-xs text-white"
                   >
                     <ArrowDownCircle size={12} />
                     PUT
@@ -703,6 +759,31 @@ export default function ChartsPage() {
         </div>
       </div>
     </div>
+
+    {/* Live strategy conditions — actionable readout matching trading_analysis.py voter */}
+    {strategyState && (
+      <StrategyConditionsCard
+        bars={strategyState.bars}
+        indicators={strategyState.indicators}
+        vwap={strategyState.vwap}
+      />
+    )}
+
+    {/* Like-this-bar similar past setups — only meaningful once the voter
+        has fired; the card itself renders a "waits for setup" state when
+        firing is null so the slot stays in the layout. */}
+    {strategyState && (() => {
+      const v = computeStrategySignals(strategyState.bars, strategyState.indicators, strategyState.vwap);
+      const score = v.firing === 'CALL' ? v.call.metCount : v.firing === 'PUT' ? v.put.metCount : null;
+      return (
+        <SimilarSetupsCard
+          ticker={activeTicker}
+          direction={v.firing}
+          rsi={strategyState.indicators.rsi}
+          score={score}
+        />
+      );
+    })()}
 
     {/* Backtester section (merged from former /backtest page) */}
     <BacktesterSection ticker={activeTicker} />
