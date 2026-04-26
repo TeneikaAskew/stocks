@@ -14,8 +14,8 @@ Three recipes, one per risk persona:
   │ aggressive    │ Wide stop (2.0 × ATR), 3 stretched targets (2R / 3.5R│
   │               │ / 5R), 1.5× sizing on high conviction. Accepts vol.  │
   ├───────────────┼──────────────────────────────────────────────────────┤
-  │ neutral       │ 1 ATR stop, 1R / 2R / 3R targets, 1.0× sizing. The   │
-  │               │ canonical base case.                                 │
+  │ neutral       │ 1 ATR stop, 1R / 2R / 3R targets, 1.0× sizing       │
+  │               │ (0.7× on low conviction). Canonical base case.       │
   ├───────────────┼──────────────────────────────────────────────────────┤
   │ conservative  │ Tightest structural stop (prior swing low / SMA200), │
   │               │ 1R / 1.75R targets, 0.5× sizing into catalyst window.│
@@ -271,7 +271,7 @@ def _build_rationale(
     if persona == "neutral":
         return (
             f"~1× ATR stop (${atr:.2f}), R = ${risk:.2f}, targets at 1R/2R/3R; "
-            f"{size:.2f}× size = canonical base case."
+            f"{size:.2f}× size on {ctx.conviction} conviction (canonical base case)."
         )
     if persona == "conservative":
         damper_note = (
