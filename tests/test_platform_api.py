@@ -9,9 +9,11 @@ Tests cover:
 - Non-review page endpoints (Backtest, Playbook, Reports, Journal)
 - Frontend route serving (SPA shell)
 """
+import json
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 # Ensure project root is on sys.path so the platform API can import lib/
@@ -107,6 +109,281 @@ class TestSignalsAPI:
         data = r.json()
         assert data["count"] == 0
         assert data["signals"] == []
+
+
+# ── Similar Signals API (analog matcher) ────────────────────────────────────
+
+class TestSimilarSignalsAPI:
+    """`GET /api/signals/{ticker}/similar` — historical analog matcher.
+
+    Tests use monkeypatched `query_to_dataframe` so they don't depend on
+    Cloud SQL state (any specific ticker's row count drifts as the
+    historical_signals table grows).
+    """
+
+    def _patch_query(self, monkeypatch, stats_df, matches_df):
+        """Install a fake `query_to_dataframe` that returns stats then
+        matches in call order. Mirrors how the router invokes it."""
+        from gcp import database
+
+        calls = {"n": 0}
+
+        def fake_query(sql, params=None):
+            calls["n"] += 1
+            # Stats query is always called first; matches second
+            return stats_df.copy() if calls["n"] == 1 else matches_df.copy()
+
+        monkeypatch.setattr(database, "query_to_dataframe", fake_query)
+        return calls
+
+    def test_similar_invalid_direction_returns_400(self, client):
+        r = client.get("/api/signals/IWM/similar?direction=BUY&rsi=55&score=4")
+        assert r.status_code == 400
+        assert "CALL or PUT" in r.json()["detail"]
+
+    def test_similar_validates_score_range(self, client):
+        # FastAPI Query(ge=3, le=5) — 6 is out of range
+        r = client.get("/api/signals/IWM/similar?direction=CALL&rsi=55&score=6")
+        assert r.status_code == 422
+        # And below the minimum
+        r = client.get("/api/signals/IWM/similar?direction=CALL&rsi=55&score=2")
+        assert r.status_code == 422
+
+    def test_similar_validates_rsi_band(self, client):
+        # rsi_band must be in [0.5, 20.0]
+        r = client.get(
+            "/api/signals/IWM/similar?direction=CALL&rsi=55&score=4&rsi_band=25"
+        )
+        assert r.status_code == 422
+
+    def test_similar_no_matches_returns_zero_count_shape(self, client, monkeypatch):
+        """When the SQL returns 0 rows, the router short-circuits with
+        a `stats: {count: 0}, matches: []` envelope."""
+        empty_stats = pd.DataFrame([{
+            "count": 0,
+            "avg_mfe_pct": None, "median_mfe_pct": None,
+            "p25_mfe_pct": None, "p75_mfe_pct": None,
+            "avg_return_5min": None, "avg_return_20min": None,
+            "pct_profitable": None,
+            "earliest": None, "latest": None,
+        }])
+        self._patch_query(monkeypatch, empty_stats, pd.DataFrame())
+
+        r = client.get(
+            "/api/signals/IWM/similar?direction=CALL&rsi=55&score=4"
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ticker"] == "IWM"
+        assert data["direction"] == "CALL"
+        assert data["stats"] == {"count": 0}
+        assert data["matches"] == []
+
+    def test_similar_returns_full_stats_and_matches(self, client, monkeypatch):
+        """Happy path: populated stats payload + ordered match list.
+        Verifies that pandas/numpy scalars become plain JSON-able floats."""
+        stats = pd.DataFrame([{
+            "count": 12,
+            "avg_mfe_pct": 1.234,
+            "median_mfe_pct": 1.0,
+            "p25_mfe_pct": 0.5,
+            "p75_mfe_pct": 1.8,
+            "avg_return_5min": 0.42,
+            "avg_return_20min": 0.71,
+            "pct_profitable": 0.667,
+            "earliest": pd.Timestamp("2023-01-04 14:30:00"),
+            "latest": pd.Timestamp("2026-04-25 10:15:00"),
+        }])
+        matches = pd.DataFrame([
+            {
+                "time": pd.Timestamp("2026-04-25 10:15:00"),
+                "direction": "CALL", "price": 222.5, "score": 4,
+                "rsi": 56.2, "return_pct": 1.7,
+                "return_5min": 0.4, "return_20min": 1.2,
+            },
+            {
+                "time": pd.Timestamp("2026-04-22 11:00:00"),
+                "direction": "CALL", "price": 219.1, "score": 4,
+                "rsi": 54.0, "return_pct": -0.3,
+                "return_5min": -0.1, "return_20min": -0.2,
+            },
+        ])
+        self._patch_query(monkeypatch, stats, matches)
+
+        r = client.get(
+            "/api/signals/IWM/similar?direction=call&rsi=55&score=4&limit=5"
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["direction"] == "CALL"  # uppercased
+        assert data["stats"]["count"] == 12
+        assert data["stats"]["pct_profitable"] == pytest.approx(0.667)
+        assert data["stats"]["earliest"] == "2023-01-04 14:30:00"
+        assert len(data["matches"]) == 2
+        # `time` is stringified in the router
+        assert data["matches"][0]["time"] == "2026-04-25 10:15:00"
+        # Most-recent first
+        assert data["matches"][0]["time"] > data["matches"][1]["time"]
+
+    def test_similar_respects_503_when_cloud_sql_unconfigured(self, client, monkeypatch):
+        """When `CLOUD_SQL_CONNECTION_NAME` is missing, the router
+        returns 503 — never fakes data, never crashes."""
+        from api.routers import signals as signals_module
+        monkeypatch.setattr(signals_module, "_CLOUD_SQL", False)
+
+        r = client.get(
+            "/api/signals/IWM/similar?direction=CALL&rsi=55&score=4"
+        )
+        assert r.status_code == 503
+        assert "Cloud SQL" in r.json()["detail"]
+
+
+# ── Journal CRUD ────────────────────────────────────────────────────────────
+
+class TestJournalCRUD:
+    """`/api/journal/trades` — Cloud SQL CRUD with local fallback.
+
+    The router has two code paths (`_HAS_CLOUD_SQL` ON/OFF). We test
+    both: Cloud SQL with monkeypatched `execute_sql`/`query_to_dataframe`
+    capturing the SQL+params, and local fallback with `tmp_path`.
+    """
+
+    def _patch_cloud_sql(self, monkeypatch, query_returns=None):
+        """Force the journal router into Cloud SQL mode and capture every
+        execute_sql + query_to_dataframe call."""
+        from api.routers import journal as journal_module
+
+        captured = {"execute": [], "query": []}
+
+        def fake_execute(sql, params=None):
+            captured["execute"].append((sql, dict(params or {})))
+
+        def fake_query(sql, params=None):
+            captured["query"].append((sql, dict(params or {})))
+            if query_returns is None:
+                return pd.DataFrame()
+            return query_returns
+
+        monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
+        monkeypatch.setattr(journal_module, "execute_sql", fake_execute)
+        monkeypatch.setattr(journal_module, "query_to_dataframe", fake_query)
+        return captured
+
+    def test_post_call_trade_round_trip_cloud_sql(self, client, monkeypatch):
+        """POST a CALL trade → return_pct = (exit - entry) / entry × 100."""
+        captured = self._patch_cloud_sql(
+            monkeypatch,
+            query_returns=pd.DataFrame([{"id": "abc-123"}]),
+        )
+        body = {
+            "ticker": "iwm",
+            "direction": "call",
+            "entry_date": "2026-04-25",
+            "entry_time": "10:00",
+            "entry_price": 200.0,
+            "exit_date": "2026-04-25",
+            "exit_time": "10:30",
+            "exit_price": 202.0,
+            "notes": "test",
+        }
+        r = client.post("/api/journal/trades", json=body)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["source"] == "cloud_sql"
+        assert data["id"] == "abc-123"
+        # CALL: (202-200)/200*100 = +1.0
+        assert data["return_pct"] == 1.0
+
+        # Verify the SQL params
+        ins_sql, ins_params = captured["execute"][0]
+        assert "INSERT INTO journal_entries" in ins_sql
+        assert ins_params["ticker"] == "IWM"  # uppercased
+        assert ins_params["direction"] == "CALL"
+        assert ins_params["entry_ts"] == "2026-04-25T10:00:00"
+        assert ins_params["exit_ts"] == "2026-04-25T10:30:00"
+        assert ins_params["return_pct"] == 1.0
+
+    def test_post_put_trade_inverts_return_sign(self, client, monkeypatch):
+        """PUT direction: a price DROP is a profit, so return_pct flips
+        sign relative to the raw price diff. This is the load-bearing
+        bug surface from the audit (`pct if "CALL" else -pct`)."""
+        self._patch_cloud_sql(
+            monkeypatch,
+            query_returns=pd.DataFrame([{"id": "xyz"}]),
+        )
+        body = {
+            "ticker": "QQQ",
+            "direction": "PUT",
+            "entry_date": "2026-04-25",
+            "entry_time": "10:00",
+            "entry_price": 400.0,
+            "exit_date": "2026-04-25",
+            "exit_time": "10:30",
+            "exit_price": 396.0,  # price dropped — a profit on a PUT
+            "notes": "",
+        }
+        r = client.post("/api/journal/trades", json=body)
+        data = r.json()
+        # Raw pct: (396-400)/400*100 = -1.0
+        # PUT inverts → +1.0 (the trader profited)
+        assert data["return_pct"] == 1.0
+
+    def test_post_zero_entry_price_returns_zero_pct(self, client, monkeypatch):
+        """Defensive: never divide by zero."""
+        self._patch_cloud_sql(monkeypatch, query_returns=pd.DataFrame([{"id": "z"}]))
+        body = {
+            "ticker": "IWM", "direction": "CALL",
+            "entry_date": "2026-04-25", "entry_time": "10:00",
+            "entry_price": 0.0,
+            "exit_date": "2026-04-25", "exit_time": "10:30",
+            "exit_price": 5.0,
+        }
+        r = client.post("/api/journal/trades", json=body)
+        assert r.json()["return_pct"] == 0.0
+
+    def test_delete_round_trip_cloud_sql(self, client, monkeypatch):
+        """DELETE issues a single SQL DELETE keyed on id."""
+        captured = self._patch_cloud_sql(monkeypatch)
+        r = client.delete("/api/journal/trades/abc-123")
+        assert r.status_code == 200
+        assert r.json() == {"source": "cloud_sql", "deleted": "abc-123"}
+        del_sql, del_params = captured["execute"][0]
+        assert "DELETE FROM journal_entries" in del_sql
+        assert del_params == {"id": "abc-123"}
+
+    def test_post_falls_back_to_local_on_cloud_sql_failure(self, client, monkeypatch, tmp_path):
+        """If Cloud SQL throws, the router writes to a local JSON file
+        keyed by ticker (the gitignored `data/journal/{ticker}_journal.json`)."""
+        from api.routers import journal as journal_module
+
+        # Force Cloud SQL "ON" but make execute_sql raise
+        monkeypatch.setattr(journal_module, "_HAS_CLOUD_SQL", True)
+        monkeypatch.setattr(
+            journal_module, "execute_sql",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("DB down")),
+        )
+        # Redirect the local journal dir to tmp_path so we don't pollute
+        # the real data/ directory
+        monkeypatch.setattr(journal_module, "LOCAL_JOURNAL_DIR", tmp_path)
+
+        body = {
+            "ticker": "IWM", "direction": "CALL",
+            "entry_date": "2026-04-25", "entry_time": "10:00",
+            "entry_price": 200.0,
+            "exit_date": "2026-04-25", "exit_time": "10:30",
+            "exit_price": 202.0,
+        }
+        r = client.post("/api/journal/trades", json=body)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["source"] == "local"
+        assert data["return_pct"] == 1.0
+        # Local file written
+        local_file = tmp_path / "iwm_journal.json"
+        assert local_file.exists()
+        entries = json.loads(local_file.read_text())
+        assert len(entries) == 1
+        assert entries[0]["ticker"] == "IWM"
 
 
 # ── Market Data API ─────────────────────────────────────────────────────────
@@ -278,6 +555,144 @@ class TestPlaybookAPI:
         assert r.status_code == 200
         data = r.json()
         assert "reports" in data
+
+
+# ── Phase-report markdown fetch ─────────────────────────────────────────────
+
+class TestReportMarkdownAPI:
+    """`GET /api/reports/{ticker}/{phase}` — raw markdown text from GCS.
+
+    Mocks `gcs_reader.list_matching_blobs` + `download_text` so tests
+    don't depend on which phase reports happen to be stored in GCS.
+    """
+
+    def test_returns_404_when_no_matching_phase(self, client, monkeypatch):
+        from api.routers import playbook as pb_module
+
+        # Both lookups return nothing → 404
+        monkeypatch.setattr(
+            pb_module.gcs_reader, "list_matching_blobs",
+            lambda prefix, pattern: [],
+        )
+        # Also clear the route cache so a previous test doesn't poison this one
+        pb_module._REPORT_TEXT_CACHE.clear()
+        r = client.get("/api/reports/IWM/phase99_summary")
+        assert r.status_code == 404
+
+    def test_returns_plaintext_markdown_when_blob_exists(self, client, monkeypatch):
+        from api.routers import playbook as pb_module
+
+        markdown = "# Backtest Results\n\nStrategy Parameters\n..."
+        monkeypatch.setattr(
+            pb_module.gcs_reader, "list_matching_blobs",
+            lambda prefix, pattern: ["raw/data/reports/phase4_summary_iwm.md"],
+        )
+        # `download_text` is the GCS read used by this endpoint
+        monkeypatch.setattr(
+            pb_module.gcs_reader, "download_text",
+            lambda blob_name: markdown,
+        )
+        pb_module._REPORT_TEXT_CACHE.clear()
+
+        r = client.get("/api/reports/IWM/phase4_summary")
+        assert r.status_code == 200
+        # PlainTextResponse → not JSON
+        assert r.headers["content-type"].startswith("text/plain")
+        assert "# Backtest Results" in r.text
+
+
+# ── Insights watchlist (catalyst ranker output) ─────────────────────────────
+
+class TestInsightsWatchlistAPI:
+    """`GET /api/insights/watchlist` — wraps `lib.agents.ranker.rank_tickers`.
+
+    No LLM, just SQL+Python. Tests patch `rank_tickers` directly so
+    we don't depend on Cloud SQL state.
+    """
+
+    def test_watchlist_returns_ranked_tickers(self, client, monkeypatch):
+        from api.routers import insights as insights_module
+
+        called_with = {}
+
+        def fake_rank(**kwargs):
+            called_with.update(kwargs)
+            return {
+                "as_of": "2026-04-25",
+                "count": 2,
+                "tickers": [
+                    {"ticker": "AAPL", "score": 0.81, "breakdown": {}},
+                    {"ticker": "MSFT", "score": 0.74, "breakdown": {}},
+                ],
+            }
+
+        # Patch the late-imported reference in the route
+        monkeypatch.setattr(
+            "lib.agents.ranker.rank_tickers", fake_rank
+        )
+
+        r = client.get("/api/insights/watchlist?limit=2")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["count"] == 2
+        assert [t["ticker"] for t in data["tickers"]] == ["AAPL", "MSFT"]
+        # The route clamps limit into [1, 50]
+        assert called_with["limit"] == 2
+
+    def test_watchlist_clamps_limit_to_50(self, client, monkeypatch):
+        called_with = {}
+
+        def fake_rank(**kwargs):
+            called_with.update(kwargs)
+            return {"as_of": "2026-04-25", "count": 0, "tickers": []}
+
+        monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
+        r = client.get("/api/insights/watchlist?limit=999")
+        assert r.status_code == 200
+        assert called_with["limit"] == 50
+
+    def test_watchlist_parses_catalyst_filter_csv(self, client, monkeypatch):
+        called_with = {}
+
+        def fake_rank(**kwargs):
+            called_with.update(kwargs)
+            return {"as_of": "x", "count": 0, "tickers": []}
+
+        monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
+        r = client.get(
+            "/api/insights/watchlist?catalyst=earnings,sec_8k,top_mover"
+        )
+        assert r.status_code == 200
+        assert called_with["catalyst_filter"] == {
+            "earnings", "sec_8k", "top_mover"
+        }
+
+    def test_watchlist_extras_uppercased_and_split(self, client, monkeypatch):
+        called_with = {}
+
+        def fake_rank(**kwargs):
+            called_with.update(kwargs)
+            return {"as_of": "x", "count": 0, "tickers": []}
+
+        monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
+        r = client.get("/api/insights/watchlist?extras=avgo,nvda,tsla")
+        assert r.status_code == 200
+        assert called_with["extras"] == ["AVGO", "NVDA", "TSLA"]
+
+    def test_watchlist_expand_universe_default_false(self, client, monkeypatch):
+        """The watchlist gate is the default — `expand=False` in the
+        route signature mirrors the ranker default. Critical: an
+        accidental flip to True would balloon the candidate pool to
+        ~1871 tickers and time out the morning brief."""
+        called_with = {}
+
+        def fake_rank(**kwargs):
+            called_with.update(kwargs)
+            return {"as_of": "x", "count": 0, "tickers": []}
+
+        monkeypatch.setattr("lib.agents.ranker.rank_tickers", fake_rank)
+        client.get("/api/insights/watchlist")
+        assert called_with["expand_universe"] is False
 
 
 # ── Journal API ─────────────────────────────────────────────────────────────

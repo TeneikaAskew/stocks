@@ -391,6 +391,63 @@ def test_pipeline_marks_failed_analysts(canned_bundle, seven_role_snapshot):
     assert report.direction == "long"
 
 
+@pytest.mark.parametrize("failing_section", [
+    "gamma",       # Added in PR #80; lib/gamma.py SoT consolidation
+    "sentiment",   # Added in PR #80; news_sentiment topic-based scoring
+    "catalyst",
+    "strat",
+    "market",
+])
+def test_pipeline_isolates_individual_analyst_failures(
+    canned_bundle, seven_role_snapshot, failing_section
+):
+    """A single analyst section raising must not abort the pipeline.
+    The orchestrator records the failure in `failed_sections` and the
+    downstream tier (researchers, judge, trader, risk, PM) continues
+    to synthesize from whichever analysts succeeded.
+
+    Covers each of the 6 analyst sections individually so we don't
+    silently regress when adding a new section."""
+    mock = _MockLLM(failing_analyst_sections=frozenset({failing_section}))
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    # The failed section is recorded
+    assert failing_section in report.failed_sections
+    # Pipeline still produced a directional report (didn't abort)
+    assert report.direction in ("long", "short", "flat")
+    # All 14 LLM calls are still attempted (the mock raises *during*
+    # the call, after `self.calls.append(...)`); the orchestrator
+    # records the failed section but downstream nodes proceed.
+    assert len(mock.calls) == 14
+    # Cost still accumulates from the surviving 13 successful responses
+    assert report.run_cost_usd > 0
+
+
+def test_pipeline_isolates_multiple_partial_failures(
+    canned_bundle, seven_role_snapshot
+):
+    """Two analysts failing simultaneously — pipeline still proceeds
+    as long as at least one analyst returned (the abort gate at
+    `lib/agents/orchestrator.py:327` only fires on full collapse)."""
+    mock = _MockLLM(
+        failing_analyst_sections=frozenset({"gamma", "sentiment"})
+    )
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    assert {"gamma", "sentiment"}.issubset(set(report.failed_sections))
+    assert report.direction in ("long", "short", "flat")
+
+
 def test_pipeline_blocks_direction_when_risk_blocks(canned_bundle, seven_role_snapshot):
     mock = _MockLLM(risk_block=True)
     report = asyncio.run(
