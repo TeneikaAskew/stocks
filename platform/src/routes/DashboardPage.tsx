@@ -12,6 +12,7 @@ import { useIndicatorConfig, classifyRsiZone } from '@/hooks/useConfig';
 import { to12h } from '@/lib/time';
 import { MetricCard } from '@/components/shared/MetricCard';
 import { PriceAreaChart, type PricePoint } from '@/components/charts/PriceAreaChart';
+import { DataPipelineStatus } from '@/components/dashboard/DataPipelineStatus';
 import {
   TrendingUp, TrendingDown, Minus, Activity, BookOpen,
   AlertTriangle, Database, CheckCircle, Circle, HelpCircle, ChevronDown,
@@ -459,6 +460,9 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      {/* ── Data pipeline freshness (collapses when all green) ── */}
+      <DataPipelineStatus />
+
       {/* ── Page header: Ticker + metadata (left) · Market status + Cloud SQL (right) ── */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
