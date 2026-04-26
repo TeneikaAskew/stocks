@@ -53,8 +53,9 @@ log = logging.getLogger(__name__)
 # excluded — AV provides Greeks for those.
 COMPUTE_GREEKS_TICKERS = {"SPX", "SPXW", "NDX", "RUT", "XSP"}
 
-# Default fallbacks if Cloud SQL daily_rates lookup fails. These are the
-# same values used historically by gcp/fetchers/fetch_etf_options.py.
+# Default fallbacks if Cloud SQL daily_rates lookup fails. These approximate
+# the late-2024 / early-2025 rate regime and were used as constants before
+# the FRED daily_rates pipeline existed.
 _DEFAULT_RISK_FREE = 0.045
 _DEFAULT_DIV_YIELD = 0.013
 
