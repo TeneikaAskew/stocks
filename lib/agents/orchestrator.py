@@ -467,13 +467,13 @@ async def run_insight_pipeline(
     if not pm.key_levels:
         pm.key_levels = _derive_key_levels(bundle)
 
-    # Flatten all risk flags from all personas + collect their concrete plans
+    # Flatten all risk flags from all personas. The numeric `plan` field
+    # the LLM personas may emit is intentionally IGNORED here — it's
+    # replaced below with a deterministic per-persona calculation so the
+    # entry/stop/targets/sizing math is reproducible and auditable.
     all_flags: list[RiskFlag] = []
-    persona_plans: list = []
     for r in risk_outputs:
         all_flags.extend(r.flags)
-        if r.plan is not None:
-            persona_plans.append(r.plan)
 
     similar: list[JournalRef] = []
     if query_embedding:
@@ -485,6 +485,20 @@ async def run_insight_pipeline(
     # Respect any explicit block from the risk debate
     blocked = any(f.severity == "block" for f in all_flags)
     direction = "flat" if blocked else pm.direction
+
+    # ── Deterministic persona plans ────────────────────────────────
+    # Compute entry/stop/targets/sizing from the same bundle the LLMs
+    # saw, using the recipes documented in lib/agents/trade_planner.py.
+    # This replaces the LLM's free-form plan — the LLM still narrates
+    # (thesis, bull/bear case, risk flags) but the numbers are now
+    # reproducible across runs.
+    from .trade_planner import compute_persona_plans, context_from_bundle
+    try:
+        plan_ctx = context_from_bundle(bundle, direction, pm.conviction)
+        persona_plans = compute_persona_plans(plan_ctx)
+    except Exception as exc:
+        logger.warning("deterministic plan compute failed: %s", exc)
+        persona_plans = []
 
     report = InsightReport(
         ticker=ticker.upper(),
