@@ -881,6 +881,12 @@ For each ticker [SPY, IWM, QQQ]:
     ↓
 Query economic_events table (today + 5 days ahead, high/medium importance)
     ↓
+Query earnings_calendar (today, or whole week on Sunday).
+Sort by tier (AV+UW+EW > AV+UW > AV+EW > tail), then market_cap DESC,
+then ticker. Cap at top 25 (``BRIEF_MAX_EARNINGS`` env var) so the embed
+mirrors the same names ``fetch-market-data --max-earnings-tickers 25``
+actually backfills daily bars for.
+    ↓
 Format 3-embed Discord message:
   1. Market Overview — price, change %, SMA200 position, RVOL, vol regime, FTFC
   2. Ticker Analysis — key levels, momentum, strat/FTFC (3 inline fields/ticker)

@@ -440,15 +440,34 @@ def process_ticker(ticker: str, fetch_date: str, bucket: str, av_api_key: str):
         )
 
 
-def _earnings_tickers_in_window(days_back: int, days_ahead: int) -> list[str]:
-    """Resolve tickers reporting earnings within [today-back, today+ahead].
+def _earnings_tickers_in_window(
+    days_back: int,
+    days_ahead: int,
+    top_n: int = 25,
+) -> list[str]:
+    """Resolve **top-N** tickers reporting earnings within [today-back, today+ahead].
 
     Used to extend the always-on watchlist with single-name catalyst
     tickers so the historical-earnings-reaction signal in the ranker
     has daily bars to measure against.
 
-    The window is symmetric by default (e.g. 7/7) to capture both
-    pre-earnings setup days and post-earnings reaction days.
+    Ranking — optionable names by market cap descending. Non-optionable
+    earnings names (no listed contracts) and rows missing market_cap fall
+    to the bottom; we still keep them if there's room under ``top_n`` so
+    a thin earnings week doesn't starve the union.
+
+    Why a cap: AlphaVantage allows 150 req/min on the current tier, and
+    each ticker costs ~3 calls (intraday + daily + supporting). The full
+    earnings calendar can return 200+ tickers, blowing through the
+    minute budget before the loop reaches IWM/QQQ/SPY — those silently
+    skip with empty AV responses, leaving the core tickers stale. The
+    cap stays well under the budget.
+
+    Args:
+        days_back / days_ahead: symmetric window around today.
+        top_n: max tickers to return. Default 25; ``0`` disables the
+            cap and returns the full set (legacy behaviour, NOT
+            recommended for the daily Cloud Run Job).
     """
     if days_back <= 0 and days_ahead <= 0:
         return []
@@ -457,16 +476,30 @@ def _earnings_tickers_in_window(days_back: int, days_ahead: int) -> list[str]:
     except ImportError:
         return []
 
+    # Aggregate per ticker: prefer rows with market_cap. Order by has_options
+    # first (true sorts AFTER false in PG ASC, so DESC) then market_cap DESC.
+    # NULLS LAST on market_cap so unranked tickers sink without disappearing.
     sql = """
-        SELECT DISTINCT ticker
+        SELECT ticker, MAX(market_cap) AS market_cap,
+               BOOL_OR(COALESCE(has_options, false)) AS optionable
         FROM earnings_calendar
         WHERE earnings_date BETWEEN
             CURRENT_DATE - (:back || ' days')::interval AND
             CURRENT_DATE + (:ahead || ' days')::interval
-        ORDER BY ticker
+        GROUP BY ticker
+        ORDER BY optionable DESC,
+                 market_cap DESC NULLS LAST,
+                 ticker
     """
+    if top_n and top_n > 0:
+        sql += '\n        LIMIT :top_n'
+
+    params: dict = {'back': days_back, 'ahead': days_ahead}
+    if top_n and top_n > 0:
+        params['top_n'] = top_n
+
     try:
-        df = query_to_dataframe(sql, {'back': days_back, 'ahead': days_ahead})
+        df = query_to_dataframe(sql, params)
     except Exception as e:
         log.warning("earnings ticker lookup failed: %s", e)
         return []
@@ -488,6 +521,12 @@ def main():
     parser.add_argument('--max-tickers', type=int,
                         default=int(os.environ.get('MAX_TICKERS', '300')),
                         help='Safety cap on total ticker count (default: 300).')
+    parser.add_argument('--max-earnings-tickers', type=int,
+                        default=int(os.environ.get('MAX_EARNINGS_TICKERS', '25')),
+                        help=('Within --earnings-window-days, only the top N earnings '
+                              'names by market cap (optionable first) are added. Keeps '
+                              'AV rate-limit budget reserved for core + watchlist. 0 = '
+                              'no cap (legacy unbounded behaviour). Default: 25.'))
     args = parser.parse_args()
 
     fetch_date = args.date or date.today().strftime('%Y-%m-%d')
@@ -506,7 +545,9 @@ def main():
 
     if args.earnings_window_days > 0:
         earnings = _earnings_tickers_in_window(
-            args.earnings_window_days, args.earnings_window_days,
+            args.earnings_window_days,
+            args.earnings_window_days,
+            top_n=args.max_earnings_tickers,
         )
         added = [t for t in earnings if t not in tickers]
         if added:
