@@ -39,6 +39,10 @@ test.describe('Admin — model routing', () => {
   });
 
   test('token gate rejects invalid tokens and accepts the correct one', async ({ page }) => {
+    // Mock /api/me as non-admin user so the token gate is shown
+    await page.route('**/api/me', (route) =>
+      route.fulfill({ status: 200, body: JSON.stringify({ email: null }) })
+    );
     // First call (token probe) — 401 for wrong, 200 for right
     await page.route('**/api/admin/routes', async (route) => {
       const req = route.request();
@@ -74,6 +78,10 @@ test.describe('Admin — model routing', () => {
   });
 
   test('editing a route saves via PUT and reflects the new value', async ({ page }) => {
+    // Mock /api/me as non-admin user so the token gate is shown
+    await page.route('**/api/me', (route) =>
+      route.fulfill({ status: 200, body: JSON.stringify({ email: null }) })
+    );
     // Token probe always 200
     await page.route('**/api/admin/routes', async (route) => {
       if (route.request().method() === 'GET') {
