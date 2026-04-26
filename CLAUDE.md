@@ -109,6 +109,22 @@ Follow this rigorous testing approach:
 - Yahoo API fetching with cache-first approach
 - Execution continuation for Google Apps Script timeout handling
 - Cloud Console logging integration
+- Strat methodology (`lib/strat.py`) — candle classification (1/2U/2D/3),
+  combo detection (Failed_2U/2D, RevStrat reversals, continuations),
+  FTFC scoring across timeframes
+- Gamma analytics (`lib/gamma.py`) — per-strike GEX, King/Gate/Spot/Flip
+  taxonomy, gamma flip detection, regime classification. See
+  [`docs/gamma_levels.md`](docs/gamma_levels.md) for the full reference.
+
+### Architectural rules
+
+- **One source of truth for math.** Per `docs/HARDCODED_VALUES_REMEDIATION.md`,
+  the React app never duplicates financial math. Indicators, gamma,
+  playbook conditions, trade analytics — all live in `lib/` (Python) and
+  are exposed via FastAPI endpoints. The frontend consumes them.
+- **`lib/` is the shared backend spine.** All three consumer surfaces
+  (FastAPI router, AI agents, CLI scripts) import from the same `lib/`
+  modules so behaviour can't drift.
 
 ### Testing Commands
 ```bash

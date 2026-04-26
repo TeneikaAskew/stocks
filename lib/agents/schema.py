@@ -188,7 +188,7 @@ class AnalystOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    section: Literal["market", "strat", "options", "catalyst", "sentiment"]
+    section: Literal["market", "strat", "options", "catalyst", "sentiment", "gamma"]
     summary: str
     bullets: list[str] = Field(default_factory=list)
     bias: Literal["bullish", "bearish", "neutral"]
