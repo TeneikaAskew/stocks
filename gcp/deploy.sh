@@ -514,24 +514,62 @@ setup_notifier_secrets() {
     echo "the failure-notifier Cloud Run service at deploy time."
     echo ""
 
+    # ── GitHub PAT ────────────────────────────────────────────────────────
     if ! gcloud secrets describe github-pat --quiet >/dev/null 2>&1; then
-        echo "Enter a fine-grained GitHub PAT with 'issues: write' (input hidden):"
-        read -rs GH_PAT
-        echo ""
-        printf '%s' "$GH_PAT" | gcloud secrets create github-pat \
+        # Auto-detect: GCP secret → env var → interactive prompt
+        local pat=""
+        # 1) Pull from existing GCP Secret Manager secret (shared PAT)
+        if [ -z "$pat" ]; then
+            pat="$(gcloud secrets versions access latest \
+                --secret=gh-stocks-repo-pat \
+                --project=28960574877 --quiet 2>/dev/null || true)"
+            [ -n "$pat" ] && echo "  PAT sourced from GCP secret gh-stocks-repo-pat"
+        fi
+        # 2) STOCKS_REPO_PAT env var
+        if [ -z "$pat" ]; then
+            pat="${STOCKS_REPO_PAT:-}"
+            [ -n "$pat" ] && echo "  PAT sourced from STOCKS_REPO_PAT env var"
+        fi
+        # 3) Interactive fallback
+        if [ -z "$pat" ]; then
+            echo "Enter a GitHub PAT with 'issues: write' (input hidden):"
+            read -rs pat
+            echo ""
+        fi
+        if [ -z "$pat" ]; then
+            echo "  ERROR: no PAT found. Ensure gh-stocks-repo-pat exists in GCP project 28960574877,"
+            echo "         or set STOCKS_REPO_PAT env var."
+            return 1
+        fi
+        printf '%s' "$pat" | gcloud secrets create github-pat \
             --replication-policy=automatic --data-file=- --quiet
-        unset GH_PAT
-        echo "github-pat created"
+        echo "  github-pat created"
     else
         echo "  github-pat already exists. Use 'gcloud secrets versions add' to rotate."
     fi
 
+    # ── GitHub repo slug ──────────────────────────────────────────────────
     if ! gcloud secrets describe github-repo --quiet >/dev/null 2>&1; then
-        echo "Enter the GitHub repo slug (e.g. 'Teneika/stocks'):"
-        read -r GH_REPO
-        printf '%s' "$GH_REPO" | gcloud secrets create github-repo \
+        # Auto-detect from git remote origin
+        local repo="${GH_REPO:-}"
+        if [ -z "$repo" ]; then
+            local remote_url
+            remote_url="$(git remote get-url origin 2>/dev/null || true)"
+            # Extract owner/repo from HTTPS or SSH URLs
+            repo="$(echo "$remote_url" | sed -E 's#.*(github\.com[:/])##; s/\.git$//')"
+        fi
+        if [ -z "$repo" ]; then
+            echo "Enter the GitHub repo slug (e.g. 'TeneikaAskew/stocks'):"
+            read -r repo
+        fi
+        if [ -z "$repo" ]; then
+            echo "  ERROR: no repo slug provided."
+            return 1
+        fi
+        echo "  Using repo: ${repo}"
+        printf '%s' "$repo" | gcloud secrets create github-repo \
             --replication-policy=automatic --data-file=- --quiet
-        echo "github-repo created"
+        echo "  github-repo created"
     else
         echo "  github-repo already exists."
     fi
@@ -540,26 +578,34 @@ setup_notifier_secrets() {
 deploy_notifier() {
     echo "Deploying failure-notifier Cloud Run service..."
 
-    local gh_pat gh_repo env_string
-    gh_pat="$(_secret github-pat)"
-    gh_repo="$(_secret github-repo)"
-
-    if [ -z "$gh_pat" ] || [ -z "$gh_repo" ]; then
+    # Verify secrets exist (but don't read them into shell variables)
+    if ! gcloud secrets describe github-pat --quiet >/dev/null 2>&1 \
+       || ! gcloud secrets describe github-repo --quiet >/dev/null 2>&1; then
         echo "  github-pat / github-repo missing. Run: $0 setup-notifier-secrets"
         return 1
     fi
 
+    # Grant the service account access to read the notifier secrets
+    for secret in github-pat github-repo; do
+        gcloud secrets add-iam-policy-binding "${secret}" \
+            --member="serviceAccount:${SA_EMAIL}" \
+            --role="roles/secretmanager.secretAccessor" --quiet 2>/dev/null || true
+    done
+
+    local env_string
     env_string="$(_env_string)"
-    env_string="${env_string},GITHUB_PAT=${gh_pat},GITHUB_REPO=${gh_repo}"
     env_string="${env_string},GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION}"
 
     # 1) Deploy the Cloud Run service (overrides Dockerfile CMD with stdlib server)
+    # Secrets are mounted from Secret Manager at runtime via --set-secrets so
+    # they never appear in revision metadata (visible to anyone with run.services.get).
     gcloud run deploy "${NOTIFIER_SERVICE}" \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 \
         --service-account "${SA_EMAIL}" \
         --command "python" --args "-m,gcp.failure_notifier" \
         --set-env-vars "${env_string}" \
+        --set-secrets="GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest" \
         --no-allow-unauthenticated \
         --quiet
 
@@ -582,17 +628,34 @@ deploy_notifier() {
         --member="serviceAccount:${pubsub_sa}" \
         --role="roles/run.invoker" --quiet
 
-    # 4) Create Pub/Sub push subscription with OIDC auth (idempotent)
+    # 4a) Create dead-letter topic so permanently failing messages don't retry forever
+    local dlq_topic="${NOTIFIER_TOPIC}-dlq"
+    gcloud pubsub topics create "${dlq_topic}" --quiet 2>/dev/null \
+        || echo "  topic ${dlq_topic}: already exists"
+
+    # 4b) Create Pub/Sub push subscription with OIDC auth (idempotent)
     gcloud pubsub subscriptions create "${NOTIFIER_SUB}" \
         --topic="${NOTIFIER_TOPIC}" \
         --push-endpoint="${service_url}" \
         --push-auth-service-account="${SA_EMAIL}" \
         --ack-deadline=60 \
+        --dead-letter-topic="projects/${PROJECT_ID}/topics/${dlq_topic}" \
+        --max-delivery-attempts=5 \
         --quiet 2>/dev/null \
         || gcloud pubsub subscriptions update "${NOTIFIER_SUB}" \
             --push-endpoint="${service_url}" \
             --push-auth-service-account="${SA_EMAIL}" \
+            --dead-letter-topic="projects/${PROJECT_ID}/topics/${dlq_topic}" \
+            --max-delivery-attempts=5 \
             --quiet
+
+    # Grant Pub/Sub SA permission to publish to dead-letter topic and ack from subscription
+    gcloud pubsub topics add-iam-policy-binding "${dlq_topic}" \
+        --member="serviceAccount:${pubsub_sa}" \
+        --role="roles/pubsub.publisher" --quiet
+    gcloud pubsub subscriptions add-iam-policy-binding "${NOTIFIER_SUB}" \
+        --member="serviceAccount:${pubsub_sa}" \
+        --role="roles/pubsub.subscriber" --quiet
 
     # 5) Create Cloud Logging sink → Pub/Sub
     # Filter catches Cloud Run Job execution failures but excludes the notifier
