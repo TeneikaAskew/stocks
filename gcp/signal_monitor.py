@@ -383,6 +383,16 @@ class SignalMonitor:
 
 
 def main():
+    # Fail-fast on missing config so Cloud Run surfaces the error instead of
+    # looping silently (see docs/incidents/2026-04-14-market-data-daily-gap.md).
+    from gcp.database import is_cloud_sql_configured
+    if not os.environ.get('ALPHA_VANTAGE_API_KEY'):
+        logger.error("ALPHA_VANTAGE_API_KEY is not set — aborting.")
+        sys.exit(2)
+    if not is_cloud_sql_configured():
+        logger.error("Cloud SQL env vars missing — aborting.")
+        sys.exit(3)
+
     monitor = SignalMonitor()
     monitor.run_loop()
 

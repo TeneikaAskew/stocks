@@ -37,6 +37,16 @@ export function MetricCard({
     ? `relative before:absolute before:left-0 before:right-0 before:top-0 before:h-[2px] before:rounded-t-xl ${toneAccent[tone]}`
     : '';
 
+  // Subtitle text color follows direction: bull (green) when up, bear (red)
+  // when down, muted gray otherwise. Matches the style of the directional
+  // arrow icon rendered next to it.
+  const subtitleColor =
+    dir === 'up'
+      ? 'text-[var(--bull)]'
+      : dir === 'down'
+      ? 'text-[var(--bear)]'
+      : 'text-[var(--on-surface-variant)]';
+
   return (
     <div
       className={`rounded-xl bg-[var(--surface-2)] p-6 transition-colors ${accentClass}`}
@@ -49,10 +59,10 @@ export function MetricCard({
           {dir === 'down' && <TrendingDown size={12} className="text-[var(--bear)] shrink-0" />}
           {dir === 'neutral' && <Minus size={12} className="text-[var(--on-surface-muted)] shrink-0" />}
           {subtitle && (
-            <span className="text-[11px] text-[var(--on-surface-variant)] truncate">{subtitle}</span>
+            <span className={`text-[11px] truncate ${subtitleColor}`}>{subtitle}</span>
           )}
           {changeLabel && (
-            <span className="text-[11px] text-[var(--on-surface-variant)] truncate">{changeLabel}</span>
+            <span className={`text-[11px] truncate ${subtitleColor}`}>{changeLabel}</span>
           )}
         </div>
       )}
