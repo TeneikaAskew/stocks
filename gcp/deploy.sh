@@ -267,6 +267,30 @@ deploy_fetch_alphavantage() {
         --quiet
 }
 
+# Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
+# Backfill mode pulls full history from 2015 (~3000 daily rows, <60s).
+# Default mode is the 14-day incremental window — wire to a daily scheduler
+# at ~00:30 UTC after FRED's nightly publication.
+deploy_fetch_fred_rates() {
+    echo "Deploying fetch-fred-rates job..."
+    local fred_key fred_env
+    fred_key="$(_secret fred-api-key 2>/dev/null || true)"
+    fred_env="$(_env_string)${fred_key:+,FRED_API_KEY=${fred_key}}"
+
+    gcloud run jobs create fetch-fred-rates \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_fred_rates" \
+        --set-env-vars "${fred_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-fred-rates \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_fred_rates" \
+        --set-env-vars "${fred_env}" \
+        --quiet
+}
+
 deploy_fetch_economic_events() {
     echo "Deploying fetch-economic-events job..."
     local fred_key fred_env
@@ -465,6 +489,7 @@ deploy_fetchers() {
     deploy_fetch_market_data
     deploy_fetch_etf_options
     deploy_fetch_alphavantage
+    deploy_fetch_fred_rates
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
     deploy_fetch_earnings_history
@@ -729,6 +754,9 @@ deploy_schedulers() {
     # AlphaVantage monthly intraday — 1st of each month 9 PM ET
     _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
 
+    # FRED rates — 6:30 AM ET daily (after FRED's nightly publication ~04:30 UTC)
+    _schedule "fred-rates-daily"  "30 6 * * *"  "fetch-fred-rates"
+
     # Economic events — 7 AM ET weekdays (before pre-market brief)
     _schedule "economic-events-daily"  "0 7 * * 1-5"  "fetch-economic-events"
 
@@ -834,6 +862,7 @@ case "${1:-help}" in
     schedulers)  deploy_schedulers ;;
     backfill)    shift; backfill_watchlist "$@" ;;
     apply-schema) build_image && deploy_apply_schema_migrations ;;
+    fred-rates)   build_image && deploy_fetch_fred_rates ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     all)
@@ -867,6 +896,7 @@ case "${1:-help}" in
         echo "             after \`fetchers\` and \`all\`."
         echo "  apply-schema Deploy one-shot job that re-applies gcp/schema.sql"
         echo "             (idempotent — every statement is IF NOT EXISTS / OR REPLACE)"
+        echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
         echo "  setup-notifier-secrets  One-time: store GitHub PAT + repo in Secret Manager"
         echo "  notifier   Deploy failure-notifier Cloud Run service + log sink"
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
