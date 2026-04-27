@@ -933,3 +933,30 @@ CREATE TABLE IF NOT EXISTS strat_levels (
 );
 CREATE INDEX IF NOT EXISTS idx_strat_levels_ticker_price
     ON strat_levels (ticker, as_of, price);
+
+-- ─── Migrations: Strat naming convention (2026-04-26) ────────────────────
+
+-- Rename premarket_analysis.strat_daily → strat_candle
+DO $$ BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'premarket_analysis' AND column_name = 'strat_daily'
+    ) THEN
+        ALTER TABLE premarket_analysis RENAME COLUMN strat_daily TO strat_candle;
+    END IF;
+END $$;
+
+-- Add Quarter level columns to market_data_daily
+ALTER TABLE market_data_daily ADD COLUMN IF NOT EXISTS prev_quarter_high DOUBLE PRECISION;
+ALTER TABLE market_data_daily ADD COLUMN IF NOT EXISTS prev_quarter_low DOUBLE PRECISION;
+ALTER TABLE market_data_daily ADD COLUMN IF NOT EXISTS prev_quarter_open DOUBLE PRECISION;
+ALTER TABLE market_data_daily ADD COLUMN IF NOT EXISTS prev_quarter_close DOUBLE PRECISION;
+ALTER TABLE market_data_daily ADD COLUMN IF NOT EXISTS prev_quarter_hl_mid DOUBLE PRECISION;
+ALTER TABLE market_data_daily ADD COLUMN IF NOT EXISTS prev_quarter_oc_mid DOUBLE PRECISION;
+ALTER TABLE market_data_daily ADD COLUMN IF NOT EXISTS broke_prev_quarter_high INTEGER;
+ALTER TABLE market_data_daily ADD COLUMN IF NOT EXISTS broke_prev_quarter_low INTEGER;
+
+-- Widen strat_combo columns to accommodate new longer labels (e.g. '322_bear_continuation')
+ALTER TABLE market_data_daily ALTER COLUMN strat_combo TYPE VARCHAR(40);
+ALTER TABLE signal_alerts ALTER COLUMN strat_combo TYPE VARCHAR(40);
+ALTER TABLE premarket_analysis ALTER COLUMN strat_combo TYPE VARCHAR(40);

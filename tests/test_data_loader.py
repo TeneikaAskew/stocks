@@ -101,7 +101,7 @@ class TestAggregateToTimeframe:
         assert len(result) <= 10
 
     def test_daily(self, loader, minute_data):
-        result = loader.aggregate_to_timeframe(minute_data, 'D')
+        result = loader.aggregate_to_timeframe(minute_data, '1d')
         assert len(result) == 1  # Single day of data
 
     def test_has_ohlcv(self, loader, minute_data):

@@ -34,8 +34,8 @@ class Trade:
     entry_price: float
     direction: str  # 'CALL' or 'PUT'
     base_score: int
-    strat_bonus: int
-    total_score: int
+    strat_bonus: float
+    total_score: float
     position_size: float
     conditions_met: List[str]
     indicators_at_entry: Dict[str, float] = field(default_factory=dict)
@@ -633,7 +633,7 @@ class BacktestEngine:
         # --- Strat: FTFC score + ORB trend + filtering + bonus ---
         self._filter_counts['signals_evaluated'] += 1
 
-        strat_bonus = 0
+        strat_bonus = 0.0
         bar_ftfc_score = 0.0
         bar_orb_trend = 0
 

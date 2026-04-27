@@ -404,7 +404,7 @@ class AppConfig:
 # Scoring helpers
 # ---------------------------------------------------------------------------
 
-def get_position_size(score: int, risk_config: RiskConfig = None) -> float:
+def get_position_size(score: float, risk_config: RiskConfig = None) -> float:
     """Map combined signal score to position size fraction.
 
     Uses score_thresholds from RiskConfig to bucket the score.
@@ -422,7 +422,7 @@ def get_position_size(score: int, risk_config: RiskConfig = None) -> float:
         return s['perfect']
 
 
-def get_signal_strength_label(score: int, risk_config: RiskConfig = None) -> str:
+def get_signal_strength_label(score: float, risk_config: RiskConfig = None) -> str:
     """Human-readable strength label derived from score_thresholds."""
     cfg = risk_config or RiskConfig()
     t = cfg.score_thresholds
