@@ -228,26 +228,94 @@ def test_embed_omits_invalidation_field_when_missing():
 
 
 # ---------------------------------------------------------------------------
-# format_message
+# split_into_messages — primary path; format_message is a back-compat shim
 # ---------------------------------------------------------------------------
 
 
-def test_format_message_no_rows_includes_header_only():
+def test_split_no_rows_returns_one_empty_payload():
     target = date(2026, 4, 27)
-    msg = push.format_message([], target)
-    assert "no reports" in msg["content"]
-    assert msg["embeds"] == []
+    msgs = push.split_into_messages([], target)
+    assert len(msgs) == 1
+    assert "no reports" in msgs[0]["content"]
+    assert msgs[0]["embeds"] == []
 
 
-def test_format_message_caps_embeds_at_ten():
-    rows = [_sample_row() for _ in range(15)]
-    # Differentiate tickers so each embed is unique
+def test_split_single_small_payload_returns_single_message():
+    msgs = push.split_into_messages([_sample_row()], date(2026, 4, 27))
+    assert len(msgs) == 1
+    assert len(msgs[0]["embeds"]) == 1
+    # Single-message push doesn't include "(part X/Y)" hint
+    assert "part " not in msgs[0]["content"]
+
+
+def test_split_includes_date_in_every_header():
+    rows = [_sample_row() for _ in range(6)]
     for i, r in enumerate(rows):
         r["ticker"] = f"T{i:02d}"
         r["report"]["ticker"] = f"T{i:02d}"
-    msg = push.format_message(rows, date(2026, 4, 27))
-    assert len(msg["embeds"]) <= push.MAX_EMBEDS_PER_MESSAGE
-    assert "showing first" in msg["content"]
+    msgs = push.split_into_messages(rows, date(2026, 4, 27))
+    for m in msgs:
+        assert "2026-04-27" in m["content"]
+
+
+def test_split_each_chunk_under_size_limit():
+    """The whole point of the splitter — every chunk fits in 6000 chars."""
+    rows = [_sample_row() for _ in range(8)]
+    for i, r in enumerate(rows):
+        r["ticker"] = f"T{i:02d}"
+        r["report"]["ticker"] = f"T{i:02d}"
+    msgs = push.split_into_messages(rows, date(2026, 4, 27))
+    for m in msgs:
+        size = sum(len(json.dumps(e)) for e in m["embeds"])
+        assert size <= push.MAX_EMBED_CHARS, f"chunk size {size} exceeds {push.MAX_EMBED_CHARS}"
+
+
+def test_split_caps_embeds_per_chunk_at_ten():
+    """Tiny embeds shouldn't pack > 10 into a single message."""
+    rows = [_sample_row() for _ in range(15)]
+    for i, r in enumerate(rows):
+        r["ticker"] = f"T{i:02d}"
+        r["report"]["ticker"] = f"T{i:02d}"
+    msgs = push.split_into_messages(rows, date(2026, 4, 27))
+    for m in msgs:
+        assert len(m["embeds"]) <= push.MAX_EMBEDS_PER_MESSAGE
+
+
+def test_split_preserves_all_rows_when_size_forces_split():
+    """Critical: total embeds across all chunks must equal len(rows)."""
+    rows = [_sample_row() for _ in range(8)]
+    for i, r in enumerate(rows):
+        r["ticker"] = f"T{i:02d}"
+        r["report"]["ticker"] = f"T{i:02d}"
+    msgs = push.split_into_messages(rows, date(2026, 4, 27))
+    total_embeds = sum(len(m["embeds"]) for m in msgs)
+    assert total_embeds == len(rows), \
+        f"splitter dropped embeds: in={len(rows)} out={total_embeds}"
+
+
+def test_split_marks_part_n_of_m_when_multiple_messages():
+    """Multi-message pushes need an audit trail in the header so the
+    operator can spot mid-flight failures."""
+    rows = [_sample_row() for _ in range(8)]
+    for i, r in enumerate(rows):
+        r["ticker"] = f"T{i:02d}"
+        r["report"]["ticker"] = f"T{i:02d}"
+    msgs = push.split_into_messages(rows, date(2026, 4, 27))
+    if len(msgs) > 1:
+        for i, m in enumerate(msgs, start=1):
+            assert f"part {i}/{len(msgs)}" in m["content"]
+
+
+def test_format_message_back_compat_returns_first_chunk():
+    """The legacy format_message helper must still work for any older
+    caller that hasn't migrated to split_into_messages."""
+    rows = [_sample_row() for _ in range(3)]
+    for i, r in enumerate(rows):
+        r["ticker"] = f"T{i:02d}"
+        r["report"]["ticker"] = f"T{i:02d}"
+    legacy = push.format_message(rows, date(2026, 4, 27))
+    new = push.split_into_messages(rows, date(2026, 4, 27))
+    assert legacy == new[0]
 
 
 def test_format_message_includes_date_in_header():
