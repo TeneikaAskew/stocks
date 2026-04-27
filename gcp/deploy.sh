@@ -424,6 +424,11 @@ deploy_fetch_news_sentiment() {
     av_key="$(_secret av-api-key 2>/dev/null || true)"
     av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
 
+    # Tickers come from alert_config.json `watchlist` at runtime via
+    # gcp/fetchers/_watchlist.load_watchlist(). No hardcoded NEWS_TICKERS
+    # env var — change the watchlist by editing alert_config.json + redeploy
+    # the image. --args="" defensively strips any leftover positional CLI
+    # args from prior manual gcloud edits that would break argparse.
     gcloud run jobs create fetch-news-sentiment \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
@@ -434,12 +439,9 @@ deploy_fetch_news_sentiment() {
     gcloud run jobs update fetch-news-sentiment \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        --args "" \
         --set-env-vars "${av_env}" \
-        --quiet
-
-    gcloud run jobs update fetch-news-sentiment \
-        --region "${REGION}" \
-        --update-env-vars "^@^NEWS_TICKERS=SPY,IWM,QQQ" \
+        --remove-env-vars "NEWS_TICKERS" \
         --quiet
 }
 
@@ -449,6 +451,8 @@ deploy_fetch_news_sentiment_topics() {
     av_key="$(_secret av-api-key 2>/dev/null || true)"
     av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
 
+    # NEWS_TOPICS env var (set below) is the source of truth; --args=""
+    # defensively strips any leftover CLI args from prior manual edits.
     gcloud run jobs create fetch-news-sentiment-topics \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
@@ -459,6 +463,7 @@ deploy_fetch_news_sentiment_topics() {
     gcloud run jobs update fetch-news-sentiment-topics \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        --args "" \
         --set-env-vars "${av_env}" \
         --quiet
 
