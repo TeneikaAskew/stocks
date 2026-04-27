@@ -236,7 +236,7 @@ def calculate_consecutive_moves(
 
 
 # ---------------------------------------------------------------------------
-# Historical levels (prev day/week/month/year)
+# Historical levels (prev day/week/month/quarter/year)
 # ---------------------------------------------------------------------------
 
 def calculate_historical_levels(
@@ -246,10 +246,10 @@ def calculate_historical_levels(
     open_: pd.Series,
     close: pd.Series,
 ) -> pd.DataFrame:
-    """Previous period levels (day, week, month, year) with midpoints,
+    """Previous period levels (day, week, month, quarter, year) with midpoints,
     price-position percentages, at-level flags, and breakout indicators.
 
-    Returns a DataFrame with ~80 new columns aligned to the input index.
+    Returns a DataFrame with ~100 new columns aligned to the input index.
     """
     df = pd.DataFrame({
         'Time': times, 'High': high, 'Low': low, 'Open': open_, 'Close': close,
@@ -257,11 +257,12 @@ def calculate_historical_levels(
     df['Date'] = pd.to_datetime(df['Time']).dt.date
     df['Week'] = pd.to_datetime(df['Time']).dt.to_period('W')
     df['Month'] = pd.to_datetime(df['Time']).dt.to_period('M')
+    df['Quarter'] = pd.to_datetime(df['Time']).dt.to_period('Q')
     df['Year'] = pd.to_datetime(df['Time']).dt.to_period('Y')
 
     result = pd.DataFrame(index=df.index)
 
-    for period_col, label in [('Date', 'Day'), ('Week', 'Week'), ('Month', 'Month'), ('Year', 'Year')]:
+    for period_col, label in [('Date', 'Day'), ('Week', 'Week'), ('Month', 'Month'), ('Quarter', 'Quarter'), ('Year', 'Year')]:
         grp = df.groupby(period_col).agg(
             H=('High', 'max'), L=('Low', 'min'), O=('Open', 'first'), C=('Close', 'last'),
         )
