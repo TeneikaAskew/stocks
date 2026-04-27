@@ -83,9 +83,15 @@ EXTRA_PREFIXES = (
 )
 
 
+DEFAULT_MAX_TICKERS = 25
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--symbol', required=True, help='Ticker symbol (IWM, QQQ, SPY, …)')
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument('--symbol', help='Ticker symbol (IWM, QQQ, SPY, …)')
+    g.add_argument('--from-watchlist', action='store_true',
+                   help='Iterate every active ticker in the Cloud SQL watchlists table.')
     p.add_argument('--start-date', help='YYYY-MM-DD inclusive start (overrides MAX(entry_time))')
     p.add_argument('--end-date', help='YYYY-MM-DD exclusive end (default: today)')
     p.add_argument('--backfill-from', help='YYYY-MM-DD inclusive — process from this date forward')
@@ -94,7 +100,31 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--dry-run', action='store_true', help='Compute signals but do not write to Cloud SQL')
     p.add_argument('--lookback-days', type=int, default=2,
                    help='Extra days BEFORE start to load for indicator warmup (default: 2)')
+    p.add_argument(
+        '--max-tickers', type=int, default=DEFAULT_MAX_TICKERS,
+        help=(f'Cap on tickers processed per invocation (default {DEFAULT_MAX_TICKERS}). '
+              'Each ticker loads months of intraday bars + runs the full voter, so a '
+              'runaway list will OOM the Cloud Run Job. Use --override-max to bypass.'),
+    )
+    p.add_argument(
+        '--override-max', action='store_true',
+        help='Bypass --max-tickers cap. Required when running > max-tickers.',
+    )
     return p.parse_args()
+
+
+def _resolve_tickers(args: argparse.Namespace) -> list[str]:
+    """Single ticker (--symbol) or whatever's currently active in the
+    Cloud SQL watchlists table (--from-watchlist)."""
+    if args.symbol:
+        return [args.symbol.strip().upper()]
+    # --from-watchlist
+    try:
+        from gcp.fetchers._watchlist import load_watchlist
+        return load_watchlist()
+    except Exception as exc:
+        log.error('watchlist load failed: %s', exc)
+        return []
 
 
 def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
@@ -152,10 +182,9 @@ def map_signals_to_table(signals_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     return out
 
 
-def main() -> int:
-    args = parse_args()
-    ticker = args.symbol.upper()
-
+def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
+    """Process one ticker. Returns 0 on success, non-zero on hard error.
+    Soft cases (no bars / no signals / window already covered) are 0."""
     if args.force:
         if not (args.start_date or args.backfill_from):
             log.warning(
@@ -165,53 +194,83 @@ def main() -> int:
         n = delete_for_ticker(ticker)
         log.info('--force: deleted %d existing rows for %s', n, ticker)
 
+    # `resolve_window` reads args.symbol — patch it through for this ticker
+    # in the watchlist iteration path.
+    args.symbol = ticker
     start, end = resolve_window(args)
     if start >= end:
-        log.info('start (%s) >= end (%s) — nothing to do, table is up-to-date', start, end)
+        log.info('  %s: window [%s, %s) empty — already up-to-date', ticker, start, end)
         return 0
 
-    # Indicator warmup — load extra days before `start` so RSI/EMA/etc.
-    # have history. The signals voter still skips bars before `start`.
     load_start = start - timedelta(days=args.lookback_days)
-
-    log.info('loading bars %s [%s → %s) (warmup from %s)', ticker, start, end, load_start)
+    log.info('  %s: loading bars [%s → %s) (warmup from %s)', ticker, start, end, load_start)
     bars = load_intraday_bars(ticker, load_start, end)
-    log.info('loaded %d bars', len(bars))
+    log.info('  %s: loaded %d bars', ticker, len(bars))
 
     if len(bars) < 30:
-        log.warning('only %d bars loaded — not enough for indicators, exiting', len(bars))
+        log.warning('  %s: only %d bars — skipping (need >= 30 for indicators)',
+                    ticker, len(bars))
         return 0
 
-    log.info('running MarketAnalyzer (indicators + signal voter)')
+    log.info('  %s: running MarketAnalyzer', ticker)
     analyzer = MarketAnalyzer()
     enriched = analyzer.add_technical_indicators(bars)
     signals_df = analyzer.generate_technical_signals(enriched)
-    log.info('voter produced %d candidate signals', len(signals_df))
+    log.info('  %s: voter produced %d candidate signals', ticker, len(signals_df))
 
     if signals_df.empty:
-        log.info('no signals fired in window — exiting clean')
         return 0
 
-    # Trim to entries strictly within the requested window. Normalize the
-    # signals_df timestamps to tz-aware UTC so the comparison with the
-    # tz-aware window bounds doesn't blow up.
     entry_ts = pd.to_datetime(signals_df['entry_time'], utc=True)
     signals_df = signals_df.loc[(entry_ts >= start) & (entry_ts < end)].copy()
-    log.info('after window trim: %d signals to insert', len(signals_df))
+    log.info('  %s: %d signals after window trim', ticker, len(signals_df))
 
     if signals_df.empty:
         return 0
 
     table_df = map_signals_to_table(signals_df, ticker)
-
     if args.dry_run:
-        log.info('--dry-run: would insert %d rows. Sample:', len(table_df))
-        log.info('\n%s', table_df.head(3).to_string())
+        log.info('  %s: --dry-run, would insert %d rows', ticker, len(table_df))
         return 0
 
     attempted, inserted = bulk_insert(table_df)
-    log.info('done: attempted=%d inserted=%d skipped=%d',
-             attempted, inserted, attempted - inserted)
+    log.info('  %s: done attempted=%d inserted=%d skipped=%d',
+             ticker, attempted, inserted, attempted - inserted)
+    return 0
+
+
+def main() -> int:
+    args = parse_args()
+
+    tickers = _resolve_tickers(args)
+    if not tickers:
+        log.error('no tickers — set --symbol or populate the Cloud SQL watchlist')
+        return 2
+
+    if len(tickers) > args.max_tickers and not args.override_max:
+        log.error(
+            'refusing to process %d tickers (max-tickers=%d). '
+            'Use --override-max=1 to bypass. tickers=%s',
+            len(tickers), args.max_tickers, tickers,
+        )
+        return 1
+
+    log.info('historical_signals batch — %d ticker(s): %s',
+             len(tickers), ', '.join(tickers))
+
+    failures: list[str] = []
+    for tk in tickers:
+        try:
+            rc = _process_ticker(tk, args)
+            if rc != 0:
+                failures.append(tk)
+        except Exception as exc:
+            log.exception('  %s: unexpected error: %s', tk, exc)
+            failures.append(tk)
+
+    if failures:
+        log.warning('completed with %d ticker failure(s): %s', len(failures), failures)
+        return 0  # don't fail the whole batch on one ticker
     return 0
 
 
