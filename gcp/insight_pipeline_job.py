@@ -319,15 +319,44 @@ async def _run_on_demand() -> int:
 
 
 async def _run_scheduled() -> int:
-    tickers_env = os.environ.get("INSIGHT_TICKERS", ",".join(DEFAULT_TICKERS))
-    tickers = parse_tickers(tickers_env)
+    # Ticker resolution chain (first non-empty wins):
+    #   1. INSIGHT_TICKERS env var — explicit one-off override for ad-hoc
+    #      gcloud run jobs execute invocations.
+    #   2. Cloud SQL `watchlists` table — the production source of truth
+    #      kept in sync with the React UI's add/remove endpoints.
+    #   3. alert_config.json `watchlist` field — repo-baked seed.
+    #   4. DEFAULT_TICKERS — last-resort hardcoded SPY/IWM/QQQ so the
+    #      scheduled cron never silently no-ops.
+    # Layers 2-3 share `gcp.fetchers._watchlist.load_watchlist`, which
+    # also handles the Cloud SQL → file → env fallback internally and
+    # fires a Discord alert when every layer comes back empty.
+    tickers_env = os.environ.get("INSIGHT_TICKERS", "").strip()
+    if tickers_env:
+        tickers = parse_tickers(tickers_env)
+        ticker_source = "INSIGHT_TICKERS env"
+    else:
+        try:
+            from gcp.fetchers._watchlist import load_watchlist
+            tickers = load_watchlist()
+            ticker_source = "watchlists table"
+        except Exception as exc:
+            logger.warning("watchlist load failed (%s); falling back to DEFAULT_TICKERS", exc)
+            tickers = []
+            ticker_source = "DEFAULT_TICKERS (watchlist load error)"
+        if not tickers:
+            tickers = list(DEFAULT_TICKERS)
+            ticker_source = "DEFAULT_TICKERS (watchlist empty)"
+
     try:
         as_of = parse_as_of(os.environ.get("INSIGHT_AS_OF"))
     except ValueError as exc:
         logger.error("INSIGHT_AS_OF invalid: %s", exc)
         return 1
     if not tickers:
-        logger.error("INSIGHT_TICKERS parsed to empty list (raw=%r); refusing to run", tickers_env)
+        logger.error(
+            "no tickers resolved from any source (env=%r, watchlist empty, default empty); refusing to run",
+            tickers_env,
+        )
         return 1
 
     # Cap the batch size to prevent the 152-ticker accident class. The
@@ -349,8 +378,8 @@ async def _run_scheduled() -> int:
 
     trigger = classify_trigger(tickers)
     logger.info(
-        "scheduled run starting: trigger=%s ticker_count=%d max_batch=%d override=%s as_of=%s tickers=%s",
-        trigger, len(tickers), max_batch, override, as_of, tickers,
+        "scheduled run starting: trigger=%s source=%s ticker_count=%d max_batch=%d override=%s as_of=%s tickers=%s",
+        trigger, ticker_source, len(tickers), max_batch, override, as_of, tickers,
     )
 
     any_failures = False
