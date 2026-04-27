@@ -36,14 +36,17 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from gcp.database import upsert_dataframe, is_cloud_sql_configured
+from gcp.database import (
+    upsert_dataframe, is_cloud_sql_configured, query_to_dataframe,
+)
 from lib.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,15 @@ DEFAULT_TOPICS = (
     "mergers_and_acquisitions,technology,financial_markets,earnings,life_sciences"
 )
 AV_BASE_URL = "https://www.alphavantage.co/query"
+
+# Incremental-fetch tunables. The 30-min overlap catches edge articles
+# whose timestamps got revised after first ingest (the upsert dedupes
+# the overlap, so re-pulling is free). 48h cold-start window matches
+# the brief's news lookback. 7d is the stale-ticker cap so a thinly-
+# covered ticker doesn't trigger an unbounded historical pull.
+SAFETY_OVERLAP_MINUTES = 30
+COLD_START_LOOKBACK_HOURS = 48
+MAX_INCREMENTAL_HOURS = 24 * 7
 
 
 def _fetch(params: dict) -> list[dict]:
@@ -132,30 +144,121 @@ def _article_to_rows(article: dict) -> list[dict]:
     return rows
 
 
+def _last_published_ts(ticker: str) -> Optional[datetime]:
+    """Most recent ``published_ts`` we have for this ticker, or ``None``
+    on cold start / DB read failure.
+
+    Used by the incremental fetch path so each scheduled run only asks
+    AV for articles newer than what we already have. The DB query is
+    a cheap MAX over the indexed (ticker, published_ts) tuple.
+
+    Returns ``None`` (the cold-start signal) on any error so the caller
+    falls back to the lookback-window default rather than crashing the
+    fetch.
+    """
+    sql = "SELECT MAX(published_ts) AS max_ts FROM news_sentiment WHERE ticker = :tk"
+    try:
+        df = query_to_dataframe(sql, {"tk": ticker.upper()})
+    except Exception:
+        logger.warning("could not read MAX(published_ts) for %s; treating as cold start", ticker)
+        return None
+    if df.empty or df.iloc[0, 0] is None:
+        return None
+    val = df.iloc[0, 0]
+    if isinstance(val, datetime):
+        return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+    try:
+        return pd.to_datetime(val, utc=True).to_pydatetime()
+    except Exception:
+        return None
+
+
+def _resolve_incremental_time_from(
+    ticker: str,
+    now: datetime,
+    *,
+    last_ts: Optional[datetime] = None,
+) -> str:
+    """Compute the AV ``time_from`` string for an incremental fetch.
+
+    Three branches:
+
+    1. **Cold start** — no rows for this ticker. Pull the last
+       ``COLD_START_LOOKBACK_HOURS`` (48h, matches the brief's news
+       window) instead of unlimited history. Prevents a new ticker
+       addition from silently triggering a years-deep AV pull.
+
+    2. **Stale ticker** — last article > ``MAX_INCREMENTAL_HOURS``
+       (7d) ago. Cap at 7d so thinly-covered ETF/sector tickers
+       don't ask AV for unbounded history every run.
+
+    3. **Normal** — subtract ``SAFETY_OVERLAP_MINUTES`` from the
+       last published_ts. The 30-min overlap catches edge articles
+       whose timestamps got revised after first ingest; the upsert
+       dedupes the overlap so re-pulling is free.
+
+    Pass ``last_ts`` explicitly when a caller (or test) already has it
+    cached, to skip the per-ticker DB read.
+    """
+    if last_ts is None:
+        last_ts = _last_published_ts(ticker)
+
+    if last_ts is None:
+        floor = now - timedelta(hours=COLD_START_LOOKBACK_HOURS)
+        reason = "cold-start"
+    elif (now - last_ts) > timedelta(hours=MAX_INCREMENTAL_HOURS):
+        floor = now - timedelta(hours=MAX_INCREMENTAL_HOURS)
+        reason = "stale-cap"
+    else:
+        floor = last_ts - timedelta(minutes=SAFETY_OVERLAP_MINUTES)
+        reason = "incremental"
+
+    av_str = floor.astimezone(timezone.utc).strftime("%Y%m%dT%H%M")
+    logger.info("ticker %s incremental floor=%s (%s)", ticker, av_str, reason)
+    return av_str
+
+
 def fetch_by_tickers(
     tickers: list[str], api_key: str, limit: int,
     time_from: str | None = None, time_to: str | None = None,
+    incremental: bool = False,
 ) -> pd.DataFrame:
     """Ticker-mode pull — one AV call per ticker, exploded across all
     tickers each article mentions.
 
-    `time_from` / `time_to` accept AV's `YYYYMMDDTHHMM` format and let
-    callers backfill historical news rather than only the most recent
-    50 articles.
+    ``time_from`` / ``time_to`` accept AV's ``YYYYMMDDTHHMM`` format
+    and let callers backfill historical news rather than only the
+    most recent 50 articles.
+
+    ``incremental=True`` resolves a per-ticker ``time_from`` from the
+    last persisted ``published_ts`` (with a 30-min safety overlap)
+    when the caller didn't pin a window. Cold-start tickers get a
+    48h lookback; stale tickers cap at 7d. This makes the scheduled
+    crons cheap enough to bump the cadence to hourly without burning
+    AV quota on duplicate-pull bandwidth.
     """
     rows: list[dict] = []
+    # Snap "now" once per batch so all tickers see the same clock.
+    batch_now = datetime.now(timezone.utc) if incremental else None
+
     for tk in tickers:
+        # Per-ticker time_from: explicit caller wins; otherwise resolve
+        # incrementally if requested; otherwise leave unset (= "AV's latest").
+        tk_time_from = time_from
+        if incremental and not time_from and not time_to:
+            tk_time_from = _resolve_incremental_time_from(tk, batch_now)
+
         params: dict[str, str | int] = {
             "function": "NEWS_SENTIMENT",
             "tickers": tk,
             "limit": limit,
             "apikey": api_key,
         }
-        if time_from:
-            params["time_from"] = time_from
+        if tk_time_from:
+            params["time_from"] = tk_time_from
         if time_to:
             params["time_to"] = time_to
-        if time_from or time_to:
+        if tk_time_from or time_to:
             params["sort"] = "EARLIEST"
         feed = _fetch(params)
         if not feed:
@@ -274,6 +377,19 @@ def main():
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and print without writing to DB")
+    parser.add_argument(
+        "--since-last", action="store_true",
+        default=os.environ.get("NEWS_SINCE_LAST", "").lower() in ("1", "true", "yes"),
+        help=(
+            "Per-ticker incremental fetch: AV time_from = last persisted "
+            "published_ts minus 30-min safety overlap. Cold-start tickers "
+            "fall back to a 48h lookback; stale tickers cap at 7d. Cuts "
+            "scheduled-run bandwidth by ~99%% (no quota benefit, just less "
+            "wasted parsing of articles the upsert already deduped). "
+            "Ignored when --time-from or --time-to is passed (backfills "
+            "always honour the explicit caller window)."
+        ),
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
@@ -297,6 +413,7 @@ def main():
         df = fetch_by_tickers(
             tickers, api_key, limit=args.limit,
             time_from=args.time_from, time_to=args.time_to,
+            incremental=args.since_last,
         )
         if not df.empty:
             frames.append(df)
