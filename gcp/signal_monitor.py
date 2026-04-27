@@ -26,6 +26,7 @@ from lib.indicators import (
 )
 from lib.signals import evaluate_signal
 from lib.strat import StratClassifier
+from lib.strat_levels import LevelMap, build_level_map
 from lib.config import load_config, get_position_size, get_signal_strength_label
 
 
@@ -58,6 +59,15 @@ class SignalMonitor:
         self.daily_pnl: dict = {t: 0.0 for t in tickers}
         self.active_positions: dict = {t: None for t in tickers}
         self.orb_levels: dict = {t: {} for t in tickers}
+
+        # Strat level map per ticker, refreshed each loop iteration. Used to
+        # detect level breaks (PDH, PDL, PWH, PWL, ...) once per crossing.
+        self.level_maps: dict = {t: None for t in tickers}
+        # Last seen price per ticker, for crossing detection. Avoids firing
+        # the same level-break alert on every tick after the break.
+        self.last_prices: dict = {t: None for t in tickers}
+        # Set of (ticker, level_name) that have already fired today.
+        self.fired_breaks: set = set()
 
     def is_market_hours(self) -> bool:
         now = datetime.now()
@@ -165,6 +175,65 @@ class SignalMonitor:
 
         return df
 
+    def refresh_level_map(self, ticker: str) -> None:
+        """Load the latest market_data_daily row + indicators and rebuild
+        the LevelMap for this ticker. Called at startup and periodically
+        through the day (prev-period levels do not change intraday but
+        current-period classifications do).
+        """
+        try:
+            from lib.data_loader import DataLoader
+            from lib.indicators import calculate_historical_levels
+            loader = DataLoader(data_dir=self.market_cfg.data_dir)
+            df = loader.load_daily(ticker)
+            if df.empty:
+                self.level_maps[ticker] = None
+                return
+            close_col = 'Close' if 'Close' in df.columns else 'Last'
+            ts = df['Time'] if 'Time' in df.columns else pd.Series(df.index)
+            levels_df = calculate_historical_levels(
+                ts, df['High'], df['Low'], df['Open'], df[close_col],
+            )
+            for col in levels_df.columns:
+                df[col] = levels_df[col].values
+
+            # Use the latest live close as current_price; the actual price
+            # will be passed in check_level_breaks for crossing detection.
+            current_price = float(df[close_col].iloc[-1])
+            self.level_maps[ticker] = build_level_map(
+                ticker=ticker, daily_df=df, current_price=current_price,
+            )
+        except Exception as e:
+            logger.warning("refresh_level_map(%s) failed: %s", ticker, e)
+            self.level_maps[ticker] = None
+
+    def check_level_breaks(
+        self,
+        ticker: str,
+        last_price: float,
+        prev_price,
+        level_map: LevelMap,
+    ) -> list:
+        """Return level names that were crossed between prev_price and
+        last_price, deduped against the day's already-fired breaks.
+
+        Fires once per (ticker, level_name) per session.
+        """
+        if level_map is None or prev_price is None:
+            return []
+        broken: list = []
+        for lev in level_map.levels:
+            crossed_up = prev_price <= lev.price < last_price
+            crossed_down = prev_price >= lev.price > last_price
+            if not (crossed_up or crossed_down):
+                continue
+            key = (ticker, lev.name, 'up' if crossed_up else 'down')
+            if key in self.fired_breaks:
+                continue
+            self.fired_breaks.add(key)
+            broken.append(lev.name)
+        return broken
+
     def check_orb(self, ticker: str, df: pd.DataFrame):
         """Track ORB levels as they form."""
         if df.empty or 'Time' not in df.columns:
@@ -193,6 +262,17 @@ class SignalMonitor:
         self.check_orb(ticker, df)
 
         latest = df.iloc[-1]
+        last_price = float(latest.get('Close', latest.get('Last', 0)))
+
+        # Level-break detection. Refreshes lazily once per day per ticker.
+        if self.level_maps.get(ticker) is None:
+            self.refresh_level_map(ticker)
+        broken_levels = self.check_level_breaks(
+            ticker, last_price, self.last_prices.get(ticker),
+            self.level_maps.get(ticker),
+        )
+        self.last_prices[ticker] = last_price
+        self._latest_broken_levels = broken_levels
 
         # Skip if at daily limits
         if self.daily_trades[ticker] >= self.risk.max_daily_trades:
@@ -324,6 +404,7 @@ class SignalMonitor:
             'orb_15m_high': self.orb_levels[ticker].get('15m_high'),
             'orb_15m_low': self.orb_levels[ticker].get('15m_low'),
             'conditions_met': json.dumps(sig['conditions_met']),
+            'level_broken': ','.join(getattr(self, '_latest_broken_levels', []) or []) or None,
         }
 
         try:
@@ -382,16 +463,72 @@ class SignalMonitor:
             time_module.sleep(poll_interval)
 
 
+def run_orb_snapshot(window: str) -> int:
+    """One-shot ORB capture mode for Cloud Scheduler (9:45 / 10:00 ET).
+
+    Computes the ORB H/L/Mid for the requested window and posts a Discord
+    embed per ticker. Returns process exit code (0 on success).
+    """
+    if window not in {'5m', '15m', '30m'}:
+        logger.error("Invalid ORB window: %s (expected 5m/15m/30m)", window)
+        return 2
+
+    monitor = SignalMonitor()
+    for ticker in monitor.market_cfg.tickers:
+        df = monitor.fetch_latest_bar(ticker)
+        if df.empty:
+            logger.warning("No intraday data for %s", ticker)
+            continue
+        monitor.check_orb(ticker, df)
+        levels = monitor.orb_levels.get(ticker, {})
+        h = levels.get(f'{window}_high')
+        l = levels.get(f'{window}_low')
+        m = levels.get(f'{window}_mid')
+        if h is None or l is None:
+            logger.warning("ORB %s incomplete for %s", window, ticker)
+            continue
+        message = {
+            'embeds': [{
+                'title': f'{ticker} {window} ORB',
+                'description': (
+                    f'High: ${h:.2f}\nLow: ${l:.2f}\nMid: ${m:.2f}\n'
+                    f'Range: ${h - l:.2f}'
+                ),
+                'color': 0x9b59b6,
+            }],
+        }
+        if monitor.webhook_url:
+            try:
+                requests.post(monitor.webhook_url, json=message,
+                              timeout=monitor.monitor_cfg.discord_timeout)
+            except Exception as e:
+                logger.warning("Discord ORB snapshot send failed for %s: %s", ticker, e)
+        else:
+            print(json.dumps(message['embeds'][0], indent=2))
+    return 0
+
+
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Real-time signal monitor')
+    parser.add_argument('--mode', choices=['loop', 'orb-snapshot'], default='loop',
+                        help='loop = run during market hours; orb-snapshot = one-shot ORB capture')
+    parser.add_argument('--window', choices=['5m', '15m', '30m'], default='15m',
+                        help='ORB window for orb-snapshot mode')
+    args = parser.parse_args()
+
     # Fail-fast on missing config so Cloud Run surfaces the error instead of
     # looping silently (see docs/incidents/2026-04-14-market-data-daily-gap.md).
     from gcp.database import is_cloud_sql_configured
     if not os.environ.get('ALPHA_VANTAGE_API_KEY'):
         logger.error("ALPHA_VANTAGE_API_KEY is not set — aborting.")
         sys.exit(2)
-    if not is_cloud_sql_configured():
+    if not is_cloud_sql_configured() and args.mode == 'loop':
         logger.error("Cloud SQL env vars missing — aborting.")
         sys.exit(3)
+
+    if args.mode == 'orb-snapshot':
+        sys.exit(run_orb_snapshot(args.window))
 
     monitor = SignalMonitor()
     monitor.run_loop()

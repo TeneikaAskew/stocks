@@ -788,6 +788,36 @@ _schedule() {
         --quiet 2>/dev/null || echo "  ${NAME}: already exists"
 }
 
+# Variant of _schedule that overrides the container command-line args via the
+# Cloud Run Jobs ":run" body. Used to point a single signal-monitor job image
+# at orb-snapshot or other one-shot modes.
+_schedule_with_args() {
+    local NAME=$1 CRON=$2 JOB=$3
+    shift 3
+    # Build JSON args array: ["--mode=orb-snapshot","--window=15m"]
+    local ARGS_JSON='['
+    local first=1
+    for a in "$@"; do
+        [ ${first} -eq 1 ] || ARGS_JSON+=','
+        ARGS_JSON+='"'"${a}"'"'
+        first=0
+    done
+    ARGS_JSON+=']'
+
+    local BODY='{"overrides":{"containerOverrides":[{"args":'"${ARGS_JSON}"'}]}}'
+
+    gcloud scheduler jobs create http "${NAME}" \
+        --location "${REGION}" \
+        --schedule "${CRON}" \
+        --time-zone "America/New_York" \
+        --uri "$(_job_uri "${JOB}")" \
+        --http-method POST \
+        --headers "Content-Type=application/json" \
+        --message-body "${BODY}" \
+        --oauth-service-account-email "${SA_EMAIL}" \
+        --quiet 2>/dev/null || echo "  ${NAME}: already exists"
+}
+
 deploy_schedulers() {
     echo "Creating Cloud Scheduler triggers..."
 
@@ -797,6 +827,12 @@ deploy_schedulers() {
     _schedule "premarket-brief-sunday"   "0 9 * * 0"      "premarket-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
+    # ORB scheduled snapshots — 9:45 ET (15-min ORB) and 10:00 ET (30-min ORB).
+    # Uses the same signal-monitor job image with --mode=orb-snapshot.
+    _schedule_with_args "orb-15m-alert"  "45 9 * * 1-5"  "signal-monitor" \
+        "--mode=orb-snapshot" "--window=15m"
+    _schedule_with_args "orb-30m-alert"  "0 10 * * 1-5"  "signal-monitor" \
+        "--mode=orb-snapshot" "--window=30m"
     # Weekend review — Saturday 9 AM ET
     _schedule "weekend-review-weekly"    "0 9 * * 6"      "weekend-review"
     # Market data — 5 PM ET weekdays

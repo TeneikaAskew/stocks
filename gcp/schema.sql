@@ -557,6 +557,10 @@ CREATE TABLE IF NOT EXISTS signal_alerts (
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_ticker_date
     ON signal_alerts (ticker, alert_date DESC);
 
+-- v2 strat refactor: record which Strat level a signal broke (PDH, PDL, PWH, ...).
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS level_broken VARCHAR(20);
+
 
 CREATE TABLE IF NOT EXISTS trades (
     id              BIGSERIAL PRIMARY KEY,
