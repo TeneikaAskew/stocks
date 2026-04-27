@@ -917,3 +917,19 @@ DROP TRIGGER IF EXISTS trg_ticker_info_updated ON ticker_info;
 CREATE TRIGGER trg_ticker_info_updated
     BEFORE UPDATE ON ticker_info
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ─── Strat Levels (multi-timeframe level classification) ─────────────────
+CREATE TABLE IF NOT EXISTS strat_levels (
+    ticker         TEXT NOT NULL,
+    as_of          TIMESTAMP WITH TIME ZONE NOT NULL,
+    level_name     TEXT NOT NULL,
+    price          NUMERIC(12,4) NOT NULL,
+    timeframe      TEXT,
+    level_type     TEXT,
+    strat_class    TEXT,
+    is_current     BOOLEAN DEFAULT FALSE,
+    period_label   TEXT,
+    PRIMARY KEY (ticker, as_of, level_name)
+);
+CREATE INDEX IF NOT EXISTS idx_strat_levels_ticker_price
+    ON strat_levels (ticker, as_of, price);
