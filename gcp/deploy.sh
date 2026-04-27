@@ -91,6 +91,31 @@ deploy_insight_pipeline() {
         --quiet
 }
 
+# ── AI Insights Discord push (Cloud Run Job) ────────────────────────────────
+# Reads today's insight_reports rows and posts them to Discord as a
+# multi-embed message. Cloud Scheduler triggers this at 9:15 AM ET
+# weekdays — ~30 min after the 8:45 insight-pipeline cron finishes.
+deploy_insight_discord_push() {
+    echo "Deploying insight-discord-push job..."
+
+    gcloud run jobs create insight-discord-push \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 120 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.insight_discord_push" \
+        --args "" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update insight-discord-push \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 120 \
+        --command "python,-m,gcp.insight_discord_push" \
+        --args "" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Auto-refresh top-N (Cloud Run Job) ───────────────────────────────────────
 # Pre-warms the AI insight cache for the highest-scoring ranker tickers.
 # Calls lib.agents.ranker.rank_tickers, picks top N, enqueues a Cloud
@@ -819,6 +844,12 @@ deploy_schedulers() {
     # (which seeds the strat + daily indicators the pipeline consumes).
     _schedule "insight-pipeline-daily"   "45 8 * * 1-5"  "insight-pipeline"
 
+    # AI Insights Discord push — 9:15 AM ET weekdays. Reads today's rows
+    # from insight_reports and POSTs a multi-embed digest to Discord.
+    # Decoupled from the pipeline so delivery can be retried independently
+    # if Discord drops.
+    _schedule "insight-discord-push-daily"  "15 9 * * 1-5"  "insight-discord-push"
+
     # Auto-refresh top-N — 8:10 AM ET weekdays.
     # Runs after news fetchers (8:00, 8:05) so catalyst data is fresh,
     # and before premarket-brief at 8:30 so the warmed reports are
@@ -858,7 +889,7 @@ case "${1:-help}" in
     monitor)     build_image && deploy_monitor ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
-    insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_auto_refresh_top_n ;;
+    insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_auto_refresh_top_n ;;
     schedulers)  deploy_schedulers ;;
     backfill)    shift; backfill_watchlist "$@" ;;
     apply-schema) build_image && deploy_apply_schema_migrations ;;
@@ -874,6 +905,7 @@ case "${1:-help}" in
         deploy_fetchers
         setup_insight_tasks_queue
         deploy_insight_pipeline
+        deploy_insight_discord_push
         deploy_auto_refresh_top_n
         deploy_notifier
         deploy_schedulers
