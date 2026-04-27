@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useTickerStore } from '@/stores/tickerStore';
+import { useUser } from '@/hooks/useUser';
 import {
   LayoutDashboard,
   Activity,
@@ -30,13 +31,16 @@ const navItems = [
   { path: '/journal', label: 'Journal', icon: NotebookPen },
   { path: '/insights', label: 'AI Insights', icon: BrainCircuit },
   { path: '/catalysts', label: 'Catalysts', icon: Zap },
-  { path: '/admin', label: 'Admin', icon: Settings },
+  { path: '/admin', label: 'Admin', icon: Settings, adminOnly: true },
   { path: '/help', label: 'Help & Glossary', icon: HelpCircle },
 ];
 
 export function Sidebar() {
   const { sidebarCollapsed, toggleSidebar } = useSettingsStore();
   const { activeTicker, setTicker, availableTickers } = useTickerStore();
+  const { isAdmin } = useUser();
+
+  const visibleNavItems = navItems.filter((item) => !('adminOnly' in item && item.adminOnly) || isAdmin);
 
   return (
     <aside
@@ -80,7 +84,7 @@ export function Sidebar() {
 
       {/* Nav items */}
       <nav className="flex-1 overflow-y-auto py-2">
-        {navItems.map(({ path, label, icon: Icon }) => (
+        {visibleNavItems.map(({ path, label, icon: Icon }) => (
           <NavLink
             key={path}
             to={path}

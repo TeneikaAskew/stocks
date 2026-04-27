@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -45,7 +45,26 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 # ---------------------------------------------------------------------------
 
 
-def _require_admin(x_admin_token: Optional[str]) -> None:
+_ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "teneika@bictech.org").lower()
+
+
+def _iap_user_email(request: Request) -> Optional[str]:
+    """Extract email from the IAP-injected header."""
+    raw = request.headers.get("x-goog-authenticated-user-email")
+    if not raw:
+        return None
+    return raw.split(":", 1)[-1].strip().lower()
+
+
+def _require_admin(
+    request: Request,
+    x_admin_token: Optional[str],
+) -> None:
+    # Allow the admin email through without a token (IAP-authenticated)
+    iap_email = _iap_user_email(request)
+    if iap_email and iap_email == _ADMIN_EMAIL:
+        return
+
     expected = os.environ.get("ADMIN_TOKEN", "").strip()
     if not expected:
         raise HTTPException(
@@ -116,8 +135,8 @@ def _model_to_row(m: AvailableModel) -> AvailableModelRow:
 
 
 @router.get("/routes", response_model=RouteListResponse)
-async def admin_list_routes(x_admin_token: Optional[str] = Header(None)):
-    _require_admin(x_admin_token)
+async def admin_list_routes(request: Request, x_admin_token: Optional[str] = Header(None)):
+    _require_admin(request, x_admin_token)
     rows = [_route_to_row(r) for r in list_routes()]
     return RouteListResponse(routes=rows)
 
@@ -126,9 +145,10 @@ async def admin_list_routes(x_admin_token: Optional[str] = Header(None)):
 async def admin_update_route(
     role: str,
     body: RouteUpdateRequest,
+    request: Request,
     x_admin_token: Optional[str] = Header(None),
 ):
-    _require_admin(x_admin_token)
+    _require_admin(request, x_admin_token)
     if role not in ALL_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown role: {role}")
     try:
@@ -143,8 +163,8 @@ async def admin_update_route(
 
 
 @router.get("/models", response_model=AvailableModelsResponse)
-async def admin_list_models(x_admin_token: Optional[str] = Header(None)):
-    _require_admin(x_admin_token)
+async def admin_list_models(request: Request, x_admin_token: Optional[str] = Header(None)):
+    _require_admin(request, x_admin_token)
     return AvailableModelsResponse(
         models=[_model_to_row(m) for m in list_available_models()]
     )
