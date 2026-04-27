@@ -1,11 +1,11 @@
 """
 The Strat candle classification system.
 
-Encodes Rob Smith's methodology:
+Encodes Rob Smith's methodology (see docs/STRAT_METHODOLOGY.md):
 - Candle type labeling (1, 2U, 2D, 3) on any timeframe
-- Combo pattern detection (2-1-2 reversals, 3-1-2, continuations)
-- Full Timeframe Continuity (FTFC) scoring across multiple timeframes
-- Integration bonus for combined signal scoring (+0 to +3 points)
+- Combo pattern detection (212, 312, 132, 322, 22, 32, Failed_2, multi-inside)
+- Full Timeframe Continuity (FTFC) scoring across 7 timeframes
+- Integration bonus for combined signal scoring (float, supports negatives)
 """
 
 import pandas as pd
@@ -15,29 +15,86 @@ from typing import Dict, Tuple, Optional
 from lib.config import StratConfig
 
 
+# ─── Per-combo bonus values (see docs/STRAT_METHODOLOGY.md §18) ──────────
+
+COMBO_BONUS_CALL: Dict[str, float] = {
+    'f2d_bull_reversal': 1.0,
+    'f2u_bear_reversal': -0.5,
+    '212_bull_reversal': 1.0,
+    '212_bear_reversal': 0.0,
+    '212_bull_continuation': 0.75,
+    '212_bear_continuation': 0.0,
+    '312_bull_reversal': 1.0,
+    '312_bear_reversal': 0.0,
+    '132_bull_continuation': 1.0,
+    '132_bear_continuation': 0.0,
+    '322_bull_continuation': 0.75,
+    '322_bear_continuation': 0.0,
+    '32_bull_reversal': 0.75,
+    '32_bear_reversal': 0.0,
+    '22_bull_reversal': 1.0,
+    '22_bear_reversal': -0.5,
+    '22_bull_continuation': 0.5,
+    '22_bear_continuation': 0.0,
+    'clean_2u_bull': 0.25,
+    'clean_2d_bear': 0.0,
+    '11_inside_compression': 0.0,
+    '111_inside_compression': 0.0,
+    'none': 0.0,
+}
+
+COMBO_BONUS_PUT: Dict[str, float] = {
+    'f2d_bull_reversal': -0.5,
+    'f2u_bear_reversal': 1.0,
+    '212_bull_reversal': 0.0,
+    '212_bear_reversal': 1.0,
+    '212_bull_continuation': 0.0,
+    '212_bear_continuation': 0.75,
+    '312_bull_reversal': 0.0,
+    '312_bear_reversal': 1.0,
+    '132_bull_continuation': 0.0,
+    '132_bear_continuation': 1.0,
+    '322_bull_continuation': 0.0,
+    '322_bear_continuation': 0.75,
+    '32_bull_reversal': 0.0,
+    '32_bear_reversal': 0.75,
+    '22_bull_reversal': -0.5,
+    '22_bear_reversal': 1.0,
+    '22_bull_continuation': 0.0,
+    '22_bear_continuation': 0.5,
+    'clean_2u_bull': 0.0,
+    'clean_2d_bear': 0.25,
+    '11_inside_compression': 0.0,
+    '111_inside_compression': 0.0,
+    'none': 0.0,
+}
+
+
 class StratClassifier:
     """Classify candles and detect Strat patterns."""
 
-    # Default FTFC weights by timeframe (higher TF = more weight)
+    # Default FTFC weights by timeframe (higher TF = more weight).
+    # See docs/STRAT_METHODOLOGY.md §16.
     DEFAULT_WEIGHTS = {
-        '5m': 0.10,
-        '15m': 0.20,
-        '1h': 0.25,
-        'D': 0.35,
-        'W': 0.10,
+        '5m': 0.05,
+        '15m': 0.10,
+        '1h': 0.15,
+        '4h': 0.15,
+        '12h': 0.15,
+        '1d': 0.30,
+        '1w': 0.10,
     }
 
     def __init__(self, strat_config: StratConfig = None):
         self.config = strat_config or StratConfig()
-        # If config provides ftfc_weights, use those as the instance default
         if strat_config is not None and strat_config.ftfc_weights:
             self._default_weights = strat_config.ftfc_weights
         else:
             self._default_weights = self.DEFAULT_WEIGHTS
 
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
     # Single-candle classification
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def classify_candle(
@@ -47,6 +104,7 @@ class StratClassifier:
         """Classify a single candle relative to the prior bar.
 
         Returns: '1' (inside), '2U' (up), '2D' (down), '3' (outside)
+        Uses inclusive inequalities so classification is exhaustive.
         """
         higher_high = curr_high > prev_high
         lower_low = curr_low < prev_low
@@ -79,135 +137,161 @@ class StratClassifier:
         labels[~higher_high & lower_low] = '2D'
         labels[higher_high & lower_low] = '3'
 
-        # First bar has no prior -- mark as unknown
+        # First bar has no prior — mark as unknown
         labels.iloc[0] = 'X'
 
         return labels
 
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
     # Trigger levels
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
 
     @staticmethod
     def get_trigger_levels(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
-        """Return (trigger_high, trigger_low) -- prior bar's High and Low.
-
-        Breaking above trigger_high = bullish trigger.
-        Breaking below trigger_low = bearish trigger.
-        """
+        """Return (trigger_high, trigger_low) — prior bar's High and Low."""
         return df['High'].shift(1), df['Low'].shift(1)
 
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
     # Combo pattern detection
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
 
     def detect_combos(self, df: pd.DataFrame, labels: pd.Series = None) -> pd.DataFrame:
         """Detect Strat combo patterns from classified candle data.
 
         Returns a DataFrame aligned to the input index with columns:
-        - strat_type: candle classification
-        - strat_combo: combo label (e.g., '2D-1-2U_reversal') or 'none'
-        - strat_setup: True if a combo setup is forming (2-bar into inside bar)
+        - strat_candle: candle classification (1/2U/2D/3)
+        - strat_combo: combo label or 'none'
+        - strat_setup: True if a combo setup is forming
         - trigger_high / trigger_low: breakout levels
+
+        Priority order (highest first, see docs/STRAT_METHODOLOGY.md §17):
+          212 REV > 312 REV > 212 CON > 132 > 322 > 32 REV >
+          22 REV > 22 CON > 11/111 > Failed_2 > Clean 2U/2D
         """
         if labels is None:
             labels = self.classify_series(df)
 
-        prev1 = labels.shift(1)  # 1 bar ago
-        prev2 = labels.shift(2)  # 2 bars ago
+        prev1 = labels.shift(1)   # 1 bar ago
+        prev2 = labels.shift(2)   # 2 bars ago
+        prev3 = labels.shift(3)   # 3 bars ago (for triple inside)
 
         trigger_high, trigger_low = self.get_trigger_levels(df)
         one_bar_high = df['High'].shift(1)  # the inside bar's high
-        one_bar_low = df['Low'].shift(1)   # the inside bar's low
+        one_bar_low = df['Low'].shift(1)    # the inside bar's low
 
         close_col = 'Close' if 'Close' in df.columns else 'Last'
-        close = df[close_col] if close_col in df.columns else df['High']  # fallback
+        close = df[close_col] if close_col in df.columns else df['High']
+        open_col = df['Open'] if 'Open' in df.columns else close
 
         result = pd.DataFrame(index=df.index)
-        result['strat_type'] = labels
+        result['strat_candle'] = labels
         result['strat_combo'] = 'none'
         result['strat_setup'] = False
         result['trigger_high'] = trigger_high
         result['trigger_low'] = trigger_low
 
-        # --- Reversal combos ---
+        # Helper: only assign where strat_combo is still 'none'
+        def _empty():
+            return result['strat_combo'] == 'none'
 
-        # 2D-1-2U Reversal (Bullish): bearish move -> compression -> bullish breakout
+        # ── Priority 1: 212 REV (3-bar reversal after coil) ──────────
         mask_212_bull = (prev2 == '2D') & (prev1 == '1') & (df['High'] > one_bar_high)
-        result.loc[mask_212_bull, 'strat_combo'] = '2D-1-2U_reversal'
+        result.loc[mask_212_bull, 'strat_combo'] = '212_bull_reversal'
 
-        # 2U-1-2D Reversal (Bearish): bullish move -> compression -> bearish breakout
         mask_212_bear = (prev2 == '2U') & (prev1 == '1') & (df['Low'] < one_bar_low)
-        result.loc[mask_212_bear, 'strat_combo'] = '2U-1-2D_reversal'
+        result.loc[mask_212_bear, 'strat_combo'] = '212_bear_reversal'
 
-        # 3-1-2U Reversal (Bullish): outside bar -> compression -> bullish
+        # ── Priority 2: 312 REV (outside bar digested) ───────────────
         mask_312_bull = (prev2 == '3') & (prev1 == '1') & (df['High'] > one_bar_high)
-        result.loc[mask_312_bull, 'strat_combo'] = '3-1-2U_reversal'
+        result.loc[mask_312_bull & _empty(), 'strat_combo'] = '312_bull_reversal'
 
-        # 3-1-2D Reversal (Bearish): outside bar -> compression -> bearish
         mask_312_bear = (prev2 == '3') & (prev1 == '1') & (df['Low'] < one_bar_low)
-        result.loc[mask_312_bear, 'strat_combo'] = '3-1-2D_reversal'
+        result.loc[mask_312_bear & _empty(), 'strat_combo'] = '312_bear_reversal'
 
-        # --- Failed 2U / Failed 2D (RevStrat reversals) ---
-        #
-        # The current bar prints as a directional 2 but closes back inside the
-        # PRIOR bar's range — i.e. the breakout failed and reversed. These are
-        # the highest-prob single-bar reversal signals in the community recaps
-        # (see tradingview-pine-scripts/strat-assistant-v2 for the Pine
-        # equivalents named 122_RevStrat_Bull/Bear). Locked definition:
-        #   Failed_2U: bar prints higher high than prior bar but closes back
-        #              inside prior bar's range (close <= prev_high).
-        #   Failed_2D: bar prints lower low than prior bar but closes back
-        #              inside prior bar's range (close >= prev_low).
-        prev_high = df['High'].shift(1)
-        prev_low = df['Low'].shift(1)
-        mask_failed_2u = (labels == '2U') & (close <= prev_high)
-        mask_failed_2d = (labels == '2D') & (close >= prev_low)
-        # Failed reversals override prior tags — they are the actionable signal
-        result.loc[mask_failed_2u, 'strat_combo'] = 'Failed_2U'
-        result.loc[mask_failed_2d, 'strat_combo'] = 'Failed_2D'
+        # ── Priority 3: 212 CON (continuation after coil) ────────────
+        mask_212con_bull = (prev2 == '2U') & (prev1 == '1') & (df['High'] > one_bar_high)
+        result.loc[mask_212con_bull & _empty(), 'strat_combo'] = '212_bull_continuation'
 
-        # --- Continuation combos ---
+        mask_212con_bear = (prev2 == '2D') & (prev1 == '1') & (df['Low'] < one_bar_low)
+        result.loc[mask_212con_bear & _empty(), 'strat_combo'] = '212_bear_continuation'
 
-        # 2U-1-2U Continuation (Bullish)
-        mask_cont_bull = (prev2 == '2U') & (prev1 == '1') & (df['High'] > one_bar_high)
-        # Only mark as continuation if not already marked as reversal
-        cont_bull_only = mask_cont_bull & (result['strat_combo'] == 'none')
-        result.loc[cont_bull_only, 'strat_combo'] = '2U-1-2U_continuation'
+        # ── Priority 4: 132 (coil, explode, follow-through) ──────────
+        mask_132_bull = (prev2 == '1') & (prev1 == '3') & (labels == '2U')
+        result.loc[mask_132_bull & _empty(), 'strat_combo'] = '132_bull_continuation'
 
-        # 2D-1-2D Continuation (Bearish)
-        mask_cont_bear = (prev2 == '2D') & (prev1 == '1') & (df['Low'] < one_bar_low)
-        cont_bear_only = mask_cont_bear & (result['strat_combo'] == 'none')
-        result.loc[cont_bear_only, 'strat_combo'] = '2D-1-2D_continuation'
+        mask_132_bear = (prev2 == '1') & (prev1 == '3') & (labels == '2D')
+        result.loc[mask_132_bear & _empty(), 'strat_combo'] = '132_bear_continuation'
 
-        # Simple two-bar continuations (used in community recaps as plain
-        # "2U continuation" / "2D continuation" — distinct from the 3-bar
-        # variants above which require a compressed inside bar between).
-        mask_22u = (prev1 == '2U') & (labels == '2U')
-        mask_22d = (prev1 == '2D') & (labels == '2D')
-        result.loc[mask_22u & (result['strat_combo'] == 'none'), 'strat_combo'] = '2U_continuation'
-        result.loc[mask_22d & (result['strat_combo'] == 'none'), 'strat_combo'] = '2D_continuation'
+        # ── Priority 5: 322 (expansion then direction confirmed) ─────
+        mask_322_bull = (prev2 == '3') & (prev1 == '2U') & (labels == '2U')
+        result.loc[mask_322_bull & _empty(), 'strat_combo'] = '322_bull_continuation'
 
-        # --- 3-bar exhaustion / reversal ---
+        mask_322_bear = (prev2 == '3') & (prev1 == '2D') & (labels == '2D')
+        result.loc[mask_322_bear & _empty(), 'strat_combo'] = '322_bear_continuation'
 
-        # 3-2 Reversal: outside bar followed by directional bar opposite to close
-        prev1_bullish_close = close.shift(1) > df['Open'].shift(1) if 'Open' in df.columns else pd.Series(False, index=df.index)
-        mask_3_rev_bear = (prev1 == '3') & prev1_bullish_close & (labels == '2D')
-        mask_3_rev_bull = (prev1 == '3') & (~prev1_bullish_close) & (labels == '2U')
-        result.loc[mask_3_rev_bear & (result['strat_combo'] == 'none'), 'strat_combo'] = '3-2D_reversal'
-        result.loc[mask_3_rev_bull & (result['strat_combo'] == 'none'), 'strat_combo'] = '3-2U_reversal'
+        # ── Priority 6: 32 REV (outside bar then directional) ────────
+        prev1_bullish_close = (
+            close.shift(1) > open_col.shift(1)
+            if 'Open' in df.columns
+            else pd.Series(False, index=df.index)
+        )
+        mask_32_bull = (prev1 == '3') & (~prev1_bullish_close) & (labels == '2U')
+        result.loc[mask_32_bull & _empty(), 'strat_combo'] = '32_bull_reversal'
 
-        # --- Setup detection (inside bar forming after directional bar) ---
+        mask_32_bear = (prev1 == '3') & prev1_bullish_close & (labels == '2D')
+        result.loc[mask_32_bear & _empty(), 'strat_combo'] = '32_bear_reversal'
+
+        # ── Priority 7: 22 REV (consecutive opposite-direction) ──────
+        mask_22rev_bull = (prev1 == '2D') & (labels == '2U')
+        result.loc[mask_22rev_bull & _empty(), 'strat_combo'] = '22_bull_reversal'
+
+        mask_22rev_bear = (prev1 == '2U') & (labels == '2D')
+        result.loc[mask_22rev_bear & _empty(), 'strat_combo'] = '22_bear_reversal'
+
+        # ── Priority 8: 22 CON (consecutive same-direction) ──────────
+        mask_22con_bull = (prev1 == '2U') & (labels == '2U')
+        result.loc[mask_22con_bull & _empty(), 'strat_combo'] = '22_bull_continuation'
+
+        mask_22con_bear = (prev1 == '2D') & (labels == '2D')
+        result.loc[mask_22con_bear & _empty(), 'strat_combo'] = '22_bear_continuation'
+
+        # ── Priority 9: Multi-inside (1-1 and 1-1-1 compression) ─────
+        mask_111 = (prev3 == '1') & (prev2 == '1') & (prev1 == '1') & (labels == '1')
+        result.loc[mask_111 & _empty(), 'strat_combo'] = '111_inside_compression'
+
+        mask_11 = (prev1 == '1') & (labels == '1')
+        result.loc[mask_11 & _empty(), 'strat_combo'] = '11_inside_compression'
+
+        # ── Priority 10: Failed 2U / Failed 2D (close vs open) ───────
+        # See docs/STRAT_METHODOLOGY.md §2. A bar that breaks one side
+        # of the prior range but closes opposite to the break direction.
+        # close < open = bearish close; close > open = bullish close.
+        mask_f2u = (labels == '2U') & (close < open_col)
+        result.loc[mask_f2u & _empty(), 'strat_combo'] = 'f2u_bear_reversal'
+
+        mask_f2d = (labels == '2D') & (close > open_col)
+        result.loc[mask_f2d & _empty(), 'strat_combo'] = 'f2d_bull_reversal'
+
+        # ── Priority 11: Clean 2U / Clean 2D (no multi-bar context) ──
+        mask_clean_2u = (labels == '2U') & (close >= open_col)
+        result.loc[mask_clean_2u & _empty(), 'strat_combo'] = 'clean_2u_bull'
+
+        mask_clean_2d = (labels == '2D') & (close <= open_col)
+        result.loc[mask_clean_2d & _empty(), 'strat_combo'] = 'clean_2d_bear'
+
+        # ── Setup detection (inside bar forming after directional) ────
         result['strat_setup'] = (labels == '1') & (prev1.isin(['2U', '2D', '3']))
 
-        # --- Consecutive inside bars (compression) ---
-        result['consecutive_1s'] = (labels == '1').astype(int).rolling(window=2, min_periods=1).sum()
+        # ── Consecutive inside bars (compression counter) ────────────
+        result['consecutive_1s'] = (
+            (labels == '1').astype(int).rolling(window=2, min_periods=1).sum()
+        )
 
         return result
 
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
     # Full Timeframe Continuity (FTFC)
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
 
     def calculate_ftfc(
         self,
@@ -219,7 +303,6 @@ class StratClassifier:
         Parameters
         ----------
         tf_dataframes : dict mapping timeframe label -> OHLCV DataFrame
-            Each DataFrame should have enough bars for classification.
         weights : optional dict of timeframe -> weight (must sum to ~1.0)
 
         Returns
@@ -247,7 +330,6 @@ class StratClassifier:
                 weighted_sum += w
             elif label == '2D':
                 weighted_sum -= w
-            # Type 1 and 3 contribute 0 (neutral)
 
             total_weight += w
 
@@ -266,9 +348,9 @@ class StratClassifier:
 
         return score, direction, tf_labels
 
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
     # Signal integration bonus
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
 
     def get_strat_bonus(
         self,
@@ -277,7 +359,7 @@ class StratClassifier:
         ftfc_score: float,
         ftfc_threshold: float = None,
         orb_trend: int = 0,
-    ) -> int:
+    ) -> float:
         """Calculate bonus points for combined scoring.
 
         Parameters
@@ -286,52 +368,37 @@ class StratClassifier:
         combo : strat combo label from detect_combos()
         ftfc_score : -1.0 to +1.0 from calculate_ftfc()
         ftfc_threshold : minimum absolute FTFC score for bonus
-            (defaults to config.ftfc_threshold)
         orb_trend : ORB trend direction (1=bullish, -1=bearish, 0=neutral)
 
         Returns
         -------
-        bonus : 0 to 3 (or negative if FTFC strongly contradicts)
+        bonus : float (can be negative if pattern/FTFC opposes direction)
         """
         if ftfc_threshold is None:
             ftfc_threshold = self.config.ftfc_threshold
 
-        combo_bonus = self.config.combo_bonus
-        ftfc_bonus = self.config.ftfc_bonus
-        orb_alignment_bonus = self.config.orb_alignment_bonus
+        bonus = 0.0
 
-        bonus = 0
+        # Per-combo bonus from the scoring tables
+        if signal_direction == 'CALL':
+            bonus += COMBO_BONUS_CALL.get(combo, 0.0)
+        elif signal_direction == 'PUT':
+            bonus += COMBO_BONUS_PUT.get(combo, 0.0)
 
-        # +combo_bonus for aligned Strat combo
-        # Failed_2U is a bearish reversal signal (rejected breakout) → favors PUT.
-        # Failed_2D is a bullish reversal signal (rejected breakdown) → favors CALL.
-        # Plain 2U/2D continuations align with their direction.
-        if signal_direction == 'CALL' and combo in (
-            '2D-1-2U_reversal', '3-1-2U_reversal', '3-2U_reversal',
-            '2U-1-2U_continuation', '2U_continuation',
-            'Failed_2D',
-        ):
-            bonus += combo_bonus
-        elif signal_direction == 'PUT' and combo in (
-            '2U-1-2D_reversal', '3-1-2D_reversal', '3-2D_reversal',
-            '2D-1-2D_continuation', '2D_continuation',
-            'Failed_2U',
-        ):
-            bonus += combo_bonus
-
-        # +ftfc_bonus for FTFC alignment (or -ftfc_bonus for strong contradiction)
+        # FTFC alignment bonus / penalty
         if signal_direction == 'CALL':
             if ftfc_score >= ftfc_threshold:
-                bonus += ftfc_bonus
+                bonus += 1.0
             elif ftfc_score <= -ftfc_threshold:
-                bonus -= ftfc_bonus  # FTFC contradicts -- penalty
+                bonus -= 1.0
         elif signal_direction == 'PUT':
             if ftfc_score <= -ftfc_threshold:
-                bonus += ftfc_bonus
+                bonus += 1.0
             elif ftfc_score >= ftfc_threshold:
-                bonus -= ftfc_bonus
+                bonus -= 1.0
 
-        # +orb_alignment_bonus for ORB alignment
+        # ORB alignment bonus
+        orb_alignment_bonus = self.config.orb_alignment_bonus
         if signal_direction == 'CALL' and orb_trend == 1:
             bonus += orb_alignment_bonus
         elif signal_direction == 'PUT' and orb_trend == -1:
@@ -339,9 +406,9 @@ class StratClassifier:
 
         return bonus
 
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
     # Convenience: classify and add Strat columns to a DataFrame
-    # -----------------------------------------------------------------------
+    # ───────────────────────────────────────────────────────────────────────
 
     def add_strat_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Classify candles and detect combos, returning the original

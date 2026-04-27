@@ -36,16 +36,18 @@ COLUMN_MAP = {
 
 REQUIRED_COLUMNS = ['Open', 'High', 'Low', 'Close', 'Volume']
 
-# Resampling rules for pandas
+# Resampling rules for pandas (keys match FTFC weight keys)
 RESAMPLE_RULES = {
     '1m': '1min',
     '5m': '5min',
     '15m': '15min',
     '30m': '30min',
     '1h': '1h',
-    'D': '1D',
-    'W': 'W-FRI',
-    'M': 'ME',
+    '4h': '4h',
+    '12h': '12h',
+    '1d': '1D',
+    '1w': 'W-FRI',
+    '1mo': 'ME',
 }
 
 
@@ -326,7 +328,7 @@ class DataLoader:
 
         Parameters
         ----------
-        timeframe : one of '5m', '15m', '30m', '1h', 'D', 'W', 'M'
+        timeframe : one of '5m', '15m', '30m', '1h', '4h', '12h', '1d', '1w', '1mo'
         """
         rule = RESAMPLE_RULES.get(timeframe)
         if rule is None:
@@ -358,7 +360,7 @@ class DataLoader:
         Used for Strat FTFC calculation.
         """
         if timeframes is None:
-            timeframes = ['5m', '15m', '1h', 'D', 'W']
+            timeframes = ['5m', '15m', '1h', '4h', '12h', '1d', '1w']
 
         result = {}
         for tf in timeframes:
