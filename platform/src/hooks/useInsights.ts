@@ -66,11 +66,23 @@ export function useInsightHistory(ticker: string, limit = 20) {
 // useRunStatus until status transitions to 'done' or 'failed'.
 // ---------------------------------------------------------------------------
 
+// Variables accepted by the refresh mutation. ``asOf`` is optional —
+// when omitted the pipeline runs against live data.
+export interface RefreshVars {
+  ticker: string;
+  asOf?: string; // ISO date (YYYY-MM-DD) or ISO datetime
+}
+
 export function useRefreshInsight() {
   const qc = useQueryClient();
-  return useMutation<RefreshResponse, Error, string>({
-    mutationFn: async (ticker: string) => {
-      const r = await fetch(`/api/insights/report/${ticker}/refresh`, {
+  return useMutation<RefreshResponse, Error, RefreshVars | string>({
+    mutationFn: async (vars: RefreshVars | string) => {
+      // Backwards compatible: accept a bare ticker string for callers
+      // that don't yet pass an as_of cutoff.
+      const { ticker, asOf } =
+        typeof vars === 'string' ? { ticker: vars, asOf: undefined } : vars;
+      const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+      const r = await fetch(`/api/insights/report/${ticker}/refresh${qs}`, {
         method: 'POST',
       });
       if (!r.ok) {
@@ -79,9 +91,10 @@ export function useRefreshInsight() {
       }
       return r.json();
     },
-    onSuccess: (_data, ticker) => {
+    onSuccess: (_data, vars) => {
       // Nothing to invalidate yet — the run is still queued. The
       // run-status poll handles invalidation when it completes.
+      const ticker = typeof vars === 'string' ? vars : vars.ticker;
       qc.invalidateQueries({ queryKey: ['insight-history', ticker] });
     },
   });

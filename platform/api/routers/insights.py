@@ -19,9 +19,9 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 from uuid import UUID, uuid4
 
 from typing import AsyncGenerator
@@ -62,6 +62,41 @@ class RefreshResponse(BaseModel):
     run_id: str
     ticker: str
     status: str = "queued"
+    as_of: Optional[str] = None
+
+
+def _parse_as_of_param(raw: Optional[str]) -> Optional[Union[date, datetime]]:
+    """Parse the optional ?as_of= query string. Mirrors the Cloud Run
+    job's parser so the two paths agree on form acceptance and
+    future-date rejection. Returns None for empty/missing input."""
+    if not raw or not raw.strip():
+        return None
+    s = raw.strip()
+    try:
+        if len(s) == 10 and s.count("-") == 2:
+            parsed: Union[date, datetime] = date.fromisoformat(s)
+        else:
+            norm = s.replace("Z", "+00:00") if s.endswith("Z") else s
+            dt = datetime.fromisoformat(norm)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            parsed = dt
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"as_of must be ISO date or datetime: {exc}",
+        )
+    now = datetime.now(timezone.utc)
+    is_future = (
+        parsed > now if isinstance(parsed, datetime)
+        else parsed > now.date()
+    )
+    if is_future:
+        raise HTTPException(
+            status_code=400,
+            detail=f"as_of {s!r} is in the future",
+        )
+    return parsed
 
 
 class ReportEnvelope(BaseModel):
@@ -296,12 +331,16 @@ def _upsert_report(report: InsightReport) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _execute_pipeline(run_id: str, ticker: str) -> None:
+async def _execute_pipeline(
+    run_id: str,
+    ticker: str,
+    as_of: Optional[Union[date, datetime]] = None,
+) -> None:
     """Run the pipeline and persist the result + run-status transitions."""
     _update_run_status(run_id, "running")
     try:
         snapshot = load_routes_snapshot()
-        report = await run_insight_pipeline(ticker, snapshot=snapshot)
+        report = await run_insight_pipeline(ticker, as_of=as_of, snapshot=snapshot)
         report_id = _upsert_report(report)
         _update_run_status(run_id, "done", report_id=report_id)
     except Exception as exc:
@@ -644,6 +683,7 @@ async def get_insight_report_by_id(report_id: str):
 async def refresh_insight_report(
     ticker: str,
     background_tasks: BackgroundTasks,
+    as_of: Optional[str] = None,
 ):
     """Enqueue a fresh pipeline run for the ticker.
 
@@ -658,25 +698,39 @@ async def refresh_insight_report(
     google-cloud-tasks isn't importable we fall back to
     BackgroundTasks with a logged warning so the endpoint remains
     functional.
+
+    Pass ``as_of`` (ISO date or datetime, optionally with timezone)
+    to run a point-in-time replay — every summarizer freezes its
+    inputs to the data available at that cutoff.
     """
     ticker_up = ticker.upper()
+    parsed_as_of = _parse_as_of_param(as_of)
     trigger = "local_dev" if _is_local_dev() else "on_demand"
     run_id = _insert_run(ticker_up, trigger=trigger)
 
     if _is_local_dev():
-        background_tasks.add_task(_sync_run, run_id, ticker_up)
+        background_tasks.add_task(_sync_run, run_id, ticker_up, parsed_as_of)
     else:
-        enqueued = _enqueue_cloud_task(run_id, ticker_up)
+        enqueued = _enqueue_cloud_task(run_id, ticker_up, as_of_iso=as_of)
         if not enqueued:
             logger.warning(
                 "Cloud Tasks enqueue unavailable — falling back to BackgroundTasks"
             )
-            background_tasks.add_task(_sync_run, run_id, ticker_up)
+            background_tasks.add_task(_sync_run, run_id, ticker_up, parsed_as_of)
 
-    return RefreshResponse(run_id=run_id, ticker=ticker_up, status="queued")
+    return RefreshResponse(
+        run_id=run_id,
+        ticker=ticker_up,
+        status="queued",
+        as_of=str(parsed_as_of) if parsed_as_of else None,
+    )
 
 
-def _enqueue_cloud_task(run_id: str, ticker: str) -> bool:
+def _enqueue_cloud_task(
+    run_id: str,
+    ticker: str,
+    as_of_iso: Optional[str] = None,
+) -> bool:
     """Submit a Cloud Tasks message that runs the insight-pipeline
     Cloud Run job with INSIGHT_RUN_ID / INSIGHT_TICKER env overrides.
 
@@ -703,16 +757,17 @@ def _enqueue_cloud_task(run_id: str, ticker: str) -> bool:
     try:
         client = tasks_v2.CloudTasksClient()
         parent = client.queue_path(project, region, queue)
+        env_vars = [
+            {"name": "INSIGHT_RUN_ID", "value": run_id},
+            {"name": "INSIGHT_TICKER", "value": ticker},
+        ]
+        if as_of_iso:
+            env_vars.append({"name": "INSIGHT_AS_OF", "value": as_of_iso})
         body = json.dumps(
             {
                 "overrides": {
                     "containerOverrides": [
-                        {
-                            "env": [
-                                {"name": "INSIGHT_RUN_ID", "value": run_id},
-                                {"name": "INSIGHT_TICKER", "value": ticker},
-                            ]
-                        }
+                        {"env": env_vars}
                     ]
                 }
             }
@@ -733,10 +788,14 @@ def _enqueue_cloud_task(run_id: str, ticker: str) -> bool:
         return False
 
 
-def _sync_run(run_id: str, ticker: str) -> None:
+def _sync_run(
+    run_id: str,
+    ticker: str,
+    as_of: Optional[Union[date, datetime]] = None,
+) -> None:
     """Synchronous wrapper around the async pipeline for BackgroundTasks."""
     try:
-        asyncio.run(_execute_pipeline(run_id, ticker))
+        asyncio.run(_execute_pipeline(run_id, ticker, as_of=as_of))
     except Exception:
         logger.exception("background run %s failed", run_id)
 
