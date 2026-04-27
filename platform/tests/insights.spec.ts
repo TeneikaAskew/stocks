@@ -205,3 +205,169 @@ test.describe('AI Insights (structured)', () => {
     await expect(page.getByText(/breakout above prior-day high/i)).toBeVisible();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Point-in-time replay — datetime picker + ?as_of= query string
+// ---------------------------------------------------------------------------
+
+test.describe('AI Insights — point-in-time replay', () => {
+  /**
+   * Stand up the minimal mock surface every replay test needs:
+   *   - GET report          (initial render)
+   *   - GET history         (empty)
+   *   - POST refresh        (records the URL so we can assert on
+   *                          whether ?as_of= rode through)
+   *   - GET runs/{id}       (immediately reports done so polling
+   *                          terminates fast)
+   *
+   * Returns the array of refresh-URLs the page hit, so each test
+   * can assert exactly which query strings the UI sent.
+   */
+  async function installRoutes(page: import('@playwright/test').Page): Promise<string[]> {
+    const refreshUrls: string[] = [];
+
+    await page.route('**/api/insights/report/IWM', (route) =>
+      route.fulfill({ status: 200, body: JSON.stringify(MOCK_REPORT) })
+    );
+    await page.route('**/api/insights/report/IWM/history**', (route) =>
+      route.fulfill({
+        status: 200,
+        body: JSON.stringify({ ticker: 'IWM', count: 0, reports: [] }),
+      })
+    );
+    await page.route('**/api/insights/report/IWM/refresh**', (route) => {
+      refreshUrls.push(route.request().url());
+      return route.fulfill({
+        status: 200,
+        body: JSON.stringify({
+          run_id: '00000000-0000-0000-0000-000000000001',
+          ticker: 'IWM',
+          status: 'queued',
+        }),
+      });
+    });
+    await page.route('**/api/insights/runs/**', (route) =>
+      route.fulfill({
+        status: 200,
+        body: JSON.stringify({
+          id: '00000000-0000-0000-0000-000000000001',
+          ticker: 'IWM',
+          status: 'done',
+          trigger: 'local_dev',
+          started_at: '2026-04-15T14:30:05Z',
+          finished_at: '2026-04-15T14:30:17Z',
+          error: null,
+          report_id: 'abc',
+        }),
+      })
+    );
+    // The watchlist panel reads insights_watchlist; mock it as empty so
+    // the panel shows its empty state rather than blocking on a fetch.
+    await page.route('**/api/insights/watchlist**', (route) =>
+      route.fulfill({
+        status: 200,
+        body: JSON.stringify({ tickers: [] }),
+      })
+    );
+
+    return refreshUrls;
+  }
+
+  test('picker is rendered with a max-now cap on the input', async ({ page }) => {
+    await installRoutes(page);
+    await page.goto('/insights');
+    await page.waitForLoadState('networkidle');
+
+    const picker = page.getByLabel('Point-in-time cutoff');
+    await expect(picker).toBeVisible();
+
+    // The `max` attribute prevents users from picking a future moment
+    // in the date-picker UI. We assert two things, deliberately:
+    //   1. A parseable ISO datetime is set (proves the binding works).
+    //   2. The value is within ~1 day of now (proves it's tracking the
+    //      clock, not a hardcoded fallback). We can't be tighter than
+    //      that because <input type="datetime-local"> takes a *local*-
+    //      time string but the JS we hand it via toISOString() is UTC,
+    //      so re-parsing through `new Date()` re-applies the TZ offset
+    //      and the value drifts by up to 12-14 h depending on locale.
+    //      The 1-day window covers every real-world TZ.
+    const max = await picker.getAttribute('max');
+    expect(max).toBeTruthy();
+    const maxMs = new Date(max as string).getTime();
+    expect(Number.isFinite(maxMs)).toBeTruthy();
+    expect(Math.abs(maxMs - Date.now())).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+  });
+
+  test('button label flips between Re-analyze and Replay based on picker state', async ({
+    page,
+  }) => {
+    await installRoutes(page);
+    await page.goto('/insights');
+    await page.waitForLoadState('networkidle');
+
+    // Default state — no cutoff set → live re-analysis label.
+    const button = page.locator('button', { hasText: /^Re-analyze$|^Replay$/ });
+    await expect(button).toHaveText(/Re-analyze/);
+
+    // Setting a cutoff flips the label.
+    await page.getByLabel('Point-in-time cutoff').fill('2026-04-26T13:15');
+    await expect(button).toHaveText(/Replay/);
+
+    // Clearing the cutoff via the × control reverts.
+    await page.getByLabel('Clear cutoff').click();
+    await expect(button).toHaveText(/Re-analyze/);
+  });
+
+  test('clicking Replay sends ?as_of= encoded in the refresh URL', async ({ page }) => {
+    const refreshUrls = await installRoutes(page);
+    await page.goto('/insights');
+    await page.waitForLoadState('networkidle');
+
+    await page.getByLabel('Point-in-time cutoff').fill('2026-04-26T13:15');
+    await page.locator('button', { hasText: 'Replay' }).click();
+
+    // Wait for the refresh request to land — polling kicks in after.
+    await expect.poll(() => refreshUrls.length).toBeGreaterThanOrEqual(1);
+
+    const url = new URL(refreshUrls[0]);
+    expect(url.pathname).toBe('/api/insights/report/IWM/refresh');
+    // Browser datetime-local doesn't append a tz; the value goes through
+    // the API as-is and the server treats naive input as UTC.
+    expect(url.searchParams.get('as_of')).toBe('2026-04-26T13:15');
+  });
+
+  test('clicking Re-analyze with no cutoff sends a query-string-free URL', async ({
+    page,
+  }) => {
+    const refreshUrls = await installRoutes(page);
+    await page.goto('/insights');
+    await page.waitForLoadState('networkidle');
+
+    await page.locator('button', { hasText: 'Re-analyze' }).click();
+    await expect.poll(() => refreshUrls.length).toBeGreaterThanOrEqual(1);
+
+    const url = new URL(refreshUrls[0]);
+    expect(url.pathname).toBe('/api/insights/report/IWM/refresh');
+    expect(url.search).toBe('');
+  });
+
+  test('clearing the cutoff after setting it sends a live (no-as_of) refresh', async ({
+    page,
+  }) => {
+    const refreshUrls = await installRoutes(page);
+    await page.goto('/insights');
+    await page.waitForLoadState('networkidle');
+
+    // Set a cutoff so the button reads Replay …
+    await page.getByLabel('Point-in-time cutoff').fill('2026-04-26T13:15');
+    await expect(page.locator('button', { hasText: 'Replay' })).toBeVisible();
+    // … then clear it.
+    await page.getByLabel('Clear cutoff').click();
+    await expect(page.locator('button', { hasText: 'Re-analyze' })).toBeVisible();
+
+    await page.locator('button', { hasText: 'Re-analyze' }).click();
+    await expect.poll(() => refreshUrls.length).toBeGreaterThanOrEqual(1);
+
+    expect(new URL(refreshUrls[0]).search).toBe('');
+  });
+});

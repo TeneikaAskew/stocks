@@ -34,6 +34,10 @@ export default function InsightsPage() {
   const [refreshingTicker, setRefreshingTicker] = useState<string | null>(null);
   // When non-null, the Report tab shows a past report instead of latest.
   const [viewingHistoricalId, setViewingHistoricalId] = useState<string | null>(null);
+  // Optional point-in-time cutoff. When set, the next Re-analyze runs
+  // the pipeline against historical data only — every summarizer is
+  // frozen to what was visible at this date/time.
+  const [asOf, setAsOf] = useState<string>('');
 
   const reportQuery = useInsightReport(activeTicker);
   const historyQuery = useInsightHistory(activeTicker, 20);
@@ -61,10 +65,13 @@ export default function InsightsPage() {
     return undefined;
   }, [runStatus.data]);
 
-  const refreshFor = async (ticker: string) => {
+  const refreshFor = async (ticker: string, asOfOverride?: string) => {
     try {
       setRefreshingTicker(ticker);
-      const res = await refreshMut.mutateAsync(ticker);
+      const cutoff = asOfOverride ?? asOf;
+      const res = await refreshMut.mutateAsync(
+        cutoff ? { ticker, asOf: cutoff } : ticker,
+      );
       setCurrentRunId(res.run_id);
     } catch (e) {
       console.error('refresh failed', e);
@@ -84,7 +91,9 @@ export default function InsightsPage() {
     setTicker(ticker as import('@/types').Ticker);
     setTab('report');
     setViewingHistoricalId(null);
-    await refreshFor(ticker);
+    // Watchlist generations always run live — point-in-time is an
+    // explicit Report-tab opt-in, not a default.
+    await refreshFor(ticker, '');
   };
 
   const isRunning = !!currentRunId && runStatus.data?.status !== 'done' && runStatus.data?.status !== 'failed';
@@ -131,6 +140,30 @@ export default function InsightsPage() {
               {runStatus.data?.status ?? 'queued'}…
             </span>
           )}
+          <label className="flex items-center gap-1.5 text-xs text-[var(--on-surface-muted)]">
+            <span title="Point-in-time replay — runs the pipeline against data available at this date/time">
+              Replay as of
+            </span>
+            <input
+              type="datetime-local"
+              value={asOf}
+              onChange={(e) => setAsOf(e.target.value)}
+              max={new Date().toISOString().slice(0, 16)}
+              className="rounded-md border border-[var(--outline)] bg-transparent px-2 py-1 text-xs"
+              aria-label="Point-in-time cutoff"
+            />
+            {asOf && (
+              <button
+                type="button"
+                onClick={() => setAsOf('')}
+                className="text-[var(--on-surface-muted)] hover:text-[var(--on-surface)]"
+                aria-label="Clear cutoff"
+                title="Clear cutoff (run live)"
+              >
+                ×
+              </button>
+            )}
+          </label>
           <button
             onClick={onRefresh}
             disabled={refreshMut.isPending || isRunning}
@@ -141,7 +174,7 @@ export default function InsightsPage() {
             ) : (
               <RefreshCw size={14} />
             )}
-            Re-analyze
+            {asOf ? 'Replay' : 'Re-analyze'}
           </button>
         </div>
       </div>

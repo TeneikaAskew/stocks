@@ -32,8 +32,9 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Optional, Union
 from uuid import uuid4
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -101,6 +102,50 @@ def parse_tickers(raw: str) -> list[str]:
             seen.add(tk)
             out.append(tk)
     return out
+
+
+def parse_as_of(raw: Optional[str]) -> Optional[Union[date, datetime]]:
+    """Parse INSIGHT_AS_OF into a date or aware datetime.
+
+    Accepted forms (in order of precedence):
+      * ``YYYY-MM-DD``                   → ``date``
+      * ``YYYY-MM-DDTHH:MM[:SS][Z|±HH:MM]`` → tz-aware ``datetime``
+                                            (naive input is treated as UTC)
+
+    Returns ``None`` when ``raw`` is empty/whitespace so the pipeline
+    falls back to its default "as of now" behaviour.
+
+    Raises ``ValueError`` on a malformed string or a future-dated cutoff
+    so the caller can surface a clean error instead of silently running
+    against the live snapshot. The caller is responsible for translating
+    that into an exit-1 / 4xx response.
+    """
+    if not raw or not raw.strip():
+        return None
+    s = raw.strip()
+    parsed: Union[date, datetime]
+    # Date-only first — len 10 with two dashes is unambiguous
+    if len(s) == 10 and s.count("-") == 2:
+        parsed = date.fromisoformat(s)
+    else:
+        # Allow trailing 'Z' — Python <3.11 datetime.fromisoformat doesn't
+        norm = s.replace("Z", "+00:00") if s.endswith("Z") else s
+        dt = datetime.fromisoformat(norm)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        parsed = dt
+    # Future-dated cutoffs are almost always a typo — reject so the user
+    # sees a clean error instead of getting a "live" report mislabelled
+    # as historical.
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    if isinstance(parsed, datetime):
+        if parsed > now:
+            raise ValueError(f"INSIGHT_AS_OF {s!r} is in the future")
+    else:
+        if parsed > today:
+            raise ValueError(f"INSIGHT_AS_OF {s!r} is in the future")
+    return parsed
 
 
 def classify_trigger(tickers: list[str]) -> str:
@@ -218,14 +263,27 @@ def _upsert_report(report: InsightReport) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _run_one(run_id: str, ticker: str) -> bool:
+async def _run_one(
+    run_id: str,
+    ticker: str,
+    as_of: Optional[Union[date, datetime]] = None,
+) -> bool:
     """Execute one pipeline run and persist transitions. Returns True
-    on success."""
-    logger.info("[run_id=%s] starting pipeline for %s", run_id, ticker)
+    on success.
+
+    ``as_of`` (when provided) freezes every summarizer to the data
+    available at that cutoff — daily bars, options snapshots, news,
+    catalysts. The orchestrator threads it through unchanged.
+    """
+    logger.info(
+        "[run_id=%s] starting pipeline for %s%s",
+        run_id, ticker,
+        f" as_of={as_of}" if as_of else "",
+    )
     _transition(run_id, "running")
     try:
         snapshot = load_routes_snapshot()
-        report = await run_insight_pipeline(ticker, snapshot=snapshot)
+        report = await run_insight_pipeline(ticker, as_of=as_of, snapshot=snapshot)
         report_id = _upsert_report(report)
         _transition(run_id, "done", report_id=report_id)
         logger.info(
@@ -251,13 +309,23 @@ async def _run_one(run_id: str, ticker: str) -> bool:
 async def _run_on_demand() -> int:
     run_id = os.environ["INSIGHT_RUN_ID"]
     ticker = os.environ["INSIGHT_TICKER"]
-    ok = await _run_one(run_id, ticker)
+    try:
+        as_of = parse_as_of(os.environ.get("INSIGHT_AS_OF"))
+    except ValueError as exc:
+        logger.error("INSIGHT_AS_OF invalid: %s", exc)
+        return 1
+    ok = await _run_one(run_id, ticker, as_of=as_of)
     return 0 if ok else 1
 
 
 async def _run_scheduled() -> int:
     tickers_env = os.environ.get("INSIGHT_TICKERS", ",".join(DEFAULT_TICKERS))
     tickers = parse_tickers(tickers_env)
+    try:
+        as_of = parse_as_of(os.environ.get("INSIGHT_AS_OF"))
+    except ValueError as exc:
+        logger.error("INSIGHT_AS_OF invalid: %s", exc)
+        return 1
     if not tickers:
         logger.error("INSIGHT_TICKERS parsed to empty list (raw=%r); refusing to run", tickers_env)
         return 1
@@ -281,14 +349,14 @@ async def _run_scheduled() -> int:
 
     trigger = classify_trigger(tickers)
     logger.info(
-        "scheduled run starting: trigger=%s ticker_count=%d max_batch=%d override=%s tickers=%s",
-        trigger, len(tickers), max_batch, override, tickers,
+        "scheduled run starting: trigger=%s ticker_count=%d max_batch=%d override=%s as_of=%s tickers=%s",
+        trigger, len(tickers), max_batch, override, as_of, tickers,
     )
 
     any_failures = False
     for ticker in tickers:
         run_id = _insert_run(ticker, trigger=trigger)
-        ok = await _run_one(run_id, ticker)
+        ok = await _run_one(run_id, ticker, as_of=as_of)
         if not ok:
             any_failures = True
     # Scheduled runs exit 0 even on partial failure — one ticker's
