@@ -188,6 +188,145 @@ def _fmt_risk_flags_field(risk_flags: list) -> str:
     return _truncate("\n".join(lines), MAX_FIELD_VALUE) if lines else "—"
 
 
+# Lookback the live LLM analyst uses for the sentiment summary. Mirrored
+# here so the Discord embed shows the same window the model weighed.
+NEWS_LOOKBACK_HOURS_DEFAULT = 48
+NEWS_TOP_N = 4
+
+
+def fetch_top_news_articles(
+    ticker: str,
+    as_of: Any,
+    lookback_hours: int = NEWS_LOOKBACK_HOURS_DEFAULT,
+    limit: int = NEWS_TOP_N,
+) -> list[dict]:
+    """Pull the top-relevance news_sentiment rows ending at ``as_of``.
+
+    Decoupled from the saved insight report — the report payload doesn't
+    persist headlines, so we re-query at push time. This keeps
+    insight_reports.report compact and lets a re-push (e.g. after a
+    Discord drop) surface fresh headlines if late-arriving rows landed.
+
+    The window is the same one ``summarizers.summarize_news_sentiment``
+    uses: 48h ending at the start of (as_of_date + 1) when as_of is a
+    date, or the literal cutoff when it's a datetime. We resolve here
+    via SQL so the discord-push job stays free of the summarizers import.
+
+    Returns ``[]`` on any DB error or empty result — callers should treat
+    a missing list as "render the failed-sentiment placeholder."
+    """
+    if as_of is None:
+        return []
+    # Accept both date and datetime; render as ISO for SQL.
+    as_of_str = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
+    is_datetime = "T" in as_of_str or " " in as_of_str
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        if is_datetime:
+            cur.execute(
+                """
+                SELECT title, sentiment_score, relevance_score, source, published_ts
+                FROM news_sentiment
+                WHERE ticker = %s
+                  AND published_ts <  %s::timestamptz
+                  AND published_ts >= %s::timestamptz - (%s || ' hours')::interval
+                ORDER BY relevance_score DESC NULLS LAST
+                LIMIT %s
+                """,
+                (ticker.upper(), as_of_str, as_of_str, lookback_hours, limit),
+            )
+        else:
+            # Date input — same +1day end, 48h start convention as
+            # summarize_news_sentiment so the LLM and the Discord push
+            # see identical samples.
+            cur.execute(
+                """
+                SELECT title, sentiment_score, relevance_score, source, published_ts
+                FROM news_sentiment
+                WHERE ticker = %s
+                  AND published_ts <  (%s::date + INTERVAL '1 day')
+                  AND published_ts >= (%s::date + INTERVAL '1 day') - (%s || ' hours')::interval
+                ORDER BY relevance_score DESC NULLS LAST
+                LIMIT %s
+                """,
+                (ticker.upper(), as_of_str, as_of_str, lookback_hours, limit),
+            )
+        rows = cur.fetchall()
+    except Exception:
+        logger.exception("fetch_top_news_articles failed for %s @ %s", ticker, as_of_str)
+        return []
+    finally:
+        conn.close()
+    return [
+        {
+            "title": r[0],
+            "sentiment_score": r[1],
+            "relevance_score": r[2],
+            "source": r[3],
+            "published_ts": r[4],
+        }
+        for r in rows
+    ]
+
+
+def _sentiment_label(score: Optional[float]) -> str:
+    """Sentiment buckets matching AlphaVantage's standard cutoffs."""
+    if score is None:
+        return "n/a"
+    if score >  0.35: return "Bullish"
+    if score >  0.15: return "Somewhat-Bullish"
+    if score > -0.15: return "Neutral"
+    if score > -0.35: return "Somewhat-Bearish"
+    return "Bearish"
+
+
+def _fmt_news_field(
+    articles: list[dict],
+    failed_sections: Optional[list] = None,
+) -> str:
+    """Render the news block — title-led so the operator sees what's
+    actually being said, not just whether sources agreed.
+
+    Format per article:
+        • **<headline (≤90 chars)>**
+          _<source> • sent +0.42_
+
+    The header line carries the aggregate read (mean sentiment + label
+    + article count) so a glance answers "is the news bullish?". When
+    `failed_sections` includes 'sentiment' OR no articles came back,
+    we render a clear failure placeholder instead of an empty block.
+    """
+    failed = failed_sections or []
+    if "sentiment" in failed:
+        return "_⚠️ sentiment unavailable — fetch failed for this run._"
+    if not articles:
+        return "_No articles in window — sentiment unavailable._"
+
+    scored = [a.get("sentiment_score") for a in articles if a.get("sentiment_score") is not None]
+    avg = (sum(scored) / len(scored)) if scored else None
+    avg_str = f"{avg:+.3f}" if avg is not None else "n/a"
+    header = (
+        f"**Mean sentiment:** {avg_str} ({_sentiment_label(avg)})  •  "
+        f"**Top {min(len(articles), NEWS_TOP_N)}:**\n\n"
+    )
+    chars_left = MAX_FIELD_VALUE - len(header) - 8
+    lines: list[str] = []
+    for a in articles[:NEWS_TOP_N]:
+        title = (a.get("title") or "(no title)").strip()
+        if len(title) > 90:
+            title = title[:87].rstrip() + "…"
+        sent = a.get("sentiment_score")
+        sent_str = f"{sent:+.2f}" if isinstance(sent, (int, float)) else "n/a"
+        src = (a.get("source") or "?")[:18]
+        line = f"• **{title}**\n  _{src} • sent {sent_str}_"
+        if chars_left - len(line) - 1 < 0:
+            break
+        lines.append(line)
+        chars_left -= len(line) + 1
+    return _truncate(header + "\n".join(lines), MAX_FIELD_VALUE)
+
+
 def _fmt_catalysts_field(catalysts: list) -> str:
     """Render upcoming catalysts as a compact bulleted list."""
     if not catalysts:
@@ -247,6 +386,11 @@ def format_report_embed(row: dict) -> dict:
     if strat.get("in_force_combo"):
         strat_lines.append(f"Combo `{strat['in_force_combo']}`")
 
+    # Pull the same headlines the LLM analyst weighed. Re-queried at push
+    # time because the saved insight_reports.report payload doesn't
+    # persist article-level data (intentional — keeps the JSON compact).
+    news_articles = fetch_top_news_articles(row.get("ticker", ""), row.get("as_of"))
+
     fields = [
         {
             "name": "📐 Trade plan",
@@ -261,6 +405,11 @@ def format_report_embed(row: dict) -> dict:
         {
             "name": "📍 Key levels",
             "value": _fmt_levels_field(r.get("key_levels") or {}),
+            "inline": False,
+        },
+        {
+            "name": "📰 News (48h)",
+            "value": _fmt_news_field(news_articles, failed_sections=failed),
             "inline": False,
         },
         {
