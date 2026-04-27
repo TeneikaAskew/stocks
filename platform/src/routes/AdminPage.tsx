@@ -9,21 +9,38 @@ import {
   useUpdateAdminRoute,
   type AvailableModelRow,
 } from '@/hooks/useAdmin';
+import { useUser } from '@/hooks/useUser';
 
 // ---------------------------------------------------------------------------
 // Admin page — per-role model routing dashboard.
 //
-// Auth: the user supplies the admin token once per tab; it's stored in
-// sessionStorage and sent as X-Admin-Token on every request. The token
-// is NEVER in a Vite env var, so shipping the bundle doesn't leak it.
+// Auth: If the user is the admin email (via IAP), they bypass the token gate
+// entirely. Otherwise, a token must be entered per-tab (sessionStorage).
 // ---------------------------------------------------------------------------
 
 export default function AdminPage() {
+  const { isAdmin, isLoading: userLoading } = useUser();
   const [token, setToken] = useState<string | null>(getAdminToken());
+
+  if (userLoading) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <Loader2 size={18} className="animate-spin text-[var(--color-text-muted)]" />
+      </div>
+    );
+  }
+
+  // Admin email gets straight through — no token needed
+  const authed = isAdmin || !!token;
+
   return (
     <div className="mx-auto max-w-4xl p-4">
       <h1 className="mb-4 text-lg font-semibold text-[var(--color-text-primary)]">Admin</h1>
-      {token ? <RoutingPanel onLogout={() => { clearAdminToken(); setToken(null); }} /> : <TokenGate onAuthed={(t) => setToken(t)} />}
+      {authed ? (
+        <RoutingPanel onLogout={() => { clearAdminToken(); setToken(null); }} showLogout={!isAdmin} />
+      ) : (
+        <TokenGate onAuthed={(t) => setToken(t)} />
+      )}
     </div>
   );
 }
@@ -108,7 +125,7 @@ function TokenGate({ onAuthed }: { onAuthed: (token: string) => void }) {
 // Routing panel
 // ---------------------------------------------------------------------------
 
-function RoutingPanel({ onLogout }: { onLogout: () => void }) {
+function RoutingPanel({ onLogout, showLogout = true }: { onLogout: () => void; showLogout?: boolean }) {
   const routesQuery = useAdminRoutes(true);
   const modelsQuery = useAdminModels(true);
   const updateMut = useUpdateAdminRoute();
@@ -171,13 +188,15 @@ function RoutingPanel({ onLogout }: { onLogout: () => void }) {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium text-[var(--color-text-primary)]">Model Routing</h2>
-        <button
-          onClick={onLogout}
-          className="flex items-center gap-1 rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
-          data-testid="admin-logout"
-        >
-          <LogOut size={12} /> Sign out
-        </button>
+        {showLogout && (
+          <button
+            onClick={onLogout}
+            className="flex items-center gap-1 rounded border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"
+            data-testid="admin-logout"
+          >
+            <LogOut size={12} /> Sign out
+          </button>
+        )}
       </div>
 
       <div className="overflow-x-auto rounded-lg border border-[var(--color-border)]" data-testid="admin-routes-table">

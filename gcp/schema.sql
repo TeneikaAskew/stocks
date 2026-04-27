@@ -887,3 +887,33 @@ CREATE INDEX IF NOT EXISTS idx_historical_signals_strength
 
 CREATE INDEX IF NOT EXISTS idx_historical_signals_direction
     ON historical_signals (ticker, trade_type, entry_time DESC);
+
+
+-- ─────────────────────────────────────────────────────────
+-- TICKER INFO (Alpha Vantage OVERVIEW cache, per-user ready)
+-- ─────────────────────────────────────────────────────────
+-- One row per ticker. Populated by lib.ticker_info on first
+-- watchlist add or periodic refresh. Provides company name,
+-- sector, industry for the news-feed alias-matching pipeline.
+
+CREATE TABLE IF NOT EXISTS ticker_info (
+    ticker          VARCHAR(10)  PRIMARY KEY,
+    name            VARCHAR(200),
+    exchange        VARCHAR(20),
+    sector          VARCHAR(100),
+    industry        VARCHAR(200),
+    market_cap      BIGINT,
+    description     TEXT,
+    asset_type      VARCHAR(20),        -- 'Common Stock', 'ETF', etc.
+    raw_json        JSONB,              -- full AV OVERVIEW response (trimmed)
+    inserted_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticker_info_sector
+    ON ticker_info (sector);
+
+DROP TRIGGER IF EXISTS trg_ticker_info_updated ON ticker_info;
+CREATE TRIGGER trg_ticker_info_updated
+    BEFORE UPDATE ON ticker_info
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();

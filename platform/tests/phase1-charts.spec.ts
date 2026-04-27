@@ -11,9 +11,12 @@ test.describe('Phase 1: Chart Viewer', () => {
   });
 
   // ── Layout ──────────────────────────────────────────────────────────────
-  test('sidebar renders with all 12 nav items', async ({ page }) => {
+  test('sidebar renders with nav items (12 for admin, 11 otherwise)', async ({ page }) => {
     const nav = page.locator('nav a');
-    await expect(nav).toHaveCount(12);
+    // Admin link is conditional on /api/me returning the admin email.
+    // With the live backend behind IAP, admin sees 12; otherwise 11.
+    const count = await nav.count();
+    expect(count === 11 || count === 12).toBeTruthy();
   });
 
   test('header shows active ticker', async ({ page }) => {

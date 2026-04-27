@@ -29,10 +29,15 @@ async function collectConsoleErrors(page: Page): Promise<string[]> {
 }
 
 test.describe('Navigation smoke', () => {
-  test('sidebar renders with all 10 nav items', async ({ page }) => {
+  test('sidebar renders with correct nav items for non-admin', async ({ page }) => {
+    // Without IAP, /api/me returns null → Admin link hidden → 11 items
+    await page.route('**/api/me', (route) =>
+      route.fulfill({ status: 200, body: JSON.stringify({ email: null }) })
+    );
     await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('networkidle');
     const nav = page.locator('nav a');
-    await expect(nav).toHaveCount(10);
+    await expect(nav).toHaveCount(11);
   });
 
   for (const { path, heading } of ROUTES) {

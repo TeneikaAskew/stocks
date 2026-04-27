@@ -314,6 +314,176 @@ def _is_local_dev() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Ticker search, info & quote (Alpha Vantage via lib.ticker_info)
+# ---------------------------------------------------------------------------
+
+
+class TickerSearchResult(BaseModel):
+    symbol: str
+    name: str
+    type: str
+    region: str
+    currency: str
+    match_score: float
+
+
+class TickerInfoResult(BaseModel):
+    symbol: str | None = None
+    name: str | None = None
+    exchange: str | None = None
+    sector: str | None = None
+    industry: str | None = None
+    market_cap: str | None = None
+    asset_type: str | None = None
+    description: str | None = None
+
+
+class TickerQuoteResult(BaseModel):
+    symbol: str
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    price: float | None = None
+    volume: int | None = None
+    latest_trading_day: str | None = None
+    previous_close: float | None = None
+    change: float | None = None
+    change_percent: str | None = None
+
+
+class WatchlistAddRequest(BaseModel):
+    ticker: str
+
+
+class WatchlistAddResponse(BaseModel):
+    ticker: str
+    added: bool
+    info: TickerInfoResult | None = None
+    quote: TickerQuoteResult | None = None
+    watchlist: list[str]
+
+
+@router.get("/api/insights/ticker/search")
+async def search_tickers(keywords: str, limit: int = 10):
+    """Search for tickers by keyword (company name, symbol, etc).
+
+    Proxies to Alpha Vantage SYMBOL_SEARCH. Used by the watchlist
+    add-ticker autocomplete.
+    """
+    from lib.ticker_info import search_tickers as av_search
+
+    if not keywords.strip():
+        raise HTTPException(status_code=400, detail="keywords required")
+    results = av_search(keywords.strip(), limit=min(limit, 20))
+    return {"keywords": keywords, "results": results}
+
+
+@router.get("/api/insights/ticker/{ticker}/info")
+async def get_ticker_info(ticker: str):
+    """Return cached ticker details (AV OVERVIEW), fetching if needed."""
+    from lib.ticker_info import get_ticker_info as av_info
+
+    info = av_info(ticker.upper())
+    if not info:
+        raise HTTPException(status_code=404, detail=f"No info for {ticker.upper()}")
+    return TickerInfoResult(
+        symbol=info.get("Symbol"),
+        name=info.get("Name"),
+        exchange=info.get("Exchange"),
+        sector=info.get("Sector"),
+        industry=info.get("Industry"),
+        market_cap=info.get("MarketCapitalization"),
+        asset_type=info.get("AssetType"),
+        description=info.get("Description"),
+    )
+
+
+@router.get("/api/insights/ticker/{ticker}/quote")
+async def get_ticker_quote(ticker: str):
+    """Return latest price/volume from AV GLOBAL_QUOTE."""
+    from lib.ticker_info import get_quote as av_quote
+
+    quote = av_quote(ticker.upper())
+    if not quote:
+        raise HTTPException(status_code=404, detail=f"No quote for {ticker.upper()}")
+    return TickerQuoteResult(**quote)
+
+
+@router.post("/api/insights/watchlist/add")
+async def add_to_watchlist(body: WatchlistAddRequest):
+    """Add a ticker to the watchlist and return its info + quote.
+
+    Fetches AV OVERVIEW (cached) and GLOBAL_QUOTE so the UI can
+    immediately display the ticker details without a second round-trip.
+    Also persists the ticker to alert_config.json.
+    """
+    from lib.ticker_info import get_ticker_info as av_info, get_quote as av_quote
+
+    ticker = body.ticker.strip().upper()
+    if not ticker:
+        raise HTTPException(status_code=400, detail="ticker required")
+
+    # Add to alert_config.json watchlist
+    config_path = PROJECT_ROOT / "alert_config.json"
+    watchlist: list[str] = []
+    added = False
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        watchlist = data.get("watchlist", [])
+        if ticker not in [t.upper() for t in watchlist]:
+            watchlist.append(ticker)
+            data["watchlist"] = watchlist
+            config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            added = True
+        else:
+            watchlist = [t.upper() for t in watchlist]
+    except Exception as exc:
+        logger.warning("Failed to update watchlist: %s", exc)
+
+    # Fetch info + quote in sequence (AV rate limit)
+    info_raw = av_info(ticker)
+    info = None
+    if info_raw:
+        info = TickerInfoResult(
+            symbol=info_raw.get("Symbol"),
+            name=info_raw.get("Name"),
+            exchange=info_raw.get("Exchange"),
+            sector=info_raw.get("Sector"),
+            industry=info_raw.get("Industry"),
+            market_cap=info_raw.get("MarketCapitalization"),
+            asset_type=info_raw.get("AssetType"),
+            description=info_raw.get("Description"),
+        )
+
+    quote_raw = av_quote(ticker)
+    quote = TickerQuoteResult(**quote_raw) if quote_raw else None
+
+    return WatchlistAddResponse(
+        ticker=ticker,
+        added=added,
+        info=info,
+        quote=quote,
+        watchlist=[t.upper() for t in watchlist],
+    )
+
+
+@router.delete("/api/insights/watchlist/{ticker}")
+async def remove_from_watchlist(ticker: str):
+    """Remove a ticker from the watchlist."""
+    ticker = ticker.strip().upper()
+    config_path = PROJECT_ROOT / "alert_config.json"
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        watchlist = data.get("watchlist", [])
+        watchlist = [t for t in watchlist if t.upper() != ticker]
+        data["watchlist"] = watchlist
+        config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return {"ticker": ticker, "removed": True, "watchlist": watchlist}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
 # Watchlist (deterministic ranker)
 # ---------------------------------------------------------------------------
 

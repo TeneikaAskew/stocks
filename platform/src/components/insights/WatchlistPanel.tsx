@@ -1,12 +1,23 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  Plus,
   RefreshCw,
+  Search,
   Sparkles,
+  Trash2,
+  X,
 } from 'lucide-react';
 import { useWatchlist } from '@/hooks/useWatchlist';
+import {
+  useTickerSearch,
+  useAddToWatchlist,
+  useRemoveFromWatchlist,
+  type SearchMatch,
+  type WatchlistAddResult,
+} from '@/hooks/useTickerSearch';
 import type {
   CatalystType,
   RankedTicker,
@@ -56,6 +67,7 @@ export function WatchlistPanel({
   );
   const [limit, setLimit] = useState(10);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [showSearch, setShowSearch] = useState(false);
 
   const filterArray = useMemo(() => Array.from(activeFilters), [activeFilters]);
   const watchlist = useWatchlist({ catalystFilter: filterArray, limit });
@@ -80,7 +92,7 @@ export function WatchlistPanel({
 
   return (
     <div className="space-y-3">
-      {/* Filter bar */}
+      {/* Filter bar + Add button */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
           Catalyst:
@@ -103,6 +115,13 @@ export function WatchlistPanel({
         })}
 
         <div className="ml-auto flex items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
+          <button
+            onClick={() => setShowSearch((v) => !v)}
+            className="flex items-center gap-1 rounded border border-[var(--color-border)] px-2 py-0.5 text-[10px] font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+          >
+            <Plus size={10} />
+            Add Ticker
+          </button>
           <label htmlFor="watchlist-limit">Limit:</label>
           <select
             id="watchlist-limit"
@@ -118,6 +137,16 @@ export function WatchlistPanel({
           </select>
         </div>
       </div>
+
+      {/* Ticker search panel */}
+      {showSearch && (
+        <TickerSearchPanel
+          onClose={() => setShowSearch(false)}
+          onAdded={() => {
+            watchlist.refetch();
+          }}
+        />
+      )}
 
       {/* Body */}
       {watchlist.isLoading ? (
@@ -167,6 +196,280 @@ export function WatchlistPanel({
             ))}
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ticker search & add panel
+// ---------------------------------------------------------------------------
+
+function TickerSearchPanel({
+  onClose,
+  onAdded,
+}: {
+  onClose: () => void;
+  onAdded: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [addedResult, setAddedResult] = useState<WatchlistAddResult | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+
+  // Focus input on mount
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  // Debounce search queries
+  const handleInputChange = useCallback((value: string) => {
+    setQuery(value);
+    setAddedResult(null);
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setDebouncedQuery(value.trim());
+    }, 300);
+  }, []);
+
+  const searchQuery = useTickerSearch(debouncedQuery, debouncedQuery.length >= 1);
+  const addMutation = useAddToWatchlist();
+
+  const handleAdd = async (match: SearchMatch) => {
+    try {
+      const result = await addMutation.mutateAsync(match.symbol);
+      setAddedResult(result);
+      setQuery('');
+      setDebouncedQuery('');
+      onAdded();
+    } catch {
+      // error handled by mutation state
+    }
+  };
+
+  const handleDirectAdd = async () => {
+    if (!query.trim()) return;
+    try {
+      const result = await addMutation.mutateAsync(query.trim().toUpperCase());
+      setAddedResult(result);
+      setQuery('');
+      setDebouncedQuery('');
+      onAdded();
+    } catch {
+      // error handled by mutation state
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-3 space-y-3">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-[var(--color-text-primary)]">
+          Add Ticker to Watchlist
+        </span>
+        <button
+          onClick={onClose}
+          className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      {/* Search input */}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--color-text-muted)]" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => handleInputChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleDirectAdd();
+              if (e.key === 'Escape') onClose();
+            }}
+            placeholder="Search by name or symbol (e.g. broadcom, INTC)..."
+            className="w-full rounded border border-[var(--color-border)] bg-[var(--color-bg-primary)] pl-7 pr-3 py-1.5 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent-blue)] focus:outline-none"
+          />
+        </div>
+        <button
+          onClick={handleDirectAdd}
+          disabled={!query.trim() || addMutation.isPending}
+          className="flex items-center gap-1 rounded bg-[var(--color-accent-blue)] px-2.5 py-1.5 text-[10px] font-medium text-[var(--on-brand)] disabled:opacity-50"
+        >
+          {addMutation.isPending ? (
+            <Loader2 size={10} className="animate-spin" />
+          ) : (
+            <Plus size={10} />
+          )}
+          Add
+        </button>
+      </div>
+
+      {/* Search results dropdown */}
+      {searchQuery.isLoading && debouncedQuery && (
+        <div className="flex items-center gap-2 py-2 text-[10px] text-[var(--color-text-muted)]">
+          <Loader2 size={10} className="animate-spin" />
+          Searching...
+        </div>
+      )}
+
+      {searchQuery.data && searchQuery.data.results.length > 0 && !addedResult && (
+        <div className="max-h-48 overflow-y-auto rounded border border-[var(--color-border)] divide-y divide-[var(--color-border)]">
+          {searchQuery.data.results.map((m) => (
+            <button
+              key={`${m.symbol}-${m.region}`}
+              onClick={() => handleAdd(m)}
+              disabled={addMutation.isPending}
+              className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-[var(--color-bg-primary)] transition-colors disabled:opacity-50"
+            >
+              <span className="font-mono text-xs font-semibold text-[var(--color-text-primary)] min-w-[60px]">
+                {m.symbol}
+              </span>
+              <span className="flex-1 truncate text-[11px] text-[var(--color-text-secondary)]">
+                {m.name}
+              </span>
+              <span className="text-[9px] text-[var(--color-text-muted)]">
+                {m.type} · {m.region}
+              </span>
+              <span className="text-[9px] tabular-nums text-[var(--color-text-muted)]">
+                {(m.match_score * 100).toFixed(0)}%
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {searchQuery.data && searchQuery.data.results.length === 0 && debouncedQuery && !addedResult && (
+        <div className="py-2 text-center text-[10px] text-[var(--color-text-muted)]">
+          No matches for "{debouncedQuery}". Press Enter or Add to add it directly.
+        </div>
+      )}
+
+      {/* Added result card */}
+      {addedResult && <AddedTickerCard result={addedResult} />}
+
+      {/* Error */}
+      {addMutation.isError && (
+        <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-[10px] text-red-300">
+          Failed to add: {addMutation.error.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Card shown after adding a ticker — shows info + quote from AV
+// ---------------------------------------------------------------------------
+
+function AddedTickerCard({ result }: { result: WatchlistAddResult }) {
+  const { ticker, added, info, quote } = result;
+
+  const fmtCap = (cap: string | null | undefined): string => {
+    if (!cap) return '—';
+    const n = Number(cap);
+    if (isNaN(n)) return cap;
+    if (n >= 1e12) return `$${(n / 1e12).toFixed(1)}T`;
+    if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
+    if (n >= 1e6) return `$${(n / 1e6).toFixed(0)}M`;
+    return `$${n.toLocaleString()}`;
+  };
+
+  const changeColor =
+    quote?.change && quote.change > 0
+      ? 'text-emerald-400'
+      : quote?.change && quote.change < 0
+      ? 'text-red-400'
+      : 'text-[var(--color-text-secondary)]';
+
+  return (
+    <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-400">
+          {added ? 'ADDED' : 'ALREADY ON WATCHLIST'}
+        </span>
+        <span className="font-mono text-sm font-bold text-[var(--color-text-primary)]">
+          {ticker}
+        </span>
+        {info?.name && (
+          <span className="text-xs text-[var(--color-text-secondary)]">
+            {info.name}
+          </span>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-4 text-[11px]">
+        {info && (
+          <>
+            {info.exchange && (
+              <div>
+                <span className="text-[var(--color-text-muted)]">Exchange </span>
+                <span className="text-[var(--color-text-secondary)]">{info.exchange}</span>
+              </div>
+            )}
+            {info.sector && (
+              <div>
+                <span className="text-[var(--color-text-muted)]">Sector </span>
+                <span className="text-[var(--color-text-secondary)]">{info.sector}</span>
+              </div>
+            )}
+            {info.industry && (
+              <div>
+                <span className="text-[var(--color-text-muted)]">Industry </span>
+                <span className="text-[var(--color-text-secondary)]">{info.industry}</span>
+              </div>
+            )}
+            {info.market_cap && (
+              <div>
+                <span className="text-[var(--color-text-muted)]">Cap </span>
+                <span className="text-[var(--color-text-secondary)]">{fmtCap(info.market_cap)}</span>
+              </div>
+            )}
+            {info.asset_type && (
+              <div>
+                <span className="text-[var(--color-text-muted)]">Type </span>
+                <span className="text-[var(--color-text-secondary)]">{info.asset_type}</span>
+              </div>
+            )}
+          </>
+        )}
+
+        {quote && quote.price != null && (
+          <>
+            <div>
+              <span className="text-[var(--color-text-muted)]">Price </span>
+              <span className="font-mono font-semibold text-[var(--color-text-primary)]">
+                ${quote.price.toFixed(2)}
+              </span>
+            </div>
+            <div>
+              <span className="text-[var(--color-text-muted)]">Change </span>
+              <span className={`font-mono font-semibold ${changeColor}`}>
+                {quote.change != null && quote.change > 0 ? '+' : ''}
+                {quote.change?.toFixed(2)} ({quote.change_percent})
+              </span>
+            </div>
+            <div>
+              <span className="text-[var(--color-text-muted)]">Vol </span>
+              <span className="text-[var(--color-text-secondary)]">
+                {quote.volume?.toLocaleString()}
+              </span>
+            </div>
+            <div>
+              <span className="text-[var(--color-text-muted)]">Date </span>
+              <span className="text-[var(--color-text-secondary)]">
+                {quote.latest_trading_day}
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+
+      {info?.description && (
+        <p className="text-[10px] leading-relaxed text-[var(--color-text-muted)] line-clamp-2">
+          {info.description}
+        </p>
       )}
     </div>
   );
@@ -267,8 +570,8 @@ function ScoreBreakdown({ breakdown }: { breakdown: SignalContribution[] }) {
         <thead>
           <tr className="text-[10px] text-[var(--color-text-muted)]">
             <th className="text-left">Signal</th>
-            <th className="text-right">0–1</th>
-            <th className="text-right">×weight</th>
+            <th className="text-right">0-1</th>
+            <th className="text-right">x weight</th>
             <th className="text-right">= points</th>
             <th className="pl-3 text-left">Reason</th>
           </tr>
