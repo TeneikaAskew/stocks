@@ -308,62 +308,35 @@ def format_report_embed(row: dict) -> dict:
 
 
 def split_into_messages(rows: list[dict], target_date: date) -> list[dict]:
-    """Split rich report embeds across one-or-more Discord webhook payloads.
+    """Build one Discord webhook payload per ticker.
 
-    Discord caps **per-message** at:
-      • 10 embeds (MAX_EMBEDS_PER_MESSAGE)
-      • 6000 characters total across all embeds (MAX_EMBED_CHARS)
+    Each ticker gets its own message so:
+      • Reports are easy to scroll / reference / quote individually
+      • A Discord drop of one message only loses that one ticker
+      • No 6000-char envelope juggling — each ticker's embed is well
+        under the limit on its own (typically 1500-3500 chars)
+      • The header reads naturally: "🧠 **IWM** — 2026-04-27"
 
-    Each insight report rendered by format_report_embed is typically
-    1500-3500 chars, so 6 reports easily exceed the 6000-char envelope.
-    Previously the formatter dropped trailing embeds to fit; that meant
-    half the watchlist's reports never reached Discord. This splitter
-    instead packs as many embeds as fit into one message, then opens a
-    new message for the rest, so every report lands.
-
-    Returns a list of webhook payloads, each ready for `send_to_discord`.
-    The first message carries the date header; subsequent messages get
-    a "(part N/M)" hint so the operator can spot mid-flight drops.
+    A single optional summary message could be added on top, but that
+    just adds noise; each per-ticker message already carries the date
+    in its content header.
 
     Edge cases:
-      • Empty `rows` → single payload with the "no reports" header and
-        an empty embeds list (caller can choose to skip or post).
-      • A single embed > 6000 chars (shouldn't happen given internal
-        truncation, but defensively): emitted on its own; Discord may
-        still reject, but that's a per-embed failure not a packing one.
+      • Empty `rows` → returns a single "no reports" payload (caller
+        can choose to skip or post — `main()` skips).
     """
     if not rows:
         header = f"🧠 **AI Insights — {target_date.isoformat()}** (no reports for today)"
         return [{"content": header, "embeds": []}]
 
-    embeds = [format_report_embed(r) for r in rows]
-
-    chunks: list[list[dict]] = []
-    current: list[dict] = []
-    current_size = 0
-    for embed in embeds:
-        size = len(json.dumps(embed))
-        # Open a new chunk if adding this embed would exceed either limit.
-        if current and (
-            len(current) >= MAX_EMBEDS_PER_MESSAGE
-            or current_size + size > MAX_EMBED_CHARS
-        ):
-            chunks.append(current)
-            current = []
-            current_size = 0
-        current.append(embed)
-        current_size += size
-    if current:
-        chunks.append(current)
-
-    # Build a payload per chunk with a part-of-N header on multi-message pushes.
-    total = len(chunks)
     payloads: list[dict] = []
-    for i, chunk in enumerate(chunks, start=1):
-        header = f"🧠 **AI Insights — {target_date.isoformat()}**"
-        if total > 1:
-            header += f" (part {i}/{total})"
-        payloads.append({"content": header, "embeds": chunk})
+    for row in rows:
+        ticker = row.get("ticker", "?")
+        embed = format_report_embed(row)
+        payloads.append({
+            "content": f"🧠 **{ticker}** — AI Insight {target_date.isoformat()}",
+            "embeds": [embed],
+        })
     return payloads
 
 
