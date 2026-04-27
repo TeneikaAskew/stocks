@@ -228,7 +228,7 @@ def test_embed_omits_invalidation_field_when_missing():
 
 
 # ---------------------------------------------------------------------------
-# split_into_messages — primary path; format_message is a back-compat shim
+# split_into_messages — one message per ticker
 # ---------------------------------------------------------------------------
 
 
@@ -240,26 +240,36 @@ def test_split_no_rows_returns_one_empty_payload():
     assert msgs[0]["embeds"] == []
 
 
-def test_split_single_small_payload_returns_single_message():
+def test_split_one_row_one_message():
     msgs = push.split_into_messages([_sample_row()], date(2026, 4, 27))
     assert len(msgs) == 1
     assert len(msgs[0]["embeds"]) == 1
-    # Single-message push doesn't include "(part X/Y)" hint
-    assert "part " not in msgs[0]["content"]
 
 
-def test_split_includes_date_in_every_header():
+def test_split_emits_one_message_per_ticker():
+    """Six tickers → six messages. Each one has exactly one embed."""
     rows = [_sample_row() for _ in range(6)]
     for i, r in enumerate(rows):
         r["ticker"] = f"T{i:02d}"
         r["report"]["ticker"] = f"T{i:02d}"
     msgs = push.split_into_messages(rows, date(2026, 4, 27))
+    assert len(msgs) == 6
     for m in msgs:
-        assert "2026-04-27" in m["content"]
+        assert len(m["embeds"]) == 1
 
 
-def test_split_each_chunk_under_size_limit():
-    """The whole point of the splitter — every chunk fits in 6000 chars."""
+def test_split_header_carries_ticker_and_date():
+    rows = [_sample_row()]
+    rows[0]["ticker"] = "AVGO"
+    rows[0]["report"]["ticker"] = "AVGO"
+    msgs = push.split_into_messages(rows, date(2026, 4, 27))
+    assert len(msgs) == 1
+    assert "AVGO" in msgs[0]["content"]
+    assert "2026-04-27" in msgs[0]["content"]
+
+
+def test_split_each_message_under_size_limit():
+    """One ticker per message → each well under the 6000-char envelope."""
     rows = [_sample_row() for _ in range(8)]
     for i, r in enumerate(rows):
         r["ticker"] = f"T{i:02d}"
@@ -267,48 +277,36 @@ def test_split_each_chunk_under_size_limit():
     msgs = push.split_into_messages(rows, date(2026, 4, 27))
     for m in msgs:
         size = sum(len(json.dumps(e)) for e in m["embeds"])
-        assert size <= push.MAX_EMBED_CHARS, f"chunk size {size} exceeds {push.MAX_EMBED_CHARS}"
+        assert size <= push.MAX_EMBED_CHARS, f"size {size} > {push.MAX_EMBED_CHARS}"
 
 
-def test_split_caps_embeds_per_chunk_at_ten():
-    """Tiny embeds shouldn't pack > 10 into a single message."""
-    rows = [_sample_row() for _ in range(15)]
-    for i, r in enumerate(rows):
-        r["ticker"] = f"T{i:02d}"
-        r["report"]["ticker"] = f"T{i:02d}"
-    msgs = push.split_into_messages(rows, date(2026, 4, 27))
-    for m in msgs:
-        assert len(m["embeds"]) <= push.MAX_EMBEDS_PER_MESSAGE
-
-
-def test_split_preserves_all_rows_when_size_forces_split():
-    """Critical: total embeds across all chunks must equal len(rows)."""
+def test_split_preserves_all_rows():
+    """Critical: total embeds across messages == row count, no drops."""
     rows = [_sample_row() for _ in range(8)]
     for i, r in enumerate(rows):
         r["ticker"] = f"T{i:02d}"
         r["report"]["ticker"] = f"T{i:02d}"
     msgs = push.split_into_messages(rows, date(2026, 4, 27))
-    total_embeds = sum(len(m["embeds"]) for m in msgs)
-    assert total_embeds == len(rows), \
-        f"splitter dropped embeds: in={len(rows)} out={total_embeds}"
+    total = sum(len(m["embeds"]) for m in msgs)
+    assert total == len(rows)
 
 
-def test_split_marks_part_n_of_m_when_multiple_messages():
-    """Multi-message pushes need an audit trail in the header so the
-    operator can spot mid-flight failures."""
-    rows = [_sample_row() for _ in range(8)]
-    for i, r in enumerate(rows):
-        r["ticker"] = f"T{i:02d}"
-        r["report"]["ticker"] = f"T{i:02d}"
+def test_split_preserves_row_order():
+    """Tickers come out in the same order they came in (DB sorts them)."""
+    rows = [_sample_row() for _ in range(3)]
+    for i, tk in enumerate(["AAPL", "IWM", "ZS"]):
+        rows[i]["ticker"] = tk
+        rows[i]["report"]["ticker"] = tk
     msgs = push.split_into_messages(rows, date(2026, 4, 27))
-    if len(msgs) > 1:
-        for i, m in enumerate(msgs, start=1):
-            assert f"part {i}/{len(msgs)}" in m["content"]
+    extracted = [m["embeds"][0]["title"] for m in msgs]
+    # Title format: "🟢/🔴/⚪ TICKER · DIRECTION · ..."
+    assert "AAPL" in extracted[0]
+    assert "IWM" in extracted[1]
+    assert "ZS" in extracted[2]
 
 
-def test_format_message_back_compat_returns_first_chunk():
-    """The legacy format_message helper must still work for any older
-    caller that hasn't migrated to split_into_messages."""
+def test_format_message_back_compat_returns_first_per_ticker():
+    """format_message returns the first per-ticker payload."""
     rows = [_sample_row() for _ in range(3)]
     for i, r in enumerate(rows):
         r["ticker"] = f"T{i:02d}"
@@ -321,13 +319,6 @@ def test_format_message_back_compat_returns_first_chunk():
 def test_format_message_includes_date_in_header():
     msg = push.format_message([_sample_row()], date(2026, 4, 27))
     assert "2026-04-27" in msg["content"]
-
-
-def test_format_message_envelope_under_size_limit():
-    rows = [_sample_row() for _ in range(3)]
-    msg = push.format_message(rows, date(2026, 4, 27))
-    payload_size = len(json.dumps(msg["embeds"]))
-    assert payload_size <= push.MAX_EMBED_CHARS
 
 
 # ---------------------------------------------------------------------------
