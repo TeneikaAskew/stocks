@@ -244,6 +244,100 @@ class TestGetAliases:
 
 
 # ---------------------------------------------------------------------------
+# get_peers (FinViz)
+# ---------------------------------------------------------------------------
+
+
+class TestGetPeers:
+    @patch("lib.ticker_info._cloud_sql_available", return_value=False)
+    @patch("lib.ticker_info._fetch_finviz_peers")
+    def test_returns_peer_list(self, mock_fetch, _no_cloud, tmp_path):
+        mock_fetch.return_value = ["AMD", "NVDA", "QCOM", "TSM"]
+        import lib.ticker_info as ti
+        original_path = ti._LOCAL_CACHE_PATH
+        ti._LOCAL_CACHE_PATH = tmp_path / "ticker_info.json"
+        try:
+            peers = ti.get_peers("INTC", max_age_days=0)
+            assert peers == ["AMD", "NVDA", "QCOM", "TSM"]
+            mock_fetch.assert_called_once_with("INTC")
+        finally:
+            ti._LOCAL_CACHE_PATH = original_path
+
+    @patch("lib.ticker_info._cloud_sql_available", return_value=False)
+    @patch("lib.ticker_info._fetch_finviz_peers")
+    def test_caches_peers_locally(self, mock_fetch, _no_cloud, tmp_path):
+        mock_fetch.return_value = ["AMD", "NVDA"]
+        import lib.ticker_info as ti
+        original_path = ti._LOCAL_CACHE_PATH
+        ti._LOCAL_CACHE_PATH = tmp_path / "ticker_info.json"
+        try:
+            ti.get_peers("AVGO", max_age_days=0)
+            # Verify cache was written
+            cached = json.loads(ti._LOCAL_CACHE_PATH.read_text())
+            assert cached["AVGO"]["_peers"] == ["AMD", "NVDA"]
+        finally:
+            ti._LOCAL_CACHE_PATH = original_path
+
+    @patch("lib.ticker_info._cloud_sql_available", return_value=False)
+    @patch("lib.ticker_info._fetch_finviz_peers", return_value=None)
+    def test_returns_empty_on_failure(self, mock_fetch, _no_cloud, tmp_path):
+        import lib.ticker_info as ti
+        original_path = ti._LOCAL_CACHE_PATH
+        ti._LOCAL_CACHE_PATH = tmp_path / "ticker_info.json"
+        try:
+            peers = ti.get_peers("FAKE", max_age_days=0)
+            assert peers == []
+        finally:
+            ti._LOCAL_CACHE_PATH = original_path
+
+    @patch("lib.ticker_info._cloud_sql_available", return_value=False)
+    @patch("lib.ticker_info._fetch_finviz_peers")
+    def test_serves_from_cache_when_fresh(self, mock_fetch, _no_cloud, tmp_path):
+        """Second call should use cache, not call FinViz again."""
+        mock_fetch.return_value = ["AMD"]
+        import lib.ticker_info as ti
+        original_path = ti._LOCAL_CACHE_PATH
+        ti._LOCAL_CACHE_PATH = tmp_path / "ticker_info.json"
+        try:
+            ti.get_peers("TEST", max_age_days=0)  # populates cache
+            mock_fetch.return_value = ["SHOULD_NOT_SEE"]
+            peers = ti.get_peers("TEST", max_age_days=30)  # should use cache
+            assert peers == ["AMD"]
+        finally:
+            ti._LOCAL_CACHE_PATH = original_path
+
+
+# ---------------------------------------------------------------------------
+# get_finviz_news
+# ---------------------------------------------------------------------------
+
+
+class TestGetFinvizNews:
+    @patch("finvizfinance.quote.finvizfinance")
+    def test_returns_article_list(self, MockFinviz):
+        import pandas as pd
+        mock_stock = MagicMock()
+        mock_stock.ticker_news.return_value = pd.DataFrame([
+            {"Date": "2026-04-26", "Title": "AVGO surges on AI demand", "Link": "https://example.com/1", "Source": "Reuters"},
+            {"Date": "2026-04-25", "Title": "Broadcom earnings beat", "Link": "https://example.com/2", "Source": "Bloomberg"},
+        ])
+        MockFinviz.return_value = mock_stock
+
+        from lib.ticker_info import get_finviz_news
+        articles = get_finviz_news("AVGO")
+        assert len(articles) == 2
+        assert articles[0]["title"] == "AVGO surges on AI demand"
+        assert articles[0]["source"] == "Reuters"
+        assert articles[1]["link"] == "https://example.com/2"
+
+    @patch("finvizfinance.quote.finvizfinance")
+    def test_returns_empty_on_failure(self, MockFinviz):
+        MockFinviz.side_effect = Exception("blocked")
+        from lib.ticker_info import get_finviz_news
+        assert get_finviz_news("FAKE") == []
+
+
+# ---------------------------------------------------------------------------
 # get_ticker_info — caching behavior
 # ---------------------------------------------------------------------------
 
@@ -368,9 +462,19 @@ class TestTickerInfoAPI:
         r = client.get("/api/insights/ticker/FAKE123/quote")
         assert r.status_code == 404
 
+    @patch("lib.ticker_info.get_peers")
+    def test_peers_endpoint(self, mock_peers, client):
+        mock_peers.return_value = ["AMD", "NVDA", "QCOM", "TSM"]
+        r = client.get("/api/insights/ticker/INTC/peers")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ticker"] == "INTC"
+        assert data["peers"] == ["AMD", "NVDA", "QCOM", "TSM"]
+
+    @patch("lib.ticker_info.get_peers")
     @patch("lib.ticker_info.get_quote")
     @patch("lib.ticker_info.get_ticker_info")
-    def test_watchlist_add_endpoint(self, mock_info, mock_quote, client, tmp_path):
+    def test_watchlist_add_endpoint(self, mock_info, mock_quote, mock_peers, client, tmp_path):
         mock_info.return_value = {
             "Symbol": "MSFT", "Name": "Microsoft Corp", "Exchange": "NASDAQ",
             "Sector": "TECHNOLOGY", "Industry": "SOFTWARE",
@@ -384,6 +488,7 @@ class TestTickerInfoAPI:
             "previous_close": 419.0, "change": 3.0,
             "change_percent": "0.72%",
         }
+        mock_peers.return_value = ["AAPL", "GOOG", "AMZN"]
         r = client.post(
             "/api/insights/watchlist/add",
             json={"ticker": "MSFT"},
@@ -395,3 +500,4 @@ class TestTickerInfoAPI:
         assert data["info"]["name"] == "Microsoft Corp"
         assert data["quote"] is not None
         assert data["quote"]["price"] == pytest.approx(422.0)
+        assert data["peers"] == ["AAPL", "GOOG", "AMZN"]
