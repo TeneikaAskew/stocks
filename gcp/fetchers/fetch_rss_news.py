@@ -321,7 +321,29 @@ def _score_article_gemini(
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text)
-        return json.loads(text)
+        parsed = json.loads(text)
+
+        # Validate response structure
+        if not isinstance(parsed, dict):
+            logger.warning("Gemini returned non-dict: %s", type(parsed))
+            return None
+        if "overall_sentiment_score" not in parsed:
+            logger.warning("Gemini response missing overall_sentiment_score")
+            return None
+        score = parsed["overall_sentiment_score"]
+        if not isinstance(score, (int, float)) or score < -1.0 or score > 1.0:
+            logger.warning("Gemini overall_sentiment_score out of range: %s", score)
+            parsed["overall_sentiment_score"] = max(-1.0, min(1.0, float(score)))
+
+        # Validate ticker_scores
+        ts = parsed.get("ticker_scores", {})
+        if not isinstance(ts, dict):
+            parsed["ticker_scores"] = {}
+
+        return parsed
+    except json.JSONDecodeError as exc:
+        logger.warning("Gemini returned invalid JSON: %s — raw: %s", exc, text[:200])
+        return None
     except Exception as exc:
         logger.warning("Gemini scoring failed: %s", exc)
         return None
@@ -593,11 +615,31 @@ def main():
         logger.info("DRY RUN — not writing to Cloud SQL")
         return
 
+    # Validate DataFrame before write
+    required_cols = ["ticker", "published_ts", "url", "title", "source", "data_source", "match_method"]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        logger.error("DataFrame missing required columns: %s — aborting write", missing)
+        return
+
+    # Drop rows with NULL conflict columns (would fail on upsert)
+    before = len(df)
+    df = df.dropna(subset=["ticker", "published_ts", "url"])
+    if len(df) < before:
+        logger.warning("Dropped %d rows with NULL ticker/published_ts/url", before - len(df))
+
+    if df.empty:
+        logger.info("No valid rows to write after validation")
+        return
+
     # Write to Cloud SQL
     try:
         from gcp.database import upsert_dataframe, is_cloud_sql_configured
         if not is_cloud_sql_configured():
-            logger.warning("Cloud SQL not configured — skipping write")
+            logger.warning(
+                "Cloud SQL not configured — skipping write. "
+                "Set CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME env vars."
+            )
             return
         n = upsert_dataframe(
             df, "news_sentiment",
@@ -605,7 +647,10 @@ def main():
         )
         logger.info("Upserted %d rows to news_sentiment", n)
     except Exception as exc:
-        logger.error("Cloud SQL write failed: %s", exc)
+        logger.error(
+            "Cloud SQL write failed (%d rows, %d tickers): %s",
+            len(df), df["ticker"].nunique(), exc,
+        )
 
 
 if __name__ == "__main__":

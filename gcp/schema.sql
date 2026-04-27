@@ -929,7 +929,13 @@ CREATE TRIGGER trg_ticker_info_updated
 -- match_method records how the ticker was identified in the article.
 ALTER TABLE news_sentiment
     ADD COLUMN IF NOT EXISTS data_source  VARCHAR(20) DEFAULT 'alphavantage',
-    ADD COLUMN IF NOT EXISTS match_method VARCHAR(20);
+    ADD COLUMN IF NOT EXISTS match_method VARCHAR(20) DEFAULT 'direct';
     -- data_source: 'alphavantage' | 'rss' | 'finviz'
     -- match_method: 'direct' (AV/SA category) | 'title_regex' | 'alias_match'
     --              | 'relationship' (inferred via peer graph) | 'llm'
+
+CREATE INDEX IF NOT EXISTS idx_news_sentiment_data_source
+    ON news_sentiment (data_source, published_ts DESC);
+
+CREATE INDEX IF NOT EXISTS idx_news_sentiment_match_method
+    ON news_sentiment (match_method);
