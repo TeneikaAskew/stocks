@@ -910,6 +910,11 @@ CREATE TABLE IF NOT EXISTS ticker_info (
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+-- Peer/relationship data from FinViz + industry screener.
+-- Example: {"peers": ["AMD","NVDA","QCOM"], "industry_peers": ["TSM","TXN"]}
+ALTER TABLE ticker_info
+    ADD COLUMN IF NOT EXISTS relationships JSONB;
+
 CREATE INDEX IF NOT EXISTS idx_ticker_info_sector
     ON ticker_info (sector);
 
@@ -917,3 +922,14 @@ DROP TRIGGER IF EXISTS trg_ticker_info_updated ON ticker_info;
 CREATE TRIGGER trg_ticker_info_updated
     BEFORE UPDATE ON ticker_info
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+
+-- ── news_sentiment: RSS + multi-source support ──────────────────────────────
+-- data_source distinguishes AV API rows from RSS-fetched rows.
+-- match_method records how the ticker was identified in the article.
+ALTER TABLE news_sentiment
+    ADD COLUMN IF NOT EXISTS data_source  VARCHAR(20) DEFAULT 'alphavantage',
+    ADD COLUMN IF NOT EXISTS match_method VARCHAR(20);
+    -- data_source: 'alphavantage' | 'rss' | 'finviz'
+    -- match_method: 'direct' (AV/SA category) | 'title_regex' | 'alias_match'
+    --              | 'relationship' (inferred via peer graph) | 'llm'
