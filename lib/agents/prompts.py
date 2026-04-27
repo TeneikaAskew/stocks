@@ -39,7 +39,7 @@ ANALYST_PROMPTS: dict[str, str] = {
     "strat": (
         "You are an expert in Rob Smith's Strat methodology. You will "
         "receive the ticker's last candle type (1, 2U, 2D, 3), the "
-        "in-force combo (e.g. 2D-1-2U_reversal), FTFC score (-1 to +1) "
+        "in-force combo (e.g. 212_bull_reversal), FTFC score (-1 to +1) "
         "and direction, and the prior day's high/low as trigger levels. "
         "Explain what the candle sequence implies for the next session: "
         "continuation, reversal, or compression. Name the actual trigger "

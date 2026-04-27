@@ -41,7 +41,7 @@ interface MarketDataResponse {
 }
 interface BriefResponse {
   ticker: string; source: string; bias: string; has_premarket: boolean; reason?: string;
-  rsi?: number; rsi_direction?: string; strat_daily?: string; strat_combo?: string;
+  rsi?: number; rsi_direction?: string; strat_candle?: string; strat_combo?: string;
   ftfc_score?: number; ftfc_direction?: string; signal_status?: string;
   consecutive_up?: number; consecutive_down?: number;
   daily_indicators: {
@@ -839,9 +839,9 @@ export default function DashboardPage() {
 
               {/* Strat & FTFC */}
               <div className="flex gap-2 text-sm">
-                {(brief.strat_daily || di.strat_candle) && (
+                {(brief.strat_candle || di.strat_candle) && (
                   <span className="rounded-lg bg-[var(--color-bg-tertiary)] px-3 py-1.5 font-medium text-[var(--color-text-secondary)]">
-                    Strat: <span className="text-[var(--color-text-primary)]">{brief.strat_daily || di.strat_candle}</span>
+                    Strat: <span className="text-[var(--color-text-primary)]">{brief.strat_candle || di.strat_candle}</span>
                   </span>
                 )}
                 {(brief.strat_combo || di.strat_combo) && (

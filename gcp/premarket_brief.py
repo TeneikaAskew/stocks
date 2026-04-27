@@ -403,7 +403,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'consecutive_up': consec_up,
             'consecutive_down': consec_down,
             'signal_status': signal_status,
-            'strat_daily': daily_strat,
+            'strat_candle': daily_strat,
             'strat_combo': daily_combo,
             'strat_setup': bool(daily_setup),
             'ftfc_score': float(ftfc_score),
@@ -539,7 +539,7 @@ def _build_ticker_fields(brief: dict) -> list:
         })
 
         # Field 3: Strat / FTFC
-        strat_lines = [f'Daily: {d["strat_daily"]}']
+        strat_lines = [f'Daily: {d["strat_candle"]}']
         if d['strat_combo'] != 'none':
             strat_lines[0] += f' | Combo: {d["strat_combo"]}'
         strat_lines.append(
@@ -827,7 +827,7 @@ def persist_to_cloud_sql(brief: dict) -> int:
             'consecutive_up': data.get('consecutive_up'),
             'consecutive_down': data.get('consecutive_down'),
             'signal_status': data.get('signal_status'),
-            'strat_daily': str(data.get('strat_daily', '')),
+            'strat_candle': str(data.get('strat_candle', '')),
             'strat_combo': str(data.get('strat_combo', '')),
             'strat_setup': data.get('strat_setup', False),
             'ftfc_score': data.get('ftfc_score'),

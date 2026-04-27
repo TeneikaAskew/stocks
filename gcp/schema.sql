@@ -625,7 +625,7 @@ CREATE TABLE IF NOT EXISTS premarket_analysis (
     consecutive_up    INTEGER,
     consecutive_down  INTEGER,
     signal_status     VARCHAR(50),
-    strat_daily       VARCHAR(10),
+    strat_candle      VARCHAR(10),
     strat_combo       VARCHAR(30),
     strat_setup       BOOLEAN,
     ftfc_score        DOUBLE PRECISION,

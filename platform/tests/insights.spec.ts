@@ -28,7 +28,7 @@ const MOCK_REPORT = {
     key_levels: { support: 218.0, resistance: 224.0, pivot: 220.0 },
     strat_status: {
       last_candle: '2U',
-      in_force_combo: '2D-1-2U_reversal',
+      in_force_combo: '212_bull_reversal',
       ftfc_score: 0.72,
       ftfc_direction: 'bullish',
       trigger_high: 221.0,
@@ -113,7 +113,7 @@ test.describe('AI Insights (structured)', () => {
     await expect(page.getByText('Volume + FTFC + trigger break aligned.')).toBeVisible();
 
     // Strat
-    await expect(page.getByText('2D-1-2U_reversal')).toBeVisible();
+    await expect(page.getByText('212_bull_reversal')).toBeVisible();
 
     // Risk flag
     await expect(page.getByText(/CPI release within holding period/)).toBeVisible();

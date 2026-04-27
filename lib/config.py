@@ -246,9 +246,9 @@ class StratConfig:
     ftfc_direction_threshold: float = 0.3
     ftfc_filter_enabled: bool = True    # Reject trades contradicted by FTFC
     orb_filter_enabled: bool = True     # Reject trades contradicted by ORB trend
-    timeframes: list = field(default_factory=lambda: ['5m', '15m', '1h', 'D', 'W'])
+    timeframes: list = field(default_factory=lambda: ['5m', '15m', '1h', '4h', '12h', '1d', '1w'])
     ftfc_weights: Dict[str, float] = field(default_factory=lambda: {
-        '5m': 0.10, '15m': 0.20, '1h': 0.25, 'D': 0.35, 'W': 0.10,
+        '5m': 0.05, '15m': 0.10, '1h': 0.15, '4h': 0.15, '12h': 0.15, '1d': 0.30, '1w': 0.10,
     })
 
 

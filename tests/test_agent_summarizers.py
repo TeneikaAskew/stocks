@@ -93,7 +93,7 @@ def test_strat_status_extracts_trigger_levels(patch_query):
         "market_data_daily",
         pd.DataFrame([
             {"date": date(2026, 4, 15), "strat_candle": "2U",
-             "strat_combo": "2D-1-2U_reversal", "strat_setup": True,
+             "strat_combo": "212_bull_reversal", "strat_setup": True,
              "ftfc_score": 0.6, "ftfc_direction": "bullish",
              "high": 505.0, "low": 499.0},
             {"date": date(2026, 4, 14), "strat_candle": "1",
@@ -105,7 +105,7 @@ def test_strat_status_extracts_trigger_levels(patch_query):
     out = summarizers.summarize_strat_status("SPY")
     assert out["available"] is True
     assert out["last_candle"] == "2U"
-    assert out["in_force_combo"] == "2D-1-2U_reversal"
+    assert out["in_force_combo"] == "212_bull_reversal"
     assert out["trigger_high"] == 503.5  # previous day's high
     assert out["trigger_low"] == 498.2
     assert out["ftfc_direction"] == "bullish"

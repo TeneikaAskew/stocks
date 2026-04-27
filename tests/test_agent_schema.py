@@ -33,7 +33,7 @@ from lib.agents.schema import (
 def _minimal_strat() -> StratSnapshot:
     return StratSnapshot(
         last_candle="2U",
-        in_force_combo="2D-1-2U_reversal",
+        in_force_combo="212_bull_reversal",
         ftfc_score=0.6,
         ftfc_direction="bullish",
         trigger_high=505.0,
