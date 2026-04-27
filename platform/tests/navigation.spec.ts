@@ -35,7 +35,8 @@ test.describe('Navigation smoke', () => {
       route.fulfill({ status: 200, body: JSON.stringify({ email: null }) })
     );
     await page.goto('/', { waitUntil: 'domcontentloaded' });
-    await page.waitForLoadState('networkidle');
+    // Wait for nav to render before counting (don't use networkidle — slow backend stalls it)
+    await expect(page.locator('nav a[href="/help"]')).toBeVisible();
     const nav = page.locator('nav a');
     await expect(nav).toHaveCount(11);
   });
