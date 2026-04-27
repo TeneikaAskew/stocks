@@ -148,55 +148,36 @@ def summarize_market_context(
 def summarize_strat_status(
     ticker: str, as_of: Optional[date_type] = None
 ) -> dict:
-    """Rob Smith strat state from the most recent daily row.
+    """Rob Smith strat state — delegates to lib.strat.compute_strat_status.
 
-    Reads `strat_candle`, `strat_combo`, `strat_setup`, `ftfc_score`,
-    `ftfc_direction`, prev_day high/low from market_data_daily. This
-    is computed live from daily bars by the fetcher, so it's always
-    fresh — no dependency on stale premarket_analysis snapshots.
-
-    Returns the fields expected by StratSnapshot in schema.py plus
-    `available` and `trigger_high` / `trigger_low`.
+    Single source of truth: the same helper the 8:30 AM premarket-brief
+    uses, so the LLM analyst sees the *exact* candle / combo / FTFC
+    triplet that gets posted to Discord. No more reading stale NULL
+    columns from market_data_daily.
     """
-    sql = (
-        "SELECT date, strat_candle, strat_combo, strat_setup, "
-        "       ftfc_score, ftfc_direction, high, low "
-        "FROM market_data_daily "
-        "WHERE ticker = :ticker "
-        + ("AND date <= :as_of " if as_of else "")
-        + "ORDER BY date DESC LIMIT 2"
-    )
-    params: dict[str, Any] = {"ticker": ticker.upper()}
-    if as_of:
-        params["as_of"] = str(as_of)
-    df = _query(sql, params)
-    if df.empty:
-        return _unavailable(f"no market_data_daily for {ticker}")
+    from lib.strat import compute_strat_status
 
-    row = df.iloc[0]
-    candle = row.get("strat_candle") or "1"
-    combo = row.get("strat_combo")
-    ftfc_score = _scalar(row, "ftfc_score", digits=2)
-    ftfc_direction = row.get("ftfc_direction") or "mixed"
+    status = compute_strat_status(ticker, as_of=as_of)
+    if not status.get("available"):
+        return _unavailable(status.get("reason") or f"strat unavailable for {ticker}")
 
-    # Prior day high/low as trigger levels
-    if len(df) >= 2:
-        prev = df.iloc[1]
-        trig_high = _scalar(prev, "high", digits=2)
-        trig_low = _scalar(prev, "low", digits=2)
-    else:
-        trig_high = trig_low = None
+    # StratSnapshot in schema.py rounds scores to 2 dp.
+    score = status.get("ftfc_score")
+    if score is not None:
+        score = round(float(score), 2)
+    th = status.get("trigger_high")
+    tl = status.get("trigger_low")
 
     return {
         "available": True,
-        "date": str(row.get("date", "")),
-        "last_candle": candle,
-        "in_force_combo": combo,
-        "strat_setup": bool(row.get("strat_setup", False)),
-        "ftfc_score": ftfc_score if ftfc_score is not None else 0.0,
-        "ftfc_direction": ftfc_direction,
-        "trigger_high": trig_high,
-        "trigger_low": trig_low,
+        "date": status.get("date", ""),
+        "last_candle": status.get("last_candle") or "1",
+        "in_force_combo": status.get("in_force_combo"),
+        "strat_setup": bool(status.get("strat_setup", False)),
+        "ftfc_score": score if score is not None else 0.0,
+        "ftfc_direction": status.get("ftfc_direction") or "mixed",
+        "trigger_high": round(float(th), 2) if th is not None else None,
+        "trigger_low": round(float(tl), 2) if tl is not None else None,
     }
 
 
