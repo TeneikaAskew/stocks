@@ -382,12 +382,27 @@ def get_peers(ticker: str, max_age_days: int = 30) -> list[str]:
     return peers or []
 
 
+_FINVIZ_TIMEOUT = 15  # seconds — finvizfinance has no built-in timeout
+
+
+def _run_with_timeout(fn, timeout: int = _FINVIZ_TIMEOUT):
+    """Run a callable with a timeout. Returns result or raises TimeoutError."""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn)
+        return future.result(timeout=timeout)
+
+
 def _fetch_finviz_peers(ticker: str) -> Optional[list[str]]:
     """Fetch peers from FinViz. Returns list of ticker strings or None."""
     try:
         from finvizfinance.quote import finvizfinance
-        stock = finvizfinance(ticker)
-        peers = stock.ticker_peer()
+
+        def _do():
+            stock = finvizfinance(ticker)
+            return stock.ticker_peer()
+
+        peers = _run_with_timeout(_do)
         if isinstance(peers, list) and peers:
             logger.info("FinViz peers for %s: %s", ticker, peers)
             return peers
@@ -461,8 +476,12 @@ def get_finviz_news(ticker: str) -> list[dict]:
     ticker = ticker.upper()
     try:
         from finvizfinance.quote import finvizfinance
-        stock = finvizfinance(ticker)
-        df = stock.ticker_news()
+
+        def _do():
+            stock = finvizfinance(ticker)
+            return stock.ticker_news()
+
+        df = _run_with_timeout(_do)
         if df is None or df.empty:
             return []
         rows = []
