@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.data_loader import DataLoader
 from lib.indicators import add_all_indicators
-from lib.strat import StratClassifier
+from lib.strat import StratClassifier, compute_strat_status
 from lib.signals import check_call_conditions, check_put_conditions
 from lib.config import load_config
 
@@ -343,15 +343,26 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         above_sma200 = (curr_close > sma200) if (curr_close and sma200) else None
 
         # ── Strat / FTFC ────────────────────────────────────────────────
-        strat_labels = strat.classify_series(df)
-        strat_data = strat.detect_combos(df, strat_labels)
-        daily_strat = strat_labels.iloc[-1]
-        daily_combo = strat_data['strat_combo'].iloc[-1]
-        daily_setup = strat_data['strat_setup'].iloc[-1]
-
-        tf_dfs = loader.build_multi_timeframe(df, timeframes=['D', 'W', 'M'])
-        tf_classified = {tf: tf_df for tf, tf_df in tf_dfs.items() if not tf_df.empty}
-        ftfc_score, ftfc_dir, ftfc_labels = strat.calculate_ftfc(tf_classified)
+        # Single source of truth: lib.strat.compute_strat_status is the
+        # same helper the LLM analyst calls (lib/agents/summarizers.py),
+        # so the brief and the AI report agree on candle / combo / FTFC.
+        strat_status = compute_strat_status(
+            ticker, df=df, timeframes=['D', 'W', 'M'], strat_config=cfg.strat,
+        )
+        if strat_status.get('available'):
+            daily_strat = strat_status['last_candle']
+            daily_combo = strat_status.get('in_force_combo')
+            daily_setup = strat_status.get('strat_setup', False)
+            ftfc_score = strat_status.get('ftfc_score', 0.0)
+            ftfc_dir = strat_status.get('ftfc_direction', 'mixed')
+            ftfc_labels = strat_status.get('ftfc_labels', {}) or {}
+        else:
+            daily_strat = '1'
+            daily_combo = None
+            daily_setup = False
+            ftfc_score = 0.0
+            ftfc_dir = 'mixed'
+            ftfc_labels = {}
 
         # ── Signal conditions ───────────────────────────────────────────
         call_score, _ = check_call_conditions(latest)

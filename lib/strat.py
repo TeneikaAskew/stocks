@@ -10,7 +10,8 @@ Encodes Rob Smith's methodology:
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Tuple, Optional
+from datetime import date as date_type
+from typing import Any, Dict, Tuple, Optional
 
 from lib.config import StratConfig
 
@@ -350,3 +351,104 @@ class StratClassifier:
         labels = self.classify_series(df)
         combos = self.detect_combos(df, labels)
         return pd.concat([df, combos], axis=1)
+
+
+# ---------------------------------------------------------------------------
+# Single source of truth for per-ticker live Strat + FTFC status.
+#
+# Both the 8:30 AM premarket-brief (gcp/premarket_brief.py) and the LLM
+# pipeline analyst (lib/agents/summarizers.summarize_strat_status) call
+# this helper instead of duplicating the daily-bars-to-FTFC composition.
+# ---------------------------------------------------------------------------
+
+
+def compute_strat_status(
+    ticker: str,
+    df: Optional[pd.DataFrame] = None,
+    as_of: Optional[date_type] = None,
+    timeframes: Optional[list[str]] = None,
+    strat_config: Optional[StratConfig] = None,
+) -> Dict[str, Any]:
+    """Compute the latest Strat candle, in-force combo, and FTFC scoring.
+
+    Loads daily OHLCV bars (via DataLoader.load_daily) when `df` is None
+    so callers that already have a DataFrame in hand (e.g. premarket_brief
+    inside its per-ticker loop) can pass it through and avoid a duplicate
+    Cloud SQL read.
+
+    Returns a dict with the StratSnapshot shape used by the LLM analyst
+    plus richer fields the brief uses (`ftfc_labels`, `combo`).
+    """
+    timeframes = timeframes or ['D', 'W', 'M']
+
+    if df is None:
+        # Local import to avoid a strat→data_loader import cycle at
+        # module load time. lib.data_loader imports from lib.strat
+        # transitively via add_all_indicators in some flows.
+        from lib.data_loader import DataLoader
+
+        loader = DataLoader()
+        df = loader.load_daily(ticker)
+    else:
+        # Caller passed an already-loaded frame; we still need the loader
+        # to resample it to W/M for the FTFC dict.
+        from lib.data_loader import DataLoader
+
+        loader = DataLoader()
+
+    if df is None or df.empty or len(df) < 2:
+        return {"available": False, "reason": f"insufficient daily bars for {ticker}"}
+
+    # Honour an explicit as_of by trimming bars after that date.
+    if as_of is not None:
+        try:
+            cutoff = pd.Timestamp(as_of)
+            if df.index.tz is not None and cutoff.tz is None:
+                cutoff = cutoff.tz_localize(df.index.tz)
+            df = df[df.index <= cutoff]
+            if df.empty or len(df) < 2:
+                return {"available": False, "reason": f"insufficient bars on or before {as_of}"}
+        except Exception:
+            pass  # if the index isn't a DatetimeIndex, fall through
+
+    strat = StratClassifier(strat_config=strat_config)
+
+    # Daily candle + combo from the latest bar
+    labels = strat.classify_series(df)
+    combos = strat.detect_combos(df, labels)
+    last_candle = labels.iloc[-1]
+    last_combo = combos['strat_combo'].iloc[-1] if 'strat_combo' in combos.columns else None
+    last_setup = combos['strat_setup'].iloc[-1] if 'strat_setup' in combos.columns else False
+
+    # Multi-timeframe FTFC via the same loader.build_multi_timeframe path
+    # the brief uses, so D/W/M classifications stay byte-identical.
+    tf_dfs = loader.build_multi_timeframe(df, timeframes=timeframes)
+    tf_classified = {tf: tf_df for tf, tf_df in tf_dfs.items() if not tf_df.empty}
+    ftfc_score, ftfc_dir, ftfc_labels = strat.calculate_ftfc(tf_classified)
+
+    # Trigger high/low from the prior bar (Strat trigger lines)
+    prev = df.iloc[-2]
+    trig_high = float(prev.get('High')) if pd.notna(prev.get('High')) else None
+    trig_low = float(prev.get('Low')) if pd.notna(prev.get('Low')) else None
+
+    # Best-effort `date` field — works whether the index is a DatetimeIndex
+    # or the DataFrame has an explicit date column.
+    bar_date = ""
+    try:
+        bar_date = str(df.index[-1].date()) if hasattr(df.index[-1], 'date') else str(df.index[-1])
+    except Exception:
+        bar_date = ""
+
+    return {
+        "available": True,
+        "ticker": ticker.upper(),
+        "date": bar_date,
+        "last_candle": str(last_candle) if last_candle else "1",
+        "in_force_combo": str(last_combo) if last_combo else None,
+        "strat_setup": bool(last_setup),
+        "ftfc_score": float(ftfc_score) if ftfc_score is not None else 0.0,
+        "ftfc_direction": ftfc_dir or "mixed",
+        "ftfc_labels": dict(ftfc_labels) if ftfc_labels else {},
+        "trigger_high": trig_high,
+        "trigger_low": trig_low,
+    }
