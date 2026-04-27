@@ -360,6 +360,7 @@ class WatchlistAddResponse(BaseModel):
     added: bool
     info: TickerInfoResult | None = None
     quote: TickerQuoteResult | None = None
+    peers: list[str] | None = None
     watchlist: list[str]
 
 
@@ -409,6 +410,15 @@ async def get_ticker_quote(ticker: str):
     return TickerQuoteResult(**quote)
 
 
+@router.get("/api/insights/ticker/{ticker}/peers")
+async def get_ticker_peers(ticker: str):
+    """Return peer tickers from FinViz (cached)."""
+    from lib.ticker_info import get_peers
+
+    peers = get_peers(ticker.upper())
+    return {"ticker": ticker.upper(), "peers": peers}
+
+
 @router.post("/api/insights/watchlist/add")
 async def add_to_watchlist(body: WatchlistAddRequest):
     """Add a ticker to the watchlist and return its info + quote.
@@ -417,7 +427,11 @@ async def add_to_watchlist(body: WatchlistAddRequest):
     immediately display the ticker details without a second round-trip.
     Also persists the ticker to alert_config.json.
     """
-    from lib.ticker_info import get_ticker_info as av_info, get_quote as av_quote
+    from lib.ticker_info import (
+        get_ticker_info as av_info,
+        get_quote as av_quote,
+        get_peers,
+    )
 
     ticker = body.ticker.strip().upper()
     if not ticker:
@@ -440,7 +454,7 @@ async def add_to_watchlist(body: WatchlistAddRequest):
     except Exception as exc:
         logger.warning("Failed to update watchlist: %s", exc)
 
-    # Fetch info + quote in sequence (AV rate limit)
+    # Fetch info + quote + peers
     info_raw = av_info(ticker)
     info = None
     if info_raw:
@@ -458,11 +472,15 @@ async def add_to_watchlist(body: WatchlistAddRequest):
     quote_raw = av_quote(ticker)
     quote = TickerQuoteResult(**quote_raw) if quote_raw else None
 
+    # Fetch peers from FinViz (cached after first call)
+    peers = get_peers(ticker)
+
     return WatchlistAddResponse(
         ticker=ticker,
         added=added,
         info=info,
         quote=quote,
+        peers=peers or None,
         watchlist=[t.upper() for t in watchlist],
     )
 

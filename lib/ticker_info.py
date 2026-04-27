@@ -1,18 +1,23 @@
-"""Fetch and cache ticker details from Alpha Vantage OVERVIEW endpoint.
+"""Ticker metadata, peers, and news from Alpha Vantage + FinViz.
 
-Used by the news-feed pipeline to map watchlist tickers to company names,
-sectors, and search aliases so headlines like "Intel surges" can be matched
-to INTC without manual alias maintenance.
+Provides:
+    - AV OVERVIEW: company name, sector, industry (cached to Cloud SQL + local JSON)
+    - AV SYMBOL_SEARCH: autocomplete by company name
+    - AV GLOBAL_QUOTE: latest price/volume
+    - FinViz peers: ``ticker_peer()`` returns 10 peer tickers per symbol
+    - FinViz news: ``ticker_news()`` returns up to 100 per-ticker headlines
+    - Alias derivation for headline-to-ticker matching
 
 Primary store is Cloud SQL ``ticker_info`` table (per-user capable).
 Falls back to ``data/ticker_info.json`` when Cloud SQL is not configured.
 
 Usage:
-    from lib.ticker_info import get_ticker_info, get_aliases
+    from lib.ticker_info import get_ticker_info, get_aliases, get_peers, get_finviz_news
 
-    info = get_ticker_info("AVGO")        # dict with Name, Sector, etc.
-    aliases = get_aliases("AVGO")          # ["AVGO", "Broadcom", "Broadcom Inc"]
-    bulk  = refresh_watchlist_info()       # fetch all watchlist tickers
+    info  = get_ticker_info("AVGO")       # dict with Name, Sector, etc.
+    aliases = get_aliases("AVGO")          # ["AVGO", "Broadcom Inc", "Broadcom"]
+    peers = get_peers("AVGO")             # ["QCOM", "NVDA", "TXN", ...]
+    news  = get_finviz_news("AVGO")       # [{"date": ..., "title": ..., "link": ..., "source": ...}]
 """
 
 from __future__ import annotations
@@ -339,6 +344,161 @@ def _safe_float(val) -> Optional[float]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# FinViz: peers and news
+# ---------------------------------------------------------------------------
+
+def get_peers(ticker: str, max_age_days: int = 30) -> list[str]:
+    """Return peer tickers from FinViz, cached in local JSON and Cloud SQL.
+
+    Uses ``finvizfinance.quote.finvizfinance.ticker_peer()`` which scrapes
+    the FinViz quote page. Returns ~10 peer tickers.
+
+    Falls back to same-industry screener if ticker_peer() returns empty.
+    """
+    ticker = ticker.upper()
+
+    # Check cache first
+    local_cache = _load_local_cache()
+    entry = local_cache.get(ticker, {})
+    cached_peers = entry.get("_peers")
+    if cached_peers is not None and _is_fresh(entry, max_age_days):
+        return cached_peers
+
+    peers = _fetch_finviz_peers(ticker)
+
+    # Persist to cache
+    if peers is not None:
+        if ticker not in local_cache:
+            local_cache[ticker] = {}
+        local_cache[ticker]["_peers"] = peers
+        local_cache[ticker]["_fetched_utc"] = datetime.now(timezone.utc).isoformat()
+        _save_local_cache(local_cache)
+
+        # Also persist to Cloud SQL relationships column
+        if _cloud_sql_available():
+            _upsert_peers_to_cloud_sql(ticker, peers)
+
+    return peers or []
+
+
+_FINVIZ_TIMEOUT = 15  # seconds — finvizfinance has no built-in timeout
+
+
+def _run_with_timeout(fn, timeout: int = _FINVIZ_TIMEOUT):
+    """Run a callable with a timeout. Returns result or raises TimeoutError."""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn)
+        return future.result(timeout=timeout)
+
+
+def _fetch_finviz_peers(ticker: str) -> Optional[list[str]]:
+    """Fetch peers from FinViz. Returns list of ticker strings or None."""
+    try:
+        from finvizfinance.quote import finvizfinance
+
+        def _do():
+            stock = finvizfinance(ticker)
+            return stock.ticker_peer()
+
+        peers = _run_with_timeout(_do)
+        if isinstance(peers, list) and peers:
+            logger.info("FinViz peers for %s: %s", ticker, peers)
+            return peers
+    except Exception as exc:
+        logger.warning("FinViz ticker_peer() failed for %s: %s", ticker, exc)
+
+    # Fallback: same-industry screener
+    return _fetch_industry_peers(ticker)
+
+
+def _fetch_industry_peers(ticker: str) -> Optional[list[str]]:
+    """Fallback: find peers by querying FinViz screener for same industry."""
+    try:
+        from finvizfinance.quote import finvizfinance
+        from finvizfinance.screener.overview import Overview
+
+        stock = finvizfinance(ticker)
+        fund = stock.ticker_fundament()
+        industry = fund.get("Industry")
+        if not industry:
+            return None
+
+        foverview = Overview()
+        foverview.set_filter(filters_dict={"Industry": industry})
+        df = foverview.screener_view()
+        if df is None or df.empty:
+            return None
+
+        # Top 10 by market cap, excluding self
+        df_sorted = df[df["Ticker"] != ticker].sort_values(
+            "Market Cap", ascending=False
+        )
+        peers = df_sorted["Ticker"].head(10).tolist()
+        logger.info("FinViz industry peers for %s (%s): %s", ticker, industry, peers)
+        return peers
+    except Exception as exc:
+        logger.warning("FinViz industry screener failed for %s: %s", ticker, exc)
+        return None
+
+
+def _upsert_peers_to_cloud_sql(ticker: str, peers: list[str]) -> None:
+    """Write peers to the relationships JSONB column in ticker_info."""
+    try:
+        from gcp.database import execute_sql
+        execute_sql(
+            """
+            UPDATE ticker_info
+            SET relationships = jsonb_set(
+                COALESCE(relationships, '{}'::jsonb),
+                '{peers}',
+                :peers_json::jsonb
+            ),
+            updated_at = NOW()
+            WHERE ticker = :ticker
+            """,
+            {"ticker": ticker.upper(), "peers_json": json.dumps(peers)},
+        )
+    except Exception as exc:
+        logger.warning("Cloud SQL peers upsert for %s failed: %s", ticker, exc)
+
+
+def get_finviz_news(ticker: str) -> list[dict]:
+    """Return recent news articles for a ticker from FinViz.
+
+    Uses ``finvizfinance.quote.finvizfinance.ticker_news()`` which scrapes
+    the FinViz quote page. Returns up to 100 articles with keys:
+        date, title, link, source
+
+    Not cached — intended to be called by the RSS fetcher on each poll cycle.
+    """
+    ticker = ticker.upper()
+    try:
+        from finvizfinance.quote import finvizfinance
+
+        def _do():
+            stock = finvizfinance(ticker)
+            return stock.ticker_news()
+
+        df = _run_with_timeout(_do)
+        if df is None or df.empty:
+            return []
+        rows = []
+        for _, row in df.iterrows():
+            rows.append({
+                "date": str(row.get("Date", "")),
+                "title": str(row.get("Title", "")).strip(),
+                "link": str(row.get("Link", "")).strip(),
+                "source": str(row.get("Source", "")).strip(),
+            })
+        logger.info("FinViz news for %s: %d articles", ticker, len(rows))
+        return rows
+    except Exception as exc:
+        logger.warning("FinViz ticker_news() failed for %s: %s", ticker, exc)
+        return []
+
+
 def get_aliases(ticker: str) -> list[str]:
     """Return search strings for matching headlines to this ticker.
 
@@ -421,6 +581,18 @@ if __name__ == "__main__":
         matches = search_tickers(query)
         for m in matches:
             print(f"  {m['symbol']:10s} {m['name'][:50]:50s} {m['type']:10s} score={m['match_score']:.2f}")
+    elif len(sys.argv) > 1 and sys.argv[1] == "peers":
+        # Usage: python -m lib.ticker_info peers AVGO
+        ticker = sys.argv[2] if len(sys.argv) > 2 else "AVGO"
+        peers = get_peers(ticker, max_age_days=0)
+        print(f"\n{ticker} peers ({len(peers)}): {peers}")
+    elif len(sys.argv) > 1 and sys.argv[1] == "news":
+        # Usage: python -m lib.ticker_info news AVGO
+        ticker = sys.argv[2] if len(sys.argv) > 2 else "AVGO"
+        articles = get_finviz_news(ticker)
+        print(f"\n{ticker} news ({len(articles)} articles):")
+        for a in articles[:10]:
+            print(f"  {a['date']} | {a['title'][:70]} | {a['source']}")
     elif len(sys.argv) > 1 and sys.argv[1] == "quote":
         # Usage: python -m lib.ticker_info quote AVGO
         ticker = sys.argv[2] if len(sys.argv) > 2 else "SPY"
