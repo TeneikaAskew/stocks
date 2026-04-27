@@ -778,7 +778,7 @@ CREATE TABLE IF NOT EXISTS insight_runs (
     status          VARCHAR(16)  NOT NULL DEFAULT 'queued'
                     CHECK (status IN ('queued','running','done','failed')),
     trigger         VARCHAR(16)  NOT NULL DEFAULT 'on_demand'
-                    CHECK (trigger IN ('on_demand','scheduled','local_dev')),
+                    CHECK (trigger IN ('on_demand','scheduled','local_dev','manual_batch')),
     started_at      TIMESTAMPTZ,
     finished_at     TIMESTAMPTZ,
     error           TEXT,
@@ -790,6 +790,24 @@ CREATE INDEX IF NOT EXISTS idx_insight_runs_ticker_created
     ON insight_runs (ticker, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_insight_runs_status
     ON insight_runs (status, created_at DESC);
+
+-- Migration: extend insight_runs.trigger CHECK to allow 'manual_batch'
+-- (introduced by the batch-guard PR #106 to distinguish ad-hoc gcloud
+-- run executions from the daily 8:45 cron). Idempotent — DROP + ADD
+-- so re-running schema.sql converges existing instances.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'insight_runs_trigger_check'
+    ) THEN
+        ALTER TABLE insight_runs
+            DROP CONSTRAINT insight_runs_trigger_check;
+    END IF;
+    ALTER TABLE insight_runs
+        ADD CONSTRAINT insight_runs_trigger_check
+        CHECK (trigger IN ('on_demand','scheduled','local_dev','manual_batch'));
+END $$;
 
 
 -- ─────────────────────────────────────────────────────────
