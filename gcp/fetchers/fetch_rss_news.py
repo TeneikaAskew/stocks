@@ -150,7 +150,9 @@ def collect_all(watchlist: list[str], max_age_hours: int = 24) -> list[dict]:
         logger.info("  %d articles", len(articles))
         time.sleep(0.3)
 
-    # FinViz per-ticker news
+    # FinViz per-ticker news. Articles fetched from FinViz's per-ticker
+    # endpoint are about that ticker by definition — tag them with the
+    # ticker as a category so Step 3's `direct` path picks them up.
     for tk in watchlist:
         logger.info("Fetching FinViz news: %s", tk)
         fv_articles = get_finviz_news(tk)
@@ -162,7 +164,7 @@ def collect_all(watchlist: list[str], max_age_hours: int = 24) -> list[dict]:
                 "url": a.get("link", ""),
                 "pub_date_raw": a.get("date", ""),
                 "published_ts": pub_ts,
-                "categories": [],
+                "categories": [tk],
                 "source": "finviz",
                 "data_source": "finviz",
             })
@@ -608,27 +610,67 @@ def score_gemini_top(
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_dataframe(matched_rows: list[dict]) -> pd.DataFrame:
-    """Convert matched rows to a DataFrame aligned with news_sentiment schema."""
+    """Convert matched rows to a DataFrame matching news_sentiment schema.
+
+    Schema (from gcp/schema.sql):
+        ticker                   VARCHAR(10)
+        published_ts             TIMESTAMPTZ
+        title                    TEXT (truncated to 500 like AV fetcher)
+        url                      TEXT (truncated to 1000)
+        summary                  TEXT (truncated to 2000)
+        sentiment_score          DOUBLE PRECISION (per-ticker)
+        relevance_score          DOUBLE PRECISION (per-ticker)
+        overall_sentiment_score  DOUBLE PRECISION (article-level)
+        overall_sentiment_label  VARCHAR(20)
+        topics                   TEXT[]
+        source                   VARCHAR(100) — publisher name
+        data_source              VARCHAR(20) — 'rss' | 'finviz'
+        match_method             VARCHAR(20) — 'direct'|'title_regex'|'alias_match'|...
+
+    UNIQUE constraint: (ticker, published_ts, url)
+    """
     records = []
+    now = datetime.now(timezone.utc)
     for row in matched_rows:
+        title = (row.get("title") or "")[:500] or None
+        url = (row.get("url") or "")[:1000]
+        if not url:
+            continue  # url is part of UNIQUE — required
+        summary = (row.get("description") or "")[:2000] or None
+        # Truncate label to VARCHAR(20)
+        label = row.get("overall_sentiment_label")
+        if label:
+            label = str(label)[:20]
+        # Truncate source to VARCHAR(100)
+        source = (row.get("source") or "unknown")[:100]
+        # Topics: filter out empty strings, keep ticker categories
+        topics = row.get("categories") or None
+        if topics:
+            topics = [t for t in topics if t and str(t).strip()] or None
+
         records.append({
-            "ticker": row["ticker"],
-            "published_ts": row.get("published_ts") or datetime.now(timezone.utc),
-            "title": row["title"][:500],
-            "url": row["url"][:1000],
-            "summary": row.get("description", "")[:2000] or None,
+            "ticker": str(row["ticker"]).upper()[:10],
+            "published_ts": row.get("published_ts") or now,
+            "title": title,
+            "url": url,
+            "summary": summary,
             "sentiment_score": row.get("sentiment_score"),
             "relevance_score": row.get("relevance_score"),
             "overall_sentiment_score": row.get("overall_sentiment_score"),
-            "overall_sentiment_label": row.get("overall_sentiment_label"),
-            "topics": row.get("categories") or None,
-            "source": row.get("source", "unknown"),
-            "data_source": row.get("data_source", "rss"),
-            "match_method": row.get("match_method", "direct"),
+            "overall_sentiment_label": label,
+            "topics": topics,
+            "source": source,
+            "data_source": (row.get("data_source") or "rss")[:20],
+            "match_method": (row.get("match_method") or "direct")[:20],
         })
+
+    if not records:
+        logger.warning("No valid rows to build DataFrame")
+        return pd.DataFrame()
+
     df = pd.DataFrame(records)
 
-    # Validate required columns
+    # Validate required columns (UNIQUE constraint cols)
     required = ["ticker", "published_ts", "url"]
     for col in required:
         if col not in df.columns:
@@ -640,6 +682,13 @@ def build_dataframe(matched_rows: list[dict]) -> pd.DataFrame:
     df = df.dropna(subset=required)
     if len(df) < before:
         logger.warning("Dropped %d rows with NULL required fields", before - len(df))
+
+    # Final dedup on UNIQUE constraint (within this batch — Cloud SQL handles
+    # cross-batch via ON CONFLICT)
+    before = len(df)
+    df = df.drop_duplicates(subset=required, keep="first")
+    if len(df) < before:
+        logger.info("Dropped %d intra-batch duplicates", before - len(df))
 
     return df
 
