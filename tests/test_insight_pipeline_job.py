@@ -146,12 +146,62 @@ def _set_env(monkeypatch, **kwargs):
             monkeypatch.setenv(key, value)
 
 
-def test_run_scheduled_default_runs_three_tickers(stub_run_pipeline, monkeypatch):
-    _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
+def test_run_scheduled_explicit_env_overrides_watchlist(stub_run_pipeline, monkeypatch):
+    """INSIGHT_TICKERS env wins over the watchlist for ad-hoc runs."""
+    import gcp.fetchers._watchlist as wl_mod
+    monkeypatch.setattr(wl_mod, "load_watchlist", lambda: ["FROM_DB", "ALSO_DB"])
+    _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
     code = asyncio.run(job._run_scheduled())
     assert code == 0
     assert stub_run_pipeline == ["SPY", "IWM", "QQQ"]
+
+
+def test_run_scheduled_falls_back_to_watchlist_when_env_unset(stub_run_pipeline, monkeypatch):
+    """Empty INSIGHT_TICKERS → query the Cloud SQL watchlists table."""
+    import gcp.fetchers._watchlist as wl_mod
+    monkeypatch.setattr(wl_mod, "load_watchlist", lambda: ["AVGO", "MSFT", "IWM"])
+    _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
+             INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
+    code = asyncio.run(job._run_scheduled())
+    assert code == 0
+    assert stub_run_pipeline == ["AVGO", "MSFT", "IWM"]
+
+
+def test_run_scheduled_falls_back_to_default_when_watchlist_empty(stub_run_pipeline, monkeypatch):
+    """Both env and watchlist empty → DEFAULT_TICKERS so cron never no-ops."""
+    import gcp.fetchers._watchlist as wl_mod
+    monkeypatch.setattr(wl_mod, "load_watchlist", lambda: [])
+    _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
+             INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
+    code = asyncio.run(job._run_scheduled())
+    assert code == 0
+    assert stub_run_pipeline == list(job.DEFAULT_TICKERS)
+
+
+def test_run_scheduled_falls_back_to_default_when_watchlist_raises(stub_run_pipeline, monkeypatch):
+    """Cloud SQL outage shouldn't block the daily cron — we fall to defaults."""
+    import gcp.fetchers._watchlist as wl_mod
+
+    def explode():
+        raise RuntimeError("Cloud SQL down")
+    monkeypatch.setattr(wl_mod, "load_watchlist", explode)
+    _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
+             INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
+    code = asyncio.run(job._run_scheduled())
+    assert code == 0
+    assert stub_run_pipeline == list(job.DEFAULT_TICKERS)
+
+
+def test_run_scheduled_explicit_env_blank_string_treated_as_unset(stub_run_pipeline, monkeypatch):
+    """An empty/whitespace INSIGHT_TICKERS shouldn't bypass the watchlist."""
+    import gcp.fetchers._watchlist as wl_mod
+    monkeypatch.setattr(wl_mod, "load_watchlist", lambda: ["AVGO"])
+    _set_env(monkeypatch, INSIGHT_TICKERS="   ", INSIGHT_MAX_BATCH=None,
+             INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
+    code = asyncio.run(job._run_scheduled())
+    assert code == 0
+    assert stub_run_pipeline == ["AVGO"]
 
 
 def test_run_scheduled_refuses_when_over_cap(stub_run_pipeline, monkeypatch):
@@ -182,12 +232,19 @@ def test_run_scheduled_at_cap_runs(stub_run_pipeline, monkeypatch):
     assert len(stub_run_pipeline) == 10
 
 
-def test_run_scheduled_empty_input_refuses(stub_run_pipeline, monkeypatch):
+def test_run_scheduled_empty_env_falls_through_to_watchlist_then_default(
+    stub_run_pipeline, monkeypatch
+):
+    """Empty INSIGHT_TICKERS no longer refuses — it falls through the chain.
+    With watchlist also empty, the cron uses DEFAULT_TICKERS so the daily
+    job never silently no-ops."""
+    import gcp.fetchers._watchlist as wl_mod
+    monkeypatch.setattr(wl_mod, "load_watchlist", lambda: [])
     _set_env(monkeypatch, INSIGHT_TICKERS="", INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
     code = asyncio.run(job._run_scheduled())
-    assert code == 1
-    assert stub_run_pipeline == []
+    assert code == 0
+    assert stub_run_pipeline == list(job.DEFAULT_TICKERS)
 
 
 def test_run_scheduled_json_array_input(stub_run_pipeline, monkeypatch):
@@ -199,10 +256,29 @@ def test_run_scheduled_json_array_input(stub_run_pipeline, monkeypatch):
 
 
 def test_run_scheduled_tags_default_as_scheduled(captured_triggers, monkeypatch):
+    """When the watchlist returns the canonical default set, trigger
+    stays 'scheduled' (not 'manual_batch')."""
+    import gcp.fetchers._watchlist as wl_mod
+    monkeypatch.setattr(wl_mod, "load_watchlist", lambda: list(job.DEFAULT_TICKERS))
     _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
     asyncio.run(job._run_scheduled())
     assert all(trig == "scheduled" for _, trig in captured_triggers)
+
+
+def test_run_scheduled_tags_extended_watchlist_as_manual_batch(captured_triggers, monkeypatch):
+    """When the watchlist has extra tickers beyond defaults (the real
+    state today: SPY/IWM/QQQ/AVGO/MSFT/SPX), the run gets tagged
+    'manual_batch' for audit purposes."""
+    import gcp.fetchers._watchlist as wl_mod
+    monkeypatch.setattr(
+        wl_mod, "load_watchlist",
+        lambda: ["SPY", "IWM", "QQQ", "AVGO", "MSFT"],
+    )
+    _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
+             INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
+    asyncio.run(job._run_scheduled())
+    assert all(trig == "manual_batch" for _, trig in captured_triggers)
 
 
 def test_run_scheduled_tags_custom_list_as_manual_batch(captured_triggers, monkeypatch):
