@@ -54,19 +54,28 @@ logging.basicConfig(
 log = logging.getLogger("backfill_watchlist")
 
 REPO = Path(__file__).resolve().parents[1]
-ALERT_CFG = REPO / "alert_config.json"
+sys.path.insert(0, str(REPO))
 
 
 def _watchlist() -> list[str]:
-    if not ALERT_CFG.exists():
-        return []
+    """Source of truth: Cloud SQL `watchlists` → alert_config.json → env.
+
+    Delegates to gcp.fetchers._watchlist.load_watchlist so this script
+    sees the same active tickers the live fetchers do (no drift between
+    the platform UI's adds and the backfill driver's universe)."""
     try:
-        data = json.loads(ALERT_CFG.read_text())
+        from gcp.fetchers._watchlist import load_watchlist
+        return load_watchlist()
     except Exception as exc:
-        log.error("could not parse %s: %s", ALERT_CFG, exc)
+        log.error("watchlist load failed: %s", exc)
         return []
-    wl = data.get("watchlist") or []
-    return [str(t).strip().upper() for t in wl if str(t).strip()]
+
+
+# Default cap on the per-invocation ticker count. The backfill drivers
+# shell out to multiple AV endpoints per ticker (daily / intraday /
+# options / news / earnings / insider / SEC) and a 100-ticker run can
+# exhaust AV's free-tier rate limit and burn ~30 minutes.
+DEFAULT_MAX_TICKERS = 25
 
 
 def _scalar(sql: str, params: dict) -> int | None:
@@ -317,6 +326,16 @@ def main() -> int:
                    help="Re-pull every source regardless of freshness.")
     p.add_argument("--dry-run", action="store_true",
                    help="Report what would be backfilled without fetching.")
+    p.add_argument(
+        "--max-tickers", type=int, default=DEFAULT_MAX_TICKERS,
+        help=(f"Cap on ticker count per invocation (default {DEFAULT_MAX_TICKERS}). "
+              "Each ticker triggers ~7 AV calls, so a runaway list can exhaust "
+              "the free-tier quota in minutes. Use --override-max to bypass."),
+    )
+    p.add_argument(
+        "--override-max", action="store_true",
+        help="Bypass --max-tickers cap. Required when running > max-tickers.",
+    )
     args = p.parse_args()
 
     tickers = (
@@ -324,8 +343,16 @@ def main() -> int:
         if args.tickers else _watchlist()
     )
     if not tickers:
-        log.error("no tickers — set --tickers or populate alert_config.json[\"watchlist\"]")
+        log.error("no tickers — set --tickers or populate the watchlist")
         return 2
+
+    if len(tickers) > args.max_tickers and not args.override_max:
+        log.error(
+            "refusing to backfill %d tickers (max-tickers=%d). "
+            "Use --override-max=1 to bypass. tickers=%s",
+            len(tickers), args.max_tickers, tickers,
+        )
+        return 1
 
     log.info("Watchlist backfill — %d ticker(s): %s",
              len(tickers), ", ".join(tickers))

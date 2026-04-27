@@ -91,6 +91,32 @@ deploy_insight_pipeline() {
         --quiet
 }
 
+# ── Historical signals — watchlist iterator (Cloud Run Job) ─────────────────
+# Runs the trading_analysis voter against every active ticker in the
+# Cloud SQL watchlists table and upserts results to historical_signals.
+# Idempotent (ON CONFLICT DO NOTHING) so re-running on already-covered
+# date ranges is a no-op. Caps at --max-tickers=25 unless overridden.
+deploy_historical_signals_watchlist() {
+    echo "Deploying historical-signals-watchlist job..."
+
+    gcloud run jobs create historical-signals-watchlist \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.run_historical_signals" \
+        --args "--from-watchlist" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update historical-signals-watchlist \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,scripts.run_historical_signals" \
+        --args "--from-watchlist" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Auto-refresh top-N (Cloud Run Job) ───────────────────────────────────────
 # Pre-warms the AI insight cache for the highest-scoring ranker tickers.
 # Calls lib.agents.ranker.rank_tickers, picks top N, enqueues a Cloud
@@ -824,6 +850,11 @@ deploy_schedulers() {
     # (which seeds the strat + daily indicators the pipeline consumes).
     _schedule "insight-pipeline-daily"   "45 8 * * 1-5"  "insight-pipeline"
 
+    # Historical signals — watchlist iterator — 1 AM ET weekdays. Runs
+    # well after the 5 PM market-data fetcher has settled new intraday
+    # bars, picking up any tickers added to the watchlist that day.
+    _schedule "historical-signals-watchlist-daily"  "0 1 * * 2-6"  "historical-signals-watchlist"
+
     # Auto-refresh top-N — 8:10 AM ET weekdays.
     # Runs after news fetchers (8:00, 8:05) so catalyst data is fresh,
     # and before premarket-brief at 8:30 so the warmed reports are
@@ -863,7 +894,7 @@ case "${1:-help}" in
     monitor)     build_image && deploy_monitor ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
-    insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_auto_refresh_top_n ;;
+    insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;
     schedulers)  deploy_schedulers ;;
     backfill)    shift; backfill_watchlist "$@" ;;
     apply-schema) build_image && deploy_apply_schema_migrations ;;
@@ -879,6 +910,7 @@ case "${1:-help}" in
         deploy_fetchers
         setup_insight_tasks_queue
         deploy_insight_pipeline
+        deploy_historical_signals_watchlist
         deploy_auto_refresh_top_n
         deploy_notifier
         deploy_schedulers
