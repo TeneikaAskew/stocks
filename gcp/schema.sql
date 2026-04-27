@@ -939,3 +939,33 @@ CREATE INDEX IF NOT EXISTS idx_news_sentiment_data_source
 
 CREATE INDEX IF NOT EXISTS idx_news_sentiment_match_method
     ON news_sentiment (match_method);
+
+
+-- ── watchlists: per-user ticker subscriptions, durably stored ───────────────
+-- Replaces the alert_config.json file-based watchlist that was writing to
+-- the trading-platform Cloud Run service's ephemeral filesystem (lost on
+-- every restart, never reached the fetcher containers).
+--
+-- Schema is per-user from day one so a future auth layer can flip on
+-- multi-user mode by populating user_id from a session/JWT. Until then
+-- writers default to user_id='default'.
+--
+-- removed_at = NULL means "active". A soft-delete column instead of a
+-- DELETE so the audit trail captures intent + history.
+CREATE TABLE IF NOT EXISTS watchlists (
+    user_id      VARCHAR(64)  NOT NULL DEFAULT 'default',
+    ticker       VARCHAR(10)  NOT NULL,
+    added_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    removed_at   TIMESTAMPTZ  NULL,
+    source       VARCHAR(20)  NULL,        -- 'ui', 'cli', 'admin', 'seed'
+    notes        TEXT         NULL,
+    PRIMARY KEY (user_id, ticker)
+);
+
+-- Active rows lookup — used on every fetcher start. Partial index keeps
+-- the index small as removed rows accumulate over time.
+CREATE INDEX IF NOT EXISTS idx_watchlists_active
+    ON watchlists (user_id) WHERE removed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_watchlists_ticker
+    ON watchlists (ticker) WHERE removed_at IS NULL;
