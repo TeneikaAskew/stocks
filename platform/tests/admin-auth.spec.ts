@@ -210,8 +210,7 @@ test.describe('Sidebar — Admin link visibility', () => {
       route.fulfill({ status: 200, body: JSON.stringify({ email: ADMIN_EMAIL }) }),
     );
 
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
 
     const adminLink = page.locator('nav a[href="/admin"]');
     await expect(adminLink).toBeVisible();
@@ -222,9 +221,10 @@ test.describe('Sidebar — Admin link visibility', () => {
       route.fulfill({ status: 200, body: JSON.stringify({ email: null }) }),
     );
 
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
 
+    // Wait for the nav to render (Help link is always visible)
+    await expect(page.locator('nav a[href="/help"]')).toBeVisible();
     const adminLink = page.locator('nav a[href="/admin"]');
     await expect(adminLink).not.toBeVisible();
   });
@@ -234,9 +234,9 @@ test.describe('Sidebar — Admin link visibility', () => {
       route.fulfill({ status: 200, body: JSON.stringify({ email: 'user@other.org' }) }),
     );
 
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
 
+    await expect(page.locator('nav a[href="/help"]')).toBeVisible();
     const adminLink = page.locator('nav a[href="/admin"]');
     await expect(adminLink).not.toBeVisible();
   });
@@ -247,10 +247,11 @@ test.describe('Sidebar — Admin link visibility', () => {
     );
     await mockAdminApi(page);
 
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-    await page.click('nav a[href="/admin"]');
+    const adminLink = page.locator('nav a[href="/admin"]');
+    await expect(adminLink).toBeVisible();
+    await adminLink.click();
     await page.waitForURL('**/admin');
 
     // Should go straight to the routing panel, no token gate
@@ -263,8 +264,9 @@ test.describe('Sidebar — Admin link visibility', () => {
     );
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
-    await page.waitForLoadState('networkidle');
 
+    // Wait for nav to fully render before counting
+    await expect(page.locator('nav a[href="/help"]')).toBeVisible();
     const nav = page.locator('nav a');
     await expect(nav).toHaveCount(11);
   });
@@ -275,8 +277,9 @@ test.describe('Sidebar — Admin link visibility', () => {
     );
 
     await page.goto('/', { waitUntil: 'domcontentloaded' });
-    await page.waitForLoadState('networkidle');
 
+    // Wait for admin link to appear before counting
+    await expect(page.locator('nav a[href="/admin"]')).toBeVisible();
     const nav = page.locator('nav a');
     await expect(nav).toHaveCount(12);
   });
