@@ -22,6 +22,14 @@ Usage:
     python -m gcp.fetchers.fetch_news_sentiment --tickers SPY,IWM,QQQ
     python -m gcp.fetchers.fetch_news_sentiment --topics mergers_and_acquisitions,technology
     python -m gcp.fetchers.fetch_news_sentiment --tickers SPY --topics earnings --dry-run
+
+Backfill:
+    Pass `--time-from` / `--time-to` (AV format: YYYYMMDDTHHMM, e.g.
+    `20260406T0000`) to pull historical news. The 1000-row default
+    `--limit` matches AV's documented ceiling — keep it at 1000 for
+    backfills covering multi-day windows or you'll silently under-
+    sample high-volume catalysts (the 4/6–4/11 AVGO backfill ran
+    with limit=200 originally and missed 134 of 151 articles AV had).
 """
 
 import argparse
@@ -249,8 +257,13 @@ def main():
         default=os.environ.get("NEWS_TOPICS", ""),
         help="Comma-separated AV topics for topic-mode fetch (max 5).",
     )
-    parser.add_argument("--limit", type=int, default=200,
-                        help="Max articles per AV call (default: 200)")
+    parser.add_argument("--limit", type=int, default=1000,
+                        help=(
+                            "Max articles per AV call (default: 1000, AV's documented ceiling). "
+                            "The previous default of 200 caused silent under-coverage on high-volume "
+                            "tickers — the 4/6–4/11 backfill window persisted only 17 of 151 AVGO "
+                            "articles AV had available because every batch hit the cap."
+                        ))
     parser.add_argument(
         "--time-from", default=None,
         help="Backfill: AV time_from filter, format YYYYMMDDTHHMM (e.g. 20260407T0000)",
