@@ -1,6 +1,6 @@
 # Trading Application — Briefing Deck
 
-**Compiled:** 2026-04-26
+**Compiled:** 2026-04-26 (refreshed post-PR-#99)
 **Scope:** Full-system reference covering architecture, data pipeline, infrastructure, plans executed, and operational runbook.
 **Audience:** Engineers, stakeholders, and future maintainers.
 
@@ -41,13 +41,13 @@ A full-stack equity trading research and execution platform centered on four pri
 | FastAPI routers | 14 (live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, **analytics**, **config**, **health**, plus `__init__`) |
 | Python `lib/` modules | 12 (+ `lib/agents/` package with 11 modules + `ranker/` subpackage). Adds `lib/gamma.py` — canonical Greeks/GEX/VEX/King-Gate-Spot-Flip math |
 | GCP fetchers | 11 (composition shifted: `fetch_etf_options.py` deleted, `fetch_fred_rates.py` added) |
-| Cloud SQL tables | 30 (adds `daily_rates` for FRED-driven historical Greeks; `earnings_calendar` now 47–48 cols incl. UW liquidity) |
+| Cloud SQL tables | 31 (adds `daily_rates` for FRED-driven historical Greeks; `ticker_info` for AV/FinViz metadata cache; `earnings_calendar` now 47–48 cols incl. UW liquidity) |
 | Cloud Run jobs | 17 (15 scheduled + `apply-schema-migrations` one-shot + `compute-spx-greeks-backfill` on-demand) |
 | GitHub Actions workflows | 14 (composition: `fetch_etf_options.yml` removed, `freshness-watchdog.yml` added) |
 | Standalone web tools | 4 (heatseeker, success-report, chart-viewer, website) |
 | Google Apps Script files | 33 |
-| Test files | ~35 Python (`make test` ~703 tests after PR #94's +251), 33+ E2E specs, 18 script regression |
-| Plans logged Apr 10–26 | 14 (10 ✅ shipped, 3 🟡 partial, 1 📋 investigation) |
+| Test files | ~35 Python (`make test` ~703 tests after PR #94's +251), 34+ E2E specs (includes `admin-auth.spec.ts` — 13 IAP auth tests), 18 script regression |
+| Plans logged Apr 10–26 | 17 (13 ✅ shipped, 3 🟡 partial, 1 📋 investigation) |
 | Production URL | `trading-platform-5sjtb3yl7a-ue.a.run.app` (Cloud Run + IAP SSO, bictech.org) |
 
 **Key architectural achievements (Apr 2026):**
@@ -62,6 +62,10 @@ A full-stack equity trading research and execution platform centered on four pri
 - Historical Review Mode (global DateSelector with trading-day snapping, `end_date`/`end_time` API params).
 - Catalyst-analog matching backtest (replaces empty-trades backtest for thin-data tickers).
 - Phase 3 deterministic ticker ranker (insider buying vs selling split, news-topic match, watchlist scoping).
+- **Ticker metadata system** (`lib/ticker_info.py` ~454 lines). Unified access to company info, peers, news from AlphaVantage (SYMBOL_SEARCH, OVERVIEW, GLOBAL_QUOTE) and FinViz. Cloud SQL `ticker_info` table cache + local JSON fallback. Drives the Watchlist "Add Ticker" search flow via 5 new endpoints on the insights router and `useTickerSearch` hook.
+- **Admin IAP email bypass** (PR #98). The admin email (`teneika@bictech.org`) authenticates via IAP header without entering a token. New `/api/me` endpoint, `useUser` hook, conditional Admin sidebar link. Token-based auth preserved as fallback.
+- **RSS news feed classifier** (`scripts/probe_news_feeds.py`). Probes 19 candidate RSS feeds (Seeking Alpha, Yahoo, CNBC, MarketWatch, Investing.com, NASDAQ) and classifies them as `PER_TICKER` vs `GENERAL` with metadata extraction (cashtags, pub dates, category elements). Investigation tool for future news integration.
+- **Deterministic per-persona trade planner** (`lib/agents/trade_planner.py`). Replaced LLM-generated entry/stop/targets/sizing with explicit math recipes: aggressive (2× ATR stop, 2R/3.5R/5R targets), neutral (1× ATR), conservative (structural stop, 0.5× sizing). Same inputs now produce byte-identical plans.
 - Historical signals migrated from GCS parquet to Cloud SQL `historical_signals` table; bulk insert ~130× faster via multi-row VALUES; new `/api/signals/{ticker}/similar` endpoint backs the Charts "Similar Setups" card.
 - Earnings ticker fan-out capped at top-25 by tier + market cap in both the daily fetcher and the premarket brief, fixing a silent ~2-week stale-bars regression on IWM/SPY/QQQ caused by AV rate-limit budget exhaustion. UW liquidity columns (SP500 flag, stock/options volume, open interest, realized vol, past reactions) now flow into `earnings_calendar` and drive the within-tier sort.
 
@@ -91,7 +95,7 @@ A full-stack equity trading research and execution platform centered on four pri
                     ┌─────────────────────┐   ┌────────────────────┐
                     │ Cloud SQL           │   │ Google Cloud       │
                     │ (PostgreSQL 15)     │   │ Storage (GCS)      │
-                    │ 29 tables           │   │ raw/data/*.parquet │
+                    │ 31 tables           │   │ raw/data/*.parquet │
                     └──────────┬──────────┘   └─────────┬──────────┘
                                │                         │
                                └─────────────┬───────────┘
@@ -221,6 +225,8 @@ The standalone `/backtest` route was **merged into Charts** as a Backtester sect
 - `hooks/useConfig.ts` — fetches `/api/config/indicators` and `/api/config/market-hours` (closes BRIEFING §16.2 drift)
 - `hooks/useLiveIndicators.ts` — server-computed intraday indicators
 - `hooks/useSimilarSetups.ts` — fetches `/api/signals/{ticker}/similar` for the Charts page Similar Setups card (PR #80)
+- `hooks/useTickerSearch.ts` — debounced AV SYMBOL_SEARCH autocomplete (8 results), `useAddToWatchlist()` / `useRemoveFromWatchlist()` mutations. Drives the WatchlistPanel "Add Ticker" search flow (PR #98)
+- `hooks/useUser.ts` — fetches `/api/me` for IAP-authenticated email; exposes `{ email, isAdmin, isLoading }`. Used by Sidebar (conditional Admin link) and AdminPage (token gate bypass) (PR #98)
 
 ### 4.3 FastAPI routers and endpoints
 
@@ -233,11 +239,11 @@ Files in `platform/api/routers/`. The 13 active routers (+ `__init__.py`):
 | Playbook | `playbook.py` | `GET /api/playbook/eval`, `POST /api/playbook/evaluate` | Server-side condition evaluation against live/historical |
 | Backtest | `backtest.py` | `GET /api/backtest/results/{ticker}`, `GET /api/backtest/all/{ticker}` | Reads CSVs from GCS with TTL cache. Returns `runs[]`, `win_rate` (0-1), `avg_return_pct` |
 | Signals | `signals.py` | `GET /api/signals/{ticker}`, `GET /api/signals/{ticker}/similar`, params: `end_date`, `end_time`, `direction`, `min_score` | Cloud SQL `historical_signals` reader (legacy parquet fallback). `/similar` returns prior bars in same direction + score + RSI bucket (PR #80) |
-| Insights | `insights.py` | `GET /api/insights/{ticker}`, `POST /api/insights/refresh/{ticker}`, `GET /api/insights/runs/...` | Cached agent reports (Cloud SQL `insight_reports`), refresh trigger queues a Cloud Run Job |
+| Insights | `insights.py` | `GET /api/insights/{ticker}`, `POST /api/insights/refresh/{ticker}`, `GET /api/insights/runs/...`, **`GET /api/insights/ticker/search`**, **`GET .../ticker/{t}/info`**, **`GET .../ticker/{t}/quote`**, **`POST .../watchlist/add`**, **`DELETE .../watchlist/{t}`** | Cached agent reports (Cloud SQL `insight_reports`), refresh trigger queues a Cloud Run Job. Ticker search/info/quote endpoints back the WatchlistPanel "Add Ticker" flow via `lib/ticker_info` (PR #98) |
 | Journal | `journal.py` | `GET/POST/PATCH/DELETE /api/journal/{ticker}`, `GET /api/journal/{ticker}/{id}` | Cloud SQL `journal_entries` (UUID PK) primary; local JSON fallback for offline/dev |
 | Dashboard | `dashboard.py` | `GET /api/dashboard/brief/{ticker}` | Live overlay applied during market hours; trading-day stale calculation; `live: { price, session, updated_at, source }` block |
 | Catalysts | `catalysts.py` | `GET /api/catalysts/{ticker}`, `GET /api/catalysts/snapshot/{ticker}?as_of=...` | Unified feed: news, 8-K, insider, economic events, earnings; point-in-time snapshots |
-| Admin | `admin.py` | `GET/POST /admin/model-routing`, `/admin/...` | Model provider/version per role; gated by `ADMIN_TOKEN` env var |
+| Admin | `admin.py` | `GET/PUT /api/admin/routes`, `GET /api/admin/models`, **`GET /api/me`** (on `main.py`) | Model provider/version per role. **IAP email bypass** (PR #98): admin email (`teneika@bictech.org`) authenticated via `X-Goog-Authenticated-User-Email` header skips the token gate. `/api/me` returns the current user's email. Token-based `X-Admin-Token` auth preserved as fallback |
 | **Analytics** | `analytics.py` | `GET /api/analytics/summary/{ticker}`, `POST /api/analytics/trade-stats` | Server-side trade analytics aggregation (PR #92). Replaces frontend `useTradeAnalytics` math |
 | **Config** | `config.py` | `GET /api/config/indicators`, `GET /api/config/market-hours` | Single source of truth for thresholds + market hours. Closes BRIEFING §16.2 plan #4 drift |
 | **Health** | `health.py` | `GET /api/health/freshness`, `GET /api/health` | Per-source last-synced timestamps. Backs the Dashboard `DataPipelineStatus` widget + the `freshness-watchdog.yml` workflow (PR #85) |
@@ -309,6 +315,7 @@ Files in `lib/`. Pure-Python, no FastAPI/database imports — testable in isolat
 | `insights.py` | Template-driven narrative generation from backtest output. Markdown reports with win rate, Sharpe, drawdown, expectancy |
 | **`gamma.py`** | **Canonical Greeks/gamma math (PR #81, ~568 lines).** `aggregate_by_strike`, `gex_by_strike`, `total_vex`, `put_call_ratio`, `estimate_spot` (3-tier: parity → delta-proxy → median-strike), `zero_gamma`, `compute_gamma_flip`, `max_pain`, `implied_move`, `detect_nodes`, `classify_levels`, `build_summary`. `SpotEstimate`, `Level`, `GammaSummary` dataclasses. Single source of truth replacing the deleted `greeksCalculator.ts`/`nodeAnalyzer.ts`. See `docs/gamma_levels.md` |
 | `options_greeks.py` | Black-Scholes-Merton Greeks (PR #86, ~470 lines). `py_vollib_vectorized` IV solver from AV mid prices, computes 5 Greeks analytically, writes sidecar `_computed` columns (`delta_computed`, `gamma_computed`, etc.). `get_rate_and_yield()` reads `daily_rates`. `enrich_av_chain_with_greeks()` orchestrator for SPX/NDX/RUT/XSP |
+| **`ticker_info.py`** | **Ticker metadata system (PR #98, ~454 lines).** Multi-source: AV SYMBOL_SEARCH (autocomplete), OVERVIEW (company name/sector/industry/market cap/description), GLOBAL_QUOTE (live price/volume); FinViz peers (~10 tickers) + news (~100 headlines). Dual persistence: Cloud SQL `ticker_info` table (30-day TTL) + local `data/ticker_info.json` fallback. Public API: `get_ticker_info()`, `search_tickers()`, `get_quote()`, `get_peers()`, `get_finviz_news()`, `get_aliases()`, `refresh_watchlist_info()` |
 | `api_client.py` | HTTP helpers for AlphaVantage, Yahoo, FRED |
 | `logging_config.py` | Centralized logging setup for CLI + Cloud Run jobs |
 
@@ -326,6 +333,7 @@ Files in `lib/`. Pure-Python, no FastAPI/database imports — testable in isolat
 | `model_routing.py` | Reads `model_routing` Cloud SQL table; resolves `(role, env)` → `(provider, model)` |
 | `pricing.py` | Per-provider/model token pricing for cost tracking in reports |
 | `embeddings.py` | Vector embeddings for journal entries / similarity search |
+| **`trade_planner.py`** | **Deterministic per-persona trade planning (PR #96).** Replaces LLM-generated entry/stop/targets/sizing with explicit math recipes per persona: aggressive (2× ATR stop, 2R/3.5R/5R targets, 1.5× sizing), neutral (1× ATR, 1R/2R/3R, 1.0×), conservative (structural stop via SMA200/swing low, 1R/1.75R, 0.5×, blocks on weak alignment). Same inputs → byte-identical plans. LLM still provides narrative (thesis, bull/bear case, risk flags) |
 | `ranker/` | Subpackage — deterministic Phase 3 ticker ranker |
 
 ### `lib/agents/ranker/` — deterministic ticker ranker
@@ -379,7 +387,7 @@ The legacy `gcp/fetchers/fetch_earnings_options.py` was removed (commit `5abfc89
 
 ### 6.3 Cloud SQL schema
 
-30 tables total. PostgreSQL 15 on Cloud SQL `db-g1-small` (1.7 GB cache; tier upgrade deferred — see `INFRASTRUCTURE_NOTES.md` at repo root).
+31 tables total. PostgreSQL 15 on Cloud SQL `db-g1-small` (1.7 GB cache; tier upgrade deferred — see `INFRASTRUCTURE_NOTES.md` at repo root).
 
 | Table | Purpose | Notable columns |
 | --- | --- | --- |
@@ -412,6 +420,7 @@ The legacy `gcp/fetchers/fetch_earnings_options.py` was removed (commit `5abfc89
 | `insight_reports` | Cached multi-agent output | `ticker`, `as_of`, `report` JSONB, `model_versions`, `cost_usd` |
 | `insight_runs` | Async pipeline state | `status` (queued/running/done/failed), `report_id` |
 | `news_sentiment` | Article-level sentiment | `ticker`, `published_ts`, `sentiment_score`, `topics` array |
+| **`ticker_info`** | **Ticker metadata cache (PR #98)** | `symbol PK`, `name`, `exchange`, `asset_type`, `sector`, `industry`, `market_cap`, `description`, `relationships` JSONB (peers), `updated_at`. Populated by `lib/ticker_info.py` from AV OVERVIEW + FinViz |
 | `historical_signals` | Idempotent signal record (for backtests) | `ticker`, `entry_time`, `trade_type`, `signal_strength`, `return_pct`, `entry_rsi/ema/vwap` |
 
 ### 6.4 GCS layout
@@ -902,6 +911,8 @@ python -m playwright install chromium
 | `test_premarket_brief.py` | Premarket-brief job: tier sort, top-N cap, Discord embed (PR #94) |
 | `test_watchlist_helper.py` | Watchlist union utilities (PR #94) |
 | `test_agent_anthropic_adapter.py`, `test_agent_embeddings.py` | Multi-agent expansion (PR #94) |
+| `test_ticker_info.py` | Ticker metadata: AV search, quote, peers, FinViz news, Cloud SQL + JSON cache (PR #98) |
+| `test_trade_planner.py` | Deterministic per-persona trade planning (PR #96) |
 
 Frontend unit tests (Vitest) — colocated with source:
 - `platform/src/lib/playbookEvaluator.test.ts`
@@ -931,6 +942,7 @@ Specs added since BRIEFING write:
 - `api-smoke.spec.ts` — endpoint smoke (PR #88)
 - `navigation.spec.ts` — route navigation smoke (PR #88)
 - `charts-cards.spec.ts` — Strategy Conditions + Similar Setups + Sig overlay (PR #80)
+- `admin-auth.spec.ts` — IAP email bypass, token gate fallback, sidebar Admin link visibility (13 tests, PR #98/#99)
 
 Coverage includes per-route smoke tests for Dashboard, Charts, Insights, Admin, Catalysts, Signals, Journal — added in commit `8639b63` and `413830b`.
 
@@ -938,7 +950,7 @@ Coverage includes per-route smoke tests for Dashboard, Charts, Insights, Admin, 
 
 ## 14. Plans Executed (Apr 10–26, 2026)
 
-Fourteen named plans live in `~/.claude/plans/`. All have been validated against current code. Status legend:
+Seventeen named plans live in `~/.claude/plans/`. All have been validated against current code. Status legend:
 - ✅ **Shipped** — full intent landed in code
 - 🟡 **Partial** — some pieces shipped, others staged or deferred
 - ⛔ **Not shipped** — plan written but no code deliverable
@@ -960,6 +972,9 @@ Fourteen named plans live in `~/.claude/plans/`. All have been validated against
 | 12 | `starry-bubbling-koala` | Investigation Report — Stale Market Data | 2026-04-10 | 📋 Investigation |
 | 13 | `velvety-booping-kazoo` | Header "Market Closed" badge fix | 2026-04-10 | ✅ Shipped |
 | 14 | `zippy-forging-bachman` | Archive Yahoo Data → `archive_yahoo_*` Tables | 2026-04-12 | 🟡 Partial |
+| 15 | (session 4) | Ticker Info API + Watchlist Add | 2026-04-26 | ✅ Shipped |
+| 16 | (session 4) | Admin IAP Email Bypass | 2026-04-26 | ✅ Shipped |
+| 17 | (session 4) | RSS News Feed Probe (19 feeds) | 2026-04-26 | ✅ Shipped |
 
 ### Per-plan detail
 
@@ -1155,7 +1170,31 @@ After PR #80 merged into main, 14 follow-on PRs landed in the same morning:
 - **Test suite alignment** (#94) — +251 net additions across 18 test files; new test files for failure notifier, schema migrations, freshness audit, AV options backfill, historical_signals, playbook evaluate, premarket brief, watchlist helper, anthropic adapter, embeddings.
 - **Remove fetch-etf-options pipeline** (#95) — workflow `.yml` (186 lines), fetcher `.py` (293 lines), CLI script (616 lines) all deleted. Yahooquery intraday options retired. AV-only writer surface.
 
-### 15.3 Themes from last 50 commits
+### 15.3 Session 4 (2026-04-26 evening, PRs #96–#99)
+
+**Deterministic trade planner** (PR #96):
+- `lib/agents/trade_planner.py` replaces LLM-generated entry/stop/targets/sizing with explicit per-persona math. Same inputs → byte-identical plans. Aggressive/neutral/conservative recipes with ATR-based stops, R-multiple targets, and sizing multipliers.
+
+**Ticker Info API + Watchlist Add** (PR #98, commit `382993a9`):
+- `lib/ticker_info.py` (~454 lines): AV SYMBOL_SEARCH/OVERVIEW/GLOBAL_QUOTE + FinViz peers/news. Cloud SQL `ticker_info` table cache + local JSON fallback.
+- 5 new endpoints on insights router: `GET /api/insights/ticker/search`, `.../info`, `.../quote`, `POST .../watchlist/add`, `DELETE .../watchlist/{ticker}`.
+- `useTickerSearch` hook (debounced search, add/remove mutations). WatchlistPanel enhanced with search input + add ticker flow.
+
+**Admin IAP email bypass** (PR #98, commit `4d1afda8`):
+- `admin.py` accepts IAP-authenticated admin email (`teneika@bictech.org`) without token.
+- `/api/me` endpoint returns current user's email from IAP headers.
+- `useUser` hook + conditional Admin sidebar link + AdminPage token gate skip.
+
+**RSS news feed probe** (PR #98, commits `396d7b81`, `b86af6f6`):
+- `scripts/probe_news_feeds.py` classifies 19 candidate RSS feeds as PER_TICKER vs GENERAL.
+- Extracts metadata: cashtags, pub dates, category elements, item counts.
+- Investigation tool for future news integration pipeline.
+
+**Test reliability fix** (PR #99):
+- `admin-auth.spec.ts` (13 Playwright tests): IAP bypass, token gate fallback, sidebar visibility.
+- Replaced `networkidle` waits with element-based waits to prevent timeouts when backend is slow.
+
+### 15.4 Themes from last 50 commits
 
 | Theme | Commits |
 | --- | --- |
@@ -1181,6 +1220,7 @@ After PR #80 merged into main, 14 follow-on PRs landed in the same morning:
 | **SPX Greeks backfill execution** (`compute-spx-greeks-backfill` Cloud Run Job) | Yahoo cleanup of `etf_options_snapshots` must finish first; infra is ready | After Yahoo archival completes |
 | **Yahoo options archive** (chunked delete from prod) | `fetch-av-options-backfill` Cloud Run Job active executions | After backfill quiesces |
 | **`greeks_source` field on options response** | Wait for SPX Greeks backfill to populate `_computed` columns first | After backfill |
+| **RSS news integration pipeline** | `scripts/probe_news_feeds.py` classified 19 feeds; next step is building the fetcher (`gcp/fetchers/fetch_rss_news.py`) and schema table | Design phase |
 
 ### 16.2 Plan-vs-code drift
 
@@ -1435,4 +1475,4 @@ Per CLAUDE.md and memory:
 
 **End of briefing deck.**
 
-Compiled from: 14 plans (`~/.claude/plans/`), 2 changelog files, source code as of 2026-04-26 post-PR-#95 (branch `main`, HEAD `aea5a7c`), `gcp/schema.sql` (30 tables), all 14 GitHub workflow YAMLs, `MEMORY.md`, `HARDCODED_VALUES_REMEDIATION.md`, `gamma_levels.md`, and the 22 `docs/` reference files.
+Compiled from: 17 plans (`~/.claude/plans/`), 2 changelog files, source code as of 2026-04-26 post-PR-#99 (branch `main`, HEAD includes PRs #96–#99), `gcp/schema.sql` (31 tables), all 14 GitHub workflow YAMLs, `MEMORY.md`, `HARDCODED_VALUES_REMEDIATION.md`, `gamma_levels.md`, and the 22 `docs/` reference files.
