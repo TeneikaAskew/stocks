@@ -88,43 +88,48 @@ def test_market_context_unavailable_when_empty(patch_query):
 # ---------------------------------------------------------------------------
 
 
-def test_strat_status_extracts_trigger_levels(patch_query):
-    patch_query(
-        "market_data_daily",
-        pd.DataFrame([
-            {"date": date(2026, 4, 15), "strat_candle": "2U",
-             "strat_combo": "2D-1-2U_reversal", "strat_setup": True,
-             "ftfc_score": 0.6, "ftfc_direction": "bullish",
-             "high": 505.0, "low": 499.0},
-            {"date": date(2026, 4, 14), "strat_candle": "1",
-             "strat_combo": None, "strat_setup": False,
-             "ftfc_score": 0.0, "ftfc_direction": "mixed",
-             "high": 503.5, "low": 498.2},
-        ]),
-    )
+def test_strat_status_extracts_trigger_levels(monkeypatch):
+    """summarize_strat_status delegates to lib.strat.compute_strat_status —
+    the same helper premarket_brief calls. Patch the helper directly."""
+    import lib.strat as strat_mod
+
+    def fake_compute(ticker, **kwargs):
+        return {
+            "available": True,
+            "ticker": ticker,
+            "date": "2026-04-15",
+            "last_candle": "2U",
+            "in_force_combo": "2D-1-2U_reversal",
+            "strat_setup": True,
+            "ftfc_score": 0.6,
+            "ftfc_direction": "bullish",
+            "ftfc_labels": {"D": "2U", "W": "2U", "M": "1"},
+            "trigger_high": 503.5,
+            "trigger_low": 498.2,
+        }
+
+    monkeypatch.setattr(strat_mod, "compute_strat_status", fake_compute)
     out = summarizers.summarize_strat_status("SPY")
     assert out["available"] is True
     assert out["last_candle"] == "2U"
     assert out["in_force_combo"] == "2D-1-2U_reversal"
-    assert out["trigger_high"] == 503.5  # previous day's high
+    assert out["trigger_high"] == 503.5
     assert out["trigger_low"] == 498.2
     assert out["ftfc_direction"] == "bullish"
 
 
-def test_strat_status_handles_nulls(patch_query):
-    patch_query(
-        "market_data_daily",
-        pd.DataFrame([{
-            "date": date(2026, 4, 15), "strat_candle": None,
-            "strat_combo": None, "strat_setup": None,
-            "ftfc_score": None, "ftfc_direction": None,
-            "high": None, "low": None,
-        }]),
+def test_strat_status_handles_unavailable(monkeypatch):
+    """When the shared helper returns available=False (insufficient bars,
+    null index, etc.) the summarizer surfaces an unavailable envelope."""
+    import lib.strat as strat_mod
+
+    monkeypatch.setattr(
+        strat_mod, "compute_strat_status",
+        lambda ticker, **kw: {"available": False, "reason": "insufficient daily bars for SPY"},
     )
     out = summarizers.summarize_strat_status("SPY")
-    assert out["last_candle"] == "1"  # default fallback
-    assert out["ftfc_score"] == 0.0
-    assert out["ftfc_direction"] == "mixed"
+    assert out["available"] is False
+    assert "insufficient daily bars" in out["reason"]
 
 
 # ---------------------------------------------------------------------------
@@ -321,9 +326,9 @@ def test_retrieve_similar_journal_empty_embedding_returns_empty():
 # ---------------------------------------------------------------------------
 
 
-def test_build_context_bundle_marks_failures(patch_query):
-    # Only provide market data; strat/options/signals/backtest/catalysts
-    # will all return available:False.
+def test_build_context_bundle_marks_failures(patch_query, monkeypatch):
+    # Only provide market data; strat is now sourced via the shared
+    # lib.strat.compute_strat_status helper, which we patch directly.
     patch_query(
         "market_data_daily",
         pd.DataFrame([{
@@ -334,14 +339,22 @@ def test_build_context_bundle_marks_failures(patch_query):
             "bb_pct": None, "atr_14": None, "rvol": None,
             "volatility_20d": 0.15, "price_vs_ema20": 0.004,
             "open": None, "high": None, "low": None, "volume": None,
-            "strat_candle": "2U", "strat_combo": None, "strat_setup": True,
-            "ftfc_score": 0.3, "ftfc_direction": "bullish",
         }]),
+    )
+    import lib.strat as strat_mod
+    monkeypatch.setattr(
+        strat_mod, "compute_strat_status",
+        lambda ticker, **kw: {
+            "available": True, "ticker": ticker, "date": "2026-04-15",
+            "last_candle": "2U", "in_force_combo": None, "strat_setup": True,
+            "ftfc_score": 0.3, "ftfc_direction": "bullish",
+            "ftfc_labels": {"D": "2U", "W": "1"},
+            "trigger_high": 503.0, "trigger_low": 498.0,
+        },
     )
     bundle = summarizers.build_context_bundle("SPY")
     assert bundle["ticker"] == "SPY"
     assert bundle["market"]["available"] is True
-    # Strat uses same market_data_daily needle so it gets populated
     assert bundle["strat"]["available"] is True
     assert "options" in bundle["failed_sections"]
     assert "signals" not in bundle["failed_sections"]  # empty=available

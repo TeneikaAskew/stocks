@@ -423,36 +423,46 @@ async def get_ticker_peers(ticker: str):
 async def add_to_watchlist(body: WatchlistAddRequest):
     """Add a ticker to the watchlist and return its info + quote.
 
+    Persists to the `watchlists` Cloud SQL table (durable, per-user)
+    instead of the old `alert_config.json` file path which only existed
+    on the Cloud Run service's ephemeral filesystem and never reached
+    the fetcher containers.
+
     Fetches AV OVERVIEW (cached) and GLOBAL_QUOTE so the UI can
     immediately display the ticker details without a second round-trip.
-    Also persists the ticker to alert_config.json.
     """
     from lib.ticker_info import (
         get_ticker_info as av_info,
         get_quote as av_quote,
         get_peers,
     )
+    from gcp.fetchers._watchlist import (
+        add_to_watchlist as wl_add,
+        load_watchlist as wl_load,
+    )
 
     ticker = body.ticker.strip().upper()
     if not ticker:
         raise HTTPException(status_code=400, detail="ticker required")
 
-    # Add to alert_config.json watchlist
-    config_path = PROJECT_ROOT / "alert_config.json"
-    watchlist: list[str] = []
+    # Persist to Cloud SQL — durable, propagates to fetcher containers.
     added = False
     try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-        watchlist = data.get("watchlist", [])
-        if ticker not in [t.upper() for t in watchlist]:
-            watchlist.append(ticker)
-            data["watchlist"] = watchlist
-            config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            added = True
-        else:
-            watchlist = [t.upper() for t in watchlist]
+        added = wl_add(ticker, source="ui")
     except Exception as exc:
-        logger.warning("Failed to update watchlist: %s", exc)
+        # If Cloud SQL is unreachable surface a 503 — the legacy file
+        # write would have silently disappeared on the next restart.
+        logger.exception("Cloud SQL watchlist add failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"watchlist write to Cloud SQL failed: {exc}",
+        )
+
+    # Load the freshly-updated active watchlist for the response.
+    try:
+        watchlist = wl_load()
+    except Exception:
+        watchlist = []
 
     # Fetch info + quote + peers
     info_raw = av_info(ticker)
@@ -487,18 +497,29 @@ async def add_to_watchlist(body: WatchlistAddRequest):
 
 @router.delete("/api/insights/watchlist/{ticker}")
 async def remove_from_watchlist(ticker: str):
-    """Remove a ticker from the watchlist."""
+    """Soft-delete a ticker from the watchlist (sets removed_at=NOW()).
+
+    Persists to the `watchlists` Cloud SQL table; the alert_config.json
+    file is no longer touched at runtime — it's a seed-only artefact."""
+    from gcp.fetchers._watchlist import (
+        remove_from_watchlist as wl_remove,
+        load_watchlist as wl_load,
+    )
+
     ticker = ticker.strip().upper()
-    config_path = PROJECT_ROOT / "alert_config.json"
+    if not ticker:
+        raise HTTPException(status_code=400, detail="ticker required")
+
     try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-        watchlist = data.get("watchlist", [])
-        watchlist = [t for t in watchlist if t.upper() != ticker]
-        data["watchlist"] = watchlist
-        config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        return {"ticker": ticker, "removed": True, "watchlist": watchlist}
+        removed = wl_remove(ticker)
+        watchlist = wl_load()
+        return {"ticker": ticker, "removed": removed, "watchlist": watchlist}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.exception("Cloud SQL watchlist remove failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"watchlist write to Cloud SQL failed: {exc}",
+        )
 
 
 # ---------------------------------------------------------------------------
