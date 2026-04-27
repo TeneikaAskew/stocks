@@ -17,6 +17,16 @@ import pytest
 from gcp import insight_discord_push as push
 
 
+# Default-stub the news fetcher so existing format_report_embed tests
+# don't try to hit Cloud SQL. Individual tests override this fixture
+# when they specifically want to assert news-block rendering.
+@pytest.fixture(autouse=True)
+def _stub_news_fetch(monkeypatch):
+    monkeypatch.setattr(
+        push, "fetch_top_news_articles", lambda *_a, **_kw: []
+    )
+
+
 # ---------------------------------------------------------------------------
 # _truncate
 # ---------------------------------------------------------------------------
@@ -410,3 +420,144 @@ def test_main_send_failure_returns_one(monkeypatch):
     monkeypatch.setattr(push, "send_to_discord", fake_send)
     code = push.main()
     assert code == 1
+
+
+# ---------------------------------------------------------------------------
+# News field formatting & integration
+# ---------------------------------------------------------------------------
+
+
+def _sample_articles(n: int = 3) -> list[dict]:
+    """Three plausible AVGO-style headlines, deliberately varied so a
+    single substring assertion proves the right one made it into the
+    field (not just that *something* rendered)."""
+    return [
+        {
+            "title": "Broadcom and Google Deal Headlines Stir Market Interest",
+            "sentiment_score": 0.47,
+            "relevance_score": 0.98,
+            "source": "Investing.com",
+            "published_ts": datetime(2026, 4, 7, 14, 12, tzinfo=timezone.utc),
+        },
+        {
+            "title": "Nvidia Stock Drops as Iran War Heats Up. Here's the Level to Watch.",
+            "sentiment_score": -0.14,
+            "relevance_score": 0.63,
+            "source": "Barron's",
+            "published_ts": datetime(2026, 4, 7, 15, 8, tzinfo=timezone.utc),
+        },
+        {
+            "title": "Spire Inc stock hits all-time high at 94.46 USD",
+            "sentiment_score": 0.13,
+            "relevance_score": 0.61,
+            "source": "Investing.com",
+            "published_ts": datetime(2026, 4, 7, 15, 39, tzinfo=timezone.utc),
+        },
+    ][:n]
+
+
+def test_sentiment_label_buckets():
+    assert push._sentiment_label(None) == "n/a"
+    assert push._sentiment_label(0.50) == "Bullish"
+    assert push._sentiment_label(0.20) == "Somewhat-Bullish"
+    assert push._sentiment_label(0.00) == "Neutral"
+    assert push._sentiment_label(-0.20) == "Somewhat-Bearish"
+    assert push._sentiment_label(-0.50) == "Bearish"
+
+
+def test_fmt_news_field_leads_with_titles():
+    out = push._fmt_news_field(_sample_articles(2))
+    # Header carries the aggregate read.
+    assert "Mean sentiment" in out
+    # Each title is rendered, and the FIRST headline is fully present
+    # (proves the title is the lead, not the source).
+    assert "Broadcom and Google Deal Headlines Stir Market Interest" in out
+    # Source appears as a small annotation under the title.
+    assert "Investing.com" in out
+    assert "+0.47" in out
+
+
+def test_fmt_news_field_truncates_long_title():
+    long_title = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 4
+    article = {
+        "title": long_title.strip(),
+        "sentiment_score": 0.1,
+        "relevance_score": 0.9,
+        "source": "Wire",
+    }
+    out = push._fmt_news_field([article])
+    # Truncated to <=90 chars + ellipsis (the formatter's per-line cap).
+    # Find the title line and verify length.
+    headline_line = next(line for line in out.splitlines() if line.startswith("• "))
+    visible_title = headline_line.replace("• ", "").replace("**", "")
+    assert len(visible_title) <= 91, f"got {len(visible_title)}: {visible_title!r}"
+    assert visible_title.endswith("…")
+
+
+def test_fmt_news_field_caps_at_top_n():
+    # Build NEWS_TOP_N + 2 articles; only NEWS_TOP_N should render.
+    articles = [
+        {
+            "title": f"Story number {i}",
+            "sentiment_score": 0.1,
+            "relevance_score": 0.5,
+            "source": "Wire",
+        }
+        for i in range(push.NEWS_TOP_N + 2)
+    ]
+    out = push._fmt_news_field(articles)
+    rendered = sum(1 for line in out.splitlines() if line.startswith("• "))
+    assert rendered == push.NEWS_TOP_N
+    # The (NEWS_TOP_N + 1)-th story isn't there.
+    assert f"Story number {push.NEWS_TOP_N}" not in out
+
+
+def test_fmt_news_field_no_articles_returns_failure_placeholder():
+    out = push._fmt_news_field([])
+    assert "unavailable" in out.lower()
+
+
+def test_fmt_news_field_failed_sentiment_overrides_articles():
+    # Even with articles in hand, an explicit failed_sections entry
+    # for sentiment means the analyst couldn't use them — surface
+    # that to the trader rather than pretending the field is healthy.
+    out = push._fmt_news_field(
+        _sample_articles(2),
+        failed_sections=["sentiment"],
+    )
+    assert "sentiment unavailable" in out.lower()
+
+
+def test_fmt_news_field_handles_missing_sentiment_score_gracefully():
+    article = {
+        "title": "Headline with no sentiment",
+        "sentiment_score": None,
+        "relevance_score": 0.9,
+        "source": "Wire",
+    }
+    out = push._fmt_news_field([article])
+    assert "Headline with no sentiment" in out
+    # Should not crash on n/a sentiment.
+    assert "n/a" in out or "—" in out
+
+
+def test_format_report_embed_includes_news_field(monkeypatch):
+    monkeypatch.setattr(
+        push, "fetch_top_news_articles", lambda *_a, **_kw: _sample_articles(2)
+    )
+    embed = push.format_report_embed(_sample_row())
+    field_names = [f["name"] for f in embed["fields"]]
+    assert any("News" in n for n in field_names), f"expected News field, got {field_names}"
+    news_value = next(f["value"] for f in embed["fields"] if "News" in f["name"])
+    assert "Broadcom and Google" in news_value
+
+
+def test_format_report_embed_news_field_renders_failure_when_section_failed(monkeypatch):
+    # When the LLM bundle says sentiment failed, the field should
+    # surface the failure even if late-arriving rows are now present.
+    monkeypatch.setattr(
+        push, "fetch_top_news_articles", lambda *_a, **_kw: _sample_articles(1)
+    )
+    embed = push.format_report_embed(_sample_row(failed=["sentiment"]))
+    news_value = next(f["value"] for f in embed["fields"] if "News" in f["name"])
+    assert "unavailable" in news_value.lower()
