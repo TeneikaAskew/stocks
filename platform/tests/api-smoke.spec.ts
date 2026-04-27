@@ -95,3 +95,33 @@ test.describe('Live / signals / options / playbook routers', () => {
     expect(res.status()).toBeLessThan(500);
   });
 });
+
+test.describe('AI Insights — point-in-time replay validation', () => {
+  // These tests exercise the as_of query-string parser without burning
+  // an LLM run: both the malformed and the future-dated cases must be
+  // rejected before any pipeline work happens, so a 400 is the proof
+  // the validator is wired in. We intentionally don't post a valid
+  // cutoff here — that would actually enqueue a Cloud Tasks message.
+
+  test('POST /api/insights/report/IWM/refresh?as_of=garbage rejects with 400', async ({
+    request,
+  }) => {
+    const res = await request.post(
+      API + '/api/insights/report/IWM/refresh?as_of=not-a-date'
+    );
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(JSON.stringify(body)).toMatch(/as_of/i);
+  });
+
+  test('POST /api/insights/report/IWM/refresh?as_of=2099-01-01 rejects future cutoff', async ({
+    request,
+  }) => {
+    const res = await request.post(
+      API + '/api/insights/report/IWM/refresh?as_of=2099-01-01'
+    );
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(JSON.stringify(body)).toMatch(/future/i);
+  });
+});

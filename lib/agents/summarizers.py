@@ -922,9 +922,14 @@ def summarize_news_sentiment(
         )
         params: dict[str, Any] = {"ticker": ticker.upper(), "hours": lookback_hours}
     else:
-        # Use start of the *next* day with `<` so intraday articles on
-        # `as_of` are included (str(date) resolves to midnight start).
-        end_exclusive = as_of + timedelta(days=1)
+        # Datetime input is taken as the literal cutoff (point-in-time
+        # replay). For a date-only input, advance to the start of the
+        # *next* day so intraday articles on `as_of` are included
+        # (str(date) resolves to midnight start).
+        if isinstance(as_of, datetime):
+            end_exclusive = as_of
+        else:
+            end_exclusive = as_of + timedelta(days=1)
         sql = (
             "SELECT title, sentiment_score, relevance_score, source, published_ts "
             "FROM news_sentiment "
