@@ -53,6 +53,67 @@ logger = logging.getLogger("insight-pipeline-job")
 
 DEFAULT_TICKERS = ("SPY", "IWM", "QQQ")
 
+# Default cap on the per-execution ticker list. The 8:45 AM cron only
+# runs the 3 DEFAULT_TICKERS, so anything beyond ~10 is almost always a
+# misconfiguration (the 4/24 incident: a manual run iterated 152 tickers
+# and burned ~$1.20 + Vertex quota before anyone noticed). Override with
+# INSIGHT_BATCH_OVERRIDE=1 for one-off intentional bulk runs.
+DEFAULT_MAX_BATCH = 10
+
+
+def parse_tickers(raw: str) -> list[str]:
+    """Parse INSIGHT_TICKERS into a deduped, uppercase list.
+
+    Accepts two forms so the caller can be explicit when scripting:
+      • CSV string         → ``"SPY,IWM,QQQ"``
+      • JSON array string  → ``'["SPY","IWM","QQQ"]'``
+
+    JSON arrays are preferred for programmatic callers — they make the
+    list-of-tickers intent explicit and let shell-quoting nightmares
+    fall away. Empty or whitespace-only entries are dropped.
+    """
+    if not raw:
+        return []
+    raw = raw.strip()
+    parsed: list = []
+    # Anything starting with `{` is a JSON object, not a ticker list —
+    # treat as invalid (return []) rather than fabricate semantics.
+    if raw.startswith("{"):
+        return []
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, list):
+                parsed = obj
+            else:
+                parsed = []
+        except json.JSONDecodeError:
+            # Malformed JSON — fall through to CSV parsing.
+            parsed = raw.split(",")
+    else:
+        parsed = raw.split(",")
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in parsed:
+        tk = str(item).strip().upper()
+        if tk and tk not in seen:
+            seen.add(tk)
+            out.append(tk)
+    return out
+
+
+def classify_trigger(tickers: list[str]) -> str:
+    """Tag the trigger as `manual_batch` when the ticker list differs
+    from the daily default (SPY/IWM/QQQ), otherwise `scheduled`.
+
+    The audit trail in `insight_runs.trigger` then distinguishes the
+    8:45 AM cron from one-off manual gcloud invocations, so usage
+    accounting / cost attribution can split them.
+    """
+    default = set(DEFAULT_TICKERS)
+    return "scheduled" if set(tickers) == default else "manual_batch"
+
 
 # ---------------------------------------------------------------------------
 # Run-state transitions (copy-pasted minimal subset of the router helpers
@@ -196,13 +257,37 @@ async def _run_on_demand() -> int:
 
 async def _run_scheduled() -> int:
     tickers_env = os.environ.get("INSIGHT_TICKERS", ",".join(DEFAULT_TICKERS))
-    tickers = [t.strip().upper() for t in tickers_env.split(",") if t.strip()]
+    tickers = parse_tickers(tickers_env)
+    if not tickers:
+        logger.error("INSIGHT_TICKERS parsed to empty list (raw=%r); refusing to run", tickers_env)
+        return 1
 
-    logger.info("scheduled run for tickers: %s", tickers)
+    # Cap the batch size to prevent the 152-ticker accident class. The
+    # default cap (DEFAULT_MAX_BATCH) is comfortable for the daily 3
+    # plus a small ad-hoc add (e.g. SPY/IWM/QQQ + AVGO + MSFT). Anything
+    # larger needs an explicit opt-in via INSIGHT_BATCH_OVERRIDE=1.
+    try:
+        max_batch = int(os.environ.get("INSIGHT_MAX_BATCH", str(DEFAULT_MAX_BATCH)))
+    except ValueError:
+        max_batch = DEFAULT_MAX_BATCH
+    override = os.environ.get("INSIGHT_BATCH_OVERRIDE", "").lower() in ("1", "true", "yes")
+
+    if len(tickers) > max_batch and not override:
+        logger.error(
+            "refusing to run %d tickers (cap=%d). Set INSIGHT_BATCH_OVERRIDE=1 to bypass. tickers=%s",
+            len(tickers), max_batch, tickers,
+        )
+        return 1
+
+    trigger = classify_trigger(tickers)
+    logger.info(
+        "scheduled run starting: trigger=%s ticker_count=%d max_batch=%d override=%s tickers=%s",
+        trigger, len(tickers), max_batch, override, tickers,
+    )
 
     any_failures = False
     for ticker in tickers:
-        run_id = _insert_run(ticker, trigger="scheduled")
+        run_id = _insert_run(ticker, trigger=trigger)
         ok = await _run_one(run_id, ticker)
         if not ok:
             any_failures = True
