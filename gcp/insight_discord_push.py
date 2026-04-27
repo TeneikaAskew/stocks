@@ -60,7 +60,14 @@ DEFAULT_COLOUR = 0x95a5a6  # grey
 
 
 def fetch_reports_for_date(target_date: date, ticker: Optional[str] = None) -> list[dict]:
-    """Pull every insight_reports row whose as_of falls on `target_date`.
+    """Pull the latest insight_reports row per ticker for `target_date`.
+
+    Critical detail: we use `DISTINCT ON (ticker)` to dedupe by ticker
+    when multiple runs landed on the same day (e.g. the 8:45 AM cron
+    plus a manual rerun via `gcloud run jobs execute insight-pipeline`).
+    Without this, the Discord push would include every version of every
+    ticker for the day, blowing the 6000-char envelope and showing the
+    operator stale partial reports next to the fresh one.
 
     Returns a list of dicts with the parsed report JSON plus the
     accompanying ticker / as_of / cost / latency metadata. Sorted by
@@ -73,20 +80,22 @@ def fetch_reports_for_date(target_date: date, ticker: Optional[str] = None) -> l
         if ticker:
             cur.execute(
                 """
-                SELECT ticker, as_of, report::text, cost_usd, latency_ms
+                SELECT DISTINCT ON (ticker)
+                       ticker, as_of, report::text, cost_usd, latency_ms
                   FROM insight_reports
                  WHERE as_of::date = %s AND ticker = %s
-                 ORDER BY ticker
+                 ORDER BY ticker, as_of DESC
                 """,
                 (target_date, ticker.upper()),
             )
         else:
             cur.execute(
                 """
-                SELECT ticker, as_of, report::text, cost_usd, latency_ms
+                SELECT DISTINCT ON (ticker)
+                       ticker, as_of, report::text, cost_usd, latency_ms
                   FROM insight_reports
                  WHERE as_of::date = %s
-                 ORDER BY ticker
+                 ORDER BY ticker, as_of DESC
                 """,
                 (target_date,),
             )
@@ -298,31 +307,72 @@ def format_report_embed(row: dict) -> dict:
     return embed
 
 
-def format_message(rows: list[dict], target_date: date) -> dict:
-    """Bundle multiple ticker embeds into one Discord webhook payload.
+def split_into_messages(rows: list[dict], target_date: date) -> list[dict]:
+    """Split rich report embeds across one-or-more Discord webhook payloads.
 
-    Discord caps embeds-per-message at 10, but a typical 9:15 push is
-    only 3-5 (SPY/IWM/QQQ + watchlist additions), so a single message
-    is enough. If the cap is ever exceeded the caller can split.
+    Discord caps **per-message** at:
+      • 10 embeds (MAX_EMBEDS_PER_MESSAGE)
+      • 6000 characters total across all embeds (MAX_EMBED_CHARS)
+
+    Each insight report rendered by format_report_embed is typically
+    1500-3500 chars, so 6 reports easily exceed the 6000-char envelope.
+    Previously the formatter dropped trailing embeds to fit; that meant
+    half the watchlist's reports never reached Discord. This splitter
+    instead packs as many embeds as fit into one message, then opens a
+    new message for the rest, so every report lands.
+
+    Returns a list of webhook payloads, each ready for `send_to_discord`.
+    The first message carries the date header; subsequent messages get
+    a "(part N/M)" hint so the operator can spot mid-flight drops.
+
+    Edge cases:
+      • Empty `rows` → single payload with the "no reports" header and
+        an empty embeds list (caller can choose to skip or post).
+      • A single embed > 6000 chars (shouldn't happen given internal
+        truncation, but defensively): emitted on its own; Discord may
+        still reject, but that's a per-embed failure not a packing one.
     """
-    embeds = [format_report_embed(r) for r in rows[:MAX_EMBEDS_PER_MESSAGE]]
-
-    # Discord rejects messages whose total payload size exceeds the
-    # 6000-character envelope. Trim from the back if needed.
-    while embeds and sum(len(json.dumps(e)) for e in embeds) > MAX_EMBED_CHARS:
-        logger.warning("payload over %d chars, dropping last embed", MAX_EMBED_CHARS)
-        embeds.pop()
-
-    header = f"🧠 **AI Insights — {target_date.isoformat()}**"
     if not rows:
-        header += " (no reports for today)"
-    elif len(rows) > MAX_EMBEDS_PER_MESSAGE:
-        header += f" — showing first {MAX_EMBEDS_PER_MESSAGE} of {len(rows)}"
+        header = f"🧠 **AI Insights — {target_date.isoformat()}** (no reports for today)"
+        return [{"content": header, "embeds": []}]
 
-    return {
-        "content": header,
-        "embeds": embeds,
-    }
+    embeds = [format_report_embed(r) for r in rows]
+
+    chunks: list[list[dict]] = []
+    current: list[dict] = []
+    current_size = 0
+    for embed in embeds:
+        size = len(json.dumps(embed))
+        # Open a new chunk if adding this embed would exceed either limit.
+        if current and (
+            len(current) >= MAX_EMBEDS_PER_MESSAGE
+            or current_size + size > MAX_EMBED_CHARS
+        ):
+            chunks.append(current)
+            current = []
+            current_size = 0
+        current.append(embed)
+        current_size += size
+    if current:
+        chunks.append(current)
+
+    # Build a payload per chunk with a part-of-N header on multi-message pushes.
+    total = len(chunks)
+    payloads: list[dict] = []
+    for i, chunk in enumerate(chunks, start=1):
+        header = f"🧠 **AI Insights — {target_date.isoformat()}**"
+        if total > 1:
+            header += f" (part {i}/{total})"
+        payloads.append({"content": header, "embeds": chunk})
+    return payloads
+
+
+def format_message(rows: list[dict], target_date: date) -> dict:
+    """Backwards-compat shim. Returns the FIRST payload only — kept so
+    older callers don't break, but new code should use
+    `split_into_messages` to actually deliver every report."""
+    msgs = split_into_messages(rows, target_date)
+    return msgs[0] if msgs else {"content": "", "embeds": []}
 
 
 def send_to_discord(message: dict, webhook_url: str, timeout: int = 15) -> int:
@@ -359,11 +409,14 @@ def main() -> int:
     logger.info("fetched %d insight_reports for %s%s",
                 len(rows), target, f" (ticker={ticker})" if ticker else "")
 
-    message = format_message(rows, target)
+    payloads = split_into_messages(rows, target)
+    logger.info("split into %d Discord message(s)", len(payloads))
 
     if not webhook_url:
-        logger.warning("DISCORD_WEBHOOK_URL not set — printing message instead")
-        print(json.dumps(message, indent=2, default=str))
+        logger.warning("DISCORD_WEBHOOK_URL not set — printing %d payload(s) instead", len(payloads))
+        for i, p in enumerate(payloads, start=1):
+            print(f"--- payload {i}/{len(payloads)} ---")
+            print(json.dumps(p, indent=2, default=str))
         return 0
 
     if not rows:
@@ -371,12 +424,22 @@ def main() -> int:
         logger.info("no rows for %s; skipping push", target)
         return 0
 
-    try:
-        send_to_discord(message, webhook_url)
-        return 0
-    except Exception:
-        logger.exception("Discord push failed")
+    # Send each payload. If any fails, log and continue — partial
+    # delivery beats no delivery, and the cron will be re-runnable
+    # tomorrow if needed.
+    failures = 0
+    for i, payload in enumerate(payloads, start=1):
+        try:
+            send_to_discord(payload, webhook_url)
+            logger.info("sent message %d/%d (%d embeds)", i, len(payloads), len(payload.get("embeds", [])))
+        except Exception:
+            logger.exception("Discord push failed for message %d/%d", i, len(payloads))
+            failures += 1
+
+    if failures:
+        logger.warning("Discord push completed with %d failure(s) of %d", failures, len(payloads))
         return 1
+    return 0
 
 
 if __name__ == "__main__":
