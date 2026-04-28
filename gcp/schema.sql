@@ -865,12 +865,26 @@ CREATE TABLE IF NOT EXISTS strat_levels (
     price          NUMERIC(12,4)             NOT NULL,
     timeframe      VARCHAR(8),
     level_type     VARCHAR(20),
-    strat_class    VARCHAR(8),
+    -- VARCHAR(16) accommodates the longest Strat classification value
+    -- 'Failed_2U' / 'Failed_2D' (9 chars) plus headroom. Original
+    -- VARCHAR(8) caused IWM persists to fail with 22001 (string truncation)
+    -- while SPY/QQQ persisted because they didn't trigger Failed_2 paths.
+    strat_class    VARCHAR(16),
     is_current     BOOLEAN     DEFAULT FALSE,
     period_label   VARCHAR(40),
     inserted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (ticker, as_of, level_name)
 );
+
+-- Migration: widen strat_class for existing instances. Idempotent.
+DO $$
+BEGIN
+    IF (SELECT character_maximum_length
+          FROM information_schema.columns
+         WHERE table_name='strat_levels' AND column_name='strat_class') < 16 THEN
+        ALTER TABLE strat_levels ALTER COLUMN strat_class TYPE VARCHAR(16);
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_strat_levels_ticker_as_of_price
     ON strat_levels (ticker, as_of, price);
