@@ -374,8 +374,9 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         # Single source of truth: lib.strat.compute_strat_status is the
         # same helper the LLM analyst calls (lib/agents/summarizers.py),
         # so the brief and the AI report agree on candle / combo / FTFC.
+        # PR #101 renamed timeframe keys to match RESAMPLE_RULES (1d/1w/1mo).
         strat_status = compute_strat_status(
-            ticker, df=df, timeframes=['D', 'W', 'M'], strat_config=cfg.strat,
+            ticker, df=df, timeframes=['1d', '1w', '1mo'], strat_config=cfg.strat,
         )
         if strat_status.get('available'):
             daily_strat = strat_status['last_candle']
@@ -491,6 +492,20 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             d['recommended_orb_window'] = orb_choice['window']
             d['recommended_orb_reason'] = orb_choice['reason']
+
+            # Persist level map to Cloud SQL so the realtime signal_monitor
+            # (which doesn't itself recompute) can query it for level-break
+            # detection during market hours.
+            try:
+                from gcp.database import get_engine
+                from lib.strat_levels import persist_level_map
+                engine = get_engine()
+                with engine.connect() as conn:
+                    n = persist_level_map(level_map, conn.connection)
+                    conn.connection.commit()
+                logger.info("persisted %d strat_levels rows for %s", n, ticker)
+            except Exception as exc:
+                logger.warning("strat_levels persist failed for %s: %s", ticker, exc)
         except Exception as e:
             logger.warning("Playbook generation failed for %s: %s", ticker, e)
 
