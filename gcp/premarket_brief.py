@@ -476,11 +476,22 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     brief['recommended_orb_reason'] = orb_choice['reason']
 
     # Per-ticker level map + playbook string. Skip silently for NO DATA tickers.
+    #
+    # Diagnostic: writes to stderr (unbuffered) so every step is captured
+    # in Cloud Logging regardless of stdout buffering. After the loop is
+    # known-good these can be reduced to a single per-ticker info log.
+    print(f"[brief] entering playbook loop with {len(brief.get('tickers', {}))} tickers: "
+          f"{list(brief.get('tickers', {}).keys())}",
+          file=sys.stderr, flush=True)
     for ticker, d in brief.get('tickers', {}).items():
+        print(f"[brief:{ticker}] status={d.get('status')} price={d.get('price')}",
+              file=sys.stderr, flush=True)
         if d.get('status') == 'NO DATA':
+            print(f"[brief:{ticker}] skip (NO DATA)", file=sys.stderr, flush=True)
             continue
         try:
             df = loader.load_daily(ticker)
+            print(f"[brief:{ticker}] load_daily → {len(df)} rows", file=sys.stderr, flush=True)
             if df.empty:
                 continue
             close_col = 'Close' if 'Close' in df.columns else 'Last'
@@ -491,9 +502,13 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             for col in levels_df.columns:
                 df[col] = levels_df[col].values
+            print(f"[brief:{ticker}] calling build_level_map (current_price={d.get('price')})",
+                  file=sys.stderr, flush=True)
             level_map = build_level_map(
                 ticker=ticker, daily_df=df, current_price=d['price'],
             )
+            print(f"[brief:{ticker}] build_level_map → {len(level_map.levels)} levels",
+                  file=sys.stderr, flush=True)
             d['playbook'] = format_levels_for_brief(
                 level_map=level_map, bias=d.get('ftfc_direction', 'mixed'),
                 combo=d.get('strat_combo'), daily_strat_class=d.get('strat_candle'),
@@ -511,21 +526,19 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                 with engine.connect() as conn:
                     n = persist_level_map(level_map, conn.connection)
                     conn.connection.commit()
-                # flush=True so Cloud Run actually captures the line —
-                # without it, function-internal prints get buffered and
-                # dropped at container exit.
-                print(f"  [strat_levels] persisted {n} rows for {ticker}", flush=True)
+                print(f"[brief:{ticker}] persisted {n} strat_levels rows",
+                      file=sys.stderr, flush=True)
             except Exception as exc:
                 import traceback
-                print(f"  [strat_levels] FAILED for {ticker}: {type(exc).__name__}: {exc}", flush=True)
-                traceback.print_exc()
-                sys.stdout.flush()
+                print(f"[brief:{ticker}] strat_levels persist FAILED: {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
                 sys.stderr.flush()
         except Exception as e:
             import traceback
-            print(f"  [playbook] FAILED for {ticker}: {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
-            sys.stdout.flush()
+            print(f"[brief:{ticker}] playbook block FAILED: {type(e).__name__}: {e}",
+                  file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
             sys.stderr.flush()
 
     return brief
