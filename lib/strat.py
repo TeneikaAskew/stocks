@@ -390,7 +390,13 @@ def compute_strat_status(
     Returns a dict with the StratSnapshot shape used by the LLM analyst
     plus richer fields the brief uses (`ftfc_labels`, `combo`).
     """
-    timeframes = timeframes or ['D', 'W', 'M']
+    # PR #101 renamed timeframe keys from D/W/M to 1d/1w/1mo to match
+    # the new RESAMPLE_RULES table in lib/data_loader.py. Accept the
+    # legacy keys here so any caller that hasn't migrated yet still
+    # gets non-empty FTFC output.
+    timeframes = timeframes or ['1d', '1w', '1mo']
+    _legacy = {'D': '1d', 'W': '1w', 'M': '1mo'}
+    timeframes = [_legacy.get(tf, tf) for tf in timeframes]
 
     if df is None:
         # Local import to avoid a strat→data_loader import cycle at
