@@ -511,22 +511,22 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                 with engine.connect() as conn:
                     n = persist_level_map(level_map, conn.connection)
                     conn.connection.commit()
-                # Use print() so this surfaces in Cloud Logging regardless
-                # of logger configuration — diagnosing the IWM-no-persist
-                # mystery requires guaranteed visibility.
-                print(f"  ✓ persisted {n} strat_levels rows for {ticker}")
+                # flush=True so Cloud Run actually captures the line —
+                # without it, function-internal prints get buffered and
+                # dropped at container exit.
+                print(f"  [strat_levels] persisted {n} rows for {ticker}", flush=True)
             except Exception as exc:
-                print(f"  ✗ strat_levels persist failed for {ticker}: {type(exc).__name__}: {exc}")
                 import traceback
+                print(f"  [strat_levels] FAILED for {ticker}: {type(exc).__name__}: {exc}", flush=True)
                 traceback.print_exc()
+                sys.stdout.flush()
+                sys.stderr.flush()
         except Exception as e:
-            # Bubble up the real exception class + message via print so
-            # Cloud Logging captures it. logger.warning was being
-            # suppressed when basicConfig wasn't set, hiding the IWM
-            # failure mode.
-            print(f"  ✗ Playbook generation failed for {ticker}: {type(e).__name__}: {e}")
             import traceback
+            print(f"  [playbook] FAILED for {ticker}: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
+            sys.stdout.flush()
+            sys.stderr.flush()
 
     return brief
 
