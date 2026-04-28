@@ -527,3 +527,76 @@ def test_news_sentiment_as_of_uses_bounded_window(monkeypatch):
     # end_exclusive = as_of + 1 day = 2026-04-26 (so intraday articles
     # on the as_of date itself are still included via the `<` bound)
     assert "2026-04-26" in captured["params"]["end_ts"]
+
+
+# ---------------------------------------------------------------------------
+# _default_lookback_hours_for — Monday-aware lookback
+# ---------------------------------------------------------------------------
+
+
+def test_default_lookback_72h_on_monday():
+    """Monday brief should look back 72h to bridge the weekend gap."""
+    # 2026-04-27 is a Monday
+    assert summarizers._default_lookback_hours_for(date(2026, 4, 27)) == 72
+
+
+def test_default_lookback_48h_tuesday_through_friday():
+    """Other weekdays use the standard 48h window."""
+    assert summarizers._default_lookback_hours_for(date(2026, 4, 28)) == 48  # Tue
+    assert summarizers._default_lookback_hours_for(date(2026, 4, 29)) == 48  # Wed
+    assert summarizers._default_lookback_hours_for(date(2026, 4, 30)) == 48  # Thu
+    assert summarizers._default_lookback_hours_for(date(2026, 5, 1)) == 48  # Fri
+
+
+def test_default_lookback_48h_saturday_sunday():
+    """Weekends — no live brief runs but still 48h if asked."""
+    assert summarizers._default_lookback_hours_for(date(2026, 5, 2)) == 48  # Sat
+    assert summarizers._default_lookback_hours_for(date(2026, 5, 3)) == 48  # Sun
+
+
+def test_default_lookback_handles_datetime_input():
+    """When passed a datetime (point-in-time replay), use its weekday."""
+    from datetime import datetime, timezone
+    monday_dt = datetime(2026, 4, 27, 12, 30, tzinfo=timezone.utc)
+    assert summarizers._default_lookback_hours_for(monday_dt) == 72
+
+
+def test_news_sentiment_picks_72h_on_monday(monkeypatch):
+    """End-to-end: calling summarize_news_sentiment with no explicit
+    lookback on a Monday triggers the 72h default and that value
+    reaches the SQL params."""
+    captured: dict = {}
+
+    def fake_query(sql, params=None):
+        captured["params"] = params
+        return pd.DataFrame()
+
+    monkeypatch.setattr(summarizers, "_query", fake_query)
+    summarizers.summarize_news_sentiment("IWM", as_of=date(2026, 4, 27))
+    assert captured["params"]["hours"] == 72
+
+
+def test_news_sentiment_picks_48h_on_tuesday(monkeypatch):
+    captured: dict = {}
+
+    def fake_query(sql, params=None):
+        captured["params"] = params
+        return pd.DataFrame()
+
+    monkeypatch.setattr(summarizers, "_query", fake_query)
+    summarizers.summarize_news_sentiment("IWM", as_of=date(2026, 4, 28))
+    assert captured["params"]["hours"] == 48
+
+
+def test_news_sentiment_explicit_lookback_overrides_default(monkeypatch):
+    """An explicit lookback_hours arg always wins over the weekday default."""
+    captured: dict = {}
+
+    def fake_query(sql, params=None):
+        captured["params"] = params
+        return pd.DataFrame()
+
+    monkeypatch.setattr(summarizers, "_query", fake_query)
+    # Monday default would be 72h; explicit 24h must override.
+    summarizers.summarize_news_sentiment("IWM", as_of=date(2026, 4, 27), lookback_hours=24)
+    assert captured["params"]["hours"] == 24
