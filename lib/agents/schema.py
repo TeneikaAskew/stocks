@@ -71,7 +71,7 @@ class StratSnapshot(BaseModel):
     )
     in_force_combo: Optional[str] = Field(
         None,
-        description="In-force combo pattern, e.g. '2D-1-2U_reversal' or null",
+        description="In-force combo pattern, e.g. '212_bull_reversal' or null",
     )
     ftfc_score: float = Field(
         ..., description="Full-timeframe-continuity weighted score, -1.0 to +1.0"

@@ -710,7 +710,7 @@ def run_phase6(tickers: list = None):
             continue
 
         df = enrich_with_indicators(df_1m)
-        labels = df['strat_type'] if 'strat_type' in df.columns else classify_strat_series(df)
+        labels = df['strat_candle'] if 'strat_candle' in df.columns else classify_strat_series(df)
         progress(f"Data loaded: {len(df):,} bars", ticker)
 
         # Build per-ticker report

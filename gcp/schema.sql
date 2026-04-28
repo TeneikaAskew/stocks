@@ -557,6 +557,10 @@ CREATE TABLE IF NOT EXISTS signal_alerts (
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_ticker_date
     ON signal_alerts (ticker, alert_date DESC);
 
+-- v2 strat refactor: record which Strat level a signal broke (PDH, PDL, PWH, ...).
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS level_broken VARCHAR(20);
+
 
 CREATE TABLE IF NOT EXISTS trades (
     id              BIGSERIAL PRIMARY KEY,
@@ -625,7 +629,7 @@ CREATE TABLE IF NOT EXISTS premarket_analysis (
     consecutive_up    INTEGER,
     consecutive_down  INTEGER,
     signal_status     VARCHAR(50),
-    strat_daily       VARCHAR(10),
+    strat_candle      VARCHAR(10),
     strat_combo       VARCHAR(30),
     strat_setup       BOOLEAN,
     ftfc_score        DOUBLE PRECISION,
@@ -847,6 +851,74 @@ ALTER TABLE news_sentiment
 -- GIN index for fast `topics @> ARRAY['mergers_and_acquisitions']` lookups.
 CREATE INDEX IF NOT EXISTS idx_news_sentiment_topics
     ON news_sentiment USING GIN (topics);
+
+
+-- ============================================================================
+-- STRAT_LEVELS — long table of horizontal price markers per ticker per as_of.
+-- Populated by lib.strat_levels.persist_level_map(). Used by the premarket
+-- brief and signal_monitor for trigger / stop / target rendering.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS strat_levels (
+    ticker         VARCHAR(10)               NOT NULL,
+    as_of          TIMESTAMPTZ               NOT NULL,
+    level_name     VARCHAR(50)               NOT NULL,
+    price          NUMERIC(12,4)             NOT NULL,
+    timeframe      VARCHAR(8),
+    level_type     VARCHAR(20),
+    strat_class    VARCHAR(8),
+    is_current     BOOLEAN     DEFAULT FALSE,
+    period_label   VARCHAR(40),
+    inserted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, as_of, level_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strat_levels_ticker_as_of_price
+    ON strat_levels (ticker, as_of, price);
+
+
+-- ============================================================================
+-- Forward-looking columns for Strat Quarter levels. The columns are added
+-- idempotently so that when a future fetcher writes calculate_historical_levels()
+-- output the table is ready. Existing rows stay NULL until backfilled.
+-- ============================================================================
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS prev_quarter_high     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS prev_quarter_low      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS prev_quarter_open     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS prev_quarter_close    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS prev_quarter_hl_mid   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS prev_quarter_oc_mid   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS at_prev_quarter_high  SMALLINT,
+    ADD COLUMN IF NOT EXISTS at_prev_quarter_low   SMALLINT,
+    ADD COLUMN IF NOT EXISTS broke_prev_quarter_high SMALLINT,
+    ADD COLUMN IF NOT EXISTS broke_prev_quarter_low  SMALLINT;
+
+
+-- ============================================================================
+-- Catalyst-aware ORB recommendation persisted by gcp/premarket_brief.py.
+-- ============================================================================
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS recommended_orb_window VARCHAR(8),
+    ADD COLUMN IF NOT EXISTS recommended_orb_reason TEXT;
+
+
+-- ============================================================================
+-- Live migration: rename premarket_analysis.strat_daily -> strat_candle.
+-- The methodology doc renames every "candle classification" surface to
+-- a single column name. Idempotent.
+-- ============================================================================
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'premarket_analysis' AND column_name = 'strat_daily'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'premarket_analysis' AND column_name = 'strat_candle'
+    ) THEN
+        ALTER TABLE premarket_analysis RENAME COLUMN strat_daily TO strat_candle;
+    END IF;
+END $$;
 
 
 -- ============================================================================

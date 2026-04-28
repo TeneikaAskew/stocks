@@ -284,3 +284,75 @@ def test_daily_mode_query_uses_today(mock_cloud_sql):
     assert result["mode"] == "daily"
     assert captured["params"]["start"] == today
     assert captured["params"]["end"] == today
+
+
+# ── Catalyst-aware ORB selection (v2 strat refactor) ─────────────────────────
+
+
+class TestSelectOrbWindow:
+    def test_no_high_impact_returns_5m(self):
+        from gcp.premarket_brief import select_orb_window
+        result = select_orb_window([
+            {'time': '08:30', 'name': 'PMI', 'importance': 'medium'},
+        ])
+        assert result['window'] == '5m'
+
+    def test_830_high_impact_returns_15m(self):
+        from gcp.premarket_brief import select_orb_window
+        result = select_orb_window([
+            {'time': '08:30', 'name': 'NFP', 'importance': 'high'},
+        ])
+        assert result['window'] == '15m'
+        assert 'NFP' in result['reason']
+
+    def test_1000_high_impact_returns_30m(self):
+        from gcp.premarket_brief import select_orb_window
+        result = select_orb_window([
+            {'time': '10:00', 'name': 'ISM', 'importance': 'high'},
+        ])
+        assert result['window'] == '30m'
+        assert 'ISM' in result['reason']
+
+    def test_empty_events_returns_5m(self):
+        from gcp.premarket_brief import select_orb_window
+        result = select_orb_window([])
+        assert result['window'] == '5m'
+
+    def test_high_impact_at_other_time_returns_5m(self):
+        from gcp.premarket_brief import select_orb_window
+        result = select_orb_window([
+            {'time': '14:00', 'name': 'FOMC', 'importance': 'high'},
+        ])
+        assert result['window'] == '5m'
+
+
+class TestPlaybookEmbed:
+    def test_skips_when_no_playbook(self):
+        from gcp.premarket_brief import _build_playbook_embed
+        brief = {
+            'tickers': {
+                'IWM': {'price': 215.42},
+            },
+            'recommended_orb_window': '5m',
+            'recommended_orb_reason': 'No catalyst',
+        }
+        embed = _build_playbook_embed(brief)
+        assert embed['fields'] == []
+
+    def test_renders_when_playbook_present(self):
+        from gcp.premarket_brief import _build_playbook_embed
+        brief = {
+            'tickers': {
+                'IWM': {
+                    'price': 215.42,
+                    'playbook': 'IWM 215.42 — Daily 2U\nCALLS above 215.85 (PDH)',
+                },
+            },
+            'recommended_orb_window': '15m',
+            'recommended_orb_reason': '15-min ORB recommended (08:30 NFP)',
+        }
+        embed = _build_playbook_embed(brief)
+        assert 'Strat Playbook' in embed['title']
+        assert '15m' in embed['title']
+        assert len(embed['fields']) == 1
+        assert 'CALLS above' in embed['fields'][0]['value']

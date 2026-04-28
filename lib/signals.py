@@ -59,6 +59,12 @@ def check_call_conditions(
         score += 1
         conditions.append('stoch_rsi_oversold')
 
+    # 6. Level break aligned with direction (Strat v2 — see methodology §6).
+    # Reads Broke_Prev_Day_High from market_data_daily / calculate_historical_levels.
+    if int(row.get('Broke_Prev_Day_High', 0) or 0) == 1:
+        score += 1
+        conditions.append('level_break_pdh')
+
     return score, conditions
 
 
@@ -107,6 +113,11 @@ def check_put_conditions(
     if stoch_k > stoch_rsi_threshold:
         score += 1
         conditions.append('stoch_rsi_overbought')
+
+    # 6. Level break aligned with direction (Strat v2 — see methodology §6).
+    if int(row.get('Broke_Prev_Day_Low', 0) or 0) == 1:
+        score += 1
+        conditions.append('level_break_pdl')
 
     return score, conditions
 

@@ -257,11 +257,15 @@ def calculate_historical_levels(
     df['Date'] = pd.to_datetime(df['Time']).dt.date
     df['Week'] = pd.to_datetime(df['Time']).dt.to_period('W')
     df['Month'] = pd.to_datetime(df['Time']).dt.to_period('M')
+    df['Quarter'] = pd.to_datetime(df['Time']).dt.to_period('Q')
     df['Year'] = pd.to_datetime(df['Time']).dt.to_period('Y')
 
     result = pd.DataFrame(index=df.index)
 
-    for period_col, label in [('Date', 'Day'), ('Week', 'Week'), ('Month', 'Month'), ('Year', 'Year')]:
+    for period_col, label in [
+        ('Date', 'Day'), ('Week', 'Week'), ('Month', 'Month'),
+        ('Quarter', 'Quarter'), ('Year', 'Year'),
+    ]:
         grp = df.groupby(period_col).agg(
             H=('High', 'max'), L=('Low', 'min'), O=('Open', 'first'), C=('Close', 'last'),
         )

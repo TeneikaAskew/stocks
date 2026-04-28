@@ -337,19 +337,19 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
                           else None)
 
         # Weekly resample for FTFC. With daily-only data we can build
-        # 'D' and 'W'; intraday timeframes ('5m','15m','1h') are absent
-        # here. Override weights so D + W sum to 1.0.
+        # '1d' and '1w'; intraday timeframes are absent here.
+        # Override weights so 1d + 1w sum to 1.0.
         df_dt = enriched.copy()
         df_dt['date'] = df['date'].values  # retain date col from raw frame
         df_dt = df_dt.set_index(pd.to_datetime(df_dt['date']))
         weekly = df_dt[['Open', 'High', 'Low', 'Close']].resample('W').agg({
             'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last',
         }).dropna()
-        ftfc_inputs = {'D': df_dt[['Open', 'High', 'Low', 'Close']]}
+        ftfc_inputs = {'1d': df_dt[['Open', 'High', 'Low', 'Close']]}
         if len(weekly) >= 2:
-            ftfc_inputs['W'] = weekly
+            ftfc_inputs['1w'] = weekly
         ftfc_score, ftfc_dir, _labels = clf.calculate_ftfc(
-            ftfc_inputs, weights={'D': 0.7, 'W': 0.3},
+            ftfc_inputs, weights={'1d': 0.7, '1w': 0.3},
         )
 
         if last_candle and last_candle != 'X':

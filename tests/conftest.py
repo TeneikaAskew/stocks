@@ -84,7 +84,7 @@ def known_strat_sequence():
 
 @pytest.fixture
 def strat_combo_sequence():
-    """OHLCV data with a 2D-1-2U reversal combo at bar 4.
+    """OHLCV data with a 212_bull_reversal combo at bar 4.
 
     Bar 0: reference
     Bar 1: reference

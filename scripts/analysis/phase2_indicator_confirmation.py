@@ -493,7 +493,7 @@ def run_phase2(tickers: list = None):
 
         progress(f"Loaded {len(df_1m):,} bars, adding indicators...", ticker)
         df = enrich_with_indicators(df_1m)
-        labels = df['strat_type'] if 'strat_type' in df.columns else classify_strat_series(df)
+        labels = df['strat_candle'] if 'strat_candle' in df.columns else classify_strat_series(df)
 
         # Define conditions
         progress("Defining indicator conditions...", ticker)
