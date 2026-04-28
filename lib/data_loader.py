@@ -328,7 +328,8 @@ class DataLoader:
 
         Parameters
         ----------
-        timeframe : one of '5m', '15m', '30m', '1h', 'D', 'W', 'M'
+        timeframe : one of '5m', '15m', '30m', '1h', '4h', '12h', '1d', '1w', '1mo'
+                    (legacy 'D' / 'W' / 'M' keys removed in PR #126)
         """
         rule = RESAMPLE_RULES.get(timeframe)
         if rule is None:
