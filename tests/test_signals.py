@@ -207,3 +207,44 @@ class TestGenerateSignals:
         result = generate_signals(df, min_conditions=5)
         # With all identical bars, unlikely to meet 5 conditions
         assert isinstance(result, pd.DataFrame)
+
+
+# ── Level-break condition (Strat v2) ─────────────────────────────────────────
+
+
+class TestLevelBreakCondition:
+    def test_call_gets_level_break_pdh(self):
+        row = _make_row(Broke_Prev_Day_High=1)
+        score, conds = check_call_conditions(row)
+        assert 'level_break_pdh' in conds
+
+    def test_put_gets_level_break_pdl(self):
+        row = _make_row(Broke_Prev_Day_Low=1)
+        score, conds = check_put_conditions(row)
+        assert 'level_break_pdl' in conds
+
+    def test_no_level_break_when_zero(self):
+        row = _make_row(Broke_Prev_Day_High=0, Broke_Prev_Day_Low=0)
+        _, call_conds = check_call_conditions(row)
+        _, put_conds = check_put_conditions(row)
+        assert 'level_break_pdh' not in call_conds
+        assert 'level_break_pdl' not in put_conds
+
+    def test_missing_column_does_not_fire(self):
+        """With the column absent (default _make_row), the vote stays at 5 conditions."""
+        row = _make_row(
+            Consecutive_Down=4, RSI14=35.0, Price_vs_VWAP=-0.5,
+            Price_vs_EMA9=-0.2, StochRSI_K=20.0,
+        )
+        score, _ = check_call_conditions(row)
+        assert score == 5
+
+    def test_six_conditions_when_level_breaks(self):
+        row = _make_row(
+            Consecutive_Down=4, RSI14=35.0, Price_vs_VWAP=-0.5,
+            Price_vs_EMA9=-0.2, StochRSI_K=20.0,
+            Broke_Prev_Day_High=1,
+        )
+        score, conds = check_call_conditions(row)
+        assert score == 6
+        assert 'level_break_pdh' in conds

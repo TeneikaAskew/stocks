@@ -49,7 +49,7 @@ def analyze_regimes(ticker: str, df: pd.DataFrame) -> str:
         return report + "No ATR data available.\n\n"
 
     close = df['Close'] if 'Close' in df.columns else df['Last']
-    labels = df['strat_type'] if 'strat_type' in df.columns else classify_strat_series(df)
+    labels = df['strat_candle'] if 'strat_candle' in df.columns else classify_strat_series(df)
     next_return = close.pct_change().shift(-1) * 10000
 
     # ATR-based regime: rolling 20-day ATR percentile
@@ -165,7 +165,7 @@ def analyze_time_of_day(ticker: str, df: pd.DataFrame) -> str:
     report += "\nPerformance by intraday time window.\n\n"
 
     close = df['Close'] if 'Close' in df.columns else df['Last']
-    labels = df['strat_type'] if 'strat_type' in df.columns else classify_strat_series(df)
+    labels = df['strat_candle'] if 'strat_candle' in df.columns else classify_strat_series(df)
     next_return = close.pct_change().shift(-1) * 10000
 
     times = pd.to_datetime(df.index).time
@@ -269,7 +269,7 @@ def analyze_day_of_week(ticker: str, df: pd.DataFrame) -> str:
     report += "\nPerformance by trading day.\n\n"
 
     close = df['Close'] if 'Close' in df.columns else df['Last']
-    labels = df['strat_type'] if 'strat_type' in df.columns else classify_strat_series(df)
+    labels = df['strat_candle'] if 'strat_candle' in df.columns else classify_strat_series(df)
     next_return = close.pct_change().shift(-1) * 10000
 
     day_of_week = pd.to_datetime(df.index).dayofweek  # 0=Mon, 4=Fri
@@ -424,7 +424,7 @@ def analyze_drawdowns(ticker: str, df: pd.DataFrame) -> str:
     report += "\nWorst-case scenarios and streak analysis.\n\n"
 
     close = df['Close'] if 'Close' in df.columns else df['Last']
-    labels = df['strat_type'] if 'strat_type' in df.columns else classify_strat_series(df)
+    labels = df['strat_candle'] if 'strat_candle' in df.columns else classify_strat_series(df)
     next_return = close.pct_change().shift(-1) * 10000
 
     # Simulate simple trades: every 2U signal is a CALL, every 2D is a PUT
@@ -639,7 +639,7 @@ def run_walk_forward(ticker: str, df: pd.DataFrame) -> str:
     report += "\nTesting pattern stability over rolling windows.\n\n"
 
     close = df['Close'] if 'Close' in df.columns else df['Last']
-    labels = df['strat_type'] if 'strat_type' in df.columns else classify_strat_series(df)
+    labels = df['strat_candle'] if 'strat_candle' in df.columns else classify_strat_series(df)
     next_return = close.pct_change().shift(-1) * 10000
     next_label = labels.shift(-1)
 

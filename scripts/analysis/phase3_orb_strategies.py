@@ -177,7 +177,7 @@ def backtest_orb_strategy(
     """Backtest an ORB-based strategy using vectorized entry detection
     and per-day bar-by-bar exit simulation (fast enough for ~2700 trading days)."""
     close = df['Close'] if 'Close' in df.columns else df['Last']
-    labels = df['strat_type'] if 'strat_type' in df.columns else classify_strat_series(df)
+    labels = df['strat_candle'] if 'strat_candle' in df.columns else classify_strat_series(df)
 
     broke_high = f'ORB_{orb_label}_Broke_High'
     broke_low = f'ORB_{orb_label}_Broke_Low'

@@ -118,7 +118,7 @@ async def dashboard_brief(
                 "consecutive_up": int(row["consecutive_up"]) if "consecutive_up" in row and row["consecutive_up"] is not None else 0,
                 "consecutive_down": int(row["consecutive_down"]) if "consecutive_down" in row and row["consecutive_down"] is not None else 0,
                 "signal_status": row.get("signal_status"),
-                "strat_daily": row.get("strat_daily"),
+                "strat_candle": row.get("strat_candle"),
                 "strat_combo": row.get("strat_combo"),
                 "strat_setup": bool(row.get("strat_setup", False)),
                 "ftfc_score": round(float(row["ftfc_score"]), 2) if "ftfc_score" in row and row["ftfc_score"] is not None else None,

@@ -706,7 +706,7 @@ def run_phase4(tickers: list = None):
             continue
 
         df = enrich_with_indicators(df_1m)
-        labels = df['strat_type'] if 'strat_type' in df.columns else classify_strat_series(df)
+        labels = df['strat_candle'] if 'strat_candle' in df.columns else classify_strat_series(df)
         progress(f"Enriched {len(df):,} bars", ticker)
 
         # Build report
@@ -729,7 +729,7 @@ def run_phase4(tickers: list = None):
             try:
                 df_htf = resample_to_timeframe(df_1m, htf)
                 df_htf = enrich_with_indicators(df_htf)
-                labels_htf = df_htf['strat_type'] if 'strat_type' in df_htf.columns else classify_strat_series(df_htf)
+                labels_htf = df_htf['strat_candle'] if 'strat_candle' in df_htf.columns else classify_strat_series(df_htf)
                 groups_htf = define_feature_groups(df_htf, labels_htf)
 
                 # Use 5-bar forward return as win condition

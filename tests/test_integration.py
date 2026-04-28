@@ -364,9 +364,10 @@ class TestPipelineWithStrat:
         result = engine.run(df, use_strat=True)
 
         assert isinstance(result, BacktestResult)
-        # All trades should have strat_bonus field set (even if 0)
+        # All trades should have strat_bonus field set (even if 0). Bonus
+        # is now a float per the v2 strat refactor (supports fractional bonuses).
         for trade in result.trades:
-            assert isinstance(trade.strat_bonus, int)
+            assert isinstance(trade.strat_bonus, (int, float))
             assert trade.total_score == trade.base_score + trade.strat_bonus
 
     def test_strat_classifier_detects_combos(self, intraday_5d):
@@ -377,7 +378,7 @@ class TestPipelineWithStrat:
         df = add_all_indicators(intraday_5d, indicator_config=config.indicator)
         combo_df = classifier.detect_combos(df)
 
-        assert 'strat_type' in combo_df.columns
+        assert 'strat_candle' in combo_df.columns
         assert 'strat_combo' in combo_df.columns
         assert 'strat_setup' in combo_df.columns
         assert 'trigger_high' in combo_df.columns
@@ -386,7 +387,7 @@ class TestPipelineWithStrat:
 
         # Strat types should be one of the known values
         valid_types = {'1', '2U', '2D', '3', 'X'}
-        assert set(combo_df['strat_type'].unique()).issubset(valid_types)
+        assert set(combo_df['strat_candle'].unique()).issubset(valid_types)
 
     def test_strat_bonus_integrated_in_total_score(self, intraday_5d):
         """When strat is enabled, total_score = base_score + strat_bonus.
