@@ -985,6 +985,12 @@ def persist_to_cloud_sql(brief: dict) -> int:
             'strat_combo': str(data.get('strat_combo', '')),
             'recommended_orb_window': str(data.get('recommended_orb_window', '')),
             'recommended_orb_reason': str(data.get('recommended_orb_reason', '')),
+            # The full Strat playbook string rendered by
+            # lib.strat_levels.format_levels_for_brief — entry triggers,
+            # stops, T1/T2, R:R per ticker. PR #129 added the column;
+            # this row-builder was the second half of the fix
+            # (without it, the column would still get NULL on upsert).
+            'playbook': data.get('playbook'),
             'strat_setup': data.get('strat_setup', False),
             'ftfc_score': data.get('ftfc_score'),
             'ftfc_direction': data.get('ftfc_direction'),
