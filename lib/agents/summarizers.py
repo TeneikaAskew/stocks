@@ -78,7 +78,8 @@ def summarize_market_context(
         "SELECT date, open, high, low, close, volume, "
         "       sma_200, ema_20, ema_50, rsi_14, macd, macd_signal, "
         "       macd_histogram, bb_upper, bb_lower, bb_pct, atr_14, "
-        "       rvol, volatility_20d, price_vs_ema20 "
+        "       rvol, volatility_20d, price_vs_ema20, "
+        "       pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr "
         "FROM market_data_daily "
         "WHERE ticker = :ticker "
         + ("AND date <= :as_of " if as_of else "")
@@ -120,6 +121,53 @@ def summarize_market_context(
     else:
         vol_tag = "elevated"
 
+    # Pre-market context block (4 AM - 9:30 AM ET, populated by the
+    # 11 PM ET fetcher on the prior trading day OR by today's morning
+    # backfill). Surfaces to the LLM analyst so entry zones can
+    # reference today's pre-market range, not just yesterday's H/L —
+    # the 4/27 brief failed precisely because it didn't have this.
+    pre_high = _scalar(row, "pre_high", digits=2)
+    pre_low = _scalar(row, "pre_low", digits=2)
+    gap_pct = _scalar(row, "gap_pct", digits=3)
+    pre_range_atr = _scalar(row, "pre_range_atr", digits=3)
+    pre_volume_raw = row.get("pre_volume")
+    try:
+        pre_volume = int(pre_volume_raw) if pre_volume_raw is not None else None
+    except (TypeError, ValueError):
+        pre_volume = None
+    premarket_block = None
+    if pre_high is not None or pre_low is not None or gap_pct is not None:
+        # Tag gap regime so the LLM analyst doesn't have to interpret raw %
+        gap_tag = None
+        if gap_pct is not None:
+            ag = abs(gap_pct)
+            if ag < 0.2:
+                gap_tag = "flat"
+            elif ag < 0.5:
+                gap_tag = "small"
+            elif ag < 1.0:
+                gap_tag = "moderate"
+            else:
+                gap_tag = "large"
+        # Tag pre-market range expansion: > 0.5 ATR is regime-shifting
+        range_tag = None
+        if pre_range_atr is not None:
+            range_tag = (
+                "wide" if pre_range_atr > 0.5
+                else "normal" if pre_range_atr > 0.2
+                else "tight"
+            )
+        premarket_block = {
+            "pre_high": pre_high,
+            "pre_low": pre_low,
+            "pre_vwap": _scalar(row, "pre_vwap", digits=2),
+            "pre_volume": pre_volume,
+            "gap_pct": gap_pct,
+            "gap_tag": gap_tag,
+            "pre_range_atr": pre_range_atr,
+            "range_tag": range_tag,
+        }
+
     return {
         "available": True,
         "date": str(row.get("date", "")),
@@ -137,6 +185,11 @@ def summarize_market_context(
         "vol_tag": vol_tag,
         "macd": _scalar(row, "macd", digits=4),
         "macd_histogram": _scalar(row, "macd_histogram", digits=4),
+        # Pre-market context — None when not yet computed (e.g. weekend,
+        # or fetcher hasn't run for this date). The LLM prompt should
+        # weight pre_high/pre_low over prev_day_high/low whenever
+        # gap_tag != 'flat'.
+        "premarket": premarket_block,
     }
 
 
