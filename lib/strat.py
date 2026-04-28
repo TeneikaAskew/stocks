@@ -417,16 +417,26 @@ def compute_strat_status(
         return {"available": False, "reason": f"insufficient daily bars for {ticker}"}
 
     # Honour an explicit as_of by trimming bars after that date.
+    #
+    # Both sides of the comparison MUST share a timezone convention or
+    # pandas raises TypeError (`Invalid comparison between dtype=
+    # datetime64[ns] and Timestamp`). lib.data_loader.load_daily strips
+    # tz from the index, so we normalize the cutoff to naive UTC. The
+    # previous implementation only handled one direction of the
+    # mismatch and swallowed the TypeError silently, which leaked
+    # post-as_of bars into historical replays (insight reports for
+    # ARM as_of=2026-04-20 were reading 2026-04-27 bars — see
+    # docs/plans/INSIGHT_ZONE_HALLUCINATION_PLAN.md).
     if as_of is not None:
-        try:
-            cutoff = pd.Timestamp(as_of)
-            if df.index.tz is not None and cutoff.tz is None:
-                cutoff = cutoff.tz_localize(df.index.tz)
-            df = df[df.index <= cutoff]
-            if df.empty or len(df) < 2:
-                return {"available": False, "reason": f"insufficient bars on or before {as_of}"}
-        except Exception:
-            pass  # if the index isn't a DatetimeIndex, fall through
+        cutoff = pd.Timestamp(as_of)
+        if cutoff.tz is not None:
+            cutoff = cutoff.tz_convert('UTC').tz_localize(None)
+        if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+            df = df.copy()
+            df.index = df.index.tz_localize(None)
+        df = df[df.index <= cutoff]
+        if df.empty or len(df) < 2:
+            return {"available": False, "reason": f"insufficient bars on or before {as_of}"}
 
     strat = StratClassifier(strat_config=strat_config)
 

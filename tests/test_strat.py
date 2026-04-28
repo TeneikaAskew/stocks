@@ -545,3 +545,95 @@ class TestAddStratColumns:
         assert 'strat_combo' in result.columns
         assert 'strat_setup' in result.columns
         assert len(result) == len(sample_ohlcv)
+
+
+# ── as_of cutoff regression — historical replay must not see future bars ──
+
+
+class TestComputeStratStatusAsOf:
+    """Regression tests for the tz-leak bug.
+
+    `compute_strat_status` previously crashed silently (bare except) when
+    the caller passed a tz-aware datetime and the DataFrame's index was
+    tz-naive. The function then returned the LATEST bar instead of the
+    bar at `as_of`, leaking future data into historical replays.
+
+    Concrete impact (pre-fix): an ARM as_of=2026-04-20 insight run read
+    the 2026-04-24 bar as `trigger_high`, anchoring the LLM's entry zone
+    to a price that hadn't been printed yet.
+    """
+
+    @staticmethod
+    def _build_daily_df():
+        """6 trading days of synthetic OHLC, indexed naive (matches data_loader)."""
+        dates = pd.to_datetime([
+            '2026-04-15', '2026-04-16', '2026-04-17',
+            '2026-04-20', '2026-04-21', '2026-04-22',
+        ])
+        # H, L, O, C — values chosen so trigger_high differs sharply by date
+        rows = [
+            (160.0, 155.0, 158.0, 159.0),
+            (165.0, 158.0, 159.0, 164.0),
+            (168.35, 162.73, 167.34, 166.73),  # 4/17 high = the canonical trigger
+            (175.31, 164.10, 167.41, 175.10),  # 4/20 high
+            (179.40, 173.30, 175.37, 175.49),  # 4/21 high
+            (196.66, 178.47, 180.00, 196.57),  # 4/22 high — never seen on 4/20
+        ]
+        df = pd.DataFrame(rows, columns=['High', 'Low', 'Open', 'Close'],
+                          index=dates)
+        df['Volume'] = 1_000_000
+        return df
+
+    def test_tz_aware_datetime_as_of_filters(self):
+        """Tz-aware UTC cutoff against tz-naive index — regression for the leak."""
+        from datetime import datetime, timezone
+        from lib.strat import compute_strat_status
+        df = self._build_daily_df()
+        # The pre-fix code raised TypeError here, swallowed it via bare
+        # except, and returned trigger_high from 4/22 ($196.66) — the
+        # last bar in the frame.
+        out = compute_strat_status(
+            'TEST', df=df,
+            as_of=datetime(2026, 4, 20, 13, 15, 0, tzinfo=timezone.utc),
+        )
+        assert out['available'] is True
+        # iloc[-1] should be 4/20, iloc[-2] (= trigger_high source) = 4/17
+        assert out['date'] == '2026-04-20'
+        assert out['trigger_high'] == pytest.approx(168.35)
+        assert out['trigger_low'] == pytest.approx(162.73)
+
+    def test_naive_date_as_of_filters(self):
+        from datetime import date
+        from lib.strat import compute_strat_status
+        df = self._build_daily_df()
+        out = compute_strat_status('TEST', df=df, as_of=date(2026, 4, 20))
+        assert out['available'] is True
+        assert out['date'] == '2026-04-20'
+        assert out['trigger_high'] == pytest.approx(168.35)
+
+    def test_tz_aware_index_with_naive_cutoff(self):
+        """Defensive: tz-aware index, tz-naive cutoff (rare but possible)."""
+        from datetime import date
+        from lib.strat import compute_strat_status
+        df = self._build_daily_df()
+        df.index = df.index.tz_localize('UTC')
+        out = compute_strat_status('TEST', df=df, as_of=date(2026, 4, 20))
+        assert out['available'] is True
+        assert out['trigger_high'] == pytest.approx(168.35)
+
+    def test_as_of_before_data_returns_unavailable(self):
+        from datetime import date
+        from lib.strat import compute_strat_status
+        df = self._build_daily_df()
+        out = compute_strat_status('TEST', df=df, as_of=date(2020, 1, 1))
+        assert out['available'] is False
+        assert 'insufficient bars' in out['reason']
+
+    def test_as_of_none_uses_latest(self):
+        from lib.strat import compute_strat_status
+        df = self._build_daily_df()
+        out = compute_strat_status('TEST', df=df, as_of=None)
+        assert out['available'] is True
+        assert out['date'] == '2026-04-22'
+        # trigger_high = 4/21 high ($179.40), the bar before 4/22
+        assert out['trigger_high'] == pytest.approx(179.40)
