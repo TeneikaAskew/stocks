@@ -136,6 +136,16 @@ class PersonaPlan(BaseModel):
     rationale: str = Field(
         ..., description="One-sentence justification for these levels."
     )
+    regime: Literal["normal", "extended", "orb_only"] = Field(
+        default="normal",
+        description=(
+            "Trigger regime classification. 'normal' = next structural "
+            "level within 3 ATR (standard breakout). 'extended' = next "
+            "level >= 3 ATR away (recommend ORB confirmation). "
+            "'orb_only' = no unbroken structural trigger; wait for the "
+            "opening range to establish before entering."
+        ),
+    )
 
 
 class SignalRef(BaseModel):
@@ -179,6 +189,18 @@ class InsightReport(BaseModel):
     conviction: Literal["low", "medium", "high"]
     thesis: str = Field(
         ..., description="2-3 sentence plain-English trade thesis"
+    )
+    regime: Literal["normal", "extended", "orb_only"] = Field(
+        default="normal",
+        description=(
+            "Trigger regime for this setup. 'normal' = standard "
+            "breakout entry at the next structural level. 'extended' = "
+            "next level is >= 3 ATR away; 15-min ORB confirmation "
+            "recommended. 'orb_only' = pre-market cleared every "
+            "structural level in the trade direction (extreme gap day); "
+            "wait for the opening range to establish before entering. "
+            "Brief / Discord push render different copy per regime."
+        ),
     )
     entry_zone: EntryZone
     stop: float
