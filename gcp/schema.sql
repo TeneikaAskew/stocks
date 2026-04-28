@@ -654,6 +654,13 @@ CREATE TABLE IF NOT EXISTS premarket_analysis (
     stoch_rsi_k       DOUBLE PRECISION,
     stoch_rsi_d       DOUBLE PRECISION,
 
+    -- Strat-v2 additions (PR #101 brief now writes these per-ticker).
+    -- The ALTER TABLE block below also adds them for existing instances,
+    -- so the canonical schema and live deployments converge.
+    recommended_orb_window  VARCHAR(8),
+    recommended_orb_reason  TEXT,
+    playbook                TEXT,
+
     analysis_ts       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_premarket_analysis UNIQUE (analysis_date, ticker)
@@ -909,11 +916,17 @@ ALTER TABLE market_data_daily
 
 
 -- ============================================================================
--- Catalyst-aware ORB recommendation persisted by gcp/premarket_brief.py.
+-- Catalyst-aware ORB recommendation + Strat playbook persisted by
+-- gcp/premarket_brief.py. The playbook column was missed in the original
+-- PR #101 schema migration: the brief computed d['playbook'] but
+-- upsert_dataframe silently filtered it out (it filters columns not in
+-- the table schema), so the rich per-ticker playbook string was lost
+-- on every brief run. Adding the column makes the data flow end-to-end.
 -- ============================================================================
 ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS recommended_orb_window VARCHAR(8),
-    ADD COLUMN IF NOT EXISTS recommended_orb_reason TEXT;
+    ADD COLUMN IF NOT EXISTS recommended_orb_reason TEXT,
+    ADD COLUMN IF NOT EXISTS playbook TEXT;
 
 
 -- ============================================================================
