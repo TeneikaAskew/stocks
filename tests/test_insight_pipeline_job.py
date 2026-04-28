@@ -335,9 +335,12 @@ def test_parse_as_of_iso_datetime_with_offset():
 
 
 def test_parse_as_of_rejects_future_date():
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    # Use UTC's tomorrow because parse_as_of compares against UTC `now`.
+    # `date.today()` returns *local* date which can be a day behind UTC
+    # near midnight, making the assertion flaky.
+    tomorrow_utc = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
     with pytest.raises(ValueError, match="future"):
-        job.parse_as_of(tomorrow)
+        job.parse_as_of(tomorrow_utc)
 
 
 def test_parse_as_of_rejects_future_datetime():
