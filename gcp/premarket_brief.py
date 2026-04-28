@@ -25,6 +25,14 @@ from lib.strat_levels import build_level_map, format_levels_for_brief
 from lib.signals import check_call_conditions, check_put_conditions
 from lib.config import load_config
 
+# Configure logging for the Cloud Run Job. Without this, `logger.info()`
+# calls in this module (e.g. the persist_level_map success/failure log)
+# are dropped because Python's default level is WARNING. Cloud Run
+# captures stderr, which is where the basicConfig handler writes.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 # Discord embed limits
@@ -503,11 +511,22 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                 with engine.connect() as conn:
                     n = persist_level_map(level_map, conn.connection)
                     conn.connection.commit()
-                logger.info("persisted %d strat_levels rows for %s", n, ticker)
+                # Use print() so this surfaces in Cloud Logging regardless
+                # of logger configuration — diagnosing the IWM-no-persist
+                # mystery requires guaranteed visibility.
+                print(f"  ✓ persisted {n} strat_levels rows for {ticker}")
             except Exception as exc:
-                logger.warning("strat_levels persist failed for %s: %s", ticker, exc)
+                print(f"  ✗ strat_levels persist failed for {ticker}: {type(exc).__name__}: {exc}")
+                import traceback
+                traceback.print_exc()
         except Exception as e:
-            logger.warning("Playbook generation failed for %s: %s", ticker, e)
+            # Bubble up the real exception class + message via print so
+            # Cloud Logging captures it. logger.warning was being
+            # suppressed when basicConfig wasn't set, hiding the IWM
+            # failure mode.
+            print(f"  ✗ Playbook generation failed for {ticker}: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
 
     return brief
 
