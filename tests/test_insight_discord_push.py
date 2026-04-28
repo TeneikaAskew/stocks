@@ -98,6 +98,68 @@ def test_fmt_targets_field_truncates_to_three_targets():
     assert "5.00" not in out
 
 
+# ── Regime-aware rendering (PR α) ─────────────────────────────────────────
+
+
+def test_fmt_targets_field_orb_only_suppresses_numbers():
+    """orb_only regime: don't show entry/stop/targets; emit ORB-wait callout."""
+    out = push._fmt_targets_field(
+        {"low": 305.83, "high": 317.05},  # placeholder values from _orb_only_plan
+        294.61,
+        [],
+        regime="orb_only",
+    )
+    assert "ORB-only" in out
+    assert "wait" in out.lower() or "15-min" in out
+    # The placeholder numbers should NOT appear — they're not real triggers
+    assert "305.83" not in out
+    assert "317.05" not in out
+    assert "294.61" not in out
+
+
+def test_fmt_targets_field_extended_prepends_warning():
+    """extended regime: keep entry/stop/targets but add a leading warning."""
+    out = push._fmt_targets_field(
+        {"low": 180.0, "high": 182.0},
+        175.0,
+        [185.0, 190.0, 195.0],
+        regime="extended",
+    )
+    assert "Extended gap" in out
+    assert "ORB" in out
+    # Entry/stop/targets still rendered
+    assert "180.00" in out and "182.00" in out
+    assert "175.00" in out
+    assert "185.00" in out
+
+
+def test_fmt_targets_field_normal_regime_unchanged():
+    """normal regime: identical output to the legacy no-regime call."""
+    out_normal = push._fmt_targets_field(
+        {"low": 275.0, "high": 276.65}, 282.71,
+        [269.59, 263.53, 257.47],
+        regime="normal",
+    )
+    out_legacy = push._fmt_targets_field(
+        {"low": 275.0, "high": 276.65}, 282.71,
+        [269.59, 263.53, 257.47],
+    )
+    assert out_normal == out_legacy
+    # No regime warnings
+    assert "Extended" not in out_normal
+    assert "ORB-only" not in out_normal
+
+
+def test_fmt_targets_field_default_is_normal():
+    """Backwards-compat: callers that don't pass regime get normal rendering."""
+    out = push._fmt_targets_field(
+        {"low": 100.0, "high": 102.0}, 95.0, [105.0],
+    )
+    assert "100.00" in out
+    assert "Extended" not in out
+    assert "ORB-only" not in out
+
+
 def test_fmt_risk_flags_field_renders_severity_marker():
     out = push._fmt_risk_flags_field([
         {"severity": "warn", "persona": "neutral", "message": "Stop too tight"},
@@ -235,6 +297,51 @@ def test_embed_omits_invalidation_field_when_missing():
     embed = push.format_report_embed(row)
     field_names = [f["name"] for f in embed["fields"]]
     assert "🛑 Invalidation" not in field_names
+
+
+def test_embed_orb_only_regime_renders_callout():
+    """orb_only regime → trade-plan field shows ORB-wait copy + tagged title."""
+    row = _sample_row()
+    row["report"]["regime"] = "orb_only"
+    embed = push.format_report_embed(row)
+    field_names = [f["name"] for f in embed["fields"]]
+    assert any("ORB-only" in n for n in field_names), field_names
+    plan_field = next(f for f in embed["fields"] if "ORB-only" in f["name"])
+    assert "ORB-only" in plan_field["value"]
+    # Placeholder entry/stop numbers should be hidden on ORB-only
+    assert "275.00" not in plan_field["value"]
+
+
+def test_embed_extended_regime_prepends_warning_and_tags_field():
+    row = _sample_row()
+    row["report"]["regime"] = "extended"
+    embed = push.format_report_embed(row)
+    field_names = [f["name"] for f in embed["fields"]]
+    assert any("extended" in n.lower() for n in field_names), field_names
+    plan_field = next(f for f in embed["fields"] if "extended" in f["name"].lower())
+    assert "Extended gap" in plan_field["value"]
+    # Numbers still present on extended
+    assert "275.00" in plan_field["value"]
+
+
+def test_embed_normal_regime_renders_legacy_field_name():
+    row = _sample_row()
+    row["report"]["regime"] = "normal"
+    embed = push.format_report_embed(row)
+    field_names = [f["name"] for f in embed["fields"]]
+    assert "📐 Trade plan" in field_names
+    assert not any("ORB-only" in n for n in field_names)
+    assert not any("extended" in n.lower() for n in field_names)
+
+
+def test_embed_missing_regime_defaults_to_normal():
+    """Reports persisted before the regime field existed render as normal."""
+    row = _sample_row()
+    # explicitly drop regime to simulate pre-PR-α reports
+    row["report"].pop("regime", None)
+    embed = push.format_report_embed(row)
+    field_names = [f["name"] for f in embed["fields"]]
+    assert "📐 Trade plan" in field_names
 
 
 # ---------------------------------------------------------------------------

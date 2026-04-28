@@ -681,21 +681,65 @@ def build_level_map(
 # ─── Brief formatter ─────────────────────────────────────────────────────
 
 
+def levels_to_named_dict(level_map: LevelMap) -> dict[str, float]:
+    """Flatten a LevelMap.levels list into a {name: price} dict.
+
+    Convenience for callers that need to drive `lib.agents.trade_planner.
+    select_trigger_and_regime` from a LevelMap (e.g. the premarket brief
+    computing regime per ticker without rebuilding the multi-tf series
+    from scratch).
+    """
+    out: dict[str, float] = {}
+    for lv in level_map.levels:
+        if lv.name and lv.price is not None:
+            out[lv.name] = float(lv.price)
+    return out
+
+
 def format_levels_for_brief(
     level_map: LevelMap,
     bias: str,
     combo: str = '',
     daily_strat_class: str = '',
+    regime: str = 'normal',
 ) -> str:
     """Format the level map into the playbook Discord format.
 
-    Output:
+    Output (normal regime):
       IWM 215.42 — Daily 2U, Combo: 212_bull_reversal, FTFC +0.7 bullish
       CALLS above 215.85 (PDH)
         Stop: 213.20 (PDL)
         T1: 217.10 (PWH) — 0.58% room
+
+    Regime-aware variants (PR α):
+      * `orb_only`  — pre-market cleared every structural level in the
+                      trade direction. CALLS/PUTS triggers are
+                      suppressed (they'd be misleading on extreme gap
+                      days like AMD 4/24); the playbook emits only an
+                      ORB-wait banner.
+      * `extended`  — next unbroken level >= 3 ATR away. Standard
+                      CALLS/PUTS triggers render but a leading warning
+                      tells the trader to wait for 15-min ORB
+                      confirmation.
+      * `normal`    — original layout, no banners.
     """
     lines = []
+
+    # ── Regime banner ──────────────────────────────────────────────
+    if regime == 'orb_only':
+        return (
+            "  ⚠️ ORB-only — pre-market cleared every structural "
+            "level in the trade direction. No level-break trigger; "
+            "wait for the 15-min opening range to establish before "
+            "entering."
+        )
+    if regime == 'extended':
+        lines.append(
+            "  ⚠️ Extended gap — next structural level is far away; "
+            "recommend 15-min ORB confirmation before entry."
+        )
+        lines.append('')
+
     ct = level_map.calls_trigger
     pt = level_map.puts_trigger
 
