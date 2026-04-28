@@ -135,7 +135,21 @@ def upsert_dataframe(
     # Only keep DataFrame columns that actually exist in the table schema.
     # Extra columns in the DataFrame (e.g. from source files) would cause a
     # KeyError when building the ON CONFLICT SET clause.
+    #
+    # WARN on every dropped column so missing schema migrations don't hide
+    # silently. Past pain: the premarket-brief computed `playbook` per
+    # ticker but the column was missing from premarket_analysis, so the
+    # rich playbook text was dropped invisibly on every run for weeks.
+    # See PR #126 for the schema fix that added the column.
     table_col_names = {col.name for col in tbl.columns}
+    dropped = [c for c in df.columns if c not in table_col_names]
+    if dropped:
+        logger.warning(
+            "upsert_dataframe(%s): dropping %d DataFrame column(s) "
+            "not present in table schema: %s. If these are meant to "
+            "persist, add them to gcp/schema.sql.",
+            table, len(dropped), dropped,
+        )
     df = df[[c for c in df.columns if c in table_col_names]]
 
     if update_cols is None:
