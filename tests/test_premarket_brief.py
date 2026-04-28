@@ -356,3 +356,67 @@ class TestPlaybookEmbed:
         assert '15m' in embed['title']
         assert len(embed['fields']) == 1
         assert 'CALLS above' in embed['fields'][0]['value']
+
+
+# ── BRIEF_AS_OF / BRIEF_TICKERS env overrides (Slice 0 of Discord plan) ──
+
+
+class TestResolveAnalysisDate:
+    """`_resolve_analysis_date` reads BRIEF_AS_OF for historical replay."""
+
+    def test_default_returns_today(self, monkeypatch):
+        monkeypatch.delenv("BRIEF_AS_OF", raising=False)
+        from gcp.premarket_brief import _resolve_analysis_date
+        assert _resolve_analysis_date() == date.today()
+
+    def test_explicit_past_date_honoured(self, monkeypatch):
+        monkeypatch.setenv("BRIEF_AS_OF", "2026-04-23")
+        from gcp.premarket_brief import _resolve_analysis_date
+        assert _resolve_analysis_date() == date(2026, 4, 23)
+
+    def test_blank_falls_back_to_today(self, monkeypatch):
+        monkeypatch.setenv("BRIEF_AS_OF", "   ")
+        from gcp.premarket_brief import _resolve_analysis_date
+        assert _resolve_analysis_date() == date.today()
+
+    def test_future_date_rejected(self, monkeypatch):
+        from datetime import timedelta
+        future = (date.today() + timedelta(days=30)).isoformat()
+        monkeypatch.setenv("BRIEF_AS_OF", future)
+        from gcp.premarket_brief import _resolve_analysis_date
+        with pytest.raises(ValueError, match="future"):
+            _resolve_analysis_date()
+
+
+class TestResolveBriefTickers:
+    """`_resolve_brief_tickers` reads BRIEF_TICKERS for one-off / replay
+    runs that target a specific ticker subset."""
+
+    def test_default_unchanged_when_unset(self, monkeypatch):
+        monkeypatch.delenv("BRIEF_TICKERS", raising=False)
+        from gcp.premarket_brief import _resolve_brief_tickers
+        assert _resolve_brief_tickers(["IWM", "SPY"]) == ["IWM", "SPY"]
+
+    def test_comma_separated(self, monkeypatch):
+        monkeypatch.setenv("BRIEF_TICKERS", "AMD,ARM,CARS")
+        from gcp.premarket_brief import _resolve_brief_tickers
+        assert _resolve_brief_tickers(["IWM"]) == ["AMD", "ARM", "CARS"]
+
+    def test_space_separated(self, monkeypatch):
+        monkeypatch.setenv("BRIEF_TICKERS", "amd arm")
+        from gcp.premarket_brief import _resolve_brief_tickers
+        assert _resolve_brief_tickers(["IWM"]) == ["AMD", "ARM"]
+
+    def test_semicolon_separated(self, monkeypatch):
+        # gcloud --update-env-vars uses comma as its own delimiter, so
+        # multi-ticker BRIEF_TICKERS values must use semicolons to pass
+        # through the CLI cleanly.
+        monkeypatch.setenv("BRIEF_TICKERS", "AMD;ARM;CARS")
+        from gcp.premarket_brief import _resolve_brief_tickers
+        assert _resolve_brief_tickers(["IWM"]) == ["AMD", "ARM", "CARS"]
+
+    def test_blank_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("BRIEF_TICKERS", "  ")
+        from gcp.premarket_brief import _resolve_brief_tickers
+        assert _resolve_brief_tickers(["IWM"]) == ["IWM"]
+
