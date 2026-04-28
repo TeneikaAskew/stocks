@@ -916,6 +916,24 @@ ALTER TABLE market_data_daily
 
 
 -- ============================================================================
+-- Pre-market context (4 AM - 9:30 AM ET, computed from extended-hours bars).
+-- The 4/27 brief failed because every entry zone was based on Friday's H/L
+-- but Monday gapped up significantly — the brief had no signal that pre-
+-- market price had already invalidated those levels. These columns let the
+-- LLM analyst (and the strat_levels engine) see today's pre-market range
+-- alongside the prior-day session, so triggers can be calibrated to current
+-- reality instead of yesterday's close.
+-- ============================================================================
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS pre_high       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS pre_low        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS pre_vwap       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS pre_volume     BIGINT,
+    ADD COLUMN IF NOT EXISTS gap_pct        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS pre_range_atr  DOUBLE PRECISION;
+
+
+-- ============================================================================
 -- Catalyst-aware ORB recommendation + Strat playbook persisted by
 -- gcp/premarket_brief.py. The playbook column was missed in the original
 -- PR #101 schema migration: the brief computed d['playbook'] but
