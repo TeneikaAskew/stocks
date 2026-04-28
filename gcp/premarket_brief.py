@@ -392,6 +392,22 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             brief['tickers'][ticker] = {'status': 'NO DATA'}
             continue
 
+        # Honour BRIEF_AS_OF — historical replays must NOT see bars after
+        # analysis_date or the strat classifier / level builder will read
+        # future data via df.iloc[-1] / df.iloc[-2]. The brief on a real
+        # morning runs at 8:30 AM ET when today's daily row doesn't exist
+        # yet, so the natural "yesterday" cutoff is `< analysis_date`
+        # (strict less-than). On replay, we apply the same filter so
+        # df.iloc[-1] is the last trading day BEFORE the replay date —
+        # matching the data the brief would have seen at run time.
+        cutoff = pd.Timestamp(analysis_date)
+        if isinstance(df.index, pd.DatetimeIndex):
+            idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
+            df = df.loc[idx < cutoff]
+            if df.empty or len(df) < 2:
+                brief['tickers'][ticker] = {'status': 'NO DATA'}
+                continue
+
         close_col = 'Close' if 'Close' in df.columns else 'Last'
         df = add_all_indicators(df, close_col=close_col)
 
@@ -544,6 +560,18 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             print(f"[brief:{ticker}] load_daily → {len(df)} rows", file=sys.stderr, flush=True)
             if df.empty:
                 continue
+            # Same as_of cutoff applied above for the strat block — keep
+            # the level map honest on historical replays so PDH/PDL/PWH
+            # / etc. don't silently leak future bars (e.g. ARM 4/20
+            # replay reading 2026-04-24's high as PDH).
+            cutoff = pd.Timestamp(analysis_date)
+            if isinstance(df.index, pd.DatetimeIndex):
+                idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
+                df = df.loc[idx < cutoff]
+                if df.empty or len(df) < 2:
+                    print(f"[brief:{ticker}] insufficient bars before {analysis_date}",
+                          file=sys.stderr, flush=True)
+                    continue
             close_col = 'Close' if 'Close' in df.columns else 'Last'
             from lib.indicators import calculate_historical_levels
             ts = df['Time'] if 'Time' in df.columns else pd.Series(df.index)

@@ -420,3 +420,56 @@ class TestResolveBriefTickers:
         from gcp.premarket_brief import _resolve_brief_tickers
         assert _resolve_brief_tickers(["IWM"]) == ["IWM"]
 
+
+# ── BRIEF_AS_OF df cutoff (regression for ARM 4/20 leak) ─────────────────
+
+
+class TestBriefAsOfDfCutoff:
+    """Regression test for the brief's df cutoff logic.
+
+    Without the cutoff, `loader.load_daily()` returns the FULL daily
+    history. On historical replays this leaks future bars into the
+    StratClassifier, the level map (PDH/PDL/PWH/...), and the indicator
+    calc — surfaced when the ARM 4/20 replay produced PDH=$237.68 (the
+    actual 2026-04-24 high) instead of $168.35 (the actual 4/17 high).
+
+    These tests confirm the strict-less-than cutoff trims future bars
+    on a tz-naive DatetimeIndex.
+    """
+
+    def test_strict_less_than_excludes_analysis_date(self):
+        """df rows on/after analysis_date must be filtered out."""
+        import pandas as pd
+        idx = pd.to_datetime([
+            '2026-04-15', '2026-04-16', '2026-04-17',  # before
+            '2026-04-20',                                # analysis_date itself
+            '2026-04-21', '2026-04-22',                  # future leak
+        ])
+        df = pd.DataFrame(
+            {'High': [1, 2, 3, 999, 1000, 1001]},  # 999/1000/1001 = leakage flags
+            index=idx,
+        )
+        analysis_date = date(2026, 4, 20)
+        cutoff = pd.Timestamp(analysis_date)
+        idx_norm = df.index.tz_localize(None) if df.index.tz is not None else df.index
+        out = df.loc[idx_norm < cutoff]
+        # Only 4/15-4/17 should remain (3 rows)
+        assert len(out) == 3
+        assert out['High'].max() == 3  # leakage values 999/1000/1001 excluded
+        # df.iloc[-1] should be 4/17 (the last bar before analysis_date)
+        assert out.index[-1].date() == date(2026, 4, 17)
+
+    def test_tz_aware_index_normalized(self):
+        """Tz-aware index works the same as tz-naive."""
+        import pandas as pd
+        idx = pd.to_datetime([
+            '2026-04-17', '2026-04-20', '2026-04-22',
+        ]).tz_localize('UTC')
+        df = pd.DataFrame({'High': [1, 999, 1000]}, index=idx)
+        analysis_date = date(2026, 4, 20)
+        cutoff = pd.Timestamp(analysis_date)
+        idx_norm = df.index.tz_localize(None) if df.index.tz is not None else df.index
+        out = df.loc[idx_norm < cutoff]
+        assert len(out) == 1
+        assert out['High'].iloc[0] == 1  # only 4/17 retained
+
