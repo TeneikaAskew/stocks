@@ -366,6 +366,62 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
     except Exception as e:
         log.warning("    Strat compute failed for %s: %s", ticker, e)
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Pre-market context: 4 AM - 9:30 AM ET extended-hours bars from
+    # market_data_intraday for fetch_date. Surfaces pre_high/pre_low/
+    # pre_vwap/pre_volume/gap_pct/pre_range_atr so the LLM analyst
+    # (and strat_levels engine) can calibrate triggers to today's
+    # actual pre-market range, not just yesterday's session H/L.
+    try:
+        from lib.indicators import calculate_premarket_context
+        # Pull today's intraday bars (extended hours included)
+        intraday_sql = """
+            SELECT ts, open, high, low, close, volume
+              FROM market_data_intraday
+             WHERE ticker = :ticker
+               AND ts >= CAST(:fd AS DATE)
+               AND ts <  CAST(:fd AS DATE) + INTERVAL '1 day'
+             ORDER BY ts
+        """
+        intraday = query_to_dataframe(
+            intraday_sql, {'ticker': ticker.upper(), 'fd': fetch_date}
+        )
+        if not intraday.empty:
+            prev_close = None
+            atr14 = None
+            try:
+                prev_close = float(df['Close'].iloc[-2]) if len(df) >= 2 else None
+            except Exception:
+                pass
+            try:
+                atr14 = float(last.get('atr_14')) if last.get('atr_14') is not None else None
+            except Exception:
+                pass
+
+            pm = calculate_premarket_context(
+                times=intraday['ts'],
+                open_=intraday['open'],
+                high=intraday['high'],
+                low=intraday['low'],
+                close=intraday['close'],
+                volume=intraday['volume'],
+                prev_close=prev_close,
+                atr14=atr14,
+            )
+            if pm['bar_count'] > 0:
+                if pm['pre_high'] is not None: row['pre_high'] = pm['pre_high']
+                if pm['pre_low'] is not None: row['pre_low'] = pm['pre_low']
+                if pm['pre_vwap'] is not None: row['pre_vwap'] = pm['pre_vwap']
+                if pm['pre_volume'] is not None: row['pre_volume'] = pm['pre_volume']
+                if pm['gap_pct'] is not None: row['gap_pct'] = pm['gap_pct']
+                if pm['pre_range_atr'] is not None: row['pre_range_atr'] = pm['pre_range_atr']
+                log.info("    ✓ pre-market context computed (%d bars)", pm['bar_count'])
+            else:
+                log.info("    no pre-market bars for %s on %s (likely weekend / holiday)",
+                         ticker, fetch_date)
+    except Exception as e:
+        log.warning("    Pre-market compute failed for %s: %s", ticker, e)
+
     upsert_dataframe(pd.DataFrame([row]), 'market_data_daily', ['ticker', 'date'])
     log.info("    ✓ daily indicators + strat computed (%d bars context)", len(df))
 

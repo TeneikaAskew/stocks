@@ -293,6 +293,102 @@ def calculate_historical_levels(
 
 
 # ---------------------------------------------------------------------------
+# Pre-market context (4:00 AM - 9:30 AM ET extended-hours session)
+# ---------------------------------------------------------------------------
+
+
+def calculate_premarket_context(
+    times: pd.Series,
+    open_: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    volume: pd.Series,
+    *,
+    prev_close: float = None,
+    atr14: float = None,
+    premarket_start: time = time(4, 0),     # 4:00 AM ET
+    market_open: time = time(9, 30),        # 9:30 AM ET
+) -> dict:
+    """Compute pre-market H/L/VWAP/volume + gap_pct + pre_range_atr from
+    extended-hours minute bars.
+
+    Why this exists
+    ---------------
+    The 4/27 brief computed entry zones from Friday's H/L but Monday
+    gapped up materially — every level was stale before the bell. This
+    helper surfaces the pre-market range so the LLM analyst (and the
+    strat_levels engine) can calibrate triggers to today's reality.
+
+    Args:
+        times, open_, high, low, close, volume: aligned 1-min bar series
+        prev_close:  prior-day close, used to compute gap_pct. None → no gap_pct.
+        atr14:       14-day ATR, used to normalise pre_range. None → no atr-norm.
+        premarket_start: extended-hours start (default 4:00 AM ET)
+        market_open: regular-session open (default 9:30 AM ET)
+
+    Returns:
+        dict with keys: pre_high, pre_low, pre_vwap, pre_volume, pre_open,
+        pre_close, gap_pct, pre_range_atr, bar_count.
+
+    Edge cases:
+      - Empty pre-market bars → all numeric values None, bar_count=0
+      - prev_close=None → gap_pct=None
+      - atr14=None or 0 → pre_range_atr=None
+      - All-NaN volume → pre_volume=None (avoid sum of NaN = 0 confusion)
+    """
+    out = {
+        'pre_high': None, 'pre_low': None, 'pre_vwap': None,
+        'pre_volume': None, 'pre_open': None, 'pre_close': None,
+        'gap_pct': None, 'pre_range_atr': None, 'bar_count': 0,
+    }
+
+    if times is None or len(times) == 0:
+        return out
+
+    # Convert times to dt and filter to pre-market window
+    ts = pd.to_datetime(times)
+    if hasattr(ts, 'dt'):
+        # If tz-aware, convert to ET; else assume already-ET
+        ts_et = ts.dt.tz_convert('America/New_York') if ts.dt.tz is not None else ts
+        time_of_day = ts_et.dt.time
+    else:
+        time_of_day = pd.Series([t.time() if hasattr(t, 'time') else t for t in ts])
+
+    pre_mask = (time_of_day >= premarket_start) & (time_of_day < market_open)
+    if not pre_mask.any():
+        return out
+
+    pre_h = high[pre_mask]
+    pre_l = low[pre_mask]
+    pre_c = close[pre_mask]
+    pre_o = open_[pre_mask]
+    pre_v = volume[pre_mask]
+
+    out['bar_count'] = int(pre_mask.sum())
+    out['pre_high'] = float(pre_h.max()) if not pre_h.empty else None
+    out['pre_low']  = float(pre_l.min()) if not pre_l.empty else None
+    out['pre_open'] = float(pre_o.iloc[0]) if not pre_o.empty else None
+    out['pre_close'] = float(pre_c.iloc[-1]) if not pre_c.empty else None
+
+    # VWAP — typical price weighted by volume
+    typical = (pre_h + pre_l + pre_c) / 3.0
+    if pre_v.notna().any() and pre_v.sum() > 0:
+        out['pre_vwap'] = float((typical * pre_v).sum() / pre_v.sum())
+        out['pre_volume'] = int(pre_v.fillna(0).sum())
+
+    # Gap %: today's pre-market open vs yesterday's close
+    if prev_close is not None and prev_close > 0 and out['pre_open'] is not None:
+        out['gap_pct'] = round((out['pre_open'] / prev_close - 1) * 100, 4)
+
+    # Pre-market range expansion vs ATR (regime tag)
+    if atr14 is not None and atr14 > 0 and out['pre_high'] is not None and out['pre_low'] is not None:
+        out['pre_range_atr'] = round((out['pre_high'] - out['pre_low']) / atr14, 4)
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Opening Range Breakout (ORB)
 # ---------------------------------------------------------------------------
 
