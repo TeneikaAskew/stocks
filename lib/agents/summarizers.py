@@ -903,15 +903,51 @@ def summarize_catalysts(
 # ---------------------------------------------------------------------------
 
 
+def _default_lookback_hours_for(as_of: Optional[date_type]) -> int:
+    """Pick the news lookback window so it bridges weekends.
+
+    AV's NEWS_SENTIMENT coverage of small-cap ETFs (IWM family, plus
+    most large-cap broad-market ETFs) is concentrated in three
+    auto-publishers (富途牛牛, Moomoo, GuruFocus) that **only post on
+    trading days**. Saturday and Sunday are routinely silent across the
+    Russell 2000 family — verified empirically via the AV API.
+
+    Result: a 48h lookback ending Mon 8:30 AM ET starts at Sat 8:30 AM
+    ET — but Friday's last article posts ~4:10 PM ET = ~16h before that
+    cutoff. Mondays would always have empty sentiment for these ETFs.
+
+    Fix: bump the lookback to **72h on Mondays** (and Tuesday before
+    market open, to be safe on long weekends) so Friday's late-day
+    articles fall inside the window. Other weekdays stay at 48h.
+    """
+    if as_of is None:
+        check_dt = datetime.now(timezone.utc)
+    elif isinstance(as_of, datetime):
+        check_dt = as_of
+    else:
+        # `date` — treat as midnight-end-of-day for weekday determination
+        check_dt = datetime.combine(as_of, datetime.min.time(), tzinfo=timezone.utc)
+
+    # weekday(): 0=Mon .. 6=Sun
+    if check_dt.weekday() == 0:  # Monday
+        return 72
+    return 48
+
+
 def summarize_news_sentiment(
-    ticker: str, as_of: Optional[date_type] = None, lookback_hours: int = 48
+    ticker: str,
+    as_of: Optional[date_type] = None,
+    lookback_hours: Optional[int] = None,
 ) -> dict:
     """Aggregate recent news sentiment from the news_sentiment table.
 
     Returns headline counts, average sentiment score, and the top 5
-    most relevant recent headlines. Uses a 48-hour lookback window
-    ending at `as_of` (defaults to now when None).
+    most relevant recent headlines. Lookback defaults to 48h on most
+    weekdays, **72h on Mondays** to bridge the AV weekend gap (see
+    `_default_lookback_hours_for` for the reasoning).
     """
+    if lookback_hours is None:
+        lookback_hours = _default_lookback_hours_for(as_of)
     if as_of is None:
         sql = (
             "SELECT title, sentiment_score, relevance_score, source, published_ts "
