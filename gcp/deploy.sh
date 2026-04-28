@@ -835,8 +835,14 @@ deploy_schedulers() {
         "--mode=orb-snapshot" "--window=30m"
     # Weekend review — Saturday 9 AM ET
     _schedule "weekend-review-weekly"    "0 9 * * 6"      "weekend-review"
-    # Market data — 5 PM ET weekdays
-    _schedule "fetch-market-data-daily"  "0 17 * * 1-5"   "fetch-market-data"
+    # Market data — 11 PM ET weekdays. Was 5 PM ET originally but moved
+    # 6 hours later because AV's TIME_SERIES_INTRADAY publishes the
+    # closing-day's 1-min bars with a several-hour lag. The 5 PM cron
+    # consistently saw "no bars for <ticker> on <today>" and required
+    # a manual --date=YYYY-MM-DD backfill the following morning. 11 PM
+    # ET (= 03:00 UTC next day) puts the fetch ~7 hours after the
+    # 16:00 ET close, well beyond AV's typical ingestion window.
+    _schedule "fetch-market-data-daily"  "0 23 * * 1-5"   "fetch-market-data"
 
     # ETF options intraday (9x/day) was REMOVED — see commit message.
     # Daily EOD snapshots come from fetch-av-options-backfill (with real Greeks)
