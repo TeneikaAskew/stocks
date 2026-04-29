@@ -145,25 +145,40 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         groups[key]['rows'].append(row)
 
     # Row priority within a group: EW carries strategy info, prefer it
-    row_prio = {'earnings_whispers': 0, 'alphavantage': 1, 'unusual_whales': 2}
+    row_prio = {'earnings_whispers': 0, 'alphavantage': 1, 'unusual_whales': 2,
+                'yahoo': 3}
 
     def _tier(sources: set) -> int:
+        """Tier rows by independent date-source coverage.
+
+        AV (SEC filings), UW (analyst-expected), and Yahoo (Yahoo Finance
+        calendar) are all *date-confirming* sources — when 2+ agree on a
+        date, that date is well-established. EW signals trader interest
+        (a strategy was published) but isn't a date-of-truth source on
+        its own.
+
+        AV's date is sometimes wrong (~20% of SP500 names — observed
+        cases: SBUX, V, STX, EA, FSLR). Yahoo was added so a UW-only
+        row that Yahoo confirms gets promoted to tier 2 instead of
+        being cut by the top-N cap.
+        """
         has_av = 'alphavantage' in sources
         has_uw = 'unusual_whales' in sources
         has_ew = 'earnings_whispers' in sources
-        if has_av and has_uw and has_ew:
-            return 1
-        if has_av and has_uw:
-            return 2
-        if has_av and has_ew:
-            return 3
-        if has_uw and has_ew:   # rare: both minor sources agree, no AV
-            return 4
-        if has_uw:
-            return 5
+        has_yh = 'yahoo' in sources
+        n_date_sources = int(has_av) + int(has_uw) + int(has_yh)
+
+        if n_date_sources >= 2 and has_ew:
+            return 1   # 2+ dates agree + EW strategy — strongest signal
+        if n_date_sources >= 2:
+            return 2   # 2+ independent date sources agree
+        if (has_uw or has_yh) and has_ew:
+            return 3   # UW or Yahoo + EW strategy
+        if has_uw or has_yh:
+            return 4   # one non-AV date source confirmed
         if has_ew:
-            return 5
-        return 6   # AV only (long tail)
+            return 5   # EW alone (rare — strategy without confirmed date)
+        return 6   # AV only (long tail; AV often has stale dates)
 
     def _max_non_null(rows, key):
         """Largest non-null value of `key` across a row group, or None."""
