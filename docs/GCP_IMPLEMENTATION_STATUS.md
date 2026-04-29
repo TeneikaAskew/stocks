@@ -3,7 +3,7 @@
 **Project**: adept-mountain-474619-d4
 **Region**: us-east1
 **Service Account**: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
-**Last Updated**: 2026-04-26 (session 13 + ticker info API + news feed probes + admin IAP bypass)
+**Last Updated**: 2026-04-29 (changelog refresh + plan shipping logs for PRs #101–#145)
 
 ---
 
@@ -412,6 +412,7 @@ Pre-existing failures (unrelated to dashboard work):
 
 ## Change Log
 
+- 2026-04-29: Add `docs/changelog/CHANGELOG_2026-04-27_to_2026-05-03.md` covering 45 merged PRs (#101–#145) + in-flight PR #146 (`feat/replay-auto-backfill-v2`); refresh shipping logs in `docs/STRAT_IMPLEMENTATION_PLAN.md`, `docs/plans/DISCORD_INTERACTIONS_PLAN.md`, `docs/plans/INSIGHT_ZONE_HALLUCINATION_PLAN.md`, `docs/plans/PREMARKET_CONTEXT_PLAN.md` so each plan's status reflects what landed in code (Strat v2 levels engine, Discord `/replay` Slice 0 + Slice 1, premarket H/L/VWAP context, `as_of` tz-leak fix + level-aware planner)
 - 2026-04-26: Add GCP Cloud Run Job failure notifier — stdlib Cloud Run service triggered by Cloud Logging sink → Pub/Sub push; fans out to Discord webhook + GitHub issue (with dedup on repeat failures)
 - 2026-04-26: Add high-risk-gap test coverage (commit `c7ee564`) — 119 new tests across 8 HIGH-risk + 3 MEDIUM-risk gaps surfaced by post-merge audit. Suite 531 → 650 passing
 - 2026-02-22: Pre-migration cleanup — add .gcloudignore + .dockerignore, create requirements-gcp.txt (prod-only), update gcp/Dockerfile, delete orphaned root files

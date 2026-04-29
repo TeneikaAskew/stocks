@@ -157,6 +157,77 @@ def test_tier_2_av_plus_uw_no_strategy(mock_cloud_sql):
     assert result["earnings"][0]["tier"] == 2
 
 
+def test_tier_2_uw_plus_yahoo_promotes_av_disagreement(mock_cloud_sql):
+    """The SBUX case: UW + Yahoo agree on the date, AV booked a different
+    day. With Yahoo as a date-confirming source, two sources agree →
+    tier 2 instead of being demoted to tier 5 just because AV is missing.
+    """
+    install, _ = mock_cloud_sql
+    install(pd.DataFrame([
+        _row("SBUX", "unusual_whales", is_s_p_500=True, market_cap=112_000_000_000),
+        _row("SBUX", "yahoo"),
+    ]))
+    from gcp.premarket_brief import load_earnings_for_brief
+
+    result = load_earnings_for_brief(date(2026, 4, 27))
+    e = result["earnings"][0]
+    assert e["tier"] == 2, "UW + Yahoo agreement = tier 2"
+    assert sorted(e["sources"]) == ["unusual_whales", "yahoo"]
+
+
+def test_tier_1_three_dates_plus_ew(mock_cloud_sql):
+    """All three date sources agree + EW strategy → tier 1 (strongest signal)."""
+    install, _ = mock_cloud_sql
+    install(pd.DataFrame([
+        _row("AAPL", "alphavantage"),
+        _row("AAPL", "unusual_whales"),
+        _row("AAPL", "yahoo"),
+        _row("AAPL", "earnings_whispers", strategy="straddle"),
+    ]))
+    from gcp.premarket_brief import load_earnings_for_brief
+
+    result = load_earnings_for_brief(date(2026, 4, 27))
+    assert result["earnings"][0]["tier"] == 1
+
+
+def test_tier_4_yahoo_only(mock_cloud_sql):
+    """Yahoo alone (no AV/UW/EW) → tier 4 — one non-AV date confirmed.
+
+    Better than AV-alone tier 6 because Yahoo dates are accurate; worse
+    than tier 2 because we want corroboration from a second source.
+    """
+    install, _ = mock_cloud_sql
+    install(pd.DataFrame([_row("XYZ", "yahoo")]))
+    from gcp.premarket_brief import load_earnings_for_brief
+
+    result = load_earnings_for_brief(date(2026, 4, 27))
+    assert result["earnings"][0]["tier"] == 4
+
+
+def test_tier_4_uw_alone_demoted_from_legacy_tier_5(mock_cloud_sql):
+    """UW alone is now tier 4 (was tier 5 before Yahoo). The new floor
+    for "one non-AV date source confirmed" is tier 4 — matches Yahoo-only."""
+    install, _ = mock_cloud_sql
+    install(pd.DataFrame([_row("ZZZ", "unusual_whales")]))
+    from gcp.premarket_brief import load_earnings_for_brief
+
+    result = load_earnings_for_brief(date(2026, 4, 27))
+    assert result["earnings"][0]["tier"] == 4
+
+
+def test_tier_3_yahoo_plus_ew(mock_cloud_sql):
+    """Yahoo + EW (strategy without AV/UW backing) → tier 3."""
+    install, _ = mock_cloud_sql
+    install(pd.DataFrame([
+        _row("ABC", "yahoo"),
+        _row("ABC", "earnings_whispers", strategy="bull_spread"),
+    ]))
+    from gcp.premarket_brief import load_earnings_for_brief
+
+    result = load_earnings_for_brief(date(2026, 4, 27))
+    assert result["earnings"][0]["tier"] == 3
+
+
 # ──────────────────────────────────────────────────────────────────────
 # top_n cap — applied AFTER tier+market-cap sort
 # ──────────────────────────────────────────────────────────────────────

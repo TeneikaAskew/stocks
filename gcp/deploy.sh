@@ -287,6 +287,78 @@ deploy_discord_interactions() {
 }
 
 
+# ── Per-ticker backfill (Cloud Run Job) ──────────────────────────────────────
+# One-shot backfill of a single ticker — daily history + intraday + news +
+# indicators + pre-market context + watchlist insert. Triggered by the
+# Discord /replay command when the user requests a ticker that isn't yet
+# in market_data_daily. Idempotent (ON CONFLICT) so re-runs are cheap.
+deploy_backfill_ticker() {
+    echo "Deploying backfill-ticker job..."
+    gcloud run jobs create backfill-ticker \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.backfill_ticker" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backfill-ticker \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,gcp.backfill_ticker" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
+# ── Brief/insight accuracy validator (Cloud Run Job) ─────────────────────────
+# Wraps scripts/validation/validate_brief_accuracy.py. Triggered by the
+# Discord /validate command. Posts results back to the channel via
+# DISCORD_WEBHOOK_URL so the 15-min Discord followup TTL doesn't bound
+# the job runtime.
+deploy_validate_brief() {
+    echo "Deploying validate-brief job..."
+    gcloud run jobs create validate-brief \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 300 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.validate_brief_job" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update validate-brief \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 300 \
+        --command "python,-m,gcp.validate_brief_job" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
+# ── Strategy backtest (Cloud Run Job) ────────────────────────────────────────
+# Wraps scripts/run_backtest.py. Triggered by the Discord /backtest
+# command. Defaults to a 5y window with --use-strat (per plan §12 user
+# decision). Memory bumped to 2Gi because backtests over multi-year
+# windows aggregate large daily series in memory before signal sim.
+deploy_backtest() {
+    echo "Deploying backtest job..."
+    gcloud run jobs create backtest \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 1 \
+        --task-timeout 900 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.backtest_job" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backtest \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 900 \
+        --command "python,-m,gcp.backtest_job" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
 # ── Pre-market brief (Cloud Run Job) ─────────────────────────────────────────
 deploy_premarket() {
     echo "Deploying pre-market brief job..."

@@ -1012,6 +1012,10 @@ def summarize_catalysts(
                 "date": str(r["published_ts"])[:10],
                 "impact": impact,
                 "kind": "news_topic",
+                # Forward sentiment so the Discord catalyst renderer
+                # colours the dot by direction (🟢 bullish / 🔴 bearish
+                # / 🟡 neutral) instead of impact-class colouring.
+                "sentiment_score": sent,
             })
     if sec_df is not None and not sec_df.empty:
         # 8-K item code → human label. Material items only.

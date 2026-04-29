@@ -468,6 +468,226 @@ def fetch_earnings_whispers(user: str = None, password: str = None) -> pd.DataFr
     return result
 
 
+# ── Yahoo Finance (independent date source via yfinance) ────────────────────
+
+def _yahoo_time_from_ts(ts) -> str:
+    """Map a yfinance Earnings Date timestamp to our earnings_time vocab.
+
+    yfinance returns a tz-aware Timestamp (US/Eastern by default). Yahoo's
+    UI labels are BMO / AMC / TNS; we approximate from the hour because
+    yfinance doesn't surface the label directly:
+        hour < 9   → premarket  (Yahoo BMO is typically 06:00–08:00 ET)
+        hour >= 16 → postmarket (Yahoo AMC is typically 16:00–17:00 ET)
+        else       → intraday   (TNS shows as 12:00 noon)
+    """
+    try:
+        h = ts.hour
+    except AttributeError:
+        return 'unknown'
+    if h < 9:
+        return 'premarket'
+    if h >= 16:
+        return 'postmarket'
+    return 'intraday'
+
+
+def _fetch_yahoo_one(ticker: str, start_date, end_date, limit: int = 8):
+    """Fetch one ticker's earnings dates from Yahoo via yfinance.
+
+    Returns a list of normalized record dicts (may be empty). Catches all
+    exceptions because yfinance raises noisy KeyErrors on tickers Yahoo
+    doesn't have data for, which is normal at the long tail.
+
+    Uses TWO yfinance APIs because they cover different windows:
+      - ``get_earnings_dates()`` returns *past + as-of* earnings (last 25
+        rows). It picks up names that reported within the current day
+        (e.g. SBUX AMC yesterday) but NOT future-but-scheduled events.
+      - ``calendar`` returns the SINGLE next upcoming earnings date. This
+        is what we need for tonight's AMC names (AMZN, MSFT, GOOG, etc.)
+        before the report drops — the very case Yahoo cross-confirmation
+        was added to fix.
+
+    One retry with backoff on transient errors — Yahoo throttles aggressive
+    parallel fetching, returning 429s or empty bodies that bubble up as
+    KeyError. A single 1.5s pause is enough for the cookie/crumb cycle to
+    recover most of the time.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        return []
+
+    import time as _time
+    yf_ticker = None
+    for attempt in (0, 1):
+        try:
+            yf_ticker = yf.Ticker(ticker)
+            break
+        except Exception:
+            if attempt == 0:
+                _time.sleep(1.5)
+                continue
+            return []
+    if yf_ticker is None:
+        return []
+
+    records = []
+    seen_dates: set = set()  # avoid double-emitting if calendar agrees with get_earnings_dates
+
+    # ── Path 1: past + current-day reports ───────────────────────────────
+    try:
+        ed = yf_ticker.get_earnings_dates(limit=limit)
+    except Exception as e:
+        logger.debug("Yahoo %s get_earnings_dates: %s", ticker, type(e).__name__)
+        ed = None
+
+    if ed is not None and not ed.empty:
+        for ts, row in ed.iterrows():
+            try:
+                d = ts.date() if hasattr(ts, 'date') else None
+            except Exception:
+                continue
+            if d is None or d < start_date or d > end_date:
+                continue
+            seen_dates.add(d)
+            eps = row.get('EPS Estimate')
+            records.append({
+                'date': d.strftime('%Y-%m-%d'),
+                'ticker': ticker,
+                'company_name': '',
+                'time': _yahoo_time_from_ts(ts),
+                'eps_estimate': _safe_num(eps),
+                'market_cap': None,
+                'sector': '',
+                'has_options': None,
+                'expected_move': None,
+                'source': 'Yahoo',
+                'strategy': '',
+                'fetched_at': datetime.now().isoformat(),
+            })
+
+    # ── Path 2: upcoming-not-yet-reported via Ticker.calendar ────────────
+    # The reason Yahoo cross-confirmation matters: tonight's mega-cap AMC
+    # reporters are scheduled but not yet "as-of," so get_earnings_dates
+    # omits them. calendar fills the gap. We accept time='unknown' here
+    # because calendar doesn't surface BMO/AMC — UW provides that.
+    try:
+        cal = yf_ticker.calendar
+    except Exception:
+        cal = None
+
+    if isinstance(cal, dict):
+        cal_dates = cal.get('Earnings Date') or cal.get('earningsDate') or []
+        if not isinstance(cal_dates, (list, tuple)):
+            cal_dates = [cal_dates]
+        eps_avg = cal.get('Earnings Average')
+        for cd in cal_dates:
+            try:
+                if hasattr(cd, 'date'):
+                    d = cd.date()
+                elif isinstance(cd, datetime):
+                    d = cd.date()
+                else:
+                    d = cd  # assume already a date
+            except Exception:
+                continue
+            if d is None or d < start_date or d > end_date:
+                continue
+            if d in seen_dates:
+                continue
+            records.append({
+                'date': d.strftime('%Y-%m-%d'),
+                'ticker': ticker,
+                'company_name': '',
+                'time': 'unknown',  # calendar doesn't carry BMO/AMC
+                'eps_estimate': _safe_num(eps_avg),
+                'market_cap': None,
+                'sector': '',
+                'has_options': None,
+                'expected_move': None,
+                'source': 'Yahoo',
+                'strategy': '',
+                'fetched_at': datetime.now().isoformat(),
+            })
+
+    return records
+
+
+def fetch_yahoo_earnings(tickers, start_date, end_date, max_workers: int = 4) -> pd.DataFrame:
+    """Cross-check tickers against Yahoo Finance's earnings calendar.
+
+    Yahoo is an independent third date source — useful when AV (SEC-filing
+    dates) and UW (analyst-expected dates) disagree. We've observed AV
+    booking dates ~1 week off for SP500 names like SBUX, V, STX, EA, FSLR
+    where UW + Yahoo agree on the actual report date.
+
+    Uses yfinance per-ticker (the public visualization endpoint throttles
+    unauthenticated requests to 1 row/day). Threaded for throughput.
+
+    Args:
+        tickers: Iterable of ticker symbols to query. Caller should pass
+            the union of tickers already returned by AV/UW/EW for the
+            target window so we cross-check those rather than every
+            symbol on Yahoo.
+        start_date: date or YYYY-MM-DD string — only return rows whose
+            yfinance earnings date falls in [start_date, end_date].
+        end_date:   date or YYYY-MM-DD string.
+        max_workers: thread pool size. Default 4 — Yahoo aggressively
+            rate-limits parallel access (observed empty-result responses
+            at 16 workers within ~100 calls). Stay conservative; the daily
+            cron only needs to cross-check ~50-100 SP500 names.
+
+    Returns:
+        DataFrame matching the common earnings_calendar schema with
+        source='Yahoo'. Empty if yfinance is unavailable or no rows
+        intersect the date window.
+    """
+    try:
+        import yfinance  # noqa: F401  (probe import)
+    except ImportError:
+        logger.info("yfinance not installed — skipping Yahoo earnings")
+        return pd.DataFrame()
+
+    from datetime import date as _date
+    sd = (datetime.strptime(start_date, '%Y-%m-%d').date()
+          if isinstance(start_date, str) else start_date)
+    ed = (datetime.strptime(end_date, '%Y-%m-%d').date()
+          if isinstance(end_date, str) else end_date)
+    if not isinstance(sd, _date) or not isinstance(ed, _date):
+        logger.warning("fetch_yahoo_earnings: invalid date args sd=%s ed=%s", sd, ed)
+        return pd.DataFrame()
+
+    tickers = sorted({str(t).upper().strip() for t in tickers if t})
+    if not tickers:
+        logger.info("Yahoo: no tickers to query")
+        return pd.DataFrame()
+
+    logger.info("Fetching Yahoo earnings for %d tickers (%s..%s)...",
+                len(tickers), sd, ed)
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    all_records = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_fetch_yahoo_one, t, sd, ed): t for t in tickers}
+        for fut in as_completed(futures):
+            try:
+                all_records.extend(fut.result())
+            except Exception as e:
+                logger.debug("Yahoo worker for %s: %s", futures[fut], e)
+
+    if not all_records:
+        logger.warning("Yahoo: 0 records intersected window %s..%s across %d tickers",
+                       sd, ed, len(tickers))
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_records)
+    df = df.drop_duplicates(subset=['ticker', 'date'], keep='last')
+    df = df.sort_values('date').reset_index(drop=True)
+    logger.info("Yahoo total: %d records across %d unique tickers",
+                len(df), df['ticker'].nunique())
+    return df
+
+
 def persist_to_cloud_sql(df: pd.DataFrame) -> int:
     """Write earnings calendar DataFrame to Cloud SQL earnings_calendar table.
 
@@ -501,6 +721,7 @@ def persist_to_cloud_sql(df: pd.DataFrame) -> int:
         'UnusualWhales': 'unusual_whales',
         'EarningsWhispers': 'earnings_whispers',
         'AlphaVantage': 'alphavantage',
+        'Yahoo': 'yahoo',
     }
     if 'source' in db_df.columns:
         db_df['data_source'] = db_df['source'].map(source_map).fillna(db_df['source'])
@@ -832,9 +1053,9 @@ def main():
     )
     parser.add_argument(
         "--source",
-        choices=["all", "uw", "ew", "av"],
+        choices=["all", "uw", "ew", "av", "yh"],
         default="all",
-        help="Data source: all (default), uw (Unusual Whales), ew (Earnings Whispers), av (AlphaVantage — date truth)",
+        help="Data source: all (default), uw (Unusual Whales), ew (Earnings Whispers), av (AlphaVantage — date truth), yh (Yahoo — independent date cross-check via yfinance)",
     )
     parser.add_argument(
         "--av-horizon",
@@ -887,36 +1108,79 @@ def main():
             print(f"EW: tagged {attached} rows with av_earnings_date (dates preserved)")
             frames.append(ew_df)
 
+    # ── Yahoo Finance (independent date cross-check) ──
+    # Only iterates tickers already discovered by other sources, plus the
+    # explicit watchlist. This keeps the per-ticker yfinance call count
+    # bounded (~600 for a 90-day window) instead of scanning all of Yahoo.
+    if args.source in ("all", "yh"):
+        # Build the union of tickers we already know reports in the window
+        known_tickers: set = set()
+        for f in frames:
+            if 'ticker' in f.columns:
+                known_tickers.update(t for t in f['ticker'].dropna().unique() if t)
+        # Always include the watchlist so we never miss known names
+        try:
+            from gcp.fetchers._watchlist import get_active_watchlist
+            known_tickers.update(get_active_watchlist())
+        except Exception:
+            pass
+
+        # Date window: covers existing rows + a small lookback for AMC reports
+        # whose post-day market reaction we want to enrich later.
+        if args.start_date and args.end_date:
+            yh_start = (datetime.strptime(args.start_date, "%Y-%m-%d").date()
+                        - timedelta(days=7))
+            yh_end = datetime.strptime(args.end_date, "%Y-%m-%d").date()
+        else:
+            yh_start = datetime.now().date() - timedelta(days=7)
+            yh_end = datetime.now().date() + timedelta(days=days_ahead)
+
+        if known_tickers:
+            yh_df = fetch_yahoo_earnings(known_tickers, yh_start, yh_end)
+            if not yh_df.empty:
+                attached = _attach_av_date(yh_df, av_dates)
+                print(f"Yahoo: tagged {attached} rows with av_earnings_date (dates preserved)")
+                frames.append(yh_df)
+        else:
+            print("Yahoo: no known tickers to cross-check (skipping)")
+
     if not frames:
         print("\nNo earnings data fetched from any source")
         sys.exit(1)
 
-    earnings_df = pd.concat(frames, ignore_index=True)
+    # Un-deduped frame goes to Cloud SQL — the unique key
+    # (ticker, earnings_date, strategy, data_source) lets every source's row
+    # coexist, which is what the brief's tier-by-source-coverage logic needs.
+    all_rows_df = pd.concat(frames, ignore_index=True)
 
-    # Deduplicate: prefer Earnings Whispers (has strategies) > AlphaVantage > UW
-    source_priority = {'EarningsWhispers': 0, 'AlphaVantage': 1, 'UnusualWhales': 2}
+    # Filter by date range first (applies to both DB persist and JSON cache)
+    if args.start_date and args.end_date:
+        print(f"Filtering between {args.start_date} and {args.end_date}...")
+        all_rows_df = all_rows_df[
+            (all_rows_df["date"] >= args.start_date)
+            & (all_rows_df["date"] <= args.end_date)
+        ]
+        print(f"Filtered to {len(all_rows_df)} announcements (across all sources)")
+
+    # Deduplicate for JSON cache: prefer EW (carries strategy) > AV > UW > Yahoo.
+    # The JSON file is a human-readable summary — one row per (ticker, date)
+    # is the right shape there. Cloud SQL gets the full multi-source view.
+    source_priority = {'EarningsWhispers': 0, 'AlphaVantage': 1, 'UnusualWhales': 2, 'Yahoo': 3}
+    earnings_df = all_rows_df.copy()
     earnings_df['_priority'] = earnings_df['source'].map(source_priority).fillna(99)
     earnings_df = earnings_df.sort_values('_priority')
     earnings_df = earnings_df.drop_duplicates(
         subset=['ticker', 'date'], keep='first'
     ).drop(columns=['_priority']).sort_values('date').reset_index(drop=True)
 
-    # Filter by date range if specified
-    if args.start_date and args.end_date:
-        print(f"Filtering between {args.start_date} and {args.end_date}...")
-        earnings_df = earnings_df[
-            (earnings_df["date"] >= args.start_date)
-            & (earnings_df["date"] <= args.end_date)
-        ]
-        print(f"Filtered to {len(earnings_df)} announcements")
-
-    # Save and summarize
+    # Save JSON cache (deduped) and summary
     fetcher.save_earnings(earnings_df)
     fetcher.print_summary(earnings_df)
 
-    # Persist to Cloud SQL (non-fatal if not configured)
+    # Persist un-deduped frame to Cloud SQL so each source lands as its own
+    # row — required for the brief's per-source tier scoring.
     try:
-        n = persist_to_cloud_sql(earnings_df)
+        n = persist_to_cloud_sql(all_rows_df)
         if n:
             print(f"Persisted {n} rows to Cloud SQL earnings_calendar table")
     except Exception as e:
