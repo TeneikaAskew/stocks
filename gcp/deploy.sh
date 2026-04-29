@@ -287,6 +287,30 @@ deploy_discord_interactions() {
 }
 
 
+# ── Per-ticker backfill (Cloud Run Job) ──────────────────────────────────────
+# One-shot backfill of a single ticker — daily history + intraday + news +
+# indicators + pre-market context + watchlist insert. Triggered by the
+# Discord /replay command when the user requests a ticker that isn't yet
+# in market_data_daily. Idempotent (ON CONFLICT) so re-runs are cheap.
+deploy_backfill_ticker() {
+    echo "Deploying backfill-ticker job..."
+    gcloud run jobs create backfill-ticker \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.backfill_ticker" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backfill-ticker \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,gcp.backfill_ticker" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
 # ── Pre-market brief (Cloud Run Job) ─────────────────────────────────────────
 deploy_premarket() {
     echo "Deploying pre-market brief job..."

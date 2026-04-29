@@ -267,12 +267,70 @@ def execute_cloud_run_job(job_name: str, env_overrides: dict[str, str]) -> bool:
         return False
 
 
+def execute_cloud_run_job_blocking(job_name: str,
+                                   env_overrides: dict[str, str],
+                                   timeout_sec: int = 540) -> bool:
+    """Trigger a Cloud Run Job and BLOCK until it completes.
+
+    Used by /replay's auto-backfill path so brief + insight don't fire
+    against an empty database. Returns True on success, False on
+    failure or timeout. The 540s timeout sits comfortably under
+    Discord's 15-min followup-token TTL.
+    """
+    try:
+        from google.cloud import run_v2
+        client = run_v2.JobsClient()
+        parent = f"projects/{_gcp_project()}/locations/{_gcp_region()}"
+        job_path = f"{parent}/jobs/{job_name}"
+        env_vars = [run_v2.types.EnvVar(name=k, value=v)
+                    for k, v in env_overrides.items()]
+        overrides = run_v2.types.RunJobRequest.Overrides(
+            container_overrides=[
+                run_v2.types.RunJobRequest.Overrides.ContainerOverride(env=env_vars),
+            ],
+        )
+        op = client.run_job(request=run_v2.RunJobRequest(
+            name=job_path, overrides=overrides,
+        ))
+        # Block until execution completes (or timeout). Failures raise.
+        result = op.result(timeout=timeout_sec)
+        if hasattr(result, "succeeded_count") and result.succeeded_count > 0:
+            logger.info("blocking %s succeeded", job_name)
+            return True
+        # Some SDK versions don't surface counts on the operation result —
+        # treat absence of an exception as success.
+        logger.info("blocking %s completed (no count surfaced)", job_name)
+        return True
+    except Exception as exc:
+        logger.exception("blocking dispatch %s failed: %s", job_name, exc)
+        return False
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Command handlers
 # ──────────────────────────────────────────────────────────────────────
 def _options_to_dict(options: list[dict]) -> dict[str, Any]:
     """Flatten Discord's nested options list to {name: value}."""
     return {opt["name"]: opt.get("value") for opt in (options or [])}
+
+
+def ticker_has_daily_data(ticker: str) -> bool:
+    """Quick existence check — does the ticker have ANY daily rows in
+    market_data_daily? When False, /replay must dispatch the
+    backfill-ticker job first (otherwise brief + insight have nothing
+    to read and silently emit empty embeds)."""
+    try:
+        from gcp.database import is_cloud_sql_configured, query_to_dataframe
+        if not is_cloud_sql_configured():
+            return True  # can't verify locally; assume yes (avoids false negatives)
+        df = query_to_dataframe(
+            "SELECT 1 FROM market_data_daily WHERE ticker = :t LIMIT 1",
+            {"t": ticker.upper()},
+        )
+        return not df.empty
+    except Exception as exc:
+        logger.warning("ticker_has_daily_data: %s — assuming True", exc)
+        return True
 
 
 def handle_replay(ticker: str, date_arg: str,
@@ -284,6 +342,11 @@ def handle_replay(ticker: str, date_arg: str,
     Run Jobs each post their own Discord embeds via the existing
     DISCORD_WEBHOOK_URL flow; we just edit the deferred reply with a
     "done" confirmation when both jobs have been dispatched.
+
+    If the ticker has no daily history yet (e.g. user requested AMD
+    when only the morning watchlist is loaded), this function FIRST
+    dispatches the backfill-ticker Cloud Run Job and BLOCKS until
+    it finishes (~1-2 min) so brief + insight read populated tables.
     """
     try:
         d = parse_date_arg(date_arg)
@@ -291,6 +354,28 @@ def handle_replay(ticker: str, date_arg: str,
         return f"❌ {exc}"
 
     ticker_u = ticker.upper().strip()
+
+    # Pre-flight: if the ticker has zero data, run the backfill first.
+    # The backfill job itself adds the ticker to the watchlists table
+    # so subsequent /replay invocations skip this branch.
+    backfill_msg = ""
+    if not ticker_has_daily_data(ticker_u):
+        logger.info("auto-backfill: %s has no daily data; dispatching", ticker_u)
+        edit_deferred_reply(
+            application_id, interaction_token,
+            f"🔄 **{ticker_u}** has no data yet — backfilling now "
+            f"(daily history + intraday + news; ~1-2 min). I'll re-edit "
+            f"this message when the brief and insight are queued.",
+        )
+        backfill_ok = execute_cloud_run_job_blocking("backfill-ticker", {
+            "BACKFILL_TICKER": ticker_u,
+            "BACKFILL_DATES":  d.isoformat(),
+            "BACKFILL_INCLUDE_NEWS": "true",
+        }, timeout_sec=540)
+        if not backfill_ok:
+            return (f"❌ Backfill failed for {ticker_u}. Check the "
+                    f"backfill-ticker Cloud Run Job logs in GCP.")
+        backfill_msg = f"✅ Backfill complete for **{ticker_u}**. "
 
     # Brief: BRIEF_AS_OF + BRIEF_TICKERS (Slice 0). Brief posts its own
     # Discord embed via DISCORD_WEBHOOK_URL on completion.
@@ -302,21 +387,36 @@ def handle_replay(ticker: str, date_arg: str,
     # Insight: INSIGHT_AS_OF (datetime, 09:15 ET = 13:15 UTC during DST).
     # The insight pipeline writes to insight_reports; insight-discord-push
     # then posts the embed.
-    as_of_dt = datetime(d.year, d.month, d.day, 13, 15, tzinfo=timezone.utc)
+    #
+    # When the requested date is TODAY, the canonical 13:15 UTC anchor
+    # may be in the future relative to the moment the slash command
+    # fires (e.g. user runs /replay date:today at 13:04 UTC; 13:15 is
+    # 11 minutes in the future and `parse_as_of` rejects it). Clamp
+    # to "now - 1 minute" in that case so the cutoff is comfortably
+    # in the past without losing temporal precision.
+    canonical_as_of = datetime(d.year, d.month, d.day, 13, 15,
+                               tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    insight_as_of = (canonical_as_of if canonical_as_of <= now
+                     else now - timedelta(minutes=1))
     insight_ok = execute_cloud_run_job("insight-pipeline", {
-        "INSIGHT_AS_OF": as_of_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "INSIGHT_AS_OF": insight_as_of.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "INSIGHT_TICKERS": ticker_u,
     })
 
     if not brief_ok and not insight_ok:
-        return f"❌ Both jobs failed to dispatch for {ticker_u} {d.isoformat()}. Check Cloud Logging."
+        return (f"{backfill_msg}❌ Both jobs failed to dispatch for "
+                f"{ticker_u} {d.isoformat()}. Check Cloud Logging.")
     if not brief_ok:
-        return f"⚠️ Brief failed; insight dispatched for {ticker_u} {d.isoformat()}."
+        return (f"{backfill_msg}⚠️ Brief failed; insight dispatched for "
+                f"{ticker_u} {d.isoformat()}.")
     if not insight_ok:
-        return f"⚠️ Insight failed; brief dispatched for {ticker_u} {d.isoformat()}."
+        return (f"{backfill_msg}⚠️ Insight failed; brief dispatched for "
+                f"{ticker_u} {d.isoformat()}.")
     return (
-        f"✅ Replay queued for **{ticker_u}** as of **{d.isoformat()}** — "
-        f"brief and insight will post here when complete (~90s)."
+        f"{backfill_msg}✅ Replay queued for **{ticker_u}** as of "
+        f"**{d.isoformat()}** — brief and insight will post here when "
+        f"complete (~90s)."
     )
 
 

@@ -639,12 +639,16 @@ def _build_catalysts(section: dict) -> list[Catalyst]:
     out: list[Catalyst] = []
     for e in section.get("events", []) or []:
         try:
+            sentiment = e.get("sentiment_score")
             out.append(
                 Catalyst(
                     name=e["name"],
                     date=str(e["date"]),
                     impact=e.get("impact") or "medium",
                     kind=e.get("kind") or "economic",
+                    sentiment_score=(
+                        float(sentiment) if sentiment is not None else None
+                    ),
                 )
             )
         except Exception as exc:

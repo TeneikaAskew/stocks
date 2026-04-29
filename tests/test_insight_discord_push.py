@@ -183,14 +183,88 @@ def test_fmt_risk_flags_field_empty_returns_dash():
     assert push._fmt_risk_flags_field([]) == "—"
 
 
-def test_fmt_catalysts_field_marks_high_impact():
+def test_fmt_catalysts_field_renders_yellow_when_no_sentiment():
+    """Catalysts without sentiment_score (economic / earnings / sec_8k
+    items, or news that AV didn't score) render as 🟡 neutral —
+    direction can't be inferred so we don't claim one."""
     out = push._fmt_catalysts_field([
-        {"date": "2026-04-30", "name": "GDP", "impact": "high"},
-        {"date": "2026-04-29", "name": "Construction", "impact": "medium"},
+        {"date": "2026-04-30", "name": "GDP", "impact": "high",
+         "kind": "economic"},
+        {"date": "2026-04-29", "name": "Construction", "impact": "medium",
+         "kind": "economic"},
     ])
-    assert "🔴" in out  # high-impact marker
-    assert "🟡" in out  # medium-impact marker
-    assert "GDP" in out
+    assert "🟡 2026-04-30 — GDP" in out
+    assert "🟡 2026-04-29 — Construction" in out
+    # Old impact-based palette no longer applies
+    assert "🔴" not in out
+    assert "🟢" not in out
+
+
+# ── Sentiment-based catalyst dots ─────────────────────────────────────────
+
+
+def test_catalyst_dot_bullish_is_green():
+    assert push._catalyst_dot({
+        "kind": "news_topic", "sentiment_score": 0.4,
+    }) == "🟢"
+
+
+def test_catalyst_dot_bearish_is_red():
+    assert push._catalyst_dot({
+        "kind": "news_topic", "sentiment_score": -0.3,
+    }) == "🔴"
+
+
+def test_catalyst_dot_neutral_is_yellow():
+    """-0.15 ≤ sentiment ≤ 0.15 → 🟡 (neutral)."""
+    for score in (0.0, 0.10, -0.14, 0.15):
+        assert push._catalyst_dot({
+            "kind": "news_topic", "sentiment_score": score,
+        }) == "🟡", f"score={score}"
+
+
+def test_catalyst_dot_no_sentiment_defaults_to_yellow():
+    """Catalysts without sentiment_score (economic / earnings / sec_8k,
+    or news AV didn't score) default to 🟡 neutral. Impact is no
+    longer a fallback signal — direction is the only dimension shown."""
+    for kind in ("economic", "earnings", "sec_8k"):
+        assert push._catalyst_dot({
+            "kind": kind, "impact": "high",
+        }) == "🟡", f"kind={kind}"
+    assert push._catalyst_dot({
+        "kind": "news_topic", "impact": "high",
+        "sentiment_score": None,
+    }) == "🟡"
+
+
+def test_catalyst_dot_invalid_score_yellow():
+    assert push._catalyst_dot({
+        "kind": "news_topic", "sentiment_score": "not a number",
+    }) == "🟡"
+
+
+def test_catalyst_dot_empty_dict_yellow():
+    """Empty dict → 🟡 default (no crash)."""
+    assert push._catalyst_dot({}) == "🟡"
+
+
+def test_fmt_catalysts_field_unified_sentiment_palette():
+    """Mix of kinds: bullish + bearish news + economic event + filing.
+    Colors come from sentiment only; events without a score render 🟡."""
+    out = push._fmt_catalysts_field([
+        {"date": "2026-04-30", "name": "FOMC", "impact": "high",
+         "kind": "economic"},
+        {"date": "2026-04-29", "name": "Bullish upgrade",
+         "kind": "news_topic", "sentiment_score": 0.45},
+        {"date": "2026-04-29", "name": "Bearish downgrade",
+         "kind": "news_topic", "sentiment_score": -0.40},
+        {"date": "2026-04-28", "name": "Routine SEC filing",
+         "kind": "sec_8k", "impact": "low"},
+    ])
+    assert "🟡 2026-04-30 — FOMC" in out
+    assert "🟢 2026-04-29 — Bullish upgrade" in out
+    assert "🔴 2026-04-29 — Bearish downgrade" in out
+    assert "🟡 2026-04-28 — Routine SEC filing" in out
 
 
 def test_fmt_catalysts_field_caps_at_eight():

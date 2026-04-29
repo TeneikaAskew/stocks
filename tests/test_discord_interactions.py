@@ -356,6 +356,117 @@ def test_replay_invalid_date_returns_error_string():
     assert msg.startswith("❌")
 
 
+# ── as_of clamp + auto-backfill ──────────────────────────────────────────
+
+
+def test_replay_today_clamps_insight_as_of_below_now():
+    """Regression: if the user runs /replay date:today before 9:15 ET,
+    the canonical 13:15 UTC anchor would be in the future and
+    insight_pipeline_job.parse_as_of would reject it (caught in prod
+    on 2026-04-29 at 13:04 UTC). Clamp to "now" so the cutoff is
+    always safely in the past."""
+    from datetime import datetime, timezone
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        handle_replay("IWM", "today", "appid", "tok")
+    insight_env = next(env for name, env in calls if name == "insight-pipeline")
+    parsed = datetime.strptime(
+        insight_env["INSIGHT_AS_OF"], "%Y-%m-%dT%H:%M:%SZ"
+    ).replace(tzinfo=timezone.utc)
+    assert parsed <= datetime.now(timezone.utc), \
+        f"INSIGHT_AS_OF {parsed} is in the future"
+
+
+def test_replay_past_date_uses_canonical_915_et_anchor():
+    """For a date safely in the past, INSIGHT_AS_OF should be the
+    canonical 13:15 UTC (= 09:15 ET in DST) anchor on that day."""
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        handle_replay("IWM", "2026-04-23", "appid", "tok")
+    insight_env = next(env for name, env in calls if name == "insight-pipeline")
+    assert insight_env["INSIGHT_AS_OF"] == "2026-04-23T13:15:00Z"
+
+
+def test_replay_skips_backfill_when_ticker_has_data():
+    """Ticker already in market_data_daily → no backfill job dispatched."""
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.execute_cloud_run_job_blocking") as blocking, \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        msg = handle_replay("IWM", "2026-04-23", "appid", "tok")
+    job_names = [c[0] for c in calls]
+    assert "premarket-brief" in job_names
+    assert "insight-pipeline" in job_names
+    blocking.assert_not_called()
+    assert "Backfill" not in msg
+
+
+def test_replay_dispatches_backfill_when_ticker_missing():
+    """Missing ticker → backfill-ticker FIRST (blocking), then brief + insight."""
+    from gcp.discord_interactions.main import handle_replay
+    fire_and_forget: list = []
+    blocking_calls: list = []
+
+    def fake_blocking(name, env, timeout_sec=540):
+        blocking_calls.append((name, env))
+        return True
+
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: fire_and_forget.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.execute_cloud_run_job_blocking",
+               side_effect=fake_blocking), \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=False), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        msg = handle_replay("AMD", "2026-04-24", "appid", "tok")
+
+    assert len(blocking_calls) == 1
+    bf_name, bf_env = blocking_calls[0]
+    assert bf_name == "backfill-ticker"
+    assert bf_env["BACKFILL_TICKER"] == "AMD"
+    assert bf_env["BACKFILL_DATES"] == "2026-04-24"
+    assert bf_env["BACKFILL_INCLUDE_NEWS"] == "true"
+
+    async_names = [c[0] for c in fire_and_forget]
+    assert "premarket-brief" in async_names
+    assert "insight-pipeline" in async_names
+
+    assert "Backfill complete" in msg
+    assert "Replay queued" in msg
+
+
+def test_replay_returns_error_when_backfill_fails():
+    """If backfill-ticker fails, abort BEFORE brief + insight dispatch
+    so we don't post empty embeds against an empty database."""
+    from gcp.discord_interactions.main import handle_replay
+    fire_and_forget: list = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: fire_and_forget.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.execute_cloud_run_job_blocking",
+               return_value=False), \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=False), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        msg = handle_replay("UNKNOWN", "2026-04-23", "appid", "tok")
+    assert msg.startswith("❌")
+    assert "Backfill failed" in msg
+    assert fire_and_forget == []
+
+
 def test_replay_missing_args_ephemeral_error(client, keypair):
     body = {
         "type": 2,
