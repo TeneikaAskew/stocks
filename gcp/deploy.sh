@@ -410,6 +410,12 @@ deploy_fetch_fred_rates() {
 }
 
 deploy_fetch_economic_events() {
+    # `--source all` invokes both ForexFactory (release times +
+    # forecast/previous values direct from source) AND FRED (US
+    # agency releases via the canonical-time lookup in
+    # gcp/fetchers/fetch_economic_events.py:FRED_RELEASE_TIMES_ET).
+    # The previous `--source fred` form silently dropped FF — every
+    # event ended up TBD because FRED's API doesn't expose times.
     echo "Deploying fetch-economic-events job..."
     local fred_key fred_env
     fred_key="$(gcloud secrets versions access latest --secret=fred-api-key 2>/dev/null || true)"
@@ -419,12 +425,13 @@ deploy_fetch_economic_events() {
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
-        --command "python,-m,gcp.fetchers.fetch_economic_events,--source,fred" \
+        --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
         --set-env-vars "${fred_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-economic-events \
         --image "${IMAGE}" --region "${REGION}" \
-        --command "python,-m,gcp.fetchers.fetch_economic_events,--source,fred" \
+        --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
+        --args="" \
         --set-env-vars "${fred_env}" \
         --quiet
 }
