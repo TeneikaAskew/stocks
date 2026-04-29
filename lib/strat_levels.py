@@ -727,15 +727,61 @@ def format_levels_for_brief(
 
     # ── Regime banner ──────────────────────────────────────────────
     if regime == 'orb_only':
-        return (
-            "  ⚠️ ORB-only — pre-market cleared every structural "
+        # Name the actual structural levels that pre-market price has
+        # already cleared, so the trader sees the LAST level passed
+        # (e.g. PWH $222 for a long bias, PQL $214 for a short bias).
+        # Without this the banner read "every structural level" which
+        # is technically true but useless — the trader still needs to
+        # know which level they're now above/below.
+        bias_l = (bias or '').lower()
+        spot = level_map.current_price
+        cleared_high = [
+            lv for lv in level_map.levels
+            if lv.level_type == 'high' and not lv.is_current
+            and lv.price < spot
+        ]
+        cleared_low = [
+            lv for lv in level_map.levels
+            if lv.level_type == 'low' and not lv.is_current
+            and lv.price > spot
+        ]
+        # Closest-to-spot first — that's the LAST level price passed.
+        cleared_high.sort(key=lambda lv: spot - lv.price)
+        cleared_low.sort(key=lambda lv: lv.price - spot)
+        if 'bear' in bias_l and cleared_low:
+            cleared = cleared_low[:4]
+            direction_word = 'bearish'
+        elif cleared_high:
+            cleared = cleared_high[:4]
+            direction_word = 'bullish'
+        elif cleared_low:
+            cleared = cleared_low[:4]
+            direction_word = 'bearish'
+        else:
+            cleared = []
+            direction_word = ''
+        lines.append(
+            "  ORB-only — pre-market cleared every structural "
             "level in the trade direction. No level-break trigger; "
             "wait for the 15-min opening range to establish before "
             "entering."
         )
+        if cleared:
+            lines.append('')
+            lines.append(
+                f"  Last {direction_word} level passed: "
+                f"{cleared[0].name} {cleared[0].price:.2f} "
+                f"(spot {spot:.2f})"
+            )
+            if len(cleared) > 1:
+                rest = ', '.join(
+                    f"{lv.name} {lv.price:.2f}" for lv in cleared[1:]
+                )
+                lines.append(f"  Other cleared: {rest}")
+        return '\n'.join(lines)
     if regime == 'extended':
         lines.append(
-            "  ⚠️ Extended gap — next structural level is far away; "
+            "  Extended gap — next structural level is far away; "
             "recommend 15-min ORB confirmation before entry."
         )
         lines.append('')

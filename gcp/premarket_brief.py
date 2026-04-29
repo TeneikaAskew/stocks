@@ -680,6 +680,20 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             traceback.print_exc(file=sys.stderr)
             sys.stderr.flush()
 
+    # 🧠 LLM explanations — populate `llm_overview`, `llm_orb_explanation`,
+    # and per-ticker `llm_analysis` / `llm_playbook` slots in parallel.
+    # Best-effort: any failure leaves the slot blank and the embed
+    # builders silently skip the field. Set BRIEF_LLM_DISABLE=1 to
+    # bypass entirely (emergency mornings / cost debugging).
+    try:
+        import asyncio
+        from gcp.brief_explanations import generate_explanations
+        asyncio.run(generate_explanations(brief))
+        print(f"[brief] LLM explanations populated", file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"[brief] LLM explanations FAILED: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
     return brief
 
 
@@ -691,6 +705,16 @@ def _fmt_price(val):
 
 def _fmt_pct(val):
     return f'{val:+.2f}%' if val is not None else ''
+
+
+def _truncate(s: str, limit: int) -> str:
+    """Trim to a Discord-safe length, appending an ellipsis when cut."""
+    if not s:
+        return ''
+    s = str(s)
+    if len(s) <= limit:
+        return s
+    return s[: max(0, limit - 1)].rstrip() + '…'
 
 
 def _build_overview_embed(brief: dict) -> dict:
@@ -727,6 +751,14 @@ def _build_overview_embed(brief: dict) -> dict:
         lines.append('')
         lines.append('**FTFC:** ' + ' | '.join(ftfc_parts))
 
+    # \ud83e\udde0 LLM "Today's setup" explanation (PR \u03b2 fills brief['llm_overview'];
+    # PR \u03b1 reserves the slot). Renders as a description-suffix paragraph
+    # so it sits naturally below the FTFC line without adding a field.
+    overview_text = brief.get('llm_overview')
+    if overview_text:
+        lines.append('')
+        lines.append('\U0001F9E0 **Today\'s setup:** ' + str(overview_text))
+
     # Determine overall color
     bullish_count = sum(
         1 for d in brief.get('tickers', {}).values()
@@ -748,23 +780,40 @@ def _build_overview_embed(brief: dict) -> dict:
 
 
 def _build_ticker_fields(brief: dict) -> list:
-    """Build per-ticker analysis fields (3 fields per ticker, inline)."""
+    """Build per-ticker analysis fields (3 inline columns + 1 full-width
+    LLM explanation per ticker).
+
+    Field-pair splits land paired values on their own lines for mobile
+    readability \u2014 ``Prev H/L`` becomes ``Prev H`` + ``Prev L``,
+    ``EMA 9/20`` becomes ``EMA9`` + ``EMA20``, the inline
+    ``RSI | StochRSI`` mash-up becomes two separate lines.
+
+    The 4th field per ticker (``inline: False``) is reserved for the
+    LLM-generated analysis. PR \u03b2 fills it from
+    ``brief['tickers'][ticker]['llm_analysis']``; if that's empty
+    (LLM disabled, timed out, or errored) the field is skipped so the
+    embed doesn't render an empty box.
+    """
     fields = []
     for ticker, d in brief.get('tickers', {}).items():
         if d.get('status') == 'NO DATA':
             fields.append({'name': f'{ticker}', 'value': 'No data', 'inline': False})
             continue
 
-        # Field 1: Key Levels
+        # Field 1: Key Levels (split paired values onto their own lines)
         level_lines = []
-        if d.get('prev_day_high') and d.get('prev_day_low'):
-            level_lines.append(f'Prev H/L: {_fmt_price(d["prev_day_high"])} / {_fmt_price(d["prev_day_low"])}')
+        if d.get('prev_day_high'):
+            level_lines.append(f'Prev H: {_fmt_price(d["prev_day_high"])}')
+        if d.get('prev_day_low'):
+            level_lines.append(f'Prev L: {_fmt_price(d["prev_day_low"])}')
         if d.get('sma200'):
             level_lines.append(f'SMA200: {_fmt_price(d["sma200"])}')
         if d.get('bb_upper') and d.get('bb_lower'):
             level_lines.append(f'BB: {_fmt_price(d["bb_upper"])} / {_fmt_price(d["bb_lower"])}')
-        if d.get('ema9') and d.get('ema20'):
-            level_lines.append(f'EMA 9/20: {_fmt_price(d["ema9"])} / {_fmt_price(d["ema20"])}')
+        if d.get('ema9'):
+            level_lines.append(f'EMA9: {_fmt_price(d["ema9"])}')
+        if d.get('ema20'):
+            level_lines.append(f'EMA20: {_fmt_price(d["ema20"])}')
         if d.get('atr14'):
             level_lines.append(f'ATR14: {_fmt_price(d["atr14"])}')
 
@@ -774,11 +823,11 @@ def _build_ticker_fields(brief: dict) -> list:
             'inline': True,
         })
 
-        # Field 2: Momentum
+        # Field 2: Momentum (RSI and StochRSI on separate lines)
         rsi_arrow = '\u2193' if d.get('rsi_direction') == 'down' else '\u2191'
         mom_lines = [f'RSI: {d["rsi"]:.0f} {rsi_arrow}']
         if d.get('stoch_k') is not None:
-            mom_lines[0] += f' | StochRSI: {d["stoch_k"]:.0f}/{d["stoch_d"]:.0f}'
+            mom_lines.append(f'StochRSI: {d["stoch_k"]:.0f}/{d["stoch_d"]:.0f}')
         mom_lines.append(f'MACD: {d.get("macd_cross", "N/A")}')
 
         consec = ''
@@ -814,6 +863,17 @@ def _build_ticker_fields(brief: dict) -> list:
             'value': '\n'.join(strat_lines),
             'inline': True,
         })
+
+        # Field 4: \ud83e\udde0 Analysis (full-width, fills the gap that previously
+        # appeared from column-height misalignment). Skipped when no
+        # LLM text is available so the embed doesn't render an empty box.
+        analysis = d.get('llm_analysis')
+        if analysis:
+            fields.append({
+                'name': f'\U0001F9E0 {ticker} Analysis',
+                'value': _truncate(str(analysis), MAX_FIELD_VALUE),
+                'inline': False,
+            })
 
     return fields
 
@@ -1036,12 +1096,25 @@ def _build_playbook_embed(brief: dict) -> dict:
     """Embed: per-ticker Strat playbook with trigger, stop, T1/T2 + R:R.
 
     Each ticker gets one field with the multiline format produced by
-    lib.strat_levels.format_levels_for_brief, plus the catalyst-aware
-    ORB recommendation as a single header line.
+    lib.strat_levels.format_levels_for_brief, optionally followed by a
+    full-width LLM "Why this trigger" field. The catalyst-aware ORB
+    recommendation goes in the description, with an optional LLM
+    explanation ("which window was picked, what the alternatives are")
+    appended underneath.
     """
     fields = []
     orb_window = brief.get('recommended_orb_window') or '5m'
     orb_reason = brief.get('recommended_orb_reason') or ''
+
+    # 🧠 LLM playbook header — explains why this ORB window vs the 5/15/30
+    # alternatives. PR β fills brief['llm_orb_explanation']; PR α
+    # reserves the slot.
+    description_parts = [orb_reason] if orb_reason else []
+    orb_text = brief.get('llm_orb_explanation')
+    if orb_text:
+        description_parts.append('')
+        description_parts.append('\U0001F9E0 ' + str(orb_text))
+    description = '\n'.join(description_parts) if description_parts else ''
 
     for ticker, d in brief.get('tickers', {}).items():
         if not d.get('playbook'):
@@ -1055,9 +1128,20 @@ def _build_playbook_embed(brief: dict) -> dict:
             'inline': False,
         })
 
+        # 🧠 Per-ticker playbook explanation — explains why this trigger /
+        # what the trader should watch. Sits directly under the playbook
+        # code-block so it reads as commentary on the levels above.
+        playbook_text = d.get('llm_playbook')
+        if playbook_text:
+            fields.append({
+                'name': f'\U0001F9E0 {ticker} — Why this trigger',
+                'value': _truncate(str(playbook_text), MAX_FIELD_VALUE),
+                'inline': False,
+            })
+
     return {
         'title': f'Strat Playbook — {orb_window} ORB',
-        'description': orb_reason,
+        'description': description,
         'fields': fields,
         'color': 0x9b59b6,
     }
