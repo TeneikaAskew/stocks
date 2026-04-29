@@ -492,11 +492,20 @@ def _yahoo_time_from_ts(ts) -> str:
 
 
 def _fetch_yahoo_one(ticker: str, start_date, end_date, limit: int = 8):
-    """Fetch one ticker's recent earnings dates from Yahoo via yfinance.
+    """Fetch one ticker's earnings dates from Yahoo via yfinance.
 
     Returns a list of normalized record dicts (may be empty). Catches all
     exceptions because yfinance raises noisy KeyErrors on tickers Yahoo
     doesn't have data for, which is normal at the long tail.
+
+    Uses TWO yfinance APIs because they cover different windows:
+      - ``get_earnings_dates()`` returns *past + as-of* earnings (last 25
+        rows). It picks up names that reported within the current day
+        (e.g. SBUX AMC yesterday) but NOT future-but-scheduled events.
+      - ``calendar`` returns the SINGLE next upcoming earnings date. This
+        is what we need for tonight's AMC names (AMZN, MSFT, GOOG, etc.)
+        before the report drops — the very case Yahoo cross-confirmation
+        was added to fix.
 
     One retry with backoff on transient errors — Yahoo throttles aggressive
     parallel fetching, returning 429s or empty bodies that bubble up as
@@ -509,44 +518,98 @@ def _fetch_yahoo_one(ticker: str, start_date, end_date, limit: int = 8):
         return []
 
     import time as _time
-    ed = None
+    yf_ticker = None
     for attempt in (0, 1):
         try:
-            ed = yf.Ticker(ticker).get_earnings_dates(limit=limit)
+            yf_ticker = yf.Ticker(ticker)
             break
-        except Exception as e:
+        except Exception:
             if attempt == 0:
                 _time.sleep(1.5)
                 continue
-            logger.debug("Yahoo %s: %s", ticker, type(e).__name__)
             return []
-
-    if ed is None or ed.empty:
+    if yf_ticker is None:
         return []
 
     records = []
-    for ts, row in ed.iterrows():
-        try:
-            d = ts.date() if hasattr(ts, 'date') else None
-        except Exception:
-            continue
-        if d is None or d < start_date or d > end_date:
-            continue
-        eps = row.get('EPS Estimate')
-        records.append({
-            'date': d.strftime('%Y-%m-%d'),
-            'ticker': ticker,
-            'company_name': '',
-            'time': _yahoo_time_from_ts(ts),
-            'eps_estimate': _safe_num(eps),
-            'market_cap': None,
-            'sector': '',
-            'has_options': None,
-            'expected_move': None,
-            'source': 'Yahoo',
-            'strategy': '',
-            'fetched_at': datetime.now().isoformat(),
-        })
+    seen_dates: set = set()  # avoid double-emitting if calendar agrees with get_earnings_dates
+
+    # ── Path 1: past + current-day reports ───────────────────────────────
+    try:
+        ed = yf_ticker.get_earnings_dates(limit=limit)
+    except Exception as e:
+        logger.debug("Yahoo %s get_earnings_dates: %s", ticker, type(e).__name__)
+        ed = None
+
+    if ed is not None and not ed.empty:
+        for ts, row in ed.iterrows():
+            try:
+                d = ts.date() if hasattr(ts, 'date') else None
+            except Exception:
+                continue
+            if d is None or d < start_date or d > end_date:
+                continue
+            seen_dates.add(d)
+            eps = row.get('EPS Estimate')
+            records.append({
+                'date': d.strftime('%Y-%m-%d'),
+                'ticker': ticker,
+                'company_name': '',
+                'time': _yahoo_time_from_ts(ts),
+                'eps_estimate': _safe_num(eps),
+                'market_cap': None,
+                'sector': '',
+                'has_options': None,
+                'expected_move': None,
+                'source': 'Yahoo',
+                'strategy': '',
+                'fetched_at': datetime.now().isoformat(),
+            })
+
+    # ── Path 2: upcoming-not-yet-reported via Ticker.calendar ────────────
+    # The reason Yahoo cross-confirmation matters: tonight's mega-cap AMC
+    # reporters are scheduled but not yet "as-of," so get_earnings_dates
+    # omits them. calendar fills the gap. We accept time='unknown' here
+    # because calendar doesn't surface BMO/AMC — UW provides that.
+    try:
+        cal = yf_ticker.calendar
+    except Exception:
+        cal = None
+
+    if isinstance(cal, dict):
+        cal_dates = cal.get('Earnings Date') or cal.get('earningsDate') or []
+        if not isinstance(cal_dates, (list, tuple)):
+            cal_dates = [cal_dates]
+        eps_avg = cal.get('Earnings Average')
+        for cd in cal_dates:
+            try:
+                if hasattr(cd, 'date'):
+                    d = cd.date()
+                elif isinstance(cd, datetime):
+                    d = cd.date()
+                else:
+                    d = cd  # assume already a date
+            except Exception:
+                continue
+            if d is None or d < start_date or d > end_date:
+                continue
+            if d in seen_dates:
+                continue
+            records.append({
+                'date': d.strftime('%Y-%m-%d'),
+                'ticker': ticker,
+                'company_name': '',
+                'time': 'unknown',  # calendar doesn't carry BMO/AMC
+                'eps_estimate': _safe_num(eps_avg),
+                'market_cap': None,
+                'sector': '',
+                'has_options': None,
+                'expected_move': None,
+                'source': 'Yahoo',
+                'strategy': '',
+                'fetched_at': datetime.now().isoformat(),
+            })
+
     return records
 
 

@@ -75,6 +75,7 @@ def test_fetch_yahoo_one_filters_to_window(monkeypatch):
 
     class FakeTicker:
         def __init__(self, t): self.t = t
+        calendar = {}
         def get_earnings_dates(self, limit=8): return fake
 
     import scripts.fetch_earnings_calendar as fec
@@ -91,11 +92,63 @@ def test_fetch_yahoo_one_filters_to_window(monkeypatch):
     assert r["source"] == "Yahoo"
 
 
+def test_fetch_yahoo_one_calendar_picks_up_upcoming(monkeypatch):
+    """The AMZN-tonight case: get_earnings_dates returns nothing in the
+    window (because the report hasn't happened yet), but Ticker.calendar
+    surfaces the upcoming date. Yahoo confirmation is what promotes
+    AMZN from tier 4 to tier 2 in the brief.
+    """
+    class FakeTicker:
+        def __init__(self, t): pass
+        calendar = {
+            "Earnings Date": [date(2026, 4, 29)],
+            "Earnings Average": 1.65,
+        }
+        def get_earnings_dates(self, limit=8): return None  # no past rows
+
+    import scripts.fetch_earnings_calendar as fec
+    import yfinance
+    monkeypatch.setattr(yfinance, "Ticker", FakeTicker)
+
+    rows = fec._fetch_yahoo_one("AMZN", date(2026, 4, 1), date(2026, 5, 31))
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["ticker"] == "AMZN"
+    assert r["date"] == "2026-04-29"
+    assert r["time"] == "unknown"  # calendar doesn't expose BMO/AMC
+    assert r["eps_estimate"] == 1.65
+    assert r["source"] == "Yahoo"
+
+
+def test_fetch_yahoo_one_dedups_calendar_against_get_earnings(monkeypatch):
+    """When both APIs report the same date, get_earnings_dates wins
+    (it carries time-of-day) and the calendar entry is suppressed."""
+    fake = _fake_earnings_df([(2026, 4, 28, 16, 0, 0.44, None, None)])
+
+    class FakeTicker:
+        def __init__(self, t): pass
+        calendar = {"Earnings Date": [date(2026, 4, 28)], "Earnings Average": 0.44}
+        def get_earnings_dates(self, limit=8): return fake
+
+    import scripts.fetch_earnings_calendar as fec
+    import yfinance
+    monkeypatch.setattr(yfinance, "Ticker", FakeTicker)
+
+    rows = fec._fetch_yahoo_one("SBUX", date(2026, 4, 1), date(2026, 5, 31))
+    assert len(rows) == 1
+    assert rows[0]["time"] == "postmarket"  # the get_earnings_dates row, not the calendar one
+
+
 def test_fetch_yahoo_one_swallows_yfinance_errors(monkeypatch):
     """yfinance often raises KeyError on long-tail tickers — the worker
-    must return [] not propagate, so the parallel fetch keeps running."""
+    must return [] not propagate, so the parallel fetch keeps running.
+    Both API paths must be guarded.
+    """
     class CrashyTicker:
         def __init__(self, t): pass
+        @property
+        def calendar(self):
+            raise RuntimeError("calendar fetch failed")
         def get_earnings_dates(self, limit=8):
             raise KeyError("Earnings Date")  # the real failure mode
 
@@ -111,6 +164,7 @@ def test_fetch_yahoo_one_handles_empty_df(monkeypatch):
     """yfinance returning None or empty df → no rows, no crash."""
     class EmptyTicker:
         def __init__(self, t): pass
+        calendar = None
         def get_earnings_dates(self, limit=8): return None
 
     import scripts.fetch_earnings_calendar as fec
