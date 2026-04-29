@@ -532,6 +532,26 @@ class TestTickerFieldsLayout:
         assert '322 Bull Continuation' in strat_value
         assert '322_bull_continuation' not in strat_value
 
+    def test_daily_and_combo_render_on_separate_lines(self):
+        """Daily and Combo should be on their own lines — the previous
+        `Daily: 2U | Combo: 322 Bull Continuation` form overflowed
+        visually on mobile when the combo name was long."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(
+            strat_combo='322_bull_continuation',
+        )}}
+        fields = _build_ticker_fields(brief)
+        strat_value = next(f['value'] for f in fields if f['name'] == 'IWM Strat')
+        lines = strat_value.split('\n')
+        # Each prefix appears as the START of its own line — never piped
+        daily_lines = [ln for ln in lines if ln.startswith('Daily:')]
+        combo_lines = [ln for ln in lines if ln.startswith('Combo:')]
+        assert len(daily_lines) == 1
+        assert len(combo_lines) == 1
+        # Old `Daily: ... | Combo: ...` mash-up gone
+        assert '|' not in daily_lines[0]
+        assert 'Combo:' not in daily_lines[0]
+
     def test_strat_field_renders_timeframes_uppercase(self):
         """ftfc_labels keys (1d/1w/1mo) should render uppercase (1D/1W/1M)."""
         from gcp.premarket_brief import _build_ticker_fields

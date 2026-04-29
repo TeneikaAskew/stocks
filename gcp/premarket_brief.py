@@ -900,10 +900,13 @@ def _build_ticker_fields(brief: dict) -> list:
         # the `lib/data_loader.RESAMPLE_RULES` lowercase form for
         # storage (`1d`, `1w`, `1mo`) but render uppercase here
         # (`1D`, `1W`, `1M`) so they read like ticker symbols.
+        # Daily / Combo land on their own lines (rather than the
+        # previous `Daily: 2U | Combo: ...` mash-up) — the long
+        # title-cased combo names overflowed visually when piped onto
+        # the Daily line on mobile.
         strat_lines = [f'Daily: {d["strat_candle"]}']
         if d['strat_combo'] != 'none':
-            combo_pretty = _fmt_combo(d['strat_combo'])
-            strat_lines[0] += f' | Combo: {combo_pretty}'
+            strat_lines.append(f'Combo: {_fmt_combo(d["strat_combo"])}')
         strat_lines.append(
             f'FTFC: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
         )
