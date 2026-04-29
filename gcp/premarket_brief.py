@@ -145,25 +145,40 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         groups[key]['rows'].append(row)
 
     # Row priority within a group: EW carries strategy info, prefer it
-    row_prio = {'earnings_whispers': 0, 'alphavantage': 1, 'unusual_whales': 2}
+    row_prio = {'earnings_whispers': 0, 'alphavantage': 1, 'unusual_whales': 2,
+                'yahoo': 3}
 
     def _tier(sources: set) -> int:
+        """Tier rows by independent date-source coverage.
+
+        AV (SEC filings), UW (analyst-expected), and Yahoo (Yahoo Finance
+        calendar) are all *date-confirming* sources — when 2+ agree on a
+        date, that date is well-established. EW signals trader interest
+        (a strategy was published) but isn't a date-of-truth source on
+        its own.
+
+        AV's date is sometimes wrong (~20% of SP500 names — observed
+        cases: SBUX, V, STX, EA, FSLR). Yahoo was added so a UW-only
+        row that Yahoo confirms gets promoted to tier 2 instead of
+        being cut by the top-N cap.
+        """
         has_av = 'alphavantage' in sources
         has_uw = 'unusual_whales' in sources
         has_ew = 'earnings_whispers' in sources
-        if has_av and has_uw and has_ew:
-            return 1
-        if has_av and has_uw:
-            return 2
-        if has_av and has_ew:
-            return 3
-        if has_uw and has_ew:   # rare: both minor sources agree, no AV
-            return 4
-        if has_uw:
-            return 5
+        has_yh = 'yahoo' in sources
+        n_date_sources = int(has_av) + int(has_uw) + int(has_yh)
+
+        if n_date_sources >= 2 and has_ew:
+            return 1   # 2+ dates agree + EW strategy — strongest signal
+        if n_date_sources >= 2:
+            return 2   # 2+ independent date sources agree
+        if (has_uw or has_yh) and has_ew:
+            return 3   # UW or Yahoo + EW strategy
+        if has_uw or has_yh:
+            return 4   # one non-AV date source confirmed
         if has_ew:
-            return 5
-        return 6   # AV only (long tail)
+            return 5   # EW alone (rare — strategy without confirmed date)
+        return 6   # AV only (long tail; AV often has stale dates)
 
     def _max_non_null(rows, key):
         """Largest non-null value of `key` across a row group, or None."""
@@ -580,77 +595,103 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             for col in levels_df.columns:
                 df[col] = levels_df[col].values
-            print(f"[brief:{ticker}] calling build_level_map (current_price={d.get('price')})",
+            # Pass atr_14 from the latest daily row so build_level_map
+            # can apply the ATR + % staleness filter (drops year-old
+            # crash lows like ASTX 2026-04-28 PYL=15.03 from PUT
+            # trigger selection). When atr_14 is missing/NaN the filter
+            # falls back to the percent-only axis.
+            atr_for_filter = float(d.get('atr14') or 0.0) or None
+            print(f"[brief:{ticker}] calling build_level_map "
+                  f"(current_price={d.get('price')}, atr={atr_for_filter})",
                   file=sys.stderr, flush=True)
             level_map = build_level_map(
                 ticker=ticker, daily_df=df, current_price=d['price'],
+                atr=atr_for_filter,
             )
-            print(f"[brief:{ticker}] build_level_map → {len(level_map.levels)} levels",
+            print(f"[brief:{ticker}] build_level_map → {len(level_map.levels)} levels"
+                  f" (calls_trigger={'yes' if level_map.calls_trigger else 'NO (filtered)'}, "
+                  f"puts_trigger={'yes' if level_map.puts_trigger else 'NO (filtered)'})",
                   file=sys.stderr, flush=True)
 
             # Compute the gap regime so the playbook can flag orb_only /
             # extended setups instead of publishing a stale level-break
             # plan. Same algorithm the 9:15 AM insight pipeline uses
-            # (lib.agents.trade_planner.select_trigger_and_regime), so
-            # the 8:30 AM brief and the 9:15 AM insight push agree on
-            # whether a ticker is tradeable on a structural trigger or
-            # needs ORB confirmation.
-            regime = 'normal'
+            # (lib.agents.trade_planner.select_trigger_and_regime).
+            #
+            # We evaluate BOTH directions (long AND short) — previously
+            # only the bias direction was checked, which meant a
+            # bullish-bias ticker's bias-denial PUT setup never got
+            # filtered. The bias direction is treated as the "primary"
+            # regime that drives the playbook formatter; the
+            # opposite-side regime is logged and used downstream for
+            # per-side banners (so a denied PUT on a bullish ticker can
+            # still be flagged as 'extended' / 'orb_only').
+            regime_long = regime_short = 'normal'
+            regime_compute_error = None
             try:
                 from lib.agents.trade_planner import (
                     PlanContext, select_trigger_and_regime,
                 )
                 level_dict = levels_to_named_dict(level_map)
                 ftfc_dir = (d.get('ftfc_direction') or '').lower()
-                # Map FTFC direction to trade direction for the regime
-                # check. 'mixed' / unknown defaults to 'long' so the
-                # check picks the closest above-price level — when
-                # there's no clear bias the brief still emits the
-                # structural triggers and lets the trader decide.
-                regime_dir = 'short' if 'bear' in ftfc_dir else 'long'
-                # Pull pre-market fields from the most-recent daily row
-                # we already loaded (load_daily emits pre_high/pre_low/
-                # pre_vwap/gap_pct columns). Fall back gracefully on
-                # weekend / holiday rows where pre-market wasn't computed.
                 latest_row = df.iloc[-1]
                 pre_high_v = latest_row.get('pre_high')
                 pre_low_v = latest_row.get('pre_low')
                 pre_vwap_v = latest_row.get('pre_vwap')
                 gap_pct_v = latest_row.get('gap_pct')
-                ctx = PlanContext(
-                    direction=regime_dir,
-                    conviction='medium',
-                    close=float(d['price']),
-                    atr=float(d.get('atr14') or 0.0),
-                    trigger_high=level_dict.get('PDH'),
-                    trigger_low=level_dict.get('PDL'),
-                    pwh=level_dict.get('PWH'), pwl=level_dict.get('PWL'),
-                    pmh=level_dict.get('PMH'), pml=level_dict.get('PML'),
-                    pqh=level_dict.get('PQH'), pql=level_dict.get('PQL'),
-                    pyh=level_dict.get('PYH'), pyl=level_dict.get('PYL'),
-                    effective_pdh=level_dict.get('PDH'),
-                    effective_pdl=level_dict.get('PDL'),
-                    pre_high=float(pre_high_v) if pd.notna(pre_high_v) else None,
-                    pre_low=float(pre_low_v) if pd.notna(pre_low_v) else None,
-                    pre_vwap=float(pre_vwap_v) if pd.notna(pre_vwap_v) else None,
-                    gap_pct=float(gap_pct_v) if pd.notna(gap_pct_v) else None,
-                )
-                regime, _, _, _ = select_trigger_and_regime(ctx, regime_dir)
+
+                def _ctx(direction: str) -> PlanContext:
+                    return PlanContext(
+                        direction=direction,
+                        conviction='medium',
+                        close=float(d['price']),
+                        atr=float(d.get('atr14') or 0.0),
+                        trigger_high=level_dict.get('PDH'),
+                        trigger_low=level_dict.get('PDL'),
+                        pwh=level_dict.get('PWH'), pwl=level_dict.get('PWL'),
+                        pmh=level_dict.get('PMH'), pml=level_dict.get('PML'),
+                        pqh=level_dict.get('PQH'), pql=level_dict.get('PQL'),
+                        pyh=level_dict.get('PYH'), pyl=level_dict.get('PYL'),
+                        effective_pdh=level_dict.get('PDH'),
+                        effective_pdl=level_dict.get('PDL'),
+                        pre_high=float(pre_high_v) if pd.notna(pre_high_v) else None,
+                        pre_low=float(pre_low_v) if pd.notna(pre_low_v) else None,
+                        pre_vwap=float(pre_vwap_v) if pd.notna(pre_vwap_v) else None,
+                        gap_pct=float(gap_pct_v) if pd.notna(gap_pct_v) else None,
+                    )
+
+                regime_long, _, _, _ = select_trigger_and_regime(_ctx('long'), 'long')
+                regime_short, _, _, _ = select_trigger_and_regime(_ctx('short'), 'short')
+                # Bias direction = primary regime for legacy callers.
+                regime = regime_short if 'bear' in ftfc_dir else regime_long
                 d['regime'] = regime
-                print(f"[brief:{ticker}] regime={regime}",
+                d['regime_long'] = regime_long
+                d['regime_short'] = regime_short
+                print(f"[brief:{ticker}] regime_long={regime_long} "
+                      f"regime_short={regime_short} primary={regime}",
                       file=sys.stderr, flush=True)
             except Exception as exc:
                 # Regime compute is best-effort. Fall back to 'normal'
-                # so the playbook still renders.
+                # so the playbook still renders. Surface the error in
+                # the brief so silent failures don't mask real bugs.
+                regime = 'normal'
+                regime_compute_error = f"{type(exc).__name__}: {exc}"
                 print(f"[brief:{ticker}] regime compute failed: "
-                      f"{type(exc).__name__}: {exc}",
+                      f"{regime_compute_error}",
                       file=sys.stderr, flush=True)
                 d['regime'] = 'normal'
+                d['regime_long'] = 'normal'
+                d['regime_short'] = 'normal'
+                d['regime_compute_error'] = regime_compute_error
 
             d['playbook'] = format_levels_for_brief(
                 level_map=level_map, bias=d.get('ftfc_direction', 'mixed'),
                 combo=d.get('strat_combo'), daily_strat_class=d.get('strat_candle'),
                 regime=regime,
+                regime_long=d.get('regime_long'),
+                regime_short=d.get('regime_short'),
+                regime_compute_error=d.get('regime_compute_error'),
+                atr=atr_for_filter,
             )
             d['recommended_orb_window'] = orb_choice['window']
             d['recommended_orb_reason'] = orb_choice['reason']

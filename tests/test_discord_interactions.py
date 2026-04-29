@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -356,6 +356,117 @@ def test_replay_invalid_date_returns_error_string():
     assert msg.startswith("❌")
 
 
+# ── as_of clamp + auto-backfill ──────────────────────────────────────────
+
+
+def test_replay_today_clamps_insight_as_of_below_now():
+    """Regression: if the user runs /replay date:today before 9:15 ET,
+    the canonical 13:15 UTC anchor would be in the future and
+    insight_pipeline_job.parse_as_of would reject it (caught in prod
+    on 2026-04-29 at 13:04 UTC). Clamp to "now" so the cutoff is
+    always safely in the past."""
+    from datetime import datetime, timezone
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        handle_replay("IWM", "today", "appid", "tok")
+    insight_env = next(env for name, env in calls if name == "insight-pipeline")
+    parsed = datetime.strptime(
+        insight_env["INSIGHT_AS_OF"], "%Y-%m-%dT%H:%M:%SZ"
+    ).replace(tzinfo=timezone.utc)
+    assert parsed <= datetime.now(timezone.utc), \
+        f"INSIGHT_AS_OF {parsed} is in the future"
+
+
+def test_replay_past_date_uses_canonical_915_et_anchor():
+    """For a date safely in the past, INSIGHT_AS_OF should be the
+    canonical 13:15 UTC (= 09:15 ET in DST) anchor on that day."""
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        handle_replay("IWM", "2026-04-23", "appid", "tok")
+    insight_env = next(env for name, env in calls if name == "insight-pipeline")
+    assert insight_env["INSIGHT_AS_OF"] == "2026-04-23T13:15:00Z"
+
+
+def test_replay_skips_backfill_when_ticker_has_data():
+    """Ticker already in market_data_daily → no backfill job dispatched."""
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.execute_cloud_run_job_blocking") as blocking, \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        msg = handle_replay("IWM", "2026-04-23", "appid", "tok")
+    job_names = [c[0] for c in calls]
+    assert "premarket-brief" in job_names
+    assert "insight-pipeline" in job_names
+    blocking.assert_not_called()
+    assert "Backfill" not in msg
+
+
+def test_replay_dispatches_backfill_when_ticker_missing():
+    """Missing ticker → backfill-ticker FIRST (blocking), then brief + insight."""
+    from gcp.discord_interactions.main import handle_replay
+    fire_and_forget: list = []
+    blocking_calls: list = []
+
+    def fake_blocking(name, env, timeout_sec=540):
+        blocking_calls.append((name, env))
+        return True
+
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: fire_and_forget.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.execute_cloud_run_job_blocking",
+               side_effect=fake_blocking), \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=False), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        msg = handle_replay("AMD", "2026-04-24", "appid", "tok")
+
+    assert len(blocking_calls) == 1
+    bf_name, bf_env = blocking_calls[0]
+    assert bf_name == "backfill-ticker"
+    assert bf_env["BACKFILL_TICKER"] == "AMD"
+    assert bf_env["BACKFILL_DATES"] == "2026-04-24"
+    assert bf_env["BACKFILL_INCLUDE_NEWS"] == "true"
+
+    async_names = [c[0] for c in fire_and_forget]
+    assert "premarket-brief" in async_names
+    assert "insight-pipeline" in async_names
+
+    assert "Backfill complete" in msg
+    assert "Replay queued" in msg
+
+
+def test_replay_returns_error_when_backfill_fails():
+    """If backfill-ticker fails, abort BEFORE brief + insight dispatch
+    so we don't post empty embeds against an empty database."""
+    from gcp.discord_interactions.main import handle_replay
+    fire_and_forget: list = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: fire_and_forget.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.execute_cloud_run_job_blocking",
+               return_value=False), \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=False), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        msg = handle_replay("UNKNOWN", "2026-04-23", "appid", "tok")
+    assert msg.startswith("❌")
+    assert "Backfill failed" in msg
+    assert fire_and_forget == []
+
+
 def test_replay_missing_args_ephemeral_error(client, keypair):
     body = {
         "type": 2,
@@ -376,23 +487,291 @@ def test_replay_missing_args_ephemeral_error(client, keypair):
     assert "date" in payload["data"]["content"].lower()
 
 
-# ── Stub commands (Slice 2 / 3) ───────────────────────────────────────────
+# ── (No stubs remain — all 4 commands are real handlers as of Slice 3)
 
 
-@pytest.mark.parametrize("cmd", ["watchlist", "validate", "backtest"])
-def test_stub_commands_return_coming_soon(client, keypair, cmd):
-    body = {
+# ── /watchlist subcommands (Slice 2) ──────────────────────────────────────
+
+
+def _watchlist_payload(sub: str, ticker: str = "") -> dict:
+    """Build the Discord interaction payload for /watchlist <sub> ..."""
+    sub_options = ([{"name": "ticker", "value": ticker, "type": 3}]
+                   if ticker else [])
+    return {
         "type": 2,
-        "data": {"name": cmd, "options": []},
+        "data": {
+            "name": "watchlist",
+            "options": [{
+                "name": sub, "type": 1,  # SUB_COMMAND
+                "options": sub_options,
+            }],
+        },
         "token": "tk",
         "application_id": "1234567890",
     }
-    r = signed_post(client, keypair, body)
+
+
+def test_watchlist_subcommand_extraction():
+    """_watchlist_subcommand pulls the right name + options."""
+    from gcp.discord_interactions.main import _watchlist_subcommand
+    payload = _watchlist_payload("add", "NVDA")
+    sub, opts = _watchlist_subcommand(payload["data"])
+    assert sub == "add"
+    assert opts == {"ticker": "NVDA"}
+
+    list_payload = _watchlist_payload("list")
+    sub, opts = _watchlist_subcommand(list_payload["data"])
+    assert sub == "list"
+    assert opts == {}
+
+
+def test_watchlist_add_inserts_ticker(client, keypair):
+    from gcp.discord_interactions.main import _watchlist_add
+    captured = []
+    fake_engine = MagicMock()
+    fake_conn = MagicMock()
+
+    def fake_execute(stmt, params=None):
+        captured.append((str(stmt), dict(params) if params else {}))
+        result = MagicMock()
+        result.fetchone.return_value = (True,)  # inserted=True
+        return result
+
+    fake_conn.execute.side_effect = fake_execute
+    fake_engine.begin.return_value.__enter__.return_value = fake_conn
+    fake_engine.begin.return_value.__exit__.return_value = False
+
+    with patch("gcp.database.get_engine", return_value=fake_engine):
+        msg = _watchlist_add("nvda")
+
+    assert "✅" in msg and "NVDA" in msg
+    sql, params = captured[0]
+    assert "INSERT INTO watchlists" in sql
+    assert "user_id" in sql and "ticker" in sql
+    assert "ON CONFLICT (user_id, ticker)" in sql
+    assert params["t"] == "NVDA"
+
+
+def test_watchlist_add_already_present(client, keypair):
+    from gcp.discord_interactions.main import _watchlist_add
+    fake_engine = MagicMock()
+    fake_conn = MagicMock()
+    result = MagicMock()
+    result.fetchone.return_value = (False,)  # inserted=False (was UPDATE)
+    fake_conn.execute.return_value = result
+    fake_engine.begin.return_value.__enter__.return_value = fake_conn
+    fake_engine.begin.return_value.__exit__.return_value = False
+
+    with patch("gcp.database.get_engine", return_value=fake_engine):
+        msg = _watchlist_add("AVGO")
+
+    assert "ℹ️" in msg
+    assert "already" in msg.lower()
+
+
+def test_watchlist_add_invalid_ticker():
+    from gcp.discord_interactions.main import _watchlist_add
+    msg = _watchlist_add("not-a-ticker!")  # symbols not allowed
+    assert msg.startswith("❌")
+
+
+def test_watchlist_remove_existing(client, keypair):
+    from gcp.discord_interactions.main import _watchlist_remove
+    fake_engine = MagicMock()
+    fake_conn = MagicMock()
+    result = MagicMock()
+    result.fetchone.return_value = ("NVDA",)
+    fake_conn.execute.return_value = result
+    fake_engine.begin.return_value.__enter__.return_value = fake_conn
+    fake_engine.begin.return_value.__exit__.return_value = False
+
+    with patch("gcp.database.get_engine", return_value=fake_engine):
+        msg = _watchlist_remove("nvda")
+
+    assert "✅" in msg and "Removed" in msg
+
+
+def test_watchlist_remove_not_in_list():
+    from gcp.discord_interactions.main import _watchlist_remove
+    fake_engine = MagicMock()
+    fake_conn = MagicMock()
+    result = MagicMock()
+    result.fetchone.return_value = None
+    fake_conn.execute.return_value = result
+    fake_engine.begin.return_value.__enter__.return_value = fake_conn
+    fake_engine.begin.return_value.__exit__.return_value = False
+
+    with patch("gcp.database.get_engine", return_value=fake_engine):
+        msg = _watchlist_remove("UNKNOWN")
+
+    assert "ℹ️" in msg
+    assert "wasn't" in msg
+
+
+def test_watchlist_list_renders_rows():
+    from gcp.discord_interactions.main import _watchlist_list
+    import pandas as pd
+    df = pd.DataFrame([
+        {"ticker": "IWM", "added_at": "2026-04-01", "source": "seed"},
+        {"ticker": "NVDA", "added_at": "2026-04-29", "source": "discord-replay"},
+    ])
+    with patch("gcp.database.query_to_dataframe", return_value=df):
+        msg = _watchlist_list()
+    assert "Watchlist" in msg
+    assert "2 active" in msg
+    assert "IWM" in msg
+    assert "NVDA" in msg
+    assert "discord-replay" in msg
+
+
+def test_watchlist_list_empty():
+    from gcp.discord_interactions.main import _watchlist_list
+    import pandas as pd
+    with patch("gcp.database.query_to_dataframe", return_value=pd.DataFrame()):
+        msg = _watchlist_list()
+    assert "empty" in msg.lower()
+
+
+def test_watchlist_dispatch_routes_to_subcommand_handler(client, keypair):
+    """Full request → /watchlist list → reply rendered (Cloud SQL stubbed)."""
+    import pandas as pd
+    body = _watchlist_payload("list")
+    with patch("gcp.database.query_to_dataframe", return_value=pd.DataFrame()):
+        r = signed_post(client, keypair, body)
     assert r.status_code == 200
     payload = r.json()
-    assert payload["type"] == 4  # immediate ephemeral
-    assert "follow-up slice" in payload["data"]["content"]
-    assert payload["data"].get("flags") == 64
+    assert payload["type"] == 4  # CHANNEL_MESSAGE_WITH_SOURCE (immediate)
+    assert "Watchlist" in payload["data"]["content"] or \
+           "empty" in payload["data"]["content"].lower()
+
+
+def test_watchlist_unknown_subcommand_returns_error():
+    from gcp.discord_interactions.main import handle_watchlist
+    msg = handle_watchlist({
+        "name": "watchlist",
+        "options": [{"name": "doesnotexist", "type": 1, "options": []}],
+    })
+    assert msg.startswith("❌")
+
+
+# ── /validate command (Slice 3) ───────────────────────────────────────────
+
+
+def test_validate_dispatches_validate_brief_job():
+    from gcp.discord_interactions.main import handle_validate
+    calls: list = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True):
+        msg = handle_validate("IWM", "2026-04-23")
+    assert len(calls) == 1
+    name, env = calls[0]
+    assert name == "validate-brief"
+    assert env["VALIDATE_TICKER"] == "IWM"
+    assert env["VALIDATE_DATE"] == "2026-04-23"
+    assert "queued" in msg.lower()
+    assert "IWM" in msg
+
+
+def test_validate_invalid_date_returns_error():
+    from gcp.discord_interactions.main import handle_validate
+    msg = handle_validate("IWM", "not-a-date")
+    assert msg.startswith("❌")
+
+
+def test_validate_dispatch_failure_returns_error():
+    from gcp.discord_interactions.main import handle_validate
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               return_value=False):
+        msg = handle_validate("IWM", "2026-04-23")
+    assert msg.startswith("❌")
+
+
+def test_validate_command_returns_deferred_ack(client, keypair):
+    body = {
+        "type": 2,
+        "data": {
+            "name": "validate",
+            "options": [
+                {"name": "ticker", "value": "IWM", "type": 3},
+                {"name": "date", "value": "2026-04-23", "type": 3},
+            ],
+        },
+        "token": "tk", "application_id": "appid",
+    }
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               return_value=True):
+        r = signed_post(client, keypair, body)
+    assert r.status_code == 200
+    assert r.json()["type"] == 5  # DEFERRED
+
+
+# ── /backtest command (Slice 3) ───────────────────────────────────────────
+
+
+def test_backtest_uses_5y_default_window():
+    """No start/end → backtest job uses its own 5y default."""
+    from gcp.discord_interactions.main import handle_backtest
+    calls: list = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True):
+        msg = handle_backtest("IWM", "", "")
+    assert len(calls) == 1
+    name, env = calls[0]
+    assert name == "backtest"
+    assert env["BACKTEST_TICKER"] == "IWM"
+    assert env["BACKTEST_USE_STRAT"] == "true"
+    assert "BACKTEST_START" not in env
+    assert "BACKTEST_END" not in env
+    assert "queued" in msg.lower()
+
+
+def test_backtest_explicit_window():
+    from gcp.discord_interactions.main import handle_backtest
+    calls: list = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True):
+        msg = handle_backtest("AVGO", "2024-01-01", "2026-01-01")
+    name, env = calls[0]
+    assert env["BACKTEST_START"] == "2024-01-01"
+    assert env["BACKTEST_END"] == "2026-01-01"
+    assert "AVGO" in msg
+
+
+def test_backtest_no_ticker_returns_error():
+    from gcp.discord_interactions.main import handle_backtest
+    msg = handle_backtest("", "", "")
+    assert msg.startswith("❌")
+
+
+def test_backtest_dispatch_failure_returns_error():
+    from gcp.discord_interactions.main import handle_backtest
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               return_value=False):
+        msg = handle_backtest("IWM", "", "")
+    assert msg.startswith("❌")
+
+
+def test_backtest_command_returns_deferred_ack(client, keypair):
+    body = {
+        "type": 2,
+        "data": {
+            "name": "backtest",
+            "options": [
+                {"name": "ticker", "value": "IWM", "type": 3},
+            ],
+        },
+        "token": "tk", "application_id": "appid",
+    }
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               return_value=True):
+        r = signed_post(client, keypair, body)
+    assert r.status_code == 200
+    assert r.json()["type"] == 5  # DEFERRED
+
+
+# Stub command parametrize is now empty (all 4 commands implemented).
+# Remove the test if it parametrizes over an empty list — pytest treats
+# empty parametrize as a skip, which is fine, but assert it explicitly.
 
 
 def test_unknown_command_returns_error(client, keypair):

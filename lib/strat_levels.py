@@ -511,6 +511,21 @@ def detect_pmg_temporal(
 
 MIN_ROOM_PCT = 0.20
 
+# Staleness filter for trigger / stop selection. A level is too stale
+# to drive an intraday playbook when BOTH conditions hold:
+#   distance > MAX_TRIGGER_DISTANCE_ATR × atr_14    AND
+#   distance > MAX_TRIGGER_DISTANCE_PCT × current_price
+# Both axes matter:
+#   * Pure ATR fails for high-vol small-caps (ASTX atr_14 ≈ 27% of
+#     price → 5×ATR includes a year-old crash low at 41% from spot).
+#   * Pure % fails for tight-range index ETFs where 8% would over-
+#     filter every legitimate quarterly pivot.
+# Defaults: 3.0 ATR matches `_EXTENDED_DISTANCE_ATR` in
+# lib.agents.trade_planner; 8% is the empirical "too far for an
+# intraday level-break" threshold from the ASTX 2026-04-28 case.
+MAX_TRIGGER_DISTANCE_ATR = 3.0
+MAX_TRIGGER_DISTANCE_PCT = 0.08
+
 
 def compute_room_to_run(
     current_price: float,
@@ -570,21 +585,59 @@ def compute_risk_reward(
 # ─── Trigger identification ───────────────────────────────────────────────
 
 
+def _within_staleness_window(
+    level_price: float, current_price: float, atr: Optional[float],
+) -> bool:
+    """A level is "fresh enough" to be a trigger/stop candidate when
+    its distance from spot fits BOTH the ATR and percent budgets.
+
+    When `atr` is None or non-positive, the ATR axis is skipped and
+    only the percent budget is enforced (back-compat for callers that
+    didn't pass ATR; preserves prior behavior for unit tests with
+    synthetic data).
+    """
+    distance = abs(level_price - current_price)
+    pct_ok = distance <= MAX_TRIGGER_DISTANCE_PCT * current_price
+    if atr is None or atr <= 0:
+        return pct_ok
+    atr_ok = distance <= MAX_TRIGGER_DISTANCE_ATR * atr
+    return pct_ok and atr_ok
+
+
 def identify_triggers(
     current_price: float,
     levels: Dict[str, StratLevel],
     daily_strat_class: str = '',
     combo: str = '',
+    atr: Optional[float] = None,
 ) -> dict:
     """Identify CALL/PUT trigger levels for the premarket brief.
 
     Produces the "CALLS above X (PDH) / PUTS below Y (PDL)" format.
     Wires daily_strat_class and combo into the reasoning string.
+
+    Stale-level filter (PR for ASTX 2026-04-28):
+      Levels farther than 3×ATR AND 8% from current price are excluded
+      from trigger AND stop selection. They stay in the `levels` dict
+      (and the persisted `strat_levels` table) so the realtime
+      signal-monitor still tracks them for break alerts — but they no
+      longer drive playbook entries. Without this, a year-old crash
+      low (e.g. PYL 41% below spot) would surface as the PUT trigger,
+      and the same level would be used as a 41% stop on the CALL side.
     """
     all_levels = sorted(levels.values(), key=lambda lv: lv.price)
-    above = [lv for lv in all_levels if lv.price > current_price]
-    below = [lv for lv in all_levels if lv.price < current_price]
-    below.reverse()
+    above_all = [lv for lv in all_levels if lv.price > current_price]
+    below_all = [lv for lv in all_levels if lv.price < current_price]
+    below_all.reverse()
+
+    above_fresh = [
+        lv for lv in above_all
+        if _within_staleness_window(lv.price, current_price, atr)
+    ]
+    below_fresh = [
+        lv for lv in below_all
+        if _within_staleness_window(lv.price, current_price, atr)
+    ]
 
     result = {'calls': None, 'puts': None}
 
@@ -596,10 +649,17 @@ def identify_triggers(
         ctx_parts.append(f'Combo: {combo}')
     reasoning = ', '.join(ctx_parts) if ctx_parts else ''
 
-    if above:
-        trigger = above[0]
-        targets_above = above[1:4]
+    if above_fresh:
+        trigger = above_fresh[0]
+        targets_above = above_fresh[1:4]
         room = compute_room_to_run(trigger.price, all_levels, 'CALL')
+
+        # Stop on the OPPOSITE side must also be fresh — using a stale
+        # year-low as the stop on a CALL trade gives a meaningless
+        # 41%-below stop. If no fresh opposite-side level exists, omit
+        # the stop and let the playbook formatter / persona logic
+        # default to an ATR-based stop downstream.
+        stop_lv = below_fresh[0] if below_fresh else None
 
         result['calls'] = {
             'trigger_level': trigger.price,
@@ -608,16 +668,17 @@ def identify_triggers(
                 {'price': t.price, 'name': t.name, 'timeframe': t.timeframe}
                 for t in targets_above
             ],
-            'stop': below[0].price if below else None,
-            'stop_name': below[0].name if below else None,
+            'stop': stop_lv.price if stop_lv else None,
+            'stop_name': stop_lv.name if stop_lv else None,
             'room_to_first_target': room['distance_pct'] if room['targets'] else 0,
             'reasoning': reasoning,
         }
 
-    if below:
-        trigger = below[0]
-        targets_below = below[1:4]
+    if below_fresh:
+        trigger = below_fresh[0]
+        targets_below = below_fresh[1:4]
         room = compute_room_to_run(trigger.price, all_levels, 'PUT')
+        stop_lv = above_fresh[0] if above_fresh else None
 
         result['puts'] = {
             'trigger_level': trigger.price,
@@ -626,8 +687,8 @@ def identify_triggers(
                 {'price': t.price, 'name': t.name, 'timeframe': t.timeframe}
                 for t in targets_below
             ],
-            'stop': above[0].price if above else None,
-            'stop_name': above[0].name if above else None,
+            'stop': stop_lv.price if stop_lv else None,
+            'stop_name': stop_lv.name if stop_lv else None,
             'room_to_first_target': room['distance_pct'] if room['targets'] else 0,
             'reasoning': reasoning,
         }
@@ -644,26 +705,44 @@ def build_level_map(
     current_price: float,
     daily_strat_class: str = '',
     combo: str = '',
+    atr: Optional[float] = None,
 ) -> LevelMap:
     """Build the complete level map for a ticker.
 
     Top-level orchestrator called by the premarket brief and dashboard.
+
+    `atr` (atr_14 from the most-recent daily row) enables the
+    staleness filter inside `identify_triggers`. When None, only the
+    percent-distance axis is enforced — back-compat for callers that
+    haven't been updated to pass ATR.
     """
     prev_levels = compute_previous_levels(daily_df)
     curr_levels = compute_current_levels(daily_df, current_price)
     gap_levels = compute_gap_levels(daily_df, lookback=20)
 
-    all_levels_dict = {**prev_levels, **curr_levels}
-    all_levels_list = list(all_levels_dict.values()) + gap_levels
+    # Trigger-eligible level set: prev + current periods. Gap levels
+    # are context (PMG clustering) and not first-class trigger
+    # candidates — they're typically the same horizontal lines that
+    # already show up as PDH/PWH/etc, just labeled by gap origin.
+    structural_dict = {**prev_levels, **curr_levels}
+    structural_list = list(structural_dict.values())
+    all_levels_list = structural_list + gap_levels
 
     pmg_zones = detect_level_clusters(all_levels_list, tolerance_pct=0.15)
 
     triggers = identify_triggers(
-        current_price, all_levels_dict, daily_strat_class, combo,
+        current_price, structural_dict, daily_strat_class, combo, atr=atr,
     )
 
-    room_up = compute_room_to_run(current_price, all_levels_list, 'CALL')
-    room_down = compute_room_to_run(current_price, all_levels_list, 'PUT')
+    # `room_to_run_*` must use the SAME level set as `identify_triggers`
+    # so the playbook's 'Room to trigger: X%' number is consistent
+    # with the actual trigger emitted. Previously this used
+    # `all_levels_list` (incl. gaps) while triggers used
+    # `structural_dict` (no gaps), so a gap level closer than the
+    # trigger could dominate the room number even though it never
+    # surfaced as a trigger candidate. (Commit 6 of the staleness fix.)
+    room_up = compute_room_to_run(current_price, structural_list, 'CALL')
+    room_down = compute_room_to_run(current_price, structural_list, 'PUT')
 
     return LevelMap(
         ticker=ticker,
@@ -702,6 +781,10 @@ def format_levels_for_brief(
     combo: str = '',
     daily_strat_class: str = '',
     regime: str = 'normal',
+    regime_long: Optional[str] = None,
+    regime_short: Optional[str] = None,
+    regime_compute_error: Optional[str] = None,
+    atr: Optional[float] = None,
 ) -> str:
     """Format the level map into the playbook Discord format.
 
@@ -722,11 +805,43 @@ def format_levels_for_brief(
                       tells the trader to wait for 15-min ORB
                       confirmation.
       * `normal`    — original layout, no banners.
+
+    `regime_long` / `regime_short` are optional per-side overrides.
+    When passed, the CALLS block reflects regime_long and the PUTS
+    block reflects regime_short — so a bullish-bias ticker whose PUT
+    side is gap-extended shows the right warning for the bias-denial
+    setup. When omitted (legacy callers), `regime` applies to both.
+
+    `regime_compute_error` surfaces a regime-classifier failure as a
+    visible line in the playbook instead of silently rendering a stale
+    'normal' regime — the bug pattern from
+    gcp/premarket_brief.py:642-648 where exceptions were swallowed.
     """
+    # Per-side regime fallback — when not explicitly passed, both
+    # sides use the legacy single-regime value.
+    if regime_long is None:
+        regime_long = regime
+    if regime_short is None:
+        regime_short = regime
+
     lines = []
+    if regime_compute_error:
+        lines.append(
+            f"  ⚠ regime classifier failed: {regime_compute_error} "
+            f"-- defaulting to 'normal'; treat with care"
+        )
 
     # ── Regime banner ──────────────────────────────────────────────
-    if regime == 'orb_only':
+    # Per-side regimes: only emit the FULL "everything cleared"
+    # short-circuit when BOTH sides are orb_only (the gap-up extreme
+    # day case — AMD 4/24). Otherwise fall through and render per-side
+    # banners inline next to each CALLS / PUTS block, so a bullish
+    # ticker whose PUT side is gap-extended still shows a meaningful
+    # CALLS playbook rather than being suppressed entirely.
+    both_sides_orb_only = (
+        regime_long == 'orb_only' and regime_short == 'orb_only'
+    )
+    if both_sides_orb_only:
         # Name the actual structural levels that pre-market price has
         # already cleared, so the trader sees the LAST level passed
         # (e.g. PWH $222 for a long bias, PQL $214 for a short bias).
@@ -779,42 +894,125 @@ def format_levels_for_brief(
                 )
                 lines.append(f"  Other cleared: {rest}")
         return '\n'.join(lines)
-    if regime == 'extended':
-        lines.append(
-            "  Extended gap — next structural level is far away; "
-            "recommend 15-min ORB confirmation before entry."
-        )
-        lines.append('')
 
     ct = level_map.calls_trigger
     pt = level_map.puts_trigger
+    spot = level_map.current_price
+
+    # Find the would-be trigger candidate that the staleness filter
+    # rejected — the trader needs to know WHICH level was too far so
+    # they can mentally place it on the chart. For PUTS, "next below"
+    # is the closest level under spot; for CALLS, the closest above.
+    def _stale_candidate(direction: str):
+        """Return (level, distance_pct, distance_atr) for the closest
+        filtered-out level on `direction`'s side. distance_atr is None
+        when atr was not provided."""
+        if direction == 'PUTS':
+            cands = sorted(
+                [lv for lv in level_map.levels if lv.price < spot],
+                key=lambda lv: -lv.price,
+            )
+        else:
+            cands = sorted(
+                [lv for lv in level_map.levels if lv.price > spot],
+                key=lambda lv: lv.price,
+            )
+        if not cands:
+            return None, None, None
+        nearest = cands[0]
+        dist = abs(nearest.price - spot)
+        dist_pct = dist / spot * 100
+        dist_atr = (dist / atr) if (atr and atr > 0) else None
+        return nearest, dist_pct, dist_atr
+
+    # Per-side banner construction. Each side independently shows the
+    # right warning for its own regime — so a bullish ticker whose
+    # CALLS regime is 'normal' but PUTS regime is 'extended' renders
+    # the CALLS playbook normally and warns ONLY on the PUT side.
+    def _side_banner(direction: str, side_regime: str,
+                     trigger_present: bool) -> Optional[str]:
+        if not trigger_present:
+            stale, dist_pct, dist_atr = _stale_candidate(direction)
+            if stale is None:
+                # No level on this side at all (young ticker, partial
+                # history). Fall back to the generic banner.
+                return (
+                    f"  {direction}: no near-term structural level "
+                    f"-- wait for ORB confirmation"
+                )
+            # Multi-line format mirrors the indentation of an active
+            # CALLS/PUTS block so the trader's eye lands on the same
+            # vertical rhythm — name on top, room/qualifiers indented,
+            # ORB callout on the trailing line.
+            direction_word = 'bearish' if direction == 'PUTS' else 'bullish'
+            if dist_atr is not None:
+                room_qual = f"({dist_atr:.1f}× ATR away, too far for intraday)"
+            else:
+                room_qual = "(too far for intraday)"
+            return (
+                f"  {direction}: no near-term structural level, "
+                f"next {direction_word} level is {stale.name} {stale.price:.2f}\n"
+                f"    Room to trigger: {dist_pct:.1f}% {room_qual}\n"
+                f"    -- wait for ORB confirmation"
+            )
+        if side_regime == 'orb_only':
+            return (
+                f"  {direction}: pre-market cleared every structural "
+                f"level on this side — wait for the 15-min ORB"
+            )
+        if side_regime == 'extended':
+            return (
+                f"  {direction}: extended gap — recommend 15-min ORB "
+                f"confirmation before entry"
+            )
+        return None
+
+    no_call_banner = _side_banner('CALLS', regime_long, ct is not None) if ct is None else None
+    no_put_banner = _side_banner('PUTS', regime_short, pt is not None) if pt is None else None
+    call_pre_banner = _side_banner('CALLS', regime_long, True) if ct is not None and regime_long != 'normal' else None
+    put_pre_banner = _side_banner('PUTS', regime_short, True) if pt is not None and regime_short != 'normal' else None
 
     if ct:
+        if call_pre_banner:
+            lines.append(call_pre_banner)
         line = f"  CALLS above {ct['trigger_level']:.2f} ({ct['trigger_name']})"
         if bias == 'bearish':
             line += ' -- only if bias denied'
         lines.append(line)
         if ct.get('stop'):
             lines.append(f"    Stop: {ct['stop']:.2f} ({ct['stop_name']})")
-        for i, t in enumerate(ct.get('targets', []), 1):
+        targets = ct.get('targets', [])
+        for i, t in enumerate(targets, 1):
             lines.append(f"    T{i}: {t['price']:.2f} ({t['name']})")
-        if level_map.room_to_run_up:
-            lines.append(f"    Room to T1: {level_map.room_to_run_up:.2f}%")
+        # Label the room number by what's actually below it. The line
+        # printed here measures "current price -> trigger" (which
+        # `room_to_run_up` returns), not "trigger -> T1". Calling it
+        # "Room to T1" was a stale carryover from when triggers and T1
+        # were the same level.
+        if targets and level_map.room_to_run_up:
+            lines.append(f"    Room to trigger: {level_map.room_to_run_up:.2f}%")
+    elif no_call_banner:
+        lines.append(no_call_banner)
 
-    if ct and pt:
+    if (ct or no_call_banner) and (pt or no_put_banner):
         lines.append('')
 
     if pt:
+        if put_pre_banner:
+            lines.append(put_pre_banner)
         line = f"  PUTS below {pt['trigger_level']:.2f} ({pt['trigger_name']})"
         if bias == 'bullish':
             line += ' -- only if bias denied'
         lines.append(line)
         if pt.get('stop'):
             lines.append(f"    Stop: {pt['stop']:.2f} ({pt['stop_name']})")
-        for i, t in enumerate(pt.get('targets', []), 1):
+        targets = pt.get('targets', [])
+        for i, t in enumerate(targets, 1):
             lines.append(f"    T{i}: {t['price']:.2f} ({t['name']})")
-        if level_map.room_to_run_down:
-            lines.append(f"    Room to T1: {level_map.room_to_run_down:.2f}%")
+        if targets and level_map.room_to_run_down:
+            lines.append(f"    Room to trigger: {level_map.room_to_run_down:.2f}%")
+    elif no_put_banner:
+        lines.append(no_put_banner)
 
     if level_map.pmg_zones:
         lines.append('')

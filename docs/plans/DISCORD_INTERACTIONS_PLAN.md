@@ -1,9 +1,22 @@
 # Plan — Discord Slash Commands for Replay / Validate / Backtest / Watchlist
 
-**Status:** Draft, awaiting approval before implementation
+**Status:** Slice 0 + Slice 1 shipped (2026-04-29). Slices 2 + 3 pending.
 **Author:** session 2026-04-28
 **Scope:** New Cloud Run service `discord-interactions` + 4 slash commands
 **Goal:** Drive replays, validations, backtests, and watchlist mutation from Discord without ever touching a terminal
+
+## Shipping log
+
+| Slice | Status | Landed in |
+|---|---|---|
+| Slice 0 — `BRIEF_AS_OF` + `BRIEF_TICKERS` env overrides on the brief job | ✅ Shipped 2026-04-29 | PR #137 |
+| Decisions on the 3 open questions in §12 | ✅ Recorded 2026-04-29 | PR #138 |
+| Slice 1 — `discord-interactions` Cloud Run service + `/replay` end-to-end | ✅ Shipped 2026-04-29 | PR #139 |
+| Slice 1 day-one bug fixes (autocomplete SQL, `run_job` request shape) | ✅ Shipped 2026-04-29 | PR #142 |
+| Bot/setup runbook (`docs/DISCORD_BOT_SETUP.md`) | ✅ Shipped 2026-04-29 | PR #141 |
+| `/replay` auto-backfill missing tickers + as_of clamp + sentiment-coloured catalyst dots | 🟡 In flight on `feat/replay-auto-backfill-v2` | PR #146 |
+| Slice 2 — `/watchlist add/remove/list` (currently stubs) | 📋 Pending | — |
+| Slice 3 — `/validate` + `/backtest` (currently stubs; `validate-brief-accuracy` foundation shipped via PR #132) | 📋 Pending | — |
 
 ---
 

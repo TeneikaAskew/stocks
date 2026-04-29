@@ -360,19 +360,53 @@ def _fmt_news_field(
     return _truncate(header + "\n".join(lines), MAX_FIELD_VALUE)
 
 
+def _catalyst_dot(c: dict) -> str:
+    """Pick the dot colour for a catalyst — pure sentiment-based.
+
+    Single, unified rule across every catalyst kind:
+
+        sentiment_score > +0.15  → 🟢 bullish
+        sentiment_score < -0.15  → 🔴 bearish
+        otherwise                → 🟡 neutral
+
+    Anything without a sentiment score (economic / earnings / sec_8k
+    items, or news items where AV didn't return a score) defaults to
+    🟡 neutral. The trader can then read direction at a glance — green
+    helps the thesis, red fights it, yellow is "watch but no edge".
+
+    Buckets match AlphaVantage's published thresholds
+    (https://www.alphavantage.co/documentation/#news-sentiment) so the
+    dot agrees with per-article sentiment badges elsewhere in the embed.
+    """
+    sent = c.get("sentiment_score")
+    if sent is None:
+        return "🟡"
+    try:
+        s = float(sent)
+    except (TypeError, ValueError):
+        return "🟡"
+    if s >  0.15: return "🟢"
+    if s < -0.15: return "🔴"
+    return "🟡"
+
+
 def _fmt_catalysts_field(catalysts: list) -> str:
-    """Render upcoming catalysts as a compact bulleted list."""
+    """Render upcoming catalysts as a compact bulleted list.
+
+    Dot colour is pure sentiment-based — see ``_catalyst_dot``. News
+    items with a sentiment_score render bullish/bearish/neutral; events
+    without one default to 🟡 neutral.
+    """
     if not catalysts:
         return "—"
     lines = []
     for c in catalysts[:8]:
         if not isinstance(c, dict):
             continue
-        impact = c.get("impact", "")
-        impact_marker = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(impact, "•")
+        marker = _catalyst_dot(c)
         date_str = str(c.get("date", ""))
         name = str(c.get("name", ""))
-        lines.append(f"{impact_marker} {date_str} — {name}")
+        lines.append(f"{marker} {date_str} — {name}")
     return _truncate("\n".join(lines), MAX_FIELD_VALUE) if lines else "—"
 
 

@@ -1,9 +1,18 @@
 # Investigation — `as_of` Timezone Leak in Historical Insight Replays
 
-**Status:** Fixed in PR (this branch). Verification + follow-ups below.
+**Status:** Root cause + Fix A both shipped. Follow-up work tracked below.
 **Author:** session 2026-04-28
 **Scope:** `lib/strat.py:compute_strat_status` — used by every historical insight pipeline replay.
 **Severity:** High — historical replays read post-`as_of` bars; the LLM saw "the future."
+
+## Shipping log
+
+| Fix | Status | Landed in |
+|---|---|---|
+| Root cause — tz-aware/naive comparison swallowed by bare `except`, function returned unfiltered DataFrame | ✅ Fixed 2026-04-28 | PR #135 |
+| Fix A — orchestrator returns the deterministic neutral persona plan as the headline `entry_zone`/`stop`/`targets` (closes the LLM hallucination surface; persona alternatives still in `report.persona_plans`) | ✅ Shipped 2026-04-28 | PR #136 |
+| PR α — level-aware trigger walk + 3-tier regime classifier (`normal` / `extended` / `orb_only`) + mother-bar effective_PDH | ✅ Shipped 2026-04-28 | PR #136 |
+| PR β — structural targets (deferred to its own design doc) | 📋 Pending |
 
 ---
 

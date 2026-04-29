@@ -2,7 +2,29 @@
 
 **Branch:** `docs/strat-implementation-plan`
 **Date:** 2026-04-26
+**Status:** Strat v2 shipped 2026-04-27 via PR #101 + hardening follow-ups.
 **Companion doc:** [`docs/STRAT_METHODOLOGY.md`](STRAT_METHODOLOGY.md)
+
+## Shipping log
+
+| Item | Status | Landed in |
+|---|---|---|
+| Levels engine (`lib/strat_levels.py`) — PDH/PDL/PWH/PWL/PMH/PML/PQH/PQL/PYH/PYL, current-period open classification, gap detection, PMG, room-to-run | ✅ Shipped 2026-04-27 | PR #101 |
+| Combo bonus tables + 4h/12h timeframe weights | ✅ Shipped 2026-04-27 | PR #101 |
+| Failed_2 close-vs-open semantics + lowest-priority collision rule | ✅ Shipped 2026-04-27 | PR #101 |
+| Schema: `strat_levels` long table, `level_broken` on `signal_alerts`, `strat_daily` → `strat_candle` rename | ✅ Shipped 2026-04-27 | PR #101 |
+| Quarter period support in `calculate_historical_levels()` | ✅ Shipped 2026-04-27 | PR #101 |
+| Brief integration: `select_orb_window()` (catalyst-aware ORB) + `format_levels_for_brief` | ✅ Shipped 2026-04-27 | PR #101 |
+| Signal monitor integration: `refresh_level_map()` + `check_level_breaks()` | ✅ Shipped 2026-04-27 | PR #101 |
+| Hotfix: restore FTFC + persist `strat_levels` (post-#101 deploy regressions) | ✅ Shipped 2026-04-27 | PR #120 |
+| `strat_levels.strat_class` widen VARCHAR(8) → VARCHAR(16) (allow `Failed_2U`/`Failed_2D`) | ✅ Shipped 2026-04-27 | PR #125 |
+| Diagnostic plumbing (basicConfig + flush + stderr step-by-step) | ✅ Shipped 2026-04-27 | PRs #121, #123, #124 |
+| Remove legacy `D`/`W`/`M` timeframe-key compatibility shim (now raises `ValueError`) | ✅ Shipped 2026-04-28 | PR #128 |
+| `premarket_analysis.playbook` column + warn-on-dropped-columns guard + persist allow-list | ✅ Shipped 2026-04-28 | PRs #129, #130 |
+| Single-source-of-truth FTFC across brief + LLM analyst | ✅ Shipped 2026-04-27 | PR #105 |
+| Level-aware trigger + gap-regime gate in trade planner | ✅ Shipped 2026-04-28 | PR #136 |
+| Named-cleared-levels in `format_levels_for_brief` orb_only banner (e.g. "Last bullish level passed: PMH 228.00") | ✅ Shipped 2026-04-29 | PR #140 |
+| Render polish: combo title-case + timeframe uppercase across brief + push | ✅ Shipped 2026-04-29 | PRs #143, #145 |
 
 ---
 

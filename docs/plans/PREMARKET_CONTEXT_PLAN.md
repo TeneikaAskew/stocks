@@ -1,8 +1,17 @@
 # Plan — Pre-Market Context for Entry/Stop Calibration
 
-**Status:** Draft, awaiting approval before implementation
+**Status:** Fix A shipped 2026-04-28 via PR #134. Fixes B + C still pending.
 **Author:** session 2026-04-28
 **Scope:** AI Insight pipeline + premarket brief
+
+## Shipping log
+
+| Fix | Status | Landed in |
+|---|---|---|
+| Fix A — Pre-market H/L/VWAP/volume/gap_pct/pre_range_atr block in `summarize_market_context`; surfaced in brief overview embed and in the LLM analyst prompt | ✅ Shipped 2026-04-28 | PR #134 |
+| Adjacent — level-aware trigger + gap-regime gate (uses Fix A's pre_high to mark "cleared" levels and to switch into `orb_only` regime on extreme gaps) | ✅ Shipped 2026-04-28 | PR #136 |
+| Fix B — Overnight futures (ES / NQ / RTY) context | 📋 Pending |
+| Fix C — Pre-market range expansion vs ATR14 as a regime gate (partially covered by `pre_range_atr` in Fix A) | 🟡 Partial — surfaced as a number but not yet a regime classifier |
 
 ---
 

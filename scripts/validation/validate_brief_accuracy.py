@@ -127,16 +127,56 @@ class TickerScorecard:
 
 
 def _connect():
-    """Open Cloud SQL connection using the same secret-manager flow the
-    rest of the validation tooling uses. Falls back to env vars when
-    secret manager isn't reachable so the script can run locally."""
+    """Open Cloud SQL connection.
+
+    Two modes:
+    1. **Cloud Run** — when ``CLOUD_SQL_CONNECTION_NAME`` is set (the
+       canonical platform env var), use the Cloud SQL Python Connector
+       via pg8000. This is the only path that works inside Cloud Run
+       Jobs (no public-IP TCP access from the runtime). Required for
+       the /validate Discord command — caught when validate-brief-psmzk
+       hit "Connection timed out" trying to reach 34.24.66.12:5432.
+    2. **Local** — fall back to direct psycopg2 TCP. Works from a
+       developer machine whose IP is whitelisted on Cloud SQL
+       (104.8.79.228/32 in this repo).
+    """
+    csql_conn = os.environ.get("CLOUD_SQL_CONNECTION_NAME", "").strip()
+    db_user = os.environ.get("DB_USER", "").strip()
+    db_pass = os.environ.get("DB_PASS", "").strip()
+    db_name = os.environ.get("DB_NAME", "trading").strip()
+
+    # Cloud Run path — connector returns a pg8000 connection that quacks
+    # like psycopg2's enough for the validator's cursor.execute() calls.
+    if csql_conn and db_user and db_pass:
+        try:
+            from google.cloud.sql.connector import Connector
+            import pg8000.dbapi
+            # pg8000's Cursor follows DBAPI strictly and DOESN'T support
+            # the context-manager protocol that psycopg2 adds. The
+            # validator uses `with conn.cursor() as cur:` in 5 places,
+            # which would crash with "Cursor does not support context
+            # manager protocol" under pg8000. Patch the class once at
+            # connect-time so the validator code stays portable.
+            if not hasattr(pg8000.dbapi.Cursor, "__enter__"):
+                pg8000.dbapi.Cursor.__enter__ = lambda self: self
+                pg8000.dbapi.Cursor.__exit__ = (
+                    lambda self, *_a: self.close()
+                )
+            connector = Connector()
+            return connector.connect(
+                csql_conn, "pg8000",
+                user=db_user, password=db_pass, db=db_name,
+            )
+        except ImportError:
+            # Connector not installed (e.g. local dev without it) —
+            # fall through to TCP path.
+            pass
+
+    # Local path — direct TCP psycopg2
     import psycopg2
-
     host = os.environ.get("DB_HOST", "34.24.66.12")
-    user = os.environ.get("DB_USER")
-    password = os.environ.get("DB_PASS")
 
-    if not user or not password:
+    if not db_user or not db_pass:
         # Fetch via gcloud secret manager
         import subprocess
         gcloud = os.environ.get(
@@ -151,12 +191,12 @@ def _connect():
                 text=True,
             ).rstrip("\n")
 
-        user = user or secret("db-trading-user")
-        password = password or secret("db-trading-pass")
+        db_user = db_user or secret("db-trading-user")
+        db_pass = db_pass or secret("db-trading-pass")
 
     return psycopg2.connect(
-        host=host, port=5432, user=user, password=password,
-        dbname="trading", sslmode="require",
+        host=host, port=5432, user=db_user, password=db_pass,
+        dbname=db_name, sslmode="require",
     )
 
 
