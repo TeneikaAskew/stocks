@@ -904,28 +904,26 @@ def format_levels_for_brief(
     # they can mentally place it on the chart. For PUTS, "next below"
     # is the closest level under spot; for CALLS, the closest above.
     def _stale_candidate(direction: str):
-        """Return (level, distance_pct, distance_atr_str) for the
-        closest filtered-out level on `direction`'s side."""
+        """Return (level, distance_pct, distance_atr) for the closest
+        filtered-out level on `direction`'s side. distance_atr is None
+        when atr was not provided."""
         if direction == 'PUTS':
-            below = sorted(
+            cands = sorted(
                 [lv for lv in level_map.levels if lv.price < spot],
                 key=lambda lv: -lv.price,
             )
-            cands = below
         else:
-            above = sorted(
+            cands = sorted(
                 [lv for lv in level_map.levels if lv.price > spot],
                 key=lambda lv: lv.price,
             )
-            cands = above
         if not cands:
             return None, None, None
         nearest = cands[0]
-        dist_pct = abs(nearest.price - spot) / spot * 100
-        atr_str = ''
-        if atr and atr > 0:
-            atr_str = f", {abs(nearest.price - spot) / atr:.1f}× ATR"
-        return nearest, dist_pct, atr_str
+        dist = abs(nearest.price - spot)
+        dist_pct = dist / spot * 100
+        dist_atr = (dist / atr) if (atr and atr > 0) else None
+        return nearest, dist_pct, dist_atr
 
     # Per-side banner construction. Each side independently shows the
     # right warning for its own regime — so a bullish ticker whose
@@ -934,7 +932,7 @@ def format_levels_for_brief(
     def _side_banner(direction: str, side_regime: str,
                      trigger_present: bool) -> Optional[str]:
         if not trigger_present:
-            stale, dist_pct, atr_str = _stale_candidate(direction)
+            stale, dist_pct, dist_atr = _stale_candidate(direction)
             if stale is None:
                 # No level on this side at all (young ticker, partial
                 # history). Fall back to the generic banner.
@@ -942,12 +940,20 @@ def format_levels_for_brief(
                     f"  {direction}: no near-term structural level "
                     f"-- wait for ORB confirmation"
                 )
-            relation = 'next below' if direction == 'PUTS' else 'next above'
+            # Multi-line format mirrors the indentation of an active
+            # CALLS/PUTS block so the trader's eye lands on the same
+            # vertical rhythm — name on top, room/qualifiers indented,
+            # ORB callout on the trailing line.
+            direction_word = 'bearish' if direction == 'PUTS' else 'bullish'
+            if dist_atr is not None:
+                room_qual = f"({dist_atr:.1f}× ATR away, too far for intraday)"
+            else:
+                room_qual = "(too far for intraday)"
             return (
-                f"  {direction}: no near-term structural level — "
-                f"{relation} is {stale.name} {stale.price:.2f} "
-                f"({dist_pct:.1f}%{atr_str} away, too far for intraday) "
-                f"-- wait for ORB confirmation"
+                f"  {direction}: no near-term structural level, "
+                f"next {direction_word} level is {stale.name} {stale.price:.2f}\n"
+                f"    Room to trigger: {dist_pct:.1f}% {room_qual}\n"
+                f"    -- wait for ORB confirmation"
             )
         if side_regime == 'orb_only':
             return (

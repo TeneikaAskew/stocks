@@ -242,11 +242,22 @@ class TestStalenessFilter:
             room_to_run_down=(spot - 15.03) / spot * 100,
         )
         text = format_levels_for_brief(lm, 'bullish', atr=atr_val)
-        # The PUTS banner should name the level and the distance.
+        # Multi-line banner mirroring active-block indentation.
         assert 'PYL 15.03' in text
-        assert '41.5%' in text
-        assert 'ATR' in text  # ATR axis present when atr passed
-        assert 'wait for orb' in text.lower()
+        assert 'next bearish level' in text
+        # Scope to the PUTS section — the active CALLS block also has
+        # its own 'Room to trigger:' line for the fresh trigger, so we
+        # need to look at the half of the output that follows the
+        # 'next bearish level' line.
+        puts_section = text.split('next bearish level', 1)[1]
+        room_line = next(
+            ln for ln in puts_section.split('\n') if 'Room to trigger' in ln
+        )
+        assert '41.5%' in room_line
+        assert '× ATR' in room_line
+        assert 'too far for intraday' in room_line
+        # Trailer line is indented like a target line.
+        assert '    -- wait for ORB confirmation' in text
 
     def test_no_trigger_banner_without_atr_omits_atr_str(self):
         """Same banner without `atr` kwarg: shows percent only, no
@@ -267,7 +278,11 @@ class TestStalenessFilter:
         )
         text = format_levels_for_brief(lm, 'bullish')
         if 'no near-term' in text:
-            assert 'ATR' not in text  # no ATR axis when atr not passed
+            # No ATR axis qualifier when atr not passed; the banner
+            # falls back to "(too far for intraday)" without the
+            # "1.5× ATR away" prefix.
+            assert '× ATR' not in text
+            assert 'too far for intraday' in text
 
 
 # ───── Commit 4: both-side regime ─────────────────────────────────────
