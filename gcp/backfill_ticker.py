@@ -220,9 +220,16 @@ def av_news_to_rows(feed: list[dict]) -> list[dict]:
 def add_to_watchlist(ticker: str) -> None:
     """Insert into watchlists table; idempotent via ON CONFLICT.
 
-    The watchlists table uses ``removed_at IS NULL`` to encode "active"
-    (no `active` column). Any existing soft-removed row gets reactivated
-    by setting removed_at back to NULL.
+    Schema (per gcp/schema.sql):
+      * Composite PK is (user_id, ticker), with user_id defaulting to
+        'default'. The Discord-driven /replay flow always uses 'default'.
+      * `added_at TIMESTAMPTZ` defaults to NOW() — we don't pass it.
+      * `removed_at IS NULL` encodes "active". Any existing soft-removed
+        row gets reactivated by clearing removed_at.
+
+    `source='discord-replay'` tags rows added via this auto-backfill
+    path so a later audit can tell self-served replay tickers apart
+    from manually-curated watchlist entries.
     """
     from gcp.database import get_engine
     import sqlalchemy
@@ -230,9 +237,11 @@ def add_to_watchlist(ticker: str) -> None:
     with engine.begin() as conn:
         conn.execute(
             sqlalchemy.text(
-                "INSERT INTO watchlists (ticker, created_at) "
-                "VALUES (:t, NOW()) "
-                "ON CONFLICT (ticker) DO UPDATE SET removed_at = NULL"
+                "INSERT INTO watchlists (user_id, ticker, source) "
+                "VALUES ('default', :t, 'discord-replay') "
+                "ON CONFLICT (user_id, ticker) DO UPDATE "
+                "  SET removed_at = NULL, "
+                "      source = COALESCE(watchlists.source, EXCLUDED.source)"
             ),
             {"t": ticker.upper()},
         )
