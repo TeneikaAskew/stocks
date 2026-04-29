@@ -29,8 +29,12 @@ from lib.walk_forward import WalkForwardValidator
 
 def main():
     parser = argparse.ArgumentParser(description='Run backtests on trading signals')
-    parser.add_argument('--ticker', default='IWM', choices=['IWM', 'SPY', 'QQQ', 'SPX'],
-                        help='Ticker to backtest')
+    parser.add_argument('--ticker', default='IWM',
+                        help=('Ticker to backtest. Free-text — accepts any '
+                              'symbol with daily history in market_data_daily. '
+                              'Originally hardcoded to IWM/SPY/QQQ/SPX; relaxed '
+                              'so the Discord /backtest command can target '
+                              'newly-added watchlist tickers (NVDA, AMD, etc).'))
     parser.add_argument('--start', type=str, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end', type=str, help='End date (YYYY-MM-DD)')
     parser.add_argument('--use-strat', action='store_true',

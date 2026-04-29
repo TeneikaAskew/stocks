@@ -564,6 +564,80 @@ def handle_watchlist(data: dict) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# /validate and /backtest handlers (Slice 3)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Both fire-and-forget Cloud Run Jobs that POST results to
+# DISCORD_WEBHOOK_URL on completion. /validate is fast (~30 sec),
+# /backtest can take 30 sec - 5 min. Both use the ack-and-fresh-post
+# pattern (per plan §6.3) so the 15-min Discord followup TTL doesn't
+# constrain the job runtime.
+
+
+def handle_validate(ticker: str, date_arg: str) -> str:
+    """Background handler for /validate. Returns followup-message text."""
+    try:
+        d = parse_date_arg(date_arg)
+    except ValueError as exc:
+        return f"❌ {exc}"
+    ticker_u = ticker.upper().strip()
+    ok = execute_cloud_run_job("validate-brief", {
+        "VALIDATE_TICKER": ticker_u,
+        "VALIDATE_DATE": d.isoformat(),
+    })
+    if not ok:
+        return f"❌ Failed to dispatch validate job for {ticker_u} {d.isoformat()}."
+    return (f"📊 Validate queued for **{ticker_u}** on **{d.isoformat()}** "
+            f"— results post to this channel when complete (~30s).")
+
+
+def handle_backtest(ticker: str, start: str, end: str) -> str:
+    """Background handler for /backtest. Returns followup-message text.
+
+    Defaults to 5y / use_strat=true per plan §12 user decision when
+    start/end aren't provided.
+    """
+    ticker_u = ticker.upper().strip()
+    if not ticker_u:
+        return "❌ ticker is required"
+    env: dict[str, str] = {
+        "BACKTEST_TICKER": ticker_u,
+        "BACKTEST_USE_STRAT": "true",
+    }
+    if start:
+        env["BACKTEST_START"] = start
+    if end:
+        env["BACKTEST_END"] = end
+    ok = execute_cloud_run_job("backtest", env)
+    if not ok:
+        return f"❌ Failed to dispatch backtest for {ticker_u}."
+    window = (f" {start} → {end}" if start or end
+              else " (5y default window with --use-strat)")
+    return (f"🔬 Backtest queued for **{ticker_u}**{window} — metrics post "
+            f"to this channel when complete (~30 sec - 5 min).")
+
+
+def validate_in_background(ticker: str, date_arg: str,
+                           application_id: str, interaction_token: str) -> None:
+    try:
+        msg = handle_validate(ticker, date_arg)
+    except Exception as exc:
+        logger.exception("validate handler crashed: %s", exc)
+        msg = f"❌ Internal error: {exc}"
+    edit_deferred_reply(application_id, interaction_token, msg)
+
+
+def backtest_in_background(ticker: str, start: str, end: str,
+                           application_id: str, interaction_token: str) -> None:
+    try:
+        msg = handle_backtest(ticker, start, end)
+    except Exception as exc:
+        logger.exception("backtest handler crashed: %s", exc)
+        msg = f"❌ Internal error: {exc}"
+    edit_deferred_reply(application_id, interaction_token, msg)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # FastAPI app
 # ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="discord-interactions", version="1.0.0")
@@ -642,13 +716,34 @@ async def interactions(request: Request,
                 "data": {"content": content[:2000]},
             })
 
-        # Slice 3 commands — stubbed so registration doesn't fail
-        # if Discord routes them here before the handlers exist.
-        if command_name in ("validate", "backtest"):
-            return _ephemeral_reply(
-                f"⏳ `/{command_name}` lands in a follow-up slice. "
-                f"Tracking in `docs/plans/DISCORD_INTERACTIONS_PLAN.md`."
+        if command_name == "validate":
+            opts = _options_to_dict(data.get("options", []))
+            ticker = str(opts.get("ticker", "")).strip()
+            date_arg = str(opts.get("date", "")).strip()
+            if not ticker or not date_arg:
+                return _ephemeral_reply("❌ Both `ticker` and `date` are required.")
+            background.add_task(
+                validate_in_background, ticker, date_arg, app_id, token,
             )
+            return JSONResponse({
+                "type": DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+                "data": {"content": f"📊 Validating {ticker.upper()} on {date_arg}..."},
+            })
+
+        if command_name == "backtest":
+            opts = _options_to_dict(data.get("options", []))
+            ticker = str(opts.get("ticker", "")).strip()
+            start = str(opts.get("start", "")).strip()
+            end = str(opts.get("end", "")).strip()
+            if not ticker:
+                return _ephemeral_reply("❌ `ticker` is required.")
+            background.add_task(
+                backtest_in_background, ticker, start, end, app_id, token,
+            )
+            return JSONResponse({
+                "type": DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+                "data": {"content": f"🔬 Backtest queued for {ticker.upper()}..."},
+            })
 
         return _ephemeral_reply(f"❌ Unknown command: {command_name!r}")
 

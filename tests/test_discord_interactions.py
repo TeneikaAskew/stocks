@@ -487,23 +487,7 @@ def test_replay_missing_args_ephemeral_error(client, keypair):
     assert "date" in payload["data"]["content"].lower()
 
 
-# ── Stub commands (Slice 3) ────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("cmd", ["validate", "backtest"])
-def test_stub_commands_return_coming_soon(client, keypair, cmd):
-    body = {
-        "type": 2,
-        "data": {"name": cmd, "options": []},
-        "token": "tk",
-        "application_id": "1234567890",
-    }
-    r = signed_post(client, keypair, body)
-    assert r.status_code == 200
-    payload = r.json()
-    assert payload["type"] == 4  # immediate ephemeral
-    assert "follow-up slice" in payload["data"]["content"]
-    assert payload["data"].get("flags") == 64
+# ── (No stubs remain — all 4 commands are real handlers as of Slice 3)
 
 
 # ── /watchlist subcommands (Slice 2) ──────────────────────────────────────
@@ -668,6 +652,126 @@ def test_watchlist_unknown_subcommand_returns_error():
         "options": [{"name": "doesnotexist", "type": 1, "options": []}],
     })
     assert msg.startswith("❌")
+
+
+# ── /validate command (Slice 3) ───────────────────────────────────────────
+
+
+def test_validate_dispatches_validate_brief_job():
+    from gcp.discord_interactions.main import handle_validate
+    calls: list = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True):
+        msg = handle_validate("IWM", "2026-04-23")
+    assert len(calls) == 1
+    name, env = calls[0]
+    assert name == "validate-brief"
+    assert env["VALIDATE_TICKER"] == "IWM"
+    assert env["VALIDATE_DATE"] == "2026-04-23"
+    assert "queued" in msg.lower()
+    assert "IWM" in msg
+
+
+def test_validate_invalid_date_returns_error():
+    from gcp.discord_interactions.main import handle_validate
+    msg = handle_validate("IWM", "not-a-date")
+    assert msg.startswith("❌")
+
+
+def test_validate_dispatch_failure_returns_error():
+    from gcp.discord_interactions.main import handle_validate
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               return_value=False):
+        msg = handle_validate("IWM", "2026-04-23")
+    assert msg.startswith("❌")
+
+
+def test_validate_command_returns_deferred_ack(client, keypair):
+    body = {
+        "type": 2,
+        "data": {
+            "name": "validate",
+            "options": [
+                {"name": "ticker", "value": "IWM", "type": 3},
+                {"name": "date", "value": "2026-04-23", "type": 3},
+            ],
+        },
+        "token": "tk", "application_id": "appid",
+    }
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               return_value=True):
+        r = signed_post(client, keypair, body)
+    assert r.status_code == 200
+    assert r.json()["type"] == 5  # DEFERRED
+
+
+# ── /backtest command (Slice 3) ───────────────────────────────────────────
+
+
+def test_backtest_uses_5y_default_window():
+    """No start/end → backtest job uses its own 5y default."""
+    from gcp.discord_interactions.main import handle_backtest
+    calls: list = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True):
+        msg = handle_backtest("IWM", "", "")
+    assert len(calls) == 1
+    name, env = calls[0]
+    assert name == "backtest"
+    assert env["BACKTEST_TICKER"] == "IWM"
+    assert env["BACKTEST_USE_STRAT"] == "true"
+    assert "BACKTEST_START" not in env
+    assert "BACKTEST_END" not in env
+    assert "queued" in msg.lower()
+
+
+def test_backtest_explicit_window():
+    from gcp.discord_interactions.main import handle_backtest
+    calls: list = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True):
+        msg = handle_backtest("AVGO", "2024-01-01", "2026-01-01")
+    name, env = calls[0]
+    assert env["BACKTEST_START"] == "2024-01-01"
+    assert env["BACKTEST_END"] == "2026-01-01"
+    assert "AVGO" in msg
+
+
+def test_backtest_no_ticker_returns_error():
+    from gcp.discord_interactions.main import handle_backtest
+    msg = handle_backtest("", "", "")
+    assert msg.startswith("❌")
+
+
+def test_backtest_dispatch_failure_returns_error():
+    from gcp.discord_interactions.main import handle_backtest
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               return_value=False):
+        msg = handle_backtest("IWM", "", "")
+    assert msg.startswith("❌")
+
+
+def test_backtest_command_returns_deferred_ack(client, keypair):
+    body = {
+        "type": 2,
+        "data": {
+            "name": "backtest",
+            "options": [
+                {"name": "ticker", "value": "IWM", "type": 3},
+            ],
+        },
+        "token": "tk", "application_id": "appid",
+    }
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               return_value=True):
+        r = signed_post(client, keypair, body)
+    assert r.status_code == 200
+    assert r.json()["type"] == 5  # DEFERRED
+
+
+# Stub command parametrize is now empty (all 4 commands implemented).
+# Remove the test if it parametrizes over an empty list — pytest treats
+# empty parametrize as a skip, which is fine, but assert it explicitly.
 
 
 def test_unknown_command_returns_error(client, keypair):
