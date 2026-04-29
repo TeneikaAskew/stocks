@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -487,10 +487,10 @@ def test_replay_missing_args_ephemeral_error(client, keypair):
     assert "date" in payload["data"]["content"].lower()
 
 
-# ── Stub commands (Slice 2 / 3) ───────────────────────────────────────────
+# ── Stub commands (Slice 3) ────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("cmd", ["watchlist", "validate", "backtest"])
+@pytest.mark.parametrize("cmd", ["validate", "backtest"])
 def test_stub_commands_return_coming_soon(client, keypair, cmd):
     body = {
         "type": 2,
@@ -504,6 +504,170 @@ def test_stub_commands_return_coming_soon(client, keypair, cmd):
     assert payload["type"] == 4  # immediate ephemeral
     assert "follow-up slice" in payload["data"]["content"]
     assert payload["data"].get("flags") == 64
+
+
+# ── /watchlist subcommands (Slice 2) ──────────────────────────────────────
+
+
+def _watchlist_payload(sub: str, ticker: str = "") -> dict:
+    """Build the Discord interaction payload for /watchlist <sub> ..."""
+    sub_options = ([{"name": "ticker", "value": ticker, "type": 3}]
+                   if ticker else [])
+    return {
+        "type": 2,
+        "data": {
+            "name": "watchlist",
+            "options": [{
+                "name": sub, "type": 1,  # SUB_COMMAND
+                "options": sub_options,
+            }],
+        },
+        "token": "tk",
+        "application_id": "1234567890",
+    }
+
+
+def test_watchlist_subcommand_extraction():
+    """_watchlist_subcommand pulls the right name + options."""
+    from gcp.discord_interactions.main import _watchlist_subcommand
+    payload = _watchlist_payload("add", "NVDA")
+    sub, opts = _watchlist_subcommand(payload["data"])
+    assert sub == "add"
+    assert opts == {"ticker": "NVDA"}
+
+    list_payload = _watchlist_payload("list")
+    sub, opts = _watchlist_subcommand(list_payload["data"])
+    assert sub == "list"
+    assert opts == {}
+
+
+def test_watchlist_add_inserts_ticker(client, keypair):
+    from gcp.discord_interactions.main import _watchlist_add
+    captured = []
+    fake_engine = MagicMock()
+    fake_conn = MagicMock()
+
+    def fake_execute(stmt, params=None):
+        captured.append((str(stmt), dict(params) if params else {}))
+        result = MagicMock()
+        result.fetchone.return_value = (True,)  # inserted=True
+        return result
+
+    fake_conn.execute.side_effect = fake_execute
+    fake_engine.begin.return_value.__enter__.return_value = fake_conn
+    fake_engine.begin.return_value.__exit__.return_value = False
+
+    with patch("gcp.database.get_engine", return_value=fake_engine):
+        msg = _watchlist_add("nvda")
+
+    assert "✅" in msg and "NVDA" in msg
+    sql, params = captured[0]
+    assert "INSERT INTO watchlists" in sql
+    assert "user_id" in sql and "ticker" in sql
+    assert "ON CONFLICT (user_id, ticker)" in sql
+    assert params["t"] == "NVDA"
+
+
+def test_watchlist_add_already_present(client, keypair):
+    from gcp.discord_interactions.main import _watchlist_add
+    fake_engine = MagicMock()
+    fake_conn = MagicMock()
+    result = MagicMock()
+    result.fetchone.return_value = (False,)  # inserted=False (was UPDATE)
+    fake_conn.execute.return_value = result
+    fake_engine.begin.return_value.__enter__.return_value = fake_conn
+    fake_engine.begin.return_value.__exit__.return_value = False
+
+    with patch("gcp.database.get_engine", return_value=fake_engine):
+        msg = _watchlist_add("AVGO")
+
+    assert "ℹ️" in msg
+    assert "already" in msg.lower()
+
+
+def test_watchlist_add_invalid_ticker():
+    from gcp.discord_interactions.main import _watchlist_add
+    msg = _watchlist_add("not-a-ticker!")  # symbols not allowed
+    assert msg.startswith("❌")
+
+
+def test_watchlist_remove_existing(client, keypair):
+    from gcp.discord_interactions.main import _watchlist_remove
+    fake_engine = MagicMock()
+    fake_conn = MagicMock()
+    result = MagicMock()
+    result.fetchone.return_value = ("NVDA",)
+    fake_conn.execute.return_value = result
+    fake_engine.begin.return_value.__enter__.return_value = fake_conn
+    fake_engine.begin.return_value.__exit__.return_value = False
+
+    with patch("gcp.database.get_engine", return_value=fake_engine):
+        msg = _watchlist_remove("nvda")
+
+    assert "✅" in msg and "Removed" in msg
+
+
+def test_watchlist_remove_not_in_list():
+    from gcp.discord_interactions.main import _watchlist_remove
+    fake_engine = MagicMock()
+    fake_conn = MagicMock()
+    result = MagicMock()
+    result.fetchone.return_value = None
+    fake_conn.execute.return_value = result
+    fake_engine.begin.return_value.__enter__.return_value = fake_conn
+    fake_engine.begin.return_value.__exit__.return_value = False
+
+    with patch("gcp.database.get_engine", return_value=fake_engine):
+        msg = _watchlist_remove("UNKNOWN")
+
+    assert "ℹ️" in msg
+    assert "wasn't" in msg
+
+
+def test_watchlist_list_renders_rows():
+    from gcp.discord_interactions.main import _watchlist_list
+    import pandas as pd
+    df = pd.DataFrame([
+        {"ticker": "IWM", "added_at": "2026-04-01", "source": "seed"},
+        {"ticker": "NVDA", "added_at": "2026-04-29", "source": "discord-replay"},
+    ])
+    with patch("gcp.database.query_to_dataframe", return_value=df):
+        msg = _watchlist_list()
+    assert "Watchlist" in msg
+    assert "2 active" in msg
+    assert "IWM" in msg
+    assert "NVDA" in msg
+    assert "discord-replay" in msg
+
+
+def test_watchlist_list_empty():
+    from gcp.discord_interactions.main import _watchlist_list
+    import pandas as pd
+    with patch("gcp.database.query_to_dataframe", return_value=pd.DataFrame()):
+        msg = _watchlist_list()
+    assert "empty" in msg.lower()
+
+
+def test_watchlist_dispatch_routes_to_subcommand_handler(client, keypair):
+    """Full request → /watchlist list → reply rendered (Cloud SQL stubbed)."""
+    import pandas as pd
+    body = _watchlist_payload("list")
+    with patch("gcp.database.query_to_dataframe", return_value=pd.DataFrame()):
+        r = signed_post(client, keypair, body)
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["type"] == 4  # CHANNEL_MESSAGE_WITH_SOURCE (immediate)
+    assert "Watchlist" in payload["data"]["content"] or \
+           "empty" in payload["data"]["content"].lower()
+
+
+def test_watchlist_unknown_subcommand_returns_error():
+    from gcp.discord_interactions.main import handle_watchlist
+    msg = handle_watchlist({
+        "name": "watchlist",
+        "options": [{"name": "doesnotexist", "type": 1, "options": []}],
+    })
+    assert msg.startswith("❌")
 
 
 def test_unknown_command_returns_error(client, keypair):

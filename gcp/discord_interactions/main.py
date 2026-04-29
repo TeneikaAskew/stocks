@@ -434,6 +434,136 @@ def replay_in_background(ticker: str, date_arg: str,
 
 
 # ──────────────────────────────────────────────────────────────────────
+# /watchlist subcommand handlers (Slice 2)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Discord delivers /watchlist as ONE command with subcommand-typed
+# options. The interactions payload looks like:
+#
+#   data: {
+#     name: "watchlist",
+#     options: [
+#       {name: "add", type: 1 (SUB_COMMAND), options: [
+#         {name: "ticker", value: "NVDA", type: 3 (STRING)}
+#       ]}
+#     ]
+#   }
+#
+# All three subcommands are handled synchronously (Cloud SQL round-trip
+# completes well within Discord's 3-sec ack window) so they emit a
+# direct CHANNEL_MESSAGE_WITH_SOURCE response — no deferred ack needed.
+
+WATCHLIST_USER_ID = "default"  # Single-user system; matches schema default.
+
+
+def _watchlist_add(ticker: str) -> str:
+    """Add ticker to watchlists. Returns user-facing reply text."""
+    ticker_u = ticker.upper().strip()
+    if not ticker_u or not ticker_u.isalnum():
+        return f"❌ Invalid ticker: {ticker!r}"
+    try:
+        from gcp.database import get_engine
+        import sqlalchemy
+        engine = get_engine()
+        with engine.begin() as conn:
+            # ON CONFLICT detects already-present tickers and reactivates
+            # any soft-removed row by clearing removed_at. The RETURNING
+            # clause tells us whether this was a fresh insert (xmax=0)
+            # or an UPDATE so we can give the user a meaningful message.
+            result = conn.execute(
+                sqlalchemy.text(
+                    "INSERT INTO watchlists (user_id, ticker, source) "
+                    "VALUES (:u, :t, 'discord-slash') "
+                    "ON CONFLICT (user_id, ticker) DO UPDATE "
+                    "  SET removed_at = NULL "
+                    "RETURNING (xmax = 0) AS inserted"
+                ),
+                {"u": WATCHLIST_USER_ID, "t": ticker_u},
+            ).fetchone()
+        if result and result[0]:
+            return f"✅ Added **{ticker_u}** to watchlist."
+        return f"ℹ️ **{ticker_u}** already in watchlist (reactivated if removed)."
+    except Exception as exc:
+        logger.exception("watchlist add failed for %s: %s", ticker_u, exc)
+        return f"❌ Failed to add {ticker_u}: {exc}"
+
+
+def _watchlist_remove(ticker: str) -> str:
+    """Soft-remove ticker (sets removed_at = NOW)."""
+    ticker_u = ticker.upper().strip()
+    if not ticker_u:
+        return f"❌ Invalid ticker: {ticker!r}"
+    try:
+        from gcp.database import get_engine
+        import sqlalchemy
+        engine = get_engine()
+        with engine.begin() as conn:
+            result = conn.execute(
+                sqlalchemy.text(
+                    "UPDATE watchlists SET removed_at = NOW() "
+                    "WHERE user_id = :u AND ticker = :t "
+                    "  AND removed_at IS NULL "
+                    "RETURNING ticker"
+                ),
+                {"u": WATCHLIST_USER_ID, "t": ticker_u},
+            ).fetchone()
+        if result:
+            return f"✅ Removed **{ticker_u}** from watchlist."
+        return f"ℹ️ **{ticker_u}** wasn't in the active watchlist."
+    except Exception as exc:
+        logger.exception("watchlist remove failed for %s: %s", ticker_u, exc)
+        return f"❌ Failed to remove {ticker_u}: {exc}"
+
+
+def _watchlist_list() -> str:
+    """Return active watchlist as a formatted reply."""
+    try:
+        from gcp.database import query_to_dataframe
+        df = query_to_dataframe(
+            "SELECT ticker, added_at, source FROM watchlists "
+            "WHERE user_id = :u AND removed_at IS NULL "
+            "ORDER BY ticker",
+            {"u": WATCHLIST_USER_ID},
+        )
+        if df.empty:
+            return "📋 Watchlist is empty. Add a ticker with `/watchlist add ticker:X`."
+        lines = [f"📋 **Watchlist** ({len(df)} active)"]
+        for _, r in df.iterrows():
+            added = str(r.get("added_at", ""))[:10]
+            src = r.get("source") or ""
+            tag = f" _{src}_" if src else ""
+            lines.append(f"  • `{r['ticker']}` — added {added}{tag}")
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.exception("watchlist list failed: %s", exc)
+        return f"❌ Failed to list watchlist: {exc}"
+
+
+def _watchlist_subcommand(data: dict) -> tuple[str, dict]:
+    """Extract subcommand name + its options from the /watchlist payload.
+
+    Returns (subcommand_name, {option_name: value}).
+    """
+    options = data.get("options") or []
+    if not options or options[0].get("type") not in (1, 2):
+        return "", {}
+    sub = options[0]
+    return sub.get("name", ""), _options_to_dict(sub.get("options", []))
+
+
+def handle_watchlist(data: dict) -> str:
+    """Route /watchlist add | remove | list to the right handler."""
+    sub, opts = _watchlist_subcommand(data)
+    if sub == "add":
+        return _watchlist_add(str(opts.get("ticker", "")))
+    if sub == "remove":
+        return _watchlist_remove(str(opts.get("ticker", "")))
+    if sub == "list":
+        return _watchlist_list()
+    return f"❌ Unknown /watchlist subcommand: {sub!r}"
+
+
+# ──────────────────────────────────────────────────────────────────────
 # FastAPI app
 # ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="discord-interactions", version="1.0.0")
@@ -503,9 +633,18 @@ async def interactions(request: Request,
                 "data": {"content": f"🔄 Replaying {ticker.upper()} as of {date_arg}..."},
             })
 
-        # Slice 2 / 3 commands — stubbed so registration doesn't fail
+        if command_name == "watchlist":
+            # Synchronous — Cloud SQL round-trip is well under Discord's
+            # 3-sec ack window so we skip the deferred-response dance.
+            content = handle_watchlist(data)
+            return JSONResponse({
+                "type": 4,  # CHANNEL_MESSAGE_WITH_SOURCE (immediate)
+                "data": {"content": content[:2000]},
+            })
+
+        # Slice 3 commands — stubbed so registration doesn't fail
         # if Discord routes them here before the handlers exist.
-        if command_name in ("watchlist", "validate", "backtest"):
+        if command_name in ("validate", "backtest"):
             return _ephemeral_reply(
                 f"⏳ `/{command_name}` lands in a follow-up slice. "
                 f"Tracking in `docs/plans/DISCORD_INTERACTIONS_PLAN.md`."
