@@ -471,12 +471,18 @@ class TestFormatLevelsForBrief:
         assert '⚠' not in text
 
     def test_extended_regime_prepends_warning_keeps_triggers(self):
-        """extended: warning header + standard CALLS/PUTS still rendered."""
+        """extended: per-side warning header + standard CALLS/PUTS still
+        rendered. The legacy global 'Extended gap' header was replaced
+        with per-side banners ('CALLS: extended gap...' /
+        'PUTS: extended gap...') so a bullish ticker whose CALL side is
+        normal but PUT side is gap-extended only sees a warning on the
+        relevant side."""
         df = _daily_df(60)
         price = float(df['Close'].iloc[-1])
         lm = build_level_map('IWM', df, price)
         text = format_levels_for_brief(lm, 'bullish', regime='extended')
-        assert 'Extended gap' in text
+        # Per-side banner uses lowercase 'extended gap'.
+        assert 'extended gap' in text
         assert 'ORB' in text
         # Still has trigger lines (extended ≠ skip the trade)
         assert 'CALLS above' in text or 'PUTS below' in text
@@ -496,7 +502,8 @@ class TestFormatLevelsForBrief:
         price = float(df['Close'].iloc[-1])
         lm = build_level_map('IWM', df, price)
         text = format_levels_for_brief(lm, 'bullish')
-        assert 'Extended gap' not in text
+        # No regime banner of any kind when default is 'normal'.
+        assert 'extended gap' not in text.lower()
         assert 'ORB-only' not in text
 
 
