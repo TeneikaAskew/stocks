@@ -321,28 +321,92 @@ def select_orb_window(today_events: list) -> dict:
 
 # ── Brief Generation ────────────────────────────────────────────────────────
 
+def _resolve_analysis_date() -> date:
+    """Resolve the brief's analysis date.
+
+    Honours `BRIEF_AS_OF=YYYY-MM-DD` for historical replay (Discord
+    /replay command, ad-hoc backfills) — falls back to today otherwise.
+    Future-dated cutoffs are rejected so a typo doesn't silently
+    produce a blank brief.
+    """
+    raw = os.environ.get("BRIEF_AS_OF")
+    if not raw or not raw.strip():
+        return date.today()
+    parsed = date.fromisoformat(raw.strip())
+    if parsed > date.today():
+        raise ValueError(f"BRIEF_AS_OF {raw!r} is in the future")
+    return parsed
+
+
+def _resolve_brief_tickers(default_tickers: list[str]) -> list[str]:
+    """Resolve the ticker list the brief runs against.
+
+    Honours `BRIEF_TICKERS` env var for one-off / replay invocations
+    that focus on a specific ticker subset. Accepts comma-, semicolon-,
+    or space-separated values — semicolon form is needed because
+    gcloud's `--update-env-vars` uses comma as its OWN delimiter, so
+    `--update-env-vars=BRIEF_TICKERS=AMD;ARM` is the only shape that
+    safely passes a multi-ticker list through the gcloud CLI.
+
+    Falls back to the config default when unset / blank.
+    """
+    raw = os.environ.get("BRIEF_TICKERS")
+    if not raw or not raw.strip():
+        return default_tickers
+    # Normalize all separators to whitespace, then split.
+    normalized = raw.replace(',', ' ').replace(';', ' ')
+    parts = [t.strip().upper() for t in normalized.split() if t.strip()]
+    return parts or default_tickers
+
+
 def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     """Generate pre-market brief for all tickers.
 
     Returns a dict with per-ticker analysis and economic events.
+
+    Honours BRIEF_AS_OF (historical replay) and BRIEF_TICKERS (override
+    the config ticker list) — used by the Discord /replay command and
+    ad-hoc backfills.
     """
     if cfg is None:
         cfg = load_config()
 
     data_dir = data_dir or cfg.market.data_dir
-    tickers = cfg.market.tickers
+    tickers = _resolve_brief_tickers(cfg.market.tickers)
     signal_threshold = cfg.signal.premarket_signal_threshold
     building_threshold = cfg.signal.premarket_building_threshold
 
+    analysis_date = _resolve_analysis_date()
+
     loader = DataLoader(data_dir=data_dir)
     strat = StratClassifier(strat_config=cfg.strat)
-    brief = {'date': datetime.now().strftime('%a %b %d, %Y'), 'tickers': {}}
+    brief = {
+        'date': analysis_date.strftime('%a %b %d, %Y'),
+        'analysis_date': analysis_date,
+        'tickers': {},
+    }
 
     for ticker in tickers:
         df = loader.load_daily(ticker)
         if df.empty or len(df) < 2:
             brief['tickers'][ticker] = {'status': 'NO DATA'}
             continue
+
+        # Honour BRIEF_AS_OF — historical replays must NOT see bars after
+        # analysis_date or the strat classifier / level builder will read
+        # future data via df.iloc[-1] / df.iloc[-2]. The brief on a real
+        # morning runs at 8:30 AM ET when today's daily row doesn't exist
+        # yet, so the natural "yesterday" cutoff is `< analysis_date`
+        # (strict less-than). On replay, we apply the same filter so
+        # df.iloc[-1] is the last trading day BEFORE the replay date —
+        # matching the data the brief would have seen at run time.
+        cutoff = pd.Timestamp(analysis_date)
+        if isinstance(df.index, pd.DatetimeIndex):
+            idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
+            df = df.loc[idx < cutoff]
+            if df.empty or len(df) < 2:
+                brief['tickers'][ticker] = {'status': 'NO DATA'}
+                continue
 
         close_col = 'Close' if 'Close' in df.columns else 'Last'
         df = add_all_indicators(df, close_col=close_col)
@@ -461,8 +525,10 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
 
     # Earnings: weekday → today's; Sunday → upcoming week's. Cap aligned
     # with the daily fetch job so the brief surfaces the same names that
-    # actually have intraday bars in Cloud SQL.
-    today = date.today()
+    # actually have intraday bars in Cloud SQL. Uses the resolved
+    # analysis_date (honours BRIEF_AS_OF) so historical replays show
+    # the earnings calendar as it was on that date.
+    today = analysis_date
     is_sunday = today.weekday() == 6
     brief_top_n = int(os.environ.get('BRIEF_MAX_EARNINGS', '25'))
     brief['earnings'] = load_earnings_for_brief(today, weekly=is_sunday, top_n=brief_top_n)
@@ -494,6 +560,18 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             print(f"[brief:{ticker}] load_daily → {len(df)} rows", file=sys.stderr, flush=True)
             if df.empty:
                 continue
+            # Same as_of cutoff applied above for the strat block — keep
+            # the level map honest on historical replays so PDH/PDL/PWH
+            # / etc. don't silently leak future bars (e.g. ARM 4/20
+            # replay reading 2026-04-24's high as PDH).
+            cutoff = pd.Timestamp(analysis_date)
+            if isinstance(df.index, pd.DatetimeIndex):
+                idx = df.index.tz_localize(None) if df.index.tz is not None else df.index
+                df = df.loc[idx < cutoff]
+                if df.empty or len(df) < 2:
+                    print(f"[brief:{ticker}] insufficient bars before {analysis_date}",
+                          file=sys.stderr, flush=True)
+                    continue
             close_col = 'Close' if 'Close' in df.columns else 'Last'
             from lib.indicators import calculate_historical_levels
             ts = df['Time'] if 'Time' in df.columns else pd.Series(df.index)
@@ -967,7 +1045,11 @@ def persist_to_cloud_sql(brief: dict) -> int:
         logger.info("Cloud SQL not configured -- skipping DB persist")
         return 0
 
-    analysis_date = date.today()
+    # Honour the brief's resolved analysis_date (BRIEF_AS_OF) so
+    # historical replays write to the correct date row, not today's.
+    # Falls back to today when the brief was generated without an
+    # explicit override.
+    analysis_date = brief.get('analysis_date') or date.today()
     rows = []
     for ticker, data in brief.get('tickers', {}).items():
         if data.get('status') == 'NO DATA':
