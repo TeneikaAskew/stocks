@@ -413,6 +413,63 @@ class TestFormatLevelsForBrief:
         assert 'CALLS above' not in text
         assert 'PUTS below' not in text
 
+    def test_orb_only_banner_names_cleared_levels(self):
+        """orb_only: banner must name the LAST cleared structural level
+        with its price so the trader sees what's now behind them.
+        Regression for the original 'every structural level' wording
+        which was technically true but useless."""
+        levels = [
+            StratLevel(name='PDH', price=220.0, timeframe='day',
+                       level_type='high', strat_class='2U'),
+            StratLevel(name='PWH', price=225.0, timeframe='week',
+                       level_type='high', strat_class='2U'),
+            StratLevel(name='PMH', price=228.0, timeframe='month',
+                       level_type='high', strat_class='2U'),
+            StratLevel(name='PDL', price=215.0, timeframe='day',
+                       level_type='low', strat_class='2U'),
+        ]
+        lm = LevelMap(
+            ticker='IWM', as_of='2026-04-28',
+            current_price=230.0, levels=levels,
+        )
+        text = format_levels_for_brief(lm, 'bullish', regime='orb_only')
+        # Last cleared bullish level (closest to spot) named with price
+        assert 'Last bullish level passed' in text
+        assert 'PMH' in text and '228.00' in text
+        assert 'PWH' in text and '225.00' in text
+        assert 'PDH' in text and '220.00' in text
+        # Spot price referenced for context
+        assert '230.00' in text
+
+    def test_orb_only_banner_short_bias_names_cleared_lows(self):
+        """Mirror: bear bias names the LAST cleared LOW with its price."""
+        levels = [
+            StratLevel(name='PDL', price=200.0, timeframe='day',
+                       level_type='low', strat_class='2D'),
+            StratLevel(name='PWL', price=195.0, timeframe='week',
+                       level_type='low', strat_class='2D'),
+            StratLevel(name='PQL', price=190.0, timeframe='quarter',
+                       level_type='low', strat_class='2D'),
+        ]
+        lm = LevelMap(
+            ticker='IWM', as_of='2026-04-28',
+            current_price=185.0, levels=levels,
+        )
+        text = format_levels_for_brief(lm, 'bearish', regime='orb_only')
+        assert 'Last bearish level passed' in text
+        # Closest-to-spot low (PQL $190) is the LAST level price passed
+        assert 'PQL' in text and '190.00' in text
+        assert 'PWL' in text and '195.00' in text
+
+    def test_orb_only_banner_no_warning_emoji(self):
+        """No ⚠ in the banner — user wants plain text. Brain emoji is
+        added by the embed builder, not by the level formatter."""
+        df = _daily_df(60)
+        price = float(df['Close'].iloc[-1])
+        lm = build_level_map('IWM', df, price)
+        text = format_levels_for_brief(lm, 'bullish', regime='orb_only')
+        assert '⚠' not in text
+
     def test_extended_regime_prepends_warning_keeps_triggers(self):
         """extended: warning header + standard CALLS/PUTS still rendered."""
         df = _daily_df(60)
