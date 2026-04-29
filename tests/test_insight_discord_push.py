@@ -291,6 +291,41 @@ def test_embed_has_expected_fields():
     assert "🛑 Invalidation" in field_names
 
 
+def test_embed_renders_combo_in_title_case():
+    """Regression for PR #143's scope gap — the brief got the
+    title-case combo formatter, the AI insight push didn't. User saw
+    `Combo 322_bull_continuation` (snake_case in code-fence) on the
+    morning insight push. Both surfaces should now render the same
+    title-cased form."""
+    row = _sample_row()
+    row["report"]["strat_status"]["in_force_combo"] = "322_bull_continuation"
+    embed = push.format_report_embed(row)
+    strat_field = next(f for f in embed["fields"] if f["name"] == "🎲 Strat / FTFC")
+    assert "322 Bull Continuation" in strat_field["value"]
+    assert "322_bull_continuation" not in strat_field["value"]
+    assert "`" not in strat_field["value"]  # no backtick code-fence
+
+
+def test_embed_handles_failed_2u_combo():
+    """`failed_2u_bear_reversal` should render as `Failed 2U Bear Reversal`
+    — preserves '2U' uppercase like the brief formatter does."""
+    row = _sample_row()
+    row["report"]["strat_status"]["in_force_combo"] = "failed_2u_bear_reversal"
+    embed = push.format_report_embed(row)
+    strat_field = next(f for f in embed["fields"] if f["name"] == "🎲 Strat / FTFC")
+    assert "Failed 2U Bear Reversal" in strat_field["value"]
+
+
+def test_embed_no_combo_omits_combo_line():
+    """Backwards-compat: when the LLM didn't surface a combo, no
+    'Combo' line appears in the strat field."""
+    row = _sample_row()
+    row["report"]["strat_status"]["in_force_combo"] = None
+    embed = push.format_report_embed(row)
+    strat_field = next(f for f in embed["fields"] if f["name"] == "🎲 Strat / FTFC")
+    assert "Combo" not in strat_field["value"]
+
+
 def test_embed_footer_includes_metadata():
     embed = push.format_report_embed(_sample_row())
     footer = embed.get("footer", {}).get("text", "")
