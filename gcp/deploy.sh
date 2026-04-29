@@ -204,6 +204,89 @@ _env_string() {
     echo "$env"
 }
 
+# ── Discord interactions endpoint (Cloud Run SERVICE, not a Job) ────────────
+# HTTP service that receives slash-command webhooks from Discord, verifies
+# Ed25519 signatures, and dispatches Cloud Run Job executions for /replay,
+# /validate, /backtest, /watchlist (latter three stubbed in Slice 1).
+#
+# Setup prerequisites (one-time, before deploy):
+#   1. Use your EXISTING Discord app (the one whose webhook posts the
+#      morning briefs). No need to create a new app — the webhook URL
+#      and the application identity are independent properties of the
+#      same app and can coexist.
+#   2. Grab three values from Dev Portal → Your App:
+#        General Information  →  Application ID
+#        General Information  →  Public Key
+#        Bot                  →  Reset Token  (one-time copy; the
+#                                webhook flow doesn't need this so
+#                                you may have never generated it)
+#   3. Store each in GCP Secret Manager (paste value, then Ctrl+D):
+#        gcloud secrets create discord-app-id --data-file=-
+#        gcloud secrets create discord-public-key --data-file=-
+#        gcloud secrets create discord-bot-token --data-file=-
+#   4. Grant the trading-runner SA `roles/run.developer` so it can
+#      dispatch other Cloud Run Jobs:
+#        gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+#            --member=serviceAccount:${SA_EMAIL} \
+#            --role=roles/run.developer
+#   5. Bot must be in the guild with `applications.commands` + `bot`
+#      OAuth scopes. If your existing bot is already in the guild
+#      (because it posts the morning brief), slash commands work
+#      once registered — no re-invite needed.
+#   6. After this script runs, set the service URL as the "Interactions
+#      Endpoint URL" in Discord Dev Portal → General Information.
+#   7. Run scripts/discord/register_commands.py to register the commands.
+deploy_discord_interactions() {
+    echo "Deploying discord-interactions SERVICE..."
+
+    # Discord-specific secrets only — the service queries Cloud SQL via
+    # the same connector path as the rest of the platform.
+    local discord_app_id discord_public_key discord_bot_token
+    discord_app_id="$(_secret discord-app-id 2>/dev/null || true)"
+    discord_public_key="$(_secret discord-public-key 2>/dev/null || true)"
+    discord_bot_token="$(_secret discord-bot-token 2>/dev/null || true)"
+    if [ -z "${discord_app_id}" ] || [ -z "${discord_public_key}" ] \
+       || [ -z "${discord_bot_token}" ]; then
+        echo "ERROR: Discord secrets missing. Create discord-app-id, " \
+             "discord-public-key, discord-bot-token in Secret Manager first." >&2
+        return 1
+    fi
+
+    local env
+    env="$(_env_string)"
+    env="${env},DISCORD_APP_ID=${discord_app_id}"
+    env="${env},DISCORD_PUBLIC_KEY=${discord_public_key}"
+    env="${env},DISCORD_BOT_TOKEN=${discord_bot_token}"
+    env="${env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
+
+    # Cloud Run service deploy. min-instances=0 keeps cost ~$0 when idle;
+    # cold start fits in Discord's 3-sec ack window (1-2 sec on this
+    # image). max-instances=5 caps autocomplete-burst cost.
+    gcloud run deploy discord-interactions \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 \
+        --min-instances 0 --max-instances 5 \
+        --timeout 600 \
+        --port 8080 \
+        --allow-unauthenticated \
+        --service-account "${SA_EMAIL}" \
+        --command "uvicorn" \
+        --args "gcp.discord_interactions.main:app,--host,0.0.0.0,--port,8080" \
+        --set-env-vars "${env}" \
+        --quiet
+
+    echo
+    echo "Service URL:"
+    gcloud run services describe discord-interactions \
+        --region "${REGION}" --format="value(status.url)"
+    echo
+    echo "Next steps:"
+    echo "  1. Copy the URL above + '/discord/interactions' into the"
+    echo "     'Interactions Endpoint URL' field in Discord Dev Portal."
+    echo "  2. Run: python -m scripts.discord.register_commands"
+}
+
+
 # ── Pre-market brief (Cloud Run Job) ─────────────────────────────────────────
 deploy_premarket() {
     echo "Deploying pre-market brief job..."
@@ -975,6 +1058,7 @@ case "${1:-help}" in
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
+    discord)     build_image && deploy_discord_interactions ;;
     all)
         build_image
         deploy_premarket
@@ -1013,6 +1097,11 @@ case "${1:-help}" in
         echo "             python -m scripts.maintenance.compute_spx_greeks --ticker SPX"
         echo "  setup-notifier-secrets  One-time: store GitHub PAT + repo in Secret Manager"
         echo "  notifier   Deploy failure-notifier Cloud Run service + log sink"
+        echo "  discord    Deploy discord-interactions Cloud Run service (slash commands)"
+        echo "             Prereqs: discord-app-id, discord-public-key, discord-bot-token"
+        echo "             secrets in Secret Manager. After deploy, set the service URL"
+        echo "             as Discord's Interactions Endpoint URL and run"
+        echo "             scripts/discord/register_commands.py."
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac
