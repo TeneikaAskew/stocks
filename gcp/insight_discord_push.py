@@ -413,6 +413,14 @@ def format_report_embed(row: dict) -> dict:
         thesis += f"\n\n_⚠️ failed sections: {', '.join(failed)}_"
 
     # Strat row → one compact field
+    # Combo names are snake_case in the bundle / DB
+    # (`322_bull_continuation`) but render title-case here for trader
+    # readability (`322 Bull Continuation`). PR #143 added this
+    # formatter for the morning brief but missed this AI-insight push
+    # render path; single source of truth lives in
+    # `gcp.premarket_brief._fmt_combo` so the two surfaces stay aligned.
+    from gcp.premarket_brief import _fmt_combo
+
     strat = r.get("strat_status") or {}
     strat_lines = []
     if strat.get("last_candle"):
@@ -422,7 +430,8 @@ def format_report_embed(row: dict) -> dict:
         score_str = f"{float(score):+.2f}" if isinstance(score, (int, float)) else str(score)
         strat_lines.append(f"FTFC {score_str} **{strat['ftfc_direction']}**")
     if strat.get("in_force_combo"):
-        strat_lines.append(f"Combo `{strat['in_force_combo']}`")
+        combo_pretty = _fmt_combo(strat["in_force_combo"]) or strat["in_force_combo"]
+        strat_lines.append(f"Combo **{combo_pretty}**")
 
     # Pull the same headlines the LLM analyst weighed. Re-queried at push
     # time because the saved insight_reports.report payload doesn't
