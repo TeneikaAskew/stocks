@@ -46,3 +46,11 @@ google-genai>=1.0.0
 google-cloud-aiplatform>=1.38.0
 google-cloud-tasks>=2.16.0
 anthropic>=0.40.0  # optional: Anthropic Claude adapter for agent pipeline
+
+# Discord interactions service (gcp/discord_interactions/main.py)
+# FastAPI service that receives slash-command webhooks from Discord,
+# verifies Ed25519 signatures, and dispatches Cloud Run Job executions.
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pynacl>=1.5.0
+google-cloud-run>=0.10.0
