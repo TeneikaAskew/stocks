@@ -86,13 +86,15 @@ The `ticker` field on every command uses **autocomplete** (Discord queries the e
 
 ## 4. Discord application setup
 
-Reusing the existing Discord app that posts your morning briefs (assumed). Three secrets need to land in GCP Secret Manager:
+**Reuse your existing Discord app** — the one whose webhook posts the morning briefs. The webhook URL and the application identity (App ID / Public Key / Bot Token) are independent properties of the same app and can coexist; you don't need to create a second app.
 
-| Secret | Purpose | Where to find |
+Three secrets need to land in GCP Secret Manager (paste each value when prompted, then Ctrl+D):
+
+| Secret | Purpose | Where to find on the EXISTING app |
 |---|---|---|
-| `discord-app-id` | Identifies your app in Discord API URLs | Discord Developer Portal → Your App → General Information → Application ID |
-| `discord-public-key` | Ed25519 public key for signature verification | Discord Developer Portal → Your App → General Information → Public Key |
-| `discord-bot-token` | For posting followup messages + registering commands | Discord Developer Portal → Your App → Bot → Reset Token |
+| `discord-app-id` | Identifies the app in Discord API URLs | Dev Portal → Your App → General Information → Application ID |
+| `discord-public-key` | Ed25519 public key for signature verification | Same page, just below App ID |
+| `discord-bot-token` | For posting followup messages + registering commands | Dev Portal → Your App → Bot → Reset Token (one-time copy — Discord shows it only once. The webhook flow doesn't need this token, so you may have never generated it.) |
 
 After deploy:
 
