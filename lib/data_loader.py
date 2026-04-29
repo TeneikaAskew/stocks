@@ -255,7 +255,9 @@ class DataLoader:
                    vwap, price_vs_vwap AS "Price_vs_VWAP",
                    price_vs_ema9, price_vs_ema20,
                    strat_candle, strat_combo, strat_setup,
-                   ftfc_score, ftfc_direction
+                   ftfc_score, ftfc_direction,
+                   pre_high, pre_low, pre_vwap, pre_volume,
+                   gap_pct, pre_range_atr
             FROM market_data_daily
             {where}
             ORDER BY date

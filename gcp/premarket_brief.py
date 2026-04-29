@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.data_loader import DataLoader
 from lib.indicators import add_all_indicators
 from lib.strat import StratClassifier, compute_strat_status
-from lib.strat_levels import build_level_map, format_levels_for_brief
+from lib.strat_levels import build_level_map, format_levels_for_brief, levels_to_named_dict
 from lib.signals import check_call_conditions, check_put_conditions
 from lib.config import load_config
 
@@ -587,9 +587,70 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             print(f"[brief:{ticker}] build_level_map → {len(level_map.levels)} levels",
                   file=sys.stderr, flush=True)
+
+            # Compute the gap regime so the playbook can flag orb_only /
+            # extended setups instead of publishing a stale level-break
+            # plan. Same algorithm the 9:15 AM insight pipeline uses
+            # (lib.agents.trade_planner.select_trigger_and_regime), so
+            # the 8:30 AM brief and the 9:15 AM insight push agree on
+            # whether a ticker is tradeable on a structural trigger or
+            # needs ORB confirmation.
+            regime = 'normal'
+            try:
+                from lib.agents.trade_planner import (
+                    PlanContext, select_trigger_and_regime,
+                )
+                level_dict = levels_to_named_dict(level_map)
+                ftfc_dir = (d.get('ftfc_direction') or '').lower()
+                # Map FTFC direction to trade direction for the regime
+                # check. 'mixed' / unknown defaults to 'long' so the
+                # check picks the closest above-price level — when
+                # there's no clear bias the brief still emits the
+                # structural triggers and lets the trader decide.
+                regime_dir = 'short' if 'bear' in ftfc_dir else 'long'
+                # Pull pre-market fields from the most-recent daily row
+                # we already loaded (load_daily emits pre_high/pre_low/
+                # pre_vwap/gap_pct columns). Fall back gracefully on
+                # weekend / holiday rows where pre-market wasn't computed.
+                latest_row = df.iloc[-1]
+                pre_high_v = latest_row.get('pre_high')
+                pre_low_v = latest_row.get('pre_low')
+                pre_vwap_v = latest_row.get('pre_vwap')
+                gap_pct_v = latest_row.get('gap_pct')
+                ctx = PlanContext(
+                    direction=regime_dir,
+                    conviction='medium',
+                    close=float(d['price']),
+                    atr=float(d.get('atr14') or 0.0),
+                    trigger_high=level_dict.get('PDH'),
+                    trigger_low=level_dict.get('PDL'),
+                    pwh=level_dict.get('PWH'), pwl=level_dict.get('PWL'),
+                    pmh=level_dict.get('PMH'), pml=level_dict.get('PML'),
+                    pqh=level_dict.get('PQH'), pql=level_dict.get('PQL'),
+                    pyh=level_dict.get('PYH'), pyl=level_dict.get('PYL'),
+                    effective_pdh=level_dict.get('PDH'),
+                    effective_pdl=level_dict.get('PDL'),
+                    pre_high=float(pre_high_v) if pd.notna(pre_high_v) else None,
+                    pre_low=float(pre_low_v) if pd.notna(pre_low_v) else None,
+                    pre_vwap=float(pre_vwap_v) if pd.notna(pre_vwap_v) else None,
+                    gap_pct=float(gap_pct_v) if pd.notna(gap_pct_v) else None,
+                )
+                regime, _, _, _ = select_trigger_and_regime(ctx, regime_dir)
+                d['regime'] = regime
+                print(f"[brief:{ticker}] regime={regime}",
+                      file=sys.stderr, flush=True)
+            except Exception as exc:
+                # Regime compute is best-effort. Fall back to 'normal'
+                # so the playbook still renders.
+                print(f"[brief:{ticker}] regime compute failed: "
+                      f"{type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
+                d['regime'] = 'normal'
+
             d['playbook'] = format_levels_for_brief(
                 level_map=level_map, bias=d.get('ftfc_direction', 'mixed'),
                 combo=d.get('strat_combo'), daily_strat_class=d.get('strat_candle'),
+                regime=regime,
             )
             d['recommended_orb_window'] = orb_choice['window']
             d['recommended_orb_reason'] = orb_choice['reason']

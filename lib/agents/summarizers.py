@@ -207,6 +207,12 @@ def summarize_strat_status(
     uses, so the LLM analyst sees the *exact* candle / combo / FTFC
     triplet that gets posted to Discord. No more reading stale NULL
     columns from market_data_daily.
+
+    Also surfaces the multi-timeframe level map (PDH/PDL/PWH/PWL/PMH/PML/
+    PQH/PQL/PYH/PYL) and the mother-bar walk-back ``effective_pdh`` /
+    ``effective_pdl`` for inside-of-inside compressions. The deterministic
+    trade planner uses these to walk the level hierarchy on gap days
+    instead of always anchoring entry at PDH/PDL.
     """
     from lib.strat import compute_strat_status
 
@@ -221,7 +227,7 @@ def summarize_strat_status(
     th = status.get("trigger_high")
     tl = status.get("trigger_low")
 
-    return {
+    out = {
         "available": True,
         "date": status.get("date", ""),
         "last_candle": status.get("last_candle") or "1",
@@ -232,6 +238,103 @@ def summarize_strat_status(
         "trigger_high": round(float(th), 2) if th is not None else None,
         "trigger_low": round(float(tl), 2) if tl is not None else None,
     }
+
+    # Multi-timeframe level map. Built from the same daily history
+    # `compute_strat_status` already trimmed to the as_of cutoff (so
+    # historical replays don't see future bars). Computed best-effort —
+    # if the level builder errors on this ticker the strat dict still
+    # returns; the planner falls back to single-level PDH/PDL behaviour.
+    try:
+        from lib.data_loader import DataLoader
+        from lib.strat_levels import compute_previous_levels
+        loader = DataLoader()
+        df = loader.load_daily(ticker)
+        if df is not None and not df.empty:
+            # Apply the same as_of cutoff lib.strat.compute_strat_status
+            # uses, with the same tz normalization to avoid the leak
+            # patched in PR #135.
+            if as_of is not None:
+                import pandas as _pd
+                cutoff = _pd.Timestamp(as_of)
+                if cutoff.tz is not None:
+                    cutoff = cutoff.tz_convert('UTC').tz_localize(None)
+                if isinstance(df.index, _pd.DatetimeIndex) and df.index.tz is not None:
+                    df = df.copy()
+                    df.index = df.index.tz_localize(None)
+                df = df[df.index <= cutoff]
+            level_map = compute_previous_levels(df)
+            level_dict: dict[str, float] = {}
+            for name in ("PDH", "PDL", "PWH", "PWL", "PMH", "PML",
+                         "PQH", "PQL", "PYH", "PYL"):
+                lv = level_map.get(name)
+                if lv is not None:
+                    level_dict[name] = round(float(lv.price), 2)
+
+            # Mother-bar walk-back for inside-of-inside compressions.
+            # When the prior bar is a strat '1' (inside bar), price has
+            # been compressing within an outer "mother bar" — the real
+            # PDH/PDL trigger is the OUTER mother bar's H/L, not the
+            # inside bar's. Walk back through consecutive '1' bars to
+            # find the bar that contained them.
+            try:
+                from lib.strat import StratClassifier
+                clf = StratClassifier()
+                ohlc = df[['Open', 'High', 'Low', 'Close']]
+                labels = clf.classify_series(ohlc)
+                eff_pdh, eff_pdl = _walk_back_to_mother_bar(df, labels)
+                if eff_pdh is not None:
+                    level_dict["effective_PDH"] = round(float(eff_pdh), 2)
+                if eff_pdl is not None:
+                    level_dict["effective_PDL"] = round(float(eff_pdl), 2)
+            except Exception:
+                # Walk-back failed — planner will fall back to PDH/PDL
+                pass
+
+            if level_dict:
+                out["levels"] = level_dict
+    except Exception:
+        # Level map best-effort — never block the strat block from returning
+        pass
+
+    return out
+
+
+def _walk_back_to_mother_bar(df, labels) -> tuple[Optional[float], Optional[float]]:
+    """Walk back through consecutive inside bars to find the mother bar.
+
+    Returns the H/L of the most recent bar BEFORE today whose range
+    contains every subsequent inside bar up through yesterday. Falls
+    back to yesterday's H/L when yesterday was a directional bar
+    (2U/2D/3) rather than a '1'.
+
+    Used by ``summarize_strat_status`` to populate ``effective_PDH`` /
+    ``effective_PDL`` so the trade planner uses the structural trigger
+    (the outer mother bar) on inside-of-inside compressions instead of
+    yesterday's tighter inside-bar range.
+    """
+    if len(df) < 2 or len(labels) < 2:
+        return None, None
+    # iloc[-1] is "today" (the as_of cutoff bar) — we don't trigger on
+    # it. iloc[-2] is yesterday — the canonical PDH source. Walk back
+    # only when yesterday is a '1' (inside) bar.
+    i = -2
+    if str(labels.iloc[i]) != '1':
+        try:
+            return float(df.iloc[i]['High']), float(df.iloc[i]['Low'])
+        except (KeyError, ValueError, TypeError):
+            return None, None
+    # Walk further back through consecutive '1' bars
+    LOOKBACK = 10  # cap so we don't walk to the start of history
+    while i - 1 >= -min(LOOKBACK, len(df)) and str(labels.iloc[i - 1]) == '1':
+        i -= 1
+    # Mother bar = the bar BEFORE the inside-bar chain started
+    mother_idx = i - 1
+    if mother_idx < -len(df):
+        return None, None
+    try:
+        return float(df.iloc[mother_idx]['High']), float(df.iloc[mother_idx]['Low'])
+    except (KeyError, ValueError, TypeError):
+        return None, None
 
 
 # ---------------------------------------------------------------------------
