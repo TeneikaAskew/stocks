@@ -407,6 +407,85 @@ class TestPlaybookEmbed:
         assert all('Why this trigger' not in f['name'] for f in embed['fields'])
 
 
+class TestStochRegimeTag:
+    """StochRSI K/D → 'oversold' / 'overbought' / 'neutral'."""
+
+    def test_pegged_top_is_overbought(self):
+        from gcp.premarket_brief import _stoch_regime_tag
+        assert _stoch_regime_tag(100, 99) == 'overbought'
+        assert _stoch_regime_tag(85, 80) == 'overbought'
+
+    def test_pegged_bottom_is_oversold(self):
+        from gcp.premarket_brief import _stoch_regime_tag
+        assert _stoch_regime_tag(0, 1) == 'oversold'
+        assert _stoch_regime_tag(20, 15) == 'oversold'
+
+    def test_mid_range_is_neutral(self):
+        from gcp.premarket_brief import _stoch_regime_tag
+        assert _stoch_regime_tag(50, 55) == 'neutral'
+        assert _stoch_regime_tag(40, 60) == 'neutral'
+
+    def test_either_line_pegged_top_triggers_overbought(self):
+        """If K=85 but D=70, the more extreme reading wins."""
+        from gcp.premarket_brief import _stoch_regime_tag
+        assert _stoch_regime_tag(85, 70) == 'overbought'
+
+    def test_none_input_returns_blank(self):
+        from gcp.premarket_brief import _stoch_regime_tag
+        assert _stoch_regime_tag(None, 50) == ''
+        assert _stoch_regime_tag(50, None) == ''
+
+
+class TestFmtCombo:
+    """Snake-case storage form → title-case render form."""
+
+    def test_322_bull_continuation_capitalized(self):
+        from gcp.premarket_brief import _fmt_combo
+        assert _fmt_combo('322_bull_continuation') == '322 Bull Continuation'
+
+    def test_failed_2u_keeps_2u_uppercase(self):
+        from gcp.premarket_brief import _fmt_combo
+        assert _fmt_combo('failed_2u_bear_reversal') == 'Failed 2U Bear Reversal'
+
+    def test_clean_2d_bull(self):
+        from gcp.premarket_brief import _fmt_combo
+        assert _fmt_combo('clean_2d_bull') == 'Clean 2D Bull'
+
+    def test_212_bull_reversal(self):
+        from gcp.premarket_brief import _fmt_combo
+        assert _fmt_combo('212_bull_reversal') == '212 Bull Reversal'
+
+    def test_none_or_empty_returns_blank(self):
+        from gcp.premarket_brief import _fmt_combo
+        assert _fmt_combo('') == ''
+        assert _fmt_combo(None) == ''
+        assert _fmt_combo('none') == ''
+
+
+class TestFmtTimeframe:
+    """RESAMPLE_RULES key → uppercase short form."""
+
+    def test_lowercase_day_to_uppercase(self):
+        from gcp.premarket_brief import _fmt_timeframe
+        assert _fmt_timeframe('1d') == '1D'
+
+    def test_lowercase_week_to_uppercase(self):
+        from gcp.premarket_brief import _fmt_timeframe
+        assert _fmt_timeframe('1w') == '1W'
+
+    def test_1mo_collapses_to_1M(self):
+        from gcp.premarket_brief import _fmt_timeframe
+        assert _fmt_timeframe('1mo') == '1M'
+
+    def test_4h_to_4H(self):
+        from gcp.premarket_brief import _fmt_timeframe
+        assert _fmt_timeframe('4h') == '4H'
+
+    def test_blank_passthrough(self):
+        from gcp.premarket_brief import _fmt_timeframe
+        assert _fmt_timeframe('') == ''
+
+
 class TestTickerFieldsLayout:
     """Field-pair splits + LLM analysis slot for the ticker analysis embed."""
 
@@ -462,6 +541,35 @@ class TestTickerFieldsLayout:
         assert len(stoch_lines) == 1
         assert '|' not in rsi_lines[0]  # no inline pipe-separated value any more
 
+    def test_stochrsi_renders_with_overbought_regime_tag(self):
+        """100/99 reading should append (overbought) so the trader sees
+        the regime context next to the raw numbers."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(stoch_k=100, stoch_d=99)}}
+        fields = _build_ticker_fields(brief)
+        mom_value = next(f['value'] for f in fields if f['name'] == 'IWM Momentum')
+        stoch_line = next(ln for ln in mom_value.split('\n') if ln.startswith('StochRSI:'))
+        assert '100/99' in stoch_line
+        assert '(overbought)' in stoch_line
+
+    def test_stochrsi_renders_with_oversold_regime_tag(self):
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(stoch_k=5, stoch_d=10)}}
+        fields = _build_ticker_fields(brief)
+        mom_value = next(f['value'] for f in fields if f['name'] == 'IWM Momentum')
+        stoch_line = next(ln for ln in mom_value.split('\n') if ln.startswith('StochRSI:'))
+        assert '(oversold)' in stoch_line
+
+    def test_stochrsi_neutral_renders_with_neutral_tag(self):
+        """Mid-range readings show '(neutral)' — positive signal too,
+        not noise. Tells the trader 'no momentum exhaustion either way'."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(stoch_k=50, stoch_d=55)}}
+        fields = _build_ticker_fields(brief)
+        mom_value = next(f['value'] for f in fields if f['name'] == 'IWM Momentum')
+        stoch_line = next(ln for ln in mom_value.split('\n') if ln.startswith('StochRSI:'))
+        assert '(neutral)' in stoch_line
+
     def test_three_inline_fields_per_ticker_when_no_llm_analysis(self):
         """With no llm_analysis the embed keeps the legacy 3-field layout."""
         from gcp.premarket_brief import _build_ticker_fields
@@ -469,6 +577,54 @@ class TestTickerFieldsLayout:
         fields = _build_ticker_fields(brief)
         assert len(fields) == 3
         assert all(f['inline'] for f in fields)
+
+    def test_strat_field_renders_combo_title_case(self):
+        """`322_bull_continuation` should render as `322 Bull Continuation`
+        in the brief embed — not the snake_case storage form."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(
+            strat_combo='322_bull_continuation',
+        )}}
+        fields = _build_ticker_fields(brief)
+        strat_value = next(f['value'] for f in fields if f['name'] == 'IWM Strat')
+        assert '322 Bull Continuation' in strat_value
+        assert '322_bull_continuation' not in strat_value
+
+    def test_daily_and_combo_render_on_separate_lines(self):
+        """Daily and Combo should be on their own lines — the previous
+        `Daily: 2U | Combo: 322 Bull Continuation` form overflowed
+        visually on mobile when the combo name was long."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(
+            strat_combo='322_bull_continuation',
+        )}}
+        fields = _build_ticker_fields(brief)
+        strat_value = next(f['value'] for f in fields if f['name'] == 'IWM Strat')
+        lines = strat_value.split('\n')
+        # Each prefix appears as the START of its own line — never piped
+        daily_lines = [ln for ln in lines if ln.startswith('Daily:')]
+        combo_lines = [ln for ln in lines if ln.startswith('Combo:')]
+        assert len(daily_lines) == 1
+        assert len(combo_lines) == 1
+        # Old `Daily: ... | Combo: ...` mash-up gone
+        assert '|' not in daily_lines[0]
+        assert 'Combo:' not in daily_lines[0]
+
+    def test_strat_field_renders_timeframes_uppercase(self):
+        """ftfc_labels keys (1d/1w/1mo) should render uppercase (1D/1W/1M)."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(
+            ftfc_labels={'1d': '2U', '1w': '2U', '1mo': '2U'},
+        )}}
+        fields = _build_ticker_fields(brief)
+        strat_value = next(f['value'] for f in fields if f['name'] == 'IWM Strat')
+        # New uppercase form
+        assert '1D:2U' in strat_value
+        assert '1W:2U' in strat_value
+        assert '1M:2U' in strat_value
+        # Old lowercase form gone
+        assert '1d:2U' not in strat_value
+        assert '1mo:2U' not in strat_value
 
     def test_llm_analysis_appends_full_width_field(self):
         """When llm_analysis is set, a 4th non-inline field renders below."""
