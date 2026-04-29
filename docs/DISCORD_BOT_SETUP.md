@@ -211,7 +211,16 @@ This is the OAuth2 flow. Without it, slash commands don't appear in your server 
    ```
 
 6. Copy the URL, **open it in a new browser tab**, pick your server from the dropdown, click **Authorize**, solve the captcha if prompted.
-7. The bot should now appear in your server's member list (right sidebar in Discord). Slash commands show up in the autocomplete picker within ~5 seconds (or up to 1 hour for global commands; instant for guild-registered).
+7. Discord shows a green-checkmark **"Success!"** screen with the message *"<YourBotName> has been authorized and added to <YourServerName>."* You can close that tab.
+8. The bot should now appear in your server's member list (right sidebar in Discord). Slash commands show up in the autocomplete picker within ~5 seconds (or up to 1 hour for global commands; instant for guild-registered).
+
+If you don't see the **Success!** screen, the most common causes are:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| "Bots cannot have a manage server permission" | You ticked **Administrator** or **Manage Server** in Bot Permissions | Untick those — the bot only needs Send Messages / Embed Links / Use Slash Commands. Re-copy the URL. |
+| Server not in the dropdown | You don't have **Manage Server** permission on that guild | Ask the server owner to do the invite, or get the role granted. |
+| "Invalid OAuth2 redirect URI" | App was set up with a custom redirect; OAuth2 URL Generator picks the implicit flow | Discord Dev Portal → OAuth2 → Redirects → confirm there's no stale entry blocking the implicit flow. |
 
 ---
 
