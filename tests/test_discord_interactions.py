@@ -199,6 +199,81 @@ def test_autocomplete_returns_choice_dict_shape(monkeypatch):
         assert isinstance(c["name"], str)
 
 
+def test_autocomplete_sql_uses_removed_at_not_active_column(monkeypatch):
+    """The watchlists table has no `active` column — `removed_at IS NULL`
+    is how 'active' is encoded. Regression test for the column-mismatch
+    error that broke autocomplete in production ('Loading options
+    failed' in Discord)."""
+    import gcp.discord_interactions.main as svc
+
+    captured: dict = {}
+
+    def fake_query(sql: str, params: dict):
+        captured["sql"] = sql
+        captured["params"] = params
+        import pandas as pd
+        return pd.DataFrame({"ticker": ["IWM", "SPY"]})
+
+    # Make Cloud SQL appear configured so autocomplete takes the SQL path
+    monkeypatch.setenv("CLOUD_SQL_CONNECTION_NAME", "fake:proj:db")
+    monkeypatch.setenv("DB_USER", "u")
+    monkeypatch.setenv("DB_PASS", "p")
+    monkeypatch.setenv("DB_NAME", "d")
+    monkeypatch.setattr("gcp.database.query_to_dataframe", fake_query)
+
+    out = svc.autocomplete_tickers("I")
+
+    assert "removed_at IS NULL" in captured["sql"]
+    assert "active = true" not in captured["sql"]
+    # Result still flows through normally
+    assert any(c["value"] == "IWM" for c in out)
+
+
+def test_execute_cloud_run_job_uses_request_object(monkeypatch):
+    """JobsClient.run_job() does NOT accept `overrides=` as a kwarg —
+    it must be passed inside a RunJobRequest. Regression test for the
+    TypeError that broke every /replay dispatch in production
+    (`JobsClient.run_job() got an unexpected keyword argument 'overrides'`).
+    """
+    from unittest.mock import MagicMock, patch
+    import gcp.discord_interactions.main as svc
+
+    captured: dict = {}
+
+    fake_op = MagicMock()
+    fake_op.operation.name = "fake-op-id"
+
+    fake_client = MagicMock()
+    def fake_run_job(**kwargs):
+        # Reject the buggy kwarg shape exactly the way the real client does
+        if "name" in kwargs or "overrides" in kwargs:
+            raise TypeError("JobsClient.run_job() got an unexpected keyword argument 'overrides'")
+        captured["kwargs"] = kwargs
+        return fake_op
+    fake_client.run_job = fake_run_job
+
+    fake_run_v2 = MagicMock()
+    fake_run_v2.JobsClient.return_value = fake_client
+
+    # Stash the patched module so `from google.cloud import run_v2`
+    # inside execute_cloud_run_job picks it up
+    fake_google_cloud = MagicMock()
+    fake_google_cloud.run_v2 = fake_run_v2
+
+    monkeypatch.setattr(svc, "_gcp_project", lambda: "proj")
+    monkeypatch.setattr(svc, "_gcp_region", lambda: "us-east1")
+
+    with patch.dict("sys.modules", {"google.cloud": fake_google_cloud,
+                                    "google.cloud.run_v2": fake_run_v2}):
+        ok = svc.execute_cloud_run_job("test-job", {"FOO": "bar"})
+
+    assert ok is True
+    # The CRITICAL assertion: `request` is the kwarg, NOT `name`/`overrides`
+    assert "request" in captured["kwargs"]
+    assert "name" not in captured["kwargs"]
+    assert "overrides" not in captured["kwargs"]
+
+
 def test_autocomplete_interaction_returns_type_8(client, keypair, monkeypatch):
     monkeypatch.delenv("CLOUD_SQL_CONNECTION_NAME", raising=False)
     body = {

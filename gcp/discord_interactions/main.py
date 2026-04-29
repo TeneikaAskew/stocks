@@ -164,9 +164,14 @@ def autocomplete_tickers(prefix: str, limit: int = 25) -> list[dict]:
         from gcp.database import is_cloud_sql_configured, query_to_dataframe
         if not is_cloud_sql_configured():
             raise RuntimeError("Cloud SQL not configured")
+        # The watchlists table has no `active` column — "active" is
+        # encoded as `removed_at IS NULL`. The earlier draft used a
+        # nonexistent column and Cloud SQL returned a hard error,
+        # which made the autocomplete UI show "Loading options
+        # failed". See gcp/schema.sql for the canonical column list.
         sql = (
             "SELECT DISTINCT ticker FROM watchlists "
-            "WHERE active = true "
+            "WHERE removed_at IS NULL "
             + ("AND ticker LIKE :p " if prefix_u else "")
             + "ORDER BY ticker LIMIT :n"
         )
@@ -241,7 +246,16 @@ def execute_cloud_run_job(job_name: str, env_overrides: dict[str, str]) -> bool:
                 )
             ],
         )
-        op = client.run_job(name=job_path, overrides=overrides)
+        # `client.run_job(name=..., overrides=...)` raises TypeError on
+        # the v2 client — `overrides` is NOT a top-level kwarg. The
+        # supported signature is `run_job(request=...)` where `request`
+        # is a RunJobRequest with both `name` and `overrides` set.
+        # The earlier draft used the kwarg form and crashed on every
+        # /replay dispatch.
+        op = client.run_job(request=run_v2.RunJobRequest(
+            name=job_path,
+            overrides=overrides,
+        ))
         # Don't block on the operation — Discord deferred reply will
         # edit when the caller polls. For the simple "fire and forget"
         # path used by /replay, op being created is success enough.
