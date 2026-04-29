@@ -281,6 +281,50 @@ def test_replay_invalid_date_returns_error_string():
     assert msg.startswith("❌")
 
 
+def test_replay_today_clamps_insight_as_of_below_now():
+    """Regression: if the user runs /replay date:today before 9:15 ET,
+    the canonical 13:15 UTC anchor would be in the future and
+    insight_pipeline_job.parse_as_of would reject it (caught the live
+    bug after PR #139 deploy on 2026-04-29 13:04 UTC). Clamp to "now"
+    so the cutoff is always safely in the past."""
+    from datetime import datetime, timezone
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+
+    def fake_execute(name, env):
+        calls.append((name, env))
+        return True
+
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=fake_execute), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        handle_replay("IWM", "today", "1234567890", "test-token")
+
+    insight_env = next(env for name, env in calls if name == "insight-pipeline")
+    insight_as_of = insight_env["INSIGHT_AS_OF"]
+    parsed = datetime.strptime(insight_as_of, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc,
+    )
+    now = datetime.now(timezone.utc)
+    # Must NOT be in the future — that's what triggered the original bug.
+    assert parsed <= now, f"INSIGHT_AS_OF {parsed} is in the future (now={now})"
+
+
+def test_replay_past_date_uses_canonical_915_et_anchor():
+    """For a date safely in the past, INSIGHT_AS_OF should be the
+    canonical 13:15 UTC (= 09:15 ET in DST) anchor on that day —
+    matches the daily insight cron so historical replays produce
+    identical bundles to live runs."""
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        handle_replay("IWM", "2026-04-23", "1234567890", "test-token")
+    insight_env = next(env for name, env in calls if name == "insight-pipeline")
+    assert insight_env["INSIGHT_AS_OF"] == "2026-04-23T13:15:00Z"
+
+
 def test_replay_missing_args_ephemeral_error(client, keypair):
     body = {
         "type": 2,

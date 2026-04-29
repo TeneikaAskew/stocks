@@ -354,19 +354,54 @@ def _fmt_news_field(
     return _truncate(header + "\n".join(lines), MAX_FIELD_VALUE)
 
 
+def _catalyst_dot(c: dict) -> str:
+    """Pick the dot colour for a catalyst.
+
+    News items (kind='news_topic' with sentiment_score) use SENTIMENT
+    colouring — green = bullish, red = bearish, yellow = neutral —
+    matching what the trader cares about (does this article support or
+    fight my thesis?).
+
+    Non-news catalysts (economic / earnings / sec_8k) use IMPACT
+    colouring — red = high-stakes event, yellow = medium, green = low
+    — because directional sentiment doesn't apply to a scheduled
+    earnings release or a CPI print.
+
+    Buckets for sentiment match AlphaVantage's published thresholds
+    (https://www.alphavantage.co/documentation/#news-sentiment) so the
+    dot agrees with the per-article sentiment label shown elsewhere
+    in the embed.
+    """
+    sent = c.get("sentiment_score")
+    if sent is not None:
+        try:
+            s = float(sent)
+        except (TypeError, ValueError):
+            s = None
+        else:
+            if s >  0.15: return "🟢"
+            if s < -0.15: return "🔴"
+            return "🟡"
+    impact = c.get("impact", "")
+    return {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(impact, "•")
+
+
 def _fmt_catalysts_field(catalysts: list) -> str:
-    """Render upcoming catalysts as a compact bulleted list."""
+    """Render upcoming catalysts as a compact bulleted list.
+
+    Dot colour is sentiment-based for news items, impact-based for
+    everything else — see ``_catalyst_dot``.
+    """
     if not catalysts:
         return "—"
     lines = []
     for c in catalysts[:8]:
         if not isinstance(c, dict):
             continue
-        impact = c.get("impact", "")
-        impact_marker = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(impact, "•")
+        marker = _catalyst_dot(c)
         date_str = str(c.get("date", ""))
         name = str(c.get("name", ""))
-        lines.append(f"{impact_marker} {date_str} — {name}")
+        lines.append(f"{marker} {date_str} — {name}")
     return _truncate("\n".join(lines), MAX_FIELD_VALUE) if lines else "—"
 
 

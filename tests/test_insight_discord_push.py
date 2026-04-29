@@ -176,13 +176,95 @@ def test_fmt_risk_flags_field_empty_returns_dash():
 
 
 def test_fmt_catalysts_field_marks_high_impact():
+    """Non-news catalysts (no sentiment_score) fall back to impact-based
+    colours: high=🔴, medium=🟡, low=🟢."""
     out = push._fmt_catalysts_field([
-        {"date": "2026-04-30", "name": "GDP", "impact": "high"},
-        {"date": "2026-04-29", "name": "Construction", "impact": "medium"},
+        {"date": "2026-04-30", "name": "GDP", "impact": "high",
+         "kind": "economic"},
+        {"date": "2026-04-29", "name": "Construction", "impact": "medium",
+         "kind": "economic"},
     ])
     assert "🔴" in out  # high-impact marker
     assert "🟡" in out  # medium-impact marker
     assert "GDP" in out
+
+
+# ── Sentiment-based catalyst dots (news_topic items) ──────────────────────
+
+
+def test_catalyst_dot_news_bullish_is_green():
+    """News with sentiment_score > 0.15 → 🟢 (bullish)."""
+    out = push._catalyst_dot({
+        "kind": "news_topic",
+        "impact": "low",  # impact says green coincidentally
+        "sentiment_score": 0.4,
+    })
+    assert out == "🟢"
+
+
+def test_catalyst_dot_news_bearish_is_red():
+    """News with sentiment_score < -0.15 → 🔴 (bearish), even if
+    impact is low (which would be green under impact-based rules)."""
+    out = push._catalyst_dot({
+        "kind": "news_topic",
+        "impact": "low",  # would be green under old logic
+        "sentiment_score": -0.3,
+    })
+    assert out == "🔴"  # sentiment overrides impact
+
+
+def test_catalyst_dot_news_neutral_is_yellow():
+    """News with -0.15 ≤ sentiment ≤ 0.15 → 🟡."""
+    assert push._catalyst_dot({
+        "kind": "news_topic", "impact": "high",
+        "sentiment_score": 0.0,
+    }) == "🟡"
+    assert push._catalyst_dot({
+        "kind": "news_topic", "impact": "high",
+        "sentiment_score": 0.10,
+    }) == "🟡"
+    assert push._catalyst_dot({
+        "kind": "news_topic", "impact": "high",
+        "sentiment_score": -0.14,
+    }) == "🟡"
+
+
+def test_catalyst_dot_event_uses_impact_when_no_sentiment():
+    """Economic / earnings / sec_8k catalysts have no sentiment_score
+    so they fall back to impact-based coloring (red=high-stakes,
+    yellow=medium, green=low)."""
+    assert push._catalyst_dot({
+        "kind": "economic", "impact": "high", "sentiment_score": None,
+    }) == "🔴"
+    assert push._catalyst_dot({
+        "kind": "earnings", "impact": "medium", "sentiment_score": None,
+    }) == "🟡"
+    assert push._catalyst_dot({
+        "kind": "sec_8k", "impact": "low", "sentiment_score": None,
+    }) == "🟢"
+
+
+def test_catalyst_dot_handles_missing_keys():
+    """Empty dict shouldn't crash — falls back to '•'."""
+    assert push._catalyst_dot({}) == "•"
+
+
+def test_fmt_catalysts_field_mixed_news_and_events():
+    """Realistic mix: economic event + bullish news + bearish news.
+    Sentiment overrides impact for news; impact applies for events."""
+    out = push._fmt_catalysts_field([
+        {"date": "2026-04-30", "name": "FOMC", "impact": "high",
+         "kind": "economic"},
+        {"date": "2026-04-29", "name": "Bullish upgrade", "impact": "low",
+         "kind": "news_topic", "sentiment_score": 0.45},
+        {"date": "2026-04-29", "name": "Bearish downgrade", "impact": "low",
+         "kind": "news_topic", "sentiment_score": -0.40},
+    ])
+    # 🔴 from FOMC (impact=high) AND bearish news (sentiment<0)
+    # 🟢 from bullish news (sentiment>0)
+    assert "🔴 2026-04-30 — FOMC" in out
+    assert "🟢 2026-04-29 — Bullish upgrade" in out
+    assert "🔴 2026-04-29 — Bearish downgrade" in out
 
 
 def test_fmt_catalysts_field_caps_at_eight():

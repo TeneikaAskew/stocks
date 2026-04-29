@@ -288,9 +288,20 @@ def handle_replay(ticker: str, date_arg: str,
     # Insight: INSIGHT_AS_OF (datetime, 09:15 ET = 13:15 UTC during DST).
     # The insight pipeline writes to insight_reports; insight-discord-push
     # then posts the embed.
-    as_of_dt = datetime(d.year, d.month, d.day, 13, 15, tzinfo=timezone.utc)
+    #
+    # When the requested date is TODAY, the canonical 13:15 UTC anchor
+    # may be in the future relative to the moment the slash command
+    # fires (e.g. user runs /replay date:today at 13:04 UTC; 13:15 is
+    # 11 minutes in the future and `parse_as_of` rejects it). Clamp
+    # to "now - 1 minute" in that case so the cutoff is comfortably
+    # in the past without losing temporal precision.
+    canonical_as_of = datetime(d.year, d.month, d.day, 13, 15,
+                               tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    insight_as_of = (canonical_as_of if canonical_as_of <= now
+                     else now - timedelta(minutes=1))
     insight_ok = execute_cloud_run_job("insight-pipeline", {
-        "INSIGHT_AS_OF": as_of_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "INSIGHT_AS_OF": insight_as_of.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "INSIGHT_TICKERS": ticker_u,
     })
 

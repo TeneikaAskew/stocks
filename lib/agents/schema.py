@@ -91,6 +91,17 @@ class Catalyst(BaseModel):
     date: str = Field(..., description="ISO date (YYYY-MM-DD)")
     impact: Literal["high", "medium", "low"]
     kind: Literal["economic", "earnings", "news_topic", "sec_8k"]
+    sentiment_score: Optional[float] = Field(
+        default=None,
+        description=(
+            "AlphaVantage overall_sentiment_score for news_topic items "
+            "(range -1 to +1; >+0.15 bullish, <-0.15 bearish). None for "
+            "non-news kinds (economic / earnings / sec_8k) where "
+            "directional sentiment doesn't apply. Discord embed renders "
+            "🟢/🟡/🔴 from this when present, falling back to impact-based "
+            "coloring otherwise."
+        ),
+    )
 
 
 class RiskFlag(BaseModel):
