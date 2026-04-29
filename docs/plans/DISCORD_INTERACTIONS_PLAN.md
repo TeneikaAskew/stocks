@@ -292,12 +292,24 @@ After Slice 1, you can already replay any past date for any watchlist ticker. Th
 
 ---
 
-## 12. Open questions
+## 12. Resolved decisions (2026-04-28)
 
-1. **Channel scoping** — should `/replay` post results back to the channel where the slash was typed, or to a fixed `#ai-insights` channel? Currently the morning brief posts to a fixed channel. Recommend: results go to the originating channel (gives flexibility to use replays in private DMs / threads).
-2. **Permissions** — restrict commands to specific Discord roles? Or allow any guild member? Recommend: allow any member for v1 since this is a personal trading server. Add role gates if you ever invite teammates.
-3. **Backtest defaults** — what's the canonical default window? Recommend: 5 years (2021-01-01 → today) with `--use-strat` enabled, since that matches the strategy you're actually trading.
+User signed off on the recommended defaults for all three open questions:
+
+1. **Channel scoping** → **originating channel** (where the slash was typed). Replay/validate/backtest results post back to wherever the user invoked the command. Gives flexibility to use the commands in private DMs / threads without polluting the main `#ai-insights` channel.
+2. **Permissions** → **any guild member** (v1). No role gates. Easy to add later via Discord's `default_member_permissions` field on the command definition if teammates ever join the server.
+3. **Backtest defaults** → **5y window (2021-01-01 → today) with `--use-strat` enabled**. Matches the strategy actually being traded. User can override with explicit `start:` / `end:` arguments when needed.
+
+These are wired into the implementation as constants:
+
+```python
+# scripts/discord/register_commands.py + the interactions service
+DEFAULT_BACKTEST_WINDOW_YEARS = 5
+DEFAULT_BACKTEST_USE_STRAT = True
+COMMAND_PERMISSIONS = None        # any-member (v1)
+RESPONSE_CHANNEL = "originating"  # post back to channel of invocation
+```
 
 ---
 
-**Ready to implement Slice 0 + Slice 1 once these three open questions are answered.**
+**Ready to implement Slice 0 (already shipped in PR #137) → Slice 1 (Cloud Run service + `/replay`) on the next branch.**
