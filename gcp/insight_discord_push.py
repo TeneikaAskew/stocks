@@ -199,18 +199,24 @@ def _fmt_targets_field(
 
 
 def _fmt_risk_flags_field(risk_flags: list) -> str:
-    """Concatenate top risk flags into a single field (≤1024 chars)."""
+    """Concatenate top risk flags into a single field (≤1024 chars).
+
+    Persona-line emojis (⚠️/ℹ️) intentionally omitted — the category is
+    already conveyed by the section header (⚠️ Risk flags), and per
+    user-facing feedback the per-line markers added visual clutter
+    without aiding scanability. Severity is preserved in the data
+    model (`flag['severity']`) so downstream consumers (UI, journal)
+    can colour-code or filter without depending on emoji presence.
+    """
     if not risk_flags:
         return "—"
     lines = []
     for flag in risk_flags:
         if not isinstance(flag, dict):
             continue
-        sev = flag.get("severity", "info")
         persona = flag.get("persona", "")
         msg = flag.get("message", "")
-        marker = "⚠️" if sev == "warn" else "ℹ️"
-        prefix = f"{marker} **{persona}**: " if persona else f"{marker} "
+        prefix = f"**{persona}**: " if persona else ""
         lines.append(prefix + str(msg))
     return _truncate("\n".join(lines), MAX_FIELD_VALUE) if lines else "—"
 

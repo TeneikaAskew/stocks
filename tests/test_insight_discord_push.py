@@ -160,15 +160,23 @@ def test_fmt_targets_field_default_is_normal():
     assert "ORB-only" not in out
 
 
-def test_fmt_risk_flags_field_renders_severity_marker():
+def test_fmt_risk_flags_field_renders_persona_label_without_emoji():
+    """Per-line persona-emoji markers stripped — severity is conveyed
+    by the section header (⚠️ Risk flags) plus persona name; per-line
+    emojis added clutter without helping the reader."""
     out = push._fmt_risk_flags_field([
         {"severity": "warn", "persona": "neutral", "message": "Stop too tight"},
         {"severity": "info", "persona": "aggressive", "message": "Targets close"},
     ])
-    assert "⚠️" in out
-    assert "ℹ️" in out
+    # Persona name still bold-prefixed
+    assert "**neutral**:" in out
+    assert "**aggressive**:" in out
+    # Messages preserved
     assert "Stop too tight" in out
     assert "Targets close" in out
+    # Per-line warning / info emojis explicitly removed
+    assert "⚠️" not in out
+    assert "ℹ️" not in out
 
 
 def test_fmt_risk_flags_field_empty_returns_dash():
