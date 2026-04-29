@@ -357,6 +357,183 @@ class TestPlaybookEmbed:
         assert len(embed['fields']) == 1
         assert 'CALLS above' in embed['fields'][0]['value']
 
+    def test_orb_explanation_appears_in_description(self):
+        """LLM-generated ORB explanation appended to embed description."""
+        from gcp.premarket_brief import _build_playbook_embed
+        brief = {
+            'tickers': {
+                'IWM': {'playbook': 'IWM\nCALLS above 215.85 (PDH)'},
+            },
+            'recommended_orb_window': '5m',
+            'recommended_orb_reason': '5-min ORB selected',
+            'llm_orb_explanation': '5m is the baseline scalp window when '
+                                   'no high-impact event before 10:00 AM. '
+                                   '15m/30m alternatives still valid for swing.',
+        }
+        embed = _build_playbook_embed(brief)
+        assert '5-min ORB selected' in embed['description']
+        assert 'baseline scalp window' in embed['description']
+        # Brain emoji marker so the explanation is visually distinct
+        assert '\U0001F9E0' in embed['description']
+
+    def test_per_ticker_playbook_explanation_field(self):
+        """LLM 'Why this trigger' field rendered after each ticker's playbook."""
+        from gcp.premarket_brief import _build_playbook_embed
+        brief = {
+            'tickers': {
+                'IWM': {
+                    'playbook': 'IWM\nCALLS above 215.85 (PDH)',
+                    'llm_playbook': 'CDO chosen because pre-market sits at open.',
+                },
+            },
+            'recommended_orb_window': '5m',
+        }
+        embed = _build_playbook_embed(brief)
+        # Two fields: the playbook code-block + the explanation
+        assert len(embed['fields']) == 2
+        explain_field = next(f for f in embed['fields'] if 'Why this trigger' in f['name'])
+        assert 'CDO chosen' in explain_field['value']
+        assert explain_field['inline'] is False
+
+    def test_playbook_explanation_omitted_when_blank(self):
+        """No explanation field when llm_playbook missing."""
+        from gcp.premarket_brief import _build_playbook_embed
+        brief = {
+            'tickers': {'IWM': {'playbook': 'IWM\nCALLS above 215.85 (PDH)'}},
+            'recommended_orb_window': '5m',
+        }
+        embed = _build_playbook_embed(brief)
+        assert len(embed['fields']) == 1
+        assert all('Why this trigger' not in f['name'] for f in embed['fields'])
+
+
+class TestTickerFieldsLayout:
+    """Field-pair splits + LLM analysis slot for the ticker analysis embed."""
+
+    def _ticker_data(self, **overrides):
+        base = {
+            'price': 215.42, 'change_pct': 1.2,
+            'rsi': 72, 'rsi_direction': 'up',
+            'stoch_k': 99, 'stoch_d': 99,
+            'macd_cross': 'Bullish',
+            'consecutive_up': 2, 'consecutive_down': 0,
+            'signal_status': 'PUT setup (4/5)',
+            'prev_day_high': 278.13, 'prev_day_low': 274.23,
+            'sma200': 244.59,
+            'bb_upper': 269.49, 'bb_lower': 234.88,
+            'ema9': 261.14, 'ema20': 256.36,
+            'atr14': 6.06,
+            'strat_candle': '2U', 'strat_combo': '132_bull_continuation',
+            'strat_setup': False,
+            'ftfc_score': 1.0, 'ftfc_direction': 'bullish',
+            'ftfc_labels': {'1d': '2U', '1w': '2U', '1mo': '2U'},
+        }
+        base.update(overrides)
+        return base
+
+    def test_prev_h_and_prev_l_on_separate_lines(self):
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data()}}
+        fields = _build_ticker_fields(brief)
+        levels_value = next(f['value'] for f in fields if f['name'] == 'IWM Levels')
+        # Each on its own line — the old combined "Prev H/L" form is gone
+        assert 'Prev H: $278.13' in levels_value
+        assert 'Prev L: $274.23' in levels_value
+        assert 'Prev H/L:' not in levels_value
+
+    def test_ema9_and_ema20_on_separate_lines(self):
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data()}}
+        fields = _build_ticker_fields(brief)
+        levels_value = next(f['value'] for f in fields if f['name'] == 'IWM Levels')
+        assert 'EMA9: $261.14' in levels_value
+        assert 'EMA20: $256.36' in levels_value
+        assert 'EMA 9/20:' not in levels_value
+
+    def test_rsi_and_stoch_on_separate_lines(self):
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data()}}
+        fields = _build_ticker_fields(brief)
+        mom_value = next(f['value'] for f in fields if f['name'] == 'IWM Momentum')
+        # Two distinct lines now, not the old "RSI: X | StochRSI: Y" mash-up
+        rsi_lines = [ln for ln in mom_value.split('\n') if ln.startswith('RSI:')]
+        stoch_lines = [ln for ln in mom_value.split('\n') if ln.startswith('StochRSI:')]
+        assert len(rsi_lines) == 1
+        assert len(stoch_lines) == 1
+        assert '|' not in rsi_lines[0]  # no inline pipe-separated value any more
+
+    def test_three_inline_fields_per_ticker_when_no_llm_analysis(self):
+        """With no llm_analysis the embed keeps the legacy 3-field layout."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data()}}
+        fields = _build_ticker_fields(brief)
+        assert len(fields) == 3
+        assert all(f['inline'] for f in fields)
+
+    def test_llm_analysis_appends_full_width_field(self):
+        """When llm_analysis is set, a 4th non-inline field renders below."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(
+            llm_analysis='IWM sits 13% above SMA200; longs favored on pullback.',
+        )}}
+        fields = _build_ticker_fields(brief)
+        assert len(fields) == 4
+        explain = fields[3]
+        assert 'IWM Analysis' in explain['name']
+        assert explain['inline'] is False
+        assert 'longs favored' in explain['value']
+
+    def test_two_tickers_each_get_their_own_explanation_block(self):
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {
+            'IWM': self._ticker_data(llm_analysis='IWM analysis text.'),
+            'SPY': self._ticker_data(llm_analysis='SPY analysis text.'),
+        }}
+        fields = _build_ticker_fields(brief)
+        # 4 fields per ticker × 2 = 8 total
+        assert len(fields) == 8
+        # Each analysis field follows its ticker's 3 inline columns
+        assert fields[0]['name'] == 'IWM Levels'
+        assert fields[3]['name'].endswith('IWM Analysis')
+        assert fields[4]['name'] == 'SPY Levels'
+        assert fields[7]['name'].endswith('SPY Analysis')
+
+
+class TestOverviewEmbedSetupExplanation:
+    """LLM 'Today's setup' line lands under the FTFC summary."""
+
+    def test_setup_explanation_renders_under_ftfc(self):
+        from gcp.premarket_brief import _build_overview_embed
+        brief = {
+            'date': 'Tue Apr 28, 2026',
+            'tickers': {
+                'IWM': {'price': 215, 'change_pct': 1.0, 'rsi': 72,
+                        'ftfc_direction': 'bullish', 'ftfc_score': 1.0,
+                        'vol_regime': 'Normal'},
+            },
+            'llm_overview': "All names print +1.0 FTFC bullish — every "
+                            "timeframe agrees. Trend-continuation favored.",
+        }
+        embed = _build_overview_embed(brief)
+        assert "Today's setup" in embed['description']
+        assert 'Trend-continuation favored' in embed['description']
+        # Brain emoji prefix so the line is visually distinct
+        assert '\U0001F9E0' in embed['description']
+
+    def test_overview_unchanged_when_no_explanation(self):
+        from gcp.premarket_brief import _build_overview_embed
+        brief = {
+            'date': 'Tue Apr 28, 2026',
+            'tickers': {
+                'IWM': {'price': 215, 'change_pct': 1.0, 'rsi': 72,
+                        'ftfc_direction': 'bullish', 'ftfc_score': 1.0,
+                        'vol_regime': 'Normal'},
+            },
+        }
+        embed = _build_overview_embed(brief)
+        # Setup explanation absent → header line absent
+        assert "Today's setup" not in embed['description']
+
 
 # ── BRIEF_AS_OF / BRIEF_TICKERS env overrides (Slice 0 of Discord plan) ──
 
