@@ -210,19 +210,32 @@ _env_string() {
 # /validate, /backtest, /watchlist (latter three stubbed in Slice 1).
 #
 # Setup prerequisites (one-time, before deploy):
-#   1. Create Discord app at discord.com/developers/applications
-#   2. Add three secrets to GCP Secret Manager:
+#   1. Use your EXISTING Discord app (the one whose webhook posts the
+#      morning briefs). No need to create a new app — the webhook URL
+#      and the application identity are independent properties of the
+#      same app and can coexist.
+#   2. Grab three values from Dev Portal → Your App:
+#        General Information  →  Application ID
+#        General Information  →  Public Key
+#        Bot                  →  Reset Token  (one-time copy; the
+#                                webhook flow doesn't need this so
+#                                you may have never generated it)
+#   3. Store each in GCP Secret Manager (paste value, then Ctrl+D):
 #        gcloud secrets create discord-app-id --data-file=-
 #        gcloud secrets create discord-public-key --data-file=-
 #        gcloud secrets create discord-bot-token --data-file=-
-#   3. Grant the trading-runner SA `roles/run.developer` so it can dispatch
-#      other Cloud Run Jobs:
+#   4. Grant the trading-runner SA `roles/run.developer` so it can
+#      dispatch other Cloud Run Jobs:
 #        gcloud projects add-iam-policy-binding ${PROJECT_ID} \
 #            --member=serviceAccount:${SA_EMAIL} \
 #            --role=roles/run.developer
-#   4. After this script runs, set the service URL as the "Interactions
+#   5. Bot must be in the guild with `applications.commands` + `bot`
+#      OAuth scopes. If your existing bot is already in the guild
+#      (because it posts the morning brief), slash commands work
+#      once registered — no re-invite needed.
+#   6. After this script runs, set the service URL as the "Interactions
 #      Endpoint URL" in Discord Dev Portal → General Information.
-#   5. Run scripts/discord/register_commands.py to register the commands.
+#   7. Run scripts/discord/register_commands.py to register the commands.
 deploy_discord_interactions() {
     echo "Deploying discord-interactions SERVICE..."
 
