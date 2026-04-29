@@ -407,6 +407,35 @@ class TestPlaybookEmbed:
         assert all('Why this trigger' not in f['name'] for f in embed['fields'])
 
 
+class TestStochRegimeTag:
+    """StochRSI K/D → 'oversold' / 'overbought' / 'neutral'."""
+
+    def test_pegged_top_is_overbought(self):
+        from gcp.premarket_brief import _stoch_regime_tag
+        assert _stoch_regime_tag(100, 99) == 'overbought'
+        assert _stoch_regime_tag(85, 80) == 'overbought'
+
+    def test_pegged_bottom_is_oversold(self):
+        from gcp.premarket_brief import _stoch_regime_tag
+        assert _stoch_regime_tag(0, 1) == 'oversold'
+        assert _stoch_regime_tag(20, 15) == 'oversold'
+
+    def test_mid_range_is_neutral(self):
+        from gcp.premarket_brief import _stoch_regime_tag
+        assert _stoch_regime_tag(50, 55) == 'neutral'
+        assert _stoch_regime_tag(40, 60) == 'neutral'
+
+    def test_either_line_pegged_top_triggers_overbought(self):
+        """If K=85 but D=70, the more extreme reading wins."""
+        from gcp.premarket_brief import _stoch_regime_tag
+        assert _stoch_regime_tag(85, 70) == 'overbought'
+
+    def test_none_input_returns_blank(self):
+        from gcp.premarket_brief import _stoch_regime_tag
+        assert _stoch_regime_tag(None, 50) == ''
+        assert _stoch_regime_tag(50, None) == ''
+
+
 class TestFmtCombo:
     """Snake-case storage form → title-case render form."""
 
@@ -511,6 +540,35 @@ class TestTickerFieldsLayout:
         assert len(rsi_lines) == 1
         assert len(stoch_lines) == 1
         assert '|' not in rsi_lines[0]  # no inline pipe-separated value any more
+
+    def test_stochrsi_renders_with_overbought_regime_tag(self):
+        """100/99 reading should append (overbought) so the trader sees
+        the regime context next to the raw numbers."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(stoch_k=100, stoch_d=99)}}
+        fields = _build_ticker_fields(brief)
+        mom_value = next(f['value'] for f in fields if f['name'] == 'IWM Momentum')
+        stoch_line = next(ln for ln in mom_value.split('\n') if ln.startswith('StochRSI:'))
+        assert '100/99' in stoch_line
+        assert '(overbought)' in stoch_line
+
+    def test_stochrsi_renders_with_oversold_regime_tag(self):
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(stoch_k=5, stoch_d=10)}}
+        fields = _build_ticker_fields(brief)
+        mom_value = next(f['value'] for f in fields if f['name'] == 'IWM Momentum')
+        stoch_line = next(ln for ln in mom_value.split('\n') if ln.startswith('StochRSI:'))
+        assert '(oversold)' in stoch_line
+
+    def test_stochrsi_neutral_renders_with_neutral_tag(self):
+        """Mid-range readings show '(neutral)' — positive signal too,
+        not noise. Tells the trader 'no momentum exhaustion either way'."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(stoch_k=50, stoch_d=55)}}
+        fields = _build_ticker_fields(brief)
+        mom_value = next(f['value'] for f in fields if f['name'] == 'IWM Momentum')
+        stoch_line = next(ln for ln in mom_value.split('\n') if ln.startswith('StochRSI:'))
+        assert '(neutral)' in stoch_line
 
     def test_three_inline_fields_per_ticker_when_no_llm_analysis(self):
         """With no llm_analysis the embed keeps the legacy 3-field layout."""

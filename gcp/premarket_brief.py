@@ -765,6 +765,42 @@ def _fmt_timeframe(tf: str) -> str:
     return tf.upper()
 
 
+def _stoch_regime_tag(stoch_k, stoch_d) -> str:
+    """Translate the larger of K and D into the standard 0-100 regime tag.
+
+    StochRSI is RSI applied to RSI itself — measures where current
+    RSI sits within its recent range. The two lines (K and D) almost
+    always agree on which band they're in, so we tag based on the
+    larger value (the more extreme reading) which is the one a
+    trader would react to. Bands follow the common 20/80 thresholds:
+
+      * ``oversold``    — both lines ≤ 20 (RSI is at the LOW end of
+                          its lookback range; mean-reversion up
+                          favoured short-term)
+      * ``overbought``  — either line ≥ 80 (RSI at the HIGH end;
+                          mean-reversion down favoured)
+      * ``neutral``     — anywhere between (no momentum-exhaustion
+                          signal either way)
+
+    The IWM 100/99 reading from the 2026-04-28 brief is the
+    canonical "fully pegged at the top" overbought call this tag
+    surfaces — combined with regular RSI 73, it argues for a
+    pullback to EMA9 / BB mid-band rather than further breakout.
+    """
+    if stoch_k is None or stoch_d is None:
+        return ''
+    try:
+        hi = max(float(stoch_k), float(stoch_d))
+        lo = min(float(stoch_k), float(stoch_d))
+    except (TypeError, ValueError):
+        return ''
+    if hi >= 80:
+        return 'overbought'
+    if lo <= 20:
+        return 'oversold'
+    return 'neutral'
+
+
 def _build_overview_embed(brief: dict) -> dict:
     """Embed 1: Market overview — previous day recap + regime context."""
     lines = []
@@ -875,7 +911,11 @@ def _build_ticker_fields(brief: dict) -> list:
         rsi_arrow = '\u2193' if d.get('rsi_direction') == 'down' else '\u2191'
         mom_lines = [f'RSI: {d["rsi"]:.0f} {rsi_arrow}']
         if d.get('stoch_k') is not None:
-            mom_lines.append(f'StochRSI: {d["stoch_k"]:.0f}/{d["stoch_d"]:.0f}')
+            tag = _stoch_regime_tag(d['stoch_k'], d['stoch_d'])
+            tag_suffix = f' ({tag})' if tag else ''
+            mom_lines.append(
+                f'StochRSI: {d["stoch_k"]:.0f}/{d["stoch_d"]:.0f}{tag_suffix}'
+            )
         mom_lines.append(f'MACD: {d.get("macd_cross", "N/A")}')
 
         consec = ''
