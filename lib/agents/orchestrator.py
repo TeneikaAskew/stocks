@@ -500,15 +500,52 @@ async def run_insight_pipeline(
         logger.warning("deterministic plan compute failed: %s", exc)
         persona_plans = []
 
+    # Surface the trigger regime at the top level so brief / Discord
+    # consumers can render different copy without iterating into
+    # persona_plans. All three personas share the same regime (it's
+    # determined per-context, not per-persona). If plans failed to
+    # compute, default to 'normal' — the LLM's plan is the only source.
+    regime = persona_plans[0].regime if persona_plans else "normal"
+
+    # Use the deterministic persona plan as the source of truth for the
+    # headline entry/stop/targets. The LLM PM is allowed to *suggest*
+    # numbers in its response but those are replaced here with the
+    # audit-able math from `trade_planner.compute_persona_plans`. The
+    # neutral persona is the canonical "headline" version (1 ATR stop,
+    # 1R/2R/3R targets); aggressive and conservative remain available
+    # as alternatives in `report.persona_plans`.
+    #
+    # This closes the LLM-hallucination surface that produced ARM 4/20's
+    # $237.68 entry zone (a number sourced from outside the bundle —
+    # see docs/plans/INSIGHT_ZONE_HALLUCINATION_PLAN.md). On orb_only
+    # regimes the persona plan publishes placeholder bracketing levels
+    # and the rationale tells the trader to wait for the opening range.
+    if persona_plans:
+        canonical = next(
+            (p for p in persona_plans if p.persona == "neutral"),
+            persona_plans[0],
+        )
+        headline_entry_zone = canonical.entry_zone
+        headline_stop = canonical.stop
+        headline_targets = canonical.targets
+    else:
+        # Deterministic plan compute failed — fall back to the LLM's
+        # numbers so the report still has actionable fields. Degraded
+        # but better than emitting an empty plan.
+        headline_entry_zone = pm.entry_zone
+        headline_stop = pm.stop
+        headline_targets = pm.targets
+
     report = InsightReport(
         ticker=ticker.upper(),
         as_of=datetime.now(timezone.utc) if as_of is None else _as_datetime(as_of),
         direction=direction,
         conviction=pm.conviction,
         thesis=pm.thesis,
-        entry_zone=pm.entry_zone,
-        stop=pm.stop,
-        targets=pm.targets,
+        regime=regime,
+        entry_zone=headline_entry_zone,
+        stop=headline_stop,
+        targets=headline_targets,
         invalidation=pm.invalidation,
         time_horizon=pm.time_horizon,
         key_levels=pm.key_levels,

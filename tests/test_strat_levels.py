@@ -397,3 +397,72 @@ class TestFormatLevelsForBrief:
         text = format_levels_for_brief(lm, 'bearish')
         if 'CALLS above' in text:
             assert 'only if bias denied' in text
+
+    # ── Regime-aware playbook output (PR α) ───────────────────────────
+
+    def test_orb_only_regime_suppresses_calls_and_puts(self):
+        """orb_only: pre-market cleared every level; the playbook
+        replaces CALLS/PUTS with an ORB-wait banner."""
+        df = _daily_df(60)
+        price = float(df['Close'].iloc[-1])
+        lm = build_level_map('IWM', df, price)
+        text = format_levels_for_brief(lm, 'bullish', regime='orb_only')
+        assert 'ORB-only' in text
+        assert 'wait' in text.lower() or '15-min' in text
+        # Suppressed: no CALLS/PUTS lines
+        assert 'CALLS above' not in text
+        assert 'PUTS below' not in text
+
+    def test_extended_regime_prepends_warning_keeps_triggers(self):
+        """extended: warning header + standard CALLS/PUTS still rendered."""
+        df = _daily_df(60)
+        price = float(df['Close'].iloc[-1])
+        lm = build_level_map('IWM', df, price)
+        text = format_levels_for_brief(lm, 'bullish', regime='extended')
+        assert 'Extended gap' in text
+        assert 'ORB' in text
+        # Still has trigger lines (extended ≠ skip the trade)
+        assert 'CALLS above' in text or 'PUTS below' in text
+
+    def test_normal_regime_matches_legacy_output(self):
+        """normal regime: identical to the legacy no-regime call."""
+        df = _daily_df(60)
+        price = float(df['Close'].iloc[-1])
+        lm = build_level_map('IWM', df, price)
+        text_normal = format_levels_for_brief(lm, 'bullish', regime='normal')
+        text_legacy = format_levels_for_brief(lm, 'bullish')
+        assert text_normal == text_legacy
+
+    def test_default_regime_is_normal(self):
+        """No regime kwarg → backwards-compat with pre-α callers."""
+        df = _daily_df(60)
+        price = float(df['Close'].iloc[-1])
+        lm = build_level_map('IWM', df, price)
+        text = format_levels_for_brief(lm, 'bullish')
+        assert 'Extended gap' not in text
+        assert 'ORB-only' not in text
+
+
+# ─── levels_to_named_dict (PR α adapter) ──────────────────────────────────
+
+
+class TestLevelsToNamedDict:
+    def test_extracts_named_levels(self):
+        from lib.strat_levels import levels_to_named_dict
+        df = _daily_df(60)
+        price = float(df['Close'].iloc[-1])
+        lm = build_level_map('IWM', df, price)
+        d = levels_to_named_dict(lm)
+        # PDH/PDL should always be present after 60 days of data
+        assert 'PDH' in d
+        assert 'PDL' in d
+        # All values should be floats
+        assert all(isinstance(v, float) for v in d.values())
+
+    def test_empty_level_map(self):
+        from lib.strat_levels import LevelMap, levels_to_named_dict
+        empty = LevelMap(
+            ticker='X', as_of='2026-01-01', current_price=100.0,
+            levels=[], pmg_zones=[],
+        )
+        assert levels_to_named_dict(empty) == {}

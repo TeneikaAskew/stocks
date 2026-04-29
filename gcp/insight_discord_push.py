@@ -147,9 +147,36 @@ def _fmt_levels_field(key_levels: dict) -> str:
     return _truncate("\n".join(lines), MAX_FIELD_VALUE) if lines else "—"
 
 
-def _fmt_targets_field(entry_zone: Optional[dict], stop, targets) -> str:
-    """Compact one-field summary of entry / stop / targets."""
+def _fmt_targets_field(
+    entry_zone: Optional[dict], stop, targets,
+    regime: str = "normal",
+) -> str:
+    """Compact one-field summary of entry / stop / targets.
+
+    Regime-aware rendering (PR α):
+      * `normal`     — standard Entry / Stop / Targets layout.
+      * `extended`   — same fields plus a leading "⚠️ Extended gap"
+                       banner reminding the trader to wait for ORB
+                       confirmation before entering.
+      * `orb_only`   — pre-market cleared every structural level in
+                       the trade direction. Suppress the placeholder
+                       entry/stop numbers entirely (they're not real
+                       triggers — see lib/agents/trade_planner.py
+                       _orb_only_plan) and emit an ORB-wait callout.
+    """
+    if regime == "orb_only":
+        return (
+            "⚠️ **ORB-only** — pre-market cleared every structural "
+            "level. No entry trigger; wait for the 15-min opening "
+            "range to establish before sizing in."
+        )
+
     parts = []
+    if regime == "extended":
+        parts.append(
+            "⚠️ **Extended gap** — next level is far above/below pre-market; "
+            "recommend 15-min ORB confirmation before entry."
+        )
     if isinstance(entry_zone, dict):
         lo, hi = entry_zone.get("low"), entry_zone.get("high")
         if lo is not None and hi is not None:
@@ -356,6 +383,11 @@ def format_report_embed(row: dict) -> dict:
     conviction = (r.get("conviction") or "").lower()
     failed = r.get("failed_sections") or []
     confidence = r.get("confidence_score")
+    # PR α: regime tags whether the LLM's deterministic plan has a
+    # tradeable trigger or whether pre-market action ate the entry.
+    # Default 'normal' for backwards-compat with reports persisted
+    # before the field existed in the schema.
+    regime = (r.get("regime") or "normal").lower()
 
     # Header line
     if direction in ("long", "short"):
@@ -391,10 +423,17 @@ def format_report_embed(row: dict) -> dict:
     # persist article-level data (intentional — keeps the JSON compact).
     news_articles = fetch_top_news_articles(row.get("ticker", ""), row.get("as_of"))
 
+    plan_field_name = {
+        "orb_only": "📐 Trade plan · ORB-only",
+        "extended": "📐 Trade plan · ⚠️ extended",
+    }.get(regime, "📐 Trade plan")
     fields = [
         {
-            "name": "📐 Trade plan",
-            "value": _fmt_targets_field(r.get("entry_zone"), r.get("stop"), r.get("targets")),
+            "name": plan_field_name,
+            "value": _fmt_targets_field(
+                r.get("entry_zone"), r.get("stop"), r.get("targets"),
+                regime=regime,
+            ),
             "inline": True,
         },
         {
