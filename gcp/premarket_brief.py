@@ -717,6 +717,54 @@ def _truncate(s: str, limit: int) -> str:
     return s[: max(0, limit - 1)].rstrip() + '…'
 
 
+def _fmt_combo(combo: str) -> str:
+    """Render a Strat combo identifier in human-readable form.
+
+    Storage form is snake_case (e.g. ``322_bull_continuation``,
+    ``failed_2u_bear_reversal``, ``clean_2u_bull``) — that's the
+    canonical key the codebase uses across DB rows, signals, the
+    LLM bundle, and journal entries. The render layer (this brief
+    embed) converts to title-case for trader readability:
+
+      ``322_bull_continuation``     → ``322 Bull Continuation``
+      ``failed_2u_bear_reversal``   → ``Failed 2U Bear Reversal``
+      ``clean_2u_bull``             → ``Clean 2U Bull``
+
+    Numeric prefixes (``322``, ``212``) and the ``2U``/``2D`` candle
+    tokens stay as-is because they're recognised lingo. Everything
+    else gets ``capitalize()``-d.
+    """
+    if not combo or combo == 'none':
+        return ''
+    out = []
+    for part in combo.split('_'):
+        if part.upper() in ('2U', '2D'):
+            out.append(part.upper())
+        elif part.isdigit():
+            out.append(part)
+        else:
+            out.append(part.capitalize())
+    return ' '.join(out)
+
+
+def _fmt_timeframe(tf: str) -> str:
+    """Render a timeframe key in canonical uppercase short form.
+
+    The codebase uses the lib/data_loader.RESAMPLE_RULES keys
+    (``1d``, ``1w``, ``1mo``, ``4h``…) for storage and FTFC math.
+    Discord readers prefer ``1D`` / ``1W`` / ``1M`` / ``4H`` — looks
+    cleaner alongside ticker symbols which are also uppercase.
+
+    ``1mo`` collapses to ``1M`` (not ``1MO``) — 'M' is unambiguous in
+    a trading context.
+    """
+    if not tf:
+        return tf
+    if tf.lower() == '1mo':
+        return '1M'
+    return tf.upper()
+
+
 def _build_overview_embed(brief: dict) -> dict:
     """Embed 1: Market overview — previous day recap + regime context."""
     lines = []
@@ -846,13 +894,23 @@ def _build_ticker_fields(brief: dict) -> list:
         })
 
         # Field 3: Strat / FTFC
+        # Combo names are stored snake_case in the DB / LLM bundle
+        # (`322_bull_continuation`) but rendered title-case here for
+        # readability (`322 Bull Continuation`). Timeframe keys use
+        # the `lib/data_loader.RESAMPLE_RULES` lowercase form for
+        # storage (`1d`, `1w`, `1mo`) but render uppercase here
+        # (`1D`, `1W`, `1M`) so they read like ticker symbols.
         strat_lines = [f'Daily: {d["strat_candle"]}']
         if d['strat_combo'] != 'none':
-            strat_lines[0] += f' | Combo: {d["strat_combo"]}'
+            combo_pretty = _fmt_combo(d['strat_combo'])
+            strat_lines[0] += f' | Combo: {combo_pretty}'
         strat_lines.append(
             f'FTFC: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
         )
-        tf_parts = ' '.join(f'{k}:{v}' for k, v in d.get('ftfc_labels', {}).items())
+        tf_parts = ' '.join(
+            f'{_fmt_timeframe(k)}:{v}'
+            for k, v in d.get('ftfc_labels', {}).items()
+        )
         if tf_parts:
             strat_lines.append(tf_parts)
         if d['strat_setup']:

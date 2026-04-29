@@ -407,6 +407,56 @@ class TestPlaybookEmbed:
         assert all('Why this trigger' not in f['name'] for f in embed['fields'])
 
 
+class TestFmtCombo:
+    """Snake-case storage form → title-case render form."""
+
+    def test_322_bull_continuation_capitalized(self):
+        from gcp.premarket_brief import _fmt_combo
+        assert _fmt_combo('322_bull_continuation') == '322 Bull Continuation'
+
+    def test_failed_2u_keeps_2u_uppercase(self):
+        from gcp.premarket_brief import _fmt_combo
+        assert _fmt_combo('failed_2u_bear_reversal') == 'Failed 2U Bear Reversal'
+
+    def test_clean_2d_bull(self):
+        from gcp.premarket_brief import _fmt_combo
+        assert _fmt_combo('clean_2d_bull') == 'Clean 2D Bull'
+
+    def test_212_bull_reversal(self):
+        from gcp.premarket_brief import _fmt_combo
+        assert _fmt_combo('212_bull_reversal') == '212 Bull Reversal'
+
+    def test_none_or_empty_returns_blank(self):
+        from gcp.premarket_brief import _fmt_combo
+        assert _fmt_combo('') == ''
+        assert _fmt_combo(None) == ''
+        assert _fmt_combo('none') == ''
+
+
+class TestFmtTimeframe:
+    """RESAMPLE_RULES key → uppercase short form."""
+
+    def test_lowercase_day_to_uppercase(self):
+        from gcp.premarket_brief import _fmt_timeframe
+        assert _fmt_timeframe('1d') == '1D'
+
+    def test_lowercase_week_to_uppercase(self):
+        from gcp.premarket_brief import _fmt_timeframe
+        assert _fmt_timeframe('1w') == '1W'
+
+    def test_1mo_collapses_to_1M(self):
+        from gcp.premarket_brief import _fmt_timeframe
+        assert _fmt_timeframe('1mo') == '1M'
+
+    def test_4h_to_4H(self):
+        from gcp.premarket_brief import _fmt_timeframe
+        assert _fmt_timeframe('4h') == '4H'
+
+    def test_blank_passthrough(self):
+        from gcp.premarket_brief import _fmt_timeframe
+        assert _fmt_timeframe('') == ''
+
+
 class TestTickerFieldsLayout:
     """Field-pair splits + LLM analysis slot for the ticker analysis embed."""
 
@@ -469,6 +519,34 @@ class TestTickerFieldsLayout:
         fields = _build_ticker_fields(brief)
         assert len(fields) == 3
         assert all(f['inline'] for f in fields)
+
+    def test_strat_field_renders_combo_title_case(self):
+        """`322_bull_continuation` should render as `322 Bull Continuation`
+        in the brief embed — not the snake_case storage form."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(
+            strat_combo='322_bull_continuation',
+        )}}
+        fields = _build_ticker_fields(brief)
+        strat_value = next(f['value'] for f in fields if f['name'] == 'IWM Strat')
+        assert '322 Bull Continuation' in strat_value
+        assert '322_bull_continuation' not in strat_value
+
+    def test_strat_field_renders_timeframes_uppercase(self):
+        """ftfc_labels keys (1d/1w/1mo) should render uppercase (1D/1W/1M)."""
+        from gcp.premarket_brief import _build_ticker_fields
+        brief = {'tickers': {'IWM': self._ticker_data(
+            ftfc_labels={'1d': '2U', '1w': '2U', '1mo': '2U'},
+        )}}
+        fields = _build_ticker_fields(brief)
+        strat_value = next(f['value'] for f in fields if f['name'] == 'IWM Strat')
+        # New uppercase form
+        assert '1D:2U' in strat_value
+        assert '1W:2U' in strat_value
+        assert '1M:2U' in strat_value
+        # Old lowercase form gone
+        assert '1d:2U' not in strat_value
+        assert '1mo:2U' not in strat_value
 
     def test_llm_analysis_appends_full_width_field(self):
         """When llm_analysis is set, a 4th non-inline field renders below."""
