@@ -717,6 +717,90 @@ def _truncate(s: str, limit: int) -> str:
     return s[: max(0, limit - 1)].rstrip() + '…'
 
 
+def _fmt_combo(combo: str) -> str:
+    """Render a Strat combo identifier in human-readable form.
+
+    Storage form is snake_case (e.g. ``322_bull_continuation``,
+    ``failed_2u_bear_reversal``, ``clean_2u_bull``) — that's the
+    canonical key the codebase uses across DB rows, signals, the
+    LLM bundle, and journal entries. The render layer (this brief
+    embed) converts to title-case for trader readability:
+
+      ``322_bull_continuation``     → ``322 Bull Continuation``
+      ``failed_2u_bear_reversal``   → ``Failed 2U Bear Reversal``
+      ``clean_2u_bull``             → ``Clean 2U Bull``
+
+    Numeric prefixes (``322``, ``212``) and the ``2U``/``2D`` candle
+    tokens stay as-is because they're recognised lingo. Everything
+    else gets ``capitalize()``-d.
+    """
+    if not combo or combo == 'none':
+        return ''
+    out = []
+    for part in combo.split('_'):
+        if part.upper() in ('2U', '2D'):
+            out.append(part.upper())
+        elif part.isdigit():
+            out.append(part)
+        else:
+            out.append(part.capitalize())
+    return ' '.join(out)
+
+
+def _fmt_timeframe(tf: str) -> str:
+    """Render a timeframe key in canonical uppercase short form.
+
+    The codebase uses the lib/data_loader.RESAMPLE_RULES keys
+    (``1d``, ``1w``, ``1mo``, ``4h``…) for storage and FTFC math.
+    Discord readers prefer ``1D`` / ``1W`` / ``1M`` / ``4H`` — looks
+    cleaner alongside ticker symbols which are also uppercase.
+
+    ``1mo`` collapses to ``1M`` (not ``1MO``) — 'M' is unambiguous in
+    a trading context.
+    """
+    if not tf:
+        return tf
+    if tf.lower() == '1mo':
+        return '1M'
+    return tf.upper()
+
+
+def _stoch_regime_tag(stoch_k, stoch_d) -> str:
+    """Translate the larger of K and D into the standard 0-100 regime tag.
+
+    StochRSI is RSI applied to RSI itself — measures where current
+    RSI sits within its recent range. The two lines (K and D) almost
+    always agree on which band they're in, so we tag based on the
+    larger value (the more extreme reading) which is the one a
+    trader would react to. Bands follow the common 20/80 thresholds:
+
+      * ``oversold``    — both lines ≤ 20 (RSI is at the LOW end of
+                          its lookback range; mean-reversion up
+                          favoured short-term)
+      * ``overbought``  — either line ≥ 80 (RSI at the HIGH end;
+                          mean-reversion down favoured)
+      * ``neutral``     — anywhere between (no momentum-exhaustion
+                          signal either way)
+
+    The IWM 100/99 reading from the 2026-04-28 brief is the
+    canonical "fully pegged at the top" overbought call this tag
+    surfaces — combined with regular RSI 73, it argues for a
+    pullback to EMA9 / BB mid-band rather than further breakout.
+    """
+    if stoch_k is None or stoch_d is None:
+        return ''
+    try:
+        hi = max(float(stoch_k), float(stoch_d))
+        lo = min(float(stoch_k), float(stoch_d))
+    except (TypeError, ValueError):
+        return ''
+    if hi >= 80:
+        return 'overbought'
+    if lo <= 20:
+        return 'oversold'
+    return 'neutral'
+
+
 def _build_overview_embed(brief: dict) -> dict:
     """Embed 1: Market overview — previous day recap + regime context."""
     lines = []
@@ -827,7 +911,11 @@ def _build_ticker_fields(brief: dict) -> list:
         rsi_arrow = '\u2193' if d.get('rsi_direction') == 'down' else '\u2191'
         mom_lines = [f'RSI: {d["rsi"]:.0f} {rsi_arrow}']
         if d.get('stoch_k') is not None:
-            mom_lines.append(f'StochRSI: {d["stoch_k"]:.0f}/{d["stoch_d"]:.0f}')
+            tag = _stoch_regime_tag(d['stoch_k'], d['stoch_d'])
+            tag_suffix = f' ({tag})' if tag else ''
+            mom_lines.append(
+                f'StochRSI: {d["stoch_k"]:.0f}/{d["stoch_d"]:.0f}{tag_suffix}'
+            )
         mom_lines.append(f'MACD: {d.get("macd_cross", "N/A")}')
 
         consec = ''
@@ -846,13 +934,26 @@ def _build_ticker_fields(brief: dict) -> list:
         })
 
         # Field 3: Strat / FTFC
+        # Combo names are stored snake_case in the DB / LLM bundle
+        # (`322_bull_continuation`) but rendered title-case here for
+        # readability (`322 Bull Continuation`). Timeframe keys use
+        # the `lib/data_loader.RESAMPLE_RULES` lowercase form for
+        # storage (`1d`, `1w`, `1mo`) but render uppercase here
+        # (`1D`, `1W`, `1M`) so they read like ticker symbols.
+        # Daily / Combo land on their own lines (rather than the
+        # previous `Daily: 2U | Combo: ...` mash-up) — the long
+        # title-cased combo names overflowed visually when piped onto
+        # the Daily line on mobile.
         strat_lines = [f'Daily: {d["strat_candle"]}']
         if d['strat_combo'] != 'none':
-            strat_lines[0] += f' | Combo: {d["strat_combo"]}'
+            strat_lines.append(f'Combo: {_fmt_combo(d["strat_combo"])}')
         strat_lines.append(
             f'FTFC: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
         )
-        tf_parts = ' '.join(f'{k}:{v}' for k, v in d.get('ftfc_labels', {}).items())
+        tf_parts = ' '.join(
+            f'{_fmt_timeframe(k)}:{v}'
+            for k, v in d.get('ftfc_labels', {}).items()
+        )
         if tf_parts:
             strat_lines.append(tf_parts)
         if d['strat_setup']:
