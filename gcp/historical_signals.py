@@ -54,14 +54,23 @@ COLS = (
 
 
 def latest_entry_time(ticker: str) -> Optional[datetime]:
-    """Return MAX(entry_time) for a ticker, or None when no rows exist."""
+    """Return MAX(entry_time) for a ticker, or None when no rows exist.
+
+    Index by position (row[0]) instead of attribute (row.t) - pg8000's
+    Row implementation returns a wrapped Row when an aliased aggregate
+    is accessed by attribute name, which propagates back to callers as
+    a Row instead of a datetime and breaks downstream arithmetic
+    (TypeError: unsupported operand type(s) for +: 'Row' and
+    'datetime.timedelta' in scripts/run_historical_signals.py).
+    Positional indexing returns the scalar value reliably.
+    """
     engine = get_engine()
     with engine.connect() as conn:
         row = conn.execute(
             text('SELECT MAX(entry_time) AS t FROM historical_signals WHERE ticker = :t'),
             {'t': ticker.upper()},
         ).fetchone()
-    return row.t if row and row.t else None
+    return row[0] if row and row[0] else None
 
 
 def delete_for_ticker(ticker: str) -> int:
