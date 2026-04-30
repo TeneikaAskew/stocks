@@ -195,3 +195,92 @@ def test_compute_returns_metrics_when_premarket_bars_present(monkeypatch):
     # gap_pct = (180.0 - 175.0) / 175.0 * 100 ≈ +2.86%
     assert result['gap_pct'] is not None
     assert abs(result['gap_pct'] - 2.857) < 0.01
+
+
+# ──────────────────────────────────────────────────────────────────────
+# upsert_premarket — filter rows with no useful pre-market data
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestUpsertFiltering:
+    """Regression: AV occasionally returns no pre-market bars for a
+    ticker (early run, weekend, extended-hours not enabled). Without
+    this filter, upsert would INSERT a row with all NULLs, which
+    crashed the morning brief's compute_current_levels."""
+
+    def test_skips_rows_with_all_pre_fields_null(self, monkeypatch):
+        """Row where every pre_* field is None must NOT trigger INSERT."""
+        from gcp.fetchers import fetch_premarket_refresh as fpr
+
+        # Stub get_engine so we can detect any execute() call
+        executed = []
+        class FakeConn:
+            def execute(self, sql, params):
+                executed.append(params)
+        class FakeBegin:
+            def __enter__(self): return FakeConn()
+            def __exit__(self, *a): return False
+        class FakeEngine:
+            def begin(self): return FakeBegin()
+        from gcp import database
+        monkeypatch.setattr(database, "get_engine", lambda: FakeEngine())
+
+        n = fpr.upsert_premarket([
+            {'ticker': 'EMPTY', 'date': date(2026, 4, 30),
+             'pre_high': None, 'pre_low': None, 'pre_vwap': None,
+             'pre_volume': None, 'gap_pct': None},
+        ])
+        assert n == 0
+        assert executed == [], "no INSERT should fire for all-null row"
+
+    def test_keeps_rows_with_at_least_one_pre_field(self, monkeypatch):
+        from gcp.fetchers import fetch_premarket_refresh as fpr
+
+        executed = []
+        class FakeConn:
+            def execute(self, sql, params):
+                executed.append(params)
+        class FakeBegin:
+            def __enter__(self): return FakeConn()
+            def __exit__(self, *a): return False
+        class FakeEngine:
+            def begin(self): return FakeBegin()
+        from gcp import database
+        monkeypatch.setattr(database, "get_engine", lambda: FakeEngine())
+
+        # Row with only gap_pct → keep
+        n = fpr.upsert_premarket([
+            {'ticker': 'GAP_ONLY', 'date': date(2026, 4, 30),
+             'pre_high': None, 'pre_low': None, 'pre_vwap': None,
+             'pre_volume': None, 'gap_pct': 0.42},
+        ])
+        assert n == 1
+        assert len(executed) == 1
+        assert executed[0]['ticker'] == 'GAP_ONLY'
+
+    def test_mixed_useful_and_empty_rows(self, monkeypatch):
+        """Useful rows persist; empty ones are silently dropped."""
+        from gcp.fetchers import fetch_premarket_refresh as fpr
+
+        executed = []
+        class FakeConn:
+            def execute(self, sql, params):
+                executed.append(params)
+        class FakeBegin:
+            def __enter__(self): return FakeConn()
+            def __exit__(self, *a): return False
+        class FakeEngine:
+            def begin(self): return FakeBegin()
+        from gcp import database
+        monkeypatch.setattr(database, "get_engine", lambda: FakeEngine())
+
+        n = fpr.upsert_premarket([
+            {'ticker': 'GOOD', 'date': date(2026, 4, 30),
+             'pre_high': 180.0, 'pre_low': 178.0, 'pre_vwap': 179.0,
+             'pre_volume': 100, 'gap_pct': 1.5},
+            {'ticker': 'EMPTY', 'date': date(2026, 4, 30),
+             'pre_high': None, 'pre_low': None, 'pre_vwap': None,
+             'pre_volume': None, 'gap_pct': None},
+        ])
+        assert n == 1
+        assert {e['ticker'] for e in executed} == {'GOOD'}
