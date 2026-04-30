@@ -20,6 +20,16 @@
 
 set -euo pipefail
 
+# Disable Git Bash / MSYS2 Unix→Windows path conversion. Without this,
+# any value passed to gcloud that starts with `/` (e.g. a Cloud SQL DB
+# password starting with `/axQM...`) gets mangled to `C:\Program Files\
+# Git\axQM...` before reaching the gcloud Windows binary. That mangling
+# silently broke DB_PASS for every Cloud Run Job deployed from a Git
+# Bash shell on Windows on 2026-04-30. Setting this here makes deploys
+# from any shell (Git Bash, WSL, Linux CI) produce identical results.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
+
 PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
 REGION="${REGION:-us-east1}"
 IMAGE="us-east1-docker.pkg.dev/${PROJECT_ID}/trading/trading-system"
