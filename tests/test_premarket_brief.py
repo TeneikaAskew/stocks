@@ -978,6 +978,132 @@ class TestResolveRunKindAndUpdate:
         allow_update, run_kind = _resolve_run_kind_and_update(False)
         assert allow_update is False
         assert run_kind == 'manual_replay'
+
+
+class TestPersistPlaybookFailedHandling:
+    """A per-ticker playbook crash sets data['status']='PLAYBOOK_FAILED'
+    on the ticker's brief dict (gcp/premarket_brief.py:1008-1019). The
+    persist layer must:
+      - still write the row to premarket_analysis_history (audit trail)
+      - skip the canonical premarket_analysis row entirely
+    Without this, a fresh-day failure inserts a NULL-playbook row into
+    the canonical view that the morning Discord embed reads from.
+    """
+
+    def _install_persist_mocks(self, monkeypatch):
+        from gcp import database
+
+        captured = {
+            'history_rows': [],
+            'upsert_rows': [],
+            'row_exists_calls': [],
+        }
+
+        def fake_bulk_insert(df, table):
+            captured['history_rows'].append((table, df.to_dict('records')))
+            return len(df)
+
+        def fake_upsert(df, table, keys):
+            captured['upsert_rows'].append((table, df.to_dict('records')))
+            return len(df)
+
+        def fake_row_exists(table, where):
+            captured['row_exists_calls'].append((table, dict(where)))
+            return False  # default: no existing rows → all inserts
+
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'bulk_insert_dataframe', fake_bulk_insert)
+        monkeypatch.setattr(database, 'upsert_dataframe', fake_upsert)
+        monkeypatch.setattr(database, 'row_exists', fake_row_exists)
+        return captured
+
+    def _brief_with_tickers(self, tickers: dict) -> dict:
+        return {
+            'analysis_date': date(2026, 4, 30),
+            'tickers': tickers,
+        }
+
+    def test_playbook_failed_writes_to_history_only(self, monkeypatch):
+        """PLAYBOOK_FAILED ticker: history yes, canonical no."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = self._brief_with_tickers({
+            'IWM': {'status': 'PLAYBOOK_FAILED', 'price': 220.0,
+                    'playbook_error': "TypeError: NoneType > float"},
+            'SPX': {'status': None, 'price': 6891.7, 'playbook': 'long calls @...'},
+        })
+        n = persist_to_cloud_sql(brief, allow_update=True,
+                                 run_kind='manual_update', triggered_by='test')
+
+        # Both rows go to history
+        assert len(captured['history_rows']) == 1
+        history_table, history = captured['history_rows'][0]
+        assert history_table == 'premarket_analysis_history'
+        history_tickers = {r['ticker'] for r in history}
+        assert history_tickers == {'IWM', 'SPX'}
+
+        # Only SPX goes to current
+        assert n == 1
+        assert len(captured['upsert_rows']) == 1
+        upsert_table, upsert = captured['upsert_rows'][0]
+        assert upsert_table == 'premarket_analysis'
+        assert {r['ticker'] for r in upsert} == {'SPX'}
+
+    def test_no_data_skips_both_tables(self, monkeypatch):
+        """NO DATA ticker is excluded entirely; PLAYBOOK_FAILED is not."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = self._brief_with_tickers({
+            'NONE': {'status': 'NO DATA'},
+            'IWM':  {'status': 'PLAYBOOK_FAILED', 'price': 220.0},
+            'SPX':  {'status': None, 'price': 6891.7},
+        })
+        persist_to_cloud_sql(brief, allow_update=True,
+                             run_kind='manual_update', triggered_by='test')
+
+        history = captured['history_rows'][0][1]
+        history_tickers = {r['ticker'] for r in history}
+        # NO DATA fully excluded; PLAYBOOK_FAILED still in history
+        assert history_tickers == {'IWM', 'SPX'}
+
+    def test_all_playbook_failed_returns_zero_canonical(self, monkeypatch):
+        """If every ticker is PLAYBOOK_FAILED the canonical write short-
+        circuits to 0 without raising on an empty DataFrame."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = self._brief_with_tickers({
+            'IWM': {'status': 'PLAYBOOK_FAILED', 'price': 220.0},
+            'QQQ': {'status': 'PLAYBOOK_FAILED', 'price': 600.0},
+        })
+        n = persist_to_cloud_sql(brief, allow_update=True,
+                                 run_kind='manual_update', triggered_by='test')
+        assert n == 0
+        # History still got both rows
+        history = captured['history_rows'][0][1]
+        assert {r['ticker'] for r in history} == {'IWM', 'QQQ'}
+        # No canonical-table call at all
+        assert captured['upsert_rows'] == []
+
+    def test_playbook_failed_skipped_in_default_path(self, monkeypatch):
+        """In the default (allow_update=False) path, PLAYBOOK_FAILED
+        tickers are dropped before the row_exists check."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = self._brief_with_tickers({
+            'IWM': {'status': 'PLAYBOOK_FAILED', 'price': 220.0},
+            'SPX': {'status': None, 'price': 6891.7, 'playbook': 'x'},
+        })
+        persist_to_cloud_sql(brief, allow_update=False,
+                             run_kind='scheduled', triggered_by='test')
+        # row_exists called for SPX only — IWM was filtered upstream
+        seen = {c[1]['ticker'] for c in captured['row_exists_calls']}
+        assert seen == {'SPX'}
+
+
 # ──────────────────────────────────────────────────────────────────────
 # market_data_daily JOIN — gap_pct propagation
 # ──────────────────────────────────────────────────────────────────────

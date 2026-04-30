@@ -1011,6 +1011,13 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                   file=sys.stderr, flush=True)
             traceback.print_exc(file=sys.stderr)
             sys.stderr.flush()
+            # Mark the ticker as PLAYBOOK_FAILED so persist_to_cloud_sql
+            # writes the row to premarket_analysis_history (audit trail)
+            # but skips the canonical premarket_analysis row. Without
+            # this flag the partial row would land in the canonical
+            # table with NULL playbook on a fresh-day failure.
+            d['status'] = 'PLAYBOOK_FAILED'
+            d['playbook_error'] = f"{type(e).__name__}: {e}"
 
     # 🧠 LLM explanations — populate `llm_overview`, `llm_orb_explanation`,
     # and per-ticker `llm_analysis` / `llm_playbook` slots in parallel.
@@ -1929,9 +1936,17 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
     # explicit override.
     analysis_date = brief.get('analysis_date') or date.today()
     rows = []
+    # Tickers whose per-ticker playbook block raised. They still go to
+    # premarket_analysis_history (audit trail records the failure), but
+    # they MUST NOT land in the canonical premarket_analysis row — a
+    # partial row with NULL playbook would silently corrupt the morning
+    # snapshot on a fresh-day failure.
+    playbook_failed = set()
     for ticker, data in brief.get('tickers', {}).items():
         if data.get('status') == 'NO DATA':
             continue
+        if data.get('status') == 'PLAYBOOK_FAILED':
+            playbook_failed.add(ticker)
         rows.append({
             'analysis_date': analysis_date,
             'ticker': ticker,
@@ -1989,8 +2004,18 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
 
     # Step 2 — write to current table. Per-ticker conditional UPSERT
     # protects the canonical morning row when allow_update=False.
+    # Drop PLAYBOOK_FAILED tickers before either write path; those rows
+    # have no playbook + level data and would corrupt the canonical row.
+    canonical_rows = [r for r in rows if r['ticker'] not in playbook_failed]
+    if playbook_failed:
+        logger.warning(
+            "Skipped premarket_analysis write for %d PLAYBOOK_FAILED "
+            "ticker(s); history rows are still recorded. Failed: %s",
+            len(playbook_failed), ', '.join(sorted(playbook_failed)))
+    if not canonical_rows:
+        return 0
     if allow_update:
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(canonical_rows)
         n = upsert_dataframe(df, 'premarket_analysis', ['analysis_date', 'ticker'])
         logger.info("UPSERTED %d rows to premarket_analysis (allow_update=True)", n)
         return n
@@ -1998,7 +2023,7 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
     # Default path — INSERT only the rows that don't already exist.
     rows_to_write = []
     skipped = []
-    for row in rows:
+    for row in canonical_rows:
         if row_exists('premarket_analysis',
                       {'analysis_date': row['analysis_date'],
                        'ticker': row['ticker']}):
