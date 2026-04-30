@@ -84,7 +84,11 @@ def test_returns_empty_envelope_when_query_returns_no_rows(mock_cloud_sql):
 
 
 def _row(ticker, source, **kw):
-    """Build a one-row earnings_calendar dict matching the SELECT shape."""
+    """Build a one-row earnings_calendar dict matching the SELECT shape.
+
+    Includes the LEFT-joined market_data_daily columns (gap_pct, pre_high,
+    pre_low, pre_vwap) — set by tests that exercise the gap-render path.
+    """
     base = {
         "ticker": ticker,
         "earnings_date": date(2026, 4, 27),
@@ -94,7 +98,6 @@ def _row(ticker, source, **kw):
         "expected_move": 5.0,
         "sector": "Tech",
         "market_cap": 1_000_000_000,
-        "is_s_p_500": False,
         "stock_volume": 1_000_000,
         "options_volume": 50_000,
         "open_interest": 100_000,
@@ -104,6 +107,11 @@ def _row(ticker, source, **kw):
         "premium": None,
         "score": None,
         "data_source": source,
+        # Joined market_data_daily columns — None when no daily row
+        "gap_pct": None,
+        "pre_high": None,
+        "pre_low": None,
+        "pre_vwap": None,
     }
     base.update(kw)
     return base
@@ -164,7 +172,7 @@ def test_tier_2_uw_plus_yahoo_promotes_av_disagreement(mock_cloud_sql):
     """
     install, _ = mock_cloud_sql
     install(pd.DataFrame([
-        _row("SBUX", "unusual_whales", is_s_p_500=True, market_cap=112_000_000_000),
+        _row("SBUX", "unusual_whales", market_cap=112_000_000_000),
         _row("SBUX", "yahoo"),
     ]))
     from gcp.premarket_brief import load_earnings_for_brief
@@ -294,21 +302,6 @@ def test_market_cap_coalesces_across_sources(mock_cloud_sql):
 
     result = load_earnings_for_brief(date(2026, 4, 27))
     assert result["earnings"][0]["market_cap"] == 2_500_000_000_000
-
-
-def test_sp500_truthy_in_any_row_wins(mock_cloud_sql):
-    """is_s_p_500 may be False on UW but True on AV. The merged entry
-    sorts as if SP500 — so an AV-confirmed SP500 doesn't lose to a
-    UW row that omitted the flag."""
-    install, _ = mock_cloud_sql
-    install(pd.DataFrame([
-        _row("AAPL", "unusual_whales", is_s_p_500=False),
-        _row("AAPL", "alphavantage", is_s_p_500=True),
-    ]))
-    from gcp.premarket_brief import load_earnings_for_brief
-
-    result = load_earnings_for_brief(date(2026, 4, 27))
-    assert result["earnings"][0]["is_s_p_500"] is True
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -931,4 +924,295 @@ class TestResolveRunKindAndUpdate:
         allow_update, run_kind = _resolve_run_kind_and_update(False)
         assert allow_update is False
         assert run_kind == 'manual_replay'
+# ──────────────────────────────────────────────────────────────────────
+# market_data_daily JOIN — gap_pct propagation
+# ──────────────────────────────────────────────────────────────────────
 
+
+class TestTradeabilityRanking:
+    """The brief ranks by (options_volume × market_cap) BEFORE tier so a
+    tier-2 name with real options flow (e.g. SBUX 20K options + $112B
+    mcap) outranks tier-1 names with zero options (WELL, WM, MDLZ —
+    EW-confirmed but no flow). Tier remains a tiebreaker for similar
+    composite scores.
+    """
+
+    def test_high_flow_tier2_beats_zero_flow_tier1(self, mock_cloud_sql):
+        """SBUX tier 2 with real flow > WELL tier 1 with zero flow."""
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([
+            # WELL: tier 1 (3 sources confirm) but zero options
+            _row("WELL", "alphavantage",     options_volume=0, market_cap=149_000_000_000),
+            _row("WELL", "unusual_whales",   options_volume=0, market_cap=149_000_000_000),
+            _row("WELL", "earnings_whispers",options_volume=0, market_cap=149_000_000_000),
+            # SBUX: tier 2 (UW + Yahoo only) but high options + high mcap
+            _row("SBUX", "unusual_whales",   options_volume=20_000, market_cap=112_000_000_000),
+            _row("SBUX", "yahoo",            options_volume=20_000, market_cap=112_000_000_000),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        tickers = [e["ticker"] for e in result["earnings"]]
+        assert tickers == ["SBUX"], (
+            "SBUX with real flow must beat WELL with zero flow; WELL filtered out by options>0"
+        )
+
+    def test_tier_breaks_ties_at_same_score(self, mock_cloud_sql):
+        """Two names with identical options/mcap → tier 1 ranks first."""
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([
+            _row("BBB", "unusual_whales",     options_volume=10_000, market_cap=50_000_000_000),
+            _row("BBB", "yahoo",              options_volume=10_000, market_cap=50_000_000_000),
+            _row("AAA", "alphavantage",       options_volume=10_000, market_cap=50_000_000_000),
+            _row("AAA", "unusual_whales",     options_volume=10_000, market_cap=50_000_000_000),
+            _row("AAA", "earnings_whispers",  options_volume=10_000, market_cap=50_000_000_000),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        tickers = [e["ticker"] for e in result["earnings"]]
+        assert tickers == ["AAA", "BBB"], (
+            "Same score → tier 1 (AAA) ranks before tier 2 (BBB)"
+        )
+
+
+class TestOptionsFlowFilter:
+    """Names without options flow are filtered out — earnings are only
+    tradeable via options for this brief's use case. Removes the
+    long-tail tier-6 AV-only names (NULL options) and the
+    EW-confirmed-but-no-flow names (options_volume=0)."""
+
+    def test_zero_options_volume_filtered_out(self, mock_cloud_sql):
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([
+            _row("WELL", "unusual_whales", options_volume=0),
+            _row("AAPL", "unusual_whales", options_volume=12_345),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        tickers = [e["ticker"] for e in result["earnings"]]
+        assert tickers == ["AAPL"]
+
+    def test_null_options_volume_filtered_out(self, mock_cloud_sql):
+        """AV-only / EW-only rows have NULL options_volume (UW-derived
+        column). Those long-tail names get filtered out."""
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([
+            _row("OBSCURE", "alphavantage", options_volume=None),
+            _row("ACTIVE",  "unusual_whales", options_volume=5_000),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        tickers = [e["ticker"] for e in result["earnings"]]
+        assert tickers == ["ACTIVE"]
+
+    def test_options_volume_propagates_max_across_sources(self, mock_cloud_sql):
+        """One source has options_volume=NULL but another has the real
+        value. Filter must use the MAX across sources, not whichever
+        row was 'first'. Otherwise we'd drop SBUX whenever its AV row
+        (with NULL options) sorts before its UW row."""
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([
+            _row("SBUX", "alphavantage",   options_volume=None),
+            _row("SBUX", "unusual_whales", options_volume=20_272),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        assert len(result["earnings"]) == 1
+        assert result["earnings"][0]["ticker"] == "SBUX"
+        assert result["earnings"][0]["options_volume"] == 20_272
+
+
+class TestEarningsTimePicker:
+    """The group's earnings_time must come from the most-specific row,
+    not the lowest-priority one. AV often persists 'unknown' even when
+    UW has 'postmarket' — the embed mis-bucketed META/GOOGL into the
+    'Time Unknown' section before the dedicated picker.
+    """
+
+    def test_specific_time_beats_unknown(self, mock_cloud_sql):
+        """AV row says 'unknown', UW row says 'postmarket' — output time
+        must be 'postmarket' so the row lands in the AMC section."""
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([
+            _row("META", "alphavantage", earnings_time="unknown"),
+            _row("META", "unusual_whales", earnings_time="postmarket"),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        assert result["earnings"][0]["time"] == "postmarket"
+
+    def test_uw_wins_over_av_on_time_when_both_specific(self, mock_cloud_sql):
+        """UW > AV on time-of-day per the Yahoo cross-check observations
+        (UW had MA right when AV disagreed)."""
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([
+            _row("MA", "alphavantage", earnings_time="postmarket"),
+            _row("MA", "unusual_whales", earnings_time="premarket"),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        assert result["earnings"][0]["time"] == "premarket"
+
+    def test_all_unknown_stays_unknown(self, mock_cloud_sql):
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([_row("X", "yahoo", earnings_time="unknown")]))
+        from gcp.premarket_brief import load_earnings_for_brief
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        assert result["earnings"][0]["time"] == "unknown"
+
+
+class TestGapPctPropagation:
+    """The brief loader LEFT-joins market_data_daily so each output row
+    carries today's gap_pct. NULL when the ticker isn't in the daily
+    fetcher universe — must not crash."""
+
+    def test_gap_pct_propagates_to_output_row(self, mock_cloud_sql):
+        install, captured = mock_cloud_sql
+        install(pd.DataFrame([
+            _row("HUM", "alphavantage", earnings_time="premarket", gap_pct=4.2),
+            _row("HUM", "yahoo",        earnings_time="premarket", gap_pct=4.2),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        assert result["earnings"][0]["gap_pct"] == 4.2
+
+    def test_gap_pct_null_when_no_market_data_row(self, mock_cloud_sql):
+        """LEFT JOIN with no match → NULL → output row has gap_pct=None."""
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([_row("XYZ", "alphavantage", gap_pct=None)]))
+        from gcp.premarket_brief import load_earnings_for_brief
+
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        assert result["earnings"][0]["gap_pct"] is None
+
+    def test_sql_joins_market_data_daily(self, mock_cloud_sql):
+        """The SQL the loader sends must reference market_data_daily so
+        the join happens at query time, not Python-side."""
+        install, captured = mock_cloud_sql
+        install(pd.DataFrame([_row("AAPL", "alphavantage")]))
+        from gcp.premarket_brief import load_earnings_for_brief
+
+        load_earnings_for_brief(date(2026, 4, 27))
+        sql = captured["sql"].lower()
+        assert "left join market_data_daily" in sql
+        assert "gap_pct" in sql
+
+
+# ──────────────────────────────────────────────────────────────────────
+# _build_earnings_embed — daily section split + gap render
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _earnings_brief(rows, mode='daily'):
+    """Build the dict shape that load_earnings_for_brief returns."""
+    return {'mode': mode, 'earnings': rows}
+
+
+def _row_out(ticker, time_, tier, **kw):
+    """Build the post-loader output row shape that _build_earnings_embed
+    consumes (different from the SQL row — already grouped/tiered)."""
+    base = {
+        'ticker': ticker, 'date': date(2026, 4, 29),
+        'company_name': ticker + ' Inc',
+        'time': time_, 'tier': tier,
+        'eps_estimate': 1.0, 'expected_move': None,
+        'sector': '', 'market_cap': 1e9,
+        'strategy': '', 'strike': None, 'premium': None, 'score': None,
+        'sources': ['alphavantage'],
+        'gap_pct': None, 'pre_high': None, 'pre_low': None,
+    }
+    base.update(kw)
+    return base
+
+
+class TestEarningsEmbedSectionSplit:
+
+    def test_daily_partitions_into_three_sections(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('HUM',  'premarket',  1),
+            _row_out('AMZN', 'postmarket', 2),
+            _row_out('XYZ',  'unknown',    4),
+        ]))
+        desc = embed['description']
+        assert 'Reporting Before Open' in desc
+        assert 'Reporting After Close' in desc
+        assert 'Time Unknown / Intraday' in desc
+        # Each ticker must land under its correct header
+        bmo_pos = desc.index('Reporting Before Open')
+        amc_pos = desc.index('Reporting After Close')
+        other_pos = desc.index('Time Unknown / Intraday')
+        assert bmo_pos < desc.index('HUM') < amc_pos, "HUM must sit in BMO section"
+        assert amc_pos < desc.index('AMZN') < other_pos, "AMZN must sit in AMC section"
+        assert other_pos < desc.index('XYZ'), "XYZ must sit in unknown section"
+
+    def test_empty_section_omitted(self):
+        """Day with only AMC reporters → no 'Before Open' header rendered."""
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('MSFT', 'postmarket', 1),
+            _row_out('AMZN', 'postmarket', 2),
+        ]))
+        assert 'Reporting Before Open' not in embed['description']
+        assert 'Reporting After Close' in embed['description']
+
+    def test_per_section_cap_independent(self):
+        """11 BMO + 11 AMC names → each section caps at 10, BMO doesn't
+        crowd out AMC. Confirms the per-section cap fix."""
+        rows = (
+            [_row_out(f'BMO{i:02d}', 'premarket', 1) for i in range(11)]
+            + [_row_out(f'AMC{i:02d}', 'postmarket', 1) for i in range(11)]
+        )
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief(rows))
+        desc = embed['description']
+        # Each '+1 more' line indicates a section had the cap hit
+        assert desc.count('+1 more') == 2
+
+    def test_no_earnings_renders_placeholder(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([]))
+        assert 'No earnings scheduled' in embed['description']
+
+
+class TestEarningsEmbedGapRender:
+
+    def test_positive_gap_renders_with_chart_up(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('HUM', 'premarket', 1, gap_pct=4.2),
+        ]))
+        # 📈 = U+1F4C8
+        assert '\U0001f4c8' in embed['description']
+        assert '+4.2%' in embed['description']
+
+    def test_negative_gap_renders_with_chart_down(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('SBUX', 'postmarket', 2, gap_pct=-3.7),
+        ]))
+        # 📉 = U+1F4C9
+        assert '\U0001f4c9' in embed['description']
+        assert '-3.7%' in embed['description']
+
+    def test_below_threshold_gap_suppressed(self):
+        """±0.05% rounding noise must not clutter the line."""
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('AAPL', 'postmarket', 1, gap_pct=0.02),
+        ]))
+        assert '\U0001f4c8' not in embed['description']
+        assert '\U0001f4c9' not in embed['description']
+
+    def test_null_gap_renders_no_arrow(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('UNKWN', 'premarket', 4, gap_pct=None),
+        ]))
+        assert '\U0001f4c8' not in embed['description']
+        assert '\U0001f4c9' not in embed['description']

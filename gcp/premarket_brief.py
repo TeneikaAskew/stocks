@@ -123,15 +123,24 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     # Pull all rows, then dedupe + tier in Python
     # Pull liquidity/quality signals too so we can break tier ties.
     # Most are UW-only; AV/EW rows leave them NULL → sort gates handle that.
+    #
+    # LEFT JOIN market_data_daily on (ticker, earnings_date) so the embed
+    # can surface today's pre-market gap next to BMO reporters and any
+    # available pre-session range for AMC names whose post-day reaction
+    # is in scope. NULL when the ticker isn't in the daily fetcher
+    # universe — handled downstream.
     sql = """
-        SELECT ticker, earnings_date, company_name, earnings_time,
-               eps_estimate, expected_move, sector, market_cap,
-               is_s_p_500, stock_volume, options_volume, open_interest,
-               rv_1d_last_12q,
-               strategy, strike, premium, score, data_source
-        FROM earnings_calendar
-        WHERE earnings_date BETWEEN :start AND :end
-        ORDER BY ticker, earnings_date
+        SELECT ec.ticker, ec.earnings_date, ec.company_name, ec.earnings_time,
+               ec.eps_estimate, ec.expected_move, ec.sector, ec.market_cap,
+               ec.stock_volume, ec.options_volume, ec.open_interest,
+               ec.rv_1d_last_12q,
+               ec.strategy, ec.strike, ec.premium, ec.score, ec.data_source,
+               md.gap_pct, md.pre_high, md.pre_low, md.pre_vwap
+        FROM earnings_calendar ec
+        LEFT JOIN market_data_daily md
+          ON md.ticker = ec.ticker AND md.date = ec.earnings_date
+        WHERE ec.earnings_date BETWEEN :start AND :end
+        ORDER BY ec.ticker, ec.earnings_date
     """
     df = query_to_dataframe(sql, {'start': start, 'end': end})
 
@@ -187,9 +196,28 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         vals = [r.get(key) for r in rows if r.get(key) is not None and not pd.isna(r.get(key))]
         return max(vals) if vals else None
 
-    def _any_true(rows, key):
-        """True if any row has the key set truthy."""
-        return any(bool(r.get(key)) for r in rows)
+    def _best_time(rows_list):
+        """Pick the most-specific earnings_time across the group.
+
+        Group-by-(ticker, date) collects rows from all data sources, but
+        AV often persists earnings_time='unknown' even when UW knows the
+        time. Using the lowest-priority row's time directly mis-buckets
+        names like META/GOOGL into "Time Unknown" when UW had postmarket
+        all along.
+
+        Selection: any specific value beats 'unknown'; within specific
+        values UW > AV > EW (UW's time-of-day is the most reliable per
+        the Yahoo cross-check observations). Yahoo's calendar API never
+        surfaces BMO/AMC so its time is always 'unknown' here.
+        """
+        src_prio = {'unusual_whales': 0, 'alphavantage': 1, 'earnings_whispers': 2}
+        specific = [r for r in rows_list
+                    if r.get('earnings_time')
+                    and r['earnings_time'] != 'unknown']
+        if specific:
+            specific.sort(key=lambda r: src_prio.get(r.get('data_source'), 99))
+            return specific[0]['earnings_time']
+        return 'unknown'
 
     earnings = []
     for (ticker, earnings_date), group in groups.items():
@@ -204,18 +232,29 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         options_vol = _max_non_null(rows_list, 'options_volume')
         oi = _max_non_null(rows_list, 'open_interest')
         rv_12q = _max_non_null(rows_list, 'rv_1d_last_12q')
-        sp500 = _any_true(rows_list, 'is_s_p_500')
+        # is_s_p_500 dropped: UW's flag is missing for ~half of real
+        # SP500 names (WELL/WM/MDLZ/NXPI/OKE etc.) so it's noise rather
+        # than signal. Tradeability ranking (options_volume × market_cap)
+        # picks up SP500-grade liquidity directly.
+
+        # Pre-market reaction signals from market_data_daily (LEFT JOIN).
+        # For BMO reporters today: gap_pct = today's premarket open vs
+        # yesterday's close — directly reflects the announcement reaction.
+        # For AMC reporters today: NULL until tomorrow's gap. NULL also
+        # when the ticker isn't in the daily fetcher universe yet.
+        gap = _max_non_null(rows_list, 'gap_pct')
+        pre_h = _max_non_null(rows_list, 'pre_high')
+        pre_l = _max_non_null(rows_list, 'pre_low')
 
         earnings.append({
             'ticker': ticker,
             'date': earnings_date,
             'company_name': best.get('company_name') or '',
-            'time': best.get('earnings_time') or 'unknown',
+            'time': _best_time(rows_list),
             'eps_estimate': best.get('eps_estimate'),
             'expected_move': best.get('expected_move'),
             'sector': best.get('sector') or '',
             'market_cap': mcap,
-            'is_s_p_500': sp500,
             'stock_volume': stock_vol,
             'options_volume': options_vol,
             'open_interest': oi,
@@ -227,21 +266,41 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
             'source': best.get('data_source'),
             'sources': sorted(group['sources']),
             'tier': _tier(group['sources']),
+            'gap_pct': gap,
+            'pre_high': pre_h,
+            'pre_low': pre_l,
         })
 
-    # Sort: date → tier → SP500 first → options_volume DESC → stock_volume
-    # DESC → market_cap DESC → ticker. Negative-with-fallback yields NULLS
-    # LAST. SP500 truthy sorts before False/None via the int cast.
-    def _neg(v):
-        return -(v if v is not None else float('-inf'))
+    # Filter out names without options flow — earnings are only tradeable
+    # via options for our use case, and a ticker with options_volume=0
+    # (or NULL) means UW reported no options activity. AV-only / EW-only
+    # rows often have NULL options_volume because the field is UW-derived;
+    # those long-tail names rarely have meaningful options markets anyway.
+    # NULL → 0 → filtered.
+    earnings = [e for e in earnings if (e.get('options_volume') or 0) > 0]
+
+    # Sort by tradeability first, tier as tiebreaker.
+    #
+    # Tier-only sorting put EW-confirmed-but-illiquid names (WELL, WM,
+    # MDLZ, NXPI, OKE — all options_volume=0) ahead of high-flow names
+    # like SBUX (20K options, $112B mcap) just because EW picked a
+    # strategy. From a trader's POV that's backwards: real options
+    # flow + institutional weight matters more than analyst confirmation.
+    #
+    # Composite score (options_volume + 1) × (market_cap_B + 1):
+    #   - Names with BOTH signals get multiplicative boost
+    #   - Names with zero options collapse toward linear market_cap
+    #     (well below names with real options flow)
+    #   - Tier still matters as a tiebreaker for similar-score names
+    def _rank_score(r):
+        ovol = r.get('options_volume') or 0
+        mcap = r.get('market_cap') or 0
+        return (ovol + 1) * (mcap / 1e9 + 1)
 
     earnings.sort(key=lambda r: (
         r['date'],
-        r['tier'],
-        -int(bool(r.get('is_s_p_500'))),     # True (1) sorts before False (0)
-        _neg(r.get('options_volume')),
-        _neg(r.get('stock_volume')),
-        _neg(r.get('market_cap')),
+        -_rank_score(r),     # tradeability primary (DESC)
+        r['tier'],           # tier breaks ties (1 before 6)
         r['ticker'],
     ))
 
@@ -1025,8 +1084,16 @@ def _build_ticker_fields(brief: dict) -> list:
 def _build_earnings_embed(earnings_data: dict) -> dict:
     """Embed 4: Earnings calendar — today (weekday) or week ahead (Sunday).
 
-    Prefers EW rows (which carry strategy, strike, premium) and falls back
-    to AV/UW. Truncates to stay under Discord's 4096-char description limit.
+    Daily mode partitions rows into Before Open / After Close / Intraday
+    sections so traders can scan the timing-relevant bucket at a glance.
+    Each section caps independently so a busy AMC day doesn't crowd out
+    BMO names.
+
+    Pre-market gap_pct (from the LEFT-joined market_data_daily) renders
+    next to rows as \U0001f4c8 +X.X% / \U0001f4c9 -X.X% — the announcement
+    reaction in pre-session for names that already reported.
+
+    Truncates to stay under Discord's 4096-char description limit.
     """
     mode = earnings_data.get('mode', 'daily')
     rows = earnings_data.get('earnings', [])
@@ -1052,6 +1119,19 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
             return None if (f != f) else f  # NaN check (NaN != NaN)
         except (ValueError, TypeError):
             return None
+
+    def _gap_str(gap):
+        """Render gap_pct as up/down arrow + signed pct, or '' when no signal.
+
+        \xb10.05% threshold so pure rounding noise doesn't clutter the line;
+        real announcement reactions are typically \xb12-10% on earnings names.
+        """
+        g = _valid_num(gap)
+        if g is None or abs(g) < 0.05:
+            return ''
+        if g > 0:
+            return f'\U0001f4c8 +{g:.1f}%'
+        return f'\U0001f4c9 {g:.1f}%'
 
     def _row_line(r):
         t_icon = time_icon.get(r.get('time'), '\u2754')
@@ -1085,6 +1165,11 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
                 extras.append(f'EPS {eps:.2f}')
         if not extras and r.get('sector'):
             extras.append(str(r['sector'])[:20])
+        # Pre-market gap reaction (where market_data_daily has data).
+        # Always last so it visually anchors the right side of the line.
+        gap_str = _gap_str(r.get('gap_pct'))
+        if gap_str:
+            extras.append(gap_str)
         extra_str = f' — {" | ".join(extras)}' if extras else ''
         return f'{badge}{t_icon} **{ticker}**{extra_str}'
 
@@ -1126,17 +1211,54 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         title = f'Earnings Week Ahead — {total_confirmed} confirmed / {total} total'
         description = '\n'.join(sections).strip()
     else:
+        # Daily mode: partition by time-of-day so traders scan the
+        # relevant bucket directly. Each section caps independently —
+        # a busy AMC day no longer crowds out BMO names.
         confirmed = _confirmed_count(rows)
         title = f'Earnings Today — {confirmed} confirmed / {len(rows)} total'
-        # Daily: show top 20 (already tier-sorted)
-        lines = [_row_line(r) for r in rows[:20]]
-        if len(rows) > 20:
-            hidden_conf = max(0, confirmed - sum(1 for r in rows[:20] if r.get('tier', 6) <= 3))
-            if hidden_conf > 0:
-                lines.append(f'_+{len(rows) - 20} more ({hidden_conf} confirmed)_')
-            else:
-                lines.append(f'_+{len(rows) - 20} more_')
-        description = '\n'.join(lines)
+
+        def _bucket(r):
+            t = r.get('time')
+            if t == 'premarket':  return 'bmo'
+            if t == 'postmarket': return 'amc'
+            return 'other'  # intraday + unknown
+
+        buckets = {'bmo': [], 'amc': [], 'other': []}
+        for r in rows:
+            buckets[_bucket(r)].append(r)
+
+        # Per-section caps. BMO/AMC each get 10; intraday/unknown bucket
+        # is small (TNS rows + the rare during-market reporter) so 5 is
+        # enough. Caller can pass top_n to override at the SQL layer.
+        SECTION_CAP = {'bmo': 10, 'amc': 10, 'other': 5}
+        SECTION_HEAD = [
+            ('bmo',   '☀️ Reporting Before Open'),
+            ('amc',   '\U0001f319 Reporting After Close'),
+            ('other', '\U0001f552 Time Unknown / Intraday'),
+        ]
+        sections = []
+        for key, header in SECTION_HEAD:
+            bucket = buckets[key]
+            if not bucket:
+                continue
+            cap = SECTION_CAP[key]
+            kept = bucket[:cap]
+            sec_lines = [
+                f'\n**{header}** ({_confirmed_count(bucket)} confirmed / {len(bucket)})'
+            ]
+            sec_lines.extend(_row_line(r) for r in kept)
+            if len(bucket) > cap:
+                hidden_conf = max(0, _confirmed_count(bucket)
+                                  - sum(1 for r in kept if r.get('tier', 6) <= 3))
+                if hidden_conf > 0:
+                    sec_lines.append(
+                        f'_+{len(bucket) - cap} more ({hidden_conf} confirmed)_'
+                    )
+                else:
+                    sec_lines.append(f'_+{len(bucket) - cap} more_')
+            sections.append('\n'.join(sec_lines))
+
+        description = '\n'.join(sections).strip()
 
     return {
         'title': title,
