@@ -333,20 +333,71 @@ def ticker_has_daily_data(ticker: str) -> bool:
         return True
 
 
+def _brief_row_exists(ticker: str, analysis_date) -> bool:
+    """Check premarket_analysis for an existing row at this (date, ticker)."""
+    try:
+        from gcp.database import row_exists
+        return row_exists('premarket_analysis',
+                          {'analysis_date': str(analysis_date),
+                           'ticker': ticker.upper()})
+    except Exception as exc:
+        logger.warning("_brief_row_exists check failed: %s", exc)
+        return False
+
+
+def _insight_row_exists(ticker: str, as_of: datetime) -> bool:
+    """Check insight_reports for an existing row at this (ticker, as_of)."""
+    try:
+        from gcp.database import row_exists
+        return row_exists('insight_reports',
+                          {'ticker': ticker.upper(),
+                           'as_of': as_of.strftime('%Y-%m-%d %H:%M:%S+00')})
+    except Exception as exc:
+        logger.warning("_insight_row_exists check failed: %s", exc)
+        return False
+
+
+def _log_cache_hit(ticker: str, user_id: str) -> None:
+    """Insert a cache_hit row into insight_runs for the audit trail.
+
+    Uses the existing insight_runs schema with trigger='cache_hit'
+    (CHECK constraint extended in Phase 1 schema migration). The
+    status='done' so admin UIs that filter on done runs see it.
+    """
+    try:
+        from gcp.database import execute_sql
+        from uuid import uuid4
+        execute_sql(
+            """
+            INSERT INTO insight_runs
+                (id, ticker, status, trigger, started_at, finished_at)
+            VALUES (:id, :t, 'done', 'cache_hit', NOW(), NOW())
+            """,
+            {'id': str(uuid4()), 't': ticker.upper()},
+        )
+        logger.info("cache_hit logged for %s (user=%s)", ticker, user_id or '?')
+    except Exception as exc:
+        # Don't fail the replay if audit logging breaks.
+        logger.warning("_log_cache_hit failed: %s", exc)
+
+
 def handle_replay(ticker: str, date_arg: str,
-                  application_id: str, interaction_token: str) -> str:
+                  application_id: str, interaction_token: str,
+                  refresh: bool = False, user_id: str = "") -> str:
     """Background handler for /replay. Returns the followup-message text.
 
-    Triggers the brief + insight + push pipeline as_of the requested
-    date, focused on the requested ticker. The brief / insight Cloud
-    Run Jobs each post their own Discord embeds via the existing
-    DISCORD_WEBHOOK_URL flow; we just edit the deferred reply with a
-    "done" confirmation when both jobs have been dispatched.
+    Two paths:
 
-    If the ticker has no daily history yet (e.g. user requested AMD
-    when only the morning watchlist is loaded), this function FIRST
-    dispatches the backfill-ticker Cloud Run Job and BLOCKS until
-    it finishes (~1-2 min) so brief + insight read populated tables.
+    1. CACHE HIT (refresh=False AND both brief + insight rows already
+       exist for the date): dispatch the brief and push jobs in
+       'render existing' mode. They pull the canonical rows from
+       Cloud SQL and post fresh Discord embeds without recomputing.
+       Logs an `insight_runs` row with trigger='cache_hit' for audit.
+
+    2. REFRESH (refresh=True OR cache miss): existing path — auto-
+       backfill if needed, then dispatch the full brief + insight
+       Cloud Run Jobs with BRIEF_UPDATE/INSIGHT_UPDATE env vars so
+       the new persistence path UPSERTs the canonical row.
     """
     try:
         d = parse_date_arg(date_arg)
@@ -355,9 +406,47 @@ def handle_replay(ticker: str, date_arg: str,
 
     ticker_u = ticker.upper().strip()
 
+    # Canonical insight as_of slot (9:15 EDT = 13:15 UTC during DST).
+    canonical_as_of = datetime(d.year, d.month, d.day, 13, 15,
+                               tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    insight_as_of = (canonical_as_of if canonical_as_of <= now
+                     else now - timedelta(minutes=1))
+
+    # ── Path 1: cache hit ────────────────────────────────────────
+    if not refresh:
+        if (_brief_row_exists(ticker_u, d)
+                and _insight_row_exists(ticker_u, insight_as_of)):
+            logger.info("cache hit for %s on %s — dispatching render-existing jobs",
+                        ticker_u, d.isoformat())
+            _log_cache_hit(ticker_u, user_id)
+
+            triggered_by = f"discord:replay:{user_id}" if user_id else "discord:replay"
+            # Dispatch render-existing brief job (--post-existing mode).
+            # The brief job's args are passed via BRIEF_POST_EXISTING env
+            # var so the existing job-update wrapper can override them.
+            brief_ok = execute_cloud_run_job("premarket-brief", {
+                "BRIEF_POST_EXISTING_TICKER": ticker_u,
+                "BRIEF_POST_EXISTING_DATE":   d.isoformat(),
+                "BRIEF_TRIGGERED_BY":         triggered_by,
+            })
+            insight_ok = execute_cloud_run_job("insight-discord-push", {
+                "INSIGHT_PUSH_ONE_TICKER": ticker_u,
+                "INSIGHT_PUSH_ONE_DATE":   d.isoformat(),
+            })
+
+            if not brief_ok and not insight_ok:
+                return (f"❌ Cache-hit re-post failed for {ticker_u} "
+                        f"{d.isoformat()}. Try `refresh:true`.")
+            return (
+                f"📼 **Cached replay** for **{ticker_u}** on "
+                f"**{d.isoformat()}** — brief + insight re-posted "
+                f"(no recompute). Use `refresh:true` to re-run with "
+                f"the latest code."
+            )
+
+    # ── Path 2: refresh OR cache miss ────────────────────────────
     # Pre-flight: if the ticker has zero data, run the backfill first.
-    # The backfill job itself adds the ticker to the watchlists table
-    # so subsequent /replay invocations skip this branch.
     backfill_msg = ""
     if not ticker_has_daily_data(ticker_u):
         logger.info("auto-backfill: %s has no daily data; dispatching", ticker_u)
@@ -377,32 +466,25 @@ def handle_replay(ticker: str, date_arg: str,
                     f"backfill-ticker Cloud Run Job logs in GCP.")
         backfill_msg = f"✅ Backfill complete for **{ticker_u}**. "
 
-    # Brief: BRIEF_AS_OF + BRIEF_TICKERS (Slice 0). Brief posts its own
-    # Discord embed via DISCORD_WEBHOOK_URL on completion.
-    brief_ok = execute_cloud_run_job("premarket-brief", {
-        "BRIEF_AS_OF": d.isoformat(),
-        "BRIEF_TICKERS": ticker_u,
-    })
+    triggered_by = f"discord:replay:{user_id}" if user_id else "discord:replay"
+    # Brief: BRIEF_AS_OF + BRIEF_TICKERS. BRIEF_UPDATE=true so the new
+    # persistence path UPSERTs the row instead of skipping it.
+    brief_env = {
+        "BRIEF_AS_OF":         d.isoformat(),
+        "BRIEF_TICKERS":       ticker_u,
+        "BRIEF_UPDATE":        "true",
+        "BRIEF_TRIGGERED_BY":  triggered_by,
+    }
+    brief_ok = execute_cloud_run_job("premarket-brief", brief_env)
 
-    # Insight: INSIGHT_AS_OF (datetime, 09:15 ET = 13:15 UTC during DST).
-    # The insight pipeline writes to insight_reports; insight-discord-push
-    # then posts the embed.
-    #
-    # When the requested date is TODAY, the canonical 13:15 UTC anchor
-    # may be in the future relative to the moment the slash command
-    # fires (e.g. user runs /replay date:today at 13:04 UTC; 13:15 is
-    # 11 minutes in the future and `parse_as_of` rejects it). Clamp
-    # to "now - 1 minute" in that case so the cutoff is comfortably
-    # in the past without losing temporal precision.
-    canonical_as_of = datetime(d.year, d.month, d.day, 13, 15,
-                               tzinfo=timezone.utc)
-    now = datetime.now(timezone.utc)
-    insight_as_of = (canonical_as_of if canonical_as_of <= now
-                     else now - timedelta(minutes=1))
-    insight_ok = execute_cloud_run_job("insight-pipeline", {
-        "INSIGHT_AS_OF": insight_as_of.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "INSIGHT_TICKERS": ticker_u,
-    })
+    # Insight: similar — INSIGHT_UPDATE=true forces UPSERT.
+    insight_env = {
+        "INSIGHT_AS_OF":          insight_as_of.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "INSIGHT_TICKERS":        ticker_u,
+        "INSIGHT_UPDATE":         "true",
+        "INSIGHT_TRIGGERED_BY":   triggered_by,
+    }
+    insight_ok = execute_cloud_run_job("insight-pipeline", insight_env)
 
     if not brief_ok and not insight_ok:
         return (f"{backfill_msg}❌ Both jobs failed to dispatch for "
@@ -413,20 +495,24 @@ def handle_replay(ticker: str, date_arg: str,
     if not insight_ok:
         return (f"{backfill_msg}⚠️ Insight failed; brief dispatched for "
                 f"{ticker_u} {d.isoformat()}.")
+    refresh_tag = " (refresh)" if refresh else ""
     return (
-        f"{backfill_msg}✅ Replay queued for **{ticker_u}** as of "
+        f"{backfill_msg}✅ Replay queued{refresh_tag} for **{ticker_u}** as of "
         f"**{d.isoformat()}** — brief and insight will post here when "
         f"complete (~90s)."
     )
 
 
 def replay_in_background(ticker: str, date_arg: str,
-                         application_id: str, interaction_token: str) -> None:
+                         application_id: str, interaction_token: str,
+                         refresh: bool = False, user_id: str = "") -> None:
     """Wrapper executed by FastAPI BackgroundTasks. Edits the deferred
     reply with the final status. Wrapped in try/except so a crash
     doesn't leave the user with a permanent "thinking..." spinner."""
     try:
-        msg = handle_replay(ticker, date_arg, application_id, interaction_token)
+        msg = handle_replay(ticker, date_arg, application_id,
+                            interaction_token, refresh=refresh,
+                            user_id=user_id)
     except Exception as exc:
         logger.exception("replay handler crashed: %s", exc)
         msg = f"❌ Internal error: {exc}"
@@ -697,14 +783,19 @@ async def interactions(request: Request,
             opts = _options_to_dict(data.get("options", []))
             ticker = str(opts.get("ticker", "")).strip()
             date_arg = str(opts.get("date", "")).strip()
+            refresh = bool(opts.get("refresh", False))
+            user_id = (payload.get("member") or {}).get("user", {}).get("id") \
+                      or (payload.get("user") or {}).get("id") or ""
             if not ticker or not date_arg:
                 return _ephemeral_reply("❌ Both `ticker` and `date` are required.")
             background.add_task(
                 replay_in_background, ticker, date_arg, app_id, token,
+                refresh, user_id,
             )
+            mode = "refreshed" if refresh else "cached"
             return JSONResponse({
                 "type": DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
-                "data": {"content": f"🔄 Replaying {ticker.upper()} as of {date_arg}..."},
+                "data": {"content": f"🔄 Replaying {ticker.upper()} as of {date_arg} ({mode})..."},
             })
 
         if command_name == "watchlist":
