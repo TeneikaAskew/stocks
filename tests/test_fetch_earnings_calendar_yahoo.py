@@ -303,12 +303,15 @@ def test_bulk_fetch_handles_single_day_by_widening(monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# fetch_yahoo_earnings — bulk + optional per-ticker fill
+# fetch_yahoo_earnings — bulk-only (per-ticker fill removed; was the
+# OOM cause for the daily Cloud Run Job and the bulk endpoint already
+# carries Reported EPS + Surprise(%) for the 7-day brief window).
 # ──────────────────────────────────────────────────────────────────────
 
 
 def test_fetch_yahoo_earnings_bulk_only(monkeypatch):
-    """No fill_tickers → bulk path is the only call made."""
+    """fetch_yahoo_earnings always uses the bulk path; the per-ticker
+    fan-out was removed for memory reasons."""
     bulk = _bulk_df([
         ("AAPL", 3.9e12, "2026-04-30 20:00:00", "AMC", 1.94, None),
     ])
@@ -320,48 +323,12 @@ def test_fetch_yahoo_earnings_bulk_only(monkeypatch):
     import scripts.fetch_earnings_calendar as fec
     import yfinance
     monkeypatch.setattr(yfinance, "Calendars", FakeCalendars)
-    # Tracks whether per-ticker path is called — should NOT be
+    # Per-ticker path must NOT be reachable from fetch_yahoo_earnings
     monkeypatch.setattr(yfinance, "Ticker",
-                        lambda t: pytest.fail(f"per-ticker called for {t} but fill_tickers was None"))
+                        lambda t: pytest.fail(f"per-ticker called for {t} (path was removed)"))
 
     df = fec.fetch_yahoo_earnings(date(2026, 4, 1), date(2026, 5, 31))
     assert set(df["ticker"]) == {"AAPL"}
-
-
-def test_fetch_yahoo_earnings_fills_missing_tickers(monkeypatch):
-    """The AMZN-tonight case: bulk misses today's pending AMC, but
-    fill_tickers triggers per-ticker calendar lookup that catches it."""
-    bulk = _bulk_df([
-        ("AAPL", 3.9e12, "2026-04-30 20:00:00", "AMC", 1.94, None),
-    ])
-    class FakeCalendars:
-        def __init__(self, *a, **kw): pass
-        def get_earnings_calendar(self, **kw):
-            return bulk if kw.get("offset", 0) == 0 else pd.DataFrame()
-
-    class FakeTicker:
-        def __init__(self, t): self.t = t
-        @property
-        def calendar(self):
-            if self.t == "AMZN":
-                return {"Earnings Date": [date(2026, 4, 29)],
-                        "Earnings Average": 1.65}
-            return None
-        def get_earnings_dates(self, limit=8): return None
-
-    import scripts.fetch_earnings_calendar as fec
-    import yfinance
-    monkeypatch.setattr(yfinance, "Calendars", FakeCalendars)
-    monkeypatch.setattr(yfinance, "Ticker", FakeTicker)
-
-    df = fec.fetch_yahoo_earnings(
-        date(2026, 4, 1), date(2026, 5, 31),
-        fill_tickers=["AAPL", "AMZN"],   # AAPL already in bulk → no per-ticker; AMZN missing → call
-        max_workers=2,
-    )
-    tickers = set(df["ticker"])
-    assert "AAPL" in tickers, "bulk row preserved"
-    assert "AMZN" in tickers, "per-ticker fill caught AMZN"
 
 
 def test_fetch_yahoo_earnings_no_yfinance(monkeypatch):
