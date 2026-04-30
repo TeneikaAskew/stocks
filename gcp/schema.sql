@@ -367,7 +367,44 @@ ALTER TABLE earnings_calendar
     ADD COLUMN IF NOT EXISTS options_volume      BIGINT,           -- call_vol + put_vol
     ADD COLUMN IF NOT EXISTS open_interest       BIGINT,           -- UW: oi
     ADD COLUMN IF NOT EXISTS rv_1d_last_12q      DOUBLE PRECISION, -- realized vol over last 12 quarters
-    ADD COLUMN IF NOT EXISTS last_1d_reactions   JSONB;            -- array of past 1-day post-earnings moves
+    ADD COLUMN IF NOT EXISTS last_1d_reactions   JSONB,            -- array of past 1-day post-earnings moves
+    -- Beat/miss enrichment (added 2026-04-30) — populated by the Yahoo
+    -- Calendars TAS rows after a company reports. Lets the brief render
+    -- "EPS 0.44 → 0.41 ❌ miss (-6.8%)" inline so traders see the
+    -- expectation delta alongside the pre-market gap reaction.
+    ADD COLUMN IF NOT EXISTS eps_actual          DOUBLE PRECISION, -- Yahoo: Reported EPS
+    ADD COLUMN IF NOT EXISTS eps_surprise_pct    DOUBLE PRECISION, -- Yahoo: Surprise(%)
+    -- EW strike verdict (added 2026-04-30) — populated by
+    -- evaluate_ew_strikes.py once a report day's session closes.
+    -- The brief renders "Q-1: HIT in 5m, held 142m, day +1.2%" inline
+    -- so traders can judge whether a HIT was a tradeable sustained move
+    -- or a fakeout, and whether it ran with or against the day's tape.
+    ADD COLUMN IF NOT EXISTS ew_high_on_day      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ew_low_on_day       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ew_close_on_day     DOUBLE PRECISION,
+    -- HIT (long-call/long-put strike was crossed intraday)
+    -- MISS (strike never touched)
+    -- KEPT (covered-call strike held below at close)
+    -- ASSIGNED (covered-call strike crossed above by close)
+    ADD COLUMN IF NOT EXISTS ew_strike_verdict   VARCHAR(16),
+    -- Signed % vs strike: + for above, − for below. Sign convention is
+    -- direction-agnostic so the brief can display "HIT +14.6%" or
+    -- "MISS -10.1%" without needing the verdict to interpret it.
+    ADD COLUMN IF NOT EXISTS ew_strike_move_pct  DOUBLE PRECISION,
+    -- Time-to-hit in minutes from regular session open (9:30 AM ET)
+    -- to the first bar that crossed strike in the strategy's direction.
+    -- A small number means the move happened on the open print; large
+    -- numbers mean late-session move. NULL when verdict = MISS.
+    ADD COLUMN IF NOT EXISTS ew_minutes_to_hit   INTEGER,
+    -- Total minutes during regular session that the underlying was
+    -- on the profitable side of strike (above for long calls / spreads,
+    -- below for long puts). Distinguishes "5-minute fakeout" from
+    -- "sustained intraday momentum".
+    ADD COLUMN IF NOT EXISTS ew_minutes_in_zone  INTEGER,
+    -- Day's directional bias: signed open-to-close % change. Lets the
+    -- brief show "HIT in 5m, day -2.1%" — strike got hit on a counter-
+    -- trend pop that immediately faded. Positive = bullish day.
+    ADD COLUMN IF NOT EXISTS ew_day_change_pct   DOUBLE PRECISION;
 
 CREATE INDEX IF NOT EXISTS idx_earnings_calendar_sp500_date
     ON earnings_calendar (earnings_date DESC, is_s_p_500 DESC NULLS LAST);
