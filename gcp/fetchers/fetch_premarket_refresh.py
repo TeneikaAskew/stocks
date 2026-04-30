@@ -214,15 +214,31 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
 def upsert_premarket(rows: list[dict]) -> int:
     """UPSERT today's pre-market columns into market_data_daily.
 
-    If today's row exists (rare at 8:30am — only if a manual run already
-    populated it), UPDATE the pre_* columns only. If it doesn't exist,
-    INSERT a row with only the pre_* fields populated; full OHLC will
-    fill tonight at 11pm.
+    Filters out rows where every pre_* field is NULL — AV had nothing
+    useful for that ticker, so an INSERT would create a row with all
+    OHLC + all pre_* NULL. That broke the morning brief
+    (compute_current_levels crashed on max(NULL, current_price)) until
+    the strat_levels NULL-handling fix landed; this guard prevents the
+    underlying bad rows from being written in the first place.
+
+    For rows that DO have at least one pre_* signal:
+    - If today's row exists (rare at 8:30am), UPDATE pre_* only.
+    - If it doesn't, INSERT pre_* fields; full OHLC fills tonight at 11pm.
 
     Returns the number of rows touched.
     """
     if not rows:
         return 0
+    # Skip rows with no useful pre-market data — AV gave us nothing.
+    PRE_KEYS = ('pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct')
+    useful = [r for r in rows
+              if any(r.get(k) is not None for k in PRE_KEYS)]
+    skipped = len(rows) - len(useful)
+    if skipped:
+        log.info("skipped %d ticker(s) with no AV pre-market data", skipped)
+    if not useful:
+        return 0
+
     try:
         from gcp.database import get_engine
     except ImportError:
@@ -245,7 +261,7 @@ def upsert_premarket(rows: list[dict]) -> int:
     """)
     n = 0
     with eng.begin() as conn:
-        for r in rows:
+        for r in useful:
             conn.execute(sql, r)
             n += 1
     return n
