@@ -20,6 +20,11 @@ RUN if [ -f requirements-gcp.lock ]; then \
 COPY lib/ lib/
 COPY gcp/ gcp/
 COPY scripts/ scripts/
+# Root-level modules imported by scripts/run_historical_signals.py
+# (sys.path.insert(0, parent.parent) makes /app importable as a
+# package root). Without trading_analysis.py at /app/, the historical-
+# signals-watchlist Cloud Run Job fails with ModuleNotFoundError.
+COPY trading_analysis.py .
 COPY alert_config.json .
 
 # Default entrypoint (overridden at deploy time via --command)
