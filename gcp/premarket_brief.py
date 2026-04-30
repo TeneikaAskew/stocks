@@ -325,6 +325,90 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     return {'mode': mode, 'start': start, 'end': end, 'earnings': earnings}
 
 
+# ── Yesterday-AMC reaction view (PR 3) ──────────────────────────────────────
+
+def load_yesterday_amc_reactions(today: date, top_n: int = 5) -> list[dict]:
+    """Yesterday's AMC reporters + today's pre-market gap reaction.
+
+    The morning brief shows TODAY's earnings. But yesterday's AMC names
+    (SBUX 4/28 PM, AMZN 4/29 PM, etc.) had their announcement drop AFTER
+    yesterday's close — the actual market reaction lives in TODAY's
+    pre-market gap. Surfacing those rows in the morning brief turns
+    "what just happened?" into one glance.
+
+    Walks back to the most recent prior weekday (skips Sat/Sun), filters
+    AMC reporters with options_volume>0, JOINs today's market_data_daily
+    for gap_pct, returns the top N by absolute gap. Skips rows where
+    today's gap is NULL (the pre-market refresh hasn't run yet, or the
+    ticker isn't in the daily fetcher universe).
+
+    Returns a list of dicts ready for the embed builder. Each dict carries
+    the same shape as load_earnings_for_brief rows so _row_line works.
+    """
+    try:
+        from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    except ImportError:
+        return []
+    if not is_cloud_sql_configured():
+        return []
+
+    # Walk back to most recent weekday
+    prior = today - timedelta(days=1)
+    while prior.weekday() >= 5:  # Sat=5, Sun=6
+        prior -= timedelta(days=1)
+
+    sql = """
+        SELECT ec.ticker, ec.earnings_date,
+               MAX(ec.eps_estimate)      AS eps_estimate,
+               MAX(ec.eps_actual)        AS eps_actual,
+               MAX(ec.eps_surprise_pct)  AS eps_surprise_pct,
+               MAX(ec.market_cap)        AS market_cap,
+               MAX(ec.options_volume)    AS options_volume,
+               MAX(ec.expected_move)     AS expected_move,
+               MAX(ec.strategy)          AS strategy,
+               md.gap_pct, md.pre_high, md.pre_low
+          FROM earnings_calendar ec
+          LEFT JOIN market_data_daily md
+                 ON md.ticker = ec.ticker AND md.date = :today
+         WHERE ec.earnings_date = :prior
+           AND ec.earnings_time = 'postmarket'
+           AND COALESCE(ec.options_volume, 0) > 0
+         GROUP BY ec.ticker, ec.earnings_date, md.gap_pct, md.pre_high, md.pre_low
+    """
+    df = query_to_dataframe(sql, {'today': today, 'prior': prior})
+    if df.empty:
+        return []
+
+    rows = []
+    for _, r in df.iterrows():
+        gap = r.get('gap_pct')
+        if gap is None or pd.isna(gap):
+            # No reaction data yet — skip rather than render a useless row
+            continue
+        rows.append({
+            'ticker': r['ticker'],
+            'date': r['earnings_date'],
+            'time': 'postmarket',
+            'tier': 1,            # display-only (not used for sort here)
+            'eps_estimate': r.get('eps_estimate'),
+            'eps_actual': r.get('eps_actual'),
+            'eps_surprise_pct': r.get('eps_surprise_pct'),
+            'market_cap': r.get('market_cap'),
+            'options_volume': r.get('options_volume'),
+            'expected_move': r.get('expected_move'),
+            'strategy': r.get('strategy') or '',
+            'strike': None, 'premium': None, 'score': None,
+            'sources': [],
+            'gap_pct': float(gap),
+            'pre_high': r.get('pre_high'),
+            'pre_low': r.get('pre_low'),
+        })
+
+    # Top by absolute gap (biggest movers first, regardless of direction)
+    rows.sort(key=lambda x: -abs(x['gap_pct']))
+    return rows[:top_n] if top_n else rows
+
+
 # ── Economic Events ─────────────────────────────────────────────────────────
 
 def load_economic_events(today: date, days_ahead: int = 5) -> dict:
@@ -621,6 +705,17 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     is_sunday = today.weekday() == 6
     brief_top_n = int(os.environ.get('BRIEF_MAX_EARNINGS', '25'))
     brief['earnings'] = load_earnings_for_brief(today, weekly=is_sunday, top_n=brief_top_n)
+
+    # Yesterday's AMC reporters with today's pre-market gap (PR 3).
+    # Skipped on Sundays — the weekly view is forward-looking, no
+    # yesterday-AMC angle. Disable via BRIEF_AMC_REACTIONS=0.
+    if not is_sunday and os.environ.get('BRIEF_AMC_REACTIONS', '1') != '0':
+        try:
+            top_amc = int(os.environ.get('BRIEF_AMC_REACTIONS_TOP', '5'))
+            brief['earnings']['yesterday_amc_reactions'] = load_yesterday_amc_reactions(
+                today, top_n=top_amc)
+        except Exception as e:
+            logger.warning("yesterday-AMC-reactions load failed: %s", e)
 
     # Economic events: Sunday brief needs a full week lookahead, weekday needs ~5 days
     brief['events'] = load_economic_events(today, days_ahead=7 if is_sunday else 5)
@@ -1315,6 +1410,20 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
                 else:
                     sec_lines.append(f'_+{len(bucket) - cap} more_')
             sections.append('\n'.join(sec_lines))
+
+        # Yesterday-AMC reactions (PR 3) — last night's AMC reporters with
+        # today's pre-market gap. The actual market reaction to the news
+        # that dropped 4-5 PM yesterday lives in today's pre-market gap.
+        # Only render when load_yesterday_amc_reactions returned rows AND
+        # at least one has gap_pct (otherwise the section is decorative).
+        amc_reactions = earnings_data.get('yesterday_amc_reactions') or []
+        if amc_reactions:
+            r_lines = [
+                f'\n**\U0001f4ca Reactions to Last Night’s AMC** '
+                f'(top {len(amc_reactions)} by |gap|)'
+            ]
+            r_lines.extend(_row_line(r) for r in amc_reactions)
+            sections.append('\n'.join(r_lines))
 
         description = '\n'.join(sections).strip()
 
