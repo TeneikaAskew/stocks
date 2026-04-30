@@ -1263,6 +1263,13 @@ CREATE TABLE IF NOT EXISTS watchlists (
     removed_at   TIMESTAMPTZ  NULL,
     source       VARCHAR(20)  NULL,        -- 'ui', 'cli', 'admin', 'seed'
     notes        TEXT         NULL,
+    -- Per-surface filters: control whether a watchlist ticker drives
+    -- the morning brief and/or the AI insight pipeline. Defaults TRUE
+    -- so adding via /watchlist add (e.g. an ETF) lands in all surfaces
+    -- by default; non-default tickers (peers tracked for /similar
+    -- comp only) are explicitly UPDATEd to FALSE.
+    in_brief     BOOLEAN      NOT NULL DEFAULT TRUE,
+    in_insight   BOOLEAN      NOT NULL DEFAULT TRUE,
     PRIMARY KEY (user_id, ticker)
 );
 
@@ -1273,3 +1280,23 @@ CREATE INDEX IF NOT EXISTS idx_watchlists_active
 
 CREATE INDEX IF NOT EXISTS idx_watchlists_ticker
     ON watchlists (ticker) WHERE removed_at IS NULL;
+
+-- Live migration: add in_brief / in_insight columns idempotently for
+-- instances created before the per-surface filter shipped.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'watchlists' AND column_name = 'in_brief'
+    ) THEN
+        ALTER TABLE watchlists
+            ADD COLUMN in_brief BOOLEAN NOT NULL DEFAULT TRUE;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'watchlists' AND column_name = 'in_insight'
+    ) THEN
+        ALTER TABLE watchlists
+            ADD COLUMN in_insight BOOLEAN NOT NULL DEFAULT TRUE;
+    END IF;
+END $$;

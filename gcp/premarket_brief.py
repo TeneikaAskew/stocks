@@ -554,22 +554,40 @@ def _resolve_analysis_date() -> date:
 def _resolve_brief_tickers(default_tickers: list[str]) -> list[str]:
     """Resolve the ticker list the brief runs against.
 
-    Honours `BRIEF_TICKERS` env var for one-off / replay invocations
-    that focus on a specific ticker subset. Accepts comma-, semicolon-,
-    or space-separated values — semicolon form is needed because
-    gcloud's `--update-env-vars` uses comma as its OWN delimiter, so
-    `--update-env-vars=BRIEF_TICKERS=AMD;ARM` is the only shape that
-    safely passes a multi-ticker list through the gcloud CLI.
-
-    Falls back to the config default when unset / blank.
+    Resolution order (first non-empty wins):
+      1. ``BRIEF_TICKERS`` env var — one-off / replay invocations that
+         focus on a specific subset. Accepts comma-, semicolon-, or
+         space-separated values; semicolon needed because gcloud's
+         ``--update-env-vars`` uses comma as its OWN delimiter.
+      2. Cloud SQL ``watchlists`` filtered by ``in_brief = TRUE`` —
+         the production source of truth for "what shows in the brief".
+         Lets users add peer tickers (NVDA, AMD, …) to the watchlist
+         for /similar lookups WITHOUT bloating the morning Discord
+         message — only ETFs/index tickers carry ``in_brief = TRUE``.
+      3. ``default_tickers`` (cfg.market.tickers) — local-dev fallback.
     """
     raw = os.environ.get("BRIEF_TICKERS")
-    if not raw or not raw.strip():
-        return default_tickers
-    # Normalize all separators to whitespace, then split.
-    normalized = raw.replace(',', ' ').replace(';', ' ')
-    parts = [t.strip().upper() for t in normalized.split() if t.strip()]
-    return parts or default_tickers
+    if raw and raw.strip():
+        # Normalize all separators to whitespace, then split.
+        normalized = raw.replace(',', ' ').replace(';', ' ')
+        parts = [t.strip().upper() for t in normalized.split() if t.strip()]
+        if parts:
+            return parts
+
+    # Cloud SQL — the in_brief column gates per-surface inclusion.
+    try:
+        from gcp.fetchers._watchlist import load_watchlist
+        wl = load_watchlist(surface='brief')
+        if wl:
+            logger.info(
+                "brief tickers resolved from Cloud SQL watchlists "
+                "(in_brief=TRUE): %s", wl,
+            )
+            return wl
+    except Exception as exc:
+        logger.warning("brief watchlist load failed (%s); using config default", exc)
+
+    return default_tickers
 
 
 def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:

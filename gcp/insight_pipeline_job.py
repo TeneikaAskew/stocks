@@ -459,9 +459,15 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
         ticker_source = "INSIGHT_TICKERS env"
     else:
         try:
+            # Filter to in_insight=TRUE — peer tickers added to the
+            # watchlist for /similar comparison (MRVL, AMD, ANET, …)
+            # are NOT auto-included in the daily AI insight pipeline,
+            # which costs a Vertex call per ticker. Operator must
+            # explicitly opt those in via UPDATE watchlists SET
+            # in_insight=TRUE WHERE ticker='X'.
             from gcp.fetchers._watchlist import load_watchlist
-            tickers = load_watchlist()
-            ticker_source = "watchlists table"
+            tickers = load_watchlist(surface='insight')
+            ticker_source = "watchlists table (in_insight=TRUE)"
         except Exception as exc:
             logger.warning("watchlist load failed (%s); falling back to DEFAULT_TICKERS", exc)
             tickers = []

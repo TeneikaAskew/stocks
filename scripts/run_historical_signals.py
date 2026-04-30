@@ -37,7 +37,7 @@ import pandas as pd
 # Repo root on path so we can import trading_analysis + gcp
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from trading_analysis import MarketAnalyzer  # noqa: E402
+from lib.trading_analysis import MarketAnalyzer  # noqa: E402
 from gcp.historical_signals import (  # noqa: E402
     bulk_insert,
     delete_for_ticker,

@@ -1060,26 +1060,37 @@ deploy_schedulers() {
     # 11pm fetcher runs, so the brief sees NULL for all gap_pct cells.
     _schedule "premarket-refresh-daily"  "30 8 * * 1-5"  "fetch-premarket-refresh"
 
-    # SEC EDGAR filings — every 30min during market hours, hourly otherwise.
-    # 8-Ks (material events) hit at any time; M&A and earnings preannouncements
-    # are the highest-impact catalysts and appear only here at zero cost.
-    _schedule "sec-filings-0930"  "30 9 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1000"  "0 10 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1030"  "30 10 * * 1-5"  "fetch-sec-filings"
-    _schedule "sec-filings-1100"  "0 11 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1130"  "30 11 * * 1-5"  "fetch-sec-filings"
-    _schedule "sec-filings-1200"  "0 12 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1230"  "30 12 * * 1-5"  "fetch-sec-filings"
-    _schedule "sec-filings-1300"  "0 13 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1330"  "30 13 * * 1-5"  "fetch-sec-filings"
-    _schedule "sec-filings-1400"  "0 14 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1430"  "30 14 * * 1-5"  "fetch-sec-filings"
-    _schedule "sec-filings-1500"  "0 15 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1530"  "30 15 * * 1-5"  "fetch-sec-filings"
-    _schedule "sec-filings-1600"  "0 16 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-1700"  "0 17 * * 1-5"   "fetch-sec-filings"
-    _schedule "sec-filings-2000"  "0 20 * * 1-5"   "fetch-sec-filings"
+    # SEC EDGAR filings — 4 strategic slots that cover every consumer.
+    # The brief (8:30) and insight pipeline (8:45) read from sec_filings
+    # once each morning, so 0700 is the only feed that matters for the
+    # morning workflow. The other three give the Catalysts page intra-day
+    # freshness for users browsing during market hours plus a post-close
+    # sweep for after-hours 8-Ks.
+    #
+    # History: this used to be 17 schedules every 30 min — see PR
+    # cleanup that retired the redundant slots. The deletion loop below
+    # is idempotent; once the obsolete jobs are gone, it's a no-op.
     _schedule "sec-filings-0700"  "0 7 * * 1-5"    "fetch-sec-filings"
+    _schedule "sec-filings-1000"  "0 10 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1300"  "0 13 * * 1-5"   "fetch-sec-filings"
+    _schedule "sec-filings-1700"  "0 17 * * 1-5"   "fetch-sec-filings"
+
+    # One-shot cleanup of the 13 retired sec-filings schedules. Idempotent:
+    # `gcloud scheduler jobs delete` returns non-zero when the job is
+    # already gone, which we swallow with `|| true`. Safe to leave in
+    # forever; consider removing this loop once a deploy or two has
+    # confirmed all targets are gone in your environment.
+    for OBSOLETE in \
+        sec-filings-0930 sec-filings-1030 sec-filings-1100 \
+        sec-filings-1130 sec-filings-1200 sec-filings-1230 \
+        sec-filings-1330 sec-filings-1400 sec-filings-1430 \
+        sec-filings-1500 sec-filings-1530 sec-filings-1600 \
+        sec-filings-2000 ; do
+        gcloud scheduler jobs delete "${OBSOLETE}" \
+            --location "${REGION}" --quiet 2>/dev/null \
+            && echo "  retired ${OBSOLETE}" \
+            || true
+    done
 
     # Insider transactions — daily at 7 AM ET. AV refreshes Form 4 data
     # overnight from EDGAR; daily cadence catches everything new.
