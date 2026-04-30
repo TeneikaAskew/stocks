@@ -542,8 +542,20 @@ def replay_in_background(ticker: str, date_arg: str,
 WATCHLIST_USER_ID = "default"  # Single-user system; matches schema default.
 
 
-def _watchlist_add(ticker: str) -> str:
-    """Add ticker to watchlists. Returns user-facing reply text."""
+def _watchlist_add(
+    ticker: str,
+    in_brief: Optional[bool] = None,
+    in_insight: Optional[bool] = None,
+) -> str:
+    """Add ticker to watchlists. Returns user-facing reply text.
+
+    Optional flags opt the new ticker into the morning brief and/or
+    AI insight pipeline surfaces. When omitted, the column DEFAULT
+    (FALSE) applies — the ticker is added to the watchlist (drives
+    /similar lookups, /replay autocomplete, news/options fetchers)
+    but does NOT auto-include in the Discord brief or AI insight
+    push.
+    """
     ticker_u = ticker.upper().strip()
     if not ticker_u or not ticker_u.isalnum():
         return f"❌ Invalid ticker: {ticker!r}"
@@ -551,24 +563,57 @@ def _watchlist_add(ticker: str) -> str:
         from gcp.database import get_engine
         import sqlalchemy
         engine = get_engine()
+
+        # Build column / value lists dynamically so omitted flags fall
+        # through to the table's DEFAULT (FALSE) — keeps the SQL clean
+        # without nullable-NULL semantics in a NOT NULL column.
+        cols = ["user_id", "ticker", "source"]
+        values = {"u": WATCHLIST_USER_ID, "t": ticker_u}
+        placeholders = [":u", ":t", "'discord-slash'"]
+        if in_brief is not None:
+            cols.append("in_brief")
+            values["b"] = in_brief
+            placeholders.append(":b")
+        if in_insight is not None:
+            cols.append("in_insight")
+            values["i"] = in_insight
+            placeholders.append(":i")
+        col_sql = ", ".join(cols)
+        ph_sql = ", ".join(placeholders)
         with engine.begin() as conn:
             # ON CONFLICT detects already-present tickers and reactivates
             # any soft-removed row by clearing removed_at. The RETURNING
             # clause tells us whether this was a fresh insert (xmax=0)
             # or an UPDATE so we can give the user a meaningful message.
+            # Surface flags ARE re-applied on conflict so /watchlist add
+            # can also be used to flip an existing ticker's flags.
+            on_conflict_sets = ["removed_at = NULL"]
+            if in_brief is not None:
+                on_conflict_sets.append("in_brief = EXCLUDED.in_brief")
+            if in_insight is not None:
+                on_conflict_sets.append("in_insight = EXCLUDED.in_insight")
+            on_conflict_sql = ", ".join(on_conflict_sets)
             result = conn.execute(
                 sqlalchemy.text(
-                    "INSERT INTO watchlists (user_id, ticker, source) "
-                    "VALUES (:u, :t, 'discord-slash') "
-                    "ON CONFLICT (user_id, ticker) DO UPDATE "
-                    "  SET removed_at = NULL "
-                    "RETURNING (xmax = 0) AS inserted"
+                    f"INSERT INTO watchlists ({col_sql}) "
+                    f"VALUES ({ph_sql}) "
+                    f"ON CONFLICT (user_id, ticker) DO UPDATE "
+                    f"  SET {on_conflict_sql} "
+                    f"RETURNING (xmax = 0) AS inserted, in_brief, in_insight"
                 ),
-                {"u": WATCHLIST_USER_ID, "t": ticker_u},
+                values,
             ).fetchone()
+        # Build descriptive reply showing the resulting flag state so
+        # the user can confirm what got configured.
+        flags = []
+        if result is not None:
+            flags.append(f"brief: {'on' if result[1] else 'off'}")
+            flags.append(f"insight: {'on' if result[2] else 'off'}")
+        flag_str = f" ({', '.join(flags)})" if flags else ""
         if result and result[0]:
-            return f"✅ Added **{ticker_u}** to watchlist."
-        return f"ℹ️ **{ticker_u}** already in watchlist (reactivated if removed)."
+            return f"✅ Added **{ticker_u}** to watchlist{flag_str}."
+        return (f"ℹ️ **{ticker_u}** already in watchlist"
+                f"{flag_str} (reactivated if removed; flags updated if passed).")
     except Exception as exc:
         logger.exception("watchlist add failed for %s: %s", ticker_u, exc)
         return f"❌ Failed to add {ticker_u}: {exc}"
@@ -641,7 +686,14 @@ def handle_watchlist(data: dict) -> str:
     """Route /watchlist add | remove | list to the right handler."""
     sub, opts = _watchlist_subcommand(data)
     if sub == "add":
-        return _watchlist_add(str(opts.get("ticker", "")))
+        # Discord BOOLEAN options come through as native bool (or absent).
+        brief_arg = opts.get("brief")
+        insight_arg = opts.get("insight")
+        return _watchlist_add(
+            str(opts.get("ticker", "")),
+            in_brief=brief_arg if isinstance(brief_arg, bool) else None,
+            in_insight=insight_arg if isinstance(insight_arg, bool) else None,
+        )
     if sub == "remove":
         return _watchlist_remove(str(opts.get("ticker", "")))
     if sub == "list":
