@@ -220,6 +220,8 @@ def add_to_watchlist(
     user_id: str = DEFAULT_USER_ID,
     source: Optional[str] = "ui",
     notes: Optional[str] = None,
+    in_brief: Optional[bool] = None,
+    in_insight: Optional[bool] = None,
 ) -> bool:
     """Insert (or un-archive) a (user_id, ticker) row.
 
@@ -227,6 +229,14 @@ def add_to_watchlist(
     reactivated; False if the row was already active. Raises on
     Cloud SQL errors — the caller decides whether to surface a 500
     or fall back to the JSON file.
+
+    `in_brief` / `in_insight`: opt the new ticker into the morning
+    brief / AI insight pipeline surfaces. When omitted (None), the
+    column DEFAULT (FALSE) applies — the ticker is added to the
+    watchlist but does NOT auto-include in those Discord surfaces.
+    Pass True explicitly for ETFs / curated names that should appear.
+    Re-activating an archived row never clobbers existing flag values
+    (use UPDATE for that).
     """
     from lib.agents.model_routing import connect
 
@@ -237,10 +247,23 @@ def add_to_watchlist(
     conn = connect()
     try:
         cur = conn.cursor()
+        # Build the column / value lists dynamically so omitted flags
+        # fall through to the table's column DEFAULT (FALSE) instead
+        # of being explicitly set. Keeps the SQL tidy without nullable
+        # NULL semantics in a non-null column.
+        cols = ["user_id", "ticker", "source", "notes"]
+        params: list = [user_id, ticker, source, notes]
+        if in_brief is not None:
+            cols.append("in_brief"); params.append(in_brief)
+        if in_insight is not None:
+            cols.append("in_insight"); params.append(in_insight)
+        col_sql = ", ".join(cols)
+        ph_sql = ", ".join(["%s"] * len(cols))
+
         cur.execute(
-            """
-            INSERT INTO watchlists (user_id, ticker, source, notes)
-            VALUES (%s, %s, %s, %s)
+            f"""
+            INSERT INTO watchlists ({col_sql})
+            VALUES ({ph_sql})
             ON CONFLICT (user_id, ticker) DO UPDATE
               SET removed_at = NULL,
                   source     = COALESCE(EXCLUDED.source, watchlists.source),
@@ -248,7 +271,7 @@ def add_to_watchlist(
               WHERE watchlists.removed_at IS NOT NULL
             RETURNING (xmax = 0) AS inserted
             """,
-            (user_id, ticker, source, notes),
+            params,
         )
         result = cur.fetchone()
         conn.commit()

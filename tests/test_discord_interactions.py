@@ -534,7 +534,8 @@ def test_watchlist_add_inserts_ticker(client, keypair):
     def fake_execute(stmt, params=None):
         captured.append((str(stmt), dict(params) if params else {}))
         result = MagicMock()
-        result.fetchone.return_value = (True,)  # inserted=True
+        # RETURNING (inserted, in_brief, in_insight) — defaults FALSE
+        result.fetchone.return_value = (True, False, False)
         return result
 
     fake_conn.execute.side_effect = fake_execute
@@ -545,11 +546,50 @@ def test_watchlist_add_inserts_ticker(client, keypair):
         msg = _watchlist_add("nvda")
 
     assert "✅" in msg and "NVDA" in msg
+    # Reply now includes flag state for the user's confirmation
+    assert "brief: off" in msg
+    assert "insight: off" in msg
     sql, params = captured[0]
     assert "INSERT INTO watchlists" in sql
     assert "user_id" in sql and "ticker" in sql
     assert "ON CONFLICT (user_id, ticker)" in sql
     assert params["t"] == "NVDA"
+    # When flags weren't passed, the INSERT column list should NOT
+    # include in_brief / in_insight (column DEFAULT FALSE applies).
+    # The RETURNING clause does name them, so scope the check to the
+    # column-list portion before VALUES.
+    insert_cols = sql.split("VALUES", 1)[0]
+    assert "in_brief" not in insert_cols
+    assert "in_insight" not in insert_cols
+
+
+def test_watchlist_add_with_brief_flag(client, keypair):
+    """`/watchlist add SOXX brief:true` propagates the flag to the
+    INSERT and reflects it in the reply."""
+    from gcp.discord_interactions.main import _watchlist_add
+    captured = []
+    fake_engine = MagicMock()
+    fake_conn = MagicMock()
+
+    def fake_execute(stmt, params=None):
+        captured.append((str(stmt), dict(params) if params else {}))
+        result = MagicMock()
+        result.fetchone.return_value = (True, True, False)  # brief=ON
+        return result
+
+    fake_conn.execute.side_effect = fake_execute
+    fake_engine.begin.return_value.__enter__.return_value = fake_conn
+    fake_engine.begin.return_value.__exit__.return_value = False
+
+    with patch("gcp.database.get_engine", return_value=fake_engine):
+        msg = _watchlist_add("SOXX", in_brief=True)
+
+    assert "✅" in msg and "SOXX" in msg
+    assert "brief: on" in msg
+    assert "insight: off" in msg
+    sql, params = captured[0]
+    assert "in_brief" in sql
+    assert params["b"] is True
 
 
 def test_watchlist_add_already_present(client, keypair):
@@ -557,7 +597,8 @@ def test_watchlist_add_already_present(client, keypair):
     fake_engine = MagicMock()
     fake_conn = MagicMock()
     result = MagicMock()
-    result.fetchone.return_value = (False,)  # inserted=False (was UPDATE)
+    # RETURNING (inserted=False, in_brief=True, in_insight=True)
+    result.fetchone.return_value = (False, True, True)
     fake_conn.execute.return_value = result
     fake_engine.begin.return_value.__enter__.return_value = fake_conn
     fake_engine.begin.return_value.__exit__.return_value = False
@@ -567,6 +608,9 @@ def test_watchlist_add_already_present(client, keypair):
 
     assert "ℹ️" in msg
     assert "already" in msg.lower()
+    # Reply still shows current flag state from the existing row
+    assert "brief: on" in msg
+    assert "insight: on" in msg
 
 
 def test_watchlist_add_invalid_ticker():
