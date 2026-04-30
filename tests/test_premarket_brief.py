@@ -88,6 +88,8 @@ def _row(ticker, source, **kw):
 
     Includes the LEFT-joined market_data_daily columns (gap_pct, pre_high,
     pre_low, pre_vwap) — set by tests that exercise the gap-render path.
+    Also includes the beat/miss columns (eps_actual, eps_surprise_pct)
+    set by tests that exercise the report-verdict render.
     """
     base = {
         "ticker": ticker,
@@ -95,6 +97,8 @@ def _row(ticker, source, **kw):
         "company_name": ticker + " Inc",
         "earnings_time": "BMO",
         "eps_estimate": 1.0,
+        "eps_actual": None,
+        "eps_surprise_pct": None,
         "expected_move": 5.0,
         "sector": "Tech",
         "market_cap": 1_000_000_000,
@@ -1120,7 +1124,9 @@ def _row_out(ticker, time_, tier, **kw):
         'ticker': ticker, 'date': date(2026, 4, 29),
         'company_name': ticker + ' Inc',
         'time': time_, 'tier': tier,
-        'eps_estimate': 1.0, 'expected_move': None,
+        'eps_estimate': 1.0,
+        'eps_actual': None, 'eps_surprise_pct': None,
+        'expected_move': None,
         'sector': '', 'market_cap': 1e9,
         'strategy': '', 'strike': None, 'premium': None, 'score': None,
         'sources': ['alphavantage'],
@@ -1216,3 +1222,118 @@ class TestEarningsEmbedGapRender:
         ]))
         assert '\U0001f4c8' not in embed['description']
         assert '\U0001f4c9' not in embed['description']
+
+
+# ──────────────────────────────────────────────────────────────────────
+# PR 1: Beat/miss enrichment from Yahoo TAS rows
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestBeatMissPropagation:
+    """eps_actual + eps_surprise_pct flow through the loader from Yahoo
+    TAS rows (already-reported names). Null for not-yet-reported names."""
+
+    def test_eps_actual_propagates_from_yahoo_row(self, mock_cloud_sql):
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([
+            _row("V", "yahoo", eps_actual=3.31, eps_surprise_pct=6.77),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        e = result["earnings"][0]
+        assert e["eps_actual"] == 3.31
+        assert e["eps_surprise_pct"] == 6.77
+
+    def test_negative_surprise_preserved(self, mock_cloud_sql):
+        """A -6.8% miss must NOT be filtered as 'no signal' the way a
+        zero-options ticker is. Sign carries the verdict."""
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([
+            _row("SBUX", "yahoo", eps_actual=0.41,
+                 eps_surprise_pct=-6.8),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        assert result["earnings"][0]["eps_surprise_pct"] == -6.8
+
+    def test_null_actual_keeps_null(self, mock_cloud_sql):
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([_row("AAPL", "alphavantage")]))
+        from gcp.premarket_brief import load_earnings_for_brief
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        assert result["earnings"][0]["eps_actual"] is None
+        assert result["earnings"][0]["eps_surprise_pct"] is None
+
+
+class TestBeatMissRender:
+    """The embed renders 'EPS 0.44→0.41 ❌ -6.8%' inline once a company
+    has reported. Verdict marker chosen by surprise threshold:
+        >= +1% → ✅ beat
+        <= -1% → ❌ miss
+        otherwise → 🎯 inline
+    """
+
+    def test_beat_renders_check_mark(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('V', 'postmarket', 1,
+                     eps_estimate=3.10, eps_actual=3.31,
+                     eps_surprise_pct=6.77),
+        ]))
+        assert '✅' in embed['description']
+        assert '3.10→33.31' in embed['description'].replace(' ', '') \
+            or 'EPS 3.10→3.31' in embed['description']
+        # Surprise pct is shown with sign
+        assert '+6.8%' in embed['description']
+
+    def test_miss_renders_x_mark(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('SBUX', 'postmarket', 2,
+                     eps_estimate=0.44, eps_actual=0.41,
+                     eps_surprise_pct=-6.8),
+        ]))
+        assert '❌' in embed['description']
+        assert '-6.8%' in embed['description']
+
+    def test_inline_renders_bullseye(self):
+        """Surprise within ±1% is 'inline' — bullseye marker."""
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('AAPL', 'postmarket', 1,
+                     eps_estimate=1.94, eps_actual=1.95,
+                     eps_surprise_pct=0.5),
+        ]))
+        assert '\U0001f3af' in embed['description']
+
+    def test_no_actual_falls_back_to_estimate(self):
+        """Pre-report ticker (no actual yet) shows 'EPS X.XX' fallback,
+        no verdict marker."""
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('AMZN', 'postmarket', 2,
+                     eps_estimate=1.65, eps_actual=None,
+                     eps_surprise_pct=None),
+        ]))
+        desc = embed['description']
+        # No verdict markers
+        assert '✅' not in desc
+        assert '❌' not in desc
+        assert '\U0001f3af' not in desc
+        # Plain EPS estimate fallback present
+        assert 'EPS 1.65' in desc
+
+    def test_surprise_derived_when_yahoo_missing_pct(self):
+        """If Yahoo gave actual but not surprise%, derive from
+        (actual - estimate) / |estimate|."""
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('META', 'postmarket', 2,
+                     eps_estimate=6.69, eps_actual=6.94,
+                     eps_surprise_pct=None),  # missing
+        ]))
+        # Expect derived surprise = (6.94 - 6.69) / 6.69 * 100 ≈ +3.7%
+        assert '+3.7%' in embed['description']
+        assert '✅' in embed['description']
+
+
