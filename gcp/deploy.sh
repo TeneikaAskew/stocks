@@ -555,6 +555,31 @@ deploy_fetch_premarket_refresh() {
         --quiet
 }
 
+# EW strike verdict evaluator — runs at 16:30 ET (30 min after close)
+# to score every Earnings Whispers strike pick from today's session
+# against the day's intraday bars. Populates ew_strike_verdict +
+# ew_strike_move_pct + ew_minutes_to_hit + ew_minutes_in_zone +
+# ew_day_change_pct on earnings_calendar so tomorrow's brief can render
+# the verdict in the 🔮 Whispers section ("EW LC $30 HIT +18.7%, in 0m,
+# held 390m, day +4.1%"). Idempotent — already-scored rows skip unless
+# --force is passed.
+deploy_evaluate_ew_strikes() {
+    echo "Deploying evaluate-ew-strikes job..."
+    gcloud run jobs create evaluate-ew-strikes \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update evaluate-ew-strikes \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # News sentiment is split into two Cloud Run jobs sharing the same image:
 # `fetch-news-sentiment` queries by ticker (always-on watchlist), while
 # `fetch-news-sentiment-topics` queries by AV catalyst topic to capture
@@ -720,6 +745,7 @@ deploy_fetchers() {
     deploy_fetch_earnings_calendar
     deploy_fetch_earnings_history
     deploy_fetch_premarket_refresh
+    deploy_evaluate_ew_strikes
     deploy_fetch_sec_filings
     deploy_fetch_insider_transactions
     deploy_fetch_top_movers
@@ -1059,6 +1085,13 @@ deploy_schedulers() {
     # Without this, today's market_data_daily row doesn't exist until the
     # 11pm fetcher runs, so the brief sees NULL for all gap_pct cells.
     _schedule "premarket-refresh-daily"  "30 8 * * 1-5"  "fetch-premarket-refresh"
+
+    # EW strike verdict evaluator — 5:00 PM ET, 1 hour after close.
+    # Buffer absorbs any AV intraday settle lag (which is typically <5min,
+    # but the last few bars can drift). Inputs are static after 4:30 PM
+    # so there's no value in waiting until the 11pm job. Tomorrow's
+    # 8:45 AM brief reads these verdicts in the 🔮 Whispers section.
+    _schedule "evaluate-ew-strikes-daily" "0 17 * * 1-5"  "evaluate-ew-strikes"
 
     # SEC EDGAR filings — 4 strategic slots that cover every consumer.
     # The brief (8:30) and insight pipeline (8:45) read from sec_filings
