@@ -22,6 +22,16 @@ import pandas as pd
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _allow_unconfirmed(monkeypatch):
+    """Most tests assert on tier-4/5/6 single-source rows. Default
+    production behavior filters those out (BRIEF_INCLUDE_UNCONFIRMED=0),
+    so set the override here to keep the legacy test surface intact.
+    Specific tests for the confirmed-only filter override this.
+    """
+    monkeypatch.setenv('BRIEF_INCLUDE_UNCONFIRMED', '1')
+
+
 @pytest.fixture
 def mock_cloud_sql(monkeypatch):
     """Force Cloud SQL "configured" and capture the SQL/params handed to
@@ -980,6 +990,38 @@ class TestTradeabilityRanking:
         )
 
 
+class TestConfirmedOnlyFilter:
+    """BRIEF_INCLUDE_UNCONFIRMED defaults to '0' — tier 4-6 rows
+    (single-source / AV-alone / EW-alone) are dropped from the embed.
+    Override to '1' brings them back."""
+
+    def test_default_drops_tier_5_uw_only(self, monkeypatch, mock_cloud_sql):
+        # Override the autouse fixture to test default (filter ON) behavior
+        monkeypatch.delenv('BRIEF_INCLUDE_UNCONFIRMED', raising=False)
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([
+            _row('AAA', 'alphavantage', options_volume=10_000),
+            _row('AAA', 'unusual_whales', options_volume=10_000),
+            _row('AAA', 'earnings_whispers', options_volume=10_000),
+            _row('LONE', 'unusual_whales', options_volume=10_000),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        tickers = {e['ticker'] for e in result['earnings']}
+        assert 'AAA' in tickers       # tier 1, kept
+        assert 'LONE' not in tickers  # tier 4, filtered out
+
+    def test_override_keeps_unconfirmed(self, monkeypatch, mock_cloud_sql):
+        monkeypatch.setenv('BRIEF_INCLUDE_UNCONFIRMED', '1')
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame([
+            _row('LONE', 'unusual_whales', options_volume=10_000),
+        ]))
+        from gcp.premarket_brief import load_earnings_for_brief
+        result = load_earnings_for_brief(date(2026, 4, 27))
+        assert {e['ticker'] for e in result['earnings']} == {'LONE'}
+
+
 class TestOptionsFlowFilter:
     """Names without options flow are filtered out — earnings are only
     tradeable via options for this brief's use case. Removes the
@@ -1138,7 +1180,10 @@ def _row_out(ticker, time_, tier, **kw):
 
 class TestEarningsEmbedSectionSplit:
 
-    def test_daily_partitions_into_three_sections(self):
+    def test_daily_partitions_into_two_sections(self):
+        """BMO + AMC sections only — Time Unknown rows are dropped from
+        the embed (foreign listings / TNS placeholders without tradeable
+        timing)."""
         from gcp.premarket_brief import _build_earnings_embed
         embed = _build_earnings_embed(_earnings_brief([
             _row_out('HUM',  'premarket',  1),
@@ -1148,14 +1193,11 @@ class TestEarningsEmbedSectionSplit:
         desc = embed['description']
         assert 'Reporting Before Open' in desc
         assert 'Reporting After Close' in desc
-        assert 'Time Unknown / Intraday' in desc
-        # Each ticker must land under its correct header
-        bmo_pos = desc.index('Reporting Before Open')
-        amc_pos = desc.index('Reporting After Close')
-        other_pos = desc.index('Time Unknown / Intraday')
-        assert bmo_pos < desc.index('HUM') < amc_pos, "HUM must sit in BMO section"
-        assert amc_pos < desc.index('AMZN') < other_pos, "AMZN must sit in AMC section"
-        assert other_pos < desc.index('XYZ'), "XYZ must sit in unknown section"
+        assert 'Time Unknown' not in desc
+        # Unknown-time row dropped entirely
+        assert 'XYZ' not in desc
+        # BMO before AMC
+        assert desc.index('HUM') < desc.index('AMZN')
 
     def test_empty_section_omitted(self):
         """Day with only AMC reporters → no 'Before Open' header rendered."""
@@ -1446,6 +1488,113 @@ class TestEmbedAmcReactionsSection:
         assert 'Reactions to Last Night' in desc
         assert 'SBUX' in desc
         assert '\U0001f4c9' in desc   # 📉 (negative gap arrow)
+
+    def test_ew_verdict_renders_in_whispers_section(self):
+        """When evaluate_ew_strikes has scored a row, the verdict shows
+        in the Whispers section (NOT in the BMO/AMC row — strategies
+        moved to a dedicated section to avoid 'this is actionable today'
+        confusion)."""
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('TEVA', 'premarket', 1,
+                     strategy='Long Calls', strike=30,
+                     ew_strike_verdict='HIT',
+                     ew_strike_move_pct=18.7,
+                     ew_minutes_to_hit=5,
+                     ew_minutes_in_zone=142,
+                     ew_day_change_pct=1.2),
+        ]))
+        desc = embed['description']
+        assert 'Whispers' in desc
+        # Verdict block lives in Whispers, not BMO row
+        whispers_idx = desc.index('Whispers')
+        teva_in_bmo = desc.index('TEVA')  # first occurrence
+        teva_after_whispers = desc.find('TEVA', whispers_idx)
+        assert 'EW LC $30 HIT' in desc[whispers_idx:]
+        assert '+18.7%' in desc
+        assert 'in 5m' in desc
+        assert 'held 142m' in desc
+        assert 'day +1.2%' in desc
+
+    def test_ew_verdict_omitted_when_not_evaluated(self):
+        """No verdict column = no verdict text. Strategy + strike still
+        render in the Whispers section though, since the strategy alone
+        is informative."""
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('AAPL', 'premarket', 1,
+                     strategy='Long Calls', strike=260,
+                     ew_strike_verdict=None),
+        ]))
+        desc = embed['description']
+        assert 'EW LC' not in desc            # no verdict
+        assert 'Long Calls' in desc           # strategy still shows
+        assert 'Strike $260' in desc          # strike still shows
+        assert 'Whispers' in desc             # in the Whispers section
+
+
+class TestWhispersSection:
+    """Strategy + strike + EW verdict moved to a dedicated 🔮 Whispers
+    section so an EW Long-Call recommendation isn't read as 'today's
+    actionable trigger'. Section appears only when at least one row
+    has a strategy."""
+
+    def test_strategy_does_not_render_in_bmo_row(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('TEVA', 'premarket', 1,
+                     strategy='Long Calls', strike=30),
+        ]))
+        desc = embed['description']
+        # Strategy must be in Whispers section, NOT in the BMO bullet
+        bmo_section = desc.split('Whispers')[0]
+        assert 'Long Calls' not in bmo_section
+        assert 'Strike $30' not in bmo_section
+        # And IS in whispers
+        whispers_section = desc.split('Whispers')[1]
+        assert 'TEVA' in whispers_section
+        assert 'Long Calls' in whispers_section
+        assert 'Strike $30' in whispers_section
+
+    def test_no_whispers_section_when_no_strategy(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('NOSTAT', 'premarket', 2, strategy=None),
+        ]))
+        assert 'Whispers' not in embed['description']
+
+    def test_whispers_section_only_lists_strategy_rows(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed(_earnings_brief([
+            _row_out('WITH_S', 'premarket', 1,
+                     strategy='Long Calls', strike=50),
+            _row_out('NO_S',   'premarket', 2, strategy=None),
+        ]))
+        whispers = embed['description'].split('Whispers')[1]
+        assert 'WITH_S' in whispers
+        assert 'NO_S' not in whispers
+
+    def test_reactions_render_between_bmo_and_amc(self):
+        """Section order: BMO → reactions → AMC. Most-actionable first."""
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed({
+            'mode': 'daily',
+            'earnings': [
+                _row_out('HUM',  'premarket',  1),
+                _row_out('AMZN', 'postmarket', 1),
+            ],
+            'yesterday_amc_reactions': [
+                _row_out('SBUX', 'postmarket', 1, gap_pct=-3.7),
+            ],
+        })
+        desc = embed['description']
+        bmo_pos = desc.index('Reporting Before Open')
+        rx_pos  = desc.index('Reactions to Last Night')
+        amc_pos = desc.index('Reporting After Close')
+        assert bmo_pos < rx_pos < amc_pos, (
+            "Order must be BMO → reactions → AMC (got "
+            f"BMO@{bmo_pos}, reactions@{rx_pos}, AMC@{amc_pos})"
+        )
 
     def test_no_section_when_reactions_empty(self):
         from gcp.premarket_brief import _build_earnings_embed
