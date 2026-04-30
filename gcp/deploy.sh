@@ -530,6 +530,31 @@ deploy_fetch_earnings_calendar() {
         --quiet
 }
 
+# Pre-market refresh — runs at 8:30 AM ET (15 min before the brief)
+# to populate today's gap_pct / pre_high / pre_low for earnings reporters
+# and watchlist tickers. Without this, the morning brief sees NULL gap
+# data because the 11pm fetcher runs after-the-fact.
+#
+# Universe: ~50 tickers (today's earnings reporters with options flow
+# + yesterday's AMC + watchlist). One AV TIME_SERIES_INTRADAY call per
+# ticker, well under the AV premium tier's 1200/day budget.
+deploy_fetch_premarket_refresh() {
+    echo "Deploying fetch-premarket-refresh job..."
+    gcloud run jobs create fetch-premarket-refresh \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --task-timeout 300 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_premarket_refresh" \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-premarket-refresh \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_premarket_refresh" \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # News sentiment is split into two Cloud Run jobs sharing the same image:
 # `fetch-news-sentiment` queries by ticker (always-on watchlist), while
 # `fetch-news-sentiment-topics` queries by AV catalyst topic to capture
@@ -694,6 +719,7 @@ deploy_fetchers() {
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
     deploy_fetch_earnings_history
+    deploy_fetch_premarket_refresh
     deploy_fetch_sec_filings
     deploy_fetch_insider_transactions
     deploy_fetch_top_movers
@@ -1026,6 +1052,13 @@ deploy_schedulers() {
     # Earnings history (AV EARNINGS, per-ticker quarterly EPS) — Sunday 6 AM ET.
     # Weekly cadence is enough since past quarters never change.
     _schedule "earnings-history-weekly"  "0 6 * * 0"  "fetch-earnings-history"
+
+    # Pre-market refresh — 8:30 AM ET, 15 min before the brief.
+    # Populates today's gap_pct / pre_high / pre_low for earnings + watchlist
+    # tickers so the 8:45 brief can render the announcement reaction inline.
+    # Without this, today's market_data_daily row doesn't exist until the
+    # 11pm fetcher runs, so the brief sees NULL for all gap_pct cells.
+    _schedule "premarket-refresh-daily"  "30 8 * * 1-5"  "fetch-premarket-refresh"
 
     # SEC EDGAR filings — every 30min during market hours, hourly otherwise.
     # 8-Ks (material events) hit at any time; M&A and earnings preannouncements
