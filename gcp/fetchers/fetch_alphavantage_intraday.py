@@ -72,6 +72,8 @@ def fetch_month(symbol: str, year: int, month: int, api_key: str) -> Optional[pd
         'interval': '1min',
         'month': month_str,
         'outputsize': 'full',
+        'entitlement': 'realtime',
+        'extended_hours': 'true',
         'datatype': 'json',
         'apikey': api_key,
     }

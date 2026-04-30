@@ -206,6 +206,7 @@ def av_intraday_month(ticker: str, year_month: str, api_key: str) -> pd.DataFram
         'outputsize': 'full',
         'adjusted': 'true',
         'extended_hours': 'true',
+        'entitlement': 'realtime',
         'apikey': api_key,
         'datatype': 'json',
     }, timeout=120)

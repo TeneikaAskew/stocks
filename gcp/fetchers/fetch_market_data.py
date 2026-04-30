@@ -63,6 +63,11 @@ def fetch_minute_data(ticker: str, fetch_date: str, api_key: str) -> pd.DataFram
         'month': month,
         'outputsize': 'full',
         'adjusted': 'true',
+        # Required to get current-day bars. Without it AV returns
+        # historical-only — `month=2026-04` with default entitlement
+        # gave 0 bars for 2026-04-30 even mid-session.
+        'entitlement': 'realtime',
+        'extended_hours': 'true',
         'apikey': api_key,
         'datatype': 'json',
     }
