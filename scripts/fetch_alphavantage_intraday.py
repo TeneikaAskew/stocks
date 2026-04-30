@@ -146,6 +146,8 @@ def fetch_intraday_month(symbol, month, interval='1min', outputsize='full', adju
         'month': month,
         'outputsize': outputsize,
         'adjusted': 'true' if adjusted else 'false',
+        'entitlement': 'realtime',
+        'extended_hours': 'true',
         'apikey': ALPHA_VANTAGE_API_KEY,
         'datatype': 'json'
     }
