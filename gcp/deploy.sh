@@ -1086,12 +1086,12 @@ deploy_schedulers() {
     # 11pm fetcher runs, so the brief sees NULL for all gap_pct cells.
     _schedule "premarket-refresh-daily"  "30 8 * * 1-5"  "fetch-premarket-refresh"
 
-    # EW strike verdict evaluator — 5:00 PM ET, 1 hour after close.
-    # Buffer absorbs any AV intraday settle lag (which is typically <5min,
-    # but the last few bars can drift). Inputs are static after 4:30 PM
-    # so there's no value in waiting until the 11pm job. Tomorrow's
-    # 8:45 AM brief reads these verdicts in the 🔮 Whispers section.
-    _schedule "evaluate-ew-strikes-daily" "0 17 * * 1-5"  "evaluate-ew-strikes"
+    # EW strike verdict evaluator — 11:00 PM ET. Earlier 5pm slot was
+    # tried and produced unreliable bars (AV intraday hadn't fully
+    # settled — borderline KEPT/ASSIGNED verdicts flipped on re-runs).
+    # 11pm gives the full session 7 hours to settle and aligns with
+    # fetch-market-data-daily so AV is already warmed up.
+    _schedule "evaluate-ew-strikes-daily" "0 23 * * 1-5"  "evaluate-ew-strikes"
 
     # SEC EDGAR filings — 4 strategic slots that cover every consumer.
     # The brief (8:30) and insight pipeline (8:45) read from sec_filings
