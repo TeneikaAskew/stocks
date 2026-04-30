@@ -1337,3 +1337,132 @@ class TestBeatMissRender:
         assert '✅' in embed['description']
 
 
+# ──────────────────────────────────────────────────────────────────────
+# PR 3: Yesterday-AMC reaction view
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestYesterdayAmcReactionsLoader:
+    """load_yesterday_amc_reactions queries yesterday's AMC reporters,
+    LEFT-joins TODAY's market_data_daily for gap_pct, returns top N
+    by |gap|. Walks back over weekends so a Monday brief still finds
+    Friday's AMC names."""
+
+    def test_walks_back_over_weekend(self, mock_cloud_sql):
+        install, captured = mock_cloud_sql
+        install(pd.DataFrame({
+            'ticker': ['SBUX'], 'earnings_date': [date(2026, 5, 1)],
+            'eps_estimate': [0.44], 'eps_actual': [0.41],
+            'eps_surprise_pct': [-6.8], 'market_cap': [112e9],
+            'options_volume': [20272], 'expected_move': [5.78],
+            'strategy': [None],
+            'gap_pct': [-3.7], 'pre_high': [None], 'pre_low': [None],
+        }))
+        from gcp.premarket_brief import load_yesterday_amc_reactions
+
+        # Monday 2026-05-04 → walks back to Friday 2026-05-01
+        rows = load_yesterday_amc_reactions(date(2026, 5, 4))
+        assert captured["params"]["prior"] == date(2026, 5, 1)
+        assert captured["params"]["today"] == date(2026, 5, 4)
+        assert len(rows) == 1
+        assert rows[0]["ticker"] == "SBUX"
+        assert rows[0]["gap_pct"] == -3.7
+
+    def test_skips_rows_with_null_gap(self, mock_cloud_sql):
+        """A ticker without today's market_data_daily row (gap_pct NULL)
+        gives no reaction signal — drop it instead of rendering 'reacted
+        unknown amount'."""
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame({
+            'ticker': ['HAS_GAP', 'NO_GAP'],
+            'earnings_date': [date(2026, 4, 29), date(2026, 4, 29)],
+            'eps_estimate': [1.0, 1.0], 'eps_actual': [None, None],
+            'eps_surprise_pct': [None, None],
+            'market_cap': [1e10, 1e10], 'options_volume': [10000, 10000],
+            'expected_move': [None, None], 'strategy': [None, None],
+            'gap_pct': [-2.5, None],
+            'pre_high': [None, None], 'pre_low': [None, None],
+        }))
+        from gcp.premarket_brief import load_yesterday_amc_reactions
+        rows = load_yesterday_amc_reactions(date(2026, 4, 30))
+        assert {r["ticker"] for r in rows} == {"HAS_GAP"}
+
+    def test_sorts_by_absolute_gap_desc(self, mock_cloud_sql):
+        """Biggest movers first — direction-agnostic."""
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame({
+            'ticker': ['SMALL', 'BIG_DOWN', 'BIG_UP'],
+            'earnings_date': [date(2026, 4, 29)] * 3,
+            'eps_estimate': [1.0] * 3, 'eps_actual': [None] * 3,
+            'eps_surprise_pct': [None] * 3,
+            'market_cap': [1e10] * 3, 'options_volume': [10000] * 3,
+            'expected_move': [None] * 3, 'strategy': [None] * 3,
+            'gap_pct': [0.8, -7.2, 5.4],
+            'pre_high': [None] * 3, 'pre_low': [None] * 3,
+        }))
+        from gcp.premarket_brief import load_yesterday_amc_reactions
+        rows = load_yesterday_amc_reactions(date(2026, 4, 30), top_n=10)
+        assert [r["ticker"] for r in rows] == ["BIG_DOWN", "BIG_UP", "SMALL"]
+
+    def test_top_n_caps_results(self, mock_cloud_sql):
+        install, _ = mock_cloud_sql
+        install(pd.DataFrame({
+            'ticker': [f'T{i}' for i in range(10)],
+            'earnings_date': [date(2026, 4, 29)] * 10,
+            'eps_estimate': [1.0] * 10, 'eps_actual': [None] * 10,
+            'eps_surprise_pct': [None] * 10,
+            'market_cap': [1e10] * 10, 'options_volume': [10000] * 10,
+            'expected_move': [None] * 10, 'strategy': [None] * 10,
+            'gap_pct': [(-1) ** i * (i + 1) for i in range(10)],
+            'pre_high': [None] * 10, 'pre_low': [None] * 10,
+        }))
+        from gcp.premarket_brief import load_yesterday_amc_reactions
+        rows = load_yesterday_amc_reactions(date(2026, 4, 30), top_n=3)
+        assert len(rows) == 3
+
+    def test_no_cloud_sql_returns_empty(self, monkeypatch):
+        from gcp import database
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: False)
+        from gcp.premarket_brief import load_yesterday_amc_reactions
+        assert load_yesterday_amc_reactions(date(2026, 4, 30)) == []
+
+
+class TestEmbedAmcReactionsSection:
+    """The embed appends a 'Reactions to Last Night's AMC' section when
+    earnings_data has yesterday_amc_reactions."""
+
+    def test_section_renders_when_reactions_present(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed({
+            'mode': 'daily',
+            'earnings': [_row_out('AAPL', 'premarket', 1)],
+            'yesterday_amc_reactions': [
+                _row_out('SBUX', 'postmarket', 1, gap_pct=-3.7,
+                         eps_estimate=0.44, eps_actual=0.41,
+                         eps_surprise_pct=-6.8),
+            ],
+        })
+        desc = embed['description']
+        assert 'Reactions to Last Night' in desc
+        assert 'SBUX' in desc
+        assert '\U0001f4c9' in desc   # 📉 (negative gap arrow)
+
+    def test_no_section_when_reactions_empty(self):
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed({
+            'mode': 'daily',
+            'earnings': [_row_out('AAPL', 'premarket', 1)],
+            'yesterday_amc_reactions': [],
+        })
+        assert 'Reactions to Last Night' not in embed['description']
+
+    def test_no_section_when_key_absent(self):
+        """Backward compat: existing callers don't pass the new key."""
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed({
+            'mode': 'daily',
+            'earnings': [_row_out('AAPL', 'premarket', 1)],
+        })
+        assert 'Reactions to Last Night' not in embed['description']
+
+
