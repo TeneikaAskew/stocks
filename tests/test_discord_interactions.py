@@ -785,3 +785,112 @@ def test_unknown_command_returns_error(client, keypair):
     assert r.status_code == 200
     payload = r.json()
     assert "Unknown" in payload["data"]["content"]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase 2: cache-first /replay
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_replay_cache_hit_dispatches_render_existing_jobs():
+    """When both brief + insight rows already exist for the date and
+    refresh=False, /replay dispatches the render-existing jobs instead
+    of re-running the full pipeline."""
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+
+    def fake_execute(name, env):
+        calls.append((name, env))
+        return True
+
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=fake_execute), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"), \
+         patch("gcp.discord_interactions.main._brief_row_exists",
+               return_value=True), \
+         patch("gcp.discord_interactions.main._insight_row_exists",
+               return_value=True), \
+         patch("gcp.discord_interactions.main._log_cache_hit"):
+        msg = handle_replay("IWM", "2026-04-15",
+                            "appid", "tok", refresh=False, user_id="user_1")
+
+    job_names = [c[0] for c in calls]
+    # Cache-hit dispatches: brief --post-existing + insight-discord-push --push-one
+    assert "premarket-brief" in job_names
+    assert "insight-discord-push" in job_names
+    # No insight-pipeline (the orchestrator) — that's the recompute path
+    assert "insight-pipeline" not in job_names
+
+    brief_env = next(env for name, env in calls if name == "premarket-brief")
+    assert brief_env["BRIEF_POST_EXISTING_TICKER"] == "IWM"
+    assert brief_env["BRIEF_POST_EXISTING_DATE"] == "2026-04-15"
+    # Cache-hit should NOT pass BRIEF_UPDATE
+    assert "BRIEF_UPDATE" not in brief_env
+
+    push_env = next(env for name, env in calls if name == "insight-discord-push")
+    assert push_env["INSIGHT_PUSH_ONE_TICKER"] == "IWM"
+    assert push_env["INSIGHT_PUSH_ONE_DATE"] == "2026-04-15"
+
+    assert "📼" in msg or "Cached" in msg
+
+
+def test_replay_refresh_dispatches_with_update_env():
+    """refresh=True dispatches the full brief + pipeline with
+    BRIEF_UPDATE / INSIGHT_UPDATE env vars so the persistence path
+    UPSERTs the canonical row."""
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+
+    def fake_execute(name, env):
+        calls.append((name, env))
+        return True
+
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=fake_execute), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"), \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=True):
+        msg = handle_replay("IWM", "2026-04-15",
+                            "appid", "tok", refresh=True, user_id="user_1")
+
+    brief_env = next(env for name, env in calls if name == "premarket-brief")
+    assert brief_env["BRIEF_AS_OF"] == "2026-04-15"
+    assert brief_env["BRIEF_UPDATE"] == "true"
+    assert brief_env["BRIEF_TRIGGERED_BY"].startswith("discord:replay:")
+
+    insight_env = next(env for name, env in calls if name == "insight-pipeline")
+    assert insight_env["INSIGHT_UPDATE"] == "true"
+    assert insight_env["INSIGHT_TRIGGERED_BY"].startswith("discord:replay:")
+    # Refresh path uses recompute, NOT push-existing
+    assert "INSIGHT_PUSH_ONE_TICKER" not in insight_env
+
+    assert "refresh" in msg.lower() or "queued" in msg.lower()
+
+
+def test_replay_cache_miss_falls_back_to_dispatch():
+    """When at least one row is missing and refresh=False, /replay
+    falls back to the dispatch path (with UPDATE env vars). Confirms
+    that an absent insight row alone is enough to trigger recompute."""
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+
+    def fake_execute(name, env):
+        calls.append((name, env))
+        return True
+
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=fake_execute), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"), \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=True), \
+         patch("gcp.discord_interactions.main._brief_row_exists",
+               return_value=True), \
+         patch("gcp.discord_interactions.main._insight_row_exists",
+               return_value=False):
+        handle_replay("IWM", "2026-04-15",
+                       "appid", "tok", refresh=False, user_id="user_1")
+
+    job_names = [c[0] for c in calls]
+    assert "premarket-brief" in job_names
+    assert "insight-pipeline" in job_names  # full recompute path
+    assert "insight-discord-push" not in job_names  # not the cache-hit path

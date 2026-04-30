@@ -34,12 +34,13 @@ import requests
 # Discord option type enum we care about (subset)
 SUB_COMMAND = 1
 STRING = 3
+BOOLEAN = 5
 
 
 COMMANDS: list[dict] = [
     {
         "name": "replay",
-        "description": "Regenerate the 8:30 AM brief + 9:15 AM AI insight as of a past date",
+        "description": "Re-post the brief + AI insight for a ticker on a past date (cached by default)",
         "options": [
             {
                 "name": "ticker",
@@ -53,6 +54,12 @@ COMMANDS: list[dict] = [
                 "description": "YYYY-MM-DD or -N (days back) or 'today'",
                 "type": STRING,
                 "required": True,
+            },
+            {
+                "name": "refresh",
+                "description": "Re-run brief + insight with latest code instead of returning cached data (default: false)",
+                "type": BOOLEAN,
+                "required": False,
             },
         ],
     },

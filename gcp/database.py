@@ -246,6 +246,31 @@ def table_exists(table: str) -> bool:
         return False
 
 
+def row_exists(table: str, where: dict) -> bool:
+    """Return True if at least one row matches the where-dict.
+
+    Used by the brief/pipeline jobs to decide whether to UPSERT or
+    skip a current-table write when the canonical morning row is
+    being protected (Phase 2 of MORNING_RUN_PROTECTION_PLAN).
+
+    Returns False on Cloud SQL unreachable (callers fall back to
+    INSERT, which will then raise on unique-constraint violation —
+    surfacing the connection issue instead of silently skipping).
+    """
+    if not where:
+        raise ValueError("row_exists requires a non-empty where-dict")
+    if not is_cloud_sql_configured():
+        return False
+    where_clause = ' AND '.join(f"{k} = :{k}" for k in where)
+    sql = f"SELECT 1 FROM {table} WHERE {where_clause} LIMIT 1"
+    try:
+        df = query_to_dataframe(sql, where)
+        return not df.empty
+    except Exception as e:
+        logger.warning("row_exists(%s, %s) failed: %s", table, where, e)
+        return False
+
+
 def execute_sql(sql: str, params: Optional[dict] = None) -> None:
     """Execute a non-SELECT statement (INSERT, UPDATE, DELETE, DDL)."""
     engine = get_engine()
