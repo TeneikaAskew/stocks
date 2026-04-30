@@ -1655,6 +1655,31 @@ class TestEmbedAmcReactionsSection:
         assert 'SBUX' in desc
         assert '\U0001f4c9' in desc   # 📉 (negative gap arrow)
 
+    def test_amc_reactions_row_has_no_tier_badge(self):
+        """The Reactions section deliberately suppresses the tier badge —
+        green/blue/yellow source-confirmation dots aren't useful for names
+        that already reported. Lock in: no 🟢 / 🔵 / 🟡 between the
+        section header and the SBUX row."""
+        from gcp.premarket_brief import _build_earnings_embed
+        embed = _build_earnings_embed({
+            'mode': 'daily',
+            'earnings': [_row_out('AAPL', 'premarket', 1)],
+            'yesterday_amc_reactions': [
+                # tier=1 would normally render a 🟢 dot; the suppression
+                # path must drop it for the AMC reactions section.
+                _row_out('SBUX', 'postmarket', 1, gap_pct=-3.7),
+            ],
+        })
+        desc = embed['description']
+        header_idx = desc.index('Reactions to Last Night')
+        sbux_idx = desc.index('SBUX', header_idx)
+        between = desc[header_idx:sbux_idx]
+        for badge in ('\U0001f7e2', '\U0001f535', '\U0001f7e1'):
+            assert badge not in between, (
+                f"tier badge {badge!r} should not appear in AMC reactions "
+                f"section; saw between=[{between!r}]"
+            )
+
     def test_ew_verdict_renders_in_whispers_section(self):
         """When evaluate_ew_strikes has scored a row, the verdict shows
         in the Whispers section (NOT in the BMO/AMC row — strategies
