@@ -758,71 +758,19 @@ def _fetch_yahoo_one(ticker: str, start_date, end_date, limit: int = 8):
     return records
 
 
-def _fetch_yahoo_per_ticker(tickers, start_date, end_date,
-                            max_workers: int = 4) -> pd.DataFrame:
-    """Per-ticker Yahoo fetch — fallback for names the bulk API didn't
-    return (typically tonight's pending AMC reports that haven't yet
-    transitioned from "scheduled" to "TAS" in Yahoo's DB).
-
-    Threaded but conservative on concurrency — Yahoo aggressively rate
-    limits per-ticker calls (observed empty responses at 16 workers).
-    """
-    if not tickers:
-        return pd.DataFrame()
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from datetime import date as _date
-    sd = (datetime.strptime(start_date, '%Y-%m-%d').date()
-          if isinstance(start_date, str) else start_date)
-    ed = (datetime.strptime(end_date, '%Y-%m-%d').date()
-          if isinstance(end_date, str) else end_date)
-    if not isinstance(sd, _date) or not isinstance(ed, _date):
-        return pd.DataFrame()
-
-    logger.info("Yahoo per-ticker fill: %d tickers (%s..%s)",
-                len(tickers), sd, ed)
-    all_records = []
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_fetch_yahoo_one, t, sd, ed): t for t in tickers}
-        for fut in as_completed(futures):
-            try:
-                all_records.extend(fut.result())
-            except Exception as e:
-                logger.debug("Yahoo per-ticker worker %s: %s", futures[fut], e)
-
-    if not all_records:
-        return pd.DataFrame()
-    df = pd.DataFrame(all_records)
-    df = df.drop_duplicates(subset=['ticker', 'date'], keep='last')
-    df = df.sort_values('date').reset_index(drop=True)
-    return df
-
-
-def fetch_yahoo_earnings(start_date, end_date,
-                         fill_tickers=None,
-                         max_workers: int = 4) -> pd.DataFrame:
+def fetch_yahoo_earnings(start_date, end_date) -> pd.DataFrame:
     """Fetch Yahoo Finance's earnings calendar for [start, end].
 
     Uses Yahoo's bulk earnings endpoint via ``yfinance.Calendars`` — one
-    paginated API call set covers the entire window (~95% coverage on
-    most days). Per-ticker fill-in for ``fill_tickers`` catches today's
-    pending AMC reports that the bulk endpoint omits until they cross
-    the "as-of-now" boundary.
+    paginated API call set covers the entire window. The bulk response
+    already carries Reported EPS + Surprise(%) for filed rows, so the
+    previous per-ticker fill path was redundant for our 7-day window
+    and the OOM cause when iterating thousands of long-tail names.
 
     Yahoo is the third independent date source (alongside AV and UW).
     AV's date is wrong for ~20% of SP500 names (SBUX, V, STX, EA, FSLR).
     Yahoo confirmation promotes those rows from tier 5 (UW alone) to
     tier 2 in the brief.
-
-    Args:
-        start_date: date or YYYY-MM-DD string.
-        end_date:   date or YYYY-MM-DD string.
-        fill_tickers: optional iterable of tickers to back-fill via
-            per-ticker calls if the bulk fetch missed them. Caller
-            typically passes the AV/UW priority set so we don't fan out
-            to thousands of long-tail names. None disables the fill step.
-        max_workers: thread pool size for the per-ticker fill. Default
-            4 — Yahoo throttles per-ticker calls aggressively.
 
     Returns:
         DataFrame matching the common earnings_calendar schema with
@@ -835,25 +783,8 @@ def fetch_yahoo_earnings(start_date, end_date,
         return pd.DataFrame()
 
     bulk = _fetch_yahoo_bulk(start_date, end_date)
-
-    if fill_tickers:
-        bulk_set = set(bulk['ticker']) if not bulk.empty else set()
-        missing = sorted({str(t).upper().strip() for t in fill_tickers
-                          if t and str(t).upper().strip() not in bulk_set})
-        if missing:
-            fill = _fetch_yahoo_per_ticker(missing, start_date, end_date,
-                                           max_workers=max_workers)
-            if not fill.empty:
-                if bulk.empty:
-                    bulk = fill
-                else:
-                    bulk = pd.concat([bulk, fill], ignore_index=True)
-                    bulk = bulk.drop_duplicates(subset=['ticker', 'date'],
-                                                keep='first')
-                    bulk = bulk.sort_values('date').reset_index(drop=True)
-
     if not bulk.empty:
-        logger.info("Yahoo total (bulk + fill): %d records / %d unique tickers",
+        logger.info("Yahoo total: %d records / %d unique tickers",
                     len(bulk), bulk['ticker'].nunique())
     return bulk
 
@@ -1279,35 +1210,19 @@ def main():
             frames.append(ew_df)
 
     # ── Yahoo Finance (independent date cross-check) ──
-    # Bulk fetch via Calendars.get_earnings_calendar — one paginated set
-    # of API calls covers the entire window (vs hundreds of per-ticker
-    # calls). Per-ticker fill-in for the priority set catches tonight's
-    # pending AMC reports that the bulk API omits.
+    # Bulk-only fetch via Calendars.get_earnings_calendar. Yesterday +
+    # next 7 days is all the brief consumes; pulling further out
+    # multiplies memory cost without adding value (the per-ticker fill
+    # was the OOM cause for the daily Cloud Run Job).
     if args.source in ("all", "yh"):
         if args.start_date and args.end_date:
-            yh_start = (datetime.strptime(args.start_date, "%Y-%m-%d").date()
-                        - timedelta(days=7))
+            yh_start = datetime.strptime(args.start_date, "%Y-%m-%d").date()
             yh_end = datetime.strptime(args.end_date, "%Y-%m-%d").date()
         else:
-            yh_start = datetime.now().date() - timedelta(days=7)
-            yh_end = datetime.now().date() + timedelta(days=days_ahead)
+            yh_start = datetime.now().date() - timedelta(days=1)
+            yh_end = datetime.now().date() + timedelta(days=7)
 
-        # Priority set for per-ticker fill: tickers from AV/UW/EW that are
-        # likely to be missing from bulk (today's AMC reports). We pass
-        # the union so the fill step targets the names we actually care
-        # about — long-tail small caps stay out of the per-ticker path.
-        priority_tickers: set = set()
-        for f in frames:
-            if 'ticker' in f.columns:
-                priority_tickers.update(t for t in f['ticker'].dropna().unique() if t)
-        try:
-            from gcp.fetchers._watchlist import get_active_watchlist
-            priority_tickers.update(get_active_watchlist())
-        except Exception:
-            pass
-
-        yh_df = fetch_yahoo_earnings(yh_start, yh_end,
-                                     fill_tickers=priority_tickers)
+        yh_df = fetch_yahoo_earnings(yh_start, yh_end)
         if not yh_df.empty:
             attached = _attach_av_date(yh_df, av_dates)
             print(f"Yahoo: tagged {attached} rows with av_earnings_date (dates preserved)")
@@ -1322,14 +1237,23 @@ def main():
     # coexist, which is what the brief's tier-by-source-coverage logic needs.
     all_rows_df = pd.concat(frames, ignore_index=True)
 
-    # Filter by date range first (applies to both DB persist and JSON cache)
+    # Filter by date range first (applies to both DB persist and JSON cache).
+    # When no explicit window is given, clamp to today-1 .. today+7 — that's
+    # the only window the brief reads, and it caps the per-run memory
+    # footprint regardless of how many rows AV's 3-month horizon returns.
     if args.start_date and args.end_date:
-        print(f"Filtering between {args.start_date} and {args.end_date}...")
-        all_rows_df = all_rows_df[
-            (all_rows_df["date"] >= args.start_date)
-            & (all_rows_df["date"] <= args.end_date)
-        ]
-        print(f"Filtered to {len(all_rows_df)} announcements (across all sources)")
+        clamp_start, clamp_end = args.start_date, args.end_date
+    else:
+        today = datetime.now().date()
+        clamp_start = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        clamp_end = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+    print(f"Filtering between {clamp_start} and {clamp_end}...")
+    before_n = len(all_rows_df)
+    all_rows_df = all_rows_df[
+        (all_rows_df["date"] >= clamp_start)
+        & (all_rows_df["date"] <= clamp_end)
+    ]
+    print(f"Filtered: {before_n} → {len(all_rows_df)} announcements (across all sources)")
 
     # Deduplicate for JSON cache: prefer EW (carries strategy) > AV > UW > Yahoo.
     # The JSON file is a human-readable summary — one row per (ticker, date)
