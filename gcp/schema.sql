@@ -967,6 +967,138 @@ END $$;
 
 
 -- ============================================================================
+-- HISTORY TABLES — append-only audit trail for brief + insight runs
+-- ============================================================================
+-- The current `premarket_analysis` and `insight_reports` tables UPSERT on
+-- `(analysis_date, ticker)` and `(ticker, as_of)` respectively, which means
+-- any same-day re-run destructively overwrites the canonical morning row.
+-- These history tables capture every actual run (scheduled, manual, replay,
+-- retry) so we can answer "what did the 8:30 brief actually send for AVGO
+-- on 4/29?" even after a lunchtime re-run overwrote the current view.
+--
+-- Schema rules:
+--   * Append-only INSERT (no UPSERT, no UPDATE)
+--   * Mirror the column set of the parent table verbatim, plus audit metadata
+--   * Idempotency for backfill via the unique-constraint over
+--     `(parent_pk_columns, written_at)`
+--
+-- See docs/plans/MORNING_RUN_PROTECTION_PLAN.md for the rationale and the
+-- two-phase rollout (this is Phase 1 — schema only, no code change).
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS premarket_analysis_history (
+    id                BIGSERIAL    PRIMARY KEY,
+    -- Mirror of premarket_analysis (keep synced when that table evolves)
+    analysis_date     DATE         NOT NULL,
+    ticker            VARCHAR(10)  NOT NULL,
+    price             DOUBLE PRECISION,
+    rsi               DOUBLE PRECISION,
+    rsi_direction     VARCHAR(4),
+    consecutive_up    INTEGER,
+    consecutive_down  INTEGER,
+    signal_status     VARCHAR(50),
+    strat_candle      VARCHAR(10),
+    strat_combo       VARCHAR(30),
+    strat_setup       BOOLEAN,
+    ftfc_score        DOUBLE PRECISION,
+    ftfc_direction    VARCHAR(10),
+    ftfc_labels       JSONB,
+    prev_day_high     DOUBLE PRECISION,
+    prev_day_low      DOUBLE PRECISION,
+    change_pct        DOUBLE PRECISION,
+    rvol              DOUBLE PRECISION,
+    sma200            DOUBLE PRECISION,
+    bb_upper          DOUBLE PRECISION,
+    bb_lower          DOUBLE PRECISION,
+    ema9              DOUBLE PRECISION,
+    ema20             DOUBLE PRECISION,
+    atr14             DOUBLE PRECISION,
+    volatility_20d    DOUBLE PRECISION,
+    macd_cross        VARCHAR(10),
+    vol_regime        VARCHAR(10),
+    above_sma200      BOOLEAN,
+    stoch_rsi_k       DOUBLE PRECISION,
+    stoch_rsi_d       DOUBLE PRECISION,
+    recommended_orb_window  VARCHAR(8),
+    recommended_orb_reason  TEXT,
+    playbook                TEXT,
+
+    -- Audit metadata
+    written_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    run_kind          VARCHAR(20)  NOT NULL,
+        -- 'scheduled' | 'manual_update' | 'manual_replay' | 'replay_refresh'
+        -- 'auto_refresh' | 'backfill'
+    triggered_by      VARCHAR(64),
+        -- 'cloud-scheduler:premarket-brief-daily'
+        -- 'discord:replay:<user_id>' | 'cli:<user>' | 'backfill-script'
+    notes             TEXT,
+
+    -- Backfill idempotency: same (date, ticker, written_at) tuple cannot
+    -- duplicate. Live runs use NOW() so dupes within microseconds are
+    -- effectively impossible; backfill explicitly preserves analysis_ts
+    -- so re-running the backfill is a no-op.
+    CONSTRAINT uq_pmah_date_ticker_written
+        UNIQUE (analysis_date, ticker, written_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pmah_date_ticker_written
+    ON premarket_analysis_history (analysis_date, ticker, written_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pmah_run_kind
+    ON premarket_analysis_history (run_kind, written_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS insight_reports_history (
+    id                BIGSERIAL    PRIMARY KEY,
+    -- Optional FK to existing insight_runs row. SET NULL on delete so
+    -- pruning insight_runs doesn't cascade to history.
+    insight_run_id    UUID         REFERENCES insight_runs(id) ON DELETE SET NULL,
+    -- Mirror of insight_reports
+    ticker            VARCHAR(10)  NOT NULL,
+    as_of             TIMESTAMPTZ  NOT NULL,
+    report            JSONB        NOT NULL,
+    model_versions    JSONB,
+    cost_usd          NUMERIC(10,4),
+    latency_ms        INTEGER,
+
+    -- Audit metadata
+    written_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    run_kind          VARCHAR(20)  NOT NULL,
+    triggered_by      VARCHAR(64),
+    notes             TEXT,
+
+    CONSTRAINT uq_irh_ticker_asof_written
+        UNIQUE (ticker, as_of, written_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_irh_ticker_as_of_written
+    ON insight_reports_history (ticker, as_of, written_at DESC);
+CREATE INDEX IF NOT EXISTS idx_irh_run_kind
+    ON insight_reports_history (run_kind, written_at DESC);
+
+
+-- Migration: extend insight_runs.trigger CHECK to allow 'cache_hit' so
+-- /replay can audit-log "user requested cached data" without writing a
+-- new insight_reports row. Idempotent — DROP + ADD so re-running
+-- schema.sql converges existing instances.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'insight_runs_trigger_check'
+    ) THEN
+        ALTER TABLE insight_runs
+            DROP CONSTRAINT insight_runs_trigger_check;
+    END IF;
+    ALTER TABLE insight_runs
+        ADD CONSTRAINT insight_runs_trigger_check
+        CHECK (trigger IN (
+            'on_demand', 'scheduled', 'local_dev', 'manual_batch',
+            'cache_hit', 'replay_refresh'
+        ));
+END $$;
+
+
+-- ============================================================================
 -- HISTORICAL_SIGNALS — idempotent home for trading_analysis.py output
 -- ============================================================================
 -- Each row is one fired setup as defined by the 5-condition voter in
