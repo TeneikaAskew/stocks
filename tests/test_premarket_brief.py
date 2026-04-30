@@ -793,11 +793,22 @@ class TestResolveAnalysisDate:
 
 
 class TestResolveBriefTickers:
-    """`_resolve_brief_tickers` reads BRIEF_TICKERS for one-off / replay
-    runs that target a specific ticker subset."""
+    """`_resolve_brief_tickers` resolves the ticker list in three layers:
+    BRIEF_TICKERS env var, Cloud SQL watchlists (in_brief=TRUE), and
+    finally cfg.market.tickers default."""
+
+    def _stub_empty_watchlist(self, monkeypatch):
+        """Make load_watchlist return [] so tests can assert the
+        config-default fallback. Production CSQL returns 4 ETFs."""
+        import gcp.premarket_brief as pb
+        # Patch the function in its source module — the brief imports
+        # it lazily inside _resolve_brief_tickers.
+        from gcp.fetchers import _watchlist as wlmod
+        monkeypatch.setattr(wlmod, "load_watchlist", lambda **kw: [])
 
     def test_default_unchanged_when_unset(self, monkeypatch):
         monkeypatch.delenv("BRIEF_TICKERS", raising=False)
+        self._stub_empty_watchlist(monkeypatch)
         from gcp.premarket_brief import _resolve_brief_tickers
         assert _resolve_brief_tickers(["IWM", "SPY"]) == ["IWM", "SPY"]
 
@@ -821,8 +832,37 @@ class TestResolveBriefTickers:
 
     def test_blank_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("BRIEF_TICKERS", "  ")
+        self._stub_empty_watchlist(monkeypatch)
         from gcp.premarket_brief import _resolve_brief_tickers
         assert _resolve_brief_tickers(["IWM"]) == ["IWM"]
+
+    def test_cloud_sql_watchlist_supersedes_default(self, monkeypatch):
+        """When BRIEF_TICKERS is unset but Cloud SQL has in_brief tickers,
+        the brief uses those (production behaviour)."""
+        monkeypatch.delenv("BRIEF_TICKERS", raising=False)
+        from gcp.fetchers import _watchlist as wlmod
+        monkeypatch.setattr(
+            wlmod, "load_watchlist",
+            lambda **kw: ["IWM", "QQQ", "SPY", "SPX"]
+                          if kw.get("surface") == "brief" else [],
+        )
+        from gcp.premarket_brief import _resolve_brief_tickers
+        # cfg default is irrelevant when the watchlist surface returns a value
+        assert _resolve_brief_tickers(["IRRELEVANT"]) == [
+            "IWM", "QQQ", "SPY", "SPX"]
+
+    def test_brief_tickers_env_supersedes_watchlist(self, monkeypatch):
+        """BRIEF_TICKERS env wins over Cloud SQL watchlist."""
+        monkeypatch.setenv("BRIEF_TICKERS", "AMD")
+        from gcp.fetchers import _watchlist as wlmod
+        called = {"yes": False}
+        def _wl(**kw):
+            called["yes"] = True
+            return ["IWM", "QQQ"]
+        monkeypatch.setattr(wlmod, "load_watchlist", _wl)
+        from gcp.premarket_brief import _resolve_brief_tickers
+        assert _resolve_brief_tickers(["IWM"]) == ["AMD"]
+        assert not called["yes"], "load_watchlist should not be called when env is set"
 
 
 # ── BRIEF_AS_OF df cutoff (regression for ARM 4/20 leak) ─────────────────

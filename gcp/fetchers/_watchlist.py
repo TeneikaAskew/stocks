@@ -43,9 +43,36 @@ _CFG_PATH = Path(__file__).resolve().parents[2] / "alert_config.json"
 DEFAULT_USER_ID = "default"
 
 
-def _load_from_cloud_sql(user_id: str = DEFAULT_USER_ID) -> list[str]:
+_VALID_SURFACES = ("all", "brief", "insight")
+
+
+def _surface_predicate(surface: str) -> str:
+    """Return the SQL fragment that filters by surface column.
+
+    'all'      → no extra predicate (every active row)
+    'brief'    → AND in_brief = TRUE
+    'insight'  → AND in_insight = TRUE
+    """
+    if surface not in _VALID_SURFACES:
+        raise ValueError(
+            f"surface must be one of {_VALID_SURFACES}, got {surface!r}"
+        )
+    if surface == "all":
+        return ""
+    return f" AND in_{surface} = TRUE"
+
+
+def _load_from_cloud_sql(
+    user_id: str = DEFAULT_USER_ID,
+    surface: str = "all",
+) -> list[str]:
     """Query the `watchlists` table for active rows. Returns [] on any
-    error so callers can fall through to file/env without raising."""
+    error so callers can fall through to file/env without raising.
+
+    `surface` selects the in_brief / in_insight column to filter on.
+    Defaults to 'all' (no per-surface filtering) so legacy callers
+    don't change behavior.
+    """
     try:
         # Local import: lib.agents.model_routing.connect builds the
         # Cloud SQL engine. We import lazily so callers in environments
@@ -61,9 +88,9 @@ def _load_from_cloud_sql(user_id: str = DEFAULT_USER_ID) -> list[str]:
     try:
         cur = conn.cursor()
         cur.execute(
-            """
+            f"""
             SELECT ticker FROM watchlists
-             WHERE user_id = %s AND removed_at IS NULL
+             WHERE user_id = %s AND removed_at IS NULL{_surface_predicate(surface)}
              ORDER BY added_at
             """,
             (user_id,),
@@ -116,15 +143,40 @@ def _post_fallback_alert(reason: str) -> None:
         logger.warning("watchlist fallback Discord alert failed (%s)", exc)
 
 
-def load_watchlist(user_id: str = DEFAULT_USER_ID) -> list[str]:
+def load_watchlist(
+    user_id: str = DEFAULT_USER_ID,
+    surface: str = "all",
+) -> list[str]:
     """Return the configured watchlist (uppercased, deduped, order preserved).
 
     Cloud SQL → alert_config.json → INSIGHT_TICKERS env → []. When the
     final layer is reached (i.e. the system is about to use a hardcoded
     default), a Discord alert is posted so the gap is observable.
+
+    `surface` selects which subset of the watchlist to return:
+      * 'all'      — every active ticker (default; used by historical-
+                     signals-watchlist, /replay autocomplete, /similar)
+      * 'brief'    — only tickers with in_brief = TRUE
+                     (the morning premarket brief at 8:30 AM EDT)
+      * 'insight'  — only tickers with in_insight = TRUE
+                     (the AI insight pipeline at 8:45 AM EDT)
+
+    The surface filter only applies to the Cloud SQL layer. The
+    alert_config.json + env-var fallbacks return their full list
+    regardless of `surface` — they're used for local dev where the
+    full set is fine.
+
+    Raises ValueError if `surface` isn't a recognised value — fail
+    fast so a typo at a callsite doesn't silently cascade to "watchlist
+    fallback alert" in Discord.
     """
+    if surface not in _VALID_SURFACES:
+        raise ValueError(
+            f"surface must be one of {_VALID_SURFACES}, got {surface!r}"
+        )
+
     # Layer 1 — Cloud SQL (production source of truth)
-    out = _load_from_cloud_sql(user_id=user_id)
+    out = _load_from_cloud_sql(user_id=user_id, surface=surface)
     if out:
         return out
 
