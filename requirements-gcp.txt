@@ -12,6 +12,10 @@ requests>=2.31.0
 beautifulsoup4>=4.12.2
 lxml>=4.9.3
 fredapi>=0.5.0
+# Yahoo Finance — third date source for the earnings calendar fetcher.
+# Calendars.get_earnings_calendar is the bulk API (one paginated call
+# covers ~3000 tickers/window vs hundreds of per-ticker calls).
+yfinance>=1.3.0
 
 # Options Greeks calculation (used in gcp/fetchers/fetch_etf_options.py and fetch_earnings_options.py)
 py_vollib>=1.0.1

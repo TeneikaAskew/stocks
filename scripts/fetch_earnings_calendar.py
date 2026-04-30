@@ -470,17 +470,27 @@ def fetch_earnings_whispers(user: str = None, password: str = None) -> pd.DataFr
 
 # ── Yahoo Finance (independent date source via yfinance) ────────────────────
 
-def _yahoo_time_from_ts(ts) -> str:
-    """Map a yfinance Earnings Date timestamp to our earnings_time vocab.
+# Yahoo's Timing column comes from the bulk Calendars API. Map to our vocab:
+#   BMO = Before Market Open       → premarket
+#   AMC = After Market Close       → postmarket
+#   TAS = Time As Stated (reported)→ derived from the timestamp hour
+#   TNS = Time Not Supplied        → unknown
+_YH_TIMING = {'BMO': 'premarket', 'AMC': 'postmarket', 'TNS': 'unknown'}
 
-    yfinance returns a tz-aware Timestamp (US/Eastern by default). Yahoo's
-    UI labels are BMO / AMC / TNS; we approximate from the hour because
-    yfinance doesn't surface the label directly:
+
+def _yahoo_time_from_ts(ts) -> str:
+    """Map a yfinance timestamp to our earnings_time vocab.
+
+    yfinance returns a tz-aware Timestamp. Convert to ET first since
+    Yahoo's bulk API returns UTC timestamps; the per-ticker
+    get_earnings_dates already returns ET. Then bucket by hour:
         hour < 9   → premarket  (Yahoo BMO is typically 06:00–08:00 ET)
         hour >= 16 → postmarket (Yahoo AMC is typically 16:00–17:00 ET)
         else       → intraday   (TNS shows as 12:00 noon)
     """
     try:
+        if ts.tz is not None and str(ts.tz).upper() != 'US/EASTERN':
+            ts = ts.tz_convert('US/Eastern')
         h = ts.hour
     except AttributeError:
         return 'unknown'
@@ -489,6 +499,127 @@ def _yahoo_time_from_ts(ts) -> str:
     if h >= 16:
         return 'postmarket'
     return 'intraday'
+
+
+def _yahoo_time_from_row(timing: str, ts) -> str:
+    """Map (Timing, Event Start Date) from the bulk Calendars row.
+
+    Yahoo's `Timing` column carries the BMO/AMC/TNS/TAS marker. For TAS
+    rows ("Time As Stated" — already reported), the marker is just a
+    label, not a time bucket — fall through to hour-based inference.
+    """
+    if timing in _YH_TIMING:
+        return _YH_TIMING[timing]
+    return _yahoo_time_from_ts(ts)
+
+
+def _fetch_yahoo_bulk(start_date, end_date, page_size: int = 100,
+                     max_pages: int = 30) -> pd.DataFrame:
+    """Fetch the entire Yahoo earnings calendar across [start, end] in one
+    paginated call set, returning a DataFrame in our common schema.
+
+    Uses ``yfinance.Calendars.get_earnings_calendar`` (added in yfinance
+    1.2+) which calls Yahoo's bulk earnings endpoint — one HTTP request
+    per page of 100 tickers, no rate-limiting risk vs the per-ticker path.
+
+    Limitations: Yahoo's bulk API doesn't surface "today's after-close
+    events that haven't happened yet" — those need the per-ticker
+    ``Ticker.calendar`` fallback. ~3000 tickers/day across all reports
+    so 30 pages is enough headroom for a 2-3 week window.
+    """
+    try:
+        from yfinance import Calendars
+    except ImportError:
+        logger.info("yfinance.Calendars not available (need yfinance >= 1.2); "
+                    "skipping bulk Yahoo earnings")
+        return pd.DataFrame()
+
+    from datetime import date as _date
+    sd = (datetime.strptime(start_date, '%Y-%m-%d').date()
+          if isinstance(start_date, str) else start_date)
+    ed = (datetime.strptime(end_date, '%Y-%m-%d').date()
+          if isinstance(end_date, str) else end_date)
+    if not isinstance(sd, _date) or not isinstance(ed, _date):
+        logger.warning("_fetch_yahoo_bulk: invalid date args sd=%s ed=%s", sd, ed)
+        return pd.DataFrame()
+
+    # Yahoo's bulk API returns 0 rows on single-day calls (observed behavior).
+    # Force at least a 2-day window — duplicates are filtered downstream.
+    if sd == ed:
+        ed = sd + timedelta(days=1)
+
+    logger.info("Fetching Yahoo bulk earnings calendar %s..%s...", sd, ed)
+    pages = []
+    try:
+        cal = Calendars(start=sd.strftime('%Y-%m-%d'),
+                        end=ed.strftime('%Y-%m-%d'))
+        for offset in range(0, max_pages * page_size, page_size):
+            page = cal.get_earnings_calendar(
+                filter_most_active=False,
+                limit=page_size,
+                offset=offset,
+                force=True,
+            )
+            if page is None or page.empty:
+                break
+            pages.append(page)
+            if len(page) < page_size:
+                break
+    except Exception as e:
+        logger.warning("Yahoo bulk fetch failed at offset=%s: %s",
+                       offset if 'offset' in locals() else 0,
+                       type(e).__name__)
+        if not pages:
+            return pd.DataFrame()
+
+    if not pages:
+        logger.warning("Yahoo bulk: 0 pages returned for %s..%s", sd, ed)
+        return pd.DataFrame()
+
+    combined = pd.concat(pages)
+    # Yahoo schema flips between releases — normalize column names.
+    cap_col = next((c for c in ('Marketcap', 'Market Cap (Intraday)',
+                                'Market Cap', 'Marketcap (Intraday)')
+                    if c in combined.columns), None)
+    company_col = next((c for c in ('Company', 'Company Name')
+                        if c in combined.columns), None)
+
+    records = []
+    for sym, row in combined.iterrows():
+        try:
+            esd = row.get('Event Start Date')
+            if esd is None or pd.isna(esd):
+                continue
+            ts = pd.Timestamp(esd)
+            d = ts.date()
+        except Exception:
+            continue
+        if d < sd or d > ed:
+            continue
+        records.append({
+            'date': d.strftime('%Y-%m-%d'),
+            'ticker': str(sym).upper(),
+            'company_name': str(row.get(company_col, '') or '') if company_col else '',
+            'time': _yahoo_time_from_row(row.get('Timing', ''), ts),
+            'eps_estimate': _safe_num(row.get('EPS Estimate')),
+            'market_cap': _safe_num(row.get(cap_col)) if cap_col else None,
+            'sector': '',
+            'has_options': None,
+            'expected_move': None,
+            'source': 'Yahoo',
+            'strategy': '',
+            'fetched_at': datetime.now().isoformat(),
+        })
+
+    if not records:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(records)
+    df = df.drop_duplicates(subset=['ticker', 'date'], keep='last')
+    df = df.sort_values('date').reset_index(drop=True)
+    logger.info("Yahoo bulk total: %d records / %d unique tickers across "
+                "%s..%s", len(df), df['ticker'].nunique(), sd, ed)
+    return df
 
 
 def _fetch_yahoo_one(ticker: str, start_date, end_date, limit: int = 8):
@@ -613,59 +744,29 @@ def _fetch_yahoo_one(ticker: str, start_date, end_date, limit: int = 8):
     return records
 
 
-def fetch_yahoo_earnings(tickers, start_date, end_date, max_workers: int = 4) -> pd.DataFrame:
-    """Cross-check tickers against Yahoo Finance's earnings calendar.
+def _fetch_yahoo_per_ticker(tickers, start_date, end_date,
+                            max_workers: int = 4) -> pd.DataFrame:
+    """Per-ticker Yahoo fetch — fallback for names the bulk API didn't
+    return (typically tonight's pending AMC reports that haven't yet
+    transitioned from "scheduled" to "TAS" in Yahoo's DB).
 
-    Yahoo is an independent third date source — useful when AV (SEC-filing
-    dates) and UW (analyst-expected dates) disagree. We've observed AV
-    booking dates ~1 week off for SP500 names like SBUX, V, STX, EA, FSLR
-    where UW + Yahoo agree on the actual report date.
-
-    Uses yfinance per-ticker (the public visualization endpoint throttles
-    unauthenticated requests to 1 row/day). Threaded for throughput.
-
-    Args:
-        tickers: Iterable of ticker symbols to query. Caller should pass
-            the union of tickers already returned by AV/UW/EW for the
-            target window so we cross-check those rather than every
-            symbol on Yahoo.
-        start_date: date or YYYY-MM-DD string — only return rows whose
-            yfinance earnings date falls in [start_date, end_date].
-        end_date:   date or YYYY-MM-DD string.
-        max_workers: thread pool size. Default 4 — Yahoo aggressively
-            rate-limits parallel access (observed empty-result responses
-            at 16 workers within ~100 calls). Stay conservative; the daily
-            cron only needs to cross-check ~50-100 SP500 names.
-
-    Returns:
-        DataFrame matching the common earnings_calendar schema with
-        source='Yahoo'. Empty if yfinance is unavailable or no rows
-        intersect the date window.
+    Threaded but conservative on concurrency — Yahoo aggressively rate
+    limits per-ticker calls (observed empty responses at 16 workers).
     """
-    try:
-        import yfinance  # noqa: F401  (probe import)
-    except ImportError:
-        logger.info("yfinance not installed — skipping Yahoo earnings")
+    if not tickers:
         return pd.DataFrame()
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from datetime import date as _date
     sd = (datetime.strptime(start_date, '%Y-%m-%d').date()
           if isinstance(start_date, str) else start_date)
     ed = (datetime.strptime(end_date, '%Y-%m-%d').date()
           if isinstance(end_date, str) else end_date)
     if not isinstance(sd, _date) or not isinstance(ed, _date):
-        logger.warning("fetch_yahoo_earnings: invalid date args sd=%s ed=%s", sd, ed)
         return pd.DataFrame()
 
-    tickers = sorted({str(t).upper().strip() for t in tickers if t})
-    if not tickers:
-        logger.info("Yahoo: no tickers to query")
-        return pd.DataFrame()
-
-    logger.info("Fetching Yahoo earnings for %d tickers (%s..%s)...",
+    logger.info("Yahoo per-ticker fill: %d tickers (%s..%s)",
                 len(tickers), sd, ed)
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     all_records = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(_fetch_yahoo_one, t, sd, ed): t for t in tickers}
@@ -673,19 +774,74 @@ def fetch_yahoo_earnings(tickers, start_date, end_date, max_workers: int = 4) ->
             try:
                 all_records.extend(fut.result())
             except Exception as e:
-                logger.debug("Yahoo worker for %s: %s", futures[fut], e)
+                logger.debug("Yahoo per-ticker worker %s: %s", futures[fut], e)
 
     if not all_records:
-        logger.warning("Yahoo: 0 records intersected window %s..%s across %d tickers",
-                       sd, ed, len(tickers))
         return pd.DataFrame()
-
     df = pd.DataFrame(all_records)
     df = df.drop_duplicates(subset=['ticker', 'date'], keep='last')
     df = df.sort_values('date').reset_index(drop=True)
-    logger.info("Yahoo total: %d records across %d unique tickers",
-                len(df), df['ticker'].nunique())
     return df
+
+
+def fetch_yahoo_earnings(start_date, end_date,
+                         fill_tickers=None,
+                         max_workers: int = 4) -> pd.DataFrame:
+    """Fetch Yahoo Finance's earnings calendar for [start, end].
+
+    Uses Yahoo's bulk earnings endpoint via ``yfinance.Calendars`` — one
+    paginated API call set covers the entire window (~95% coverage on
+    most days). Per-ticker fill-in for ``fill_tickers`` catches today's
+    pending AMC reports that the bulk endpoint omits until they cross
+    the "as-of-now" boundary.
+
+    Yahoo is the third independent date source (alongside AV and UW).
+    AV's date is wrong for ~20% of SP500 names (SBUX, V, STX, EA, FSLR).
+    Yahoo confirmation promotes those rows from tier 5 (UW alone) to
+    tier 2 in the brief.
+
+    Args:
+        start_date: date or YYYY-MM-DD string.
+        end_date:   date or YYYY-MM-DD string.
+        fill_tickers: optional iterable of tickers to back-fill via
+            per-ticker calls if the bulk fetch missed them. Caller
+            typically passes the AV/UW priority set so we don't fan out
+            to thousands of long-tail names. None disables the fill step.
+        max_workers: thread pool size for the per-ticker fill. Default
+            4 — Yahoo throttles per-ticker calls aggressively.
+
+    Returns:
+        DataFrame matching the common earnings_calendar schema with
+        ``source='Yahoo'``. Empty if yfinance is unavailable.
+    """
+    try:
+        import yfinance  # noqa: F401  (probe)
+    except ImportError:
+        logger.info("yfinance not installed — skipping Yahoo earnings")
+        return pd.DataFrame()
+
+    bulk = _fetch_yahoo_bulk(start_date, end_date)
+
+    if fill_tickers:
+        bulk_set = set(bulk['ticker']) if not bulk.empty else set()
+        missing = sorted({str(t).upper().strip() for t in fill_tickers
+                          if t and str(t).upper().strip() not in bulk_set})
+        if missing:
+            fill = _fetch_yahoo_per_ticker(missing, start_date, end_date,
+                                           max_workers=max_workers)
+            if not fill.empty:
+                if bulk.empty:
+                    bulk = fill
+                else:
+                    bulk = pd.concat([bulk, fill], ignore_index=True)
+                    bulk = bulk.drop_duplicates(subset=['ticker', 'date'],
+                                                keep='first')
+                    bulk = bulk.sort_values('date').reset_index(drop=True)
+
+    if not bulk.empty:
+        logger.info("Yahoo total (bulk + fill): %d records / %d unique tickers",
+                    len(bulk), bulk['ticker'].nunique())
+    return bulk
 
 
 def persist_to_cloud_sql(df: pd.DataFrame) -> int:
@@ -1109,24 +1265,11 @@ def main():
             frames.append(ew_df)
 
     # ── Yahoo Finance (independent date cross-check) ──
-    # Only iterates tickers already discovered by other sources, plus the
-    # explicit watchlist. This keeps the per-ticker yfinance call count
-    # bounded (~600 for a 90-day window) instead of scanning all of Yahoo.
+    # Bulk fetch via Calendars.get_earnings_calendar — one paginated set
+    # of API calls covers the entire window (vs hundreds of per-ticker
+    # calls). Per-ticker fill-in for the priority set catches tonight's
+    # pending AMC reports that the bulk API omits.
     if args.source in ("all", "yh"):
-        # Build the union of tickers we already know reports in the window
-        known_tickers: set = set()
-        for f in frames:
-            if 'ticker' in f.columns:
-                known_tickers.update(t for t in f['ticker'].dropna().unique() if t)
-        # Always include the watchlist so we never miss known names
-        try:
-            from gcp.fetchers._watchlist import get_active_watchlist
-            known_tickers.update(get_active_watchlist())
-        except Exception:
-            pass
-
-        # Date window: covers existing rows + a small lookback for AMC reports
-        # whose post-day market reaction we want to enrich later.
         if args.start_date and args.end_date:
             yh_start = (datetime.strptime(args.start_date, "%Y-%m-%d").date()
                         - timedelta(days=7))
@@ -1135,14 +1278,26 @@ def main():
             yh_start = datetime.now().date() - timedelta(days=7)
             yh_end = datetime.now().date() + timedelta(days=days_ahead)
 
-        if known_tickers:
-            yh_df = fetch_yahoo_earnings(known_tickers, yh_start, yh_end)
-            if not yh_df.empty:
-                attached = _attach_av_date(yh_df, av_dates)
-                print(f"Yahoo: tagged {attached} rows with av_earnings_date (dates preserved)")
-                frames.append(yh_df)
-        else:
-            print("Yahoo: no known tickers to cross-check (skipping)")
+        # Priority set for per-ticker fill: tickers from AV/UW/EW that are
+        # likely to be missing from bulk (today's AMC reports). We pass
+        # the union so the fill step targets the names we actually care
+        # about — long-tail small caps stay out of the per-ticker path.
+        priority_tickers: set = set()
+        for f in frames:
+            if 'ticker' in f.columns:
+                priority_tickers.update(t for t in f['ticker'].dropna().unique() if t)
+        try:
+            from gcp.fetchers._watchlist import get_active_watchlist
+            priority_tickers.update(get_active_watchlist())
+        except Exception:
+            pass
+
+        yh_df = fetch_yahoo_earnings(yh_start, yh_end,
+                                     fill_tickers=priority_tickers)
+        if not yh_df.empty:
+            attached = _attach_av_date(yh_df, av_dates)
+            print(f"Yahoo: tagged {attached} rows with av_earnings_date (dates preserved)")
+            frames.append(yh_df)
 
     if not frames:
         print("\nNo earnings data fetched from any source")
