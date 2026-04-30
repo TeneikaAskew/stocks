@@ -131,7 +131,8 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     # universe — handled downstream.
     sql = """
         SELECT ec.ticker, ec.earnings_date, ec.company_name, ec.earnings_time,
-               ec.eps_estimate, ec.expected_move, ec.sector, ec.market_cap,
+               ec.eps_estimate, ec.eps_actual, ec.eps_surprise_pct,
+               ec.expected_move, ec.sector, ec.market_cap,
                ec.stock_volume, ec.options_volume, ec.open_interest,
                ec.rv_1d_last_12q,
                ec.strategy, ec.strike, ec.premium, ec.score, ec.data_source,
@@ -246,12 +247,24 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         pre_h = _max_non_null(rows_list, 'pre_high')
         pre_l = _max_non_null(rows_list, 'pre_low')
 
+        # Beat/miss enrichment — Yahoo TAS rows carry these. None for
+        # not-yet-reported names.
+        eps_actual = _max_non_null(rows_list, 'eps_actual')
+        # eps_surprise_pct can be negative (miss) so don't use _max_non_null;
+        # take any non-null value (typically only Yahoo TAS supplies it).
+        surprises = [r.get('eps_surprise_pct') for r in rows_list
+                     if r.get('eps_surprise_pct') is not None
+                     and not pd.isna(r.get('eps_surprise_pct'))]
+        eps_surprise_pct = surprises[0] if surprises else None
+
         earnings.append({
             'ticker': ticker,
             'date': earnings_date,
             'company_name': best.get('company_name') or '',
             'time': _best_time(rows_list),
             'eps_estimate': best.get('eps_estimate'),
+            'eps_actual': eps_actual,
+            'eps_surprise_pct': eps_surprise_pct,
             'expected_move': best.get('expected_move'),
             'sector': best.get('sector') or '',
             'market_cap': mcap,
@@ -1133,6 +1146,38 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
             return f'\U0001f4c8 +{g:.1f}%'
         return f'\U0001f4c9 {g:.1f}%'
 
+    def _beat_miss_str(estimate, actual, surprise_pct):
+        """Render expectation delta — 'EPS 0.44 -> 0.41 [miss] -6.8%'.
+
+        Returns '' when the company hasn't reported yet (actual is None).
+        Threshold |surprise| < 1% labels as 'inline' (hit) since EPS
+        rounds to 2 decimals and a 0.5% miss is typically a non-event.
+        """
+        e = _valid_num(estimate)
+        a = _valid_num(actual)
+        if a is None:
+            return ''
+        s = _valid_num(surprise_pct)
+        # If Yahoo didn't supply surprise, derive it (avoid div-by-zero)
+        if s is None and e is not None and abs(e) > 1e-6:
+            s = (a - e) / abs(e) * 100.0
+        # Verdict marker — ✅ beat, ❌ miss, \U0001f3af inline
+        if s is None:
+            verdict = ''
+        elif s >= 1.0:
+            verdict = '✅'   # beat
+        elif s <= -1.0:
+            verdict = '❌'   # miss
+        else:
+            verdict = '\U0001f3af'  # bullseye/inline
+        if e is not None:
+            base = f'EPS {e:.2f}→{a:.2f}'
+        else:
+            base = f'EPS act {a:.2f}'
+        if s is not None and verdict:
+            return f'{base} {verdict} {s:+.1f}%'
+        return base
+
     def _row_line(r):
         t_icon = time_icon.get(r.get('time'), '\u2754')
         ticker = r['ticker']
@@ -1165,6 +1210,19 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
                 extras.append(f'EPS {eps:.2f}')
         if not extras and r.get('sector'):
             extras.append(str(r['sector'])[:20])
+        # Beat/miss verdict — when actual EPS is known, this REPLACES the
+        # generic 'EPS estimate' fallback because the actual+verdict is
+        # strictly more informative.
+        bm = _beat_miss_str(r.get('eps_estimate'),
+                            r.get('eps_actual'),
+                            r.get('eps_surprise_pct'))
+        if bm:
+            # Remove a plain 'EPS X.XX' fallback if we already added one;
+            # the beat/miss form supersedes it.
+            extras = [x for x in extras if not (
+                isinstance(x, str) and x.startswith('EPS ') and '→' not in x
+            )]
+            extras.append(bm)
         # Pre-market gap reaction (where market_data_daily has data).
         # Always last so it visually anchors the right side of the line.
         gap_str = _gap_str(r.get('gap_pct'))

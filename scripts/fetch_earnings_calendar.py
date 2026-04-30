@@ -583,6 +583,9 @@ def _fetch_yahoo_bulk(start_date, end_date, page_size: int = 100,
                     if c in combined.columns), None)
     company_col = next((c for c in ('Company', 'Company Name')
                         if c in combined.columns), None)
+    surprise_col = next((c for c in ('Surprise(%)', 'Surprise (%)',
+                                     'EPS Surprise(%)')
+                         if c in combined.columns), None)
 
     records = []
     for sym, row in combined.iterrows():
@@ -596,12 +599,17 @@ def _fetch_yahoo_bulk(start_date, end_date, page_size: int = 100,
             continue
         if d < sd or d > ed:
             continue
+        # Beat/miss enrichment: Yahoo's TAS rows have Reported EPS +
+        # Surprise(%); upcoming/scheduled rows leave them None.
         records.append({
             'date': d.strftime('%Y-%m-%d'),
             'ticker': str(sym).upper(),
             'company_name': str(row.get(company_col, '') or '') if company_col else '',
             'time': _yahoo_time_from_row(row.get('Timing', ''), ts),
             'eps_estimate': _safe_num(row.get('EPS Estimate')),
+            'eps_actual': _safe_num(row.get('Reported EPS')),
+            'eps_surprise_pct': (_safe_num(row.get(surprise_col))
+                                 if surprise_col else None),
             'market_cap': _safe_num(row.get(cap_col)) if cap_col else None,
             'sector': '',
             'has_options': None,
@@ -682,12 +690,18 @@ def _fetch_yahoo_one(ticker: str, start_date, end_date, limit: int = 8):
                 continue
             seen_dates.add(d)
             eps = row.get('EPS Estimate')
+            # Per-ticker get_earnings_dates returns 'Reported EPS' +
+            # 'Surprise(%)' for past rows (already-reported names).
+            actual = row.get('Reported EPS')
+            surprise = row.get('Surprise(%)')
             records.append({
                 'date': d.strftime('%Y-%m-%d'),
                 'ticker': ticker,
                 'company_name': '',
                 'time': _yahoo_time_from_ts(ts),
                 'eps_estimate': _safe_num(eps),
+                'eps_actual': _safe_num(actual),
+                'eps_surprise_pct': _safe_num(surprise),
                 'market_cap': None,
                 'sector': '',
                 'has_options': None,

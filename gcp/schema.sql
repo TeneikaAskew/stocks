@@ -367,7 +367,13 @@ ALTER TABLE earnings_calendar
     ADD COLUMN IF NOT EXISTS options_volume      BIGINT,           -- call_vol + put_vol
     ADD COLUMN IF NOT EXISTS open_interest       BIGINT,           -- UW: oi
     ADD COLUMN IF NOT EXISTS rv_1d_last_12q      DOUBLE PRECISION, -- realized vol over last 12 quarters
-    ADD COLUMN IF NOT EXISTS last_1d_reactions   JSONB;            -- array of past 1-day post-earnings moves
+    ADD COLUMN IF NOT EXISTS last_1d_reactions   JSONB,            -- array of past 1-day post-earnings moves
+    -- Beat/miss enrichment (added 2026-04-30) — populated by the Yahoo
+    -- Calendars TAS rows after a company reports. Lets the brief render
+    -- "EPS 0.44 → 0.41 ❌ miss (-6.8%)" inline so traders see the
+    -- expectation delta alongside the pre-market gap reaction.
+    ADD COLUMN IF NOT EXISTS eps_actual          DOUBLE PRECISION, -- Yahoo: Reported EPS
+    ADD COLUMN IF NOT EXISTS eps_surprise_pct    DOUBLE PRECISION; -- Yahoo: Surprise(%)
 
 CREATE INDEX IF NOT EXISTS idx_earnings_calendar_sp500_date
     ON earnings_calendar (earnings_date DESC, is_s_p_500 DESC NULLS LAST);
