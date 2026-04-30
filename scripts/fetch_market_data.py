@@ -152,6 +152,8 @@ def fetch_minute_data_for_date(ticker, date):
             'month': month_str,
             'outputsize': 'full',
             'adjusted': 'true',
+            'entitlement': 'realtime',
+            'extended_hours': 'true',
             'apikey': AV_API_KEY,
             'datatype': 'json',
         }
