@@ -126,7 +126,8 @@ def av_intraday_month(ticker: str, year_month: str, api_key: str) -> pd.DataFram
         "function": "TIME_SERIES_INTRADAY", "symbol": ticker,
         "interval": "1min", "month": year_month,
         "outputsize": "full", "adjusted": "true",
-        "extended_hours": "true", "datatype": "json", "apikey": api_key,
+        "extended_hours": "true", "entitlement": "realtime",
+        "datatype": "json", "apikey": api_key,
     }, timeout=120)
     r.raise_for_status()
     data = r.json()

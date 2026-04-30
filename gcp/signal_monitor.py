@@ -88,6 +88,10 @@ class SignalMonitor:
             'interval': '1min',
             'outputsize': 'compact',  # last 100 data points
             'adjusted': 'true',
+            # signal_monitor checks live triggers — must use realtime
+            # entitlement, otherwise AV returns historical-only.
+            'entitlement': 'realtime',
+            'extended_hours': 'true',
             'apikey': self.av_api_key,
             'datatype': 'json',
         }
