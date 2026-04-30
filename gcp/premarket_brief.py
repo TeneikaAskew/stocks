@@ -55,6 +55,46 @@ def _safe_float(val, default=None):
         return default
 
 
+def _delete_null_close_rows(ticker: str) -> int:
+    """Delete market_data_daily rows for `ticker` that have NULL close.
+
+    Some upstream fetchers (mystery 06:44 EDT script on 2026-04-30
+    inserted 43 NULL placeholder rows — see
+    docs/incidents/2026-04-30-null-rows.md) have created placeholder
+    rows that crash the brief's level-map builder. The brief filters
+    them out at read time AND opportunistically deletes them here so
+    future runs don't re-encounter the same garbage.
+
+    Fire-and-forget — any DB error is logged at WARNING and swallowed.
+    Returns the number of rows deleted (0 on error).
+    """
+    try:
+        from gcp.database import is_cloud_sql_configured, execute_sql
+    except ImportError:
+        return 0
+    if not is_cloud_sql_configured():
+        return 0
+    try:
+        execute_sql(
+            "DELETE FROM market_data_daily "
+            "WHERE ticker = :t AND close IS NULL",
+            {'t': ticker.upper()},
+        )
+        # execute_sql doesn't return rowcount via the helper signature.
+        # Log unconditionally — caller already gated on dropped > 0.
+        logger.info(
+            "[brief:%s] cleaned up NULL-close rows in market_data_daily",
+            ticker,
+        )
+        return 1  # signal "did the cleanup attempt"
+    except Exception as exc:
+        logger.warning(
+            "[brief:%s] NULL-row cleanup failed (non-fatal): %s",
+            ticker, exc,
+        )
+        return 0
+
+
 def _vol_regime(vol_20d):
     """Classify annualized 20-day volatility into a regime label."""
     if vol_20d is None:
@@ -640,6 +680,30 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                 continue
 
         close_col = 'Close' if 'Close' in df.columns else 'Last'
+
+        # Defensive: drop rows with null close. Some upstream fetchers
+        # have inserted placeholder rows with NULL OHLCV (data_source
+        # NULL, observed 2026-04-30 — 43 tickers got a 4/29 NULL row
+        # at 06:44 EDT). Without this filter df.iloc[-1] picks the
+        # null row and curr_close=None propagates to build_level_map,
+        # which crashes in compute_current_levels at
+        # `max(float(today['_high']), current_price)`.
+        before_n = len(df)
+        df = df[df[close_col].notna()]
+        dropped = before_n - len(df)
+        if dropped:
+            logger.warning(
+                "[brief:%s] dropped %d row(s) with null close "
+                "(stale placeholder); falling back to last valid row",
+                ticker, dropped,
+            )
+            # Opportunistic cleanup so future runs don't re-encounter
+            # these rows. Fire-and-forget — failure here is non-fatal.
+            _delete_null_close_rows(ticker)
+        if df.empty or len(df) < 2:
+            brief['tickers'][ticker] = {'status': 'NO DATA (all rows null)'}
+            continue
+
         df = add_all_indicators(df, close_col=close_col)
 
         latest = df.iloc[-1]       # yesterday (most recent trading day)
