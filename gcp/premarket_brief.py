@@ -1448,11 +1448,16 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         # render just the EPS detail, no leading verdict.
         return eps_part
 
-    def _row_line(r):
+    def _row_line(r, show_tier_badge: bool = True):
         ticker = r['ticker']
-        # Tier badge: green dot for confirmed (tier 1-3), no badge for long tail
+        # Tier badge: green dot for confirmed (tier 1-3), no badge for long tail.
+        # Suppressed in the Reactions-to-Last-Night-AMC section because the
+        # tier signal isn't useful there — those names already reported, so
+        # the source-confirmation tier doesn't change how the gap is read.
         tier = r.get('tier', 6)
-        if tier == 1:
+        if not show_tier_badge:
+            badge = ''
+        elif tier == 1:
             badge = '\U0001f7e2 '   # green circle: all 3 sources
         elif tier == 2:
             badge = '\U0001f535 '   # blue circle: AV + UW (top market-movers)
@@ -1633,7 +1638,8 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
                 f'\n**\U0001f4ca Reactions to Last Night’s AMC** '
                 f'(top {len(amc_reactions)} by |gap|)'
             ]
-            r_lines.extend(_row_line(r) for r in amc_reactions)
+            r_lines.extend(_row_line(r, show_tier_badge=False)
+                           for r in amc_reactions)
             sections.append('\n'.join(r_lines))
 
         # 3. Tonight's AMC — reports after today's close
