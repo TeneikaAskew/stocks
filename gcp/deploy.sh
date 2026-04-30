@@ -1062,6 +1062,28 @@ _schedule() {
         --quiet 2>/dev/null || echo "  ${NAME}: already exists"
 }
 
+# Variant of _schedule that injects BRIEF_TRIGGERED_BY=cloud-scheduler:<name>
+# as a containerOverride env var on the Cloud Run Jobs ":run" body. Used by
+# the premarket-brief schedulers so _resolve_run_kind_and_update classifies
+# the run as 'scheduled' (not 'manual_replay') in premarket_analysis_history.
+# Plain Cloud Scheduler triggers don't propagate any context to the Job; the
+# job's persisted env is whatever was last set by a manual `gcloud run jobs
+# execute --update-env-vars=...`, which silently corrupts the run-kind label.
+_schedule_brief() {
+    local NAME=$1 CRON=$2 JOB=$3
+    local BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"BRIEF_TRIGGERED_BY","value":"cloud-scheduler:'"${NAME}"'"}]}]}}'
+    gcloud scheduler jobs create http "${NAME}" \
+        --location "${REGION}" \
+        --schedule "${CRON}" \
+        --time-zone "America/New_York" \
+        --uri "$(_job_uri "${JOB}")" \
+        --http-method POST \
+        --headers "Content-Type=application/json" \
+        --message-body "${BODY}" \
+        --oauth-service-account-email "${SA_EMAIL}" \
+        --quiet 2>/dev/null || echo "  ${NAME}: already exists"
+}
+
 # Variant of _schedule that overrides the container command-line args via the
 # Cloud Run Jobs ":run" body. Used to point a single signal-monitor job image
 # at orb-snapshot or other one-shot modes.
@@ -1095,10 +1117,13 @@ _schedule_with_args() {
 deploy_schedulers() {
     echo "Creating Cloud Scheduler triggers..."
 
-    # Pre-market brief — 8:30 AM ET weekdays (today's earnings)
-    _schedule "premarket-brief-daily"    "30 8 * * 1-5"   "premarket-brief"
+    # Pre-market brief — 8:30 AM ET weekdays (today's earnings).
+    # _schedule_brief (not _schedule) so BRIEF_TRIGGERED_BY=cloud-scheduler:<name>
+    # is passed as a containerOverride env var on every trigger; without it the
+    # brief misclassifies scheduled runs as manual_replay in history.
+    _schedule_brief "premarket-brief-daily"    "30 8 * * 1-5"   "premarket-brief"
     # Pre-market brief — 9:00 AM ET Sundays (week-ahead earnings digest)
-    _schedule "premarket-brief-sunday"   "0 9 * * 0"      "premarket-brief"
+    _schedule_brief "premarket-brief-sunday"   "0 9 * * 0"      "premarket-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
     # ORB scheduled snapshots — 9:45 ET (15-min ORB) and 10:00 ET (30-min ORB).
