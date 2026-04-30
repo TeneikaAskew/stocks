@@ -877,3 +877,58 @@ class TestBriefAsOfDfCutoff:
         assert len(out) == 1
         assert out['High'].iloc[0] == 1  # only 4/17 retained
 
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Phase 2: morning-run protection — --update flag, history write,
+# per-ticker conditional UPSERT. See docs/plans/MORNING_RUN_PROTECTION_PLAN.md.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestResolveRunKindAndUpdate:
+    """_resolve_run_kind_and_update precedence: CLI flag > env var >
+    BRIEF_AS_OF (replay implies update) > BRIEF_TRIGGERED_BY > default."""
+
+    def test_cli_flag_wins(self, monkeypatch):
+        from gcp.premarket_brief import _resolve_run_kind_and_update
+        monkeypatch.delenv('BRIEF_UPDATE', raising=False)
+        monkeypatch.delenv('BRIEF_AS_OF', raising=False)
+        allow_update, run_kind = _resolve_run_kind_and_update(True)
+        assert allow_update is True
+        assert run_kind == 'manual_update'
+
+    def test_brief_update_env_implies_update(self, monkeypatch):
+        from gcp.premarket_brief import _resolve_run_kind_and_update
+        monkeypatch.setenv('BRIEF_UPDATE', 'true')
+        monkeypatch.delenv('BRIEF_AS_OF', raising=False)
+        allow_update, run_kind = _resolve_run_kind_and_update(False)
+        assert allow_update is True
+        assert run_kind == 'manual_update'
+
+    def test_brief_as_of_set_implies_update(self, monkeypatch):
+        from gcp.premarket_brief import _resolve_run_kind_and_update
+        monkeypatch.setenv('BRIEF_AS_OF', '2026-04-15')
+        monkeypatch.delenv('BRIEF_UPDATE', raising=False)
+        allow_update, run_kind = _resolve_run_kind_and_update(False)
+        assert allow_update is True
+        assert run_kind == 'replay_refresh'
+
+    def test_cloud_scheduler_triggered_by_default_no_update(self, monkeypatch):
+        from gcp.premarket_brief import _resolve_run_kind_and_update
+        monkeypatch.delenv('BRIEF_UPDATE', raising=False)
+        monkeypatch.delenv('BRIEF_AS_OF', raising=False)
+        monkeypatch.setenv('BRIEF_TRIGGERED_BY',
+                           'cloud-scheduler:premarket-brief-daily')
+        allow_update, run_kind = _resolve_run_kind_and_update(False)
+        assert allow_update is False
+        assert run_kind == 'scheduled'
+
+    def test_no_env_no_flag_defaults_to_manual_replay(self, monkeypatch):
+        from gcp.premarket_brief import _resolve_run_kind_and_update
+        monkeypatch.delenv('BRIEF_UPDATE', raising=False)
+        monkeypatch.delenv('BRIEF_AS_OF', raising=False)
+        monkeypatch.delenv('BRIEF_TRIGGERED_BY', raising=False)
+        allow_update, run_kind = _resolve_run_kind_and_update(False)
+        assert allow_update is False
+        assert run_kind == 'manual_replay'
+

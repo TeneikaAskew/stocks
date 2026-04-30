@@ -19,6 +19,7 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -593,6 +594,41 @@ def send_to_discord(message: dict, webhook_url: str, timeout: int = 15) -> int:
     return resp.status_code
 
 
+def push_one(ticker: str, target_date: date,
+             webhook_url: Optional[str] = None) -> bool:
+    """Pull the latest insight_reports row for (ticker, target_date)
+    and POST a single-embed Discord message. Used by /replay's
+    cache-hit path.
+
+    Returns True on success. Returns False (and logs) on missing row
+    or webhook failure.
+    """
+    webhook_url = webhook_url or os.environ.get('DISCORD_WEBHOOK_URL')
+    if not webhook_url:
+        logger.warning("push_one: no DISCORD_WEBHOOK_URL set")
+        return False
+
+    rows = fetch_reports_for_date(target_date, ticker=ticker)
+    if not rows:
+        logger.warning("push_one: no insight_reports row for %s on %s",
+                       ticker, target_date)
+        return False
+
+    row = rows[0]
+    embed = format_report_embed(row)
+    payload = {
+        'content': f"📼 **Replay** — cached AI insight for "
+                   f"**{ticker.upper()}** on {target_date}",
+        'embeds': [embed],
+    }
+    try:
+        send_to_discord(payload, webhook_url)
+        return True
+    except Exception as exc:
+        logger.warning("push_one: webhook post failed: %s", exc)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -610,7 +646,38 @@ def _resolve_target_date() -> date:
     return datetime.now(timezone.utc).date()
 
 
-def main() -> int:
+def main(argv: Optional[list[str]] = None) -> int:
+    # Cloud Run Jobs pass overrides via env vars. Translate the
+    # env-var equivalent of --push-one when argv wasn't provided.
+    if argv is None:
+        env_t = os.environ.get('INSIGHT_PUSH_ONE_TICKER')
+        env_d = os.environ.get('INSIGHT_PUSH_ONE_DATE')
+        if env_t and env_d:
+            argv = ['--push-one', env_t, env_d]
+
+    parser = argparse.ArgumentParser(
+        description='Push insight_reports rows to Discord.')
+    parser.add_argument(
+        '--push-one', nargs=2, metavar=('TICKER', 'DATE'),
+        help="Skip the bulk push. Pull one (TICKER, DATE) row from "
+             "insight_reports and post a single-embed Discord message. "
+             "Used by /replay's cache-hit path. DATE: YYYY-MM-DD. "
+             "Equivalent env vars: INSIGHT_PUSH_ONE_TICKER, "
+             "INSIGHT_PUSH_ONE_DATE.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.push_one:
+        ticker, date_str = args.push_one
+        try:
+            target = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            print(f"ERROR: --push-one DATE must be YYYY-MM-DD; "
+                  f"got {date_str!r}", file=sys.stderr)
+            return 2
+        ok = push_one(ticker, target)
+        return 0 if ok else 1
+
     target = _resolve_target_date()
     ticker = os.environ.get("INSIGHT_PUSH_TICKER") or None
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")

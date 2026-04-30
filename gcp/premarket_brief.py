@@ -7,6 +7,7 @@ queries upcoming economic events, and sends a rich multi-embed Discord brief.
 Also persists per-ticker analysis to the premarket_analysis table.
 """
 
+import argparse
 import os
 import sys
 import json
@@ -15,6 +16,7 @@ import requests
 import pandas as pd
 from pathlib import Path
 from datetime import datetime, date, timedelta
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -1360,10 +1362,49 @@ def format_discord_message(brief: dict) -> dict:
 
 # ── Cloud SQL Persistence ───────────────────────────────────────────────────
 
-def persist_to_cloud_sql(brief: dict) -> int:
-    """Write premarket analysis rows to Cloud SQL premarket_analysis table."""
+def _resolve_run_kind_and_update(allow_update_arg: bool) -> tuple[bool, str]:
+    """Resolve allow_update + run_kind from CLI flag and env vars.
+
+    Precedence (highest first):
+      1. CLI --update flag → allow_update=True, run_kind='manual_update'
+      2. BRIEF_UPDATE=true env → allow_update=True, run_kind='manual_update'
+      3. BRIEF_AS_OF set (historical replay) → allow_update=True,
+         run_kind='replay_refresh'
+      4. otherwise → allow_update=False, run_kind='scheduled' if
+         BRIEF_TRIGGERED_BY starts with 'cloud-scheduler', else
+         'manual_replay'
+    """
+    if allow_update_arg or os.environ.get('BRIEF_UPDATE') == 'true':
+        return True, 'manual_update'
+    if os.environ.get('BRIEF_AS_OF'):
+        return True, 'replay_refresh'
+    triggered_by = os.environ.get('BRIEF_TRIGGERED_BY', '')
+    if triggered_by.startswith('cloud-scheduler'):
+        return False, 'scheduled'
+    return False, 'manual_replay'
+
+
+def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
+                         run_kind: str = 'scheduled',
+                         triggered_by: Optional[str] = None) -> int:
+    """Write premarket analysis rows to Cloud SQL.
+
+    Always INSERTs a row into `premarket_analysis_history` (audit
+    trail; append-only). Then, per-ticker:
+      - If a row already exists in `premarket_analysis` for
+        (analysis_date, ticker) and `allow_update` is False:
+        SKIP the current-table write; log a warning. Protects the
+        canonical morning row.
+      - Otherwise: UPSERT (INSERT, or UPDATE on conflict). Used for
+        the first run of the day and for explicit --update overrides.
+
+    See docs/plans/MORNING_RUN_PROTECTION_PLAN.md for the rationale.
+    """
     try:
-        from gcp.database import is_cloud_sql_configured, upsert_dataframe
+        from gcp.database import (
+            is_cloud_sql_configured, upsert_dataframe, bulk_insert_dataframe,
+            row_exists,
+        )
     except ImportError:
         logger.warning("gcp.database not available -- skipping DB persist")
         return 0
@@ -1426,9 +1467,47 @@ def persist_to_cloud_sql(brief: dict) -> int:
     if not rows:
         return 0
 
-    df = pd.DataFrame(rows)
-    n = upsert_dataframe(df, 'premarket_analysis', ['analysis_date', 'ticker'])
-    logger.info("Upserted %d rows to premarket_analysis", n)
+    # Step 1 — always insert into history (append-only).
+    history_rows = [
+        {**row, 'run_kind': run_kind, 'triggered_by': triggered_by}
+        for row in rows
+    ]
+    history_df = pd.DataFrame(history_rows)
+    n_hist = bulk_insert_dataframe(history_df, 'premarket_analysis_history')
+    logger.info("Inserted %d rows into premarket_analysis_history (run_kind=%s)",
+                n_hist, run_kind)
+
+    # Step 2 — write to current table. Per-ticker conditional UPSERT
+    # protects the canonical morning row when allow_update=False.
+    if allow_update:
+        df = pd.DataFrame(rows)
+        n = upsert_dataframe(df, 'premarket_analysis', ['analysis_date', 'ticker'])
+        logger.info("UPSERTED %d rows to premarket_analysis (allow_update=True)", n)
+        return n
+
+    # Default path — INSERT only the rows that don't already exist.
+    rows_to_write = []
+    skipped = []
+    for row in rows:
+        if row_exists('premarket_analysis',
+                      {'analysis_date': row['analysis_date'],
+                       'ticker': row['ticker']}):
+            skipped.append(row['ticker'])
+        else:
+            rows_to_write.append(row)
+    if rows_to_write:
+        df = pd.DataFrame(rows_to_write)
+        n = upsert_dataframe(df, 'premarket_analysis',
+                             ['analysis_date', 'ticker'])
+        logger.info("Inserted %d new rows to premarket_analysis", n)
+    else:
+        n = 0
+    if skipped:
+        logger.warning(
+            "Skipped premarket_analysis write for %d ticker(s) "
+            "(row already exists; pass --update or set BRIEF_UPDATE=true to "
+            "overwrite). Skipped: %s",
+            len(skipped), ', '.join(skipped))
     return n
 
 
@@ -1439,19 +1518,158 @@ def send_to_discord(message: dict, webhook_url: str, timeout: int = 10):
     print(f"Discord message sent successfully (status {response.status_code})")
 
 
-def main():
+def fetch_premarket_analysis_row(ticker: str, analysis_date) -> Optional[dict]:
+    """Pull one premarket_analysis row as a dict (None if missing).
+
+    Returns the row in the same dict shape that the in-memory brief
+    uses (with keys like prev_day_high, atr14, ftfc_direction, etc.)
+    so it can be fed back into the embed builders for /replay
+    cache-hits.
+    """
+    try:
+        from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    except ImportError:
+        return None
+    if not is_cloud_sql_configured():
+        return None
+
+    df = query_to_dataframe(
+        "SELECT * FROM premarket_analysis "
+        "WHERE analysis_date = :d AND ticker = :t LIMIT 1",
+        {'d': str(analysis_date), 't': ticker.upper()},
+    )
+    if df.empty:
+        return None
+    row = df.iloc[0].to_dict()
+    # ftfc_labels stored as JSONB → comes back as dict already; coerce to dict
+    # to be safe (some drivers return str).
+    if isinstance(row.get('ftfc_labels'), str):
+        try:
+            row['ftfc_labels'] = json.loads(row['ftfc_labels'])
+        except (json.JSONDecodeError, TypeError):
+            row['ftfc_labels'] = {}
+    return row
+
+
+def render_existing_brief_to_discord(
+    ticker: str, analysis_date, webhook_url: Optional[str] = None,
+) -> bool:
+    """Pull the existing premarket_analysis row and post a Discord
+    embed for it. Used by /replay's cache-hit path to re-deliver the
+    canonical morning brief without re-running compute.
+
+    Returns True on success. Returns False (and logs) if the row is
+    missing or the webhook call fails.
+    """
+    webhook_url = webhook_url or os.environ.get('DISCORD_WEBHOOK_URL')
+    if not webhook_url:
+        logger.warning("render_existing_brief: no DISCORD_WEBHOOK_URL set")
+        return False
+
+    row = fetch_premarket_analysis_row(ticker, analysis_date)
+    if row is None:
+        logger.warning("render_existing_brief: no row for %s on %s",
+                       ticker, analysis_date)
+        return False
+
+    # Reconstruct a minimal brief dict so the existing embed builders
+    # can render it. We render ONLY the ticker-fields embed (the
+    # focused /replay output) — events/earnings are separate concerns
+    # and would require re-fetching for the historical date.
+    brief = {
+        'analysis_date': analysis_date,
+        'tickers': {row['ticker']: row},
+        'events': {},
+        'earnings': {'mode': 'daily', 'earnings': []},
+    }
+    fields = _build_ticker_fields(brief)
+    embed = {
+        'title': f'Replay: {ticker.upper()} on {analysis_date}',
+        'description': f"Cached premarket analysis from "
+                       f"{row.get('analysis_ts', 'unknown time')}.",
+        'fields': fields,
+        'color': 0x95a5a6,  # gray — distinguishes from a live brief
+    }
+
+    # Drop fields if over the per-embed char budget
+    while fields and len(json.dumps(embed)) > MAX_EMBED_CHARS:
+        fields.pop()
+        embed['fields'] = fields
+
+    try:
+        send_to_discord({'embeds': [embed]}, webhook_url)
+        return True
+    except Exception as exc:
+        logger.warning("render_existing_brief: webhook post failed: %s", exc)
+        return False
+
+
+def main(argv: Optional[list[str]] = None):
+    # Cloud Run Jobs pass overrides via env vars, not CLI flags. Translate
+    # the env-var equivalent of --post-existing into argv when the caller
+    # didn't pass argv explicitly. This lets /replay dispatch the
+    # cache-hit job by setting BRIEF_POST_EXISTING_{TICKER,DATE}.
+    if argv is None:
+        env_t = os.environ.get('BRIEF_POST_EXISTING_TICKER')
+        env_d = os.environ.get('BRIEF_POST_EXISTING_DATE')
+        if env_t and env_d:
+            argv = ['--post-existing', env_t, env_d]
+
+    parser = argparse.ArgumentParser(
+        description='Run the pre-market brief and persist + post to Discord.')
+    parser.add_argument(
+        '--update', action='store_true',
+        help="Allow overwriting today's canonical premarket_analysis "
+             "row. Without this, re-runs only append to "
+             "premarket_analysis_history; the current row is "
+             "protected. Equivalent to BRIEF_UPDATE=true env var. "
+             "Implied when BRIEF_AS_OF is set (replay).",
+    )
+    parser.add_argument(
+        '--post-existing', nargs=2, metavar=('TICKER', 'DATE'),
+        help="Skip compute. Pull the existing premarket_analysis row "
+             "for (TICKER, DATE) and post it to Discord. Used by "
+             "/replay's cache-hit path. DATE format: YYYY-MM-DD. "
+             "Equivalent env vars: BRIEF_POST_EXISTING_TICKER, "
+             "BRIEF_POST_EXISTING_DATE.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.post_existing:
+        ticker, date_str = args.post_existing
+        try:
+            analysis_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            print(f"ERROR: --post-existing DATE must be YYYY-MM-DD; "
+                  f"got {date_str!r}", file=sys.stderr)
+            sys.exit(2)
+        ok = render_existing_brief_to_discord(ticker, analysis_date)
+        sys.exit(0 if ok else 1)
+
+    allow_update, run_kind = _resolve_run_kind_and_update(args.update)
+    triggered_by = (
+        os.environ.get('BRIEF_TRIGGERED_BY')
+        or ('cli' if sys.stdin.isatty() else 'cloud-run-job')
+    )
+
     webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
 
     cfg = load_config()
     data_dir = os.environ.get('DATA_DIR', cfg.market.data_dir)
 
-    print("Generating pre-market brief...")
+    print(f"Generating pre-market brief... (allow_update={allow_update}, "
+          f"run_kind={run_kind}, triggered_by={triggered_by})")
     brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
     print(json.dumps(brief, indent=2, default=str))
 
-    # Persist to Cloud SQL
-    n = persist_to_cloud_sql(brief)
-    print(f"Persisted {n} rows to premarket_analysis")
+    # Persist to Cloud SQL — always writes history; current-table
+    # write is conditional on allow_update + per-ticker existence.
+    n = persist_to_cloud_sql(
+        brief, allow_update=allow_update,
+        run_kind=run_kind, triggered_by=triggered_by,
+    )
+    print(f"Persisted {n} rows to premarket_analysis "
+          f"(history rows always written)")
 
     messages = format_discord_messages(brief)
     if webhook_url:

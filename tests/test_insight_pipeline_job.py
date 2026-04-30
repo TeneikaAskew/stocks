@@ -106,7 +106,7 @@ def stub_run_pipeline(monkeypatch):
     """
     calls: list[str] = []
 
-    async def fake_run_one(run_id: str, ticker: str, as_of=None) -> bool:
+    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None) -> bool:
         calls.append(ticker)
         return True
 
@@ -130,7 +130,7 @@ def captured_triggers(monkeypatch):
 
     monkeypatch.setattr(job, "_insert_run", fake_insert_run)
 
-    async def fake_run_one(run_id: str, ticker: str, as_of=None) -> bool:
+    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None) -> bool:
         return True
 
     monkeypatch.setattr(job, "_run_one", fake_run_one)
@@ -364,7 +364,7 @@ def captured_as_of(monkeypatch):
     """Capture the as_of value passed to _run_one for every ticker."""
     received: list[tuple[str, object]] = []
 
-    async def fake_run_one(run_id: str, ticker: str, as_of=None) -> bool:
+    async def fake_run_one(run_id: str, ticker: str, as_of=None, allow_update: bool = False, run_kind: str = "scheduled", triggered_by=None) -> bool:
         received.append((ticker, as_of))
         return True
 

@@ -587,7 +587,7 @@ def test_main_no_webhook_prints_payload_and_exits_zero(monkeypatch, capsys):
     monkeypatch.delenv("INSIGHT_PUSH_TICKER", raising=False)
     monkeypatch.setenv("INSIGHT_PUSH_DATE", "2026-04-27")
     monkeypatch.setattr(push, "fetch_reports_for_date", lambda *_a, **_k: [_sample_row()])
-    code = push.main()
+    code = push.main([])
     assert code == 0
     captured = capsys.readouterr()
     # Webhook missing → main prints the payload to stdout instead of POSTing
@@ -607,7 +607,7 @@ def test_main_no_rows_skips_push(monkeypatch):
         return 204
 
     monkeypatch.setattr(push, "send_to_discord", fake_send)
-    code = push.main()
+    code = push.main([])
     assert code == 0
     assert posted["called"] is False
 
@@ -626,7 +626,7 @@ def test_main_happy_path_posts_and_exits_zero(monkeypatch):
         return 204
 
     monkeypatch.setattr(push, "send_to_discord", fake_send)
-    code = push.main()
+    code = push.main([])
     assert code == 0
     assert captured["url"] == "https://example.com/webhook"
     assert captured["message"]["embeds"]
@@ -642,7 +642,7 @@ def test_main_send_failure_returns_one(monkeypatch):
         raise RuntimeError("Discord 500")
 
     monkeypatch.setattr(push, "send_to_discord", fake_send)
-    code = push.main()
+    code = push.main([])
     assert code == 1
 
 

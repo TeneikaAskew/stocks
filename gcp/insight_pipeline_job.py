@@ -27,6 +27,7 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
@@ -222,40 +223,145 @@ def _transition(
         conn.close()
 
 
-def _upsert_report(report: InsightReport) -> str:
+def _resolve_run_kind_and_update(arg_update: bool) -> tuple[bool, str]:
+    """Resolve allow_update + run_kind from CLI arg + env vars.
+
+    Mirrors gcp.premarket_brief._resolve_run_kind_and_update so the two
+    pipelines have identical override semantics.
+
+    Precedence (highest first):
+      1. arg_update=True OR INSIGHT_UPDATE=true → ('manual_update', True)
+      2. INSIGHT_AS_OF set (replay) → ('replay_refresh', True)
+      3. INSIGHT_TRIGGERED_BY starts with 'cloud-scheduler' → ('scheduled', False)
+      4. otherwise → ('manual_replay', False)
+    """
+    if arg_update or os.environ.get('INSIGHT_UPDATE') == 'true':
+        return True, 'manual_update'
+    if os.environ.get('INSIGHT_AS_OF'):
+        return True, 'replay_refresh'
+    triggered_by = os.environ.get('INSIGHT_TRIGGERED_BY', '')
+    if triggered_by.startswith('cloud-scheduler'):
+        return False, 'scheduled'
+    return False, 'manual_replay'
+
+
+def _insert_report_history(report: InsightReport, insight_run_id: str,
+                           run_kind: str, triggered_by: Optional[str]) -> None:
+    """Append to insight_reports_history. Append-only, never UPSERTs.
+
+    Always called regardless of allow_update — the audit trail must
+    capture every run attempt, even ones that don't touch the current
+    table.
+    """
     conn = connect()
-    row_id = str(uuid4())
     try:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO insight_reports
-                (id, ticker, as_of, report, model_versions, cost_usd, latency_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
-            ON CONFLICT (ticker, as_of) DO UPDATE
-            SET report = EXCLUDED.report,
-                model_versions = EXCLUDED.model_versions,
-                cost_usd = EXCLUDED.cost_usd,
-                latency_ms = EXCLUDED.latency_ms
-            RETURNING id::text
+            INSERT INTO insight_reports_history
+                (insight_run_id, ticker, as_of, report, model_versions,
+                 cost_usd, latency_ms, run_kind, triggered_by)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s)
             """,
             (
-                row_id,
+                insight_run_id,
                 report.ticker,
                 report.as_of,
                 report.model_dump_json(),
                 json.dumps(report.model_versions),
                 report.run_cost_usd,
                 report.run_latency_ms,
+                run_kind,
+                triggered_by,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optional[str]:
+    """Write to insight_reports.
+
+    When allow_update=True: UPSERT (existing behavior).
+    When allow_update=False: INSERT...ON CONFLICT DO NOTHING — the
+        canonical morning row is protected. Returns existing row's id
+        on conflict; new row's id otherwise.
+
+    Returns the row id (existing or new), or None if insert was a
+    no-op AND lookup of existing row failed.
+    """
+    conn = connect()
+    row_id = str(uuid4())
+    try:
+        cur = conn.cursor()
+        if allow_update:
+            cur.execute(
+                """
+                INSERT INTO insight_reports
+                    (id, ticker, as_of, report, model_versions, cost_usd, latency_ms)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+                ON CONFLICT (ticker, as_of) DO UPDATE
+                SET report = EXCLUDED.report,
+                    model_versions = EXCLUDED.model_versions,
+                    cost_usd = EXCLUDED.cost_usd,
+                    latency_ms = EXCLUDED.latency_ms
+                RETURNING id::text
+                """,
+                (
+                    row_id, report.ticker, report.as_of,
+                    report.model_dump_json(),
+                    json.dumps(report.model_versions),
+                    report.run_cost_usd, report.run_latency_ms,
+                ),
+            )
+            returned = cur.fetchone()
+            if returned:
+                row_id = returned[0]
+            conn.commit()
+            return row_id
+
+        # Default — protect the canonical row. Insert if missing,
+        # skip-and-return-existing-id if already present.
+        cur.execute(
+            """
+            INSERT INTO insight_reports
+                (id, ticker, as_of, report, model_versions, cost_usd, latency_ms)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+            ON CONFLICT (ticker, as_of) DO NOTHING
+            RETURNING id::text
+            """,
+            (
+                row_id, report.ticker, report.as_of,
+                report.model_dump_json(),
+                json.dumps(report.model_versions),
+                report.run_cost_usd, report.run_latency_ms,
             ),
         )
         returned = cur.fetchone()
         if returned:
             row_id = returned[0]
+            logger.info("insight_reports: inserted new row for %s as_of=%s",
+                        report.ticker, report.as_of)
+        else:
+            # Conflict → look up existing row's id so caller can link
+            cur.execute(
+                "SELECT id::text FROM insight_reports "
+                "WHERE ticker = %s AND as_of = %s",
+                (report.ticker, report.as_of),
+            )
+            existing = cur.fetchone()
+            row_id = existing[0] if existing else None
+            logger.warning(
+                "insight_reports: row already exists for %s as_of=%s — "
+                "skipping current-table write (history-only). Pass "
+                "--update or set INSIGHT_UPDATE=true to overwrite.",
+                report.ticker, report.as_of,
+            )
         conn.commit()
+        return row_id
     finally:
         conn.close()
-    return row_id
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +373,9 @@ async def _run_one(
     run_id: str,
     ticker: str,
     as_of: Optional[Union[date, datetime]] = None,
+    allow_update: bool = False,
+    run_kind: str = 'scheduled',
+    triggered_by: Optional[str] = None,
 ) -> bool:
     """Execute one pipeline run and persist transitions. Returns True
     on success.
@@ -274,17 +383,25 @@ async def _run_one(
     ``as_of`` (when provided) freezes every summarizer to the data
     available at that cutoff — daily bars, options snapshots, news,
     catalysts. The orchestrator threads it through unchanged.
+
+    ``allow_update`` controls whether the existing insight_reports row
+    can be overwritten on conflict. History row is always written
+    regardless — the audit trail captures every run attempt.
     """
     logger.info(
-        "[run_id=%s] starting pipeline for %s%s",
+        "[run_id=%s] starting pipeline for %s%s "
+        "(allow_update=%s, run_kind=%s)",
         run_id, ticker,
         f" as_of={as_of}" if as_of else "",
+        allow_update, run_kind,
     )
     _transition(run_id, "running")
     try:
         snapshot = load_routes_snapshot()
         report = await run_insight_pipeline(ticker, as_of=as_of, snapshot=snapshot)
-        report_id = _upsert_report(report)
+        # Always append to history first; current-table write is conditional.
+        _insert_report_history(report, run_id, run_kind, triggered_by)
+        report_id = _upsert_report(report, allow_update=allow_update)
         _transition(run_id, "done", report_id=report_id)
         logger.info(
             "[run_id=%s] done — direction=%s conviction=%s cost=$%.4f latency=%dms",
@@ -306,7 +423,7 @@ async def _run_one(
 # ---------------------------------------------------------------------------
 
 
-async def _run_on_demand() -> int:
+async def _run_on_demand(allow_update_arg: bool = False) -> int:
     run_id = os.environ["INSIGHT_RUN_ID"]
     ticker = os.environ["INSIGHT_TICKER"]
     try:
@@ -314,11 +431,17 @@ async def _run_on_demand() -> int:
     except ValueError as exc:
         logger.error("INSIGHT_AS_OF invalid: %s", exc)
         return 1
-    ok = await _run_one(run_id, ticker, as_of=as_of)
+    allow_update, run_kind = _resolve_run_kind_and_update(allow_update_arg)
+    triggered_by = os.environ.get('INSIGHT_TRIGGERED_BY')
+    ok = await _run_one(
+        run_id, ticker, as_of=as_of,
+        allow_update=allow_update, run_kind=run_kind,
+        triggered_by=triggered_by,
+    )
     return 0 if ok else 1
 
 
-async def _run_scheduled() -> int:
+async def _run_scheduled(allow_update_arg: bool = False) -> int:
     # Ticker resolution chain (first non-empty wins):
     #   1. INSIGHT_TICKERS env var — explicit one-off override for ad-hoc
     #      gcloud run jobs execute invocations.
@@ -382,10 +505,17 @@ async def _run_scheduled() -> int:
         trigger, ticker_source, len(tickers), max_batch, override, as_of, tickers,
     )
 
+    allow_update, run_kind = _resolve_run_kind_and_update(allow_update_arg)
+    triggered_by = os.environ.get('INSIGHT_TRIGGERED_BY')
+
     any_failures = False
     for ticker in tickers:
         run_id = _insert_run(ticker, trigger=trigger)
-        ok = await _run_one(run_id, ticker, as_of=as_of)
+        ok = await _run_one(
+            run_id, ticker, as_of=as_of,
+            allow_update=allow_update, run_kind=run_kind,
+            triggered_by=triggered_by,
+        )
         if not ok:
             any_failures = True
     # Scheduled runs exit 0 even on partial failure — one ticker's
@@ -397,10 +527,23 @@ async def _run_scheduled() -> int:
     return 0
 
 
-def main() -> int:
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description='Run the AI insight pipeline (orchestrator) and '
+                    'persist insight_reports + history.')
+    parser.add_argument(
+        '--update', action='store_true',
+        help="Allow overwriting today's canonical insight_reports row. "
+             "Without this, re-runs only append to "
+             "insight_reports_history; the current row is protected. "
+             "Equivalent to INSIGHT_UPDATE=true env var. Implied "
+             "when INSIGHT_AS_OF is set (replay).",
+    )
+    args = parser.parse_args(argv)
+
     if os.environ.get("INSIGHT_RUN_ID"):
-        return asyncio.run(_run_on_demand())
-    return asyncio.run(_run_scheduled())
+        return asyncio.run(_run_on_demand(allow_update_arg=args.update))
+    return asyncio.run(_run_scheduled(allow_update_arg=args.update))
 
 
 if __name__ == "__main__":
