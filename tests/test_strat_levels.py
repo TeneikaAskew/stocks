@@ -155,6 +155,26 @@ class TestComputeCurrentLevels:
         levels = compute_current_levels(df, mid)
         assert levels['CDO'].strat_class == '1'
 
+    def test_handles_null_today_ohlc_from_premarket_only_row(self):
+        """Regression: when fetch-premarket-refresh writes today's
+        market_data_daily row with only pre_high/pre_low/gap_pct (NULL
+        OHLC because the regular session hasn't run yet), compute_
+        current_levels must NOT crash on `max(NULL, current_price)`.
+        Falls back to current_price for missing values.
+        """
+        df = _daily_df(10)
+        price = float(df['Close'].iloc[-1])
+        # Simulate the pre-market-only row: nuke today's OHLC
+        df.iloc[-1, df.columns.get_loc('Open')] = None
+        df.iloc[-1, df.columns.get_loc('High')] = None
+        df.iloc[-1, df.columns.get_loc('Low')] = None
+        # Should not raise — pre-fix this called max(None, float) and
+        # blew up with TypeError
+        levels = compute_current_levels(df, price)
+        assert 'CDO' in levels
+        # Sentinel: CDO falls back to current_price when open is NULL
+        assert levels['CDO'].price == price
+
 
 # ─── compute_gap_levels ──────────────────────────────────────────────────
 
