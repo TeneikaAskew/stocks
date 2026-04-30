@@ -1289,8 +1289,24 @@ def _build_playbook_embed(brief: dict) -> dict:
     }
 
 
-def format_discord_message(brief: dict) -> dict:
-    """Format brief as a Discord webhook payload with up to 5 embeds."""
+def format_discord_messages(brief: dict) -> list[dict]:
+    """Format brief as a LIST of Discord webhook payloads.
+
+    Discord caps each webhook payload at 6000 chars across all embeds.
+    Once the earnings embed gained BMO/AMC sections + tradeability
+    ranking + options-flow filter (commit 80ebf9f3), the combined
+    overview+tickers+playbook+earnings+calendar payload exceeds 6000
+    on busy mornings — so the legacy single-message format silently
+    dropped earnings and calendar.
+
+    Split into two messages so each section has its own size budget:
+      Message 1: overview + ticker_analysis + playbook  (analytics)
+      Message 2: earnings + calendar                    (events)
+
+    Per-message truncation still applies — if a single message would
+    exceed 6000 chars on its own, lower-priority embeds drop within
+    that message until it fits. The OTHER message is unaffected.
+    """
     overview = _build_overview_embed(brief)
     ticker_fields = _build_ticker_fields(brief)
     mode = brief.get('earnings', {}).get('mode', 'daily')
@@ -1304,18 +1320,42 @@ def format_discord_message(brief: dict) -> dict:
         'color': overview.get('color', 0x3498db),
     }
 
-    embeds = [overview, ticker_embed, playbook, earnings, calendar]
-    # Drop empty playbook embed if no tickers produced one
+    # ── Message 1: analytics ────────────────────────────────────────
+    msg1 = [overview, ticker_embed, playbook]
     if not playbook.get('fields'):
-        embeds.remove(playbook)
+        msg1.remove(playbook)
 
-    # Safety: drop lower-priority embeds if over Discord's 6000-char limit
-    while embeds and sum(len(json.dumps(e)) for e in embeds) > MAX_EMBED_CHARS:
-        logger.warning("Discord payload over %d chars, dropping %s",
-                        MAX_EMBED_CHARS, embeds[-1].get('title'))
-        embeds.pop()
+    # ── Message 2: events ───────────────────────────────────────────
+    msg2 = []
+    if earnings.get('fields') or earnings.get('description'):
+        msg2.append(earnings)
+    if calendar.get('fields') or calendar.get('description'):
+        msg2.append(calendar)
 
-    return {'embeds': embeds}
+    messages = []
+    for embeds in (msg1, msg2):
+        # Per-message truncation
+        while embeds and sum(len(json.dumps(e)) for e in embeds) > MAX_EMBED_CHARS:
+            logger.warning(
+                "Discord payload over %d chars, dropping %s",
+                MAX_EMBED_CHARS, embeds[-1].get('title'),
+            )
+            embeds.pop()
+        if embeds:
+            messages.append({'embeds': embeds})
+    return messages
+
+
+def format_discord_message(brief: dict) -> dict:
+    """Legacy single-payload API kept for back-compat with tests + any
+    direct callers. Returns the FIRST message from format_discord_messages,
+    which is overview + tickers + playbook (the analytics half). Earnings
+    and calendar move to a second message — callers using this legacy
+    function will silently lose them. New code should prefer
+    format_discord_messages.
+    """
+    msgs = format_discord_messages(brief)
+    return msgs[0] if msgs else {'embeds': []}
 
 
 # ── Cloud SQL Persistence ───────────────────────────────────────────────────
@@ -1413,13 +1453,23 @@ def main():
     n = persist_to_cloud_sql(brief)
     print(f"Persisted {n} rows to premarket_analysis")
 
+    messages = format_discord_messages(brief)
     if webhook_url:
-        message = format_discord_message(brief)
-        send_to_discord(message, webhook_url, timeout=cfg.monitor.discord_timeout)
+        for i, message in enumerate(messages, start=1):
+            try:
+                send_to_discord(message, webhook_url,
+                                timeout=cfg.monitor.discord_timeout)
+                logger.info("sent message %d/%d (%d embeds)",
+                            i, len(messages),
+                            len(message.get('embeds', [])))
+            except Exception:
+                logger.exception("Discord post failed for message %d/%d",
+                                 i, len(messages))
     else:
-        print("\nDISCORD_WEBHOOK_URL not set -- printing message only")
-        message = format_discord_message(brief)
-        print(json.dumps(message, indent=2))
+        print("\nDISCORD_WEBHOOK_URL not set -- printing payloads only")
+        for i, message in enumerate(messages, start=1):
+            print(f"\n--- payload {i}/{len(messages)} ---")
+            print(json.dumps(message, indent=2))
 
 
 if __name__ == '__main__':

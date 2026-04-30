@@ -179,56 +179,198 @@ def test_fetch_yahoo_one_handles_empty_df(monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_fetch_yahoo_earnings_combines_tickers(monkeypatch):
-    """End-to-end: multiple tickers → one DataFrame with proper schema."""
-    sbux_df = _fake_earnings_df([(2026, 4, 28, 16, 0, 0.44, None, None)])
-    v_df    = _fake_earnings_df([(2026, 4, 28, 16, 0, 3.10, None, None)])
-    aapl_df = _fake_earnings_df([(2026, 4, 30, 16, 0, 1.94, None, None)])
+# ──────────────────────────────────────────────────────────────────────
+# _fetch_yahoo_bulk — Calendars.get_earnings_calendar wrapper
+# ──────────────────────────────────────────────────────────────────────
 
-    fakes = {"SBUX": sbux_df, "V": v_df, "AAPL": aapl_df}
+
+def _bulk_df(rows):
+    """Build a yfinance-Calendars-shaped DataFrame.
+
+    rows = [(symbol, marketcap, event_start_utc_str, timing, eps_est, eps_act), ...]
+    """
+    df = pd.DataFrame(rows, columns=[
+        "Symbol", "Marketcap", "Event Start Date", "Timing",
+        "EPS Estimate", "Reported EPS",
+    ])
+    df["Event Start Date"] = pd.to_datetime(df["Event Start Date"], utc=True)
+    df["Company"] = df["Symbol"].apply(lambda s: f"{s} Inc")
+    df["Event Name"] = None
+    df["Surprise(%)"] = None
+    df = df.set_index("Symbol")
+    return df
+
+
+def test_bulk_fetch_paginates_until_short_page(monkeypatch):
+    """Full page (== page_size) → keep paging. Short page (< page_size)
+    → exit. Stops cleanly without an extra empty call."""
+    # Page 1 = exactly page_size rows → loop continues
+    full_page = _bulk_df([
+        (f"T{i:03d}", 1e9, "2026-04-28 20:00:00", "TAS", 1.0, None)
+        for i in range(5)
+    ])
+    short_page = _bulk_df([
+        ("AAPL", 3.9e12, "2026-04-30 20:00:00", "AMC", 1.94, None),
+    ])
+
+    calls = []
+    class FakeCalendars:
+        def __init__(self, start, end): pass
+        def get_earnings_calendar(self, filter_most_active=False, limit=5,
+                                   offset=0, force=True):
+            calls.append(offset)
+            if offset == 0: return full_page
+            if offset == 5: return short_page
+            return pd.DataFrame()
+
+    import scripts.fetch_earnings_calendar as fec
+    import yfinance
+    monkeypatch.setattr(yfinance, "Calendars", FakeCalendars)
+
+    df = fec._fetch_yahoo_bulk(date(2026, 4, 27), date(2026, 5, 2),
+                                page_size=5, max_pages=10)
+    assert calls == [0, 5], "first page is full → second page is fetched"
+    assert "AAPL" in set(df["ticker"])
+    assert df["source"].eq("Yahoo").all()
+
+
+def test_bulk_fetch_short_first_page_exits_immediately(monkeypatch):
+    """If the very first page returns less than page_size rows, no
+    further pages are fetched — common case when Yahoo's calendar is
+    small for a tight window."""
+    only_page = _bulk_df([
+        ("AAPL", 3.9e12, "2026-04-30 20:00:00", "AMC", 1.94, None),
+        ("V",    6.4e11, "2026-04-28 20:05:56", "TAS", 3.10, 3.31),
+    ])
+
+    calls = []
+    class FakeCalendars:
+        def __init__(self, start, end): pass
+        def get_earnings_calendar(self, filter_most_active=False, limit=100,
+                                   offset=0, force=True):
+            calls.append(offset)
+            if offset == 0: return only_page
+            return pd.DataFrame()
+
+    import scripts.fetch_earnings_calendar as fec
+    import yfinance
+    monkeypatch.setattr(yfinance, "Calendars", FakeCalendars)
+
+    df = fec._fetch_yahoo_bulk(date(2026, 4, 27), date(2026, 5, 2),
+                                page_size=100, max_pages=10)
+    assert calls == [0]   # short first page → no second call
+    # Timing 'AMC' → postmarket; 'TAS' falls through to hour-based
+    assert df.set_index("ticker").loc["AAPL", "time"] == "postmarket"
+    assert df["source"].eq("Yahoo").all()
+
+
+def test_bulk_fetch_filters_outside_window(monkeypatch):
+    """Yahoo's API sometimes returns adjacent-day events; the post-fetch
+    date filter strips them so callers see only requested-window rows."""
+    df = _bulk_df([
+        ("OUT_PRE",  1e9, "2026-04-26 20:00:00", "TAS", 1.0, None),  # before window
+        ("IN",       1e9, "2026-04-28 20:00:00", "TAS", 1.0, None),
+        ("OUT_POST", 1e9, "2026-05-04 20:00:00", "AMC", 1.0, None),  # after window
+    ])
+    class FakeCalendars:
+        def __init__(self, start, end): pass
+        def get_earnings_calendar(self, **kw):
+            return df if kw.get("offset", 0) == 0 else pd.DataFrame()
+
+    import scripts.fetch_earnings_calendar as fec
+    import yfinance
+    monkeypatch.setattr(yfinance, "Calendars", FakeCalendars)
+
+    out = fec._fetch_yahoo_bulk(date(2026, 4, 27), date(2026, 5, 2))
+    assert set(out["ticker"]) == {"IN"}
+
+
+def test_bulk_fetch_handles_single_day_by_widening(monkeypatch):
+    """Single-day calls return 0 from Yahoo's API (observed). The bulk
+    fetcher widens to 2 days; the date filter then trims back."""
+    captured_starts = []
+    class FakeCalendars:
+        def __init__(self, start, end):
+            captured_starts.append((start, end))
+        def get_earnings_calendar(self, **kw): return pd.DataFrame()
+
+    import scripts.fetch_earnings_calendar as fec
+    import yfinance
+    monkeypatch.setattr(yfinance, "Calendars", FakeCalendars)
+
+    fec._fetch_yahoo_bulk(date(2026, 4, 29), date(2026, 4, 29))
+    assert captured_starts == [("2026-04-29", "2026-04-30")]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# fetch_yahoo_earnings — bulk + optional per-ticker fill
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_fetch_yahoo_earnings_bulk_only(monkeypatch):
+    """No fill_tickers → bulk path is the only call made."""
+    bulk = _bulk_df([
+        ("AAPL", 3.9e12, "2026-04-30 20:00:00", "AMC", 1.94, None),
+    ])
+    class FakeCalendars:
+        def __init__(self, *a, **kw): pass
+        def get_earnings_calendar(self, **kw):
+            return bulk if kw.get("offset", 0) == 0 else pd.DataFrame()
+
+    import scripts.fetch_earnings_calendar as fec
+    import yfinance
+    monkeypatch.setattr(yfinance, "Calendars", FakeCalendars)
+    # Tracks whether per-ticker path is called — should NOT be
+    monkeypatch.setattr(yfinance, "Ticker",
+                        lambda t: pytest.fail(f"per-ticker called for {t} but fill_tickers was None"))
+
+    df = fec.fetch_yahoo_earnings(date(2026, 4, 1), date(2026, 5, 31))
+    assert set(df["ticker"]) == {"AAPL"}
+
+
+def test_fetch_yahoo_earnings_fills_missing_tickers(monkeypatch):
+    """The AMZN-tonight case: bulk misses today's pending AMC, but
+    fill_tickers triggers per-ticker calendar lookup that catches it."""
+    bulk = _bulk_df([
+        ("AAPL", 3.9e12, "2026-04-30 20:00:00", "AMC", 1.94, None),
+    ])
+    class FakeCalendars:
+        def __init__(self, *a, **kw): pass
+        def get_earnings_calendar(self, **kw):
+            return bulk if kw.get("offset", 0) == 0 else pd.DataFrame()
 
     class FakeTicker:
         def __init__(self, t): self.t = t
-        def get_earnings_dates(self, limit=8): return fakes.get(self.t)
+        @property
+        def calendar(self):
+            if self.t == "AMZN":
+                return {"Earnings Date": [date(2026, 4, 29)],
+                        "Earnings Average": 1.65}
+            return None
+        def get_earnings_dates(self, limit=8): return None
 
     import scripts.fetch_earnings_calendar as fec
     import yfinance
+    monkeypatch.setattr(yfinance, "Calendars", FakeCalendars)
     monkeypatch.setattr(yfinance, "Ticker", FakeTicker)
 
     df = fec.fetch_yahoo_earnings(
-        ["SBUX", "V", "AAPL"],
         date(2026, 4, 1), date(2026, 5, 31),
+        fill_tickers=["AAPL", "AMZN"],   # AAPL already in bulk → no per-ticker; AMZN missing → call
         max_workers=2,
     )
-    assert len(df) == 3
-    assert set(df["ticker"]) == {"SBUX", "V", "AAPL"}
-    assert (df["source"] == "Yahoo").all()
-    assert (df["time"] == "postmarket").all()
+    tickers = set(df["ticker"])
+    assert "AAPL" in tickers, "bulk row preserved"
+    assert "AMZN" in tickers, "per-ticker fill caught AMZN"
 
 
-def test_fetch_yahoo_earnings_empty_ticker_list_returns_empty():
-    """Caller passing [] (e.g. AV/UW/EW all returned empty) is a no-op,
-    not an error."""
+def test_fetch_yahoo_earnings_no_yfinance(monkeypatch):
+    """Graceful empty-return when yfinance isn't installed."""
+    import sys
+    monkeypatch.setitem(sys.modules, "yfinance", None)
+    # The probe import block in fetch_yahoo_earnings catches ImportError
+    # by trying to import yfinance — when sys.modules entry is None,
+    # `import yfinance` raises ImportError.
     from scripts.fetch_earnings_calendar import fetch_yahoo_earnings
-    df = fetch_yahoo_earnings([], date(2026, 4, 1), date(2026, 5, 1))
+    df = fetch_yahoo_earnings(date(2026, 4, 1), date(2026, 5, 1))
     assert df.empty
-
-
-def test_fetch_yahoo_earnings_dedups_same_ticker_date(monkeypatch):
-    """Yahoo sometimes returns the same date twice (annual + quarterly).
-    The fetcher must dedup before passing to persist."""
-    dup = _fake_earnings_df([
-        (2026, 4, 28, 16, 0, 0.44, None, None),
-        (2026, 4, 28, 16, 0, 0.44, None, None),  # exact dup
-    ])
-
-    class FakeTicker:
-        def __init__(self, t): pass
-        def get_earnings_dates(self, limit=8): return dup
-
-    import scripts.fetch_earnings_calendar as fec
-    import yfinance
-    monkeypatch.setattr(yfinance, "Ticker", FakeTicker)
-
-    df = fec.fetch_yahoo_earnings(["SBUX"], date(2026, 4, 1), date(2026, 5, 1))
-    assert len(df) == 1
