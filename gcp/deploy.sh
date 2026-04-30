@@ -20,16 +20,6 @@
 
 set -euo pipefail
 
-# Disable Git Bash / MSYS2 Unix→Windows path conversion. Without this,
-# any value passed to gcloud that starts with `/` (e.g. a Cloud SQL DB
-# password starting with `/axQM...`) gets mangled to `C:\Program Files\
-# Git\axQM...` before reaching the gcloud Windows binary. That mangling
-# silently broke DB_PASS for every Cloud Run Job deployed from a Git
-# Bash shell on Windows on 2026-04-30. Setting this here makes deploys
-# from any shell (Git Bash, WSL, Linux CI) produce identical results.
-export MSYS_NO_PATHCONV=1
-export MSYS2_ARG_CONV_EXCL='*'
-
 PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}"
 REGION="${REGION:-us-east1}"
 IMAGE="us-east1-docker.pkg.dev/${PROJECT_ID}/trading/trading-system"
@@ -92,11 +82,13 @@ deploy_insight_pipeline() {
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.insight_pipeline_job" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${admin_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update insight-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.insight_pipeline_job" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${admin_env}" \
         --quiet
 }
@@ -115,6 +107,7 @@ deploy_insight_discord_push() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.insight_discord_push" \
         --args "" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update insight-discord-push \
@@ -122,6 +115,7 @@ deploy_insight_discord_push() {
         --task-timeout 120 \
         --command "python,-m,gcp.insight_discord_push" \
         --args "" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -141,6 +135,7 @@ deploy_historical_signals_watchlist() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.run_historical_signals" \
         --args "--from-watchlist" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update historical-signals-watchlist \
@@ -148,6 +143,7 @@ deploy_historical_signals_watchlist() {
         --task-timeout 1800 \
         --command "python,-m,scripts.run_historical_signals" \
         --args "--from-watchlist" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -169,12 +165,14 @@ deploy_auto_refresh_top_n() {
         --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.auto_refresh_top_n" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update auto-refresh-top-n \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 600 \
         --command "python,-m,gcp.auto_refresh_top_n" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${env}" \
         --quiet
 }
@@ -191,12 +189,20 @@ setup_insight_tasks_queue() {
         --quiet 2>/dev/null || echo "  insight-pipeline-queue: already exists"
 }
 
+# DB password is intentionally NOT included here — it's passed via the
+# Cloud Run --set-secrets flag (see DB_SECRET_FLAG below) so the value
+# never traverses bash CLI args. Inlining a Unix-style password
+# (e.g. starting with `/`) into --set-env-vars triggered MSYS path
+# conversion on Windows Git Bash deploys, mangling it to a Windows
+# path and breaking Cloud SQL auth on every Job deployed 2026-04-30.
+# --set-secrets sidesteps the entire shell-quoting/conversion mess.
+DB_SECRET_FLAG="--set-secrets=DB_PASS=db-trading-pass:latest"
+
 # ── Shared env vars injected into every Cloud Run job ─────────────────────────
 _env_string() {
     local env
     env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
     env="${env},DB_USER=$(_secret db-trading-user)"
-    env="${env},DB_PASS=$(_secret db-trading-pass)"
     env="${env},DB_NAME=trading"
     env="${env},GCS_BUCKET=${PROJECT_ID}-trading-data"
     local av_key
@@ -282,6 +288,7 @@ deploy_discord_interactions() {
         --service-account "${SA_EMAIL}" \
         --command "uvicorn" \
         --args "gcp.discord_interactions.main:app,--host,0.0.0.0,--port,8080" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${env}" \
         --quiet
 
@@ -310,12 +317,14 @@ deploy_backfill_ticker() {
         --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.backfill_ticker" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update backfill-ticker \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 600 \
         --command "python,-m,gcp.backfill_ticker" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -334,12 +343,14 @@ deploy_validate_brief() {
         --task-timeout 300 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.validate_brief_job" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update validate-brief \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 300 \
         --command "python,-m,gcp.validate_brief_job" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -358,12 +369,14 @@ deploy_backtest() {
         --task-timeout 900 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.backtest_job" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update backtest \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 900 \
         --command "python,-m,gcp.backtest_job" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -377,11 +390,13 @@ deploy_premarket() {
         --memory 1Gi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.premarket_brief" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update premarket-brief \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.premarket_brief" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -395,11 +410,13 @@ deploy_monitor() {
         --task-timeout 28800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.signal_monitor" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-monitor \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.signal_monitor" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -412,11 +429,13 @@ deploy_weekend() {
         --memory 1Gi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.weekend_review" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update weekend-review \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.weekend_review" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -436,12 +455,14 @@ deploy_fetch_market_data() {
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-market-data \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_market_data" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${env}" \
         --quiet
 }
@@ -458,11 +479,13 @@ deploy_fetch_alphavantage() {
         --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-alphavantage-intraday \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --quiet
 }
@@ -482,11 +505,13 @@ deploy_fetch_fred_rates() {
         --memory 512Mi --cpu 1 --max-retries 1 --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_fred_rates" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${fred_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-fred-rates \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_fred_rates" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${fred_env}" \
         --quiet
 }
@@ -508,12 +533,14 @@ deploy_fetch_economic_events() {
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${fred_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-economic-events \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
         --args="" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${fred_env}" \
         --quiet
 }
@@ -531,11 +558,13 @@ deploy_fetch_earnings_calendar() {
         --task-timeout 300 \
         --service-account "${SA_EMAIL}" \
         --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${ew_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-calendar \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${ew_env}" \
         --quiet
 }
@@ -556,11 +585,13 @@ deploy_fetch_premarket_refresh() {
         --task-timeout 300 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_premarket_refresh" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-premarket-refresh \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_premarket_refresh" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -581,11 +612,13 @@ deploy_evaluate_ew_strikes() {
         --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update evaluate-ew-strikes \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -612,12 +645,14 @@ deploy_fetch_insider_transactions() {
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-insider-transactions \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --quiet
 }
@@ -633,11 +668,13 @@ deploy_fetch_top_movers() {
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-top-movers \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --quiet
 }
@@ -657,12 +694,14 @@ deploy_fetch_sec_filings() {
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_sec_filings" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-sec-filings \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_sec_filings" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${env}" \
         --quiet
 }
@@ -681,12 +720,14 @@ deploy_fetch_earnings_history() {
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --quiet
 }
@@ -707,12 +748,14 @@ deploy_fetch_news_sentiment() {
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --remove-env-vars "NEWS_TICKERS" \
         --quiet
@@ -731,12 +774,14 @@ deploy_fetch_news_sentiment_topics() {
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment-topics \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${av_env}" \
         --quiet
 
@@ -774,11 +819,13 @@ deploy_apply_schema_migrations() {
         --memory 512Mi --cpu 1 --max-retries 0 --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.apply_schema" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update apply-schema-migrations \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.apply_schema" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -796,12 +843,14 @@ deploy_compute_spx_greeks_backfill() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.maintenance.compute_spx_greeks" \
         --args "--ticker,SPX" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update compute-spx-greeks-backfill \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,scripts.maintenance.compute_spx_greeks" \
         --args "--ticker,SPX" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
 }
@@ -915,6 +964,7 @@ deploy_notifier() {
         --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 \
         --service-account "${SA_EMAIL}" \
         --command "python" --args "-m,gcp.failure_notifier" \
+        ${DB_SECRET_FLAG} \
         --set-env-vars "${env_string}" \
         --set-secrets="GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest" \
         --no-allow-unauthenticated \
