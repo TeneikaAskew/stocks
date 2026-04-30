@@ -1227,12 +1227,15 @@ CREATE TABLE IF NOT EXISTS watchlists (
     source       VARCHAR(20)  NULL,        -- 'ui', 'cli', 'admin', 'seed'
     notes        TEXT         NULL,
     -- Per-surface filters: control whether a watchlist ticker drives
-    -- the morning brief and/or the AI insight pipeline. Defaults TRUE
-    -- so adding via /watchlist add (e.g. an ETF) lands in all surfaces
-    -- by default; non-default tickers (peers tracked for /similar
-    -- comp only) are explicitly UPDATEd to FALSE.
-    in_brief     BOOLEAN      NOT NULL DEFAULT TRUE,
-    in_insight   BOOLEAN      NOT NULL DEFAULT TRUE,
+    -- the morning brief and/or the AI insight pipeline. Defaults FALSE
+    -- so adding a ticker via /watchlist add (e.g. a peer for /similar
+    -- comparison like NVDA, AMD, MRVL) doesn't auto-bloat the morning
+    -- Discord brief or burn Vertex spend on AI insights. ETFs that
+    -- SHOULD drive the brief get the flags set explicitly via the
+    -- slash command (`/watchlist add SOXX brief:true insight:true`)
+    -- or via UPDATE.
+    in_brief     BOOLEAN      NOT NULL DEFAULT FALSE,
+    in_insight   BOOLEAN      NOT NULL DEFAULT FALSE,
     PRIMARY KEY (user_id, ticker)
 );
 
@@ -1253,13 +1256,20 @@ BEGIN
          WHERE table_name = 'watchlists' AND column_name = 'in_brief'
     ) THEN
         ALTER TABLE watchlists
-            ADD COLUMN in_brief BOOLEAN NOT NULL DEFAULT TRUE;
+            ADD COLUMN in_brief BOOLEAN NOT NULL DEFAULT FALSE;
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
          WHERE table_name = 'watchlists' AND column_name = 'in_insight'
     ) THEN
         ALTER TABLE watchlists
-            ADD COLUMN in_insight BOOLEAN NOT NULL DEFAULT TRUE;
+            ADD COLUMN in_insight BOOLEAN NOT NULL DEFAULT FALSE;
     END IF;
 END $$;
+
+-- Migration: flip the column DEFAULT from TRUE → FALSE on instances
+-- where the original ALTER landed with DEFAULT TRUE (PR #156). This
+-- only changes behavior for FUTURE INSERTs that don't supply
+-- in_brief / in_insight explicitly — existing rows are not touched.
+ALTER TABLE watchlists ALTER COLUMN in_brief   SET DEFAULT FALSE;
+ALTER TABLE watchlists ALTER COLUMN in_insight SET DEFAULT FALSE;

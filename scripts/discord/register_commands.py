@@ -113,7 +113,7 @@ COMMANDS: list[dict] = [
         "options": [
             {
                 "name": "add",
-                "description": "Add a ticker to the watchlist",
+                "description": "Add a ticker to the watchlist (defaults to /similar-only — opt into brief/insight)",
                 "type": SUB_COMMAND,
                 "options": [
                     {
@@ -121,7 +121,19 @@ COMMANDS: list[dict] = [
                         "description": "Ticker symbol",
                         "type": STRING,
                         "required": True,
-                    }
+                    },
+                    {
+                        "name": "brief",
+                        "description": "Include in 8:30 AM premarket Discord brief? (default false)",
+                        "type": BOOLEAN,
+                        "required": False,
+                    },
+                    {
+                        "name": "insight",
+                        "description": "Include in 8:45 AM AI insight pipeline? (default false)",
+                        "type": BOOLEAN,
+                        "required": False,
+                    },
                 ],
             },
             {
