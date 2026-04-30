@@ -258,9 +258,21 @@ def compute_current_levels(
     if len(df) >= 2:
         prev_day = df.iloc[-2]
         today = df.iloc[-1]
-        today_open = float(today['_open'])
-        today_high = max(float(today['_high']), current_price)
-        today_low = min(float(today['_low']), current_price)
+        # Today's row exists but may have NULL OHLC when the pre-market
+        # refresh job (8:30 AM ET) populated only pre_* columns and the
+        # 11pm fetcher hasn't filled in regular-session high/low/open/
+        # close yet. Fall back to current_price so the brief at 8:45 AM
+        # doesn't crash. The pre_high/pre_low values are surfaced
+        # separately by the brief embed; here we just need a non-null
+        # CDO + intraday high/low for the level-classification step.
+        today_open = (float(today['_open'])
+                      if pd.notna(today['_open']) else current_price)
+        _h = today['_high']
+        today_high = max(float(_h) if pd.notna(_h) else current_price,
+                         current_price)
+        _l = today['_low']
+        today_low = min(float(_l) if pd.notna(_l) else current_price,
+                        current_price)
 
         strat = classify_level_strat(
             today_high, today_low, current_price, today_open,
