@@ -59,7 +59,6 @@ build_image() {
     cp requirements-gcp.txt    "$tmpdir/"
     cp alert_config.json       "$tmpdir/"
     cp gcp/Dockerfile          "$tmpdir/Dockerfile"
-    cp trading_analysis.py     "$tmpdir/"
     cp -r lib/                 "$tmpdir/lib/"
     cp -r gcp/                 "$tmpdir/gcp/"
     cp -r scripts/             "$tmpdir/scripts/"
