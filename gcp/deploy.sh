@@ -1079,12 +1079,13 @@ deploy_schedulers() {
     # Weekly cadence is enough since past quarters never change.
     _schedule "earnings-history-weekly"  "0 6 * * 0"  "fetch-earnings-history"
 
-    # Pre-market refresh — 8:30 AM ET, 15 min before the brief.
-    # Populates today's gap_pct / pre_high / pre_low for earnings + watchlist
-    # tickers so the 8:45 brief can render the announcement reaction inline.
-    # Without this, today's market_data_daily row doesn't exist until the
-    # 11pm fetcher runs, so the brief sees NULL for all gap_pct cells.
-    _schedule "premarket-refresh-daily"  "30 8 * * 1-5"  "fetch-premarket-refresh"
+    # Pre-market refresh — 8:20 AM ET, 10 min before the morning brief.
+    # premarket-brief-daily (the Discord push) fires at 8:30 AM ET, so
+    # this MUST run earlier or the brief reads NULL gap_pct for every
+    # ticker. ~30s typical runtime for 50 tickers at 4 parallel workers.
+    # Populates today's gap_pct / pre_high / pre_low / pre_vwap into
+    # market_data_daily; the 11pm fetcher fills in regular-session OHLC.
+    _schedule "premarket-refresh-daily"  "20 8 * * 1-5"  "fetch-premarket-refresh"
 
     # EW strike verdict evaluator — 11:00 PM ET. Earlier 5pm slot was
     # tried and produced unreliable bars (AV intraday hadn't fully
