@@ -161,13 +161,18 @@ deploy_historical_signals_watchlist() {
 deploy_signal_quality_report() {
     echo "Deploying signal-quality-report job..."
 
+    # NB: --args="--mode=rolling" (with =) is required because the
+    # arg value itself starts with `-`. With the space form
+    # `--args "--mode=rolling"`, gcloud parses `--mode=rolling` as a
+    # new flag and bails with "argument --args: expected one
+    # argument". Same applies to anywhere args begin with `-`.
     gcloud run jobs create signal-quality-report \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
         --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.signal_quality_report" \
-        --args "--mode=rolling" \
+        --args="--mode=rolling" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
@@ -175,7 +180,7 @@ deploy_signal_quality_report() {
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 600 \
         --command "python,-m,scripts.signal_quality_report" \
-        --args "--mode=rolling" \
+        --args="--mode=rolling" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
