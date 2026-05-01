@@ -26,9 +26,13 @@ logger = logging.getLogger(__name__)
 
 # Columns the table accepts for INSERT, in the order our DataFrame should
 # present them. ``inserted_at`` defaults to NOW() so we don't pass it.
+# ``strategy`` was added in Phase 0.7 — defaults to 'momentum' on the
+# server-side via the column DEFAULT, but we always send it explicitly
+# from the application layer so the value is auditable in CI logs.
 COLS = (
     'ticker',
     'entry_time',
+    'strategy',
     'trade_type',
     'entry_price',
     'signal_strength',
@@ -53,8 +57,13 @@ COLS = (
 )
 
 
-def latest_entry_time(ticker: str) -> Optional[datetime]:
+def latest_entry_time(ticker: str, strategy: Optional[str] = None) -> Optional[datetime]:
     """Return MAX(entry_time) for a ticker, or None when no rows exist.
+
+    When ``strategy`` is given, scopes to that strategy's rows only —
+    used by the resume-from-MAX(entry_time) path on the per-strategy
+    backfill so 'momentum' resumes from the momentum cursor and
+    'mean_reversion' resumes from its own cursor.
 
     Index by position (row[0]) instead of attribute (row.t) - pg8000's
     Row implementation returns a wrapped Row when an aliased aggregate
@@ -65,24 +74,35 @@ def latest_entry_time(ticker: str) -> Optional[datetime]:
     Positional indexing returns the scalar value reliably.
     """
     engine = get_engine()
+    if strategy:
+        sql = 'SELECT MAX(entry_time) FROM historical_signals WHERE ticker = :t AND strategy = :s'
+        params = {'t': ticker.upper(), 's': strategy}
+    else:
+        sql = 'SELECT MAX(entry_time) FROM historical_signals WHERE ticker = :t'
+        params = {'t': ticker.upper()}
     with engine.connect() as conn:
-        row = conn.execute(
-            text('SELECT MAX(entry_time) AS t FROM historical_signals WHERE ticker = :t'),
-            {'t': ticker.upper()},
-        ).fetchone()
+        row = conn.execute(text(sql), params).fetchone()
     return row[0] if row and row[0] else None
 
 
-def delete_for_ticker(ticker: str) -> int:
-    """Hard-delete every row for a ticker. Used by ``--force``."""
+def delete_for_ticker(ticker: str, strategy: Optional[str] = None) -> int:
+    """Hard-delete every row for a ticker. Used by ``--force``.
+
+    When ``strategy`` is given, scopes the delete to that strategy's
+    rows only — so `--force --strategy=mean_reversion` doesn't wipe
+    the existing 'momentum' rows from prior backfills.
+    """
     engine = get_engine()
+    if strategy:
+        sql = 'DELETE FROM historical_signals WHERE ticker = :t AND strategy = :s'
+        params = {'t': ticker.upper(), 's': strategy}
+    else:
+        sql = 'DELETE FROM historical_signals WHERE ticker = :t'
+        params = {'t': ticker.upper()}
     with engine.begin() as conn:
-        result = conn.execute(
-            text('DELETE FROM historical_signals WHERE ticker = :t'),
-            {'t': ticker.upper()},
-        )
+        result = conn.execute(text(sql), params)
     n = result.rowcount or 0
-    logger.info('deleted %d rows for ticker=%s', n, ticker)
+    logger.info('deleted %d rows for ticker=%s strategy=%s', n, ticker, strategy or 'ALL')
     return n
 
 
@@ -138,7 +158,7 @@ def bulk_insert(df: pd.DataFrame, chunk_size: int = 1000) -> tuple[int, int]:
             sql = text(
                 f'INSERT INTO historical_signals ({col_list}) VALUES '
                 + ', '.join(value_tuples)
-                + ' ON CONFLICT (ticker, entry_time) DO NOTHING'
+                + ' ON CONFLICT (ticker, entry_time, strategy) DO NOTHING'
             )
             result = conn.execute(sql, params)
             attempted += len(records)

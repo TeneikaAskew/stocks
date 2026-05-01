@@ -101,6 +101,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--lookback-days', type=int, default=2,
                    help='Extra days BEFORE start to load for indicator warmup (default: 2)')
     p.add_argument(
+        '--strategy', choices=['momentum', 'mean_reversion'], default='momentum',
+        help=('Which signal-generation strategy to use (Phase 0.7). '
+              "'momentum' (default) = MarketAnalyzer.generate_technical_signals "
+              "(consec_UP + above_VWAP + above_EMA9 + RSI 25-50 = CALL). "
+              "'mean_reversion' = lib.signals.evaluate_signal "
+              "(consec_DOWN + below_VWAP + below_EMAs + RSI 25-50 = CALL — "
+              "OPPOSITE call logic). The two strategies are complementary; see "
+              "docs/plans/SIGNAL_QUALITY_TEST_PLAN.md §3.8-3.9. Each writes its "
+              "rows to historical_signals with its strategy tag, and ON CONFLICT "
+              "is keyed on (ticker, entry_time, strategy) so they coexist.")
+    )
+    p.add_argument(
         '--max-tickers', type=int, default=DEFAULT_MAX_TICKERS,
         help=(f'Cap on tickers processed per invocation (default {DEFAULT_MAX_TICKERS}). '
               'Each ticker loads months of intraday bars + runs the full voter, so a '
@@ -128,7 +140,12 @@ def _resolve_tickers(args: argparse.Namespace) -> list[str]:
 
 
 def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
-    """Determine [start, end) bar window to load from market_data_intraday."""
+    """Determine [start, end) bar window to load from market_data_intraday.
+
+    The auto-resume path (no --start-date / --backfill-from) reads
+    MAX(entry_time) scoped to the requested ``args.strategy`` so that
+    momentum and mean_reversion backfills resume from independent cursors.
+    """
     ticker = args.symbol.upper()
 
     if args.end_date:
@@ -141,20 +158,23 @@ def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
     elif args.backfill_from:
         start = datetime.fromisoformat(args.backfill_from).replace(tzinfo=timezone.utc)
     else:
-        # Default: resume from MAX(entry_time) + 1 minute, or fall back
-        # to a 30-day window if the table is empty for this ticker.
-        last = latest_entry_time(ticker)
+        # Default: resume from MAX(entry_time) + 1 minute scoped to THIS
+        # strategy, or fall back to a 30-day window if the table has no
+        # rows yet for this (ticker, strategy) combination.
+        last = latest_entry_time(ticker, strategy=args.strategy)
         if last is None:
-            log.info('no existing rows for %s — defaulting to last 30 days', ticker)
+            log.info('no existing rows for %s [%s] — defaulting to last 30 days',
+                     ticker, args.strategy)
             start = end - timedelta(days=30)
         else:
             start = last + timedelta(minutes=1)
-            log.info('resuming from MAX(entry_time)=%s', last)
+            log.info('resuming from MAX(entry_time)=%s [%s]', last, args.strategy)
 
     return start, end
 
 
-def map_signals_to_table(signals_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+def map_signals_to_table(signals_df: pd.DataFrame, ticker: str,
+                          strategy: str = 'momentum') -> pd.DataFrame:
     """Reshape MarketAnalyzer output into the historical_signals schema."""
     if signals_df.empty:
         return signals_df
@@ -166,6 +186,7 @@ def map_signals_to_table(signals_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 
     out = pd.DataFrame(out_cols)
     out['ticker'] = ticker
+    out['strategy'] = strategy   # Phase 0.7
     out['entry_time'] = pd.to_datetime(out['entry_time'], utc=True)
     if 'entry_volume' in out.columns:
         # Cast NaN-tolerant int — keep nullable
@@ -182,6 +203,87 @@ def map_signals_to_table(signals_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     return out
 
 
+def _add_mean_reversion_extra_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """MarketAnalyzer's add_technical_indicators emits column names that don't
+    match what lib.signals.evaluate_signal expects. Bridge the gap so we don't
+    have to refactor either side mid-flight.
+
+    - RSI14_W → also expose as RSI14 (lib.signals reads ind.rsi_col = 'RSI14')
+    - Derive Price_vs_VWAP, Price_vs_EMA9, Price_vs_EMA20
+    - Derive Consecutive_Up, Consecutive_Down (streak counter, not rolling sum)
+    - Alias Last → Close (lib.signals checks both)
+    """
+    import numpy as np
+    if 'RSI14_W' in df.columns and 'RSI14' not in df.columns:
+        df['RSI14'] = df['RSI14_W']
+    df['Price_vs_VWAP']  = (df['Last'] - df['VWAP']) / df['VWAP']  * 100
+    df['Price_vs_EMA9']  = (df['Last'] - df['EMA9']) / df['EMA9']  * 100
+    df['Price_vs_EMA20'] = (df['Last'] - df['EMA20']) / df['EMA20'] * 100
+    ret = df['Last'].diff()
+    cu = (ret > 0).astype(int)
+    cd = (ret < 0).astype(int)
+    # Streak counter via cumcount on grouped runs
+    df['Consecutive_Up']   = cu * (cu.groupby((cu != cu.shift()).cumsum()).cumcount() + 1)
+    df['Consecutive_Down'] = cd * (cd.groupby((cd != cd.shift()).cumsum()).cumcount() + 1)
+    if 'Close' not in df.columns:
+        df['Close'] = df['Last']
+    return df
+
+
+def _generate_mean_reversion_signals(enriched: pd.DataFrame) -> pd.DataFrame:
+    """Run lib.signals.evaluate_signal on the indicator-enriched bars
+    and return a DataFrame in the same shape MarketAnalyzer produces
+    (so map_signals_to_table can be reused).
+
+    The lib.signals output is a list of {direction, base_score, total_score,
+    conditions_met, time, price, ...} dicts. We map:
+      direction  → trade_type (lower-cased)
+      time       → entry_time
+      price      → entry_price
+      total_score → signal_strength
+      conditions_met → JSON-serialized conditions list (matching what
+                       signal_alerts already stores for the live monitor)
+    """
+    import json as _json
+    import numpy as np
+    from lib.signals import generate_signals
+    from lib.config import IndicatorConfig
+
+    enriched_with_extras = _add_mean_reversion_extra_cols(enriched.copy())
+    raw = generate_signals(enriched_with_extras, min_conditions=3,
+                            consecutive_periods=3,
+                            indicator_config=IndicatorConfig())
+    if raw is None or len(raw) == 0:
+        return pd.DataFrame()
+
+    out_rows = []
+    for _, sig in raw.iterrows():
+        out_rows.append({
+            'entry_time': sig.get('time'),
+            'trade_type': sig['direction'].lower(),  # 'CALL' → 'call' to match momentum schema
+            'entry_price': float(sig['price']),
+            'signal_strength': int(sig['total_score']),
+            'conditions_met': _json.dumps(sig['conditions_met']),
+            'duration_minutes': None,
+            'return_pct': None,
+            'best_return': None,
+            'best_window_minutes': None,
+            'return_5min': None,
+            'return_10min': None,
+            'return_15min': None,
+            'return_20min': None,
+            'return_30min': None,
+            'return_45min': None,
+            'return_60min': None,
+            'entry_rsi': float(sig['rsi']) if 'rsi' in sig.index and pd.notna(sig['rsi']) else None,
+            'entry_ema9': float(sig['ema_fast']) if 'ema_fast' in sig.index and pd.notna(sig['ema_fast']) else None,
+            'entry_ema20': float(sig['ema_mid']) if 'ema_mid' in sig.index and pd.notna(sig['ema_mid']) else None,
+            'entry_vwap': float(sig['vwap']) if 'vwap' in sig.index and pd.notna(sig['vwap']) else None,
+            'entry_volume': None,
+        })
+    return pd.DataFrame(out_rows)
+
+
 def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
     """Process one ticker. Returns 0 on success, non-zero on hard error.
     Soft cases (no bars / no signals / window already covered) are 0."""
@@ -191,8 +293,9 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
                 '--force without --start-date or --backfill-from will reprocess '
                 'only from MAX(entry_time)=NULL → last 30 days. Probably not what you want.'
             )
-        n = delete_for_ticker(ticker)
-        log.info('--force: deleted %d existing rows for %s', n, ticker)
+        n = delete_for_ticker(ticker, strategy=args.strategy)
+        log.info('--force: deleted %d existing rows for %s strategy=%s',
+                 n, ticker, args.strategy)
 
     # `resolve_window` reads args.symbol — patch it through for this ticker
     # in the watchlist iteration path.
@@ -203,7 +306,8 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
         return 0
 
     load_start = start - timedelta(days=args.lookback_days)
-    log.info('  %s: loading bars [%s → %s) (warmup from %s)', ticker, start, end, load_start)
+    log.info('  %s [%s]: loading bars [%s → %s) (warmup from %s)',
+             ticker, args.strategy, start, end, load_start)
     bars = load_intraday_bars(ticker, load_start, end)
     log.info('  %s: loaded %d bars', ticker, len(bars))
 
@@ -212,12 +316,23 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
                     ticker, len(bars))
         return 0
 
-    log.info('  %s: running MarketAnalyzer', ticker)
+    log.info('  %s: computing indicators (shared across strategies)', ticker)
     analyzer = MarketAnalyzer()
     enriched = analyzer.add_technical_indicators(bars)
-    signals_df = analyzer.generate_technical_signals(enriched)
-    log.info('  %s: voter produced %d candidate signals', ticker, len(signals_df))
 
+    # Dispatch by strategy. Both share `enriched` so indicator computation
+    # only happens once even when both strategies are backfilled in sequence.
+    if args.strategy == 'momentum':
+        log.info('  %s: running MarketAnalyzer.generate_technical_signals (momentum)', ticker)
+        signals_df = analyzer.generate_technical_signals(enriched)
+    elif args.strategy == 'mean_reversion':
+        log.info('  %s: running lib.signals.evaluate_signal (mean_reversion)', ticker)
+        signals_df = _generate_mean_reversion_signals(enriched)
+    else:
+        log.error('unknown strategy: %s', args.strategy)
+        return 1
+
+    log.info('  %s: voter produced %d candidate signals', ticker, len(signals_df))
     if signals_df.empty:
         return 0
 
@@ -228,14 +343,15 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
     if signals_df.empty:
         return 0
 
-    table_df = map_signals_to_table(signals_df, ticker)
+    table_df = map_signals_to_table(signals_df, ticker, strategy=args.strategy)
     if args.dry_run:
-        log.info('  %s: --dry-run, would insert %d rows', ticker, len(table_df))
+        log.info('  %s: --dry-run, would insert %d rows (strategy=%s)',
+                 ticker, len(table_df), args.strategy)
         return 0
 
     attempted, inserted = bulk_insert(table_df)
-    log.info('  %s: done attempted=%d inserted=%d skipped=%d',
-             ticker, attempted, inserted, attempted - inserted)
+    log.info('  %s [%s]: done attempted=%d inserted=%d skipped=%d',
+             ticker, args.strategy, attempted, inserted, attempted - inserted)
     return 0
 
 
