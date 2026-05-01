@@ -601,7 +601,16 @@ def main():
                               'no cap (legacy unbounded behaviour). Default: 25.'))
     args = parser.parse_args()
 
-    fetch_date = args.date or date.today().strftime('%Y-%m-%d')
+    # Use ET (market timezone), not the container's UTC. The 23:00 ET cron
+    # fires at 03:00–04:00 UTC the NEXT calendar day, so a UTC-based
+    # date.today() resolves to tomorrow — fetcher then asks AV for tomorrow's
+    # bars (none exist; market hasn't opened yet), filter on line ~104
+    # discards everything, write_intraday_to_sql gets empty df, nothing
+    # is persisted. Symptom: cron exits 0, but market_data_intraday goes
+    # stale. See docs/incidents/2026-05-01-fetch-market-data-tz-bug.md.
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+    fetch_date = args.date or datetime.now(_ET).date().strftime('%Y-%m-%d')
     bucket = os.environ.get('GCS_BUCKET', '')
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
