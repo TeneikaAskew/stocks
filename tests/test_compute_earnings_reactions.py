@@ -452,3 +452,71 @@ class TestComputeReactionEdgeCases:
         assert abs(r_bmo['reaction_gap_pct'] - 5.0) < 0.01
         assert r_amc['reaction_anchor_price'] == 110.0  # D+1 open
         assert r_bmo['reaction_anchor_price'] == 105.5  # D close
+
+
+# ────────────────────────────────────────────────────────────
+# _resolve_tickers — broadened default scope (Phase 1.6 fix)
+# ────────────────────────────────────────────────────────────
+
+class TestResolveTickersBroadScope:
+    """Default scope changed from "watchlist + tomorrow's brief-set"
+    to "every ticker in earnings_history" so the brief sees historical
+    profiles for all major reporters automatically."""
+
+    def test_default_returns_all_earnings_history_tickers(self, monkeypatch):
+        """The new default queries earnings_history (broad), not the
+        narrow brief-set + watchlist union."""
+        import argparse
+        from gcp.fetchers import compute_earnings_reactions as cer
+
+        captured = {}
+        def fake_query(sql, params=None):
+            captured['sql'] = sql
+            return pd.DataFrame({'ticker': ['AMZN', 'AVGO', 'MSFT', 'NVDA']})
+        monkeypatch.setattr(cer, 'query_to_dataframe', fake_query)
+
+        args = argparse.Namespace(tickers=None, dry_run=False)
+        result = cer._resolve_tickers(args)
+        assert result == ['AMZN', 'AVGO', 'MSFT', 'NVDA']
+        # Verify it queries earnings_history, not the narrow brief-set
+        sql_upper = captured['sql'].upper()
+        assert 'EARNINGS_HISTORY' in sql_upper
+        # No longer scoped via watchlists or earnings_calendar
+        assert 'WATCHLISTS' not in sql_upper
+        assert 'EARNINGS_CALENDAR' not in sql_upper
+
+    def test_filters_placeholder_rows(self, monkeypatch):
+        """The query should exclude placeholder rows (NULL or 0
+        reported_eps) so we don't waste compute on rows that aren't
+        actually reports yet."""
+        import argparse
+        from gcp.fetchers import compute_earnings_reactions as cer
+
+        captured = {}
+        def fake_query(sql, params=None):
+            captured['sql'] = sql
+            return pd.DataFrame({'ticker': ['AAA']})
+        monkeypatch.setattr(cer, 'query_to_dataframe', fake_query)
+
+        args = argparse.Namespace(tickers=None, dry_run=False)
+        cer._resolve_tickers(args)
+        # The placeholder filter pattern from the rest of the codebase
+        sql_compact = ' '.join(captured['sql'].split())
+        assert 'reported_eps > 0 OR reported_eps < 0' in sql_compact
+
+    def test_explicit_tickers_override_still_works(self):
+        """--tickers override bypasses DB query entirely."""
+        import argparse
+        from gcp.fetchers import compute_earnings_reactions as cer
+
+        args = argparse.Namespace(tickers='avgo,nvda,fdx', dry_run=False)
+        result = cer._resolve_tickers(args)
+        assert result == ['AVGO', 'NVDA', 'FDX']
+
+    def test_empty_db_returns_empty(self, monkeypatch):
+        import argparse
+        from gcp.fetchers import compute_earnings_reactions as cer
+        monkeypatch.setattr(cer, 'query_to_dataframe',
+                            lambda sql, params=None: pd.DataFrame())
+        args = argparse.Namespace(tickers=None, dry_run=False)
+        assert cer._resolve_tickers(args) == []

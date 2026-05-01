@@ -369,24 +369,29 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
 # ────────────────────────────────────────────────────────────
 
 def _resolve_tickers(args) -> list[str]:
-    """Resolve ticker set: --tickers override, else union of brief/insight
-    watchlist + tomorrow's calendar reporters with options."""
+    """Resolve ticker set: --tickers override, else every ticker we have
+    earnings_history for (which also includes the watchlist + tomorrow's
+    brief-set since fetch_earnings_history pulls them).
+
+    Earlier this defaulted to a narrow JIT scope (brief-set + watchlist
+    only). That left ~289 of 320 historical tickers without
+    earnings_reactions rows even though we had their EPS data. Result:
+    the brief showed "no historical analog" for major reporters like
+    AMZN/MSFT/META despite us having their data.
+
+    The broad scope is cheap — it's a pure DB join with no external API
+    calls, so populating 320 tickers takes the same ~5 min as
+    populating 30. Coverage matches earnings_history automatically.
+    """
     if args.tickers:
         return [t.strip().upper() for t in args.tickers.split(',') if t.strip()]
 
-    # JIT-scoped default: brief + insight watchlist union with tomorrow's
-    # calendar tickers (matches the Phase 0 scoping rule).
     sql = """
-        SELECT DISTINCT ticker FROM (
-            SELECT ticker FROM watchlists
-            WHERE COALESCE(in_brief, false) OR COALESCE(in_insight, false)
-            UNION
-            SELECT ticker FROM earnings_calendar
-            WHERE earnings_date BETWEEN CURRENT_DATE - INTERVAL '1 day'
-              AND CURRENT_DATE + INTERVAL '7 days'
-              AND COALESCE(options_volume, 0) > 0
-        ) u
-        ORDER BY ticker
+        SELECT DISTINCT ticker
+          FROM earnings_history
+         WHERE reported_date IS NOT NULL
+           AND (reported_eps > 0 OR reported_eps < 0)
+         ORDER BY ticker
     """
     df = query_to_dataframe(sql)
     if df.empty:
