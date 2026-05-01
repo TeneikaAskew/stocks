@@ -300,6 +300,91 @@ show any rows. Initial demo backfill covers:
 For broader coverage, **Phase 2** wires the JIT pipeline so the
 populator runs daily for tomorrow's reporters automatically.
 
+### Phase 1.6 — Post-Event Conditional Reads (queued 2026-05-01)
+
+**Motivation:** Phase 1's playability score is a *forward-looking,
+long-run* signal — "what should I expect from this ticker in general?"
+On the morning AFTER earnings, the actual gap is known and a different
+question becomes more useful: *"given today's specific gap, what
+typically happens next?"*
+
+User feedback (2026-05-01) surfaced this gap. The `mixed` archetype
+correctly says "long-run, SBUX is unpredictable" but doesn't help on
+the morning of D+1 when SBUX has just gapped +4.85% and the trader
+needs a same-day lean.
+
+**Design — event-conditional historical lookup:**
+
+For each ticker in the brief's "Reactions to Last Night's AMC" view
+(or BMO equivalent), filter `earnings_reactions` to past quarters
+where:
+- Same ticker
+- Same `reaction_basis` (AMC or BMO — preserve the timing match)
+- `reaction_gap_pct` within **±2% of today's actual gap** (similar
+  shape, both magnitude and direction)
+- Lookback: last 12 quarters (matches playability score lookback)
+
+Compute:
+- Hold rate (`direction_consistent_5d` = TRUE) — % of similar past
+  gaps that sustained the direction over 5 days
+- Reversal rate (`is_reversal_5d` = TRUE) — % of similar past gaps
+  that flipped direction with magnitude
+- Sample size N — show explicitly so the reader knows confidence
+
+#### Locked-in plain-English lean vocabulary (2026-05-01)
+
+User feedback called out trader jargon ("fade-rate", "fade-risk"
+suffix) — replaced with plain English matching the Phase 1 archetype
+vocabulary so the whole brief stays consistent.
+
+| Historical pattern | Lean phrase |
+|---|---|
+| 75%+ similar gaps held in same direction with bull bias | `bullish gap play` |
+| 75%+ similar gaps held in same direction with bear bias | `bearish gap play` |
+| 75%+ similar gaps reversed within 5 days | `expect reversal` |
+| Mixed (50/50 split or insufficient pattern) | `low conviction` |
+| Sample N < 3 (too few similar past gaps) | `skip` (no historical analog) |
+
+The 75% threshold is a starting heuristic — calibrate after the
+feature is live by checking how often the lean called the right
+direction over the next 4-8 weeks of brief outputs.
+
+#### Sample render
+
+Replaces / extends the existing 📊 Reactions section:
+
+```
+📊 Reactions to Last Night's AMC (3)
+SBUX gap +4.85% | ✅ +13.6%  → 3 of 4 similar past gaps reversed · lean: expect reversal
+NFLX gap +4.2%  | ✅ +3.4%   → 4 of 4 similar past gaps held    · lean: bullish gap play
+META gap -1.8%  | 🎯 inline  → too few similar past gaps        · lean: skip
+```
+
+Reads as a sentence: *"SBUX gapped +4.85% last night. Looking at the
+last 4 times SBUX had a gap of similar size and direction, 3 reversed
+within 5 days. Today's lean: expect a reversal."*
+
+#### Implementation cost
+
+- `lib/earnings_reactions.py`: ~30 lines for `query_conditional_reactions(ticker, basis, gap_pct, gap_band=2.0)` and a `classify_lean(hold_count, reverse_count, n)` helper.
+- `gcp/premarket_brief.py`: ~15 lines extending the existing `load_yesterday_amc_reactions` + `_build_earnings_embed` Yesterday-AMC section.
+- ~10 unit tests covering edge cases (small N, all-held, all-reversed, mixed, BMO-vs-AMC isolation).
+
+Estimate: 1-2 hour PR. Queued as the next Phase 1 follow-up after the
+current PR chain (#177 → #178) merges.
+
+#### Validation plan
+
+Once live, spot-check 4-6 weeks of brief outputs:
+- For each ticker that got a non-`low conviction` lean, did the actual
+  D+5 close confirm the lean?
+- Tally hold-rate of the *system* (not the ticker). If the brief leans
+  "expect reversal" 100 times and is correct 60 times, the threshold
+  is too aggressive — tighten it. If it's correct 80 times, holding
+  steady or even loosening makes sense.
+
+This becomes the loop: ship → measure → tune the 75% threshold.
+
 ### Phase 1.5 — Intraday 1-min layer (scoped narrow)
 
 Pull 1-min bars only for the **D-2..D+2 window** around each row in
