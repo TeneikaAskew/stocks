@@ -166,10 +166,25 @@ deploy_signal_quality_report() {
     # `--args "--mode=rolling"`, gcloud parses `--mode=rolling` as a
     # new flag and bails with "argument --args: expected one
     # argument". Same applies to anywhere args begin with `-`.
+    #
+    # task-timeout: 3600s (1 h). Original spec said 600s, calibrated
+    # for rolling mode (~50 signals/4h, finishes in <2 min). But the
+    # SAME job is invoked with --mode=historical for monthly backfills
+    # (~1000+ signals, ~15-20 min) — those hit the 600s wall. Bumping
+    # to 3600 gives both modes headroom; rolling still bills for ~2
+    # min (Cloud Run charges actual runtime, not the configured cap).
+    #
+    # max-retries 0: the script exits clean on success and non-zero
+    # only on legitimate failure (DB outage, bug). Cloud Run can't
+    # distinguish "transient" from "permanent" failure, so any retry
+    # double-sends failure emails for free. The hourly scheduler tick
+    # provides natural retry cadence — if the 14:00 ET run hits a DB
+    # blip, the 15:00 ET run picks up where it left off (rolling
+    # mode is incremental).
     gcloud run jobs create signal-quality-report \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 1 \
-        --task-timeout 600 \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 3600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.signal_quality_report" \
         --args="--mode=rolling" \
@@ -178,7 +193,8 @@ deploy_signal_quality_report() {
         --quiet 2>/dev/null || \
     gcloud run jobs update signal-quality-report \
         --image "${IMAGE}" --region "${REGION}" \
-        --task-timeout 600 \
+        --max-retries 0 \
+        --task-timeout 3600 \
         --command "python,-m,scripts.signal_quality_report" \
         --args="--mode=rolling" \
         ${DB_SECRET_FLAG} \
