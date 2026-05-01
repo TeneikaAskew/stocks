@@ -868,6 +868,25 @@ def persist_to_cloud_sql(df: pd.DataFrame) -> int:
             lambda v: _json.dumps(v) if isinstance(v, (list, dict)) else v
         )
 
+    # BIGINT columns: pandas widens to float64 when one source provides
+    # ints (UW: stock_volume) and another provides NULL (Yahoo: no
+    # stock_volume) and the two are concat'd. The float values then
+    # serialize as "31193563.0" — Postgres rejects that for BIGINT with
+    # 22P02 (invalid input syntax). Coerce to plain Python int (None
+    # passthrough) so pg8000 sees an integer literal.
+    #
+    # Important: build via list comprehension and re-wrap as an
+    # object-dtype Series. A bare `.apply(lambda)` returns ints+None
+    # but pandas infers the original float64 dtype back on the
+    # assignment, undoing the coercion.
+    for col in ('stock_volume', 'options_volume', 'open_interest'):
+        if col in db_df.columns:
+            coerced = [
+                int(v) if (v is not None and pd.notna(v)) else None
+                for v in db_df[col]
+            ]
+            db_df[col] = pd.Series(coerced, dtype=object, index=db_df.index)
+
     # Replace NaN/NaT with None across all columns so PostgreSQL gets NULL
     import numpy as np
     db_df = db_df.replace({np.nan: None, float('nan'): None})
@@ -1276,8 +1295,36 @@ def main():
         n = persist_to_cloud_sql(all_rows_df)
         if n:
             print(f"Persisted {n} rows to Cloud SQL earnings_calendar table")
+        else:
+            # 0 rows persisted is a real signal — either the input frame
+            # was empty (caught by persist_to_cloud_sql's df.empty guard
+            # and logged at INFO) or the upsert returned 0 (unusual).
+            # Surface at WARNING so monitoring catches stale-source bugs
+            # earlier than the 18-day silent-failure window observed in
+            # 2026-04-12..04-30 for AV / EW persists.
+            try:
+                src_breakdown = all_rows_df['source'].value_counts().to_dict()
+            except Exception:
+                src_breakdown = {}
+            logger.warning(
+                "persist_to_cloud_sql returned 0 rows for input "
+                "frame of %d (source breakdown=%s) — table may now "
+                "be stale for one or more sources",
+                len(all_rows_df), src_breakdown,
+            )
     except Exception as e:
-        logger.warning("Cloud SQL persist failed (non-fatal): %s", e)
+        # Don't just log the message — log the type, length of input
+        # frame, and re-raise type info so 22P02 / 23505 / etc. show up
+        # distinctly in Cloud Logging filters.
+        try:
+            src_breakdown = all_rows_df['source'].value_counts().to_dict()
+        except Exception:
+            src_breakdown = {}
+        logger.error(
+            "Cloud SQL persist failed (non-fatal): %s: %s | "
+            "input rows=%d sources=%s",
+            type(e).__name__, e, len(all_rows_df), src_breakdown,
+        )
 
     print("\n" + "=" * 80)
     print("Earnings Calendar Fetch Completed Successfully!")
