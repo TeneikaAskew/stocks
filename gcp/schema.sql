@@ -1310,3 +1310,76 @@ END $$;
 -- in_brief / in_insight explicitly — existing rows are not touched.
 ALTER TABLE watchlists ALTER COLUMN in_brief   SET DEFAULT FALSE;
 ALTER TABLE watchlists ALTER COLUMN in_insight SET DEFAULT FALSE;
+
+
+-- ─────────────────────────────────────────────────────────
+-- TICKER CALIBRATION (Phase 0.6)
+-- Per-ticker, quarterly-refreshed thresholds for the multi-tf signal
+-- evaluator. Replaces the universal-across-all-tickers THRESHOLDS dict
+-- that hard-coded 0.5% as "clean at 60m" for SPY, QQQ, and IWM alike
+-- (their typical ATR_60m differs ~2× across them). See
+-- docs/plans/SIGNAL_QUALITY_TEST_PLAN.md §3 caveats and Phase 0.6.
+--
+-- Refresh cadence: quarterly (1st of Jan / Apr / Jul / Oct at 02:00 ET)
+-- via the `calibrate-thresholds` Cloud Run Job. Manual override is
+-- always available via `gcloud run jobs execute calibrate-thresholds`.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS ticker_calibration (
+    ticker             VARCHAR(10)  NOT NULL,
+    calibration_date   DATE         NOT NULL,
+    lookback_days      INTEGER      NOT NULL DEFAULT 60,
+
+    -- ATR median per timeframe, expressed as % of price (e.g. 0.045 = 0.045%)
+    -- Used to scale per-tf clean/wrong/noise thresholds: clean = atr_60m_median × 1.0
+    atr_5m_median      DOUBLE PRECISION,
+    atr_15m_median     DOUBLE PRECISION,
+    atr_30m_median     DOUBLE PRECISION,
+    atr_60m_median     DOUBLE PRECISION,
+    atr_90m_median     DOUBLE PRECISION,
+    atr_120m_median    DOUBLE PRECISION,
+    atr_240m_median    DOUBLE PRECISION,
+
+    -- RVOL distribution (relative volume vs 20-day average) — used by the
+    -- per-ticker RVOL filter band proposed in §3.4.
+    rvol_p25           DOUBLE PRECISION,
+    rvol_p50           DOUBLE PRECISION,
+    rvol_p75           DOUBLE PRECISION,
+    rvol_p95           DOUBLE PRECISION,
+
+    -- RSI distribution (regime indicator) — sanity-check that the
+    -- universal CALL_RSI_RANGE / PUT_RSI_RANGE constants in lib/strategies/
+    -- config.py are still appropriate for THIS ticker.
+    rsi_p10            DOUBLE PRECISION,
+    rsi_p25            DOUBLE PRECISION,
+    rsi_p50            DOUBLE PRECISION,
+    rsi_p75            DOUBLE PRECISION,
+    rsi_p90            DOUBLE PRECISION,
+
+    -- Computed clean / wrong / noise thresholds per timeframe (in % of price).
+    -- JSONB so future timeframes can be added without schema migration.
+    -- Shape: {"5m": {"clean": 0.07, "wrong": -0.10, "noise": 0.05},
+    --         "15m": {"clean": 0.10, ...}, ...}
+    threshold_clean    JSONB,
+    threshold_wrong    JSONB,
+    threshold_noise    JSONB,
+
+    -- Per-ticker RVOL filter band (computed from rvol_p25 / rvol_p75)
+    rvol_min           DOUBLE PRECISION,
+    rvol_max           DOUBLE PRECISION,
+
+    -- Per-ticker ATR-expansion multiplier for the chop-vs-trend gate
+    -- proposed in Phase 0.7.1. Replaces the hard-coded 1.3× factor.
+    atr_expansion_x    DOUBLE PRECISION DEFAULT 1.3,
+
+    -- Audit metadata
+    n_bars_used        INTEGER,                    -- how many 1-min bars went into the calibration
+    earliest_bar_date  DATE,
+    latest_bar_date    DATE,
+    inserted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (ticker, calibration_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticker_calibration_recent
+    ON ticker_calibration (ticker, calibration_date DESC);

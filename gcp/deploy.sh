@@ -856,6 +856,32 @@ deploy_compute_spx_greeks_backfill() {
 }
 
 
+# ── Phase 0.6 — quarterly per-ticker threshold calibration ───────────────────
+# Replaces the universal-across-tickers THRESHOLDS dict with per-ticker
+# calibrated values from rolling 60-day bar history. See
+# docs/plans/SIGNAL_QUALITY_TEST_PLAN.md §3.6 / Phase 0.6.
+#
+# Cadence: quarterly (1st of Jan / Apr / Jul / Oct) — see deploy_schedulers().
+# Manual run any time: `gcloud run jobs execute calibrate-thresholds`.
+deploy_calibrate_thresholds() {
+    echo "Deploying calibrate-thresholds job..."
+    gcloud run jobs create calibrate-thresholds \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.calibrate_thresholds" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update calibrate-thresholds \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,scripts.calibrate_thresholds" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
 # ── Failure notifier (Cloud Run Service) ─────────────────────────────────────
 # Receives Cloud Logging entries about failed Cloud Run Jobs via Pub/Sub push
 # and fans out to (1) Discord webhook and (2) GitHub issue create/update.
@@ -1179,6 +1205,13 @@ deploy_schedulers() {
     # fetch-market-data-daily so AV is already warmed up.
     _schedule "evaluate-ew-strikes-daily" "0 23 * * 1-5"  "evaluate-ew-strikes"
 
+    # Phase 0.6 — per-ticker threshold calibration. Quarterly cadence
+    # (1st of Jan / Apr / Jul / Oct at 02:00 ET). ATR / RVOL / RSI
+    # distributions are slow-moving aggregates over a 60-day window;
+    # weekly recalibration would be mostly noise. Manual override
+    # always available: `gcloud run jobs execute calibrate-thresholds`.
+    _schedule "calibrate-thresholds-quarterly" "0 2 1 1,4,7,10 *" "calibrate-thresholds"
+
     # SEC EDGAR filings — 4 strategic slots that cover every consumer.
     # The brief (8:30) and insight pipeline (8:45) read from sec_filings
     # once each morning, so 0700 is the only feed that matters for the
@@ -1298,6 +1331,7 @@ case "${1:-help}" in
     apply-schema) build_image && deploy_apply_schema_migrations ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
+    calibrate)    build_image && deploy_calibrate_thresholds ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     discord)     build_image && deploy_discord_interactions ;;
