@@ -148,6 +148,71 @@ deploy_historical_signals_watchlist() {
         --quiet
 }
 
+# ── Signal-quality report (Cloud Run Job) ───────────────────────────────────
+# Phase 0.5 spec items #3-#4. Persists per-signal classifications +
+# returns + ATR-normalized MFE into signal_metrics. Runs in two modes
+# under the same image:
+#   --mode=rolling     hourly during market hours (10–16 ET, scheduler)
+#   --mode=historical  once nightly (Tue–Sat 01:00 ET, scheduler) to
+#                      promote rolling 'pending' rows to 'final'
+# 1 GiB / 10-min timeout per the spec; the script chunks per-ticker
+# intraday queries so memory stays well under the cap even on the
+# month-long historical backfill window.
+deploy_signal_quality_report() {
+    echo "Deploying signal-quality-report job..."
+
+    gcloud run jobs create signal-quality-report \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.signal_quality_report" \
+        --args "--mode=rolling" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-quality-report \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,scripts.signal_quality_report" \
+        --args "--mode=rolling" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Signal-quality alarm (Cloud Run Job) ───────────────────────────────────
+# Phase 0.5 spec item #6. Compares trailing-7d clean-rate vs prior-7d
+# clean-rate; alarms when delta < -3pp. Posts to the SIGNAL_QA_WEBHOOK_URL
+# Discord channel and exits non-zero so the failure-notifier sink picks
+# it up and creates a GitHub issue. ~10s runtime, 256 MiB is plenty.
+deploy_signal_quality_alarm() {
+    echo "Deploying signal-quality-alarm job..."
+
+    # --max-retries 0: the alarm script INTENTIONALLY exits 1 on a
+    # detected regression so the failure-notifier sink picks it up.
+    # Cloud Run can't distinguish that from a crash, so any positive
+    # retries double-post the Discord alarm. We accept that a real
+    # crash (DB outage etc.) won't auto-retry — the next day's run
+    # picks up the regression anyway.
+    gcloud run jobs create signal-quality-alarm \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 256Mi --cpu 1 --max-retries 0 \
+        --task-timeout 120 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_quality_alarm" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-quality-alarm \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 120 \
+        --command "python,-m,gcp.signal_quality_alarm" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Auto-refresh top-N (Cloud Run Job) ───────────────────────────────────────
 # Pre-warms the AI insight cache for the highest-scoring ranker tickers.
 # Calls lib.agents.ranker.rank_tickers, picks top N, enqueues a Cloud
@@ -1254,6 +1319,33 @@ deploy_schedulers() {
     # always available: `gcloud run jobs execute calibrate-thresholds`.
     _schedule "calibrate-thresholds-quarterly" "0 2 1 1,4,7,10 *" "calibrate-thresholds"
 
+    # Phase 0.5 — signal-quality report.
+    # Hourly during market hours: --mode=rolling, incremental update of
+    # signal_metrics as 60m/90m/120m/240m windows close out. Cron is
+    # 14-20 UTC (10:00-16:00 ET in DST or 09:00-15:00 ET in standard
+    # time; scheduler timezone is America/New_York so cron is read in
+    # local time — 10-16 ET). 7 invocations per trading day.
+    _schedule "signal-quality-report-hourly" \
+        "0 10-16 * * 1-5" "signal-quality-report"
+
+    # Nightly: --mode=historical promotes rolling 'pending' rows to
+    # 'final'. Tue-Sat 01:00 ET so it runs AFTER historical-signals-
+    # watchlist (which Cloud Scheduler doesn't have a strict ordering
+    # for, but in practice the watchlist iterator finishes by 22:00 ET).
+    # Uses _schedule_with_args to flip the job's --mode at trigger time.
+    _schedule_with_args "signal-quality-report-nightly" \
+        "0 1 * * 2-6" "signal-quality-report" \
+        "--mode=historical"
+
+    # Phase 0.5 spec item #6 — clean-rate regression alarm.
+    # Daily 02:00 ET, after the nightly historical run promotes rolling
+    # rows to 'final'. Compares trailing-7d to prior-7d clean-rate;
+    # alarms when delta < -3pp. Posts to SIGNAL_QA_WEBHOOK_URL and
+    # exits non-zero on regression so the existing failure-notifier
+    # creates a GitHub issue.
+    _schedule "signal-quality-alarm-daily" \
+        "0 2 * * 2-6" "signal-quality-alarm"
+
     # SEC EDGAR filings — 4 strategic slots that cover every consumer.
     # The brief (8:30) and insight pipeline (8:45) read from sec_filings
     # once each morning, so 0700 is the only feed that matters for the
@@ -1374,6 +1466,7 @@ case "${1:-help}" in
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
+    signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     discord)     build_image && deploy_discord_interactions ;;
@@ -1388,6 +1481,8 @@ case "${1:-help}" in
         deploy_insight_discord_push
         deploy_historical_signals_watchlist
         deploy_auto_refresh_top_n
+        deploy_signal_quality_report
+        deploy_signal_quality_alarm
         deploy_notifier
         deploy_schedulers
         backfill_watchlist
@@ -1420,6 +1515,9 @@ case "${1:-help}" in
         echo "             secrets in Secret Manager. After deploy, set the service URL"
         echo "             as Discord's Interactions Endpoint URL and run"
         echo "             scripts/discord/register_commands.py."
+        echo "  signal-quality"
+        echo "             Deploy signal-quality-report (Phase 0.5 measurement)"
+        echo "             + signal-quality-alarm (regression detector) jobs."
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac
