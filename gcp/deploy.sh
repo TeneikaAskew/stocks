@@ -732,6 +732,31 @@ deploy_fetch_earnings_history() {
         --quiet
 }
 
+deploy_compute_earnings_reactions() {
+    echo "Deploying compute-earnings-reactions job..."
+    # Phase 1.6 populator: joins earnings_history × market_data_daily
+    # (× earnings_calendar for timing fallback) to fill the
+    # earnings_reactions table the brief reads. Pure DB join, no
+    # external API calls — 1Gi/1CPU is plenty for ~100 tickers.
+    # 1800s timeout: ~3-5s per ticker × 100 tickers = ~5 min typical.
+    gcloud run jobs create compute-earnings-reactions \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 1 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.compute_earnings_reactions" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update compute-earnings-reactions \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,gcp.fetchers.compute_earnings_reactions" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 deploy_fetch_news_sentiment() {
     echo "Deploying fetch-news-sentiment (ticker mode) job..."
     local av_key av_env
@@ -799,6 +824,7 @@ deploy_fetchers() {
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
     deploy_fetch_earnings_history
+    deploy_compute_earnings_reactions
     deploy_fetch_premarket_refresh
     deploy_evaluate_ew_strikes
     deploy_fetch_sec_filings
@@ -1189,6 +1215,12 @@ deploy_schedulers() {
     # Earnings history (AV EARNINGS, per-ticker quarterly EPS) — Sunday 6 AM ET.
     # Weekly cadence is enough since past quarters never change.
     _schedule "earnings-history-weekly"  "0 6 * * 0"  "fetch-earnings-history"
+
+    # Compute earnings reactions — Sunday 7 AM ET, 1 hour after
+    # earnings-history-weekly finishes. Joins refreshed earnings_history
+    # × market_data_daily and upserts the per-quarter reaction profile
+    # the brief renderer reads.
+    _schedule "compute-earnings-reactions-weekly"  "0 7 * * 0"  "compute-earnings-reactions"
 
     # Pre-market refresh — 8:20 AM ET, 10 min before the morning brief.
     # premarket-brief-daily (the Discord push) fires at 8:30 AM ET, so
