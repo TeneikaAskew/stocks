@@ -76,6 +76,109 @@ around each `reported_date`. Compute pre-gap, post-gap, day-1 range,
 granularity enough, or do we need 1-min intraday for the post-report
 hour?
 
+### Phase 0.5 — Validation findings + correctness fixes (2026-04-30)
+
+After Phase 0 was committed, the math was validated against raw OHLCV
+for the most recent valid report per ticker, then the strategy was
+tested on 4 additional **BMO (premarket)** reporters (JPM, JNJ, WMT, PG)
+to verify the same scoring philosophy generalizes across timing.
+
+**Validation results:** math is correct (manual computation matches
+script output to float precision for all 4 valid AMC tickers), but
+four bugs / gaps surfaced that block production rollout:
+
+#### Fix 1 — Timing-aware `reaction_gap_pct` (BMO vs AMC)
+
+`earnings_calendar.earnings_time` distinguishes `premarket` (BMO) and
+`postmarket` (AMC) reporters. The original Phase 0 driver always used
+`post_gap = (D+1 open - D close) / D close`, which is correct for AMC
+but **wrong for BMO** — for premarket reports the actual reaction is
+`pre_gap = (D open - D-1 close) / D-1 close` (the overnight gap on
+the morning of the release).
+
+LLY (premarket reporter) was the canary: original Phase 0 reported
+move_magnitude = 1.48% for LLY. BMO-corrected math: **6.99%** (4.7×
+larger). LLY is actually a top-tier mover, not a low-yield name.
+
+**Schema:**
+```sql
+reaction_basis    VARCHAR(3)   -- 'AMC' | 'BMO' (derived from earnings_time)
+reaction_gap_pct  NUMERIC      -- pre_gap for BMO, post_gap for AMC
+reaction_anchor   NUMERIC      -- D close for BMO, D+1 open for AMC
+sustain_3d_pct, sustain_5d_pct, sustain_10d_pct  -- all measured from anchor
+```
+
+Also need to enrich `earnings_calendar` so `earnings_time` is populated
+for **all** rows, not just EW/UW/Yahoo (currently AVGO/NVDA/FDX only
+have AV rows which lack timing). Add a fallback timing source or
+derive timing from a static `ticker_info`-like table.
+
+#### Fix 2 — NaN-safe placeholder filter
+
+`fetch_earnings_history` writes `'NaN'::numeric` (PostgreSQL literal
+NaN) to `reported_eps` for AV rows where the company hasn't reported
+yet but is on the upcoming schedule. The Phase 0 filter
+`reported_eps IS NOT NULL AND reported_eps != 0` does **not** catch
+NaN (NaN is a value, not NULL).
+
+**Replace with:** `reported_eps > 0 OR reported_eps < 0` — NaN
+comparisons return false, so this excludes NULL, 0, and NaN in one
+expression.
+
+Production fix in `gcp/fetchers/fetch_earnings_history.py` — guard
+`_safe_float` against NaN: `if math.isnan(v): return None`.
+
+#### Fix 3 — Split-adjusted prices for sustain math
+
+`market_data_daily` stores **unadjusted** OHLCV. When a stock split
+falls between the reaction day and a sustain horizon (D+5, D+10), the
+sustain math reports a fictitious huge move.
+
+WMT 2024-02-20 → split 2024-02-26 → reported sustain_5d = **-66.12%**.
+This is purely the 3-for-1 split, not a real move.
+
+**Fix:** use AV's `TIME_SERIES_DAILY_ADJUSTED` endpoint (which provides
+adjusted close + split factor per row) for the sustain calculations.
+Either store an `adjusted_close` column in `market_data_daily` or
+join to a separate `splits` table at query time. The reaction-day
+gap math is unaffected (splits never happen overnight on earnings).
+
+#### Fix 4 — Ranking strategy: volatility-normalized magnitude
+
+The 9-ticker comparison shows BMO names systematically have smaller
+absolute moves than AMC names: AMC median ~6%, BMO median ~3%. A
+global sort by `move_magnitude` would crowd the brief with AMC
+tech/semis and bury BMO names that are still earnings-tradeable in
+their own context.
+
+**Decision:** introduce `move_magnitude_norm`:
+```
+move_magnitude_norm = move_magnitude / median(|daily_return|, last 60 trading days)
+```
+
+This credits "moves a lot relative to normal" instead of "moves a lot
+in absolute terms." A 1.5% reaction on JPM (which typically moves
+0.4% daily) scores similarly to a 6% reaction on AVGO (which
+typically moves 1.6% daily). Single global sort still works, but the
+ranking surfaces sector-diverse playable names.
+
+**Locked-in `playability_score` formula (revised):**
+```
+playability_score = move_magnitude_norm
+                  × max(dir_consistency, 0.5 + 0.5 × reversal_rate)
+                  × log(EW_options_volume_median + 1)
+```
+
+#### Phase 0.5 deliverables
+- [x] Validation script (`_earnings_reaction_validate.py`) — DONE
+- [x] Timing-aware Phase 0 driver v2 (`_earnings_reaction_phase0_v2.py`) — DONE
+- [x] BMO options pull v2 (`_pull_av_options_around_earnings_v2.py`) — DONE
+- [ ] `move_magnitude_norm` implementation in score script
+- [ ] Final v3 ranking on all 9 tickers
+- [ ] Production-side: NaN guard in `fetch_earnings_history.py`
+- [ ] Production-side: switch `fetch_market_data` to `TIME_SERIES_DAILY_ADJUSTED`
+- [ ] Production-side: `earnings_time` enrichment for AV-only rows
+
 ### Phase 1 — Schema design (revised after Phase 0 walk-through)
 
 ```sql
@@ -269,38 +372,51 @@ hard ceiling for the underlying tables.
 4. **Brief budget** — top 5 deep + rest short, or a single ranked
    list with progressive detail?
 
-## Locked-in `playability_score` formula (2026-04-30)
+## Locked-in `playability_score` formula (2026-04-30, post Phase 0.5)
 
 ```
-playability_score = move_magnitude
+playability_score = move_magnitude_norm
                   × max(dir_consistency, 0.5 + 0.5 × reversal_rate)
                   × log(earnings_window_options_volume_median + 1)
+
+where:
+  move_magnitude_norm = move_magnitude / typical_daily_return
+  typical_daily_return = median(|daily_return_pct|) over last 60 trading days
 ```
 
 Where:
 
 | Component | Definition | Source |
 |---|---|---|
-| `move_magnitude` | mean of \|post_gap_pct\| over last 12Q | `earnings_reactions` aggregated |
-| `dir_consistency` | % of 12Q where sign(post_gap) == sign(sustain_5d) | `earnings_reactions.direction_consistent_5d` |
+| `move_magnitude` | mean of \|reaction_gap_pct\| over last 12Q | `earnings_reactions` aggregated |
+| `move_magnitude_norm` | `move_magnitude / typical_daily_return` | computed at scoring time |
+| `typical_daily_return` | median \|daily_return_pct\| over last 60 trading days | `market_data_daily` rolling |
+| `reaction_gap_pct` | timing-aware: pre_gap (BMO) or post_gap (AMC) | `earnings_reactions.reaction_gap_pct` |
+| `dir_consistency` | % of 12Q where sign(reaction_gap) == sign(sustain_5d) | `earnings_reactions.direction_consistent_5d` |
 | `reversal_rate` | % of 12Q flagged as `is_reversal_5d` | `earnings_reactions.is_reversal_5d` |
-| `EW_options_volume_median` | median of D+1 total contract volume across 12Q | AV `HISTORICAL_OPTIONS` per quarter |
+| `EW_options_volume_median` | median of reaction-day total contract volume across 12Q (D+1 for AMC, D for BMO) | AV `HISTORICAL_OPTIONS` per quarter |
 
 Optional hard floor: `EW_options_volume_median ≥ 50,000` (config knob,
 empirical derivation deferred — see "Options-volume floor" section).
 
-**Phase 0 ranking validation (5 case-study tickers, 12Q × 12Q):**
+**Phase 0.5 ranking validation (9 tickers, 12Q × 12Q, vol-normalized):**
 
-| # | Ticker | Score | Tag |
-|---|---|---|---|
-| 1 | AVGO | 72.74 | `bullish_trend` (ride the gap) |
-| 2 | FDX  | 65.75 | `reversal_play` (fade the gap) |
-| 3 | NVDA | 58.05 | `mixed` (cautious entry, IV-crush risk) |
-| 4 | GOOG | 43.60 | `mixed` |
-| 5 | LLY  | 12.19 | bottom of brief / one-line mention |
+| # | Ticker | Timing | Score | mag_norm | Tag |
+|---|---|---|---|---|---|
+| 1 | FDX  | AMC | 73.16 | 8.22× | `reversal_play` (fade the gap) — biggest explosion factor |
+| 2 | AVGO | AMC | 56.07 | 4.98× | `bullish_trend` (ride the gap) |
+| 3 | NVDA | AMC | 39.15 | 4.04× | `mixed` (cautious entry, IV-crush risk) |
+| 4 | LLY  | **BMO** | 39.09 | 5.25× | `bullish_trend` (premarket pharma) |
+| 5 | GOOG | AMC | 37.32 | 5.22× | `mixed` |
+| 6 | WMT  | **BMO** | 31.28 | 3.64× | `bullish_trend` (consistent BMO mover) |
+| 7 | JNJ  | **BMO** | 18.56 | 2.46× | low priority — small earnings reaction |
+| 8 | PG   | **BMO** | 17.84 | 2.38× | low priority |
+| 9 | JPM  | **BMO** | 11.54 | 1.49× | bottom of brief — banks don't react much |
 
-The top 3 tickers represent **three distinct tradeable patterns** —
-the score correctly separates them by archetype, not just magnitude.
+The vol-normalized score successfully **mixes BMO and AMC names in the
+top half** (LLY ranks #4, WMT #6) while putting genuinely-low-yield
+names at the bottom (JPM #9). The raw move_magnitude formula crowded
+the top with AMC-only tickers — vol-normalization corrects that.
 
 ## Decision log (2026-04-30 — Phase 0 walk-through)
 
