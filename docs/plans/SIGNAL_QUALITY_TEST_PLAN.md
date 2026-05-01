@@ -39,6 +39,115 @@ From the v4 multi-timeframe evaluation across 30,792 historical signal-eligible 
 
 ---
 
+### Phase 0.8 — production refactor: lib/strategies/ package *(precedes Phase 0.7)*
+
+**Why this had to land in the plan (5/1 audit finding):** the two signal generators sit in different files with different output schemas. A local script bug today (calling a non-existent `MarketAnalyzer.analyze_market_data` method) silently masked momentum's true fire count for 90 minutes of analysis — the try/except swallowed an `AttributeError` and reported "0 momentum signals." The dual-strategy reality demands a clean, typed, testable separation so this class of error becomes impossible.
+
+**Today's verified state:**
+
+| File | Lines | Strategy | Used by | Output schema | Issue |
+|---|---|---|---|---|---|
+| `lib/signals.py` | 234 | Mean-reversion only | `gcp/signal_monitor.py` (live) | dict / DataFrame, `conditions_met` = JSON list | OK |
+| `lib/trading_analysis.py:677-985` | ~310 | Indicators **mixed with** momentum signals | `scripts/run_historical_signals.py` (nightly) | DataFrame, `conditions_met` = `"3/5"` string | indicators + signals coupled in one class |
+
+**Production refactor target:**
+
+```
+lib/
+├── indicators.py                         # already exists, unchanged
+├── strategies/                           # NEW package
+│   ├── __init__.py                       # public API: get_strategy(), MOMENTUM, MEAN_REVERSION
+│   ├── base.py                           # Signal dataclass + Strategy ABC
+│   ├── momentum.py                       # extracted from trading_analysis.py:799-985
+│   ├── mean_reversion.py                 # extracted from signals.py
+│   └── tests/
+│       ├── test_momentum.py
+│       ├── test_mean_reversion.py
+│       └── test_parity.py                # asserts both strategies share schema
+└── trading_analysis.py                   # KEEPS only indicator code; signal-gen DEPRECATED
+                                          # back-compat shim that imports from lib.strategies
+```
+
+**Common interface (`lib/strategies/base.py`):**
+
+```python
+from dataclasses import dataclass, field
+from typing import Literal, Optional
+import pandas as pd
+
+@dataclass
+class Signal:
+    """Unified signal output across all strategies."""
+    strategy: Literal["momentum", "mean_reversion"]
+    direction: Literal["CALL", "PUT"]
+    timestamp: pd.Timestamp
+    entry_price: float
+    base_score: float           # raw count of conditions met
+    weighted_score: float       # weighted (Phase 4 tunes)
+    conditions_met: list[str]   # canonical, JSON-serializable
+    rsi: Optional[float] = None
+    rvol: Optional[float] = None
+    atr_5m_pct: Optional[float] = None
+    extras: dict = field(default_factory=dict)
+
+class Strategy:
+    """Abstract base for signal-generation strategies."""
+    name: str
+
+    def evaluate(self, row: pd.Series) -> Optional[Signal]:
+        raise NotImplementedError
+
+    def generate_signals(self, enriched_df: pd.DataFrame) -> list[Signal]:
+        out = []
+        for _, row in enriched_df.iterrows():
+            sig = self.evaluate(row)
+            if sig is not None:
+                out.append(sig)
+        return out
+```
+
+**Public API (`lib/strategies/__init__.py`):**
+
+```python
+from .momentum import MomentumStrategy
+from .mean_reversion import MeanReversionStrategy
+
+MOMENTUM = MomentumStrategy()
+MEAN_REVERSION = MeanReversionStrategy()
+ALL = [MOMENTUM, MEAN_REVERSION]
+
+def get_strategy(name: str) -> Strategy:
+    return {"momentum": MOMENTUM, "mean_reversion": MEAN_REVERSION}[name]
+```
+
+**Caller updates (mechanical):**
+
+| Caller | Was | Becomes |
+|---|---|---|
+| `gcp/signal_monitor.py` | `from lib.signals import evaluate_signal` | `from lib.strategies import get_strategy; get_strategy("mean_reversion").evaluate(row)` |
+| `scripts/run_historical_signals.py` | `analyzer.generate_technical_signals(enriched)` | `get_strategy(args.strategy).generate_signals(enriched)` (the `--strategy` flag is what Phase 0.7 added) |
+| `lib/signals.py` | full implementation | back-compat shim re-exporting `MeanReversionStrategy().evaluate`; deprecated |
+
+**Schema unification:** both strategies write JSON-list `conditions_met`. Migration on `historical_signals` re-runs the strategy against existing bars to derive the canonical list from the original `"3/5"` strings.
+
+**Parallel-strategy guarantee:** strategies are stateless and thread-safe. The Phase 3 multi-timeframe evaluator becomes "run all (strategy × timeframe) pairs in parallel" trivially — each instance is independent. Neither strategy restricts the other; both can fire on the same bar with opposite directions (today proved this happens 78.6% of the time when both fire).
+
+**Tests added:**
+
+1. `tests/test_strategy_interface.py` — instantiate both, evaluate the same fixture row, assert schema parity (same field names, same types, JSON-serializable)
+2. `tests/test_momentum_conditions.py` — table-driven: 20 hand-crafted bars, expected condition outputs (catches accidental logic changes)
+3. `tests/test_mean_reversion_conditions.py` — same pattern
+4. `tests/test_strategy_isolation.py` — neither strategy mutates the input DataFrame, neither modifies global state, both are thread-safe (matters for Phase 3)
+5. `tests/test_strategy_legacy_parity.py` — diff `MomentumStrategy().generate_signals(enriched)` vs the old `MarketAnalyzer.generate_technical_signals(enriched)` on a fixed week of bars; row-for-row equivalence required (modulo schema migration)
+
+**Live parity validation:** deploy refactored code to a staging Cloud Run revision, run for 1 trading day, assert `signal_alerts` rows match what the prod (old) revision wrote on the same minute. Differences > 0 = revert.
+
+**Success criterion:** all 5 test paths green, no behavior change in live `signal_alerts` output, unified schema across both tables.
+
+**ETA:** 3 days dev + 1 day staging validation. **Blocks Phase 0.7** (which now lands as data inside the new structure).
+
+---
+
 ### Phase 0.7 — strategy reconciliation *(blocks all measurement)*
 
 **Problem discovered 2026-05-01:** the codebase has TWO completely different signal generators with **opposite CALL logic**:
@@ -84,6 +193,81 @@ The §3 multi-timeframe findings were generated against `historical_signals` —
 **Success criterion:** both strategies have ≥ 4 weeks of rows in `historical_signals`, side-by-side multi-tf comparison published, and the §3.4 per-(ticker, direction) table now has TWO rows per class — one per strategy.
 
 **ETA:** 2 days dev (schema + refactor + backfill) + 1 day analysis update.
+
+---
+
+### Phase 0.7.1 — momentum condition fixes *(after Phase 0.8 refactor; data-driven from 5/1 audit)*
+
+**Findings from the 5/1 morning audit + correlation analysis** (computed against 273 morning bars, all 3 tickers combined):
+
+| Momentum CALL condition | Fire rate | Issue |
+|---|---|---|
+| `consec_up_3plus` | 15.4% | OK; the differentiator. But strict |
+| `rsi_bull_zone` (25 < RSI < 50) | 37.4% | **NEGATIVELY correlated** with `above_vwap` (-0.51) and `above_ema9` (-0.50) — internally inconsistent |
+| `stoch_not_overbought` (StochRSI < 80) | 72.2% | **Free score** — fires almost always |
+| `above_vwap` | **82.1%** | **Almost always true** during uptrends — captures regime, not setup |
+| `above_ema9` | 56.4% | Mid; correlated 0.40 with `above_vwap` |
+
+**Mean-reversion's `near_below_ema` fires on 84.6% of bars** — same "free score" pathology on the other side.
+
+**The score-doesn't-discriminate problem is NOT pure correlation.** It's three separate pathologies:
+
+1. **"Free score" conditions** (>80% fire rate) — `above_vwap` for momentum, `near_below_ema` for mean-reversion. They contribute to score regardless of setup quality.
+2. **Internal contradictions** — momentum's `rsi_bull_zone` (-0.51 with `above_vwap`) means "RSI in bullish range" is anti-correlated with "above VWAP." When one fires the other doesn't. They shouldn't both be in the same score.
+3. **Strict threshold on the differentiator** — `consec_up_3plus` is the rare/discriminating condition (15% fire rate) but the all-or-nothing 3-bar streak excludes legitimate trends with 1-bar pullbacks.
+
+**Concrete fixes (in priority order):**
+
+| # | Fix | Expected effect | Cost |
+|---|---|---|---|
+| 1 | Replace `consec_up_3plus` with `consec_up_3of5` (3 of last 5 bars up) | Catches trends with single-bar pullbacks. ~1.5× more setup opportunities, similar quality. | 5 LOC in `lib/strategies/momentum.py` |
+| 2 | Drop `stoch_not_overbought` from CALL conditions (72% true; pure noise to score) | Tighter score distribution. Mean score drops from 3.0 to ~2.7; the modal "3.0 = passes everything" disappears. | 3 LOC |
+| 3 | Replace `rsi_bull_zone` (25-50) with `rsi_thrust` (RSI rising AND in 30-70 band) | Removes the internal contradiction. The new condition agrees with `above_vwap` instead of fighting it. | 8 LOC |
+| 4 | **Add** `rvol_above_recent` — ticker-specific threshold from §3.4: SPY > 1.0, QQQ > 1.2, IWM > median × 1.3 | Distinguishes trend on volume from drift on no flow. Per-ticker per Phase 0.7.1's RVOL audit. | 12 LOC + per-ticker config |
+| 5 | **Add** `atr_expansion_5m` — current 5-min ATR > 1.3× rolling 30-bar median ATR | Filters chop. Big leverage for the SPY CALL fix (today SPY was in chop, ATR was contracting). | 10 LOC |
+| 6 | **Add** `level_break_pdh` (already computed in indicators) at +2 weight | Highest-conviction momentum signal currently unused. | 5 LOC |
+| 7 | Symmetric fixes 1-3 for PUT side | mirror | trivial |
+
+**De-correlated scoring: Tier the conditions, don't sum them.**
+
+Instead of 5 binary conditions summed (which leaks score on free-rate conditions), use weighted tiers:
+
+```python
+# Tier 1 (1.0 weight) — required-for-fire setup conditions:
+#   consec_up_3of5  +  rsi_thrust   (need both)
+# Tier 2 (1.5 weight) — confirmation:
+#   rvol_above_recent  OR  atr_expansion_5m  (any one)
+# Tier 3 (2.0 weight) — high-conviction add-on:
+#   level_break_pdh
+# Position context (0.0 weight, recorded but not scored):
+#   above_vwap, above_ema9 (record for analysis, don't score)
+
+base_score   = 1.0 (consec_up_3of5) + 1.0 (rsi_thrust)         # 2.0 baseline if Tier 1 met
+weighted     = base + 1.5*tier2_count + 2.0*tier3_count
+fire_if      = weighted >= 3.0  AND  Tier 1 fully met
+```
+
+This produces a score range 2.0–6.5 with monotonic predictive power: the higher the score, the more confirmation conditions stacked. Phase 4 (reweighting) becomes a tuning exercise on these weights, not the source-of-truth refactor.
+
+**Tests added:**
+
+1. `tests/test_momentum_conditions_v2.py` — 20 fixtures, expected scores under the new weighted scheme
+2. Re-run the 5/1 morning audit and the full Apr-May simulation against the new conditions; expected results captured in `data/momentum_v2_baseline.csv`
+3. The simulation harness from §4.2 runs the v2 conditions vs current; Phase 0.5 weekly QA report adds a "v2 candidate" column
+
+**Success criterion:** on the historical Apr-May data, the new score distribution shows monotonic clean-rate by score bucket (currently flat), AND the 60m clean-rate at score >= 4 is ≥ 25% (vs 7.6% today across all momentum signals).
+
+**Symmetric Phase 0.7.2 — mean-reversion condition fixes:**
+
+| # | Fix |
+|---|---|
+| 1 | Drop `near_below_ema` (84.6% fire rate — free score) |
+| 2 | Replace single `rsi_oversold_zone` (25-50) with `rsi_thrust_down` (RSI falling AND in 30-70) |
+| 3 | Add `rvol_above_recent` (ticker-specific) |
+| 4 | Add `atr_expansion_5m` |
+| 5 | Tier the conditions same way as momentum |
+
+**ETA (combined 0.7.1 + 0.7.2):** 4 days dev + 3 days backtest validation.
 
 ---
 
@@ -426,12 +610,81 @@ This is what the **live monitor actually fires on Discord**.
 
 **Mean-reversion wins on every class.** The live monitor's strategy choice was correct; the analysis we generated against momentum data was an unrelated baseline.
 
-**Implication for the test plan:**
+### 3.9 Bar-level apples-to-apples (5/1 morning, both strategies on the SAME enriched bars)
 
-- **Default strategy = mean-reversion.** Phase 0.7 still keeps both as parallel research paths, but live continues with mean-reversion and §3.4–3.5 can be relegated to "comparison baseline."
-- **The right exit for mean-reversion is 240m (intraday-trend hold), not 60m.** Phase 1's `timeframe_tag` heuristic should default to 240m for QQQ PUT / SPY PUT / IWM PUT, with the only short-timeframe override being **IWM CALL = 5m scalp**.
-- **SPY CALL still doesn't work.** Both strategies show 11-20% clean-tf — meaningfully worse than every other class. The plan's "regime-aware suppression for CALLs in uptrend" recommendation is now backed by evidence under both strategies.
-- **Mean-reversion fires 1.8× more signals than momentum** (56k vs 30k bar-level). So while the per-signal clean rate is higher, the absolute volume of clean fires per day is similar. The "we may miss good ones" math from earlier still applies — debounce is doing real work.
+**Caveat for §3.8:** the historical Apr-May comparison used `historical_signals` (which only contains MOMENTUM rows) for the momentum side and a fresh re-run of `lib.signals` for the mean-reversion side — i.e. different invocation paths. To verify, I ran BOTH strategies on the same 273 enriched morning bars (5/1 09:30–11:00 ET) — pure bar-level, no debounce.
+
+**Volume:**
+
+| Strategy | SPY | QQQ | IWM | Total |
+|---|---|---|---|---|
+| **Momentum** | 71 | 64 | 71 | **206** |
+| **Mean-reversion** | 87 | 84 | 76 | **247** |
+
+Momentum fires ~83% as much as mean-reversion. **NOT 0 like my earlier buggy script implied** — that was a missing-method error swallowed by try/except.
+
+**Clean-rate at 60m (using same evaluator on same bars):**
+
+| Strategy | n | 60m CLEAN % | Avg MFE @60m |
+|---|---|---|---|
+| Momentum | 206 | 7.3% | 0.228% |
+| Mean-reversion | 247 | 11.3% | 0.288% |
+
+Mean-reversion is 1.5× better at 60m on this morning. The historical 2.2× gap likely overstates the difference because of the data-source asymmetry just noted.
+
+**Per-class (5/1 morning) — they're complementary, NOT one strictly better:**
+
+| Class | Mom n | Mom clean% | MR n | MR clean% | Winner |
+|---|---|---|---|---|---|
+| IWM CALL | 52 | 25.0% | 34 | **58.8%** | MR (2.4×) |
+| IWM PUT | 19 | 31.6% | 42 | 31.0% | tie |
+| **QQQ CALL** | 50 | **52.0%** | 22 | 13.6% | **Momentum (3.8×)** |
+| QQQ PUT | 14 | 42.9% | 62 | 38.7% | momentum slight |
+| SPY CALL | 51 | 15.7% | 25 | 0.0% | momentum |
+| SPY PUT | 20 | 0.0% | 62 | 8.1% | mean-reversion |
+
+**Today's tape was mixed-regime:** QQQ trended up (+0.64%), IWM dipped early then recovered (-0.18%), SPY chopped (+0.19%). On QQQ's clean uptrend, **momentum dominated by 3.8×.** On IWM's morning dip-and-bounce, **mean-reversion dominated by 2.4×.**
+
+**Overlap:** 182 bars where both strategies fired the same ticker on the same minute. **78.6% of those, they fired OPPOSITE directions.**
+
+**Implication that completely changes Phase 0.7's framing:**
+
+- **Mean-reversion is NOT strictly better.** The §3.8 "MR wins everywhere" was an artifact of comparing different data sources. On apples-to-apples bars, **the strategies are complementary** — each catches setups the other misses.
+- **A regime detector is the highest-leverage feature** (now in Phase 0.7's revised scope).
+- **The right exit timeframe is per-(strategy × ticker × direction)**, not just per-(ticker × direction). Phase 1's `assign_timeframe()` heuristic is keyed on (strategy, ticker, direction).
+- **SPY CALL still bad in both** — 15.7% momentum, 0% mean-reversion. Whatever regime SPY was in this morning, neither strategy's default conditions fit. Likely the regime: trend was too weak for momentum, but VWAP/EMA9 too strong above for mean-reversion to bounce. Both Phase 0.7.1 and 0.7.2 fixes target this with `atr_expansion_5m` (no expansion = chop = don't fire either side).
+
+### 3.10 Condition correlation analysis (5/1 morning, 273 bars)
+
+**Momentum CALL conditions — pairwise correlation (Pearson):**
+
+|  | c_up_3+ | rsi_bull | stoch_not_ob | above_vwap | above_ema9 |
+|---|---|---|---|---|---|
+| c_up_3+ | 1.00 | -0.29 | -0.32 | 0.17 | 0.35 |
+| **rsi_bull (25-50)** | -0.29 | 1.00 | 0.18 | **-0.51** | **-0.50** |
+| stoch_not_ob | -0.32 | 0.18 | 1.00 | -0.14 | -0.48 |
+| above_vwap | 0.17 | -0.51 | -0.14 | 1.00 | 0.40 |
+| above_ema9 | 0.35 | -0.50 | -0.48 | 0.40 | 1.00 |
+
+**Pairwise overlap (% bars where BOTH conditions are simultaneously true):**
+
+|  | c_up_3+ | rsi_bull | stoch_not_ob | above_vwap | above_ema9 |
+|---|---|---|---|---|---|
+| c_up_3+ | — | 0.7% | 5.9% | 15.0% | 15.0% |
+| rsi_bull | — | — | 30.8% | 21.2% | 9.2% |
+| stoch_not_ob | — | — | — | 56.8% | 30.0% |
+| **above_vwap** | — | — | — | — | **53.8%** |
+| above_ema9 | — | — | — | — | — |
+
+**Three pathologies revealed:**
+
+1. **`above_vwap` fires on 82% of bars** — almost a free score. Adds to score but doesn't discriminate setups.
+2. **`rsi_bull` (25-50) is anti-correlated with `above_vwap` (-0.51) and `above_ema9` (-0.50).** When RSI is in this band, price tends to be BELOW VWAP. So the condition is **internally inconsistent** with two other conditions in the same score sum.
+3. **`above_vwap & above_ema9` co-fire 53.8% of bars** — these two are partially redundant (correlation 0.40).
+
+**Mean-reversion CALL has a similar pattern** — `near_below_ema` fires on 84.6% (free score), `rsi_oversold (25-50) & below_vwap` correlate at 0.51 (redundant), and `stoch_oversold` (39%) is independent (good).
+
+This is the data backing Phase 0.7.1's "tier the conditions, don't sum them" fix.
 
 ---
 
