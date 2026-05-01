@@ -250,6 +250,12 @@ rather than flagged in-row — keeps the table clean and analytics simple.
 | **5.2** | Brief data path: `enrich_with_playability` attaches per-row score + archetype | [gcp/premarket_brief.py](../../gcp/premarket_brief.py) |
 | **6.1** | `_playability_lines` renderer — top-5 nested under BMO + AMC sections | [gcp/premarket_brief.py](../../gcp/premarket_brief.py) |
 | **6.2** | Plain-English action hints (Option A wording — locked-in 2026-05-01) | [lib/earnings_reactions.py](../../lib/earnings_reactions.py) `ARCHETYPE_ACTION_HINT` |
+| **7.A** | Self-heal source: `_earnings_history_tickers()` keeps refresh coverage broad even after `earnings_calendar` was clamped to 8-day window | [gcp/fetchers/fetch_earnings_history.py](../../gcp/fetchers/fetch_earnings_history.py) (#190) |
+| **7.B** | `compute_earnings_reactions` default scope broadened from "watchlist + brief-set" (~30 tickers) to "every ticker in earnings_history" (~320 tickers) | [gcp/fetchers/compute_earnings_reactions.py](../../gcp/fetchers/compute_earnings_reactions.py) (#190) |
+| **7.C** | Cloud Scheduler cadence: weekly Sunday → daily 11 PM ET weekdays | [gcp/deploy.sh](../../gcp/deploy.sh) (#190) |
+| **7.D** | OHLCV bootstrap: one-shot 10y backfill for ~290 tickers in earnings_history that lacked depth in market_data_daily | [scripts/_backfill_ohlcv_for_earnings_history.py](../../scripts/_backfill_ohlcv_for_earnings_history.py) |
+| **7.E** | Backfill smart-switch: skip already-current tickers, use `compact` (100d) for stale-but-deep tickers, `full` for bootstraps | same file |
+| **8** | Conditional-lean label distinguishes "no data for ticker yet" from "unprecedented gap" — was misleading on unbackfilled tickers | [lib/earnings_reactions.py](../../lib/earnings_reactions.py) `conditional_lean_summary` + `query_conditional_reactions.total_for_ticker` |
 
 #### Action hints (locked-in 2026-05-01)
 
