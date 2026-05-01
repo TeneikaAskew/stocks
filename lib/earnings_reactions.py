@@ -254,6 +254,204 @@ def query_typical_daily_return(tickers: list[str], window_days: int = 60) -> dic
 
 
 # ────────────────────────────────────────────────────────────
+# Phase 1.6 — Post-Event Conditional Reads
+#
+# After the gap is known (D+1 morning for AMC, D itself for BMO), the
+# long-run playability score is too coarse — it averages over all
+# directions and magnitudes. The conditional layer answers a narrower
+# question: "Of past quarters where this ticker had a similar gap,
+# how often did the move hold vs reverse?"
+# ────────────────────────────────────────────────────────────
+
+
+def query_conditional_reactions(
+    ticker: str,
+    reaction_basis: str,
+    actual_gap_pct: float,
+    gap_band_pct: float = 2.0,
+    lookback_quarters: int = 12,
+) -> dict:
+    """Return historical reactions for `ticker` filtered to past quarters
+    with a similar gap shape (size and direction).
+
+    Filter:
+        - Same ticker
+        - Same reaction_basis ('AMC' or 'BMO')
+        - reaction_gap_pct within ±gap_band_pct of actual_gap_pct
+          (preserves direction since the band is signed-around the
+          actual value, e.g. for a +4.85% gap with band=2.0 the
+          window is [+2.85%, +6.85%])
+        - Last `lookback_quarters` reports
+
+    Returns:
+        {
+          'n':            int,    # number of similar past quarters
+          'held':         int,    # direction_consistent_5d == TRUE
+          'reversed':     int,    # is_reversal_5d == TRUE
+          'unclear':      int,    # tiny moves, NULL flags
+          'avg_sustain_5d_pct': float | None,
+        }
+        Empty dict if no match.
+    """
+    if reaction_basis not in ('AMC', 'BMO'):
+        return {}
+    try:
+        from gcp.database import query_to_dataframe, is_cloud_sql_configured
+    except ImportError:
+        return {}
+    if not is_cloud_sql_configured():
+        return {}
+
+    lo = actual_gap_pct - gap_band_pct
+    hi = actual_gap_pct + gap_band_pct
+    sql = """
+        WITH ranked AS (
+            SELECT
+                reaction_gap_pct,
+                direction_consistent_5d,
+                is_reversal_5d,
+                sustain_5d_pct,
+                ROW_NUMBER() OVER (
+                    PARTITION BY ticker
+                    ORDER BY reported_date DESC
+                ) AS rn
+            FROM earnings_reactions
+            WHERE ticker = :ticker
+              AND reaction_basis = :basis
+              AND reaction_gap_pct IS NOT NULL
+        )
+        SELECT
+            COUNT(*)                                                            AS n,
+            COUNT(*) FILTER (WHERE direction_consistent_5d IS TRUE)             AS held,
+            COUNT(*) FILTER (WHERE is_reversal_5d IS TRUE)                      AS reversed,
+            COUNT(*) FILTER (
+                WHERE direction_consistent_5d IS NULL OR is_reversal_5d IS NULL
+            )                                                                   AS unclear,
+            AVG(sustain_5d_pct)                                                 AS avg_sustain_5d_pct
+        FROM ranked
+        WHERE rn <= :lookback
+          AND reaction_gap_pct BETWEEN :lo AND :hi
+    """
+    df = query_to_dataframe(sql, {
+        'ticker':  ticker,
+        'basis':   reaction_basis,
+        'lookback': lookback_quarters,
+        'lo': lo,
+        'hi': hi,
+    })
+    if df.empty:
+        return {}
+    row = df.iloc[0]
+    n = int(row['n'])
+    if n == 0:
+        return {'n': 0, 'held': 0, 'reversed': 0, 'unclear': 0,
+                'avg_sustain_5d_pct': None}
+    return {
+        'n':       n,
+        'held':    int(row['held']),
+        'reversed': int(row['reversed']),
+        'unclear': int(row['unclear']),
+        'avg_sustain_5d_pct': _to_float(row.get('avg_sustain_5d_pct')),
+    }
+
+
+def classify_lean(
+    conditional_stats: dict,
+    actual_gap_pct: Optional[float] = None,
+    min_sample: int = 3,
+    threshold: float = 0.75,
+) -> str:
+    """Map conditional historical stats → plain-English lean phrase.
+
+    Returns one of (Phase 1.6 vocabulary, locked in 2026-05-01):
+        'bullish gap play'   — ≥75% similar past gaps held, current gap up
+        'bearish gap play'   — ≥75% similar past gaps held, current gap down
+        'expect reversal'    — ≥75% similar past gaps reversed within 5d
+        'low conviction'     — mixed (no clear pattern at the threshold)
+        'skip'               — sample too small (n < min_sample)
+
+    Args:
+        conditional_stats: dict from query_conditional_reactions
+        actual_gap_pct: today's actual gap (positive=up, negative=down).
+            Required for distinguishing bullish vs bearish on a "held"
+            pattern.
+        min_sample: minimum n to attempt a directional read. Below
+            this, return 'skip' regardless of the split.
+        threshold: fraction of n that must agree for a directional read.
+    """
+    if not conditional_stats:
+        return 'skip'
+    n = conditional_stats.get('n', 0)
+    if n < min_sample:
+        return 'skip'
+    held = conditional_stats.get('held', 0)
+    reversed_ = conditional_stats.get('reversed', 0)
+
+    if held / n >= threshold:
+        if actual_gap_pct is None:
+            return 'low conviction'
+        if actual_gap_pct > 0:
+            return 'bullish gap play'
+        if actual_gap_pct < 0:
+            return 'bearish gap play'
+        return 'low conviction'  # gap == 0
+    if reversed_ / n >= threshold:
+        return 'expect reversal'
+    return 'low conviction'
+
+
+def conditional_lean_summary(
+    ticker: str,
+    reaction_basis: str,
+    actual_gap_pct: float,
+    gap_band_pct: float = 2.0,
+    lookback_quarters: int = 12,
+) -> dict:
+    """Top-level convenience for the brief — runs the query + classifier
+    and returns a renderable summary.
+
+    Returns:
+        {
+          'n':       int,
+          'held':    int,
+          'reversed': int,
+          'lean':    str,      # plain-English phrase
+          'sentence': str,     # ready-to-render summary like
+                               # "3 of 4 similar past gaps reversed"
+                               # or "" when sample too small
+        }
+    """
+    stats = query_conditional_reactions(
+        ticker, reaction_basis, actual_gap_pct,
+        gap_band_pct=gap_band_pct,
+        lookback_quarters=lookback_quarters,
+    )
+    lean = classify_lean(stats, actual_gap_pct=actual_gap_pct)
+
+    n = stats.get('n', 0)
+    held = stats.get('held', 0)
+    reversed_ = stats.get('reversed', 0)
+
+    # Build the human-readable sentence describing the dominant pattern.
+    if n == 0:
+        sentence = 'no historical analog (gap outside typical range)'
+    elif n < 3:
+        sentence = f'too few similar past gaps ({n})'
+    elif reversed_ >= held:
+        sentence = f'{reversed_} of {n} similar past gaps reversed'
+    else:
+        sentence = f'{held} of {n} similar past gaps held'
+
+    return {
+        'n':       n,
+        'held':    held,
+        'reversed': reversed_,
+        'lean':    lean,
+        'sentence': sentence,
+    }
+
+
+# ────────────────────────────────────────────────────────────
 # Top-level convenience for consumers (the brief)
 # ────────────────────────────────────────────────────────────
 

@@ -501,7 +501,24 @@ def load_yesterday_amc_reactions(today: date, top_n: int = 5) -> list[dict]:
 
     # Top by absolute gap (biggest movers first, regardless of direction)
     rows.sort(key=lambda x: -abs(x['gap_pct']))
-    return rows[:top_n] if top_n else rows
+    rows = rows[:top_n] if top_n else rows
+
+    # Phase 1.6: attach event-conditional historical lean.
+    # For each row, look up past quarters where this ticker had a
+    # similar-shaped gap; classify as 'bullish gap play' / 'expect
+    # reversal' / etc. so the renderer can surface a same-day lean.
+    try:
+        from lib.earnings_reactions import conditional_lean_summary
+        for r in rows:
+            r['conditional_lean'] = conditional_lean_summary(
+                ticker=r['ticker'],
+                reaction_basis='AMC',  # this loader is AMC-only
+                actual_gap_pct=r['gap_pct'],
+            )
+    except Exception as e:
+        logger.warning("conditional lean lookup skipped: %s", e)
+
+    return rows
 
 
 # ── Economic Events ─────────────────────────────────────────────────────────
@@ -1689,14 +1706,27 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         # 2. Yesterday-AMC reactions — last night's AMC reporters with
         # today's pre-market gap. The actual market reaction to the news
         # that dropped 4-5 PM yesterday lives in today's pre-market gap.
+        # Phase 1.6: each row also carries a conditional lean from the
+        # past 12Q earnings_reactions, rendered as a sub-line.
         amc_reactions = earnings_data.get('yesterday_amc_reactions') or []
         if amc_reactions:
             r_lines = [
                 f'\n**\U0001f4ca Reactions to Last Night’s AMC** '
                 f'(top {len(amc_reactions)} by |gap|)'
             ]
-            r_lines.extend(_row_line(r, show_tier_badge=False)
-                           for r in amc_reactions)
+            for r in amc_reactions:
+                r_lines.append(_row_line(r, show_tier_badge=False))
+                lean = r.get('conditional_lean') or {}
+                sentence = lean.get('sentence') or ''
+                lean_phrase = lean.get('lean')
+                if sentence and lean_phrase and lean_phrase != 'skip':
+                    r_lines.append(
+                        f'  → {sentence} · lean: **{lean_phrase}**'
+                    )
+                elif sentence:
+                    # Sample too small / no clear pattern — surface
+                    # the count but no directional verb.
+                    r_lines.append(f'  → {sentence}')
             sections.append('\n'.join(r_lines))
 
         # 3. Tonight's AMC — reports after today's close
