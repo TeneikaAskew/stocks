@@ -1558,3 +1558,83 @@ END $$;
 -- queries (ranker, charts page) unchanged.
 CREATE INDEX IF NOT EXISTS idx_historical_signals_strategy_time
     ON historical_signals (strategy, ticker, entry_time DESC);
+
+
+-- ─────────────────────────────────────────────────────────
+-- SIGNAL_METRICS — Phase 0.5 productionized analysis pipeline
+-- ─────────────────────────────────────────────────────────
+-- Persisted output of `scripts/signal_quality_report.py`. Replaces the
+-- throwaway CSV-based analysis (`scripts/_signal_eval_v*.py`) with a
+-- queryable, scheduled, regression-alarmed source of truth for signal
+-- quality measurement.
+--
+-- One row per (ticker, entry_time, strategy) — same composite key as
+-- historical_signals so the join is trivial:
+--    SELECT h.*, m.cls_60m, m.mfe_60m_atrs
+--      FROM historical_signals h
+--      JOIN signal_metrics m USING (ticker, entry_time, strategy)
+--
+-- `status='pending'` rows are intra-day rolling estimates (the 60m/90m/
+-- 120m/240m windows haven't closed yet). The hourly Cloud Run Job
+-- promotes them to `status='final'` once the windows complete. Phase
+-- 0.5 weekly QA reports query only `status='final'`.
+--
+-- Classification labels (cls_*) match scripts/signal_quality_report.py:
+--    'CLEAN_HIT'        — return ≥ +CLEAN_PCT (favorable)
+--    'WRONG_DIRECTION'  — return ≤ -CLEAN_PCT (adverse)
+--    'NOISE'            — abs(return) < NOISE_PCT
+--    'MIXED'            — between NOISE_PCT and CLEAN_PCT
+--    'INSUFFICIENT_DATA'— window not yet closed (rolling mode only)
+
+CREATE TABLE IF NOT EXISTS signal_metrics (
+    ticker            VARCHAR(10)      NOT NULL,
+    entry_time        TIMESTAMPTZ      NOT NULL,
+    strategy          VARCHAR(16)      NOT NULL DEFAULT 'momentum',
+
+    evaluated_at      TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    -- Per-timeframe classification (one of CLEAN_HIT, WRONG_DIRECTION,
+    -- NOISE, MIXED, INSUFFICIENT_DATA). VARCHAR(20) leaves headroom for
+    -- adding labels without a migration.
+    cls_5m            VARCHAR(20),
+    cls_15m           VARCHAR(20),
+    cls_30m           VARCHAR(20),
+    cls_60m           VARCHAR(20),
+    cls_90m           VARCHAR(20),
+    cls_120m          VARCHAR(20),
+    cls_240m          VARCHAR(20),
+
+    -- The shortest timeframe at which the signal classified CLEAN_HIT,
+    -- or NULL if no timeframe was clean. Used by the weekly QA report
+    -- to surface "fast vs slow" winners.
+    best_tf           VARCHAR(8),
+
+    -- Per-timeframe MFE-style returns (favorable excursion as fraction,
+    -- e.g. 0.012 = +1.2%). Sign convention matches the source row's
+    -- direction — already converted from raw return so CALL and PUT
+    -- can be classified with the same threshold.
+    return_5m         DOUBLE PRECISION,
+    return_15m        DOUBLE PRECISION,
+    return_30m        DOUBLE PRECISION,
+    return_60m        DOUBLE PRECISION,
+    return_90m        DOUBLE PRECISION,
+    return_120m       DOUBLE PRECISION,
+    return_240m       DOUBLE PRECISION,
+
+    -- Volatility context — used to unit-normalize the MFE so signals
+    -- on a 0.3% ATR ticker (SPY) and a 2.5% ATR ticker (small-cap) are
+    -- comparable.
+    atr_5m_pct        DOUBLE PRECISION,
+    mfe_60m_atrs      DOUBLE PRECISION,
+
+    status            VARCHAR(12)      NOT NULL DEFAULT 'final'
+                      CHECK (status IN ('final','pending')),
+
+    PRIMARY KEY (ticker, entry_time, strategy)
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_metrics_evaluated_at
+    ON signal_metrics (evaluated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_signal_metrics_status_eval
+    ON signal_metrics (status, evaluated_at DESC);
