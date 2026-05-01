@@ -28,6 +28,9 @@ from lib.signals import evaluate_signal
 from lib.strat import StratClassifier
 from lib.strat_levels import LevelMap, build_level_map
 from lib.config import load_config, get_position_size, get_signal_strength_label
+from lib.strategies import MOMENTUM
+from lib.strategies.agreement import detect_agreement
+from lib.strategies.base import Signal
 
 
 logger = logging.getLogger(__name__)
@@ -257,6 +260,54 @@ class SignalMonitor:
                     self.orb_levels[ticker][f'{label}_low']
                 ) / 2
 
+    def _evaluate_strategies_for_bar(self, latest, last_price: float, ticker: str):
+        """Run mean-reversion + momentum on the same bar; detect agreement.
+
+        Returns a (sig_dict, agreement_payload) tuple:
+          * `sig_dict` — the existing mean-reversion dict from
+            `evaluate_signal`, or `None` when mean-reversion didn't
+            fire. Existing fire/persist code paths consume this
+            unchanged, so the fire criteria are not expanded by this
+            change. (When mean-reversion doesn't fire, agreement can't
+            apply; we short-circuit to avoid running momentum.)
+          * `agreement_payload` — `None` when fewer than two strategies
+            fired or they disagree on direction; otherwise the dict
+            from `lib.strategies.agreement.detect_agreement` carrying
+            the composite score for embed sort + JSONB persistence.
+
+        See `docs/plans/SIGNAL_QUALITY_TEST_PLAN.md` Phase 1.6 for the
+        rationale: ~21% of overlapping fires AGREE on direction (high-
+        conviction stacked signals); ~79% DISAGREE (informative noise).
+        """
+        sig = evaluate_signal(
+            latest,
+            min_conditions=self.signal_cfg.min_conditions,
+            consecutive_periods=self.signal_cfg.consecutive_periods,
+            call_rsi_range=self.signal_cfg.call_rsi_range,
+            put_rsi_range=self.signal_cfg.put_rsi_range,
+        )
+        if sig is None:
+            return None, None
+
+        # Build a Signal facade from the mr dict so detect_agreement
+        # can compare it against MomentumStrategy's Signal output. We
+        # don't replace the existing mr eval call because the dict
+        # shape is what every downstream consumer (fire_alert,
+        # _persist_signal_alert, TradeLogger) reads — replacing it
+        # would balloon this PR into a cross-cutting refactor.
+        mr_signal = Signal(
+            strategy="mean_reversion",
+            direction=sig["direction"],
+            timestamp=pd.Timestamp(latest.get("Time") or datetime.now()),
+            entry_price=float(last_price),
+            base_score=float(sig["base_score"]),
+            weighted_score=float(sig["base_score"]),
+            conditions_met=list(sig["conditions_met"]),
+        )
+        mom_signal = MOMENTUM.evaluate(latest)
+        agreement = detect_agreement(mom_signal, mr_signal)
+        return sig, agreement
+
     def evaluate_ticker(self, ticker: str):
         """Evaluate signals for a single ticker."""
         df = self.calculate_indicators(ticker)
@@ -284,17 +335,14 @@ class SignalMonitor:
         if self.daily_pnl[ticker] <= self.risk.daily_loss_limit:
             return
 
-        # Evaluate signal
-        sig = evaluate_signal(
-            latest,
-            min_conditions=self.signal_cfg.min_conditions,
-            consecutive_periods=self.signal_cfg.consecutive_periods,
-            call_rsi_range=self.signal_cfg.call_rsi_range,
-            put_rsi_range=self.signal_cfg.put_rsi_range,
-        )
-
+        # Evaluate signal — Phase 1.6: also runs momentum on the same
+        # bar and detects agreement when both fire same direction.
+        sig, agreement = self._evaluate_strategies_for_bar(latest, last_price, ticker)
         if sig is None:
             return
+        # Stash for fire_alert + _persist_signal_alert (per-call frame,
+        # mirrors the `_latest_broken_levels` pattern just above).
+        self._latest_agreement = agreement
 
         # Strat bonus
         strat_bonus = 0
@@ -326,6 +374,7 @@ class SignalMonitor:
         """Send signal alert to Discord."""
         direction = sig['direction']
         price = latest.get('Close', latest.get('Last', 0))
+        agreement = getattr(self, '_latest_agreement', None)
 
         if direction == 'CALL':
             target = price * (1 + self.exit.call_target)
@@ -345,11 +394,26 @@ class SignalMonitor:
             if h and l:
                 orb_info += f"\nORB {label}: ${l:.2f} - ${h:.2f}"
 
+        # Phase 1.6: stacked-agreement signals get a visual prefix so
+        # they jump out in the Discord channel scroll.
+        title_prefix = '\U0001F3AF STACKED ' if agreement else ''
+        title = (
+            f"{title_prefix}{'CALL' if direction == 'CALL' else 'PUT'} SIGNAL "
+            f"\u2014 {ticker} @ ${price:.2f}"
+        )
+        agreement_block = ''
+        if agreement:
+            agreement_block = (
+                f"\U0001F3AF STACKED \u2014 momentum + mean_reversion both fire {direction}\n"
+                f"Composite score: {agreement['composite_score']:.1f}\n"
+            )
+
         message = {
             'embeds': [{
-                'title': f"{'CALL' if direction == 'CALL' else 'PUT'} SIGNAL \u2014 {ticker} @ ${price:.2f}",
+                'title': title,
                 'description': (
                     f"**Strength: {total_score}/{max_score} ({strength}) \u2192 {size:.0%} size**\n"
+                    f"{agreement_block}"
                     f"Base: {sig['base_score']}/5 | Strat bonus: +{strat_bonus}\n\n"
                     f"Conditions met:\n{conditions_str}\n\n"
                     f"Target: ${target:.2f} | Time stop: {time_stop} min\n"
@@ -388,6 +452,7 @@ class SignalMonitor:
             return
 
         now = datetime.now()
+        agreement = getattr(self, '_latest_agreement', None)
         row = {
             'ticker': ticker,
             'alert_ts': now,
@@ -409,6 +474,11 @@ class SignalMonitor:
             'orb_15m_low': self.orb_levels[ticker].get('15m_low'),
             'conditions_met': json.dumps(sig['conditions_met']),
             'level_broken': ','.join(getattr(self, '_latest_broken_levels', []) or []) or None,
+            # Phase 1.6: JSONB payload (or None) describing the stacked-
+            # agreement state. NULL on the common solo-fire path so the
+            # column doesn't bloat for the 99% of rows that aren't
+            # stacked.
+            'strategy_agreement': json.dumps(agreement) if agreement else None,
         }
 
         try:
