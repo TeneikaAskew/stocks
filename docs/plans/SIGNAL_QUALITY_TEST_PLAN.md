@@ -204,20 +204,39 @@ WEIGHTS = {
 
 This is the strongest case for timeframe tagging: **the right exit window varies by 50× across signal types.**
 
-### 3.4 Per ticker × direction breakdown
+### 3.4 Per ticker × direction breakdown — every timeframe
 
-| Ticker | Direction | none_clean % | best_tf=90m % | best_tf=240m % | Total clean-tf % |
-|---|---|---|---|---|---|
-| IWM | CALL | 77.3% | 2.9 | 3.2 | **22.7%** |
-| IWM | PUT | 71.2% | **9.9** | 4.8 | 28.8% |
-| QQQ | CALL | 75.6% | 7.6 | 5.1 | 24.4% |
-| **QQQ** | **PUT** | **58.7%** | **16.7** | **10.4** | **41.3%** ← best |
-| SPY | CALL | **89.0%** | 2.0 | 1.5 | 11.0% ← worst |
-| SPY | PUT | 67.5% | 11.4 | **13.7** | 32.5% |
+% of signals in each (ticker, direction) class whose **best** timeframe is X:
 
-**QQQ PUTs hold on 90m windows 16.7% of the time** — that's the highest single-class clean rate. Tag every QQQ PUT signal as a 90m hold and the clean-rate jumps to 16.7% by definition.
+| Ticker | Direction | 5m % | 15m % | 30m % | 60m % | 90m % | 120m % | 240m % | none_clean % | Total clean-tf % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| IWM | CALL | 5.4 | 2.4 | 2.2 | 4.9 | 2.9 | 1.7 | 3.2 | 77.3 | **22.7%** |
+| IWM | PUT | 3.2 | 1.9 | 2.4 | 3.6 | **9.9** | 2.9 | 4.8 | 71.2 | 28.8% |
+| QQQ | CALL | 2.9 | 1.6 | 1.3 | 3.5 | 7.6 | 2.4 | 5.1 | 75.6 | 24.4% |
+| **QQQ** | **PUT** | 3.6 | 1.8 | 1.9 | 2.6 | **16.7** | 4.4 | **10.4** | 58.7 | **41.3%** ← best |
+| SPY | CALL | 1.9 | 1.1 | 1.0 | 2.4 | 2.0 | 1.1 | 1.5 | **89.0** | 11.0% ← worst |
+| SPY | PUT | 1.4 | 0.6 | 0.7 | 1.5 | 11.4 | 3.2 | **13.7** | 67.5 | 32.5% |
 
-**SPY CALLs are still the worst** (89% none_clean) — the regime mismatch finding from v3 holds across timeframes. Most SPY CALL signals don't work at *any* horizon.
+**Reading the rows:**
+
+- **IWM CALL** has its biggest cohort at **5m (5.4%)** — these are *fast* signals; longer timeframes drop off. IWM call setups are scalps.
+- **IWM PUT** flips to longer holds (90m=9.9%, 240m=4.8%). PUTs work better when held.
+- **QQQ PUT** is the best-performing class — heavy at 90m (16.7%) and 240m (10.4%). These are slow trend trades.
+- **SPY PUT** leans hardest into 240m (13.7%) — multi-hour holds.
+- **SPY CALL** has nothing meaningful at any timeframe (max is 60m at 2.4%) — the regime-mismatch finding holds.
+
+**Two distinct strategies emerge per ticker:**
+
+| Class | Strategy | Recommended exit |
+|---|---|---|
+| IWM CALL | Quick scalp | **5m** |
+| IWM PUT | Trend hold | **90m** |
+| QQQ CALL | Mid-cycle | 90m / 240m (split) |
+| QQQ PUT | Slow trend | **90m** |
+| SPY PUT | Multi-hour | **240m** |
+| SPY CALL | *don't fire* | n/a — needs regime gate |
+
+This per-class table is what should drive the `assign_timeframe()` heuristic in Phase 1.
 
 ### 3.5 Daily breakdown (every day, no skipping)
 
