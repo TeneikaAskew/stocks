@@ -1477,3 +1477,84 @@ CREATE TABLE IF NOT EXISTS ticker_calibration (
 
 CREATE INDEX IF NOT EXISTS idx_ticker_calibration_recent
     ON ticker_calibration (ticker, calibration_date DESC);
+
+
+-- ─────────────────────────────────────────────────────────
+-- HISTORICAL_SIGNALS: parallel-strategy support (Phase 0.7)
+-- ─────────────────────────────────────────────────────────
+-- The historical_signals table is now populated by TWO different signal
+-- generators that share an indicator pipeline but encode opposite CALL
+-- logic:
+--   * 'momentum'       — MarketAnalyzer.generate_technical_signals
+--                        (CALL = consec_UP + above_VWAP + above_EMA9 + RSI 25-50)
+--   * 'mean_reversion' — lib.signals.evaluate_signal
+--                        (CALL = consec_DOWN + below_VWAP + below_EMAs + RSI 25-50)
+--
+-- Per Phase 0.7's Option B (keep both as parallel research paths), every
+-- row carries a `strategy` tag. Existing rows backfill as 'momentum'
+-- (status quo — only MarketAnalyzer wrote here before this migration).
+--
+-- See docs/plans/SIGNAL_QUALITY_TEST_PLAN.md §3.8-3.9 for the apples-to-
+-- apples comparison showing the strategies are COMPLEMENTARY, not one-
+-- strictly-better. Different (ticker, direction) classes favor different
+-- strategies depending on regime.
+-- ─────────────────────────────────────────────────────────
+
+-- Step 1: Add the strategy column. Existing rows (all written by
+-- MarketAnalyzer) backfill as 'momentum' via the DEFAULT.
+ALTER TABLE historical_signals
+    ADD COLUMN IF NOT EXISTS strategy VARCHAR(16) NOT NULL DEFAULT 'momentum';
+
+-- Step 2: Add CHECK constraint (idempotent — drop+re-add).
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'historical_signals_strategy_check'
+    ) THEN
+        ALTER TABLE historical_signals
+            DROP CONSTRAINT historical_signals_strategy_check;
+    END IF;
+    ALTER TABLE historical_signals
+        ADD CONSTRAINT historical_signals_strategy_check
+        CHECK (strategy IN ('momentum','mean_reversion'));
+END $$;
+
+-- Step 3: Extend the PRIMARY KEY to (ticker, entry_time, strategy).
+-- Both strategies can fire on the same bar minute — today's 5/1 morning
+-- audit showed 182 minutes where both fired the same ticker, with 78.6%
+-- of those firing OPPOSITE directions. The original PK (ticker, entry_time)
+-- would force them to clobber each other on upsert.
+DO $$
+BEGIN
+    -- Drop the old (ticker, entry_time) PK if it exists in that exact form.
+    IF EXISTS (
+        SELECT 1 FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_name = kcu.table_name
+        WHERE tc.table_name = 'historical_signals'
+          AND tc.constraint_type = 'PRIMARY KEY'
+          AND kcu.column_name = 'entry_time'
+    ) AND NOT EXISTS (
+        -- Skip if the new strategy-aware PK already exists.
+        SELECT 1 FROM information_schema.key_column_usage kcu
+        JOIN information_schema.table_constraints tc
+          ON tc.constraint_name = kcu.constraint_name
+        WHERE tc.table_name = 'historical_signals'
+          AND tc.constraint_type = 'PRIMARY KEY'
+          AND kcu.column_name = 'strategy'
+    ) THEN
+        ALTER TABLE historical_signals
+            DROP CONSTRAINT historical_signals_pkey;
+        ALTER TABLE historical_signals
+            ADD CONSTRAINT historical_signals_pkey
+            PRIMARY KEY (ticker, entry_time, strategy);
+    END IF;
+END $$;
+
+-- Per-strategy queries get their own covering index. The existing
+-- idx_historical_signals_ticker_time still serves strategy-agnostic
+-- queries (ranker, charts page) unchanged.
+CREATE INDEX IF NOT EXISTS idx_historical_signals_strategy_time
+    ON historical_signals (strategy, ticker, entry_time DESC);
