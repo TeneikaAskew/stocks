@@ -130,6 +130,8 @@ The §3 multi-timeframe findings were generated against `historical_signals` —
 5. **Weekly QA report** (formerly §4.1) consumes from `signal_metrics` instead of recomputing — see §4.1 below.
 6. **Regression alarm**: trailing-7-day vs prior-7-day clean-rate. If delta < -3pp, post to `#signal-qa` Discord channel and create a GitHub issue. Wired through the existing `failure-notifier` plumbing.
 7. **Stale-data fail-loud**: if `market_data_intraday.max(ts)` is older than `now() - 1h` during market hours, the report posts a "🚨 stale intraday — analysis paused" alert instead of silently producing wrong numbers. *(This is what bit us today — Cloud SQL was 4 days behind and I only noticed because the user pushed back.)*
+8. **Live-vs-offline parity test**: a daily check that runs `lib.signals.evaluate_signal` offline against the same bar window the live monitor saw, then asserts the live `signal_alerts` rows match the offline replay. Catches drift between the live monitor's rolling-window indicator state and the offline batch indicator computation. Without this test, any Phase 1+ change could regress live behavior in a way the QA report wouldn't catch.
+9. **Indicator-sharing audit**: today `gcp/signal_monitor.py` maintains its own rolling-window indicator state and `lib/trading_analysis.py:MarketAnalyzer.add_technical_indicators` recomputes from scratch. They both call into `lib/indicators.py` but the orchestration paths differ. Add an integration test asserting numerical equivalence on a fixed bar fixture. This is the "missing piece" the user asked about — the live monitor and the offline analysis aren't sharing one canonical signal-eval path yet.
 
 **Test:**
 
@@ -261,7 +263,13 @@ WEIGHTS = {
 
 ## 3. Data-driven mapping: signal → timeframe
 
-### 3.1 Clean-rate by timeframe (all 30,792 candidates, every day, no exclusion)
+> **Note (Phase 0.7 finding):** the data below covers the **MOMENTUM strategy**
+> (`lib/trading_analysis.py:MarketAnalyzer`). The live monitor uses the
+> **MEAN-REVERSION strategy** (`lib/signals.py:evaluate_signal`).
+> §3.7 has the side-by-side mean-reversion comparison. Both strategies
+> are kept and measured independently per Phase 0.7's Option B.
+
+### 3.1 Clean-rate by timeframe — MOMENTUM strategy (all 30,792 candidates)
 
 | Timeframe | Threshold (% favorable) | n | CLEAN_HIT % | WRONG % | NOISE % |
 |---|---|---|---|---|---|
@@ -364,6 +372,66 @@ Total clean-tf signals per day (signals with ≥1 clean timeframe):
 | 4/30 | 2,090 | 453 | 21.7% | OK |
 
 **Even on the worst day (4/27, 7.3% clean-tf), the system fired ~2,572 candidates.** That's the gap between bar-level conditions and timeframe-validated signals — and it's where most of the noise comes from.
+
+---
+
+### 3.6 MEAN-REVERSION strategy — clean-rate by timeframe (56,060 candidates)
+
+This is what the **live monitor actually fires on Discord**.
+
+| Timeframe | n | CLEAN_HIT % | WRONG % | NOISE % |
+|---|---|---|---|---|
+| 5m | 56,060 | 9.8% | 0.0% | 83.0% |
+| 15m | 56,060 | 10.3% | 0.0% | 83.8% |
+| 30m | 56,060 | 12.9% | 0.0% | 78.8% |
+| 60m | 56,060 | 16.6% | 0.0% | 71.9% |
+| 90m | 56,060 | **18.3%** | 0.0% | 68.5% |
+| 120m | 56,060 | 18.2% | 0.0% | 66.9% |
+| **240m** | 56,060 | **21.0%** | 0.0% | 57.6% |
+
+**Striking: WRONG_DIRECTION is essentially zero across all timeframes.** Mean-reversion almost never sees a >0.5% adverse move within the window. That's a structural property of the strategy — buying after the market has already moved against the position.
+
+### 3.7 MEAN-REVERSION best-timeframe × ticker × direction
+
+| Ticker | Direction | 5m % | 15m % | 30m % | 60m % | 90m % | 120m % | 240m % | none_clean % | Total clean-tf % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **IWM** | CALL | **9.8** | 4.2 | 3.0 | 4.1 | 2.9 | 2.7 | 5.8 | 67.7 | **32.3%** |
+| IWM | PUT | 8.4 | 4.4 | 4.0 | 4.9 | 4.1 | 2.7 | **9.7** | 61.8 | 38.2% |
+| QQQ | CALL | 8.4 | 3.4 | 3.2 | 4.6 | 4.2 | 2.7 | **8.1** | 65.5 | 34.5% |
+| **QQQ** | **PUT** | 6.7 | 4.1 | 3.7 | 6.6 | 5.4 | 5.4 | **12.9** | 55.3 | **44.7%** ← top |
+| SPY | CALL | **6.3** | 2.9 | 2.2 | 2.7 | 1.8 | 1.3 | 3.3 | **79.7** | 20.3% |
+| SPY | PUT | 5.8 | 3.6 | 3.5 | 6.3 | 4.5 | 3.3 | **12.4** | 60.5 | 39.5% |
+
+**Strategy assignment for `assign_timeframe()` heuristic** (mean-reversion, what the live monitor fires):
+
+| Class | Recommended hold | Rationale |
+|---|---|---|
+| IWM CALL | **5m scalp** | 9.8% concentrate at 5m, fades after |
+| IWM PUT | **240m all-day** | 9.7% at 240m; works as slow trend |
+| QQQ CALL | 240m | 8.1% at 240m; slow accumulation |
+| **QQQ PUT** | **240m** | **12.9% — highest single-class clean rate in any strategy/tf combination** |
+| **SPY CALL** | *don't fire* | 79.7% none_clean — same regime-mismatch problem |
+| SPY PUT | **240m** | 12.4% at 240m |
+
+### 3.8 Side-by-side strategy comparison — which one ships where
+
+| (Ticker, Dir) | Momentum clean-tf % | Mean-reversion clean-tf % | Winner |
+|---|---|---|---|
+| IWM CALL | 22.7% | **32.3%** | **MR** |
+| IWM PUT | 28.8% | **38.2%** | **MR** |
+| QQQ CALL | 24.4% | **34.5%** | **MR** |
+| QQQ PUT | 41.3% | **44.7%** | MR |
+| SPY CALL | 11.0% | **20.3%** | **MR** (still bad at both) |
+| SPY PUT | 32.5% | **39.5%** | **MR** |
+
+**Mean-reversion wins on every class.** The live monitor's strategy choice was correct; the analysis we generated against momentum data was an unrelated baseline.
+
+**Implication for the test plan:**
+
+- **Default strategy = mean-reversion.** Phase 0.7 still keeps both as parallel research paths, but live continues with mean-reversion and §3.4–3.5 can be relegated to "comparison baseline."
+- **The right exit for mean-reversion is 240m (intraday-trend hold), not 60m.** Phase 1's `timeframe_tag` heuristic should default to 240m for QQQ PUT / SPY PUT / IWM PUT, with the only short-timeframe override being **IWM CALL = 5m scalp**.
+- **SPY CALL still doesn't work.** Both strategies show 11-20% clean-tf — meaningfully worse than every other class. The plan's "regime-aware suppression for CALLs in uptrend" recommendation is now backed by evidence under both strategies.
+- **Mean-reversion fires 1.8× more signals than momentum** (56k vs 30k bar-level). So while the per-signal clean rate is higher, the absolute volume of clean fires per day is similar. The "we may miss good ones" math from earlier still applies — debounce is doing real work.
 
 ---
 
