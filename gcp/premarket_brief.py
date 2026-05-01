@@ -402,6 +402,21 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     if top_n and top_n > 0:
         earnings = earnings[:top_n]
 
+    # Enrich with the historical reaction profile + playability_score.
+    # Each row gains:
+    #   - playability_score (vol-normalized, options-weighted; None when
+    #     no historical data available)
+    #   - playability_archetype ('bullish_trend' | 'bearish_trend' |
+    #     'reversal_play' | 'mixed' | 'quiet')
+    #   - playability_n_q + the underlying inputs for the embed to render
+    # See lib/earnings_reactions.py for the formula.
+    try:
+        from lib.earnings_reactions import enrich_with_playability
+        enrich_with_playability(earnings)
+    except Exception as e:
+        # Don't fail the brief if the populator hasn't run yet — just log.
+        logger.warning("playability enrichment skipped: %s", e)
+
     return {'mode': mode, 'start': start, 'end': end, 'earnings': earnings}
 
 
