@@ -49,9 +49,25 @@ def _safe_float(val) -> float | None:
     if val is None or val == "None" or val == "":
         return None
     try:
-        return float(val)
+        f = float(val)
     except (TypeError, ValueError):
         return None
+    # AV returns "NaN" or float('nan') for upcoming-but-not-reported quarters.
+    # Storing NaN in NUMERIC columns leaks placeholder rows past the
+    # `reported_eps IS NOT NULL` filter (NaN is a value, not NULL).
+    if f != f:
+        return None
+    return f
+
+
+def _safe_str(val) -> str | None:
+    """Normalize AV string fields. Returns None for missing / 'None' / empty."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s or s.lower() in ("none", "null", "nan"):
+        return None
+    return s
 
 
 def fetch_history_for_ticker(ticker: str, api_key: str) -> pd.DataFrame:
@@ -91,6 +107,11 @@ def fetch_history_for_ticker(ticker: str, api_key: str) -> pd.DataFrame:
                 "estimated_eps": _safe_float(q.get("estimatedEPS")),
                 "surprise": _safe_float(q.get("surprise")),
                 "surprise_pct": _safe_float(q.get("surprisePercentage")),
+                # AV's `reportTime` is the canonical BMO/AMC indicator.
+                # Values observed: 'pre-market', 'post-market'.
+                # Used by compute_earnings_reactions to pick the timing-
+                # correct reaction-day gap (D for BMO, D+1 for AMC).
+                "report_time": _safe_str(q.get("reportTime")),
             }
         )
     df = pd.DataFrame(rows)
@@ -195,6 +216,15 @@ def main():
     combined = combined.drop_duplicates(
         subset=["ticker", "fiscal_date_ending"], keep="last"
     )
+
+    # Scrub NaN -> None so they land as PostgreSQL NULL, not 'NaN'::numeric.
+    # _safe_float already returns Python None for NaN inputs, but pd.concat
+    # rebuilds float columns and re-introduces np.nan. Without this scrub,
+    # upcoming-but-not-yet-reported quarters leak past the
+    # `reported_eps IS NOT NULL` filter on the consumer side.
+    import numpy as np
+    combined = combined.replace({np.nan: None}).where(combined.notna(), None)
+
     log.info("Total rows: %d across %d tickers", len(combined), combined["ticker"].nunique())
 
     if args.dry_run:
