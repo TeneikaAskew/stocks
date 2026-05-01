@@ -79,7 +79,7 @@ class TestPlayabilityLines:
         assert '`56`' in line
         assert 'bullish_trend' in line
         assert 'gap 6.5%' in line          # rounded to 1 decimal
-        assert 'cons 83%' in line
+        assert 'cons dir 83%' in line
         assert 'rev 17%' in line
         assert 'bullish gap play' in line  # Option A action hint
         # n=12 = full sample → suppressed (header already says 12Q)
@@ -164,7 +164,7 @@ class TestPlayabilityLines:
         line = lines[1]
         # Should render without error; values display as 0
         assert 'gap 0.0%' in line
-        assert 'cons 0%' in line
+        assert 'cons dir 0%' in line
         assert 'rev 0%' in line
         assert 'low conviction' in line  # archetype=mixed → Option A hint
         # n=0 is below target → surface the short-sample warning

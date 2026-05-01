@@ -1391,7 +1391,7 @@ def _playability_lines(bucket: list[dict], top_n: int = 5) -> list[str]:
         lines.append(
             f'  {i}. **{r["ticker"]}** '
             f'`{score:.0f}` {arch} | '
-            f'gap {mag:.1f}% · cons {cons:.0f}% · rev {rev:.0f}% '
+            f'gap {mag:.1f}% · cons dir {cons:.0f}% · rev {rev:.0f}% '
             f'· {hint}{n_suffix}'
         )
     return lines
