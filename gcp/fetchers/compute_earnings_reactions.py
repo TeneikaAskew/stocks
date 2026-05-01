@@ -46,17 +46,24 @@ log = logging.getLogger(__name__)
 # Pure-compute layer (testable without DB)
 # ────────────────────────────────────────────────────────────
 
-def normalize_timing(report_time: Optional[str], earnings_time: Optional[str]) -> str:
-    """Resolve reaction_basis from the two available timing sources.
+def normalize_timing(
+    report_time: Optional[str],
+    earnings_time: Optional[str],
+    yahoo_report_time: Optional[str] = None,
+) -> str:
+    """Resolve reaction_basis from up to three timing sources.
 
-    earnings_history.report_time is the canonical source ('pre-market' /
-    'post-market'). earnings_calendar.earnings_time is the fallback
-    ('premarket' / 'postmarket'). When both are missing or unknown,
-    default to AMC ('post-market') — the safer default since AMC is
-    statistically more common and the reaction-day gap measurement is
-    less ambiguous.
+    Precedence (verified by user 2026-05-01):
+      1. yahoo_report_time (earnings_history.yahoo_report_time) — preferred,
+         derived from Yahoo's wire-feed earnings event timestamps. Yahoo
+         is more reliable than AV (AV had NVDA 2026-02-25 as pre-market
+         but Yahoo correctly identifies it as post-market).
+      2. report_time (earnings_history.report_time from AV) — fallback.
+      3. earnings_time (earnings_calendar.earnings_time, majority vote
+         across data_sources) — last fallback for upcoming reports.
+      4. AMC default — when nothing is known.
     """
-    for v in (report_time, earnings_time):
+    for v in (yahoo_report_time, report_time, earnings_time):
         if v is None:
             continue
         s = str(v).lower().strip()
@@ -153,6 +160,14 @@ def compute_reaction(
             / float(d_plus_1['open']) * 100
         )
 
+    # Anomaly threshold: sustain values larger than this are almost
+    # always stock-split artifacts in the unadjusted price series
+    # (e.g. WMT 3-for-1 split between D+1 and D+5 in 2024 produced
+    # sustain_5d=-66% on a +5% reaction). Real earnings sustains rarely
+    # exceed 30%; 50% is a conservative cutoff that nulls split rows
+    # without dropping legitimate large moves.
+    SUSTAIN_ANOMALY_PCT = 50.0
+
     def sustain_at(n_days):
         # n trading days after D (so D+5 = d_idx + 5 in the bars index)
         idx = d_idx + n_days
@@ -160,7 +175,13 @@ def compute_reaction(
         if bar is None:
             return None, None
         close = float(bar['close'])
-        return close, (close - anchor_price) / anchor_price * 100
+        pct = (close - anchor_price) / anchor_price * 100
+        if abs(pct) > SUSTAIN_ANOMALY_PCT:
+            # Almost certainly a split artifact in unadjusted prices.
+            # Null it so downstream aggregates skip this quarter for
+            # this horizon. Keep the close value in case audit needs it.
+            return close, None
+        return close, pct
 
     d_plus_3_close, sustain_3d = sustain_at(3)
     d_plus_5_close, sustain_5d = sustain_at(5)
@@ -215,13 +236,14 @@ def compute_reaction(
 
 def fetch_earnings_history_for_tickers(tickers: list[str]) -> pd.DataFrame:
     """Pull all valid (non-placeholder) earnings_history rows for the
-    given tickers, with their report_time."""
+    given tickers, with both AV report_time and Yahoo yahoo_report_time."""
     if not tickers:
         return pd.DataFrame()
     placeholders = ','.join(f"'{t}'" for t in tickers)
     sql = f"""
         SELECT ticker, fiscal_date_ending, reported_date,
-               reported_eps, estimated_eps, surprise_pct, report_time
+               reported_eps, estimated_eps, surprise_pct,
+               report_time, yahoo_report_time
         FROM earnings_history
         WHERE ticker IN ({placeholders})
           AND reported_date IS NOT NULL
@@ -299,8 +321,9 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
     for _, eps in eps_df.iterrows():
         ticker = eps['ticker']
         report_time = eps.get('report_time')
+        yahoo_report_time = eps.get('yahoo_report_time')
         cal_timing = calendar_timing.get(ticker)
-        basis = normalize_timing(report_time, cal_timing)
+        basis = normalize_timing(report_time, cal_timing, yahoo_report_time)
 
         daily = fetch_daily_window(ticker, eps['reported_date'])
         result = compute_reaction(eps.to_dict(), daily, basis)

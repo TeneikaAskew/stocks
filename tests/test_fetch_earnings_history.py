@@ -15,6 +15,7 @@ import pytest
 from gcp.fetchers.fetch_earnings_history import (
     _safe_float,
     _safe_str,
+    _yahoo_timing_from_event_dt,
     fetch_history_for_ticker,
 )
 
@@ -102,6 +103,58 @@ class TestSafeStr:
 # ────────────────────────────────────────────────────────────
 # fetch_history_for_ticker — captures report_time
 # ────────────────────────────────────────────────────────────
+
+# ────────────────────────────────────────────────────────────
+# _yahoo_timing_from_event_dt — derive timing from Yahoo timestamp
+# ────────────────────────────────────────────────────────────
+
+class TestYahooTimingFromEventDt:
+    def test_post_market_hours(self):
+        # 16:31 ET on 2026-02-25 (NVDA's actual report time)
+        ts = pd.Timestamp('2026-02-25 16:31:25', tz='US/Eastern')
+        assert _yahoo_timing_from_event_dt(ts) == 'post-market'
+
+    def test_after_hours_evening(self):
+        # 20:00 ET — still AMC
+        ts = pd.Timestamp('2026-02-25 20:00:00', tz='US/Eastern')
+        assert _yahoo_timing_from_event_dt(ts) == 'post-market'
+
+    def test_pre_market_early(self):
+        # 06:30 ET — BMO
+        ts = pd.Timestamp('2026-02-04 06:30:00', tz='US/Eastern')
+        assert _yahoo_timing_from_event_dt(ts) == 'pre-market'
+
+    def test_pre_market_at_open(self):
+        # 09:30 ET (market open) — boundary, treat as BMO
+        ts = pd.Timestamp('2026-02-04 09:30:00', tz='US/Eastern')
+        assert _yahoo_timing_from_event_dt(ts) == 'pre-market'
+
+    def test_intraday_returns_none(self):
+        # 12:00 ET — neither BMO nor AMC, return None
+        ts = pd.Timestamp('2026-02-04 12:00:00', tz='US/Eastern')
+        assert _yahoo_timing_from_event_dt(ts) is None
+
+    def test_utc_input_converted(self):
+        # 21:31 UTC = 16:31 ET — should resolve to AMC
+        ts = pd.Timestamp('2026-02-25 21:31:25+00:00')
+        assert _yahoo_timing_from_event_dt(ts) == 'post-market'
+
+    def test_naive_timestamp_treated_as_et(self):
+        # No tzinfo — assume already-ET
+        ts = pd.Timestamp('2026-02-25 16:31:25')
+        assert _yahoo_timing_from_event_dt(ts) == 'post-market'
+
+    def test_none_returns_none(self):
+        assert _yahoo_timing_from_event_dt(None) is None
+
+    def test_nat_returns_none(self):
+        assert _yahoo_timing_from_event_dt(pd.NaT) is None
+
+    def test_at_4pm_boundary(self):
+        # 16:00:00 ET exactly — boundary, treat as AMC
+        ts = pd.Timestamp('2026-02-25 16:00:00', tz='US/Eastern')
+        assert _yahoo_timing_from_event_dt(ts) == 'post-market'
+
 
 class TestFetchHistory:
     def _mock_av_response(self, quarterly):
@@ -250,5 +303,74 @@ class TestFetchHistory:
         mock_resp.raise_for_status.return_value = None
         mock_get.return_value = mock_resp
 
-        df = fetch_history_for_ticker("TEST", "fake-key")
+        df = fetch_history_for_ticker("TEST", "fake-key", enrich_with_yahoo=False)
         assert df.empty
+
+    @patch("gcp.fetchers.fetch_earnings_history.fetch_yahoo_timing_for_ticker")
+    @patch("gcp.fetchers.fetch_earnings_history.requests.get")
+    def test_yahoo_merge_overrides_av_disagreement(self, mock_get, mock_yahoo):
+        """When Yahoo says post-market but AV reportTime says pre-market,
+        the row stores both — yahoo_report_time is the override.
+        compute_earnings_reactions resolves precedence at query time."""
+        mock_get.return_value = self._mock_av_response([
+            {
+                "fiscalDateEnding": "2026-01-31",
+                "reportedDate": "2026-02-25",
+                "reportedEPS": "1.62",
+                "estimatedEPS": "1.52",
+                "surprise": "0.10",
+                "surprisePercentage": "6.58",
+                "reportTime": "pre-market",   # AV's wrong value
+            }
+        ])
+        mock_yahoo.return_value = {
+            pd.to_datetime("2026-02-25").date(): "post-market"  # Yahoo's correct value
+        }
+
+        df = fetch_history_for_ticker("NVDA", "fake-key", enrich_with_yahoo=True)
+        assert len(df) == 1
+        assert df.iloc[0]["report_time"] == "pre-market"          # AV preserved
+        assert df.iloc[0]["yahoo_report_time"] == "post-market"   # Yahoo override
+
+    @patch("gcp.fetchers.fetch_earnings_history.fetch_yahoo_timing_for_ticker")
+    @patch("gcp.fetchers.fetch_earnings_history.requests.get")
+    def test_yahoo_merge_no_data_leaves_yahoo_null(self, mock_get, mock_yahoo):
+        """When Yahoo has no row for a particular reported_date, the
+        yahoo_report_time column is NULL; AV reportTime stands alone."""
+        mock_get.return_value = self._mock_av_response([
+            {
+                "fiscalDateEnding": "2026-01-31",
+                "reportedDate": "2026-03-04",
+                "reportedEPS": "2.05",
+                "estimatedEPS": "2.02",
+                "surprise": "0.03",
+                "surprisePercentage": "1.49",
+                "reportTime": "post-market",
+            }
+        ])
+        mock_yahoo.return_value = {}  # No Yahoo data
+
+        df = fetch_history_for_ticker("AVGO", "fake-key", enrich_with_yahoo=True)
+        assert df.iloc[0]["report_time"] == "post-market"
+        assert df.iloc[0]["yahoo_report_time"] is None
+
+    @patch("gcp.fetchers.fetch_earnings_history.fetch_yahoo_timing_for_ticker")
+    @patch("gcp.fetchers.fetch_earnings_history.requests.get")
+    def test_yahoo_merge_when_av_missing(self, mock_get, mock_yahoo):
+        """When AV reportTime is None but Yahoo has data, yahoo_report_time
+        carries the only timing signal."""
+        mock_get.return_value = self._mock_av_response([
+            {
+                "fiscalDateEnding": "2026-01-31",
+                "reportedDate": "2026-02-25",
+                "reportedEPS": "1.62",
+                # no reportTime
+            }
+        ])
+        mock_yahoo.return_value = {
+            pd.to_datetime("2026-02-25").date(): "post-market"
+        }
+
+        df = fetch_history_for_ticker("NVDA", "fake-key", enrich_with_yahoo=True)
+        assert df.iloc[0]["report_time"] is None
+        assert df.iloc[0]["yahoo_report_time"] == "post-market"
