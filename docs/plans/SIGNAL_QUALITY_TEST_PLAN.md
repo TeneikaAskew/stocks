@@ -39,6 +39,63 @@ From the v4 multi-timeframe evaluation across 30,792 historical signal-eligible 
 
 ---
 
+### Phase 0.5 — productionize the analysis pipeline itself *(must precede Phases 1-4 measurement)*
+
+**Problem:** the multi-timeframe analysis we just ran (`scripts/_signal_multi_tf.py`) is a throwaway. It reads creds from a temp directory, writes to a CSV, and only runs when someone types the command. Without productionizing it first, every later phase will be impossible to *measure* — we'd be tuning blind.
+
+**What gets built:**
+
+1. **Promote the script** — `scripts/_signal_multi_tf.py` → `scripts/signal_quality_report.py` with these productionization gates:
+   - Reads creds from Secret Manager (drop the `.creds_tmp/` local-dev shim).
+   - Drops the parquet read for 90/120/240m extension; queries `market_data_intraday` directly. *(Requires Phase 0's fetcher bug fix landed first.)*
+   - Adds `--mode={historical, rolling}` so the script handles both completed-signal evaluation and in-progress signals (today's fires that don't have 60m of data yet → tagged `PENDING`).
+   - Replaces stdout-only output with structured persistence (see #2).
+2. **New Cloud SQL table** `signal_metrics`:
+   ```sql
+   CREATE TABLE signal_metrics (
+       signal_id          UUID PRIMARY KEY,           -- FK to signal_alerts.id (or historical_signals composite)
+       evaluated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+       cls_5m   VARCHAR(10), cls_15m  VARCHAR(10),
+       cls_30m  VARCHAR(10), cls_60m  VARCHAR(10),
+       cls_90m  VARCHAR(10), cls_120m VARCHAR(10),
+       cls_240m VARCHAR(10),
+       best_tf            VARCHAR(8),                  -- 5m | 15m | ... | 240m | NULL if none clean
+       return_5m          DOUBLE PRECISION, return_15m DOUBLE PRECISION,
+       return_30m         DOUBLE PRECISION, return_60m DOUBLE PRECISION,
+       return_90m         DOUBLE PRECISION, return_120m DOUBLE PRECISION,
+       return_240m        DOUBLE PRECISION,
+       atr_5m_pct         DOUBLE PRECISION,
+       mfe_60m_atrs       DOUBLE PRECISION,            -- the unit-normalized metric from §4
+       status             VARCHAR(12) NOT NULL DEFAULT 'final'
+                          CHECK (status IN ('final','pending'))
+   );
+   CREATE INDEX idx_signal_metrics_evaluated_at ON signal_metrics (evaluated_at DESC);
+   ```
+3. **New Cloud Run Job** `signal-quality-report`:
+   - Same image, command `python -m scripts.signal_quality_report`.
+   - Runs hourly during market hours in `--mode=rolling` (incremental updates as 60m/90m/etc. windows close out).
+   - Runs once nightly in `--mode=historical` to write/update the `final` rows.
+   - Memory 1 GiB, timeout 10 min.
+4. **Cloud Scheduler triggers**:
+   - `signal-quality-report-hourly` — `0 14-20 * * 1-5` (every hour 10 AM – 4 PM ET).
+   - `signal-quality-report-nightly` — `0 1 * * 2-6` (Tue–Sat 01:00 ET, after `historical-signals-watchlist`).
+5. **Weekly QA report** (formerly §4.1) consumes from `signal_metrics` instead of recomputing — see §4.1 below.
+6. **Regression alarm**: trailing-7-day vs prior-7-day clean-rate. If delta < -3pp, post to `#signal-qa` Discord channel and create a GitHub issue. Wired through the existing `failure-notifier` plumbing.
+7. **Stale-data fail-loud**: if `market_data_intraday.max(ts)` is older than `now() - 1h` during market hours, the report posts a "🚨 stale intraday — analysis paused" alert instead of silently producing wrong numbers. *(This is what bit us today — Cloud SQL was 4 days behind and I only noticed because the user pushed back.)*
+
+**Test:**
+
+1. Deploy schema migration via `apply-schema-migrations`.
+2. Run `signal-quality-report --mode=historical --start 2026-04-01 --end 2026-05-01` to backfill `signal_metrics` from existing `historical_signals`.
+3. Verify the persisted classifications match what the throwaway script produced (`data/signal_eval_multi_tf.csv` is the reference).
+4. Deploy hourly + nightly schedulers. Watch for one full day. Confirm the rolling-mode rows transition `pending → final` correctly.
+
+**Success criterion:** every row in `signal_alerts` from this point forward has a corresponding `signal_metrics` row within 1 hour of fire (rolling) or by 1:30 AM next-day (final). Regression alarm fires correctly on a synthetic 5pp drop.
+
+**ETA:** 3 days dev + 2 days validation. **Blocks all later phases' measurement.**
+
+---
+
 ### Phase 1 — add timeframe tagging to every signal *(small but high-leverage)*
 
 **Hypothesis:** Different signals work on different timeframes. A 5m scalp setup, a 15m breakout, and a 60m trend-continuation are not the same trade. Currently the system fires them all the same way.
@@ -266,18 +323,23 @@ Total clean-tf signals per day (signals with ≥1 clean timeframe):
 
 To make every test repeatable and observable:
 
-### 4.1 Daily QA report
+### 4.1 Weekly QA report (consumes Phase 0.5 metrics)
 
-Every Saturday, an automated `signal-quality-weekly` Cloud Run Job emits:
+Saturday morning Cloud Run Job `signal-quality-weekly` reads from the
+`signal_metrics` table populated by Phase 0.5's hourly+nightly pipeline.
+It does NOT recompute classification — that work already happened during
+the week. The job's only job is **summarization + comparison**:
 
-- Total fires that week (signal_alerts)
-- Bar-level candidates that week (historical_signals)
-- Clean-rate at each timeframe (5m/15m/30m/60m/90m/120m/240m)
-- Per-ticker × per-direction breakdown
-- "Missed good ones" estimate (clean candidates that didn't fire)
-- Comparison to previous week — flag regressions
+- Total fires that week (signal_alerts) and bar-level candidates (historical_signals)
+- Clean-rate at each timeframe — pulled directly from `signal_metrics.cls_*`
+- Per-ticker × per-direction breakdown — pulled directly
+- "Missed good ones" estimate: rows with `best_tf IS NOT NULL` that don't
+  match a `signal_alerts.id` — i.e. clean candidates the live monitor didn't fire on
+- Comparison to previous week — flag regressions, post to `#signal-qa`
+- Per-class strategy compliance (e.g. "are QQQ PUT signals being held to 90m?")
 
-Posted to a new Discord channel `#signal-qa`.
+This is a **lightweight aggregator** — most of the cost is already paid by
+Phase 0.5's continuous evaluator.
 
 ### 4.2 A/B simulation harness
 
@@ -304,8 +366,12 @@ gantt
     section Phase 0 (block)
     Fix signal-monitor write bug      :p0a, 2026-05-01, 2d
     Fix fetch-market-data day filter  :p0b, 2026-05-01, 2d
+    section Phase 0.5 (measure)
+    Promote analysis script           :p05a, after p0a, 2d
+    signal_metrics table + Cloud Run job :p05b, after p05a, 1d
+    Backfill + validate               :p05c, after p05b, 2d
     section Phase 1 (timeframe tag)
-    Schema + tagging logic            :p1a, after p0a, 2d
+    Schema + tagging logic            :p1a, after p05c, 2d
     Forward-test (5 days)             :p1b, after p1a, 5d
     section Phase 2 (debounce)
     Outcome tracking + adaptive cooldown :p2a, after p1a, 4d
@@ -317,12 +383,14 @@ gantt
     Reweight conditions               :p4a, after p3a, 2d
     Forward-test                      :p4b, after p4a, 5d
     section Continuous
-    Daily QA report                   :qa, 2026-05-01, 30d
+    Weekly QA report                  :qa, after p05c, 30d
 ```
 
-**Critical path:** Phase 0 → Phase 1 → Phase 3. Phases 2 and 4 can run in parallel after Phase 1 ships.
+**Critical path:** Phase 0 → Phase 0.5 → Phase 1 → Phase 3. Phases 2 and 4 can run in parallel after Phase 1 ships.
 
-**Total timeline to "all phases shipped + validated":** ~30 trading days.
+**Why Phase 0.5 is non-negotiable before Phase 1+:** without persisted, automated, per-signal classification you can't measure whether any later phase's change actually moved the clean-rate. You'd be tuning blind. The throwaway script we used today only worked because someone (me) hand-pulled fresh AV data, hand-set creds, and hand-read the output.
+
+**Total timeline to "all phases shipped + validated":** ~32 trading days (added 2 for Phase 0.5).
 
 ---
 
@@ -357,7 +425,8 @@ gantt
 | Phase | Files |
 |---|---|
 | 0 | `gcp/signal_monitor.py` (bug fix), `gcp/fetchers/fetch_market_data.py:102-104` |
-| 1 | `gcp/schema.sql`, `gcp/signal_monitor.py`, `lib/signals.py` (timeframe heuristic), `gcp/insight_discord_push.py` (embed format) |
+| 0.5 | `scripts/signal_quality_report.py` (NEW, promoted from `_signal_multi_tf.py`), `gcp/schema.sql` (signal_metrics table), `gcp/deploy.sh` (new job + scheduler entries), `gcp/signal_quality_alarm.py` (NEW, regression check + stale-data fail-loud) |
+| 1 | `gcp/schema.sql` (timeframe_tag column), `gcp/signal_monitor.py`, `lib/signals.py` (timeframe heuristic from §3.4), `gcp/insight_discord_push.py` (embed format) |
 | 2 | `gcp/signal_monitor.py`, `gcp/schema.sql` (signal_outcomes table), `scripts/simulate_signal_changes.py` (NEW) |
 | 3 | `gcp/signal_monitor.py` (multi-tf evaluator), `lib/trading_analysis.py` (resampling) |
 | 4 | `lib/signals.py` (weights), `lib/trading_analysis.py` (score calc) |
