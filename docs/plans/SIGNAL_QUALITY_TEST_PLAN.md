@@ -741,6 +741,52 @@ ALTER TABLE historical_signals
 
 ---
 
+### Phase 1.6 — strategy-agreement boost (high-conviction "stack" signals)
+
+**The insight (user direction 5/1):** "If both strategies target the same direction signal, put it at the top of the list."
+
+**Why it's high-leverage:** §3.9's apples-to-apples bar-level audit showed both momentum and mean-reversion fired on the same ticker on 182 minutes during the 5/1 morning window — and **78.6% of those fires were in OPPOSITE directions** (each strategy thinks the trade is what the OTHER thinks is wrong). That leaves **21.4% where they AGREE** — both strategies independently arrive at the same direction from completely different condition logic. Those agreement bars are unusually high-conviction setups that should be ranked at the top of the alert list.
+
+**What gets built:**
+
+1. **Schema:** add a `strategy_agreement` JSONB column to `signal_alerts`:
+   ```sql
+   ALTER TABLE signal_alerts
+       ADD COLUMN IF NOT EXISTS strategy_agreement JSONB;
+   -- Example payload: {"agree": true, "strategies": ["momentum", "mean_reversion"],
+   --                   "directions": ["CALL", "CALL"], "scores": [4, 3]}
+   ```
+2. **Live monitor change** (`gcp/signal_monitor.py`): every cycle, run BOTH strategies (parallel, since lib/strategies/ guarantees thread-safety per Phase 0.8). When both fire on the same `(ticker, direction)` within the same minute:
+   - Tag the row with `strategy_agreement.agree=True`.
+   - Compute a **composite score** = max(momentum_score, mr_score) + 1.0 agreement bonus.
+   - Sort the Discord push by composite score DESC so agreement signals appear first.
+3. **Discord embed change** (`gcp/insight_discord_push.py` + signal-monitor's webhook): agreement signals get a `🎯 STACKED` prefix and appear at the top of the message: `🎯 STACKED · 🟢 SPY CALL [60m hold] · ⚠️ FOMC in 18 min`.
+4. **Per-class agreement statistics** in the Phase 0.5 weekly QA report: how often does each (ticker, direction) class fire as a stacked agreement vs solo? What's the clean-rate lift on agreement bars?
+
+**Hypothesis to validate (test built into the report):**
+
+Agreement signals should have *significantly* higher 60-min clean-rate than solo signals. If §3.9's 21.4% agreement window contains the genuinely high-conviction setups, the per-class clean-rate stratified by `strategy_agreement.agree` should show:
+
+```
+mean_reversion fires alone:   ~15-20% clean-rate
+momentum fires alone:         ~15-25% clean-rate
+both agree:                   ≥ 35% clean-rate ← the value-add we're testing for
+```
+
+If the lift isn't there in the data, agreement isn't a real signal-quality multiplier and we drop the feature. The chi-squared test in Phase 1.5's regression suite extends naturally to cover this.
+
+**Tests:**
+
+1. `tests/test_signal_agreement.py` — synthetic bars where both strategies fire same direction → asserts the composite score is computed correctly with the +1.0 agreement bonus
+2. `tests/test_signal_agreement_disagreement.py` — bars where strategies disagree → asserts NO agreement boost, and downstream consumers see two separate non-stacked alerts
+3. **Backtest**: re-run the 5/1 morning audit (`scripts/_morning_signals_today.py`) with agreement detection enabled; assert the 21.4% agreement bars show measurably higher 60-min clean-rate than solo fires
+
+**Blocked by:** Phase 0.8 (need lib/strategies/ to run both strategies cleanly side-by-side) and Phase 1.5 (catalyst proximity) so the composite ranking has both regime-tag and agreement-tag inputs. Best ordering: Phase 0.8 → Phase 1 → Phase 1.5 → **Phase 1.6** → Phase 2.
+
+**ETA:** 3 days dev + 5 days forward-test.
+
+---
+
 ### Phase 2 — debounce tuning by outcome feedback
 
 **Hypothesis:** Today's debounce is fixed-time (e.g. "no same-direction fire within X min"). Smarter debounce uses early outcome:
