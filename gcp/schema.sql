@@ -692,6 +692,24 @@ CREATE INDEX IF NOT EXISTS idx_signal_alerts_ticker_date
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS level_broken VARCHAR(20);
 
+-- Phase 1.6 — strategy-agreement payload.
+-- When momentum + mean_reversion both fire on the same bar AND target the
+-- same direction, that's a high-conviction "stacked" signal. We record the
+-- agreement payload (which strategies fired, their directions, base_scores,
+-- and a composite score that boosts agreement) here so downstream consumers
+-- (Discord embed sort, post-mortem queries) can surface stacked signals.
+-- Shape when populated:
+--   {
+--     "agree": true,
+--     "strategies":      ["momentum", "mean_reversion"],
+--     "directions":      ["CALL", "CALL"],
+--     "base_scores":     [4.0, 3.0],
+--     "composite_score": 5.0
+--   }
+-- NULL when only one strategy fired (the common case).
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS strategy_agreement JSONB;
+
 
 CREATE TABLE IF NOT EXISTS trades (
     id              BIGSERIAL PRIMARY KEY,
