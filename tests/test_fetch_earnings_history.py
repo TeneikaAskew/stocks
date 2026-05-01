@@ -16,8 +16,50 @@ from gcp.fetchers.fetch_earnings_history import (
     _safe_float,
     _safe_str,
     _yahoo_timing_from_event_dt,
+    _earnings_history_tickers,
     fetch_history_for_ticker,
 )
+
+
+# ────────────────────────────────────────────────────────────
+# _earnings_history_tickers — self-heal source
+# ────────────────────────────────────────────────────────────
+
+class TestEarningsHistorySelfHealSource:
+    def test_returns_distinct_tickers_from_db(self, monkeypatch):
+        """The self-heal source queries earnings_history for every ticker
+        we've ever pulled. Verify it normalizes to upper-case and
+        returns a list of strings."""
+        from gcp.fetchers import fetch_earnings_history as feh
+
+        def fake_query_to_dataframe(sql, params=None):
+            sql_upper = sql.upper()
+            assert "DISTINCT TICKER" in sql_upper
+            assert "EARNINGS_HISTORY" in sql_upper
+            return pd.DataFrame({"ticker": ["amzn", "msft", "AVGO"]})
+
+        monkeypatch.setattr(
+            "gcp.database.query_to_dataframe", fake_query_to_dataframe
+        )
+        result = _earnings_history_tickers()
+        assert result == ["AMZN", "MSFT", "AVGO"]
+
+    def test_empty_db_returns_empty_list(self, monkeypatch):
+        from gcp.fetchers import fetch_earnings_history as feh
+        monkeypatch.setattr(
+            "gcp.database.query_to_dataframe",
+            lambda sql, params=None: pd.DataFrame(),
+        )
+        assert _earnings_history_tickers() == []
+
+    def test_db_error_returns_empty_list(self, monkeypatch):
+        """If Cloud SQL is unreachable, return empty (don't crash the
+        fetcher) — caller falls back to other sources."""
+        from gcp.fetchers import fetch_earnings_history as feh
+        def boom(sql, params=None):
+            raise RuntimeError("connection refused")
+        monkeypatch.setattr("gcp.database.query_to_dataframe", boom)
+        assert _earnings_history_tickers() == []
 
 
 # ────────────────────────────────────────────────────────────

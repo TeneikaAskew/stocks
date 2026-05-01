@@ -248,6 +248,32 @@ def _earnings_calendar_tickers(lookahead_days: int) -> list[str]:
     return [str(t).upper() for t in df["ticker"].tolist()]
 
 
+def _earnings_history_tickers() -> list[str]:
+    """Self-heal source: every ticker we've ever pulled history for.
+
+    earnings_calendar is now clamped to today-1..today+7 (PR #174 OOM
+    fix) which means a ticker like MSFT can drift out of the
+    ``_earnings_calendar_tickers`` view if it isn't in that 8-day
+    window when this job runs (e.g. weekly Sunday cadence + ticker
+    reports next Wednesday). Adding the historical-ticker source keeps
+    every ticker we've ever touched on the refresh list so it stays
+    current as new quarters drop.
+    """
+    try:
+        from gcp.database import query_to_dataframe
+    except ImportError:
+        return []
+
+    try:
+        df = query_to_dataframe("SELECT DISTINCT ticker FROM earnings_history")
+    except Exception as e:
+        log.warning("earnings_history ticker lookup failed: %s", e)
+        return []
+    if df is None or df.empty:
+        return []
+    return [str(t).upper() for t in df["ticker"].tolist()]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fetch AV EARNINGS history → Cloud SQL")
     parser.add_argument(
@@ -281,10 +307,18 @@ def main():
 
         ec = _earnings_calendar_tickers(args.lookahead_days)
         wl = load_watchlist()
-        seen: set[str] = set(ec)
-        tickers = list(ec) + [t for t in wl if t not in seen]
-        log.info("Resolved %d tickers (%d earnings %dd ∪ %d watchlist)",
-                 len(tickers), len(ec), args.lookahead_days, len(wl))
+        eh = _earnings_history_tickers()  # self-heal source — see fn docstring
+        seen: set[str] = set()
+        tickers: list[str] = []
+        for source in (ec, wl, eh):
+            for t in source:
+                if t not in seen:
+                    tickers.append(t)
+                    seen.add(t)
+        log.info(
+            "Resolved %d tickers (%d earnings %dd + %d watchlist + %d historical)",
+            len(tickers), len(ec), args.lookahead_days, len(wl), len(eh),
+        )
 
     if not tickers:
         log.info("No tickers to process — exiting")
