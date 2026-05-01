@@ -7,6 +7,52 @@
 
 ---
 
+## ⚠️ Caveats — what's hardcoded, what's generalized, what to NOT trust without re-validation
+
+Before reading any specific threshold or per-class recommendation in this doc, read this callout. Several numbers below are **uniform across SPY / QQQ / IWM** when they should be per-ticker. Several recommendations **generalize from a single ~30-day sample** that may not hold across regimes.
+
+### Hardcoded values currently in the analysis scripts and proposed strategy code (NOT yet calibrated per ticker)
+
+| Constant | Value | Where used | Issue |
+|---|---|---|---|
+| `THRESHOLDS["60m"]["clean"]` = 0.50% | 0.50% absolute | `_signal_multi_tf*.py`, `_morning_signals_today.py` | Same threshold for SPY, QQQ, IWM — but typical ATR_60m differs ~2× across them |
+| `THRESHOLDS["240m"]["clean"]` = 1.00% | 1.00% absolute | same | as above |
+| `RVOL_RULES["SPY"]` min/max | 0.20 / 1.05 | §3.4 proposal | Quartile boundaries from Apr-May only; will shift in different regimes |
+| `atr_expansion_5m` factor = 1.3× | 1.3 | Phase 0.7.1 spec | Picked round number; should be per-ticker calibrated |
+| `consecutive_periods = 3` | 3 | `lib/signals.py`, `lib/trading_analysis.py` | Same across tickers — IWM may want 2, SPY may want 4 |
+| `call_rsi_range = (25, 50)` | (25, 50) | `lib/signals.py` | Same across tickers — each has a different RSI distribution |
+| `stoch_rsi_oversold = 30.0` | 30.0 | `lib/signals.py` | Same across tickers |
+| Tier weights 1.0 / 1.5 / 2.0 | placeholders | Phase 0.7.1 | Round numbers; not tuned |
+
+**Phase 0.6 (added below) is the calibration-script phase that fixes these.** No threshold-based filter ships before Phase 0.6 produces a `ticker_calibration` table with per-ticker values.
+
+### Generalizations made (single-sample inferences extrapolated; flagged for cross-validation)
+
+| Claim in doc | Why it might not generalize |
+|---|---|
+| "IWM CALL = 5m scalp" (§3.4) | Based on best_tf concentration in one period. Today's audit (§3.9) showed IWM CALL also clean at 60m via momentum (25%). The "5m scalp" label is **strategy-conditional**, not universal. |
+| "Mean-reversion wins everywhere" (original §3.8) | **CORRECTED in §3.9.** Apples-to-apples bar-level comparison shows momentum dominated QQQ CALL by 3.8× on 5/1. The strategies are complementary. |
+| "SPY CALL is broken" | True in our sample but our sample is entirely from a SPY uptrend regime. Untested on SPY downtrending days. Likely the regime-trend issue, not strategy issue. |
+| "QQQ PUT is the top class at 41%" (§3.8) | True in Apr-May data. Could shift in earnings-heavy or post-Fed regimes. |
+| Per-class strategy assignment in §3.4 / §3.7 | Single-period inference. Cross-validate on at least 3 different regimes (trending up / trending down / chop) before shipping any per-class default in Phase 1. |
+
+### What IS per-ticker and validated
+
+| Component | Per-ticker? | Validated on |
+|---|---|---|
+| Per-(ticker × direction) clean-rate tables in §3.4, 3.7 | ✅ | Apr-May 2026 |
+| Per-ticker RVOL distribution in §3.4 (median/P75/P95) | ✅ | Apr-May 2026 |
+| Per-(ticker × direction × strategy) data in §3.9 | ✅ | 5/1 morning ONLY (small) |
+| Bar-level fire counts in §3.6 vs §3.10 | ✅ | period-specific |
+
+### Rule going forward
+
+1. **No ticker-universal numeric constants ship in production code** after Phase 0.6. Any constant lives in `ticker_calibration` (refreshed weekly) or is normalized to ATR / RVOL ratios computed at runtime.
+2. **Single-regime claims get cross-validated on at least 3 regimes** (trending up / trending down / chop) before becoming a default in Phase 1 timeframe-tag heuristics or in any per-class assignment.
+3. **Strategy assignments are (ticker × direction × strategy × regime)**, not (ticker × direction).
+
+---
+
 ## 1. The problem we're testing against
 
 From the v4 multi-timeframe evaluation across 30,792 historical signal-eligible bars (Apr 1 – May 1, SPY/QQQ/IWM):
@@ -36,6 +82,106 @@ From the v4 multi-timeframe evaluation across 30,792 historical signal-eligible 
 **Success criterion:** Daily run produces ≥1 row in `signal_alerts` OR the failure-notifier fires. No silent exits.
 
 **Owner / ETA:** Independent investigation — start now, doesn't block phases below.
+
+---
+
+### Phase 0.6 — per-ticker threshold calibration *(blocks any threshold-based filter)*
+
+**Why this had to land in the plan:** the multi-timeframe analysis, the RVOL filter proposal, the `atr_expansion_5m` factor, and the per-class clean-rate findings ALL use thresholds that are currently **hardcoded uniformly across SPY / QQQ / IWM**. That's wrong. SPY's typical bar moves 0.05% on noise; IWM's typical bar moves 2× as much. A 0.5% threshold for "clean hit at 60m" treats them as equivalent when they aren't.
+
+**Specific hardcoded values that need per-ticker calibration:**
+
+| Constant | Value (today) | Where | Issue |
+|---|---|---|---|
+| `THRESHOLDS["60m"]["clean"]` | 0.50% | all 3 multi-tf scripts | universal across tickers |
+| `THRESHOLDS["240m"]["clean"]` | 1.00% | same | universal across tickers |
+| `RVOL_RULES["SPY"]` | min=0.20, max=1.05 | §3.4 proposal | derived from Apr-May only; not regime-validated |
+| `RVOL_RULES["IWM"]` | min=0.40, no cap | same | as above |
+| `atr_expansion_5m` factor | 1.3× | Phase 0.7.1 spec | guessed; should be per-ticker |
+| `consecutive_periods` | 3 | `lib/signals.py`, `lib/trading_analysis.py` | universal — IWM may want 2, SPY may want 4 |
+| `call_rsi_range` | (25, 50) | `lib/signals.py` | universal — each ticker has different RSI distribution |
+| `stoch_rsi_oversold` | 30.0 | `lib/signals.py` | universal |
+| Tier weights (1.0 / 1.5 / 2.0) | placeholders | Phase 0.7.1 | not calibrated |
+
+**Calibration script: `scripts/calibrate_thresholds.py` (NEW, production-grade):**
+
+For each (ticker, timeframe) pair, computes from rolling 60-trading-day historical bars:
+
+```python
+calibration = {
+    "SPY": {
+        "atr_5m_median": 0.045,           # median 5-min ATR as % of price
+        "atr_60m_median": 0.18,           # used to scale per-tf threshold
+        "rvol_p25": 0.20, "rvol_p50": 0.55, "rvol_p75": 1.05,
+        "rsi_p25": 42, "rsi_p75": 58,     # ticker-specific RSI distribution
+        "thresholds_clean_per_tf": {
+            "5m":  0.045 * 1.5,           # 1.5× ATR_5m
+            "15m": 0.045 * 2.0,
+            "30m": 0.045 * 2.5,
+            "60m": 0.045 * 3.0,
+            ...
+        },
+    },
+    "QQQ": {...},
+    "IWM": {...},
+}
+```
+
+Persisted to a new `ticker_calibration` Cloud SQL table, refreshed weekly by a new `calibrate-thresholds` Cloud Run Job.
+
+**Schema:**
+
+```sql
+CREATE TABLE ticker_calibration (
+    ticker             VARCHAR(10) NOT NULL,
+    calibration_date   DATE        NOT NULL,
+    lookback_days      INTEGER     NOT NULL DEFAULT 60,
+
+    -- ATR per timeframe (in % of price)
+    atr_5m_median      DOUBLE PRECISION,
+    atr_15m_median     DOUBLE PRECISION,
+    atr_60m_median     DOUBLE PRECISION,
+
+    -- RVOL distribution
+    rvol_p25           DOUBLE PRECISION,
+    rvol_p50           DOUBLE PRECISION,
+    rvol_p75           DOUBLE PRECISION,
+    rvol_p95           DOUBLE PRECISION,
+
+    -- RSI distribution (regime indicator)
+    rsi_p10            DOUBLE PRECISION,
+    rsi_p25            DOUBLE PRECISION,
+    rsi_p75            DOUBLE PRECISION,
+    rsi_p90            DOUBLE PRECISION,
+
+    -- Computed clean thresholds per tf (in % of price)
+    clean_threshold    JSONB,              -- {"5m": 0.07, "15m": 0.10, ...}
+    rvol_min           DOUBLE PRECISION,   -- per-ticker filter band
+    rvol_max           DOUBLE PRECISION,
+    atr_expansion_x    DOUBLE PRECISION,   -- per-ticker calibrated multiplier
+
+    inserted_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (ticker, calibration_date)
+);
+```
+
+**Caller updates after calibration lands:**
+
+- `lib/strategies/momentum.py` and `mean_reversion.py` accept a `calibration` arg in `__init__` (or look up by ticker at runtime). They use `calibration[ticker]['rvol_min']` instead of hardcoded `0.20`.
+- All three multi-tf scripts read from `ticker_calibration` instead of the hardcoded `THRESHOLDS` dict.
+- `gcp/signal_monitor.py` reads calibration on startup and uses per-ticker thresholds.
+
+**Cloud Scheduler trigger:** `calibrate-thresholds-weekly` — Sunday 02:00 ET. Outputs to `ticker_calibration`. Adds < 1 min execution time. Cost: ~$0/month.
+
+**Tests:**
+
+1. `tests/test_calibrate_thresholds.py` — table-driven: synthetic bars with known ATR/RVOL distributions, verify calibration output matches expected
+2. `tests/test_strategy_uses_calibration.py` — instantiate `MomentumStrategy(calibration=...)`, verify it uses ticker-specific thresholds
+3. Regression: re-run the morning audit on 5/1 with calibrated thresholds, expect different (more accurate) clean-rates per ticker
+
+**Success criterion:** every threshold currently in scripts or strategy code is sourced from `ticker_calibration` for the relevant ticker. No ticker-universal numeric constants remain in the signal-evaluation hot path. The simulation harness from §4.2 can A/B compare "old uniform thresholds" vs "new calibrated thresholds" and the calibrated version shows measurably improved per-ticker clean-rate accuracy.
+
+**ETA:** 2 days dev + 1 day calibration validation. **Blocks Phases 0.7.1, 0.7.2, and any threshold-based filter in Phase 1+.**
 
 ---
 
@@ -735,11 +881,19 @@ gantt
     section Phase 0 (block)
     Fix signal-monitor write bug      :p0a, 2026-05-01, 2d
     Fix fetch-market-data day filter  :p0b, 2026-05-01, 2d
+    section Phase 0.6 (calibration)
+    calibrate-thresholds script + table :p06a, after p0a, 2d
+    Validate per-ticker outputs       :p06b, after p06a, 1d
+    section Phase 0.8 (refactor)
+    lib/strategies/ package + tests   :p08a, after p06b, 3d
+    Live parity validation            :p08b, after p08a, 1d
     section Phase 0.7 (strategy)
-    Schema strategy column            :p07a, after p0a, 1d
+    Schema strategy column            :p07a, after p08b, 1d
     Refactor + backfill mean-reversion:p07b, after p07a, 2d
+    section Phase 0.7.1 (mom fixes)
+    Tiered conditions + tests         :p071, after p07b, 4d
     section Phase 0.5 (measure)
-    Promote analysis script           :p05a, after p07b, 2d
+    Promote analysis script           :p05a, after p071, 2d
     signal_metrics table + Cloud Run job :p05b, after p05a, 1d
     Backfill + validate               :p05c, after p05b, 2d
     section Phase 1 (timeframe tag)
@@ -758,7 +912,9 @@ gantt
     Weekly QA report                  :qa, after p05c, 30d
 ```
 
-**Critical path:** Phase 0 → Phase 0.7 → Phase 0.5 → Phase 1 → Phase 3. Phases 2 and 4 can run in parallel after Phase 1 ships.
+**Critical path:** Phase 0 → Phase 0.6 → Phase 0.8 → Phase 0.7 → Phase 0.7.1 → Phase 0.5 → Phase 1 → Phase 3. Phases 2 and 4 can run in parallel after Phase 1 ships.
+
+(Why this many "Phase 0.x" sub-phases: each captures a *different* gap exposed during the analysis. Phase 0 = data freshness bugs. Phase 0.6 = no per-ticker calibration. Phase 0.8 = code structure (single canonical signal-eval path). Phase 0.7 = parallel-strategy schema. Phase 0.7.1 = condition fixes. Phase 0.5 = persisted measurement pipeline. None overlap; collapsing them into one phase would hide the dependency order.)
 
 **Why Phase 0.5 is non-negotiable before Phase 1+:** without persisted, automated, per-signal classification you can't measure whether any later phase's change actually moved the clean-rate. You'd be tuning blind. The throwaway script we used today only worked because someone (me) hand-pulled fresh AV data, hand-set creds, and hand-read the output.
 
@@ -797,7 +953,11 @@ gantt
 | Phase | Files |
 |---|---|
 | 0 | `gcp/signal_monitor.py` (bug fix), `gcp/fetchers/fetch_market_data.py:102-104` |
-| 0.7 | `gcp/schema.sql` (strategy column on historical_signals), `scripts/run_historical_signals.py` (--strategy flag, calls `lib.signals.evaluate_signal` for mean_reversion), `gcp/insight_discord_push.py` (strategy tag in embed) |
+| 0.6 | `scripts/calibrate_thresholds.py` (NEW), `gcp/schema.sql` (`ticker_calibration` table), `gcp/deploy.sh` (`calibrate-thresholds` Cloud Run Job + scheduler), `tests/test_calibrate_thresholds.py` |
+| 0.8 | `lib/strategies/__init__.py`, `lib/strategies/base.py`, `lib/strategies/momentum.py`, `lib/strategies/mean_reversion.py` (NEW package); `lib/signals.py` (back-compat shim); `lib/trading_analysis.py` (signal-gen removed; indicators only); `gcp/signal_monitor.py` (use `get_strategy()`); `scripts/run_historical_signals.py` (use `get_strategy()`); `tests/test_strategy_*.py` (5 new test files) |
+| 0.7 | `gcp/schema.sql` (strategy column on historical_signals); `scripts/run_historical_signals.py` (`--strategy` flag); `gcp/insight_discord_push.py` (strategy tag in embed) |
+| 0.7.1 | `lib/strategies/momentum.py` (tier conditions, drop free-score noise, loosen consec_up); `tests/test_momentum_conditions_v2.py` |
+| 0.7.2 | `lib/strategies/mean_reversion.py` (mirror fixes); `tests/test_mean_reversion_conditions_v2.py` |
 | 0.5 | `scripts/signal_quality_report.py` (NEW, promoted from `_signal_multi_tf.py`), `gcp/schema.sql` (signal_metrics table + strategy column), `gcp/deploy.sh` (new job + scheduler entries), `gcp/signal_quality_alarm.py` (NEW, regression check + stale-data fail-loud) |
 | 1 | `gcp/schema.sql` (timeframe_tag column), `gcp/signal_monitor.py`, `lib/signals.py` (timeframe heuristic from §3.4), `gcp/insight_discord_push.py` (embed format) |
 | 2 | `gcp/signal_monitor.py`, `gcp/schema.sql` (signal_outcomes table), `scripts/simulate_signal_changes.py` (NEW) |
