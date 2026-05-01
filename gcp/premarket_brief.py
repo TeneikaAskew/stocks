@@ -1333,6 +1333,47 @@ def _build_ticker_fields(brief: dict) -> list:
     return fields
 
 
+def _playability_lines(bucket: list[dict], top_n: int = 5) -> list[str]:
+    """Build the indented 'Playability — top N' sub-section for a bucket.
+
+    Returns a list of lines (no leading newline; caller joins with \\n).
+    Returns [] when no row in the bucket has a playability_score — the
+    section is hidden in that case rather than showing 'no data'.
+    """
+    playable = [r for r in bucket if r.get('playability_score') is not None]
+    if not playable:
+        return []
+    playable = sorted(playable, key=lambda r: -r['playability_score'])[:top_n]
+
+    try:
+        from lib.earnings_reactions import action_hint_for_archetype
+    except ImportError:
+        def action_hint_for_archetype(_a):
+            return ''
+
+    LOOKBACK_TARGET = 12  # matches enrich_with_playability default
+    lines = [f'  🎯 _Playability — top {len(playable)} ({LOOKBACK_TARGET}Q profile)_']
+    for i, r in enumerate(playable, 1):
+        score = r.get('playability_score') or 0
+        arch = r.get('playability_archetype') or 'quiet'
+        mag = r.get('playability_move_mag_pct') or 0
+        cons = (r.get('playability_dir_consistency') or 0) * 100
+        rev = (r.get('playability_reversal_rate') or 0) * 100
+        nq = r.get('playability_n_q', 0)
+        hint = action_hint_for_archetype(arch)
+        # Show n=X only when the ticker has fewer than LOOKBACK_TARGET
+        # quarters (insufficient daily bars for some reports). When n
+        # matches the target, the section header already conveys it.
+        n_suffix = '' if nq >= LOOKBACK_TARGET else f' _(n={nq})_'
+        lines.append(
+            f'  {i}. **{r["ticker"]}** '
+            f'`{score:.0f}` {arch} | '
+            f'gap {mag:.1f}% · cons {cons:.0f}% · rev {rev:.0f}% '
+            f'· {hint}{n_suffix}'
+        )
+    return lines
+
+
 def _build_earnings_embed(earnings_data: dict) -> dict:
     """Embed 4: Earnings calendar — today (weekday) or week ahead (Sunday).
 
@@ -1634,6 +1675,7 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
             sec_lines.extend(_row_line(r) for r in kept)
             if len(bucket) > cap:
                 sec_lines.append(f'_+{len(bucket) - cap} more_')
+            sec_lines.extend(_playability_lines(bucket, top_n=5))
             return '\n'.join(sec_lines)
 
         sections = []
