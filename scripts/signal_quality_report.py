@@ -190,16 +190,25 @@ def compute_atr_pct(
 ) -> Optional[float]:
     """ATR(14) on 5m bars, expressed as a fraction of entry price.
 
-    `intraday_lookback` must have High, Low, Close columns and at least
-    `period + 1` bars ending at (or just before) the signal time.
-    Returns None if not enough bars are available.
+    `intraday_lookback` must have High, Low, and a close-price column at
+    least `period + 1` bars long ending at (or just before) the signal
+    time. Accepts either `Close` (MarketAnalyzer-enriched DataFrames)
+    or `Last` (the column shape produced by `load_intraday_bars` —
+    MarketAnalyzer's convention is to alias close as `Last`).
+
+    Returns None if not enough bars are available or the close column
+    is missing entirely.
     """
     if intraday_lookback is None or len(intraday_lookback) < period + 1 or entry_price <= 0:
+        return None
+    close = intraday_lookback["Close"] if "Close" in intraday_lookback.columns \
+            else intraday_lookback.get("Last")
+    if close is None:
         return None
     atr_series = calculate_atr(
         intraday_lookback["High"],
         intraday_lookback["Low"],
-        intraday_lookback["Close"],
+        close,
         period=period,
     )
     if atr_series.empty or pd.isna(atr_series.iloc[-1]):
