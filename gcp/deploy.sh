@@ -200,9 +200,15 @@ deploy_signal_quality_alarm() {
     # retries double-post the Discord alarm. We accept that a real
     # crash (DB outage etc.) won't auto-retry — the next day's run
     # picks up the regression anyway.
+    #
+    # Memory: 512Mi is Cloud Run's gen2-with-CPU-always-allocated
+    # minimum. Tried 256Mi originally — gcloud rejects with "Total
+    # memory < 512 Mi is not supported with gen2 execution environment
+    # with cpu always allocated (unthrottled)". The actual workload
+    # (one DB query + small Discord POST) runs comfortably in <100Mi.
     gcloud run jobs create signal-quality-alarm \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 256Mi --cpu 1 --max-retries 0 \
+        --memory 512Mi --cpu 1 --max-retries 0 \
         --task-timeout 120 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.signal_quality_alarm" \
