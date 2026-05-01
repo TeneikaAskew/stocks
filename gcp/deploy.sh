@@ -189,9 +189,15 @@ deploy_signal_quality_report() {
 deploy_signal_quality_alarm() {
     echo "Deploying signal-quality-alarm job..."
 
+    # --max-retries 0: the alarm script INTENTIONALLY exits 1 on a
+    # detected regression so the failure-notifier sink picks it up.
+    # Cloud Run can't distinguish that from a crash, so any positive
+    # retries double-post the Discord alarm. We accept that a real
+    # crash (DB outage etc.) won't auto-retry — the next day's run
+    # picks up the regression anyway.
     gcloud run jobs create signal-quality-alarm \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 256Mi --cpu 1 --max-retries 1 \
+        --memory 256Mi --cpu 1 --max-retries 0 \
         --task-timeout 120 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.signal_quality_alarm" \
