@@ -94,15 +94,52 @@ class TestClassifyLean:
 
 class TestConditionalLeanSummary:
     def test_empty_when_query_returns_nothing(self, monkeypatch):
+        """Cloud SQL unavailable → empty dict from query → skip + null
+        sentence about the failure mode."""
         from lib import earnings_reactions
         monkeypatch.setattr(earnings_reactions, 'query_conditional_reactions',
                             lambda *a, **kw: {})
         result = conditional_lean_summary('AAA', 'AMC', 5.0)
         assert result['n'] == 0
         assert result['lean'] == 'skip'
-        # Phase 1.6 update: surface "no historical analog" so the brief
-        # tells the reader we looked but found nothing
+        # No data path of any kind known — fall through to
+        # "no historical data for this ticker yet" since total_for_ticker
+        # defaults to 0 when stats dict is empty.
+        assert 'no historical data for this ticker yet' in result['sentence']
+
+    def test_no_data_for_ticker(self, monkeypatch):
+        """Ticker has 0 rows in earnings_reactions (not yet backfilled).
+        Should render 'no historical data for this ticker yet' — NOT
+        the misleading 'gap outside typical range'."""
+        from lib import earnings_reactions
+        monkeypatch.setattr(earnings_reactions, 'query_conditional_reactions',
+                            lambda *a, **kw: {
+                                'n': 0, 'held': 0, 'reversed': 0,
+                                'unclear': 0, 'avg_sustain_5d_pct': None,
+                                'total_for_ticker': 0,
+                            })
+        result = conditional_lean_summary('AMZN', 'AMC', 4.85)
+        assert result['lean'] == 'skip'
+        assert 'no historical data for this ticker yet' in result['sentence']
+        # Should NOT say "outside typical range" — we don't know that
+        assert 'outside typical range' not in result['sentence']
+
+    def test_unprecedented_gap_for_known_ticker(self, monkeypatch):
+        """Ticker has data, but today's gap is outside any past gap's
+        ±band — this is the real 'unprecedented' case (e.g. BE +22%)."""
+        from lib import earnings_reactions
+        monkeypatch.setattr(earnings_reactions, 'query_conditional_reactions',
+                            lambda *a, **kw: {
+                                'n': 0, 'held': 0, 'reversed': 0,
+                                'unclear': 0, 'avg_sustain_5d_pct': None,
+                                'total_for_ticker': 12,  # 12 past quarters
+                            })
+        result = conditional_lean_summary('BE', 'AMC', 22.17)
+        assert result['lean'] == 'skip'
         assert 'no historical analog' in result['sentence']
+        assert 'gap outside typical range' in result['sentence']
+        # Should surface the count so reader knows we DID have data
+        assert '12 past quarters' in result['sentence']
 
     def test_too_few_samples(self, monkeypatch):
         from lib import earnings_reactions
