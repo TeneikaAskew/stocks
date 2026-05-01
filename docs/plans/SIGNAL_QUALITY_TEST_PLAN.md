@@ -39,6 +39,54 @@ From the v4 multi-timeframe evaluation across 30,792 historical signal-eligible 
 
 ---
 
+### Phase 0.7 — strategy reconciliation *(blocks all measurement)*
+
+**Problem discovered 2026-05-01:** the codebase has TWO completely different signal generators with **opposite CALL logic**:
+
+| | `lib/signals.py:check_call_conditions()` | `lib/trading_analysis.py:799-836` |
+|---|---|---|
+| Used by | live `signal_monitor.py` → `signal_alerts` | nightly `historical-signals-watchlist` → `historical_signals` |
+| CALL logic | **Mean-reversion** (consec_DOWN, below VWAP, below EMAs, RSI oversold) | **Momentum** (consec_UP, above VWAP, above EMA9, RSI bullish range) |
+| `conditions_met` format | JSON array `["consecutive_down", "rsi_oversold_zone", ...]` | String `"3/5"` |
+
+The §3 multi-timeframe findings were generated against `historical_signals` — i.e. the **momentum** strategy. They do NOT describe the live mean-reversion fires you see in Discord. The plan and §3 mappings are still useful but only for the momentum strategy; mean-reversion needs its own measurement.
+
+**Decision: Option B — keep both as parallel strategies, measure each side-by-side.**
+
+**What gets built:**
+
+1. **Schema:** add a `strategy` column to `historical_signals`:
+   ```sql
+   ALTER TABLE historical_signals ADD COLUMN IF NOT EXISTS strategy
+       VARCHAR(16) NOT NULL DEFAULT 'momentum'
+       CHECK (strategy IN ('momentum', 'mean_reversion'));
+   CREATE INDEX IF NOT EXISTS idx_historical_signals_strategy
+       ON historical_signals (strategy, entry_time DESC);
+   ```
+   Existing rows backfill as `'momentum'` (current behavior).
+2. **Refactor `scripts/run_historical_signals.py`** to accept `--strategy {momentum,mean_reversion}`:
+   - `momentum` → uses existing `MarketAnalyzer` path (status quo)
+   - `mean_reversion` → calls `lib.signals.evaluate_signal()` against the same indicator-enriched bars; writes rows with `strategy='mean_reversion'`.
+3. **Backfill mean-reversion** for SPY/QQQ/IWM × 2026-04-01 → present, `--force` (rebuild from scratch).
+4. **Update `signal_metrics`** (Phase 0.5's table) to carry `strategy` so the per-timeframe classifications track per strategy.
+5. **Weekly QA report** (§4.1) shows side-by-side: momentum clean-rate vs mean-reversion clean-rate at every timeframe, per-(ticker, direction).
+6. **Live `signal_monitor.py` stays mean-reversion.** No live behavior change.
+7. **Discord embed update** (small): when a signal fires, show its strategy tag — e.g. "🟢 SPY CALL [mean_reversion / 90m]".
+
+**Test:**
+
+1. Apply schema migration via `apply-schema-migrations`.
+2. Run `python scripts/run_historical_signals.py --symbol SPY --strategy mean_reversion --start-date 2026-04-01 --end-date 2026-05-02 --force` (and similarly for QQQ/IWM).
+3. Confirm both strategies' rows coexist in `historical_signals` for the same dates with different signal-eligibility patterns.
+4. Re-run the multi-tf analyzer (Phase 0.5's `signal_quality_report.py`) with `--strategy mean_reversion` filter. Compare to existing momentum results.
+5. Update §3 in this plan with side-by-side tables.
+
+**Success criterion:** both strategies have ≥ 4 weeks of rows in `historical_signals`, side-by-side multi-tf comparison published, and the §3.4 per-(ticker, direction) table now has TWO rows per class — one per strategy.
+
+**ETA:** 2 days dev (schema + refactor + backfill) + 1 day analysis update.
+
+---
+
 ### Phase 0.5 — productionize the analysis pipeline itself *(must precede Phases 1-4 measurement)*
 
 **Problem:** the multi-timeframe analysis we just ran (`scripts/_signal_multi_tf.py`) is a throwaway. It reads creds from a temp directory, writes to a CSV, and only runs when someone types the command. Without productionizing it first, every later phase will be impossible to *measure* — we'd be tuning blind.
@@ -366,8 +414,11 @@ gantt
     section Phase 0 (block)
     Fix signal-monitor write bug      :p0a, 2026-05-01, 2d
     Fix fetch-market-data day filter  :p0b, 2026-05-01, 2d
+    section Phase 0.7 (strategy)
+    Schema strategy column            :p07a, after p0a, 1d
+    Refactor + backfill mean-reversion:p07b, after p07a, 2d
     section Phase 0.5 (measure)
-    Promote analysis script           :p05a, after p0a, 2d
+    Promote analysis script           :p05a, after p07b, 2d
     signal_metrics table + Cloud Run job :p05b, after p05a, 1d
     Backfill + validate               :p05c, after p05b, 2d
     section Phase 1 (timeframe tag)
@@ -386,7 +437,7 @@ gantt
     Weekly QA report                  :qa, after p05c, 30d
 ```
 
-**Critical path:** Phase 0 → Phase 0.5 → Phase 1 → Phase 3. Phases 2 and 4 can run in parallel after Phase 1 ships.
+**Critical path:** Phase 0 → Phase 0.7 → Phase 0.5 → Phase 1 → Phase 3. Phases 2 and 4 can run in parallel after Phase 1 ships.
 
 **Why Phase 0.5 is non-negotiable before Phase 1+:** without persisted, automated, per-signal classification you can't measure whether any later phase's change actually moved the clean-rate. You'd be tuning blind. The throwaway script we used today only worked because someone (me) hand-pulled fresh AV data, hand-set creds, and hand-read the output.
 
@@ -425,7 +476,8 @@ gantt
 | Phase | Files |
 |---|---|
 | 0 | `gcp/signal_monitor.py` (bug fix), `gcp/fetchers/fetch_market_data.py:102-104` |
-| 0.5 | `scripts/signal_quality_report.py` (NEW, promoted from `_signal_multi_tf.py`), `gcp/schema.sql` (signal_metrics table), `gcp/deploy.sh` (new job + scheduler entries), `gcp/signal_quality_alarm.py` (NEW, regression check + stale-data fail-loud) |
+| 0.7 | `gcp/schema.sql` (strategy column on historical_signals), `scripts/run_historical_signals.py` (--strategy flag, calls `lib.signals.evaluate_signal` for mean_reversion), `gcp/insight_discord_push.py` (strategy tag in embed) |
+| 0.5 | `scripts/signal_quality_report.py` (NEW, promoted from `_signal_multi_tf.py`), `gcp/schema.sql` (signal_metrics table + strategy column), `gcp/deploy.sh` (new job + scheduler entries), `gcp/signal_quality_alarm.py` (NEW, regression check + stale-data fail-loud) |
 | 1 | `gcp/schema.sql` (timeframe_tag column), `gcp/signal_monitor.py`, `lib/signals.py` (timeframe heuristic from §3.4), `gcp/insight_discord_push.py` (embed format) |
 | 2 | `gcp/signal_monitor.py`, `gcp/schema.sql` (signal_outcomes table), `scripts/simulate_signal_changes.py` (NEW) |
 | 3 | `gcp/signal_monitor.py` (multi-tf evaluator), `lib/trading_analysis.py` (resampling) |
