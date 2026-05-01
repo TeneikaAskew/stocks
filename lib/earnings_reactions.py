@@ -345,8 +345,14 @@ def query_conditional_reactions(
           'reversed':     int,    # is_reversal_5d == TRUE
           'unclear':      int,    # tiny moves, NULL flags
           'avg_sustain_5d_pct': float | None,
+          'total_for_ticker': int,  # all rows for this ticker × basis
+                                    # (regardless of gap band) — lets
+                                    # callers distinguish "no data for
+                                    # this ticker yet" (=0) from
+                                    # "ticker exists but no similar gaps"
+                                    # (>0 with n=0).
         }
-        Empty dict if no match.
+        Empty dict if Cloud SQL unavailable.
     """
     if reaction_basis not in ('AMC', 'BMO'):
         return {}
@@ -363,6 +369,10 @@ def query_conditional_reactions(
 
     lo = actual_gap_pct - gap_band_pct
     hi = actual_gap_pct + gap_band_pct
+    # Single query computes both the gap-band-filtered stats AND the
+    # unfiltered total for the ticker. `total_for_ticker` lets callers
+    # distinguish "we have no data for this ticker yet" from "we have
+    # data but today's gap is unprecedented."
     sql = """
         WITH ranked AS (
             SELECT
@@ -378,18 +388,31 @@ def query_conditional_reactions(
             WHERE ticker = :ticker
               AND reaction_basis = :basis
               AND reaction_gap_pct IS NOT NULL
+        ),
+        windowed AS (
+            SELECT * FROM ranked WHERE rn <= :lookback
         )
         SELECT
-            COUNT(*)                                                            AS n,
-            COUNT(*) FILTER (WHERE direction_consistent_5d IS TRUE)             AS held,
-            COUNT(*) FILTER (WHERE is_reversal_5d IS TRUE)                      AS reversed,
             COUNT(*) FILTER (
-                WHERE direction_consistent_5d IS NULL OR is_reversal_5d IS NULL
-            )                                                                   AS unclear,
-            AVG(sustain_5d_pct)                                                 AS avg_sustain_5d_pct
-        FROM ranked
-        WHERE rn <= :lookback
-          AND reaction_gap_pct BETWEEN :lo AND :hi
+                WHERE reaction_gap_pct BETWEEN :lo AND :hi
+            )                                                       AS n,
+            COUNT(*) FILTER (
+                WHERE reaction_gap_pct BETWEEN :lo AND :hi
+                  AND direction_consistent_5d IS TRUE
+            )                                                       AS held,
+            COUNT(*) FILTER (
+                WHERE reaction_gap_pct BETWEEN :lo AND :hi
+                  AND is_reversal_5d IS TRUE
+            )                                                       AS reversed,
+            COUNT(*) FILTER (
+                WHERE reaction_gap_pct BETWEEN :lo AND :hi
+                  AND (direction_consistent_5d IS NULL OR is_reversal_5d IS NULL)
+            )                                                       AS unclear,
+            AVG(sustain_5d_pct) FILTER (
+                WHERE reaction_gap_pct BETWEEN :lo AND :hi
+            )                                                       AS avg_sustain_5d_pct,
+            COUNT(*)                                                AS total_for_ticker
+        FROM windowed
     """
     df = query_to_dataframe(sql, {
         'ticker':  ticker,
@@ -402,15 +425,18 @@ def query_conditional_reactions(
         return {}
     row = df.iloc[0]
     n = int(row['n'])
+    total_for_ticker = int(row.get('total_for_ticker', 0) or 0)
     if n == 0:
         return {'n': 0, 'held': 0, 'reversed': 0, 'unclear': 0,
-                'avg_sustain_5d_pct': None}
+                'avg_sustain_5d_pct': None,
+                'total_for_ticker': total_for_ticker}
     return {
         'n':       n,
         'held':    int(row['held']),
         'reversed': int(row['reversed']),
         'unclear': int(row['unclear']),
         'avg_sustain_5d_pct': _to_float(row.get('avg_sustain_5d_pct')),
+        'total_for_ticker': total_for_ticker,
     }
 
 
@@ -494,10 +520,25 @@ def conditional_lean_summary(
     n = stats.get('n', 0)
     held = stats.get('held', 0)
     reversed_ = stats.get('reversed', 0)
+    total_for_ticker = stats.get('total_for_ticker', 0)
 
     # Build the human-readable sentence describing the dominant pattern.
+    # n=0 has two distinct meanings — distinguish them so the brief
+    # reader knows whether we have data at all for this ticker.
     if n == 0:
-        sentence = 'no historical analog (gap outside typical range)'
+        if total_for_ticker == 0:
+            # No earnings_reactions rows for this (ticker, basis) yet —
+            # the populator hasn't covered it. Different remediation:
+            # one-shot backfill vs accept "this gap is unusual."
+            sentence = 'no historical data for this ticker yet'
+        else:
+            # We have data, but today's gap is outside any past gap's
+            # ±band range. Could be unprecedented (real signal) or just
+            # extreme (treat with caution).
+            sentence = (
+                f'no historical analog '
+                f'(gap outside typical range, {total_for_ticker} past quarters)'
+            )
     elif n < 3:
         sentence = f'too few similar past gaps ({n})'
     elif reversed_ >= held:
