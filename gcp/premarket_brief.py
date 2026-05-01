@@ -402,6 +402,21 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     if top_n and top_n > 0:
         earnings = earnings[:top_n]
 
+    # Enrich with the historical reaction profile + playability_score.
+    # Each row gains:
+    #   - playability_score (vol-normalized, options-weighted; None when
+    #     no historical data available)
+    #   - playability_archetype ('bullish_trend' | 'bearish_trend' |
+    #     'reversal_play' | 'mixed' | 'quiet')
+    #   - playability_n_q + the underlying inputs for the embed to render
+    # See lib/earnings_reactions.py for the formula.
+    try:
+        from lib.earnings_reactions import enrich_with_playability
+        enrich_with_playability(earnings)
+    except Exception as e:
+        # Don't fail the brief if the populator hasn't run yet — just log.
+        logger.warning("playability enrichment skipped: %s", e)
+
     return {'mode': mode, 'start': start, 'end': end, 'earnings': earnings}
 
 
@@ -486,7 +501,24 @@ def load_yesterday_amc_reactions(today: date, top_n: int = 5) -> list[dict]:
 
     # Top by absolute gap (biggest movers first, regardless of direction)
     rows.sort(key=lambda x: -abs(x['gap_pct']))
-    return rows[:top_n] if top_n else rows
+    rows = rows[:top_n] if top_n else rows
+
+    # Phase 1.6: attach event-conditional historical lean.
+    # For each row, look up past quarters where this ticker had a
+    # similar-shaped gap; classify as 'bullish gap play' / 'expect
+    # reversal' / etc. so the renderer can surface a same-day lean.
+    try:
+        from lib.earnings_reactions import conditional_lean_summary
+        for r in rows:
+            r['conditional_lean'] = conditional_lean_summary(
+                ticker=r['ticker'],
+                reaction_basis='AMC',  # this loader is AMC-only
+                actual_gap_pct=r['gap_pct'],
+            )
+    except Exception as e:
+        logger.warning("conditional lean lookup skipped: %s", e)
+
+    return rows
 
 
 # ── Economic Events ─────────────────────────────────────────────────────────
@@ -1318,6 +1350,53 @@ def _build_ticker_fields(brief: dict) -> list:
     return fields
 
 
+def _playability_lines(bucket: list[dict], top_n: int = 5) -> list[str]:
+    """Build the indented 'Playability — top N' sub-section for a bucket.
+
+    Returns a list of lines (no leading newline; caller joins with \\n).
+    Returns [] when no row in the bucket has a playability_score — the
+    section is hidden in that case rather than showing 'no data'.
+    """
+    playable = [r for r in bucket if r.get('playability_score') is not None]
+    if not playable:
+        return []
+    playable = sorted(playable, key=lambda r: -r['playability_score'])[:top_n]
+
+    try:
+        from lib.earnings_reactions import action_hint_for_archetype
+    except ImportError:
+        def action_hint_for_archetype(_a):
+            return ''
+
+    # Pull the lookback target from lib so the embed header label
+    # matches whatever BRIEF_REACTION_LOOKBACK_QUARTERS is set to.
+    try:
+        from lib.earnings_reactions import DEFAULT_LOOKBACK_QUARTERS
+        lookback = DEFAULT_LOOKBACK_QUARTERS
+    except ImportError:
+        lookback = 12
+    lines = [f'  🎯 _Playability — top {len(playable)} ({lookback}Q profile)_']
+    for i, r in enumerate(playable, 1):
+        score = r.get('playability_score') or 0
+        arch = r.get('playability_archetype') or 'quiet'
+        mag = r.get('playability_move_mag_pct') or 0
+        cons = (r.get('playability_dir_consistency') or 0) * 100
+        rev = (r.get('playability_reversal_rate') or 0) * 100
+        nq = r.get('playability_n_q', 0)
+        hint = action_hint_for_archetype(arch)
+        # Show n=X only when the ticker has fewer than the lookback
+        # target quarters (insufficient daily bars for some reports).
+        # When n matches the target, the section header already conveys it.
+        n_suffix = '' if nq >= lookback else f' _(n={nq})_'
+        lines.append(
+            f'  {i}. **{r["ticker"]}** '
+            f'`{score:.0f}` {arch} | '
+            f'gap {mag:.1f}% · cons {cons:.0f}% · rev {rev:.0f}% '
+            f'· {hint}{n_suffix}'
+        )
+    return lines
+
+
 def _build_earnings_embed(earnings_data: dict) -> dict:
     """Embed 4: Earnings calendar — today (weekday) or week ahead (Sunday).
 
@@ -1619,6 +1698,7 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
             sec_lines.extend(_row_line(r) for r in kept)
             if len(bucket) > cap:
                 sec_lines.append(f'_+{len(bucket) - cap} more_')
+            sec_lines.extend(_playability_lines(bucket, top_n=5))
             return '\n'.join(sec_lines)
 
         sections = []
@@ -1632,14 +1712,27 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         # 2. Yesterday-AMC reactions — last night's AMC reporters with
         # today's pre-market gap. The actual market reaction to the news
         # that dropped 4-5 PM yesterday lives in today's pre-market gap.
+        # Phase 1.6: each row also carries a conditional lean from the
+        # past 12Q earnings_reactions, rendered as a sub-line.
         amc_reactions = earnings_data.get('yesterday_amc_reactions') or []
         if amc_reactions:
             r_lines = [
                 f'\n**\U0001f4ca Reactions to Last Night’s AMC** '
                 f'(top {len(amc_reactions)} by |gap|)'
             ]
-            r_lines.extend(_row_line(r, show_tier_badge=False)
-                           for r in amc_reactions)
+            for r in amc_reactions:
+                r_lines.append(_row_line(r, show_tier_badge=False))
+                lean = r.get('conditional_lean') or {}
+                sentence = lean.get('sentence') or ''
+                lean_phrase = lean.get('lean')
+                if sentence and lean_phrase and lean_phrase != 'skip':
+                    r_lines.append(
+                        f'  → {sentence} · lean: **{lean_phrase}**'
+                    )
+                elif sentence:
+                    # Sample too small / no clear pattern — surface
+                    # the count but no directional verb.
+                    r_lines.append(f'  → {sentence}')
             sections.append('\n'.join(r_lines))
 
         # 3. Tonight's AMC — reports after today's close
