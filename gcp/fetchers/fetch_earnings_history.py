@@ -49,13 +49,113 @@ def _safe_float(val) -> float | None:
     if val is None or val == "None" or val == "":
         return None
     try:
-        return float(val)
+        f = float(val)
     except (TypeError, ValueError):
         return None
+    # AV returns "NaN" or float('nan') for upcoming-but-not-reported quarters.
+    # Storing NaN in NUMERIC columns leaks placeholder rows past the
+    # `reported_eps IS NOT NULL` filter (NaN is a value, not NULL).
+    if f != f:
+        return None
+    return f
 
 
-def fetch_history_for_ticker(ticker: str, api_key: str) -> pd.DataFrame:
-    """Pull AV EARNINGS for one ticker; return rows for `quarterlyEarnings`."""
+def _safe_str(val) -> str | None:
+    """Normalize AV string fields. Returns None for missing / 'None' / empty."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s or s.lower() in ("none", "null", "nan"):
+        return None
+    return s
+
+
+def _yahoo_timing_from_event_dt(event_dt) -> str | None:
+    """Derive 'pre-market' | 'post-market' from a Yahoo earnings event datetime.
+
+    Yahoo's get_earnings_dates() returns timestamps in US/Eastern. An
+    event at 16:00 ET or later is post-market (AMC); an event at
+    09:30 ET or earlier is pre-market (BMO). Anything in between is
+    intraday — rare for earnings, treat as None so AV reportTime
+    fallback wins.
+
+    Robust to tz-aware and tz-naive timestamps.
+    """
+    if event_dt is None or pd.isna(event_dt):
+        return None
+    try:
+        ts = pd.Timestamp(event_dt)
+    except (TypeError, ValueError):
+        return None
+    # Convert to US/Eastern if tz-aware; assume already-ET if naive
+    if ts.tzinfo is not None:
+        try:
+            ts = ts.tz_convert('US/Eastern')
+        except Exception:
+            ts = ts.tz_convert('UTC').tz_convert('US/Eastern')
+    # Compare wall-clock time
+    hr, mn = ts.hour, ts.minute
+    minutes = hr * 60 + mn
+    if minutes >= 16 * 60:           # 16:00 ET or later -> AMC
+        return 'post-market'
+    if minutes <= 9 * 60 + 30:       # 09:30 ET or earlier -> BMO
+        return 'pre-market'
+    return None  # intraday — let AV fallback decide
+
+
+def fetch_yahoo_timing_for_ticker(ticker: str, limit: int = 40) -> dict:
+    """Pull the last `limit` earnings dates for `ticker` from Yahoo
+    (yfinance) and return a {reported_date: 'pre-market'|'post-market'}
+    map. yfinance.Ticker.get_earnings_dates() returns historical
+    timestamps in US/Eastern with the reaction-day datetime.
+
+    Returns empty dict on any failure (yfinance is often noisy at the
+    long tail). Caller should treat absence as 'no Yahoo data — fall
+    back to AV reportTime'.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        log.info("yfinance not installed — skipping Yahoo timing validation")
+        return {}
+    try:
+        df = yf.Ticker(ticker).get_earnings_dates(limit=limit)
+    except Exception as e:
+        log.debug("    Yahoo earnings_dates for %s: %s", ticker, e)
+        return {}
+    if df is None or df.empty:
+        return {}
+    out: dict = {}
+    for ts, _row in df.iterrows():
+        timing = _yahoo_timing_from_event_dt(ts)
+        if timing is None:
+            continue
+        # Normalize to a date for joining against earnings_history.reported_date
+        try:
+            d = pd.Timestamp(ts)
+            if d.tzinfo is not None:
+                d = d.tz_convert('US/Eastern')
+            out[d.date()] = timing
+        except Exception:
+            continue
+    return out
+
+
+def fetch_history_for_ticker(
+    ticker: str,
+    api_key: str,
+    enrich_with_yahoo: bool = True,
+) -> pd.DataFrame:
+    """Pull AV EARNINGS for one ticker; optionally enrich with Yahoo timing.
+
+    AV's `reportTime` is the primary timing source per quarter, but it
+    has occasional errors (e.g. NVDA 2026-02-25 was reported by AV as
+    pre-market when it actually released after-hours). Yahoo's
+    earnings-dates timestamps are derived from the wire feed and are
+    reliable. When `enrich_with_yahoo=True`, we also pull yfinance's
+    earnings_dates for the same ticker and store the per-quarter Yahoo
+    timing in `yahoo_report_time` so the consumer can prefer it.
+    """
     params = {"function": "EARNINGS", "symbol": ticker.upper(), "apikey": api_key}
     try:
         resp = requests.get(AV_BASE_URL, params=params, timeout=30)
@@ -74,28 +174,53 @@ def fetch_history_for_ticker(ticker: str, api_key: str) -> pd.DataFrame:
         log.info("    No quarterly history for %s", ticker)
         return pd.DataFrame()
 
+    yahoo_timing_map = (
+        fetch_yahoo_timing_for_ticker(ticker.upper())
+        if enrich_with_yahoo else {}
+    )
+
     rows = []
+    yahoo_hits = 0
+    yahoo_disagreements = 0
     for q in quarterly:
         fiscal = q.get("fiscalDateEnding")
         reported = q.get("reportedDate")
         if not fiscal:
             continue
+        reported_date = (
+            pd.to_datetime(reported).date() if reported else None
+        )
+        av_report_time = _safe_str(q.get("reportTime"))
+        yahoo_report_time = (
+            yahoo_timing_map.get(reported_date) if reported_date else None
+        )
+        if yahoo_report_time:
+            yahoo_hits += 1
+            if av_report_time and av_report_time.lower() != yahoo_report_time.lower():
+                yahoo_disagreements += 1
+                log.info(
+                    "    %s %s: AV reportTime=%s but Yahoo says %s — Yahoo wins",
+                    ticker, reported_date, av_report_time, yahoo_report_time,
+                )
         rows.append(
             {
                 "ticker": ticker.upper(),
                 "fiscal_date_ending": pd.to_datetime(fiscal).date(),
-                "reported_date": (
-                    pd.to_datetime(reported).date() if reported else None
-                ),
+                "reported_date": reported_date,
                 "reported_eps": _safe_float(q.get("reportedEPS")),
                 "estimated_eps": _safe_float(q.get("estimatedEPS")),
                 "surprise": _safe_float(q.get("surprise")),
                 "surprise_pct": _safe_float(q.get("surprisePercentage")),
+                "report_time": av_report_time,
+                "yahoo_report_time": yahoo_report_time,
             }
         )
     df = pd.DataFrame(rows)
     if not df.empty:
-        log.info("    %s: %d quarterly entries", ticker, len(df))
+        log.info(
+            "    %s: %d quarterly entries  (Yahoo timing: %d/%d, %d disagreements)",
+            ticker, len(df), yahoo_hits, len(df), yahoo_disagreements,
+        )
     return df
 
 
@@ -195,6 +320,15 @@ def main():
     combined = combined.drop_duplicates(
         subset=["ticker", "fiscal_date_ending"], keep="last"
     )
+
+    # Scrub NaN -> None so they land as PostgreSQL NULL, not 'NaN'::numeric.
+    # _safe_float already returns Python None for NaN inputs, but pd.concat
+    # rebuilds float columns and re-introduces np.nan. Without this scrub,
+    # upcoming-but-not-yet-reported quarters leak past the
+    # `reported_eps IS NOT NULL` filter on the consumer side.
+    import numpy as np
+    combined = combined.replace({np.nan: None}).where(combined.notna(), None)
+
     log.info("Total rows: %d across %d tickers", len(combined), combined["ticker"].nunique())
 
     if args.dry_run:
