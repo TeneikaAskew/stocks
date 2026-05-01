@@ -199,6 +199,44 @@ def test_compute_atr_pct_none_on_zero_entry_price():
     assert compute_atr_pct(bars, 0.0) is None
 
 
+def test_compute_atr_pct_accepts_last_column_alias():
+    """Production-realistic fixture: gcp/historical_signals.load_intraday_bars
+    aliases the SQL `close` column as `Last` (per MarketAnalyzer's column
+    convention). When that's the only close-price column on the DataFrame,
+    compute_atr_pct must NOT raise KeyError('Close')."""
+    bars = pd.DataFrame({
+        "Time":  pd.date_range("2026-04-29 14:30", periods=30, freq="1min"),
+        "High":  [101.0] * 30,
+        "Low":   [99.0]  * 30,
+        "Last":  [100.0] * 30,    # NOT 'Close' — production column shape
+    })
+    out = compute_atr_pct(bars, 100.0, period=14)
+    assert out == pytest.approx(0.02, rel=1e-3)
+
+
+def test_compute_atr_pct_prefers_close_when_both_present():
+    """If both Close and Last exist (MarketAnalyzer-enriched DF), use
+    Close — that's the canonical column when it's available."""
+    bars = pd.DataFrame({
+        "High":  [101.0] * 30,
+        "Low":   [99.0]  * 30,
+        "Close": [100.0] * 30,    # used
+        "Last":  [50.0]  * 30,    # would yield ATR/price = 0.04 if used
+    })
+    out = compute_atr_pct(bars, 100.0, period=14)
+    assert out == pytest.approx(0.02, rel=1e-3)
+
+
+def test_compute_atr_pct_returns_none_when_no_close_column():
+    """Defensive: if neither Close nor Last is present, return None
+    rather than raise — keeps the pipeline running on weird inputs."""
+    bars = pd.DataFrame({
+        "High": [101.0] * 30,
+        "Low":  [99.0]  * 30,
+    })
+    assert compute_atr_pct(bars, 100.0) is None
+
+
 # ── 6) compute_metrics_for_signal end-to-end ───────────────────────────
 
 def test_compute_metrics_for_signal_full_pipeline():
