@@ -20,11 +20,58 @@ Archetype tagging (used by the brief's playbook section):
     reversal_play  — high reversal_rate, low dir_consistency
     mixed          — moderate signals on both axes
     quiet          — small move_magnitude or no clear pattern
+
+Tunable knobs (env vars, defaults match the values locked in Phase 0.5):
+    BRIEF_REACTION_LOOKBACK_QUARTERS  — playability + conditional lookback
+                                        (default 12, range 4-20 sane)
+    BRIEF_CONDITIONAL_GAP_BAND_PCT    — width of similar-gap band, ±X%
+                                        (default 2.0, range 1.0-5.0 sane)
+    BRIEF_CONDITIONAL_THRESHOLD       — fraction of n that must agree
+                                        for a directional read
+                                        (default 0.75, range 0.5-0.9 sane)
+    BRIEF_CONDITIONAL_MIN_SAMPLE      — minimum n to attempt a directional
+                                        read, else 'skip' (default 3)
 """
 from __future__ import annotations
 
 import math
+import os
 from typing import Optional
+
+
+# ────────────────────────────────────────────────────────────
+# Config — env-var overridable. Read once at import; consumers
+# pass values explicitly so unit tests don't depend on env state.
+# ────────────────────────────────────────────────────────────
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float env var, fall back to default on missing/bad value."""
+    raw = os.environ.get(name)
+    if raw is None or raw == '':
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == '':
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+# Public defaults — tests + brief import these so the wired-in values
+# stay in sync. To override at runtime, set the env vars at process
+# start (Cloud Run job env, local shell, etc).
+DEFAULT_LOOKBACK_QUARTERS = _env_int('BRIEF_REACTION_LOOKBACK_QUARTERS', 12)
+DEFAULT_GAP_BAND_PCT      = _env_float('BRIEF_CONDITIONAL_GAP_BAND_PCT', 2.0)
+DEFAULT_CONDITIONAL_THRESHOLD = _env_float('BRIEF_CONDITIONAL_THRESHOLD', 0.75)
+DEFAULT_CONDITIONAL_MIN_SAMPLE = _env_int('BRIEF_CONDITIONAL_MIN_SAMPLE', 3)
 
 
 # ────────────────────────────────────────────────────────────
@@ -135,15 +182,23 @@ def classify_archetype(
 # DB query helpers
 # ────────────────────────────────────────────────────────────
 
-def query_reaction_stats(tickers: list[str], lookback_quarters: int = 12) -> dict:
+def query_reaction_stats(
+    tickers: list[str],
+    lookback_quarters: Optional[int] = None,
+) -> dict:
     """Fetch per-ticker aggregate stats from earnings_reactions over the
     last `lookback_quarters` quarters.
+
+    `lookback_quarters` defaults to DEFAULT_LOOKBACK_QUARTERS (env var
+    BRIEF_REACTION_LOOKBACK_QUARTERS, default 12).
 
     Returns:
         {ticker: {n_q, move_magnitude_pct, directional_bias_pct,
                   dir_consistency, reversal_rate}}
         Tickers without enough data are simply absent from the dict.
     """
+    if lookback_quarters is None:
+        lookback_quarters = DEFAULT_LOOKBACK_QUARTERS
     if not tickers:
         return {}
     try:
@@ -268,8 +323,8 @@ def query_conditional_reactions(
     ticker: str,
     reaction_basis: str,
     actual_gap_pct: float,
-    gap_band_pct: float = 2.0,
-    lookback_quarters: int = 12,
+    gap_band_pct: Optional[float] = None,
+    lookback_quarters: Optional[int] = None,
 ) -> dict:
     """Return historical reactions for `ticker` filtered to past quarters
     with a similar gap shape (size and direction).
@@ -295,6 +350,10 @@ def query_conditional_reactions(
     """
     if reaction_basis not in ('AMC', 'BMO'):
         return {}
+    if gap_band_pct is None:
+        gap_band_pct = DEFAULT_GAP_BAND_PCT
+    if lookback_quarters is None:
+        lookback_quarters = DEFAULT_LOOKBACK_QUARTERS
     try:
         from gcp.database import query_to_dataframe, is_cloud_sql_configured
     except ImportError:
@@ -358,8 +417,8 @@ def query_conditional_reactions(
 def classify_lean(
     conditional_stats: dict,
     actual_gap_pct: Optional[float] = None,
-    min_sample: int = 3,
-    threshold: float = 0.75,
+    min_sample: Optional[int] = None,
+    threshold: Optional[float] = None,
 ) -> str:
     """Map conditional historical stats → plain-English lean phrase.
 
@@ -379,6 +438,10 @@ def classify_lean(
             this, return 'skip' regardless of the split.
         threshold: fraction of n that must agree for a directional read.
     """
+    if min_sample is None:
+        min_sample = DEFAULT_CONDITIONAL_MIN_SAMPLE
+    if threshold is None:
+        threshold = DEFAULT_CONDITIONAL_THRESHOLD
     if not conditional_stats:
         return 'skip'
     n = conditional_stats.get('n', 0)
@@ -404,8 +467,8 @@ def conditional_lean_summary(
     ticker: str,
     reaction_basis: str,
     actual_gap_pct: float,
-    gap_band_pct: float = 2.0,
-    lookback_quarters: int = 12,
+    gap_band_pct: Optional[float] = None,
+    lookback_quarters: Optional[int] = None,
 ) -> dict:
     """Top-level convenience for the brief — runs the query + classifier
     and returns a renderable summary.
@@ -457,7 +520,7 @@ def conditional_lean_summary(
 
 def enrich_with_playability(
     rows: list[dict],
-    lookback_quarters: int = 12,
+    lookback_quarters: Optional[int] = None,
     daily_return_window: int = 60,
 ) -> list[dict]:
     """Add 'playability_score' and 'playability_archetype' to each row in `rows`.
@@ -472,6 +535,8 @@ def enrich_with_playability(
     """
     if not rows:
         return rows
+    if lookback_quarters is None:
+        lookback_quarters = DEFAULT_LOOKBACK_QUARTERS
     tickers = sorted({str(r['ticker']) for r in rows if r.get('ticker')})
     stats_map = query_reaction_stats(tickers, lookback_quarters)
     daily_map = query_typical_daily_return(tickers, daily_return_window)

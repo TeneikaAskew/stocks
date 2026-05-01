@@ -4,7 +4,10 @@ Covers:
   - classify_lean: maps (n, held, reversed, gap) → plain-English phrase
   - conditional_lean_summary: end-to-end with mocked DB query
   - SBUX 4/28 validation: real-world example should produce 'expect reversal'
+  - Env-var configurability of all four knobs
 """
+import importlib
+import os
 import pytest
 
 from lib.earnings_reactions import (
@@ -205,3 +208,89 @@ class TestQueryInputValidation:
         query_conditional_reactions('AAA', 'AMC', -4.0)
         assert called_with['params']['lo'] == -6.0
         assert called_with['params']['hi'] == -2.0
+
+
+# ────────────────────────────────────────────────────────────
+# Env-var configurability — Phase 1.6 tunable knobs
+# ────────────────────────────────────────────────────────────
+
+class TestEnvVarConfig:
+    """Each knob: verify default + env-var override."""
+
+    def test_default_lookback_is_12(self):
+        from lib.earnings_reactions import DEFAULT_LOOKBACK_QUARTERS
+        # When env var is unset, default is 12. Most CI runs leave it
+        # unset, so the loaded value should be 12.
+        if 'BRIEF_REACTION_LOOKBACK_QUARTERS' not in os.environ:
+            assert DEFAULT_LOOKBACK_QUARTERS == 12
+
+    def test_default_gap_band_is_2(self):
+        from lib.earnings_reactions import DEFAULT_GAP_BAND_PCT
+        if 'BRIEF_CONDITIONAL_GAP_BAND_PCT' not in os.environ:
+            assert DEFAULT_GAP_BAND_PCT == 2.0
+
+    def test_default_threshold_is_75pct(self):
+        from lib.earnings_reactions import DEFAULT_CONDITIONAL_THRESHOLD
+        if 'BRIEF_CONDITIONAL_THRESHOLD' not in os.environ:
+            assert DEFAULT_CONDITIONAL_THRESHOLD == 0.75
+
+    def test_default_min_sample_is_3(self):
+        from lib.earnings_reactions import DEFAULT_CONDITIONAL_MIN_SAMPLE
+        if 'BRIEF_CONDITIONAL_MIN_SAMPLE' not in os.environ:
+            assert DEFAULT_CONDITIONAL_MIN_SAMPLE == 3
+
+    def test_env_override_lookback(self, monkeypatch):
+        """BRIEF_REACTION_LOOKBACK_QUARTERS=8 should produce 8 on reload."""
+        monkeypatch.setenv('BRIEF_REACTION_LOOKBACK_QUARTERS', '8')
+        # Force re-import so module-level constants pick up the env var
+        import lib.earnings_reactions as er
+        importlib.reload(er)
+        assert er.DEFAULT_LOOKBACK_QUARTERS == 8
+        # Restore
+        importlib.reload(er)
+
+    def test_env_override_gap_band(self, monkeypatch):
+        monkeypatch.setenv('BRIEF_CONDITIONAL_GAP_BAND_PCT', '3.5')
+        import lib.earnings_reactions as er
+        importlib.reload(er)
+        assert er.DEFAULT_GAP_BAND_PCT == 3.5
+        importlib.reload(er)
+
+    def test_env_override_threshold(self, monkeypatch):
+        monkeypatch.setenv('BRIEF_CONDITIONAL_THRESHOLD', '0.6')
+        import lib.earnings_reactions as er
+        importlib.reload(er)
+        assert er.DEFAULT_CONDITIONAL_THRESHOLD == 0.6
+        importlib.reload(er)
+
+    def test_env_override_min_sample(self, monkeypatch):
+        monkeypatch.setenv('BRIEF_CONDITIONAL_MIN_SAMPLE', '5')
+        import lib.earnings_reactions as er
+        importlib.reload(er)
+        assert er.DEFAULT_CONDITIONAL_MIN_SAMPLE == 5
+        importlib.reload(er)
+
+    def test_invalid_env_falls_back_to_default(self, monkeypatch):
+        """Bad env values shouldn't crash; should use default."""
+        monkeypatch.setenv('BRIEF_CONDITIONAL_GAP_BAND_PCT', 'not_a_number')
+        import lib.earnings_reactions as er
+        importlib.reload(er)
+        assert er.DEFAULT_GAP_BAND_PCT == 2.0
+        importlib.reload(er)
+
+    def test_classify_lean_uses_env_threshold(self, monkeypatch):
+        """When env override changes threshold, classify_lean should
+        reflect it without explicit param."""
+        monkeypatch.setenv('BRIEF_CONDITIONAL_THRESHOLD', '0.5')
+        import lib.earnings_reactions as er
+        importlib.reload(er)
+        # 50% reversed at threshold=0.5 → expect reversal
+        result = er.classify_lean(
+            {'n': 4, 'held': 2, 'reversed': 2, 'unclear': 0},
+            actual_gap_pct=4.0,
+        )
+        # Note: 2/4 = 0.5 exactly meets 0.5 threshold -> reversal wins?
+        # held >= 0.5? yes (held/n = 0.5). bullish gap play takes precedence
+        # (held is checked first in classify_lean, then reversal).
+        assert result == 'bullish gap play'
+        importlib.reload(er)

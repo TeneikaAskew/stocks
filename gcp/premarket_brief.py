@@ -1368,8 +1368,14 @@ def _playability_lines(bucket: list[dict], top_n: int = 5) -> list[str]:
         def action_hint_for_archetype(_a):
             return ''
 
-    LOOKBACK_TARGET = 12  # matches enrich_with_playability default
-    lines = [f'  🎯 _Playability — top {len(playable)} ({LOOKBACK_TARGET}Q profile)_']
+    # Pull the lookback target from lib so the embed header label
+    # matches whatever BRIEF_REACTION_LOOKBACK_QUARTERS is set to.
+    try:
+        from lib.earnings_reactions import DEFAULT_LOOKBACK_QUARTERS
+        lookback = DEFAULT_LOOKBACK_QUARTERS
+    except ImportError:
+        lookback = 12
+    lines = [f'  🎯 _Playability — top {len(playable)} ({lookback}Q profile)_']
     for i, r in enumerate(playable, 1):
         score = r.get('playability_score') or 0
         arch = r.get('playability_archetype') or 'quiet'
@@ -1378,10 +1384,10 @@ def _playability_lines(bucket: list[dict], top_n: int = 5) -> list[str]:
         rev = (r.get('playability_reversal_rate') or 0) * 100
         nq = r.get('playability_n_q', 0)
         hint = action_hint_for_archetype(arch)
-        # Show n=X only when the ticker has fewer than LOOKBACK_TARGET
-        # quarters (insufficient daily bars for some reports). When n
-        # matches the target, the section header already conveys it.
-        n_suffix = '' if nq >= LOOKBACK_TARGET else f' _(n={nq})_'
+        # Show n=X only when the ticker has fewer than the lookback
+        # target quarters (insufficient daily bars for some reports).
+        # When n matches the target, the section header already conveys it.
+        n_suffix = '' if nq >= lookback else f' _(n={nq})_'
         lines.append(
             f'  {i}. **{r["ticker"]}** '
             f'`{score:.0f}` {arch} | '
