@@ -615,6 +615,132 @@ def assign_timeframe(conditions_met: list[str], rsi: float, rvol: float,
 
 ---
 
+### Phase 1.5 — catalyst-proximity tagging on every signal *(blocks Phase 4)*
+
+**Why this had to land in the plan (5/1 user direction):** signal quality is materially modified by proximity to known catalyst events. A CALL fired 30 min before FOMC behaves nothing like the same CALL fired during a quiet hour. Today's analysis stratified by hour-of-day but NOT by event-proximity — so trending-pre-NFP days got averaged with quiet-Tuesday days, hiding real effects.
+
+**The platform already has every catalyst calendar in Cloud SQL:**
+
+| Catalyst type | Source table | Time precision | Coverage |
+|---|---|---|---|
+| **Economic** (FOMC, CPI, NFP, PCE, GDP, ISM, Retail Sales, Jobless Claims, Beige Book) | `economic_events` | minute (after PR #144 canonical-time lookup) | All US releases |
+| **Fed speakers** | `economic_events` | minute | Scheduled appearances |
+| **Earnings** (per-ticker) | `earnings_calendar.earnings_time` | `'premarket'` / `'postmarket'` | All AV+UW+EW tickers |
+| **8-K material filings** (per-ticker) | `sec_filings` | timestamp of filing | Items 1.01, 2.01, 5.02, 7.01, 8.01 |
+| **Insider transactions** | `insider_transactions` | date | Form 4 filings |
+
+**What gets added to every signal:**
+
+```python
+@dataclass
+class Signal:
+    # ... (all existing fields) ...
+
+    # NEW: catalyst proximity context (Phase 1.5)
+    next_catalyst_min: Optional[int] = None      # minutes until next high-impact catalyst (None if >24h)
+    next_catalyst_type: Optional[str] = None     # 'fomc' | 'cpi' | 'nfp' | 'pce' | 'gdp' | 'fed_speaker' | 'earnings_pre' | 'earnings_post' | 'sec_8k' | 'insider_cluster'
+    last_catalyst_min: Optional[int] = None      # minutes since last catalyst
+    last_catalyst_type: Optional[str] = None
+    catalyst_session: Optional[str] = None       # 'pre_market' | 'intraday' | 'post_market' | 'weekend' — when does the relevant catalyst occur?
+    proximity_bucket: Optional[str] = None       # 'imminent' (≤30m) | 'pre' (30m-2h) | 'during' (event hour) | 'post' (≤2h after) | 'next_day' (2-24h after) | 'quiet' (>24h either side)
+```
+
+**Helper module: `lib/strategies/catalyst_proximity.py` (NEW):**
+
+```python
+"""Compute catalyst proximity context for a signal at (ticker, timestamp)."""
+from datetime import timedelta
+from typing import Optional
+from functools import lru_cache
+import pandas as pd
+
+# High-impact economic event names (canonical, from economic_events.event_name).
+# Tier B — universal but tested (test_high_impact_event_classification.py).
+HIGH_IMPACT_ECONOMIC = {
+    "fomc":           ["FOMC", "Federal Open Market Committee"],
+    "cpi":            ["Consumer Price Index", "CPI"],
+    "nfp":            ["Employment Situation", "Nonfarm Payrolls"],
+    "pce":            ["Personal Income and Outlays", "PCE"],
+    "gdp":            ["Gross Domestic Product"],
+    "ism":            ["ISM Manufacturing", "ISM Services"],
+    "retail_sales":   ["Retail Sales", "Advance Retail Sales"],
+    "jobless_claims": ["Jobless Claims", "Initial Claims"],
+    "beige_book":     ["Beige Book"],
+}
+
+# Window definitions (Tier C — universal, structural, in minutes).
+PROXIMITY_WINDOWS_MIN = {
+    "imminent": 30,    # within 30 min before event
+    "pre":      120,   # 30m – 2h before
+    "during":   60,    # within 1h after event start
+    "post":     120,   # 1h – 3h after
+    "next_day": 24*60, # within 24h after
+    # else: 'quiet'
+}
+
+@lru_cache(maxsize=512)
+def get_catalyst_context(ticker: str, ts_floor_5min: pd.Timestamp) -> dict:
+    """Look up nearest economic + earnings + 8-K catalysts for ticker at ts.
+
+    Returns the 6 fields documented on Signal above. Uses lru_cache keyed on
+    (ticker, ts.floor('5min')) to avoid hammering Cloud SQL on every bar.
+    """
+    # ... see Appendix C for full implementation ...
+```
+
+**Schema migration (idempotent):**
+
+```sql
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS next_catalyst_min   INTEGER,
+    ADD COLUMN IF NOT EXISTS next_catalyst_type  VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS last_catalyst_min   INTEGER,
+    ADD COLUMN IF NOT EXISTS last_catalyst_type  VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS catalyst_session    VARCHAR(12)
+        CHECK (catalyst_session IN ('pre_market','intraday','post_market','weekend')),
+    ADD COLUMN IF NOT EXISTS proximity_bucket    VARCHAR(12)
+        CHECK (proximity_bucket IN ('imminent','pre','during','post','next_day','quiet'));
+
+ALTER TABLE historical_signals
+    ADD COLUMN IF NOT EXISTS next_catalyst_min   INTEGER,
+    ADD COLUMN IF NOT EXISTS next_catalyst_type  VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS last_catalyst_min   INTEGER,
+    ADD COLUMN IF NOT EXISTS last_catalyst_type  VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS catalyst_session    VARCHAR(12),
+    ADD COLUMN IF NOT EXISTS proximity_bucket    VARCHAR(12);
+```
+
+**Catalyst session classification — what actually fires when:**
+
+| Catalyst | Typical session | Signal-logic implication |
+|---|---|---|
+| FOMC announcement | **intraday** (14:00 ET) | `during` 14:00-14:30 = suppress all fires; `post` 14:30-16:00 = amplify post-event direction-confirmed signals |
+| FOMC press conf | **intraday** (14:30 ET) | same as FOMC |
+| CPI / NFP / PCE / GDP | **pre_market** (08:30 ET) | `imminent` (8:00-8:30) = suppress; `post` (8:30-10:00) = amplify open-direction-confirmed signals |
+| ISM / Consumer Sentiment | **intraday** (10:00 ET) | mid-morning event; usually small impact unless surprise |
+| Earnings (premarket) | **pre_market** | suppress on the ticker 4-9:30 AM ET pre-event; amplify post-9:30 ET if direction matches gap |
+| Earnings (postmarket) | **post_market** | suppress on the ticker 16:00-20:00 ET post-event; next morning's gap is the trade |
+| Fed speakers | varies | `imminent`/`during` only matter if scheduled ≥ medium impact |
+| 8-K filing | varies (often after-hours) | 4-trading-day post-event reaction window |
+
+**How the analysis uses it (downstream):**
+
+1. **Phase 0.5 weekly QA report** stratifies clean-rate by `proximity_bucket`. Reveals e.g. a signal class might be 12% clean overall but 25% in `quiet` vs 4% in `imminent` — actionable.
+2. **Phase 4 reweighting** — `proximity_bucket` becomes a scoring input. `imminent` de-weights signals (don't fade into FOMC); `post` may amplify (post-event continuation).
+3. **Live monitor cooldown (Phase 2)** — adaptive cooldown becomes catalyst-aware. Longer cooldown in `imminent`; shorter in `post`.
+4. **Discord embed (Phase 1)** — catalyst tag on every signal: "🟢 SPY CALL [60m hold] · ⚠️ FOMC in 18 min" or "🟢 IWM CALL [5m scalp] · quiet hour."
+
+**Tests:**
+
+1. `tests/test_catalyst_proximity.py` — table-driven: synthetic catalyst entries + signal timestamps at known offsets; verify `proximity_bucket` returns expected value
+2. `tests/test_catalyst_session_classification.py` — every catalyst type maps to the correct session; new types fail loudly until classified
+3. `tests/test_signal_with_catalyst.py` — `MomentumStrategy().evaluate(row)` correctly populates the 6 catalyst fields
+4. **Regression statistical test** — re-run Apr-May historical analysis with proximity tagging; assert clean-rate variation across proximity buckets is statistically significant (chi-squared p < 0.05). If not, the feature isn't doing real work and we revisit.
+
+**ETA:** 3 days dev + 2 days backfill + validation. **Blocks Phase 4** (reweighting needs proximity as input). Can run in parallel with Phase 2 (debounce) and Phase 3 (multi-tf).
+
+---
+
 ### Phase 2 — debounce tuning by outcome feedback
 
 **Hypothesis:** Today's debounce is fixed-time (e.g. "no same-direction fire within X min"). Smarter debounce uses early outcome:
@@ -948,6 +1074,8 @@ the week. The job's only job is **summarization + comparison**:
 - Total fires that week (signal_alerts) and bar-level candidates (historical_signals)
 - Clean-rate at each timeframe — pulled directly from `signal_metrics.cls_*`
 - Per-ticker × per-direction breakdown — pulled directly
+- **Per-`proximity_bucket` stratification** (Phase 1.5 catalyst-awareness): clean-rate broken out by `quiet` / `imminent` / `pre` / `during` / `post` / `next_day` buckets. Reveals where the system is actually adding value vs where it's firing into noise.
+- **Per-`catalyst_type` ranking**: which catalyst types correlate with which strategy's success? (e.g. mean-reversion CALLs may work post-CPI but not post-FOMC.)
 - "Missed good ones" estimate: rows with `best_tf IS NOT NULL` that don't
   match a `signal_alerts.id` — i.e. clean candidates the live monitor didn't fire on
 - Comparison to previous week — flag regressions, post to `#signal-qa`
@@ -999,6 +1127,9 @@ gantt
     section Phase 1 (timeframe tag)
     Schema + tagging logic            :p1a, after p05c, 2d
     Forward-test (5 days)             :p1b, after p1a, 5d
+    section Phase 1.5 (catalyst proximity)
+    Schema + helper module + tests    :p15a, after p1a, 3d
+    Backfill + statistical validation :p15b, after p15a, 2d
     section Phase 2 (debounce)
     Outcome tracking + adaptive cooldown :p2a, after p1a, 4d
     Forward-test                      :p2b, after p2a, 5d
@@ -1060,6 +1191,7 @@ gantt
 | 0.7.2 | `lib/strategies/mean_reversion.py` (mirror fixes); `tests/test_mean_reversion_conditions_v2.py` |
 | 0.5 | `scripts/signal_quality_report.py` (NEW, promoted from `_signal_multi_tf.py`), `gcp/schema.sql` (signal_metrics table + strategy column), `gcp/deploy.sh` (new job + scheduler entries), `gcp/signal_quality_alarm.py` (NEW, regression check + stale-data fail-loud) |
 | 1 | `gcp/schema.sql` (timeframe_tag column), `gcp/signal_monitor.py`, `lib/signals.py` (timeframe heuristic from §3.4), `gcp/insight_discord_push.py` (embed format) |
+| 1.5 | `lib/strategies/catalyst_proximity.py` (NEW), `gcp/schema.sql` (proximity columns on signal_alerts + historical_signals), `lib/strategies/base.py` (Signal dataclass adds proximity fields), `tests/test_catalyst_proximity.py` + 3 more catalyst tests |
 | 2 | `gcp/signal_monitor.py`, `gcp/schema.sql` (signal_outcomes table), `scripts/simulate_signal_changes.py` (NEW) |
 | 3 | `gcp/signal_monitor.py` (multi-tf evaluator), `lib/trading_analysis.py` (resampling) |
 | 4 | `lib/signals.py` (weights), `lib/trading_analysis.py` (score calc) |
