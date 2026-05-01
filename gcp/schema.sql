@@ -443,6 +443,95 @@ CREATE INDEX IF NOT EXISTS idx_earnings_history_ticker_reported
 CREATE INDEX IF NOT EXISTS idx_earnings_history_reported
     ON earnings_history (reported_date DESC NULLS LAST);
 
+-- Per-quarter report timing (added 2026-04-30) — populated from AV
+-- EARNINGS endpoint's `reportTime` field ('pre-market' | 'post-market').
+-- This is the canonical source for BMO vs AMC classification: the
+-- earnings_reactions populator uses it to pick the correct reaction-day
+-- gap (pre-gap for BMO, post-gap for AMC).
+ALTER TABLE earnings_history
+    ADD COLUMN IF NOT EXISTS report_time VARCHAR(20);
+
+
+-- ─────────────────────────────────────────────────────────
+-- EARNINGS REACTIONS (per-quarter post-earnings reaction profile)
+-- One row per (ticker, fiscal_date_ending). Joins earnings_history
+-- with market_data_daily to compute timing-aware reaction stats:
+-- pre-earnings drift, reaction-day gap, intraday range, multi-horizon
+-- sustain, direction consistency, reversal flag. Populated by
+-- gcp/fetchers/compute_earnings_reactions.py (Phase 1 deliverable).
+--
+-- The brief reads aggregated 12Q stats from this table to rank
+-- tomorrow's reporters by playability_score.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS earnings_reactions (
+    id                          BIGSERIAL PRIMARY KEY,
+    ticker                      VARCHAR(10)  NOT NULL,
+    fiscal_date_ending          DATE         NOT NULL,
+    reported_date               DATE         NOT NULL,
+
+    -- Timing (canonical source: earnings_history.report_time)
+    reaction_basis              VARCHAR(3),     -- 'AMC' or 'BMO'
+
+    -- EPS context (denormalized from earnings_history for query speed)
+    reported_eps                DOUBLE PRECISION,
+    estimated_eps               DOUBLE PRECISION,
+    surprise_pct                DOUBLE PRECISION,
+
+    -- Pre-earnings drift (D-10 → D-1)
+    d_minus_10_close            DOUBLE PRECISION,
+    d_minus_1_close             DOUBLE PRECISION,
+    pre_earnings_drift_10d_pct  DOUBLE PRECISION,    -- (D-1 close - D-10 close) / D-10 close × 100
+
+    -- Report day (D)
+    d_open                      DOUBLE PRECISION,
+    d_high                      DOUBLE PRECISION,
+    d_low                       DOUBLE PRECISION,
+    d_close                     DOUBLE PRECISION,
+    pre_report_gap_pct          DOUBLE PRECISION,    -- (D open - D-1 close) / D-1 close × 100
+
+    -- Day after (D+1)
+    d_plus_1_open               DOUBLE PRECISION,
+    d_plus_1_high               DOUBLE PRECISION,
+    d_plus_1_low                DOUBLE PRECISION,
+    d_plus_1_close              DOUBLE PRECISION,
+    post_gap_pct                DOUBLE PRECISION,    -- (D+1 open - D close) / D close × 100
+
+    -- Timing-aware reaction (THE column the score uses)
+    -- For BMO: equals pre_report_gap_pct (D open vs D-1 close)
+    -- For AMC: equals post_gap_pct (D+1 open vs D close)
+    reaction_gap_pct            DOUBLE PRECISION,
+    reaction_anchor_price       DOUBLE PRECISION,    -- D close (BMO) or D+1 open (AMC)
+    reaction_max_run_pct        DOUBLE PRECISION,    -- max(high - open) / open on reaction day
+    reaction_max_drawdown_pct   DOUBLE PRECISION,    -- min(low - open) / open on reaction day
+
+    -- Multi-horizon sustain (anchored at reaction_anchor_price)
+    d_plus_3_close              DOUBLE PRECISION,
+    sustain_3d_pct              DOUBLE PRECISION,
+    d_plus_5_close              DOUBLE PRECISION,
+    sustain_5d_pct              DOUBLE PRECISION,
+    d_plus_10_close             DOUBLE PRECISION,
+    sustain_10d_pct             DOUBLE PRECISION,
+
+    -- Computed flags
+    direction_consistent_5d     BOOLEAN,            -- sign(reaction_gap) == sign(sustain_5d)
+    is_reversal_5d              BOOLEAN,            -- sign flip + |sustain_5d| >= 0.5*|reaction_gap|
+
+    -- Provenance
+    inserted_at                 TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at                  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_earnings_reactions UNIQUE (ticker, fiscal_date_ending),
+    CONSTRAINT ck_earnings_reactions_basis
+        CHECK (reaction_basis IS NULL OR reaction_basis IN ('AMC', 'BMO'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_reactions_ticker_reported
+    ON earnings_reactions (ticker, reported_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_reactions_reported
+    ON earnings_reactions (reported_date DESC);
+
 
 -- ─────────────────────────────────────────────────────────
 -- SEC EDGAR FILINGS (8-K material events, 10-Q/10-K, etc.)
