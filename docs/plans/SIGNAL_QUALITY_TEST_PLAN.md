@@ -11,20 +11,38 @@
 
 Before reading any specific threshold or per-class recommendation in this doc, read this callout. Several numbers below are **uniform across SPY / QQQ / IWM** when they should be per-ticker. Several recommendations **generalize from a single ~30-day sample** that may not hold across regimes.
 
-### Hardcoded values currently in the analysis scripts and proposed strategy code (NOT yet calibrated per ticker)
+### Three-tier parameter classification (per user decision 2026-05-01)
 
-| Constant | Value | Where used | Issue |
-|---|---|---|---|
-| `THRESHOLDS["60m"]["clean"]` = 0.50% | 0.50% absolute | `_signal_multi_tf*.py`, `_morning_signals_today.py` | Same threshold for SPY, QQQ, IWM — but typical ATR_60m differs ~2× across them |
-| `THRESHOLDS["240m"]["clean"]` = 1.00% | 1.00% absolute | same | as above |
-| `RVOL_RULES["SPY"]` min/max | 0.20 / 1.05 | §3.4 proposal | Quartile boundaries from Apr-May only; will shift in different regimes |
-| `atr_expansion_5m` factor = 1.3× | 1.3 | Phase 0.7.1 spec | Picked round number; should be per-ticker calibrated |
-| `consecutive_periods = 3` | 3 | `lib/signals.py`, `lib/trading_analysis.py` | Same across tickers — IWM may want 2, SPY may want 4 |
-| `call_rsi_range = (25, 50)` | (25, 50) | `lib/signals.py` | Same across tickers — each has a different RSI distribution |
-| `stoch_rsi_oversold = 30.0` | 30.0 | `lib/signals.py` | Same across tickers |
-| Tier weights 1.0 / 1.5 / 2.0 | placeholders | Phase 0.7.1 | Round numbers; not tuned |
+Every numeric constant currently in `lib/signals.py`, `lib/trading_analysis.py`, and the analysis scripts gets classified into one of three tiers. Phase 0.6 implements this.
 
-**Phase 0.6 (added below) is the calibration-script phase that fixes these.** No threshold-based filter ships before Phase 0.6 produces a `ticker_calibration` table with per-ticker values.
+**Tier A — per-ticker, calibrated weekly** (lives in `ticker_calibration` Cloud SQL table):
+
+| Constant | Today's hardcoded value | Why it must be per-ticker |
+|---|---|---|
+| `THRESHOLDS["{tf}"]["clean"]` (7 timeframes) | 0.15% — 1.00% absolute | Typical ATR_60m differs ~2× between SPY and IWM; same threshold mis-classifies |
+| `THRESHOLDS["{tf}"]["wrong"]`, `["noise"]` | mirrors of clean | same |
+| `RVOL_RULES["{ticker}"]` min/max | 0.20 / 1.05 etc. (§3.4) | RVOL distribution is per-ticker; quartile bounds shift over regimes too |
+| `atr_expansion_5m` factor | 1.3× | should be per-ticker calibrated multiplier |
+
+**Tier B — universal but TESTED** (lives in `lib/strategies/config.py` constants; CI-tested):
+
+| Constant | Value | Note |
+|---|---|---|
+| `CALL_RSI_RANGE` | (25, 50) | Per user: keep universal but auto-test for cross-ticker validity |
+| `PUT_RSI_RANGE` | (50, 75) | same |
+| `EMA_PROXIMITY` | 0.1 | same |
+| `STOCH_RSI_OVERSOLD` | 30.0 | same |
+| `STOCH_RSI_OVERBOUGHT` | 70.0 | same |
+
+`tests/test_universal_param_validity.py` runs a grid search around each Tier-B value on 60-day per-ticker history; if any ticker materially benefits from a different value (≥3pp clean-rate lift), test fails and we revisit.
+
+**Tier C — universal, stays** (hardcoded with comment; no test needed):
+
+| Constant | Value | Justification |
+|---|---|---|
+| `CONSECUTIVE_PERIODS` | 3 | Per user: structural definition of the setup ("3 bars in a row"), not a vol-scaling threshold. Stays. |
+
+**Tier weights from Phase 0.7.1 (1.0 / 1.5 / 2.0)** are placeholders that get tuned by Phase 4's simulation harness — per-strategy, not per-ticker.
 
 ### Generalizations made (single-sample inferences extrapolated; flagged for cross-validation)
 
@@ -85,23 +103,34 @@ From the v4 multi-timeframe evaluation across 30,792 historical signal-eligible 
 
 ---
 
-### Phase 0.6 — per-ticker threshold calibration *(blocks any threshold-based filter)*
+### Phase 0.6 — three-tier config: per-ticker calibrated, universal-tested, universal-stays
 
 **Why this had to land in the plan:** the multi-timeframe analysis, the RVOL filter proposal, the `atr_expansion_5m` factor, and the per-class clean-rate findings ALL use thresholds that are currently **hardcoded uniformly across SPY / QQQ / IWM**. That's wrong. SPY's typical bar moves 0.05% on noise; IWM's typical bar moves 2× as much. A 0.5% threshold for "clean hit at 60m" treats them as equivalent when they aren't.
 
-**Specific hardcoded values that need per-ticker calibration:**
+**But not every parameter needs per-ticker calibration.** Per the user's design call, parameters fall into three tiers:
 
-| Constant | Value (today) | Where | Issue |
+| Tier | Source | Refresh | Examples |
 |---|---|---|---|
-| `THRESHOLDS["60m"]["clean"]` | 0.50% | all 3 multi-tf scripts | universal across tickers |
-| `THRESHOLDS["240m"]["clean"]` | 1.00% | same | universal across tickers |
-| `RVOL_RULES["SPY"]` | min=0.20, max=1.05 | §3.4 proposal | derived from Apr-May only; not regime-validated |
-| `RVOL_RULES["IWM"]` | min=0.40, no cap | same | as above |
-| `atr_expansion_5m` factor | 1.3× | Phase 0.7.1 spec | guessed; should be per-ticker |
-| `consecutive_periods` | 3 | `lib/signals.py`, `lib/trading_analysis.py` | universal — IWM may want 2, SPY may want 4 |
-| `call_rsi_range` | (25, 50) | `lib/signals.py` | universal — each ticker has different RSI distribution |
-| `stoch_rsi_oversold` | 30.0 | `lib/signals.py` | universal |
-| Tier weights (1.0 / 1.5 / 2.0) | placeholders | Phase 0.7.1 | not calibrated |
+| **A — Per-ticker (calibrated)** | `ticker_calibration` Cloud SQL table | Weekly via `calibrate-thresholds` Cloud Run Job | clean/wrong/noise thresholds per timeframe; RVOL min/max |
+| **B — Universal but TESTED** | `lib/strategies/config.py` constants + test coverage | Manual; revisit on test failure | `call_rsi_range = (25, 50)`, `put_rsi_range = (50, 75)`, `ema_proximity = 0.1`, `stoch_rsi_oversold = 30.0`, `stoch_rsi_overbought = 70.0` |
+| **C — Universal, stays** | Hardcoded with explanatory comment | Don't touch | `consecutive_periods = 3` |
+
+The Tier-B parameters are the ones the user explicitly said "these can stay universal but I want them tested" — i.e., we don't blindly trust them across SPY/QQQ/IWM, we have an automated test that fails if any one of them stops working on any of the 3 tickers.
+
+**Specific values + their tier assignment (per user direction):**
+
+| Constant | Value (today) | Tier | Decision |
+|---|---|---|---|
+| `THRESHOLDS["{tf}"]["clean"/"wrong"/"noise"]` (all 7 timeframes × 3 categories) | 0.15% — 1.00% absolute | **A — per-ticker calibrated** | Move to `ticker_calibration` table; computed as multiples of per-ticker ATR_60m_median |
+| `RVOL_RULES["{ticker}"]` (min/max) | mostly missing today | **A — per-ticker calibrated** | Compute per-ticker quartile bounds from rolling 60d; persist to `ticker_calibration` |
+| `atr_expansion_5m` factor | 1.3× | **A — per-ticker calibrated** | Use per-ticker calibrated multiplier from `ticker_calibration` |
+| `call_rsi_range` | (25, 50) | **B — universal but tested** | Stays in `lib/strategies/config.py`; tested across all 3 tickers in `test_rsi_band_validity.py` |
+| `put_rsi_range` | (50, 75) | **B — universal but tested** | same |
+| `ema_proximity` | 0.1 | **B — universal but tested** | same |
+| `stoch_rsi_oversold` | 30.0 | **B — universal but tested** | same |
+| `stoch_rsi_overbought` | 70.0 | **B — universal but tested** | same |
+| **`consecutive_periods`** | **3** | **C — universal, stays** | **No change. Documented universally appropriate.** |
+| Tier weights (1.0 / 1.5 / 2.0) | placeholders | tuned by Phase 4 simulation | becomes per-strategy after Phase 4; not per-ticker |
 
 **Calibration script: `scripts/calibrate_thresholds.py` (NEW, production-grade):**
 
@@ -165,19 +194,90 @@ CREATE TABLE ticker_calibration (
 );
 ```
 
-**Caller updates after calibration lands:**
+**The three-tier lookup at runtime:**
 
-- `lib/strategies/momentum.py` and `mean_reversion.py` accept a `calibration` arg in `__init__` (or look up by ticker at runtime). They use `calibration[ticker]['rvol_min']` instead of hardcoded `0.20`.
-- All three multi-tf scripts read from `ticker_calibration` instead of the hardcoded `THRESHOLDS` dict.
-- `gcp/signal_monitor.py` reads calibration on startup and uses per-ticker thresholds.
+```python
+# lib/strategies/config.py — Tier B + Tier C constants
+# These are universal across tickers, but Tier B has automated tests
+# that fail on regression for ANY of the 3 active tickers.
+
+# Tier B — universal but TESTED (test_universal_param_validity.py)
+CALL_RSI_RANGE = (25.0, 50.0)
+PUT_RSI_RANGE  = (50.0, 75.0)
+EMA_PROXIMITY  = 0.1
+STOCH_RSI_OVERSOLD   = 30.0
+STOCH_RSI_OVERBOUGHT = 70.0
+
+# Tier C — universal, stays (no per-ticker variant needed)
+# Justified by: works correctly across all 3 active tickers AND
+# represents a structural definition (3 bars in a row) not a numeric
+# threshold that scales with volatility.
+CONSECUTIVE_PERIODS = 3
+```
+
+```python
+# lib/strategies/calibration.py — Tier A loader
+from gcp.database import query_to_dataframe
+from functools import lru_cache
+
+@lru_cache(maxsize=16)
+def get_calibration(ticker: str) -> dict:
+    """Return per-ticker thresholds. Cached; refreshed on Cloud Run cold start."""
+    df = query_to_dataframe("""
+        SELECT * FROM ticker_calibration
+         WHERE ticker = %s
+           AND calibration_date = (
+               SELECT max(calibration_date) FROM ticker_calibration
+                WHERE ticker = %s)
+    """, [ticker, ticker])
+    if df.empty:
+        raise ValueError(f"No calibration for {ticker} — run calibrate-thresholds first")
+    return df.iloc[0].to_dict()
+```
+
+```python
+# lib/strategies/momentum.py — uses all three tiers correctly
+from lib.strategies.config import (CALL_RSI_RANGE, EMA_PROXIMITY,
+                                    STOCH_RSI_OVERSOLD, CONSECUTIVE_PERIODS)
+from lib.strategies.calibration import get_calibration
+
+class MomentumStrategy(Strategy):
+    name = "momentum"
+
+    def evaluate(self, row: pd.Series) -> Optional[Signal]:
+        ticker = row['ticker']
+        cal = get_calibration(ticker)         # Tier A — per-ticker
+
+        # Tier B — universal, but tested across SPY/QQQ/IWM
+        rsi_lo, rsi_hi = CALL_RSI_RANGE
+        if not (rsi_lo < row['RSI14'] < rsi_hi):
+            return None
+
+        # Tier A — per-ticker thresholds
+        if row['RVOL'] < cal['rvol_min'] or row['RVOL'] > cal['rvol_max']:
+            return None
+
+        # Tier C — universal, stays
+        if row['Consecutive_Up'] < CONSECUTIVE_PERIODS:
+            return None
+
+        # ...build Signal...
+```
+
+**Key benefits of the three-tier structure:**
+
+1. **Per-ticker accuracy where it matters most** (Tier A) — thresholds that scale with ticker volatility get auto-calibrated.
+2. **Test coverage for shared constants** (Tier B) — RSI / EMA / Stoch parameters that ARE universal still get a regression test that compares each ticker's signal output across (a) the universal value and (b) a per-ticker grid search; if any ticker shows materially better outcomes with a different value, the test fails and we revisit.
+3. **Stable structural definitions** (Tier C) — `consecutive_periods=3` is part of the *definition* of the setup ("3 bars in a row"), not a vol-scaling number, so it stays put.
 
 **Cloud Scheduler trigger:** `calibrate-thresholds-weekly` — Sunday 02:00 ET. Outputs to `ticker_calibration`. Adds < 1 min execution time. Cost: ~$0/month.
 
 **Tests:**
 
 1. `tests/test_calibrate_thresholds.py` — table-driven: synthetic bars with known ATR/RVOL distributions, verify calibration output matches expected
-2. `tests/test_strategy_uses_calibration.py` — instantiate `MomentumStrategy(calibration=...)`, verify it uses ticker-specific thresholds
-3. Regression: re-run the morning audit on 5/1 with calibrated thresholds, expect different (more accurate) clean-rates per ticker
+2. `tests/test_strategy_uses_calibration.py` — instantiate `MomentumStrategy()`, verify it reads ticker-specific thresholds via `get_calibration()`
+3. **`tests/test_universal_param_validity.py` (NEW — guards Tier B)** — for each of the 5 universal-tested constants, run a small grid search over plausible alternate values on 60-day historical data per ticker. If any ticker shows a materially better outcome (≥3pp clean-rate improvement) under a different value, the test fails. This forces us to reconsider whether the constant should remain universal or move to Tier A.
+4. Regression: re-run the morning audit on 5/1 with calibrated thresholds, expect different (more accurate) clean-rates per ticker
 
 **Success criterion:** every threshold currently in scripts or strategy code is sourced from `ticker_calibration` for the relevant ticker. No ticker-universal numeric constants remain in the signal-evaluation hot path. The simulation harness from §4.2 can A/B compare "old uniform thresholds" vs "new calibrated thresholds" and the calibrated version shows measurably improved per-ticker clean-rate accuracy.
 
