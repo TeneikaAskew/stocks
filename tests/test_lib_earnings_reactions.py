@@ -12,7 +12,47 @@ from lib.earnings_reactions import (
     compute_playability_score,
     classify_archetype,
     enrich_with_playability,
+    action_hint_for_archetype,
+    ARCHETYPE_ACTION_HINT,
 )
+
+
+# ────────────────────────────────────────────────────────────
+# action_hint_for_archetype — Option A wording (locked-in 2026-05-01)
+# ────────────────────────────────────────────────────────────
+
+class TestActionHint:
+    def test_bullish_trend_hint(self):
+        assert action_hint_for_archetype('bullish_trend') == 'bullish gap play'
+
+    def test_bearish_trend_hint(self):
+        assert action_hint_for_archetype('bearish_trend') == 'bearish gap play'
+
+    def test_reversal_play_hint(self):
+        assert action_hint_for_archetype('reversal_play') == 'gap reversal play'
+
+    def test_mixed_hint(self):
+        assert action_hint_for_archetype('mixed') == 'low conviction'
+
+    def test_quiet_hint(self):
+        assert action_hint_for_archetype('quiet') == 'skip'
+
+    def test_none_defaults_to_skip(self):
+        assert action_hint_for_archetype(None) == 'skip'
+
+    def test_unknown_defaults_to_skip(self):
+        assert action_hint_for_archetype('something_new') == 'skip'
+
+    def test_all_archetypes_have_hints(self):
+        """Every archetype classify_archetype can return must have a hint."""
+        for archetype in ('bullish_trend', 'bearish_trend', 'reversal_play',
+                          'mixed', 'quiet'):
+            hint = action_hint_for_archetype(archetype)
+            assert hint, f"missing hint for {archetype}"
+            # No trader jargon — Option A uses plain English
+            assert 'fade' not in hint.lower()
+            assert 'IV-crush' not in hint
+            assert 'ride' not in hint.lower()
 
 
 # ────────────────────────────────────────────────────────────

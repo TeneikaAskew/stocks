@@ -74,6 +74,25 @@ def compute_playability_score(
     return move_magnitude_norm * confidence * log_liquidity
 
 
+# Plain-English action hints per archetype (locked-in 2026-05-01 — Option A).
+# Used by the brief renderer so the morning reader doesn't have to mentally
+# translate trader jargon ('fade', 'IV-crush', etc.). Keep these short —
+# they appear as the trailing phrase on each playability row.
+ARCHETYPE_ACTION_HINT = {
+    'bullish_trend': 'bullish gap play',
+    'bearish_trend': 'bearish gap play',
+    'reversal_play': 'gap reversal play',
+    'mixed':         'low conviction',
+    'quiet':         'skip',
+}
+
+
+def action_hint_for_archetype(archetype: Optional[str]) -> str:
+    """Return the plain-English action hint for an archetype tag.
+    Defaults to 'skip' for None / unknown values."""
+    return ARCHETYPE_ACTION_HINT.get(archetype or 'quiet', 'skip')
+
+
 def classify_archetype(
     move_magnitude_pct: Optional[float],
     directional_bias_pct: Optional[float],

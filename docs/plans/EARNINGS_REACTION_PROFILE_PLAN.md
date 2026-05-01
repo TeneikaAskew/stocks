@@ -235,6 +235,71 @@ CREATE TABLE earnings_reactions (
 surprise_pct=-100%`. These are filtered at fetch time (NOT inserted)
 rather than flagged in-row — keeps the table clean and analytics simple.
 
+### Phase 1 — Implementation status (2026-05-01)
+
+| Step | What landed | Where |
+|---|---|---|
+| **1.1** | `earnings_history.report_time` + `yahoo_report_time` columns | [gcp/schema.sql](../../gcp/schema.sql) |
+| **1.2** | `earnings_reactions` table — 35 columns, idempotent migration | [gcp/schema.sql](../../gcp/schema.sql) |
+| **2.1** | `fetch_earnings_history.py` captures AV `reportTime` + Yahoo timing validation | [gcp/fetchers/fetch_earnings_history.py](../../gcp/fetchers/fetch_earnings_history.py) |
+| **2.2** | NaN guard in `_safe_float` + persist-time scrub | same file |
+| **3** | Consolidated `_pull_av_options_around_earnings.py` (timing-aware) | [scripts/_pull_av_options_around_earnings.py](../../scripts/_pull_av_options_around_earnings.py) |
+| **4.1** | `compute_earnings_reactions.py` Cloud Run Job — pure-compute layer + DB integration | [gcp/fetchers/compute_earnings_reactions.py](../../gcp/fetchers/compute_earnings_reactions.py) |
+| **4.2** | Yahoo timing precedence + WMT split anomaly null | same file |
+| **5.1** | `lib/earnings_reactions.py` — score formula + archetype + DB query helpers | [lib/earnings_reactions.py](../../lib/earnings_reactions.py) |
+| **5.2** | Brief data path: `enrich_with_playability` attaches per-row score + archetype | [gcp/premarket_brief.py](../../gcp/premarket_brief.py) |
+| **6.1** | `_playability_lines` renderer — top-5 nested under BMO + AMC sections | [gcp/premarket_brief.py](../../gcp/premarket_brief.py) |
+| **6.2** | Plain-English action hints (Option A wording — locked-in 2026-05-01) | [lib/earnings_reactions.py](../../lib/earnings_reactions.py) `ARCHETYPE_ACTION_HINT` |
+
+#### Action hints (locked-in 2026-05-01)
+
+| Archetype | Hint | Trigger threshold |
+|---|---|---|
+| `bullish_trend` | bullish gap play | dir_consistency ≥ 0.65 AND directional_bias > +0.5% |
+| `bearish_trend` | bearish gap play | dir_consistency ≥ 0.65 AND directional_bias < -0.5% |
+| `reversal_play` | gap reversal play | reversal_rate ≥ 0.40 AND dir_consistency < 0.50 |
+| `mixed` | low conviction | none of the above (with mag ≥ 1.5%) |
+| `quiet` | skip | move_magnitude < 1.5% |
+
+**Rationale for Option A wording:** the earlier mock used trader jargon
+(`fade-the-gap`, `IV-crush`, `ride-the-gap`). User feedback
+(2026-05-01): plain-English wording is clearer for the morning brief
+audience. Trade-off accepted — slight loss of "trader playbook" feel
+for unambiguous readability.
+
+#### Brief render format
+
+```
+☀️ Reporting Before Open (12)
+[12 BMO ticker rows...]
+
+  🎯 _Playability — top 5 (12Q profile)_
+  1. **GM**   `68` reversal_play | gap 5.2% · cons 40% · rev 45% · gap reversal play
+  2. **SPOT** `52` bullish_trend | gap 8.4% · cons 67% · rev 17% · bullish gap play
+  3. **KO**   `18` mixed         | gap 1.8% · cons 58% · rev 25% · low conviction
+```
+
+**Rendering rules:**
+- Sub-section indented 2 spaces — visually nests under parent header
+- Top 5 per bucket, sorted by `playability_score` descending
+- `(n=X)` suffix only shown when X < lookback target (12) — header
+  already declares the lookback so suppressing redundant info
+- Section omitted entirely when no row in the bucket has historical
+  data (gradual rollout — show nothing rather than empty boilerplate)
+
+#### Coverage at landing time
+
+`earnings_reactions` populator must run before the brief renderer can
+show any rows. Initial demo backfill covers:
+- **Phase 0 case-study set (9 tickers):** AVGO, GOOG, NVDA, FDX, LLY,
+  JPM, JNJ, WMT, PG
+- **Phase 0 backfill (4/28 reporters, 22 tickers):** KO, GLW, GM, UPS,
+  BP, SPOT, EPD, GLXY, CNC, JBLU, PHM, ROK, V, HOOD, BE, SBUX, STX,
+  BKNG, TMUS, EXE, ENPH, CZR
+
+For broader coverage, **Phase 2** wires the JIT pipeline so the
+populator runs daily for tomorrow's reporters automatically.
+
 ### Phase 1.5 — Intraday 1-min layer (scoped narrow)
 
 Pull 1-min bars only for the **D-2..D+2 window** around each row in
