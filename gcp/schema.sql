@@ -445,11 +445,16 @@ CREATE INDEX IF NOT EXISTS idx_earnings_history_reported
 
 -- Per-quarter report timing (added 2026-04-30) — populated from AV
 -- EARNINGS endpoint's `reportTime` field ('pre-market' | 'post-market').
--- This is the canonical source for BMO vs AMC classification: the
--- earnings_reactions populator uses it to pick the correct reaction-day
--- gap (pre-gap for BMO, post-gap for AMC).
+-- AV is occasionally wrong (e.g. NVDA 2026-02-25 was reported as
+-- 'pre-market' but actually released after-hours). The
+-- yahoo_report_time column (added 2026-05-01) is the validation
+-- source: derived from yfinance.Calendars Event Start Date in ET
+-- (>= 16:00 = post-market; <= 09:30 = pre-market). The
+-- earnings_reactions populator prefers yahoo_report_time over
+-- report_time when both are present.
 ALTER TABLE earnings_history
-    ADD COLUMN IF NOT EXISTS report_time VARCHAR(20);
+    ADD COLUMN IF NOT EXISTS report_time         VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS yahoo_report_time   VARCHAR(20);
 
 
 -- ─────────────────────────────────────────────────────────

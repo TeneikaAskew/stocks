@@ -34,8 +34,8 @@ class TestNormalizeTiming:
         assert normalize_timing('post-market', None) == 'AMC'
 
     def test_report_time_takes_precedence_over_calendar(self):
-        # report_time says BMO, calendar says postmarket (premarket too)
-        # report_time wins because earnings_history is canonical
+        # AV report_time says BMO, calendar says postmarket
+        # AV wins over calendar (Yahoo not present)
         assert normalize_timing('pre-market', 'postmarket') == 'BMO'
 
     def test_calendar_fallback_premarket(self):
@@ -63,6 +63,54 @@ class TestNormalizeTiming:
 
     def test_empty_string_falls_through(self):
         assert normalize_timing('', 'postmarket') == 'AMC'
+
+    # ── Yahoo precedence tests (added 2026-05-01 per user directive) ──
+
+    def test_yahoo_overrides_av_disagreement(self):
+        """The NVDA 2026-02-25 case: AV=pre-market (wrong), Yahoo=post-market.
+        Yahoo wins. This is the exact bug the directive came from."""
+        result = normalize_timing(
+            report_time='pre-market',
+            earnings_time=None,
+            yahoo_report_time='post-market',
+        )
+        assert result == 'AMC'
+
+    def test_yahoo_overrides_av_other_direction(self):
+        """Yahoo says BMO, AV says AMC — Yahoo wins."""
+        result = normalize_timing(
+            report_time='post-market',
+            earnings_time='postmarket',
+            yahoo_report_time='pre-market',
+        )
+        assert result == 'BMO'
+
+    def test_yahoo_missing_falls_back_to_av(self):
+        """When yahoo_report_time is None, AV report_time is the source."""
+        result = normalize_timing(
+            report_time='post-market',
+            earnings_time=None,
+            yahoo_report_time=None,
+        )
+        assert result == 'AMC'
+
+    def test_yahoo_present_av_missing(self):
+        """Yahoo alone is sufficient when AV is missing."""
+        result = normalize_timing(
+            report_time=None,
+            earnings_time=None,
+            yahoo_report_time='pre-market',
+        )
+        assert result == 'BMO'
+
+    def test_yahoo_unknown_falls_through_to_av(self):
+        """Yahoo 'unknown' value falls through to AV (next in precedence)."""
+        result = normalize_timing(
+            report_time='post-market',
+            earnings_time=None,
+            yahoo_report_time='unknown',
+        )
+        assert result == 'AMC'
 
 
 # ────────────────────────────────────────────────────────────
@@ -347,6 +395,42 @@ class TestComputeReactionEdgeCases:
         assert r['reaction_gap_pct'] == 0.0
         assert r['direction_consistent_5d'] is None
         assert r['is_reversal_5d'] is None
+
+    def test_split_anomaly_nulls_sustain(self):
+        """The WMT 2024-02-20 case: 3-for-1 split between D+1 and D+5
+        produces a fictitious -66% sustain. compute_reaction must null
+        the affected sustain values so they don't poison aggregates."""
+        # D=2026-03-04 reaction. Then a 3-for-1 split between D+4 and D+5
+        # collapses prices by 1/3.
+        df = _bars([
+            (date(2026, 3, 3), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 100.0),  # D close = 100
+            (date(2026, 3, 5), 105.0, 107.0, 104.0, 106.0),  # D+1 anchor=105 (AMC)
+            (date(2026, 3, 6), 106.0, 108.0, 105.0, 107.0),
+            (date(2026, 3, 9), 107.0, 109.0, 106.0, 108.0),
+            (date(2026, 3, 10), 108.0, 110.0, 107.0, 109.0),
+            (date(2026, 3, 11), 36.0, 37.0, 35.5, 36.5),  # 3-for-1 split executed
+            (date(2026, 3, 12), 36.5, 37.5, 36.0, 37.0),
+            (date(2026, 3, 13), 37.0, 38.0, 36.5, 37.5),
+            (date(2026, 3, 16), 37.0, 38.5, 36.5, 38.0),
+            (date(2026, 3, 17), 38.0, 39.0, 37.5, 38.5),
+            (date(2026, 3, 18), 38.5, 39.5, 38.0, 39.0),  # D+10 (post-split)
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # Reaction itself is fine (D vs D+1 doesn't span the split)
+        assert abs(r['reaction_gap_pct'] - 5.0) < 0.01  # (105-100)/100 = 5%
+        # sustain_5d would have been (36.5 - 105) / 105 ≈ -65% — should be NULL
+        assert r['sustain_5d_pct'] is None
+        # sustain_10d also crossed the split — should be NULL
+        assert r['sustain_10d_pct'] is None
+        # direction_consistent_5d / is_reversal_5d need sustain_5d, so also NULL
+        assert r['direction_consistent_5d'] is None
+        assert r['is_reversal_5d'] is None
+        # sustain_3d does NOT cross the split (D+3 = 2026-03-09 close=108)
+        # = (108 - 105) / 105 ≈ 2.86%, well within threshold
+        assert r['sustain_3d_pct'] is not None
+        assert abs(r['sustain_3d_pct'] - 2.857) < 0.01
 
     def test_amc_and_bmo_yield_different_reaction_for_same_bars(self):
         """Sanity check: same OHLCV, different reaction_basis -> different reaction_gap."""
