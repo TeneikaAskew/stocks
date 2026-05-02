@@ -46,12 +46,10 @@ def check_call_conditions(
         score += 1
         conditions.append('below_vwap')
 
-    # 4. Price near/below EMA fast or EMA mid
-    price_vs_ema_fast = row.get(ind.price_vs_ema_fast_col, 0.0)
-    price_vs_ema_mid = row.get(ind.price_vs_ema_mid_col, 0.0)
-    if price_vs_ema_fast < ema_proximity or price_vs_ema_mid < ema_proximity:
-        score += 1
-        conditions.append('near_below_emas')
+    # Phase 0.7.2: dropped `near_below_emas` (was 84.6% fire rate per
+    # §3.10 strategy audit — pure free score). The EMA proximity columns
+    # are still computed by lib/indicators and recorded on signal rows
+    # for analysis, just not contributing to the score anymore.
 
     # 5. Stochastic RSI oversold
     stoch_k = row.get('StochRSI_K', 50.0)
@@ -101,12 +99,8 @@ def check_put_conditions(
         score += 1
         conditions.append('above_vwap')
 
-    # 4. Price near/above EMA fast or EMA mid
-    price_vs_ema_fast = row.get(ind.price_vs_ema_fast_col, 0.0)
-    price_vs_ema_mid = row.get(ind.price_vs_ema_mid_col, 0.0)
-    if price_vs_ema_fast > -ema_proximity or price_vs_ema_mid > -ema_proximity:
-        score += 1
-        conditions.append('near_above_emas')
+    # Phase 0.7.2: dropped `near_above_emas` (PUT-side mirror of the
+    # CALL-side `near_below_emas` drop). Same 84.6% free-fire issue.
 
     # 5. Stochastic RSI overbought
     stoch_k = row.get('StochRSI_K', 50.0)

@@ -1,18 +1,29 @@
-"""Phase 0.8 — Behavioral parity between new strategy classes and the
-legacy generators they replace.
+"""Phase 0.8 → 0.7.x — Strategy divergence from the legacy generators.
 
-These tests guarantee the refactor doesn't change WHICH bars fire — it
-only changes the OUTPUT SCHEMA (Signal dataclass instead of dict /
-DataFrame). Crucial for shipping the refactor without changing live
-signal_alerts behavior on the next deploy.
+History:
+  Phase 0.8 (#184) extracted MeanReversion + Momentum into the
+  lib/strategies/ package and these tests pinned BEHAVIORAL PARITY
+  (same conditions, same scoring) so the refactor didn't change live
+  signal_alerts on the next deploy.
 
-Two parities tested:
-  1. MeanReversionStrategy vs lib.signals.evaluate_signal — same bars
-     fire, same direction, same conditions_met.
-  2. MomentumStrategy vs MarketAnalyzer's inline momentum block — same
-     bars fire (count + direction); conditions_met list is new in
-     the refactor (legacy only stored "{score}/5" string), so we
-     can't compare condition labels — only the score.
+  Phase 0.7.1+0.7.2 (this PR) intentionally drops two "free score"
+  conditions per the §3.10 audit:
+    * Momentum: stoch_rsi_not_overbought (72.2% fire rate)
+    * Mean-reversion: near_below_emas (84.6% fire rate)
+  These conditions added score on bars where they didn't actually
+  reflect setup quality. Tightening the score distribution is the
+  whole point.
+
+  After Phase 0.7.x, the parity assertions below are now DIVERGENCE
+  assertions. For each fixture:
+    * Same bars fire, same direction (still)
+    * NEW score = LEGACY score - (1 if the dropped condition fired
+      in legacy, else 0)
+    * NEW conditions_met = LEGACY conditions_met minus the dropped one
+
+  This is more rigorous than deleting the tests: it pins the
+  intentional divergence and catches OTHER unintended behavior
+  changes (anything beyond the documented drops).
 """
 from __future__ import annotations
 
@@ -60,16 +71,39 @@ def _bar(**overrides) -> pd.Series:
     )),
 ])
 def test_mean_reversion_matches_legacy_evaluate_signal(name, row_kwargs):
-    """Run both old (lib.signals.evaluate_signal) and new on the same row,
-    assert same direction + same base_score + same conditions_met."""
+    """Phase 0.7.2 divergence: legacy includes near_below_emas / near_above_emas;
+    new omits them. Otherwise behavior is identical.
+
+    Asserts:
+      * Direction matches
+      * NEW score = LEGACY score - (1 if dropped condition fired in legacy else 0)
+      * NEW conditions_met = LEGACY conditions_met - {dropped_label}
+    """
     row = _bar(**row_kwargs)
     legacy = legacy_mr_evaluate(row)
     new = MR_NEW.evaluate(row)
 
+    # The Phase 0.7.2 drops, by direction:
+    DROPPED_FOR_DIR = {"CALL": "near_below_emas", "PUT": "near_above_emas"}
+
+    # Edge case: legacy fired only because the dropped condition pushed
+    # it over MIN_CONDITIONS=3. In that case new won't fire at all.
+    if legacy is not None:
+        dropped_label = DROPPED_FOR_DIR.get(legacy["direction"])
+        legacy_had_dropped = dropped_label in (legacy.get("conditions_met") or [])
+        legacy_minus_dropped = legacy["base_score"] - (1 if legacy_had_dropped else 0)
+        if legacy_minus_dropped < 3:
+            # Legacy fired only because of the dropped condition — new
+            # correctly doesn't fire (intended Phase 0.7.2 effect).
+            assert new is None, (
+                f"[{name}] legacy fired only via dropped condition "
+                f"({dropped_label}); new must NOT fire. new={new}"
+            )
+            return
+
     if legacy is None:
         assert new is None, (
-            f"[{name}] new fires but legacy doesn't — "
-            f"new={new}"
+            f"[{name}] new fires but legacy doesn't — new={new}"
         )
         return
 
@@ -79,15 +113,21 @@ def test_mean_reversion_matches_legacy_evaluate_signal(name, row_kwargs):
     assert legacy["direction"] == new.direction, (
         f"[{name}] direction mismatch — legacy={legacy['direction']} new={new.direction}"
     )
-    # Legacy 'base_score' is the raw int condition count
-    assert legacy["base_score"] == new.base_score, (
-        f"[{name}] score mismatch — legacy={legacy['base_score']} new={new.base_score}"
+
+    dropped_label = DROPPED_FOR_DIR[legacy["direction"]]
+    legacy_had_dropped = dropped_label in legacy["conditions_met"]
+    expected_new_score = legacy["base_score"] - (1 if legacy_had_dropped else 0)
+    assert new.base_score == expected_new_score, (
+        f"[{name}] score mismatch — legacy={legacy['base_score']} "
+        f"dropped={dropped_label} fired_in_legacy={legacy_had_dropped} "
+        f"expected_new={expected_new_score} got={new.base_score}"
     )
-    # conditions_met set parity (order may differ if logic ever reorders)
-    assert set(legacy["conditions_met"]) == set(new.conditions_met), (
-        f"[{name}] conditions mismatch — "
+    expected_conditions = set(legacy["conditions_met"]) - {dropped_label}
+    assert set(new.conditions_met) == expected_conditions, (
+        f"[{name}] conditions mismatch beyond expected drop — "
         f"legacy={set(legacy['conditions_met'])} "
-        f"new={set(new.conditions_met)}"
+        f"new={set(new.conditions_met)} "
+        f"expected={expected_conditions}"
     )
 
 
@@ -159,9 +199,42 @@ def _legacy_momentum_score(row: pd.Series) -> tuple[int, int, str | None]:
     )),
 ])
 def test_momentum_matches_legacy_inline_logic(name, row_kwargs):
+    """Phase 0.7.1 divergence: legacy includes stoch_rsi_not_overbought
+    (CALL) / stoch_rsi_not_oversold (PUT); new omits them.
+
+    Asserts:
+      * Direction matches (or BOTH don't fire — legacy might have only
+        fired because the dropped condition pushed it over MIN_CONDITIONS)
+      * NEW score = LEGACY score - 1 (the dropped condition almost always
+        fires in legacy at typical StochRSI values; if the threshold
+        wasn't crossed we'd be in an edge case that's tested separately).
+    """
     row = _bar(**row_kwargs)
     legacy_call_n, legacy_put_n, legacy_dir = _legacy_momentum_score(row)
     new_sig = MOM_NEW.evaluate(row)
+
+    # Determine if the dropped condition fired in legacy for the chosen
+    # direction. CALL drops `StochRSI_K < 80`; PUT drops `StochRSI_K > 20`.
+    stoch = row.get("StochRSI_K", 50.0)
+    if legacy_dir == "CALL":
+        legacy_had_dropped = stoch < 80
+    elif legacy_dir == "PUT":
+        legacy_had_dropped = stoch > 20
+    else:
+        legacy_had_dropped = False
+
+    legacy_score = (legacy_call_n if legacy_dir == "CALL"
+                     else legacy_put_n if legacy_dir == "PUT" else 0)
+
+    # Edge case: legacy fired only via the dropped condition.
+    if legacy_dir is not None:
+        legacy_minus_dropped = legacy_score - (1 if legacy_had_dropped else 0)
+        if legacy_minus_dropped < 3:
+            assert new_sig is None, (
+                f"[{name}] legacy fired only via dropped stoch condition; "
+                f"new must NOT fire. new={new_sig}"
+            )
+            return
 
     if legacy_dir is None:
         assert new_sig is None, (
@@ -176,9 +249,11 @@ def test_momentum_matches_legacy_inline_logic(name, row_kwargs):
     assert new_sig.direction == legacy_dir, (
         f"[{name}] direction mismatch — legacy={legacy_dir} new={new_sig.direction}"
     )
-    legacy_score = legacy_call_n if legacy_dir == "CALL" else legacy_put_n
-    assert new_sig.base_score == legacy_score, (
-        f"[{name}] score mismatch — legacy={legacy_score} new={new_sig.base_score}"
+    expected_new_score = legacy_score - (1 if legacy_had_dropped else 0)
+    assert new_sig.base_score == expected_new_score, (
+        f"[{name}] score mismatch — legacy={legacy_score} "
+        f"dropped_in_legacy={legacy_had_dropped} "
+        f"expected_new={expected_new_score} got={new_sig.base_score}"
     )
 
 
