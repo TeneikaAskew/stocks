@@ -31,6 +31,7 @@ from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
 from lib.strategies.agreement import detect_agreement
 from lib.strategies.base import Signal
+from lib.strategies.timeframe import assign_timeframe
 
 
 logger = logging.getLogger(__name__)
@@ -344,6 +345,20 @@ class SignalMonitor:
         # mirrors the `_latest_broken_levels` pattern just above).
         self._latest_agreement = agreement
 
+        # Phase 1: predict the timeframe horizon for this fire.
+        # Pure helper, no I/O. Uses RVOL + ATR + condition pattern to
+        # tag the signal with one of {5m,15m,30m,60m,...}. Persisted
+        # to signal_alerts so consumers can match exit logic to the
+        # signal class.
+        tf_tag, tf_hold = assign_timeframe(
+            sig['conditions_met'],
+            rsi=latest.get(self.indicator_cfg.rsi_col),
+            rvol=latest.get('RVOL'),
+            atr_5m_pct=(latest.get('ATR14', 0) / last_price) if last_price > 0 else None,
+        )
+        self._latest_timeframe_tag = tf_tag
+        self._latest_expected_hold_min = tf_hold
+
         # Strat bonus
         strat_bonus = 0
         if self.strat_cfg.enabled:
@@ -397,9 +412,12 @@ class SignalMonitor:
         # Phase 1.6: stacked-agreement signals get a visual prefix so
         # they jump out in the Discord channel scroll.
         title_prefix = '\U0001F3AF STACKED ' if agreement else ''
+        # Phase 1: timeframe tag in the title \u2014 '[15m]' or '[60m]' etc.
+        tf_tag = getattr(self, '_latest_timeframe_tag', None)
+        tf_label = f" [{tf_tag}]" if tf_tag else ''
         title = (
-            f"{title_prefix}{'CALL' if direction == 'CALL' else 'PUT'} SIGNAL "
-            f"\u2014 {ticker} @ ${price:.2f}"
+            f"{title_prefix}{'CALL' if direction == 'CALL' else 'PUT'} SIGNAL"
+            f"{tf_label} \u2014 {ticker} @ ${price:.2f}"
         )
         agreement_block = ''
         if agreement:
@@ -479,6 +497,12 @@ class SignalMonitor:
             # column doesn't bloat for the 99% of rows that aren't
             # stacked.
             'strategy_agreement': json.dumps(agreement) if agreement else None,
+            # Phase 1: timeframe horizon (one of 5m,15m,30m,60m,90m,120m,240m)
+            # and the planned hold window. Tagged at fire time by the
+            # heuristic in lib/strategies/timeframe.py — never None
+            # post-Phase-1 (always tagged with at least the default).
+            'timeframe_tag': getattr(self, '_latest_timeframe_tag', None),
+            'expected_hold_min': getattr(self, '_latest_expected_hold_min', None),
         }
 
         try:

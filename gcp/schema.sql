@@ -1656,3 +1656,29 @@ CREATE INDEX IF NOT EXISTS idx_signal_metrics_evaluated_at
 
 CREATE INDEX IF NOT EXISTS idx_signal_metrics_status_eval
     ON signal_metrics (status, evaluated_at DESC);
+
+
+-- ─────────────────────────────────────────────────────────
+-- TIMEFRAME TAGS — Phase 1
+-- ─────────────────────────────────────────────────────────
+-- Hypothesis: different signals work on different timeframes — a 5m
+-- scalp setup, a 15m breakout, and a 60m trend-continuation are not
+-- the same trade and shouldn't be exited on the same time-stop.
+--
+-- timeframe_tag values:    '5m' | '15m' | '30m' | '60m' | '90m' | '120m' | '240m'
+-- expected_hold_min:       upper bound of the timeframe bucket (planned holding period)
+--
+-- The heuristic that populates these columns lives in
+-- lib/strategies/timeframe.py and is intentionally a documented
+-- placeholder — it'll be refined from signal_metrics empirical data
+-- in a follow-up phase.
+
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS timeframe_tag VARCHAR(8);
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS expected_hold_min INTEGER;
+
+ALTER TABLE historical_signals
+    ADD COLUMN IF NOT EXISTS timeframe_tag VARCHAR(8);
+ALTER TABLE historical_signals
+    ADD COLUMN IF NOT EXISTS expected_hold_min INTEGER;
