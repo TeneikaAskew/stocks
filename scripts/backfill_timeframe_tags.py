@@ -131,12 +131,22 @@ def upsert_chunk(engine, chunk: pd.DataFrame) -> int:
     params: dict = {}
     for i, r in enumerate(rows):
         params[f"t{i}"]  = r["ticker"]
-        params[f"e{i}"]  = r["entry_time"]
+        # pg8000 sends pandas Timestamp objects as text and Postgres
+        # then can't infer timestamptz even with a CAST in the query.
+        # Convert to ISO 8601 string so the CAST has clean text input.
+        et = r["entry_time"]
+        params[f"e{i}"]  = et.isoformat() if hasattr(et, "isoformat") else str(et)
         params[f"s{i}"]  = r["strategy"]
         params[f"tf{i}"] = r["timeframe_tag"]
         params[f"hm{i}"] = r["expected_hold_min"]
+        # CAST(... AS timestamptz) instead of ::timestamptz: SQLAlchemy's
+        # parameter rewriter for pg8000 stops at named-param boundaries,
+        # and the `::` immediately after `:e0` (no space) confuses it
+        # into emitting `:e0::timestamptz` literally instead of
+        # rewriting to `%s::timestamptz`. The CAST() syntax has clean
+        # whitespace boundaries so the rewriter handles it.
         value_tuples.append(
-            f"(:t{i}, :e{i}, :s{i}, :tf{i}, :hm{i})"
+            f"(:t{i}, CAST(:e{i} AS timestamptz), :s{i}, :tf{i}, :hm{i})"
         )
 
     sql = text(f"""
