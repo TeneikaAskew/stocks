@@ -5,6 +5,47 @@ This is a stocks/trading application project that includes Google Apps Script co
 
 ## Critical Rules - MUST FOLLOW
 
+### 0. Production-Grade Architecture — NON-NEGOTIABLE
+
+**You only ship production-grade solutions. Every design must explicitly account for cloud and data capacity at design time, NOT as future work.**
+
+This rule was added on **2026-05-01** after a Phase 0.5 incident where I shipped a script with a known per-signal-query architecture, flagged it as "future-work, non-blocking" in my own PR review, then watched it time out repeatedly in production while sending the user a stream of failure emails. The runbook I wrote alongside the PR explicitly told the user to run the exact workload my script couldn't handle. That cost real GCP money, real attention, and real trust.
+
+#### Rules
+
+1. **No "future-work, non-blocking" perf flags on workloads in the runbook.** If a PR's runbook says "kick off this backfill", the code in that PR must handle that backfill. Either fix the perf concern before merging or remove the workload from the runbook with an explicit "do not run X until Y lands."
+
+2. **Always do a back-of-envelope capacity calculation BEFORE merging.** Three numbers, written in the PR description:
+   - **Volume**: how many input rows × bytes/row
+   - **Velocity**: SQL queries / API calls / network round-trips per input row × total
+   - **Wall-clock**: queries × per-query latency at production driver speeds (pg8000 + Cloud SQL Connector ≈ 0.5–2 s per round-trip; psycopg2 ≈ 50–200 ms)
+   If wall-clock exceeds the configured Cloud Run task-timeout, the architecture is wrong, not the timeout.
+
+3. **Hermetic tests are necessary but not sufficient.** Synthetic in-memory DataFrames run in microseconds; production runs against the network. A test suite of pure-helper unit tests proves correctness, not deployability. Every PR that touches a Cloud Run job must include either:
+   - A test that asserts the I/O shape (e.g. "N source rows of K tickers triggers exactly K queries"), or
+   - A documented production smoke test in the test plan with the actual data volume the runbook will hit.
+
+4. **Default architectural patterns for this stack:**
+   - **Batch SQL queries by partition/grouping key** (ticker, date, etc.) — never per-row when N could exceed 100. Pull one query covering the union range, slice in memory.
+   - **Bound memory** — write to DB in per-group chunks rather than accumulating all results before any commit. A crash mid-job should leave partial progress durable, not lose everything.
+   - **Observable progress** — log per-group counts so a 30-minute job is debuggable, not a black box. `logger.info("ticker=%s processed=%d/%d", ...)` is the bar.
+   - **Resilient to bad data** — one missing partition logs a warning and skips, doesn't crash the batch.
+   - **Idempotent re-runs** — `ON CONFLICT DO UPDATE` so a re-run after a partial failure converges, not duplicates.
+   - **Bounded retries** — Cloud Run can't distinguish transient from permanent failures. `--max-retries 0` is the default unless you can prove transient retries help and double-emails are acceptable.
+
+5. **Cloud Run Job sizing checklist:**
+   - **task-timeout**: ≥ 4× the wall-clock estimate. Cloud Run charges runtime, not the cap, so headroom is free.
+   - **memory**: ≥ 512 MiB (gen2 minimum with always-allocated CPU). Estimate peak working-set, double it.
+   - **max-retries**: 0 unless explicitly justified.
+   - **--args**: use `--args="--mode=foo"` (with `=`) when the value starts with `-`, otherwise gcloud parses it as a new flag.
+
+6. **Cost discipline:**
+   - Estimate **$/run × runs/day × 30** in the PR description for any new scheduled job.
+   - A scheduler firing a failing job is a slow leak — paused/disabled-on-failure beats endless-retry-on-failure.
+   - Cloud SQL queries are free (instance is always-on); Cloud Run round-trips are cheap individually but expensive in aggregate. Optimize round-trips, not query cost.
+
+7. **When you find yourself writing "non-blocking", "future-work", or "for now" in a perf-related context — stop and re-read rule 1.** Those phrases are how shipping happens with known-broken architecture. They are only acceptable when the slow path is genuinely unreachable from the runbook in the same PR.
+
 ### 1. File Management Philosophy - READ FIRST, CREATE LAST
 - **ALWAYS** read and understand existing files before making any changes
 - **SEARCH** thoroughly for related files using Grep, Glob, and Read tools
