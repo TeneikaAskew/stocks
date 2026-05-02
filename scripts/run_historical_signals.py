@@ -200,19 +200,24 @@ def map_signals_to_table(signals_df: pd.DataFrame, ticker: str,
         out['entry_volume'] = out['entry_volume'].astype('Int64')
 
     # Phase 1: timeframe tagging on every research-pipeline row.
-    # We don't have ATR at this layer (signals_df is post-MarketAnalyzer,
-    # no per-row ATR snapshot), so the approximate helper tier-defaults
-    # from strategy + signal_strength.
+    # signals_df has entry_rsi at the per-row level. Pass it through
+    # so the empirical lookup (EMPIRICAL_LOOKUP in
+    # lib/strategies/timeframe.py) hits the populated buckets instead
+    # of cold-starting on the rsi='unknown' bucket. ATR is still
+    # unavailable at this layer (no per-row snapshot in signals_df).
     from lib.strategies.timeframe import assign_timeframe_for_backfill
     if 'signal_strength' in out.columns:
-        tags_holds = [
-            assign_timeframe_for_backfill(
+        rsi_series = out['entry_rsi'] if 'entry_rsi' in out.columns else None
+        tags_holds = []
+        for i in range(len(out)):
+            ss = out['signal_strength'].iloc[i]
+            rsi = rsi_series.iloc[i] if rsi_series is not None else None
+            tags_holds.append(assign_timeframe_for_backfill(
                 strategy=strategy,
                 signal_strength=int(ss) if pd.notna(ss) else None,
                 atr_5m_pct=None,
-            )
-            for ss in out['signal_strength']
-        ]
+                entry_rsi=float(rsi) if rsi is not None and pd.notna(rsi) else None,
+            ))
         out['timeframe_tag'] = [t for t, _ in tags_holds]
         out['expected_hold_min'] = [h for _, h in tags_holds]
     else:
