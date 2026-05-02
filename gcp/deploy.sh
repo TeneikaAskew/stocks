@@ -1359,10 +1359,12 @@ deploy_schedulers() {
     # 'final'. Tue-Sat 01:00 ET so it runs AFTER historical-signals-
     # watchlist (which Cloud Scheduler doesn't have a strict ordering
     # for, but in practice the watchlist iterator finishes by 22:00 ET).
-    # Uses _schedule_with_args to flip the job's --mode at trigger time.
+    # --lookback-days=2 covers any signal whose 240m (=4h) window
+    # closed in the last day; 2 days is paranoid headroom against DST
+    # edges and weekend gaps.
     _schedule_with_args "signal-quality-report-nightly" \
         "0 1 * * 2-6" "signal-quality-report" \
-        "--mode=historical"
+        "--mode=historical" "--lookback-days=2"
 
     # Phase 0.5 spec item #6 — clean-rate regression alarm.
     # Daily 02:00 ET, after the nightly historical run promotes rolling

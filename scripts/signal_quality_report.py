@@ -472,8 +472,13 @@ def upsert_signal_metrics(engine, rows: list[SignalMetrics]) -> int:
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Phase 0.5 signal-quality report")
     p.add_argument("--mode", choices=("historical", "rolling"), required=True)
-    p.add_argument("--start", help="UTC date YYYY-MM-DD (historical mode)")
+    p.add_argument("--start", help="UTC date YYYY-MM-DD (historical mode, with --end)")
     p.add_argument("--end", help="UTC date YYYY-MM-DD (historical mode, exclusive)")
+    p.add_argument("--lookback-days", type=int, default=None,
+                   help="Historical mode: process the last N days "
+                        "(alternative to --start/--end). Used by the "
+                        "nightly scheduler to promote pending → final "
+                        "without computing explicit dates.")
     p.add_argument("--lookback-hours", type=int, default=4,
                    help="Rolling mode: how far back to scan for fires (default 4)")
     p.add_argument("--tickers", default="",
@@ -487,6 +492,131 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
+    """Translate CLI args into a [start, end) UTC window.
+
+    Three valid invocations:
+      * --mode=rolling                   → end=now, start=now - lookback_hours
+      * --mode=historical --lookback-days N → end=now, start=now - N days
+      * --mode=historical --start X --end Y  → explicit window
+
+    Raises ValueError on missing/conflicting args so the caller can
+    return a non-zero exit code with a clear log line.
+    """
+    if args.mode == "rolling":
+        end = datetime.now(timezone.utc)
+        return end - timedelta(hours=args.lookback_hours), end
+
+    # historical mode
+    if args.lookback_days is not None:
+        end = datetime.now(timezone.utc)
+        return end - timedelta(days=args.lookback_days), end
+    if args.start and args.end:
+        start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
+        end = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
+        return start, end
+    raise ValueError(
+        "historical mode requires either --lookback-days N or --start/--end"
+    )
+
+
+def _slice_intraday(
+    full_df: pd.DataFrame, entry_t: pd.Timestamp,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Cut the per-ticker intraday DataFrame into (forward, lookback) for
+    one signal. Pure function — no DB.
+
+    `forward` covers [entry_t, entry_t + max_extended_tf + 5min] for the
+    extended-timeframe MFE computation; `lookback` covers
+    [entry_t - 120min, entry_t) for the ATR context.
+    """
+    forward_end = entry_t + timedelta(minutes=max(EXTENDED_TFS_MIN) + 5)
+    lookback_start = entry_t - timedelta(minutes=120)
+    forward = full_df[(full_df["Time"] >= entry_t) & (full_df["Time"] <= forward_end)]
+    lookback = full_df[(full_df["Time"] >= lookback_start) & (full_df["Time"] < entry_t)]
+    return forward, lookback
+
+
+def _normalize_entry_time(raw) -> datetime:
+    """Coerce a source-row entry_time into a timezone-aware UTC datetime."""
+    entry_t = pd.Timestamp(raw).to_pydatetime()
+    if entry_t.tzinfo is None:
+        entry_t = entry_t.replace(tzinfo=timezone.utc)
+    return entry_t
+
+
+def process_ticker_batch(
+    engine, ticker: str, group: pd.DataFrame, *, mode: str,
+    dry_run: bool = False,
+) -> tuple[int, int, dict[str, int]]:
+    """Process all signals for one ticker with ONE intraday query.
+
+    This is the production-grade hot loop. The naive "two queries per
+    signal" shape did 6000+ round-trips on a monthly backfill and
+    timed out at 1 hour. The batched shape pulls one DataFrame
+    covering the full per-ticker window, slices it in memory per
+    signal, and upserts the resulting `SignalMetrics` rows in one
+    chunked insert. Cloud Run round-trips drop from O(signals) to
+    O(tickers).
+
+    Memory: SPY's full month of 1-min bars is ~12k rows × ~50 bytes
+    ≈ 600 KB; even a year is <10 MB per ticker. Per-ticker upsert
+    keeps the metrics-list memory bounded too — we don't accumulate
+    every ticker's results before any DB write.
+
+    Returns (signals_processed, signals_upserted, classification_counts).
+    """
+    if group.empty:
+        return (0, 0, {})
+
+    earliest_entry = pd.Timestamp(group["entry_time"].min())
+    latest_entry = pd.Timestamp(group["entry_time"].max())
+    if earliest_entry.tzinfo is None:
+        earliest_entry = earliest_entry.tz_localize(timezone.utc)
+    if latest_entry.tzinfo is None:
+        latest_entry = latest_entry.tz_localize(timezone.utc)
+
+    fetch_start = earliest_entry - timedelta(minutes=120)
+    fetch_end = latest_entry + timedelta(minutes=max(EXTENDED_TFS_MIN) + 5)
+
+    logger.info(
+        "ticker=%s signals=%d fetching intraday [%s, %s)",
+        ticker, len(group), fetch_start, fetch_end,
+    )
+    full_df = fetch_intraday_window(engine, ticker, fetch_start, fetch_end)
+    if full_df.empty:
+        logger.warning(
+            "ticker=%s no intraday bars in [%s, %s) — skipping %d signals",
+            ticker, fetch_start, fetch_end, len(group),
+        )
+        return (len(group), 0, {})
+
+    metrics: list[SignalMetrics] = []
+    for _, row in group.iterrows():
+        d = row.to_dict()
+        d["entry_time"] = _normalize_entry_time(d["entry_time"])
+        forward, lookback = _slice_intraday(full_df, pd.Timestamp(d["entry_time"]))
+        m = compute_metrics_for_signal(
+            d, intraday=forward, intraday_lookback=lookback, mode=mode,
+        )
+        metrics.append(m)
+
+    counts = pd.Series([m.cls_60m for m in metrics]).value_counts().to_dict()
+    if dry_run:
+        logger.info(
+            "ticker=%s --dry-run: %d rows ready, classifications=%s",
+            ticker, len(metrics), counts,
+        )
+        return (len(metrics), 0, counts)
+
+    n = upsert_signal_metrics(engine, metrics)
+    logger.info(
+        "ticker=%s upserted=%d/%d classifications=%s",
+        ticker, n, len(metrics), counts,
+    )
+    return (len(metrics), n, counts)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -494,15 +624,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     args = parse_args(argv)
 
-    if args.mode == "historical":
-        if not (args.start and args.end):
-            logger.error("--start and --end are required in historical mode")
-            return 2
-        start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
-        end = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc)
-    else:
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(hours=args.lookback_hours)
+    try:
+        start, end = _resolve_window(args)
+    except ValueError as e:
+        logger.error("invalid CLI args: %s", e)
+        return 2
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()] or None
     strategies = None if args.strategy == "all" else [args.strategy]
@@ -518,40 +644,30 @@ def main(argv: Optional[list[str]] = None) -> int:
         start, end, tickers or "ALL", args.strategy,
     )
     src = fetch_source_rows(engine, start, end, tickers=tickers, strategies=strategies)
-    logger.info("loaded %d source rows", len(src))
+    logger.info("loaded %d source rows across %d tickers",
+                len(src), src["ticker"].nunique() if not src.empty else 0)
     if src.empty:
         logger.info("nothing to evaluate")
         return 0
 
-    metrics: list[SignalMetrics] = []
-    for _, row in src.iterrows():
-        d = row.to_dict()
-        ticker = d["ticker"]
-        entry_t = pd.Timestamp(d["entry_time"]).to_pydatetime()
-        if entry_t.tzinfo is None:
-            entry_t = entry_t.replace(tzinfo=timezone.utc)
-        d["entry_time"] = entry_t
-
-        intraday = fetch_intraday_window(
-            engine, ticker, entry_t, entry_t + timedelta(minutes=max(EXTENDED_TFS_MIN) + 5),
+    # Per-ticker batched processing — bounded memory, observable
+    # progress, ONE intraday query per ticker (not per signal).
+    total_processed = 0
+    total_upserted = 0
+    aggregate_counts: dict[str, int] = {}
+    for ticker, group in src.groupby("ticker", sort=False):
+        processed, upserted, counts = process_ticker_batch(
+            engine, str(ticker), group, mode=args.mode, dry_run=args.dry_run,
         )
-        lookback = fetch_intraday_window(
-            engine, ticker, entry_t - timedelta(minutes=120), entry_t,
-        )
-        m = compute_metrics_for_signal(
-            d, intraday=intraday, intraday_lookback=lookback, mode=args.mode,
-        )
-        metrics.append(m)
+        total_processed += processed
+        total_upserted += upserted
+        for k, v in counts.items():
+            aggregate_counts[k] = aggregate_counts.get(k, 0) + v
 
-    counts = pd.Series([m.cls_60m for m in metrics]).value_counts().to_dict()
-    logger.info("60m classification distribution: %s", counts)
-
-    if args.dry_run:
-        logger.info("--dry-run set — skipping DB write (%d rows ready)", len(metrics))
-        return 0
-
-    n = upsert_signal_metrics(engine, metrics)
-    logger.info("upserted %d signal_metrics rows", n)
+    logger.info(
+        "DONE processed=%d upserted=%d classifications=%s",
+        total_processed, total_upserted, aggregate_counts,
+    )
     return 0
 
 
