@@ -219,6 +219,27 @@ def map_signals_to_table(signals_df: pd.DataFrame, ticker: str,
         out['timeframe_tag'] = None
         out['expected_hold_min'] = None
 
+    # Phase 1.5: catalyst proximity per row. The lru_cache in
+    # get_catalyst_context collapses repeat lookups within the same
+    # 5-min bucket on the same ticker — so a research run over a
+    # full month of intraday signals does at most ~12 DB queries per
+    # ticker per day rather than one per signal. Lookup failure
+    # (no DB / table absent) is non-fatal — returns EMPTY_CONTEXT
+    # → proximity_bucket='quiet', the rest NULL.
+    from lib.strategies.catalyst_proximity import get_catalyst_context
+    proximity_keys = (
+        'next_catalyst_min', 'next_catalyst_type',
+        'last_catalyst_min', 'last_catalyst_type',
+        'catalyst_session', 'proximity_bucket',
+    )
+    if 'entry_time' in out.columns and len(out) > 0:
+        ctxs = [get_catalyst_context(ticker, ts) for ts in out['entry_time']]
+        for k in proximity_keys:
+            out[k] = [c.get(k) for c in ctxs]
+    else:
+        for k in proximity_keys:
+            out[k] = None
+
     # Bundle every "extra" column into the JSONB blob
     extra_cols = [c for c in signals_df.columns if c.startswith(EXTRA_PREFIXES)]
     if extra_cols:

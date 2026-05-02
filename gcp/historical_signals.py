@@ -60,6 +60,17 @@ COLS = (
     # column flowed through (covered by the backfill script).
     'timeframe_tag',
     'expected_hold_min',
+    # Phase 1.5: catalyst proximity context — populated at write-time
+    # via lib.strategies.catalyst_proximity.get_catalyst_context.
+    # NULL tolerated for legacy rows; downstream stratification skips
+    # NULLs (treated as 'quiet' implicitly) so partial backfills are
+    # safe to land.
+    'next_catalyst_min',
+    'next_catalyst_type',
+    'last_catalyst_min',
+    'last_catalyst_type',
+    'catalyst_session',
+    'proximity_bucket',
 )
 
 
@@ -130,7 +141,11 @@ def bulk_insert(df: pd.DataFrame, chunk_size: int = 1000) -> tuple[int, int]:
     if df.empty:
         return (0, 0)
 
-    df = df[list(COLS)].copy()  # enforce column order, drop unknowns
+    # Enforce column order, drop unknowns. reindex (vs []-selection)
+    # tolerates missing columns by filling NaN — required so legacy
+    # callers + tests that don't yet emit the Phase 1 / 1.5 enrichment
+    # columns still write rows (the columns are nullable in the schema).
+    df = df.reindex(columns=list(COLS)).copy()
     if 'extra' in df.columns:
         df['extra'] = df['extra'].apply(
             lambda x: json.dumps(_clean_for_json(x), default=_json_default) if x else None

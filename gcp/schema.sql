@@ -1713,3 +1713,42 @@ ALTER TABLE historical_signals
     ADD COLUMN IF NOT EXISTS timeframe_tag VARCHAR(8);
 ALTER TABLE historical_signals
     ADD COLUMN IF NOT EXISTS expected_hold_min INTEGER;
+
+-- ─── Phase 1.5 — catalyst-proximity tagging on every signal ────────
+-- Signal quality is materially modified by proximity to known catalyst
+-- events (FOMC/CPI/NFP/PCE/GDP, earnings, material 8-Ks). These six
+-- columns enrich each fired signal with the closest scheduled or
+-- recently-released catalyst so downstream analysis (Phase 0.5 weekly
+-- QA, Phase 4 reweighting, Phase 2 cooldown) can stratify by
+-- proximity_bucket. Population logic lives in
+-- lib/strategies/catalyst_proximity.py — pure helpers + lru_cache'd
+-- DB lookup keyed on (ticker, ts.floor('5min')).
+--
+-- proximity_bucket values:
+--   'imminent'  ≤30 min before event      'post'     1-3 h after event
+--   'pre'       30 min - 2 h before       'next_day' 3-24 h after event
+--   'during'    0-60 min after event       'quiet'   nothing in window
+--
+-- catalyst_session: which US session the driving event sits in. Lets
+-- the analysis separate pre-market 8:30 ET releases (CPI/NFP) from
+-- intraday 14:00 ET releases (FOMC) from post-market earnings.
+--
+-- *_catalyst_type values: 'fomc' | 'cpi' | 'nfp' | 'pce' | 'gdp' |
+--   'ism' | 'retail_sales' | 'jobless_claims' | 'beige_book' |
+--   'fed_speaker' | 'earnings_pre' | 'earnings_post' | 'sec_8k'
+
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS next_catalyst_min   INTEGER,
+    ADD COLUMN IF NOT EXISTS next_catalyst_type  VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS last_catalyst_min   INTEGER,
+    ADD COLUMN IF NOT EXISTS last_catalyst_type  VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS catalyst_session    VARCHAR(12),
+    ADD COLUMN IF NOT EXISTS proximity_bucket    VARCHAR(12);
+
+ALTER TABLE historical_signals
+    ADD COLUMN IF NOT EXISTS next_catalyst_min   INTEGER,
+    ADD COLUMN IF NOT EXISTS next_catalyst_type  VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS last_catalyst_min   INTEGER,
+    ADD COLUMN IF NOT EXISTS last_catalyst_type  VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS catalyst_session    VARCHAR(12),
+    ADD COLUMN IF NOT EXISTS proximity_bucket    VARCHAR(12);

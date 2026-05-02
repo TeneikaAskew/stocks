@@ -32,6 +32,7 @@ from lib.strategies import MOMENTUM
 from lib.strategies.agreement import detect_agreement
 from lib.strategies.base import Signal
 from lib.strategies.timeframe import assign_timeframe
+from lib.strategies.catalyst_proximity import get_catalyst_context
 
 
 logger = logging.getLogger(__name__)
@@ -546,6 +547,19 @@ class SignalMonitor:
             'timeframe_tag': getattr(self, '_latest_timeframe_tag', None),
             'expected_hold_min': getattr(self, '_latest_expected_hold_min', None),
         }
+
+        # Phase 1.5: catalyst proximity. Looked up at signal-fire time
+        # via lru_cache'd Cloud SQL query — same 5-min bucket on the
+        # same ticker = one DB hit. Failure is non-fatal: returns
+        # EMPTY_CONTEXT so the row still writes with proximity_bucket
+        # = 'quiet' rather than crashing the persist.
+        try:
+            proximity = get_catalyst_context(ticker, pd.Timestamp(now))
+        except Exception as e:
+            logger.debug("catalyst proximity skipped for %s: %s", ticker, e)
+            from lib.strategies.catalyst_proximity import EMPTY_CONTEXT
+            proximity = EMPTY_CONTEXT.copy()
+        row.update(proximity)
 
         try:
             df = pd.DataFrame([row])
