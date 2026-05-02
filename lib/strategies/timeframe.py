@@ -137,8 +137,53 @@ def assign_timeframe(
     return ("30m", _HOLD_MIN_BY_TAG["30m"])
 
 
+def assign_timeframe_for_backfill(
+    strategy: Optional[str],
+    signal_strength: Optional[int],
+    atr_5m_pct: Optional[float] = None,
+) -> tuple[str, int]:
+    """Approximate timeframe tag for HISTORICAL rows that lack live RVOL.
+
+    historical_signals stores conditions_met as a count string (e.g.
+    '4/5'), not the live monitor's granular list, and never persists
+    RVOL. The retrospective backfill therefore can't use the full live
+    heuristic. This function uses only what's available historically:
+
+      * strategy           — 'momentum' or 'mean_reversion'
+      * signal_strength    — 3..5 (count of conditions met)
+      * atr_5m_pct         — joined from signal_metrics if present
+
+    Tier structure mirrors the live heuristic:
+      * High vol + strong confirmation (signal_strength >= 4) → 15m
+      * High vol, weaker confirmation                          → 30m
+      * Mean-reversion strategy at avg vol                     → 30m
+      * Momentum strategy at avg vol                           → 15m
+      * Default / unknown                                      → 30m
+
+    Documented as APPROXIMATE — the live monitor's tags will be more
+    precise. When a future phase ships the empirically-derived
+    heuristic, this function can be replaced with a backfill that
+    consumes more historical fields (joined indicator snapshots).
+    """
+    high_vol = (
+        atr_5m_pct is not None and atr_5m_pct >= HIGH_ATR_5M_PCT / 100.0
+    )
+    strong = (signal_strength or 0) >= STRONG_CONFIRMATION
+
+    if high_vol and strong:
+        return ("15m", _HOLD_MIN_BY_TAG["15m"])
+    if high_vol:
+        return ("30m", _HOLD_MIN_BY_TAG["30m"])
+    if strategy == "mean_reversion":
+        return ("30m", _HOLD_MIN_BY_TAG["30m"])
+    if strategy == "momentum":
+        return ("15m", _HOLD_MIN_BY_TAG["15m"])
+    return ("30m", _HOLD_MIN_BY_TAG["30m"])
+
+
 __all__ = [
     "assign_timeframe",
+    "assign_timeframe_for_backfill",
     "VALID_TAGS",
     "HIGH_RVOL",
     "HIGH_ATR_5M_PCT",
