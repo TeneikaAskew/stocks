@@ -1,0 +1,254 @@
+name: Monthly architecture doc refresh
+
+# Regenerates ARCHITECTURE.md, DATA_DEPENDENCIES.md, and COST_ANALYSIS.md
+# from live GCP state on the first day of every month.
+#
+# How it works:
+#   1. Authenticates to GCP via Workload Identity Federation
+#   2. Snapshots inventory + IAM + 90-day billing rollup to local JSON files
+#   3. Invokes Claude Code in headless mode for each doc, using the
+#      prompts versioned under .github/prompts/
+#   4. Diffs the regenerated docs against committed versions, ignoring
+#      the trailing "Generated YYYY-MM-DD" line so timestamp-only churn
+#      doesn't open noisy PRs
+#   5. Opens a PR titled "Monthly architecture doc refresh: YYYY-MM"
+#      if any doc changed in a meaningful way; exits clean otherwise
+#
+# Required GitHub secrets (one-time setup, see SETUP.md):
+#   - GCP_WIF_PROVIDER       full resource name of the Workload Identity Provider
+#   - GCP_WIF_SA_EMAIL       email of the service account this workflow impersonates
+#   - ANTHROPIC_API_KEY      key for Claude Code to call the Anthropic API
+#
+# Service account roles (see SETUP.md for grant commands):
+#   - roles/cloudasset.viewer       (asset inventory)
+#   - roles/iam.securityReviewer    (IAM policy read)
+#   - roles/bigquery.dataViewer + roles/bigquery.jobUser  (billing rollup)
+
+on:
+  schedule:
+    - cron: '0 6 1 * *'   # 06:00 UTC on the 1st of every month
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Generate docs but skip PR creation (for testing).'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  contents: write       # push the bot branch
+  pull-requests: write  # open the PR
+  id-token: write       # WIF token
+
+env:
+  GCP_PROJECT: adept-mountain-474619-d4
+  REGION: us-east1
+  PR_BRANCH_PREFIX: bot/arch-refresh
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── Tooling ───────────────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node (for Claude Code CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Python deps
+        run: pip install --quiet google-cloud-bigquery
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      # ── GCP auth via Workload Identity Federation ─────────────────────────
+      - name: Authenticate to GCP (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SA_EMAIL }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+
+      # ── Snapshot live GCP state ───────────────────────────────────────────
+      - name: Dump asset inventory
+        run: |
+          gcloud asset search-all-resources \
+            --scope="projects/${GCP_PROJECT}" \
+            --format=json > gcp_inventory.json
+          echo "Inventory rows: $(jq 'length' gcp_inventory.json)"
+
+      - name: Dump IAM policy
+        run: |
+          gcloud projects get-iam-policy "${GCP_PROJECT}" --format=json > gcp_iam.json
+
+      - name: Dump 90-day billing rollup
+        run: |
+          python - <<'PY'
+          import os, json, decimal, datetime
+          from google.cloud import bigquery
+
+          project = os.environ["GCP_PROJECT"]
+          client = bigquery.Client(project=project)
+
+          # Discover the billing-export table dynamically — its suffix
+          # encodes the billing-account ID and isn't stable across projects.
+          tables = [t.table_id for t in client.list_tables(f"{project}.billing_export")]
+          standard = [t for t in tables if t.startswith("gcp_billing_export_v1_")]
+          if not standard:
+              raise SystemExit(f"no gcp_billing_export_v1_* table in dataset; got {tables}")
+          billing_table = standard[0]
+
+          sql = f"""
+          SELECT service.description AS service,
+                 sku.description     AS sku,
+                 SUM(cost)            AS cost_usd,
+                 DATE_TRUNC(DATE(usage_start_time), MONTH) AS month
+          FROM `{project}.billing_export.{billing_table}`
+          WHERE _PARTITIONTIME >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)
+          GROUP BY service, sku, month
+          ORDER BY month DESC, cost_usd DESC
+          """
+          rows = [dict(r) for r in client.query(sql).result()]
+
+          def enc(o):
+              if isinstance(o, decimal.Decimal): return float(o)
+              if isinstance(o, (datetime.date, datetime.datetime)): return o.isoformat()
+              raise TypeError(f"unhandled {type(o)}")
+
+          with open("billing_90d.json", "w") as f:
+              json.dump(rows, f, default=enc)
+          print(f"wrote billing_90d.json with {len(rows)} rows")
+          PY
+
+      # ── Regenerate docs via Claude Code (headless) ────────────────────────
+      # Each invocation gets the corresponding prompt as the user message,
+      # all repo files + the JSON dumps as tool-accessible inputs, and is
+      # restricted to non-destructive tools.
+      - name: Regenerate ARCHITECTURE.md
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p "$(cat .github/prompts/architecture.md)" \
+            --allowed-tools "Read Bash Write Edit Grep Glob" \
+            --max-turns 60 \
+            --output-format text
+
+      - name: Regenerate DATA_DEPENDENCIES.md
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p "$(cat .github/prompts/data-dependencies.md)" \
+            --allowed-tools "Read Bash Write Edit Grep Glob" \
+            --max-turns 80 \
+            --output-format text
+
+      - name: Regenerate COST_ANALYSIS.md
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p "$(cat .github/prompts/cost-analysis.md)" \
+            --allowed-tools "Read Bash Write Edit Grep Glob" \
+            --max-turns 40 \
+            --output-format text
+
+      # ── Decide whether the changes are meaningful ─────────────────────────
+      # Strip the "Generated YYYY-MM-DD" footer + row-count noise before
+      # diffing. If only the date moved, skip the PR and revert the file.
+      - name: Detect meaningful changes
+        id: detect
+        run: |
+          set +e
+          MEANINGFUL=0
+          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md; do
+            if [ ! -f "$FILE" ]; then continue; fi
+            git diff --no-color "$FILE" \
+              | grep -vE '^[-+]Generated 20[0-9]{2}-[0-9]{2}-[0-9]{2}' \
+              | grep -vE '^[-+]\*\*Generated\*\* 20[0-9]{2}' \
+              | grep -E '^[-+][^-+]' \
+              > /tmp/${FILE}.diff
+            if [ -s /tmp/${FILE}.diff ]; then
+              CHANGED_LINES=$(wc -l < /tmp/${FILE}.diff)
+              echo "::notice::$FILE has meaningful changes ($CHANGED_LINES lines)"
+              MEANINGFUL=1
+            else
+              echo "$FILE: no meaningful changes (timestamp-only) — reverting"
+              git checkout -- "$FILE"
+            fi
+          done
+          echo "meaningful=$MEANINGFUL" >> "$GITHUB_OUTPUT"
+
+      # ── Open PR if meaningful ─────────────────────────────────────────────
+      - name: Open refresh PR
+        if: steps.detect.outputs.meaningful == '1' && inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MONTH=$(date -u +%Y-%m)
+          BRANCH="${PR_BRANCH_PREFIX}-${MONTH}"
+
+          git config user.name  "arch-refresh-bot"
+          git config user.email "noreply@github.com"
+          git checkout -b "$BRANCH"
+
+          # Stage only the regenerated docs. JSON dumps are gitignored
+          # (see .gitignore: gcp_inventory.json / gcp_iam.json / billing_90d.json).
+          git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md
+
+          if git diff --cached --quiet; then
+            echo "nothing staged — exit clean"
+            exit 0
+          fi
+
+          git commit -m "docs: monthly architecture doc refresh ${MONTH}"
+          git push -u origin "$BRANCH"
+
+          STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md)
+
+          gh pr create \
+            --base main --head "$BRANCH" \
+            --title "Monthly architecture doc refresh: ${MONTH}" \
+            --body "## Summary
+
+          Automated monthly refresh of architecture / cost / dependency docs from live GCP state.
+
+          ## Files changed
+
+          \`\`\`
+          ${STAT}
+          \`\`\`
+
+          ## What ran
+
+          1. \`gcloud asset search-all-resources\` → \`gcp_inventory.json\`
+          2. \`gcloud projects get-iam-policy\` → \`gcp_iam.json\`
+          3. BigQuery 90-day billing rollup → \`billing_90d.json\`
+          4. Claude Code regenerated each doc using prompts in \`.github/prompts/\`
+
+          ## Reviewer checklist
+
+          - Spot-check the Cloud Run Job inventory in \`ARCHITECTURE.md\` against \`gcloud run jobs list\`
+          - Confirm \`COST_ANALYSIS.md\` headline numbers match Cloud Console → Billing → Reports
+          - Verify any new orphan-table flag in \`DATA_DEPENDENCIES.md\` is real before acting on it
+
+          🤖 Generated by \`.github/workflows/refresh-architecture-docs.yml\`"
+
+      - name: No-op summary
+        if: steps.detect.outputs.meaningful != '1'
+        run: |
+          echo "::notice::No meaningful doc changes this run — exiting clean without opening a PR."
