@@ -711,11 +711,9 @@ def _run_backfill() -> None:
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
     if not is_cloud_sql_configured():
-        log.error("Cloud SQL not configured — backfill cannot proceed")
-        sys.exit(1)
+        raise RuntimeError("Cloud SQL not configured — backfill cannot proceed")
     if not av_api_key:
-        log.error("ALPHA_VANTAGE_API_KEY not set — backfill cannot proceed")
-        sys.exit(1)
+        raise RuntimeError("ALPHA_VANTAGE_API_KEY not set — backfill cannot proceed")
 
     targets = _backfill_targets()
     plan = [(t, n, mx, _pick_backfill_outputsize(n, mx, today_et))

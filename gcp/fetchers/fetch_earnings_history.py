@@ -293,6 +293,15 @@ def main():
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and print without writing to DB.")
+    parser.add_argument(
+        "--no-backfill", action="store_true",
+        help="Skip the post-fetch market-data backfill chain. "
+             "Default: after a successful earnings_history fetch we kick "
+             "off fetch_market_data._run_backfill() so any new ticker that "
+             "just landed in earnings_history gets OHLCV depth before the "
+             "11pm compute-earnings-reactions run. Smart-switch makes this "
+             "free (zero AV calls) when no new tickers appeared.",
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
@@ -383,6 +392,21 @@ def main():
 
     if errors:
         log.warning("Failed (%d): %s", len(errors), errors[:20])
+
+    # Chain: any new ticker that just landed in earnings_history needs
+    # OHLCV depth before tonight's compute-earnings-reactions run, so
+    # we hand off to fetch_market_data._run_backfill() in-process.
+    # Smart-switch in the backfill (≥1500 bars + ≤1d stale → skip) makes
+    # this free on no-op days. Wrapped so a backfill failure does NOT
+    # mark the earnings fetch as failed — the persist already succeeded.
+    if not args.no_backfill and not args.dry_run and is_cloud_sql_configured():
+        log.info("─" * 60)
+        log.info("Post-fetch chain: fetch_market_data._run_backfill()")
+        try:
+            from gcp.fetchers.fetch_market_data import _run_backfill
+            _run_backfill()
+        except Exception as e:
+            log.warning("Post-fetch backfill failed (non-fatal): %s", e)
 
 
 if __name__ == "__main__":
