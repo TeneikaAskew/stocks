@@ -68,14 +68,20 @@ VALID_TFS: tuple[str, ...] = ("5m", "15m", "30m", "60m", "90m", "120m", "240m")
 
 @dataclass(frozen=True)
 class Bucket:
-    """The (strategy, signal_strength, atr_bucket, rsi_bucket) feature
-    cell. Used as a dict key into the empirical lookup table —
+    """The (strategy, signal_strength, atr_bucket, rsi_bucket [, ticker])
+    feature cell. Used as a dict key into the empirical lookup table.
+
     `frozen=True` synthesizes `__hash__` so the bucket is hashable.
+
+    `ticker` is included only when explicitly requested via
+    `make_bucket(row, include_ticker=True)`; default omits it so the
+    same bucket spans across tickers (the original 4-feature design).
     """
     strategy: str
     signal_strength: int
-    atr_bucket: str    # 'high' | 'avg' | 'low' | 'unknown'
-    rsi_bucket: str    # 'low' | 'mid' | 'high' | 'unknown'
+    atr_bucket: str         # 'high' | 'avg' | 'low' | 'unknown'
+    rsi_bucket: str         # 'low' | 'mid' | 'high' | 'unknown'
+    ticker: str = ""        # default empty = "all tickers" bucket
 
 
 def bucket_atr(atr_5m_pct: Optional[float]) -> str:
@@ -118,19 +124,27 @@ def bucket_rsi(rsi: Optional[float]) -> str:
     return "mid"
 
 
-def make_bucket(row: dict) -> Bucket:
-    """Per-row feature bucket. Used by both train and predict paths."""
+def make_bucket(row: dict, include_ticker: bool = False) -> Bucket:
+    """Per-row feature bucket. Used by both train and predict paths.
+
+    When `include_ticker=True`, the ticker becomes part of the bucket
+    so per-ticker patterns can emerge in the lookup. Default omits it
+    so the same bucket pools rows across tickers — useful for the
+    cold-start case where we don't have enough data per ticker.
+    """
     return Bucket(
         strategy=str(row.get("strategy") or "unknown"),
         signal_strength=int(row.get("signal_strength") or 0),
         atr_bucket=bucket_atr(row.get("atr_5m_pct")),
         rsi_bucket=bucket_rsi(row.get("entry_rsi")),
+        ticker=(str(row.get("ticker") or "").upper() if include_ticker else ""),
     )
 
 
 def build_lookup_table(
     train_df: pd.DataFrame,
     target: str = "mode_best_tf",
+    include_ticker: bool = False,
 ) -> dict[Bucket, str]:
     """Empirical mapping bucket → predicted TF on the train set.
 
@@ -156,7 +170,9 @@ def build_lookup_table(
     """
     lookup: dict[Bucket, str] = {}
     train = train_df.copy()
-    train["_bucket"] = train.apply(lambda r: make_bucket(r.to_dict()), axis=1)
+    train["_bucket"] = train.apply(
+        lambda r: make_bucket(r.to_dict(), include_ticker=include_ticker), axis=1,
+    )
 
     if target == "mode_best_tf":
         train["_mode_target"] = train["best_tf"].fillna("none")
@@ -199,14 +215,18 @@ def build_lookup_table(
 
 
 def predict_with_lookup(row: dict, lookup: dict[Bucket, str],
-                        cold_start_default: str = "30m") -> str:
+                        cold_start_default: str = "30m",
+                        include_ticker: bool = False) -> str:
     """Apply the empirical lookup table to one row.
 
     Cold-start fallback: a holdout row whose bucket the train set didn't
     see returns the cold_start_default (30m by design — it's the most
     common bucket overall in the placeholder).
+
+    `include_ticker` must match what was used at train time — passing
+    False here against a ticker-aware lookup will always cold-start.
     """
-    bucket = make_bucket(row)
+    bucket = make_bucket(row, include_ticker=include_ticker)
     return lookup.get(bucket, cold_start_default)
 
 
@@ -328,7 +348,71 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "tradeable horizon). Default is mode_best_tf for backward compat."
         ),
     )
+    p.add_argument("--include-ticker", action="store_true",
+                   help="Add ticker as a bucket dimension (Q2 — does optimal TF "
+                        "vary by ticker?). Increases bucket count by ~15× — risk "
+                        "of cold-start on tail buckets, surfaced in output.")
+    p.add_argument("--multi-tf-baselines", action="store_true",
+                   help="Report 'always pick TF X' baselines for each TF, so we "
+                        "see whether the empirical pick is the universal best or "
+                        "just one of many good options.")
     return p.parse_args(argv)
+
+
+def report_multi_tf_baselines(holdout: pd.DataFrame) -> dict[str, float]:
+    """Compute the 'always pick TF X' clean-rate for every TF.
+
+    Tells us the ceiling for each timeframe choice. If 'always 60m'
+    matches the empirical heuristic's 91.5%, that's the heuristic's
+    ceiling — it's basically picking 60m everywhere. If some other
+    TF has a higher rate, the heuristic could improve by varying its
+    output.
+    """
+    rates: dict[str, float] = {}
+    for tf in VALID_TFS:
+        col = f"cls_{tf}"
+        if col not in holdout.columns:
+            continue
+        eligible = holdout[col].notna() & (holdout[col] != "INSUFFICIENT_DATA")
+        n = int(eligible.sum())
+        if n == 0:
+            rates[tf] = 0.0
+            continue
+        clean = int((holdout.loc[eligible, col] == "CLEAN_HIT").sum())
+        rates[tf] = 100.0 * clean / n
+    return rates
+
+
+def report_per_ticker_breakdown(holdout: pd.DataFrame, predicted_tfs: list[str]) -> dict:
+    """Per-ticker clean-hit rate at the predicted TF.
+
+    If most tickers are within ±5pp of each other, the 4-feature
+    heuristic generalizes fine. If one or two tickers are >10pp off,
+    that's evidence for either a per-ticker heuristic or excluding
+    those tickers from the universal lookup.
+    """
+    holdout = holdout.copy()
+    holdout["_pred"] = predicted_tfs
+    out: dict = {}
+    for ticker, group in holdout.groupby("ticker", sort=False):
+        n_clean = 0
+        n_eligible = 0
+        for _, row in group.iterrows():
+            tf = row["_pred"]
+            cls = row.get(f"cls_{tf}")
+            if cls is None or pd.isna(cls) or cls == "INSUFFICIENT_DATA":
+                continue
+            n_eligible += 1
+            if cls == "CLEAN_HIT":
+                n_clean += 1
+        rate = (100.0 * n_clean / n_eligible) if n_eligible > 0 else 0.0
+        out[ticker] = {
+            "n_total":   len(group),
+            "n_clean":   n_clean,
+            "n_eligible": n_eligible,
+            "clean_rate_pct": rate,
+        }
+    return out
 
 
 def split_train_holdout(df: pd.DataFrame, holdout_pct: float,
@@ -405,14 +489,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     train, holdout = split_train_holdout(df, args.holdout_pct, args.seed)
     logger.info("train=%d holdout=%d", len(train), len(holdout))
 
-    logger.info("building lookup with target=%s", args.target)
-    lookup = build_lookup_table(train, target=args.target)
+    logger.info("building lookup with target=%s include_ticker=%s",
+                args.target, args.include_ticker)
+    lookup = build_lookup_table(train, target=args.target,
+                                 include_ticker=args.include_ticker)
+    logger.info("lookup table size: %d buckets", len(lookup))
     print_lookup_table(lookup, train, limit=args.top_buckets)
 
     # Predict + evaluate
     holdout_records = holdout.to_dict(orient="records")
 
-    pred_emp = [predict_with_lookup(r, lookup) for r in holdout_records]
+    pred_emp = [predict_with_lookup(r, lookup,
+                                     include_ticker=args.include_ticker)
+                for r in holdout_records]
     pred_plc = [predict_with_placeholder(r) for r in holdout_records]
 
     metrics_emp = evaluate_predictions(holdout, pred_emp)
@@ -440,6 +529,42 @@ def main(argv: Optional[list[str]] = None) -> int:
     print()
     print("Empirical TF distribution:", metrics_emp["tf_distribution"])
     print("Placeholder TF distribution:", metrics_plc["tf_distribution"])
+
+    # Q1 — always-X baselines (does the empirical pick match the
+    # universal-best TF, or is variation per-bucket actually helping?)
+    if args.multi_tf_baselines:
+        baselines = report_multi_tf_baselines(holdout)
+        print()
+        print("=" * 90)
+        print("MULTI-TF BASELINE — clean-rate at each TF if we ALWAYS picked it")
+        print("=" * 90)
+        print(f"{'TF':<8}{'clean_rate_pct':<18}")
+        for tf in VALID_TFS:
+            if tf in baselines:
+                print(f"{tf:<8}{baselines[tf]:<18.2f}")
+        print()
+        print("Compare to empirical heuristic clean-rate:",
+              f"{metrics_emp['clean_rate_pct']:.2f}%")
+        print("Compare to placeholder clean-rate:        ",
+              f"{metrics_plc['clean_rate_pct']:.2f}%")
+
+    # Q2 — per-ticker breakdown of empirical predictions
+    print()
+    print("=" * 90)
+    print("PER-TICKER BREAKDOWN — empirical heuristic")
+    print("=" * 90)
+    pt = report_per_ticker_breakdown(holdout, pred_emp)
+    print(f"{'ticker':<8}{'n':<10}{'clean':<10}{'eligible':<12}{'rate_pct':<10}")
+    for tk, m in sorted(pt.items(), key=lambda x: -x[1]["n_total"]):
+        print(f"{tk:<8}{m['n_total']:<10,}{m['n_clean']:<10,}"
+              f"{m['n_eligible']:<12,}{m['clean_rate_pct']:<10.2f}")
+    rates = [m["clean_rate_pct"] for m in pt.values()]
+    if rates:
+        spread = max(rates) - min(rates)
+        print()
+        print(f"Per-ticker clean-rate spread: {spread:.2f}pp "
+              f"(min={min(rates):.2f}, max={max(rates):.2f})")
+        print("If spread > ~10pp, ticker likely matters as a feature.")
 
     return 0
 
