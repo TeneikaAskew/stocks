@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(/home/user/.gcp-key.json)",
+      "Bash(cat /home/user/.gcp-key.json:*)",
+      "Bash(cat *gcp-key*.json:*)",
+      "Bash(cat *.json | grep -i private:*)",
+      "Bash(env:*)",
+      "Bash(printenv:*)"
+    ]
+  }
+}
