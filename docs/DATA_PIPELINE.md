@@ -154,8 +154,8 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 
 **ML value** — Medium. Future models might use "days until earnings" as a feature; the calendar enables that.
 
-**Canonical writer** — [`scripts/fetch_earnings_calendar.py`](../scripts/fetch_earnings_calendar.py)
-**Schedule** — GitHub Actions `update_economic_events_calendar.yml` at `0 11 * * 0` (Sundays 11:00 UTC = 6 AM EST)
+**Canonical writer** — [`scripts/fetch_earnings_calendar.py`](../scripts/fetch_earnings_calendar.py) invoked by Cloud Run job `fetch-earnings-calendar`
+**Schedule** — Cloud Scheduler `earnings-calendar-daily` at **7:15 AM ET Mon–Fri** (`15 7 * * 1-5 America/New_York`)
 **Sources** — AV `EARNINGS_CALENDAR` endpoint (date of truth) + Unusual Whales CSV (expected moves) + Earnings Whispers CSV (strategy picks, requires login)
 **Writes** — ~50-200 rows/week depending on earnings season
 **Freshness budget** — 192h (8 days — allows one missed weekly run)
@@ -193,8 +193,8 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 
 **ML value** — Low. Scheduled events without outcomes aren't useful for training. Historical "actual vs forecast" from FRED would be more valuable and is a different data source.
 
-**Canonical writer** — [`scripts/fetch_economic_calendar.py`](../scripts/fetch_economic_calendar.py) + [`gcp/fetchers/fetch_economic_events.py`](../gcp/fetchers/fetch_economic_events.py)
-**Schedule** — Weekly, bundled into `update_economic_events_calendar.yml`
+**Canonical writer** — [`gcp/fetchers/fetch_economic_events.py`](../gcp/fetchers/fetch_economic_events.py) invoked by Cloud Run job `fetch-economic-events`. The legacy `scripts/market_events_tracker.py` and `scripts/fetch_economic_calendar.py` (and their host workflow `update_economic_events_calendar.yml`) were removed 2026-05-01 — they ran weekly in GitHub Actions but the platform standardized on Cloud Run + Cloud Scheduler.
+**Schedule** — Cloud Scheduler `economic-events-daily` at **7:00 AM ET Mon–Fri** (`0 7 * * 1-5 America/New_York`)
 **Freshness budget** — 192h
 
 **Proposed changes**
@@ -334,9 +334,9 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 | `market_data_intraday` | (same writer) | (same schedule) | ✅ OK |
 | `etf_options_snapshots` | fetch-av-options-backfill | 01:00 UTC Mon-Fri | ⚠️ Needs verify — ensure automation actually runs daily |
 | `earnings_options_snapshots` | fetch-earnings-options Cloud Run | 6x/day during market hours | ⚠️ Warn — last row April 12, need April 13 |
-| `earnings_calendar` | update_economic_events_calendar GH workflow | Weekly Sundays 6 AM EST | ✅ OK |
+| `earnings_calendar` | fetch-earnings-calendar Cloud Run | 7:15 AM ET Mon-Fri | ✅ OK |
 | `earnings_history` | (not built) | (lazy on first UI request) | 🆕 Not yet built |
-| `economic_events` | update_economic_events_calendar GH workflow | Weekly Sundays 6 AM EST | ✅ OK — keep as-is, don't drop |
+| `economic_events` | fetch-economic-events Cloud Run | 7:00 AM ET Mon-Fri | ✅ OK — canonical via GCP since 2026-05-01 |
 | `premarket_analysis` | premarket-brief Cloud Run | 08:30 ET Mon-Fri | ✅ OK (needs env var fail-fast too) |
 | `signal_alerts` | signal-monitor Cloud Run | 09:25-16:00 ET Mon-Fri | 🔴 Empty — April 10 regression, self-heal tomorrow |
 | `trades` | trade-logger (via signal-monitor) | (same lifecycle) | 🔴 Same root cause as signal_alerts |
