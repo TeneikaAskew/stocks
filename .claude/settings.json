@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(/home/user/.gcp-key.json)",
+      "Read(**/.gcp-key.json)",
+      "Read(**/*service-account*.json)",
+      "Bash(cat /home/user/.gcp-key.json:*)",
+      "Bash(cat *gcp-key*.json:*)",
+      "Bash(cat *service-account*.json:*)",
+      "Bash(xxd *gcp-key*:*)",
+      "Bash(xxd *service-account*:*)",
+      "Bash(base64 *gcp-key*:*)",
+      "Bash(base64 *service-account*:*)",
+      "Bash(env:*)",
+      "Bash(printenv:*)",
+      "Bash(echo $GCP_SERVICE_ACCOUNT_KEY:*)",
+      "Bash(echo $GOOGLE_APPLICATION_CREDENTIALS:*)"
+    ]
+  }
+}
