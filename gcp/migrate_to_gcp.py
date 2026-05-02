@@ -99,36 +99,10 @@ COLUMN_MAP = {
     'volume': 'volume',
 }
 
-# add_all_indicators() column name → market_data_daily SQL column name
-_DAILY_IND_TO_SQL = {
-    'RSI14':          'rsi_14',
-    'RSI9':           'rsi_9',
-    'ATR14':          'atr_14',
-    'EMA9':           'ema_9',
-    'EMA20':          'ema_20',
-    'EMA50':          'ema_50',
-    'SMA5':           'ma_5',
-    'SMA10':          'ma_10',
-    'SMA20':          'ma_20',
-    'SMA50':          'ma_50',
-    'SMA200':         'sma_200',
-    'MACD':           'macd',
-    'MACD_Signal':    'macd_signal',
-    'MACD_Histogram': 'macd_histogram',
-    'BB_Upper':       'bb_upper',
-    'BB_Lower':       'bb_lower',
-    'BB_Width':       'bb_width',
-    'BB_Pct':         'bb_pct',
-    'StochRSI_K':     'stoch_rsi_k',
-    'StochRSI_D':     'stoch_rsi_d',
-    'OBV':            'obv',
-    'RVOL':           'rvol',
-    'Consecutive_Up':   'consecutive_up',
-    'Consecutive_Down': 'consecutive_down',
-    'Price_vs_EMA9':    'price_vs_ema9',
-    'Price_vs_EMA20':   'price_vs_ema20',
-    'volatility_20d':   'volatility_20d',
-}
+# add_all_indicators() column name → market_data_daily SQL column name.
+# Single source of truth lives in gcp/database.py. Imported here so the
+# one-shot migrator and the live fetcher can never drift on rename.
+from gcp.database import DAILY_INDICATOR_TO_SQL_COLUMN as _DAILY_IND_TO_SQL
 
 
 def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
