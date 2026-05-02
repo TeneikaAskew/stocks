@@ -68,10 +68,18 @@ class FakeEngine:
 
 
 def _make_row(entry_time, **overrides):
-    """Build one valid `historical_signals` row dict matching COLS."""
+    """Build one valid `historical_signals` row dict matching COLS.
+
+    Includes every column in `gcp.historical_signals.COLS` so the
+    bulk_insert column-projection (`df = df[list(COLS)]`) doesn't
+    raise KeyError. New columns must be added here whenever COLS
+    changes (Phase 0.7 added 'strategy', Phase 1 added
+    'timeframe_tag' and 'expected_hold_min').
+    """
     base = {
         "ticker": "IWM",
         "entry_time": entry_time,
+        "strategy": "momentum",                # Phase 0.7
         "trade_type": "CALL",
         "entry_price": 220.5,
         "signal_strength": 4,
@@ -93,6 +101,8 @@ def _make_row(entry_time, **overrides):
         "entry_vwap": 219.8,
         "entry_volume": 250_000,
         "extra": {"setup": "2D-1-2U"},
+        "timeframe_tag": "30m",                # Phase 1
+        "expected_hold_min": 30,               # Phase 1
     }
     base.update(overrides)
     return base
@@ -152,7 +162,9 @@ def test_bulk_insert_emits_one_statement_per_chunk(fake_engine_factory):
     assert len(conn.calls) == 1, "all rows fit in one chunk → one execute"
     sql, params = conn.calls[0]
     assert sql.startswith("INSERT INTO historical_signals")
-    assert "ON CONFLICT (ticker, entry_time) DO NOTHING" in sql
+    # Phase 0.7 extended the conflict key to include strategy so
+    # parallel-strategy rows coexist on the same (ticker, entry_time).
+    assert "ON CONFLICT (ticker, entry_time, strategy) DO NOTHING" in sql
     # 3 value tuples
     assert sql.count("(:p") == 3
 
@@ -332,12 +344,17 @@ def test_bulk_insert_drops_unknown_columns(fake_engine_factory):
 
 
 def test_latest_entry_time_returns_none_when_no_rows(monkeypatch):
+    """Phase 0.7's latest_entry_time uses row[0] (positional) rather
+    than row.t (attribute) — pg8000's Row implementation wraps aliased
+    aggregates and breaks attribute access. The fake row must support
+    __getitem__(0) → None to model the no-rows case."""
     from gcp import historical_signals as hs_module
 
-    fake_row = MagicMock()
-    fake_row.t = None
+    # Tuple is the simplest "indexable" thing that mirrors a real
+    # Postgres row of (None,) — what fetchone() returns when MAX() over
+    # an empty table.
     conn = MagicMock()
-    conn.execute.return_value.fetchone.return_value = fake_row
+    conn.execute.return_value.fetchone.return_value = (None,)
     eng = MagicMock()
     eng.connect.return_value.__enter__.return_value = conn
     monkeypatch.setattr(hs_module, "get_engine", lambda: eng)

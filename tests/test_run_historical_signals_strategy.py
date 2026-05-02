@@ -235,3 +235,50 @@ def test_map_signals_to_table_default_strategy_is_momentum():
 def test_map_signals_to_table_empty_passthrough():
     out = map_signals_to_table(pd.DataFrame(), "SPY", strategy="mean_reversion")
     assert out.empty
+
+
+# ── Phase 1: research-pipeline timeframe tagging ───────────────────────
+
+def test_map_signals_to_table_populates_timeframe_columns():
+    """Phase 1: research pipeline tags every row with timeframe_tag and
+    expected_hold_min so historical_signals never has NULL for new writes."""
+    src = pd.DataFrame([{
+        "entry_time": datetime(2026, 4, 28, 13, 30, tzinfo=timezone.utc),
+        "trade_type": "call",
+        "entry_price": 100.0,
+        "signal_strength": 4,
+        "conditions_met": "4/5",
+    }])
+    out = map_signals_to_table(src, "SPY", strategy="momentum")
+    assert "timeframe_tag" in out.columns
+    assert "expected_hold_min" in out.columns
+    # backfill helper: momentum at avg vol → 15m
+    assert out["timeframe_tag"].iloc[0] == "15m"
+    assert out["expected_hold_min"].iloc[0] == 15
+
+
+def test_map_signals_to_table_mean_reversion_gets_30m_tag():
+    src = pd.DataFrame([{
+        "entry_time": datetime(2026, 4, 28, 13, 30, tzinfo=timezone.utc),
+        "trade_type": "put",
+        "entry_price": 100.0,
+        "signal_strength": 3,
+        "conditions_met": json.dumps(["consecutive_up", "above_vwap"]),
+    }])
+    out = map_signals_to_table(src, "IWM", strategy="mean_reversion")
+    assert out["timeframe_tag"].iloc[0] == "30m"
+    assert out["expected_hold_min"].iloc[0] == 30
+
+
+def test_map_signals_to_table_handles_missing_signal_strength():
+    """If signals_df ever omits signal_strength, tag columns get None
+    rather than crashing."""
+    src = pd.DataFrame([{
+        "entry_time": datetime(2026, 4, 28, 13, 30, tzinfo=timezone.utc),
+        "trade_type": "call",
+        "entry_price": 100.0,
+        "conditions_met": "3/5",
+    }])
+    out = map_signals_to_table(src, "SPY", strategy="momentum")
+    assert "timeframe_tag" in out.columns
+    assert out["timeframe_tag"].iloc[0] is None
