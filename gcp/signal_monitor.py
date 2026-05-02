@@ -52,6 +52,7 @@ class SignalMonitor:
         self.indicator_cfg = self.cfg.indicator
         self.monitor_cfg = self.cfg.monitor
         self.market_cfg = self.cfg.market
+        self.proximity_cfg = self.cfg.proximity
 
         self.strat = StratClassifier(strat_config=self.strat_cfg)
         self.webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
@@ -422,7 +423,29 @@ class SignalMonitor:
                 orb_trend=orb_trend,
             )
 
-        total_score = sig['base_score'] + strat_bonus
+        # Phase 1.5: catalyst proximity context — looked up once per
+        # fire and stashed for fire_alert + _persist_signal_alert.
+        # Failure is non-fatal (returns EMPTY_CONTEXT → bucket='quiet'
+        # → multiplier=1.0 → no score change). Bucket='during' applies
+        # the empirically-validated 0.75x de-weight (Apr holdout
+        # showed 8-10pp lower clean rate); 'next_day' gets 1.10x
+        # amplification (3pp higher clean rate).
+        try:
+            self._latest_proximity = get_catalyst_context(
+                ticker, pd.Timestamp(datetime.now())
+            )
+        except Exception as e:
+            from lib.strategies.catalyst_proximity import EMPTY_CONTEXT
+            logger.debug("catalyst proximity skipped for %s: %s", ticker, e)
+            self._latest_proximity = EMPTY_CONTEXT.copy()
+
+        prox_bucket = self._latest_proximity.get('proximity_bucket')
+        prox_mult = self.proximity_cfg.get(prox_bucket)
+        raw_score = sig['base_score'] + strat_bonus
+        total_score = raw_score * prox_mult
+        self._latest_proximity_mult = prox_mult
+        self._latest_raw_score = raw_score
+
         size = get_position_size(total_score, self.risk)
         strength = get_signal_strength_label(total_score, self.risk)
 
@@ -458,9 +481,25 @@ class SignalMonitor:
         # Phase 1: timeframe tag in the title \u2014 '[15m]' or '[60m]' etc.
         tf_tag = getattr(self, '_latest_timeframe_tag', None)
         tf_label = f" [{tf_tag}]" if tf_tag else ''
+        # Phase 1.5: catalyst proximity tag. Non-quiet buckets get a
+        # bracket suffix so the trader sees "during FOMC in 0m" or
+        # "next_day \u00b7 earnings_post 4h ago" at fire time.
+        proximity = getattr(self, '_latest_proximity', None) or {}
+        prox_bucket = proximity.get('proximity_bucket')
+        prox_label = ''
+        if prox_bucket and prox_bucket != 'quiet':
+            ev_type = (proximity.get('next_catalyst_type')
+                       or proximity.get('last_catalyst_type') or '')
+            mins = (proximity.get('next_catalyst_min')
+                    if prox_bucket in ('imminent', 'pre')
+                    else proximity.get('last_catalyst_min'))
+            time_clause = ''
+            if mins is not None:
+                time_clause = f' in {mins}m' if prox_bucket in ('imminent', 'pre') else f' {mins}m ago'
+            prox_label = f' [{prox_bucket}{":" + ev_type if ev_type else ""}{time_clause}]'
         title = (
             f"{title_prefix}{'CALL' if direction == 'CALL' else 'PUT'} SIGNAL"
-            f"{tf_label} \u2014 {ticker} @ ${price:.2f}"
+            f"{tf_label}{prox_label} \u2014 {ticker} @ ${price:.2f}"
         )
         agreement_block = ''
         if agreement:
@@ -469,12 +508,27 @@ class SignalMonitor:
                 f"Composite score: {agreement['composite_score']:.1f}\n"
             )
 
+        # Phase 1.5: warning block for de-weighted catalyst windows.
+        # Surfaces the multiplier the empirical weighting applied so
+        # the trader sees "score reduced 0.75x because we're inside
+        # an FOMC window" rather than wondering why the score is low.
+        prox_mult = getattr(self, '_latest_proximity_mult', 1.0)
+        raw_score = getattr(self, '_latest_raw_score', total_score)
+        proximity_block = ''
+        if prox_bucket and prox_bucket != 'quiet' and abs(prox_mult - 1.0) > 0.001:
+            verb = 'de-weighted' if prox_mult < 1.0 else 'amplified'
+            proximity_block = (
+                f"\u26a0\ufe0f Catalyst window: **{prox_bucket}** \u2014 "
+                f"score {verb} {prox_mult:.2f}\u00d7 ({raw_score} \u2192 {total_score:.1f})\n"
+            )
+
         message = {
             'embeds': [{
                 'title': title,
                 'description': (
-                    f"**Strength: {total_score}/{max_score} ({strength}) \u2192 {size:.0%} size**\n"
+                    f"**Strength: {total_score:.1f}/{max_score} ({strength}) \u2192 {size:.0%} size**\n"
                     f"{agreement_block}"
+                    f"{proximity_block}"
                     f"Base: {sig['base_score']}/5 | Strat bonus: +{strat_bonus}\n\n"
                     f"Conditions met:\n{conditions_str}\n\n"
                     f"Target: ${target:.2f} | Time stop: {time_stop} min\n"
@@ -548,17 +602,11 @@ class SignalMonitor:
             'expected_hold_min': getattr(self, '_latest_expected_hold_min', None),
         }
 
-        # Phase 1.5: catalyst proximity. Looked up at signal-fire time
-        # via lru_cache'd Cloud SQL query — same 5-min bucket on the
-        # same ticker = one DB hit. Failure is non-fatal: returns
-        # EMPTY_CONTEXT so the row still writes with proximity_bucket
-        # = 'quiet' rather than crashing the persist.
-        try:
-            proximity = get_catalyst_context(ticker, pd.Timestamp(now))
-        except Exception as e:
-            logger.debug("catalyst proximity skipped for %s: %s", ticker, e)
-            from lib.strategies.catalyst_proximity import EMPTY_CONTEXT
-            proximity = EMPTY_CONTEXT.copy()
+        # Phase 1.5: catalyst proximity — already looked up + stashed
+        # in the upstream signal-evaluation block (so the multiplier
+        # could affect total_score before persist). Just reuse.
+        from lib.strategies.catalyst_proximity import EMPTY_CONTEXT
+        proximity = getattr(self, '_latest_proximity', None) or EMPTY_CONTEXT.copy()
         row.update(proximity)
 
         try:

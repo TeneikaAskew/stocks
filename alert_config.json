@@ -122,5 +122,14 @@
     },
     "daily_loss_limit": -2.0,
     "daily_profit_target": 3.0
+  },
+  "proximity_multipliers": {
+    "_doc": "Phase 1.5 — score multiplier per proximity_bucket. Default values are the empirical universal-tier defaults derived from the Apr 1-28 holdout (chi2=131.99, p<<0.001). 'during' (catalyst event window) signals had 8-10pp lower clean rate; 'next_day' (3-24h post-catalyst) had 3pp higher clean rate. Per-ticker override path: ticker_calibration table (Phase 0.6 Tier A — not yet populated; values default to these universal multipliers).",
+    "imminent": 0.95,
+    "pre": 1.00,
+    "during": 0.75,
+    "post": 0.85,
+    "next_day": 1.10,
+    "quiet": 1.00
   }
 }
