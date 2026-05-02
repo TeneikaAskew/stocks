@@ -1,6 +1,6 @@
 # Data Pipeline — per-table plan for freshness & reliability
 
-**Last updated:** 2026-04-14 (post-incident, after the April 10 env var regression caused `market_data_daily` to drift)
+**Last updated:** 2026-05-01 (post the legacy GitHub Actions retirement in PR #211 + the schedule / canonical-writer drift sweep against ARCHITECTURE.md)
 
 This doc is the single source of truth for:
 - What every Cloud SQL table exists for
@@ -39,7 +39,7 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 **ML value** — High. Any future swing/daily model trains from this table. Indicator columns are pre-computed so we don't recompute them every training run.
 
 **Canonical writer** — [`gcp/fetchers/fetch_market_data.py`](../gcp/fetchers/fetch_market_data.py) invoked by Cloud Run job `fetch-market-data`
-**Schedule** — Cloud Scheduler `fetch-market-data-daily` at **17:00 ET Mon–Fri** (`0 17 * * 1-5 America/New_York`)
+**Schedule** — Cloud Scheduler `fetch-market-data-daily` at **23:00 ET Mon–Fri / 11:00 PM ET** (`0 23 * * 1-5 America/New_York`). Originally `0 17` (5 PM) but moved 6 hours later because AV's `TIME_SERIES_INTRADAY` publishes the closing-day's 1-min bars with several hours of lag — see comment in [`gcp/deploy.sh`](../gcp/deploy.sh).
 **Writes** — Daily row per ticker to `market_data_daily` **AND** full 1-min session to `market_data_intraday` (shared writer)
 **Freshness budget** — max 30h after market close (`expected_lag_hours: 30` in audit)
 
@@ -68,7 +68,7 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 **ML value** — High. Intraday strategy backtests, market microstructure models, volatility forecasting all need persisted 1-min bars.
 
 **Canonical writer** — Same Cloud Run job as `market_data_daily` (`gcp/fetchers/fetch_market_data.py` writes both tables in a single run)
-**Schedule** — Same daily run at 17:00 ET (the fetcher fetches a full day of 1-min bars and upserts them)
+**Schedule** — Same daily run at 23:00 ET (the fetcher fetches a full day of 1-min bars and upserts them)
 **Writes** — ~390-1200 rows per ticker per day (pre + regular + after hours)
 **Freshness budget** — 30h max (same as daily)
 
@@ -115,29 +115,27 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 
 ---
 
-### 4. `earnings_options_snapshots` ✅ canonical (6x/day)
+### 4. `earnings_options_snapshots` 🔴 ORPHANED — no writer (verified 2026-05-01)
 
 **Purpose** — Options chains for tickers announcing earnings in the next 7 days. Captures IV ramp + post-earnings IV crush. Multiple snapshots per day so we can compare 9:30 AM vs 3:55 PM IV.
 
-**Feeds into**
-- [earnings_options_analytics/](../earnings_options_analytics/) — strategy analyzer, win rate, profit factor per strategy (Long Calls, Bull Spreads, Iron Condors, etc.)
-- Future: an Earnings page in the platform (per the previous plan) — 4 quarterly EPS cards + grouped bar chart + strategy picks table
+**Status** — **No live writer exists.** Verified via `gcloud run jobs describe fetch-earnings-options` → `Cannot find job [fetch-earnings-options]`. The previously-documented module path `gcp/fetchers/fetch_earnings_options.py` does not exist in the repo either. Whatever rows are in the table are historical residue. ARCHITECTURE.md's Reconciliation section flags the same gap.
+
+**Feeds into** (no current populate path)
+- [earnings_options_analytics/](../earnings_options_analytics/) — strategy analyzer, win rate, profit factor per strategy. Reads stale rows.
+- Future: an Earnings page in the platform — currently has nothing fresh to render.
 
 **Alternatives considered** — Same as `etf_options_snapshots`. IV crush studies need historical chains; we can't regenerate IV from price alone.
 
-**ML value** — High. Earnings-specific options strategies (long straddle, iron condor, calendar spreads) all benefit from historical IV + outcomes data for training.
+**ML value** — High *if* the table is being populated. Currently it isn't.
 
-**Canonical writer** — [`gcp/fetchers/fetch_earnings_options.py`](../gcp/fetchers/fetch_earnings_options.py)
-**Cloud Run job** — `fetch-earnings-options`
-**Schedule** — Cloud Scheduler 6x/day during market hours (`0900, 0935, 1000, 1200, 1550, 1630 America/New_York` weekdays)
-**Source** — Originally yahooquery with AV fallback. **User preference: AV only.** Need to verify this.
-**Writes** — Variable: depends on how many tickers have earnings in the 7-day window (typically 20-50 tickers × 100-500 contracts = 2-25k rows per snapshot, × 6 snapshots = 12k-150k rows/day)
-**Freshness budget** — 24h
+**Canonical writer** — **MISSING.** Either rebuild the fetcher under `gcp/fetchers/fetch_earnings_options.py` and re-deploy the Cloud Run Job, or formally drop the table.
+**Schedule** — None (the previously-documented `0900, 0935, 1000, 1200, 1550, 1630 ET` cadence has no scheduler in Cloud Scheduler).
 
 **Reliability improvements**
-1. 🟡 **TODO**: audit the fetcher source — replace any remaining yahooquery calls with AV equivalents
-2. 🟡 **TODO**: verify the ticker resolution from `earnings_calendar` (see next table) is pulling the right 7-day window
-3. 🟡 **TODO**: confirm the `data_source` column reflects `'alphavantage'` for all new writes
+1. 🔴 **DECISION NEEDED**: rebuild the fetcher + scheduler, or drop the table from the schema. Don't leave it half-existing.
+2. 🟡 If rebuilding: ticker resolution from `earnings_calendar` (next table) needs verifying for the 7-day window
+3. 🟡 If rebuilding: `data_source` column should reflect `'alphavantage'` (no Yahoo fallback per user preference)
 
 ---
 
@@ -330,10 +328,10 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 
 | Table | Canonical writer | Schedule | Status today |
 |---|---|---|---|
-| `market_data_daily` | fetch-market-data Cloud Run | 17:00 ET Mon-Fri | ✅ OK (April 14 run will confirm) |
+| `market_data_daily` | fetch-market-data Cloud Run | 23:00 ET Mon-Fri | ✅ OK |
 | `market_data_intraday` | (same writer) | (same schedule) | ✅ OK |
 | `etf_options_snapshots` | fetch-av-options-backfill | 01:00 UTC Mon-Fri | ⚠️ Needs verify — ensure automation actually runs daily |
-| `earnings_options_snapshots` | fetch-earnings-options Cloud Run | 6x/day during market hours | ⚠️ Warn — last row April 12, need April 13 |
+| `earnings_options_snapshots` | **NONE** (writer & scheduler missing) | n/a | 🔴 ORPHANED — see §4 above |
 | `earnings_calendar` | fetch-earnings-calendar Cloud Run | 7:15 AM ET Mon-Fri | ✅ OK |
 | `earnings_history` | (not built) | (lazy on first UI request) | 🆕 Not yet built |
 | `economic_events` | fetch-economic-events Cloud Run | 7:00 AM ET Mon-Fri | ✅ OK — canonical via GCP since 2026-05-01 |
@@ -352,7 +350,7 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 - [x] Add fail-fast guard to `fetch_market_data.py` (done)
 - [x] Backfill `etf_options_snapshots` April 13 for all 4 tickers (done)
 - [ ] Add fail-fast guard to `signal_monitor.py` — same pattern as market data
-- [ ] Confirm April 14 17:00 ET scheduled run of `fetch-market-data` populates today's row
+- [x] ~~Confirm April 14 17:00 ET scheduled run of `fetch-market-data` populates today's row~~ — superseded; schedule moved to 23:00 ET. Rows landing daily.
 - [ ] Confirm April 14 09:25 ET scheduled run of `signal-monitor` populates `signal_alerts` with at least 1 row
 
 ### P1 — This week
@@ -426,7 +424,7 @@ gcloud alpha monitoring policies create \
 Skipped-execution (scheduler didn't fire) is caught by the freshness watchdog instead — it's simpler to check "did the data land" than to derive "did the scheduler fire" from GCP metrics.
 
 ### 3. SPX parity ordering constraint
-`gcp/fetchers/fetch_market_data.py::process_spx_via_parity` derives SPX daily close via put-call parity from `etf_options_snapshots`. The options backfill job (`fetch-av-options-backfill`, ~01:00 UTC) **must** run before the daily fetcher (`fetch-market-data-daily`, 17:00 ET / 21:00 UTC) for the same calendar day. Current ordering gives a 20+ hour buffer.
+`gcp/fetchers/fetch_market_data.py::process_spx_via_parity` derives SPX daily close via put-call parity from `etf_options_snapshots`. The options backfill job (`fetch-av-options-backfill`, ~01:00 UTC) **must** run before the daily fetcher (`fetch-market-data-daily`, 23:00 ET / 04:00 UTC next day) for the same calendar day. Current ordering gives a 22+ hour buffer.
 
 If the options backfill is ever moved later, update the daily fetcher schedule to run after it, or SPX will be 1 day behind the ETFs.
 
