@@ -1011,8 +1011,6 @@ Normalize earnings_time to {premarket, intraday, postmarket, unknown}
     ↓
 Dedupe by priority: EarningsWhispers > AlphaVantage > UnusualWhales
     ↓
-Save to data/earnings/earnings_calendar.json
-    ↓
 UPSERT earnings_calendar → Cloud SQL (42 columns)
     (ON CONFLICT (ticker, earnings_date, strategy, data_source) DO UPDATE)
     data_source ∈ {alphavantage, earnings_whispers, unusual_whales}

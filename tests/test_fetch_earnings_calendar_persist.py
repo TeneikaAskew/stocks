@@ -132,3 +132,37 @@ def test_nan_in_bigint_column_becomes_none(captured_persist):
     assert row['stock_volume'] is None
     assert row['options_volume'] == 1166736  # the only non-NaN
     assert row['open_interest'] is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cloud-SQL-only persist (no legacy JSON cache)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestNoLegacyJsonWrite:
+    """Cloud SQL is the canonical store. The legacy
+    `data/earnings/earnings_calendar.json` cache was removed 2026-05-01
+    because no consumer read it and the parallel write created drift
+    risk between sources. Lock in: the fetcher class must not regrow
+    a save_earnings() / earnings_file path."""
+
+    def test_fetcher_has_no_save_earnings_method(self):
+        """A regression in this method = a regression in the audit
+        finding. Drop in a save_earnings() and this test fails."""
+        from scripts.fetch_earnings_calendar import EarningsCalendarFetcher
+        f = EarningsCalendarFetcher()
+        assert not hasattr(f, 'save_earnings'), (
+            "EarningsCalendarFetcher.save_earnings was deliberately "
+            "removed (Finding 3 in HARDCODED_VALUES_REMEDIATION audit). "
+            "Cloud SQL is the canonical store — do not reintroduce a "
+            "JSON-file write path."
+        )
+
+    def test_fetcher_has_no_earnings_file_attr(self):
+        """Same protection on the file-path attribute. If something
+        adds back self.earnings_file = Path('data/earnings/…') the
+        save_earnings absence check is easy to bypass."""
+        from scripts.fetch_earnings_calendar import EarningsCalendarFetcher
+        f = EarningsCalendarFetcher()
+        assert not hasattr(f, 'earnings_file')
+        assert not hasattr(f, 'output_dir')
