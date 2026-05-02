@@ -325,3 +325,124 @@ def test_build_lookup_unknown_target_raises():
 
 
 VALID_TFS_NON_5M = ("15m", "30m", "60m", "90m", "120m", "240m")
+
+
+# ── 10) include_ticker bucket dimension ────────────────────────────────
+
+def test_make_bucket_omits_ticker_by_default():
+    b = make_bucket({
+        "strategy": "momentum", "signal_strength": 4,
+        "atr_5m_pct": 0.002, "entry_rsi": 50.0, "ticker": "SPY",
+    })
+    # ticker is empty (default = "all tickers" bucket)
+    assert b.ticker == ""
+
+
+def test_make_bucket_includes_ticker_when_requested():
+    b = make_bucket({
+        "strategy": "momentum", "signal_strength": 4,
+        "atr_5m_pct": 0.002, "entry_rsi": 50.0, "ticker": "spy",
+    }, include_ticker=True)
+    assert b.ticker == "SPY"   # uppercased
+
+
+def test_build_lookup_with_ticker_separates_buckets_per_ticker():
+    """Same (strategy, signal_strength, atr, rsi) but different ticker
+    → different buckets when include_ticker=True."""
+    df = _make_train_df([
+        {"strategy": "momentum", "signal_strength": 4,
+         "atr_5m_pct": 0.002, "entry_rsi": 50.0, "ticker": "SPY",
+         "best_tf": "15m"},
+        {"strategy": "momentum", "signal_strength": 4,
+         "atr_5m_pct": 0.002, "entry_rsi": 50.0, "ticker": "QQQ",
+         "best_tf": "60m"},
+    ])
+    lookup = build_lookup_table(df, target="mode_best_tf", include_ticker=True)
+    assert len(lookup) == 2  # one per ticker
+    spy_b = make_bucket(df.iloc[0].to_dict(), include_ticker=True)
+    qqq_b = make_bucket(df.iloc[1].to_dict(), include_ticker=True)
+    assert lookup[spy_b] == "15m"
+    assert lookup[qqq_b] == "60m"
+
+
+def test_predict_with_lookup_include_ticker_must_match_train():
+    """If lookup was built with include_ticker=True, predict must also
+    pass include_ticker=True or it'll always cold-start."""
+    df = _make_train_df([
+        {"strategy": "momentum", "signal_strength": 4,
+         "atr_5m_pct": 0.002, "entry_rsi": 50.0, "ticker": "SPY",
+         "best_tf": "15m"},
+    ])
+    lookup = build_lookup_table(df, target="mode_best_tf", include_ticker=True)
+    # WITH include_ticker=True → finds the bucket
+    pred_with = predict_with_lookup(df.iloc[0].to_dict(), lookup,
+                                     include_ticker=True)
+    # WITHOUT → cold-start fallback
+    pred_without = predict_with_lookup(df.iloc[0].to_dict(), lookup,
+                                        include_ticker=False)
+    assert pred_with == "15m"
+    assert pred_without == "30m"   # cold-start default
+
+
+# ── 11) report_multi_tf_baselines ──────────────────────────────────────
+
+def test_multi_tf_baselines_per_tf_clean_rates():
+    """Always-pick-X baseline: for each TF, what's the clean-rate?"""
+    from scripts.analyze_timeframe_heuristic import report_multi_tf_baselines
+    holdout = pd.DataFrame([
+        {"cls_5m": "CLEAN_HIT", "cls_15m": "CLEAN_HIT", "cls_30m": "WRONG_DIRECTION",
+         "cls_60m": "CLEAN_HIT", "cls_90m": "CLEAN_HIT", "cls_120m": "CLEAN_HIT",
+         "cls_240m": "CLEAN_HIT"},
+        {"cls_5m": "WRONG_DIRECTION", "cls_15m": "CLEAN_HIT", "cls_30m": "CLEAN_HIT",
+         "cls_60m": "CLEAN_HIT", "cls_90m": "CLEAN_HIT", "cls_120m": "CLEAN_HIT",
+         "cls_240m": "CLEAN_HIT"},
+    ])
+    rates = report_multi_tf_baselines(holdout)
+    # 5m: 1/2 clean = 50%; 15m: 2/2 = 100%; 30m: 1/2 = 50%
+    assert rates["5m"] == 50.0
+    assert rates["15m"] == 100.0
+    assert rates["30m"] == 50.0
+    # 60m..240m all 2/2 clean
+    for tf in ("60m", "90m", "120m", "240m"):
+        assert rates[tf] == 100.0
+
+
+def test_multi_tf_baselines_excludes_insufficient_data():
+    from scripts.analyze_timeframe_heuristic import report_multi_tf_baselines
+    holdout = pd.DataFrame([
+        {"cls_240m": "CLEAN_HIT"},
+        {"cls_240m": "INSUFFICIENT_DATA"},
+        {"cls_240m": None},
+    ])
+    rates = report_multi_tf_baselines(holdout)
+    # 1 clean / (3-2 ineligible) = 100%
+    assert rates["240m"] == 100.0
+
+
+# ── 12) report_per_ticker_breakdown ────────────────────────────────────
+
+def test_per_ticker_breakdown_separates_by_ticker():
+    from scripts.analyze_timeframe_heuristic import report_per_ticker_breakdown
+    holdout = pd.DataFrame([
+        {"ticker": "SPY", "cls_60m": "CLEAN_HIT"},
+        {"ticker": "SPY", "cls_60m": "CLEAN_HIT"},
+        {"ticker": "QQQ", "cls_60m": "WRONG_DIRECTION"},
+    ])
+    out = report_per_ticker_breakdown(holdout, ["60m", "60m", "60m"])
+    assert out["SPY"]["clean_rate_pct"] == 100.0
+    assert out["QQQ"]["clean_rate_pct"] == 0.0
+    assert out["SPY"]["n_total"] == 2
+    assert out["QQQ"]["n_total"] == 1
+
+
+def test_per_ticker_breakdown_excludes_insufficient():
+    from scripts.analyze_timeframe_heuristic import report_per_ticker_breakdown
+    holdout = pd.DataFrame([
+        {"ticker": "SPY", "cls_60m": "CLEAN_HIT"},
+        {"ticker": "SPY", "cls_60m": "INSUFFICIENT_DATA"},
+    ])
+    out = report_per_ticker_breakdown(holdout, ["60m", "60m"])
+    # 1 clean / 1 eligible (the INSUFFICIENT row dropped)
+    assert out["SPY"]["clean_rate_pct"] == 100.0
+    assert out["SPY"]["n_eligible"] == 1
+    assert out["SPY"]["n_total"] == 2
