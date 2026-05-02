@@ -507,80 +507,63 @@ def test_gather_candidates_catalyst_filter_post_filter(patch_candidates_query):
 
 
 def test_load_watchlist_reads_alert_config(monkeypatch):
-    """`_load_watchlist` is the production fallback chain:
-    alert_config.json (project root) → INSIGHT_TICKERS env → SPY/IWM/QQQ."""
+    """`_load_watchlist` delegates to the centralized helper:
+    `load_watchlist(surface='all')` (Cloud SQL → INSIGHT_TICKERS env).
+    The legacy alert_config.json path was removed in #205 so the
+    ranker shares the single source of truth with every other
+    consumer."""
     from lib.agents.ranker import candidates as cand_mod
 
-    captured = {}
-
-    class FakePath:
-        """Stand-in for the resolved alert_config.json path."""
-        def __init__(self, exists_=True, content='{"watchlist": ["aapl", " msft ", "GOOG"]}'):
-            self._exists = exists_
-            self._content = content
-
-        def exists(self):
-            captured["exists_called"] = True
-            return self._exists
-
-        def read_text(self):
-            return self._content
-
-    # Patch the path resolution in _load_watchlist so we don't depend
-    # on the real alert_config.json on disk.
+    # Patch the centralized helper so we don't hit Cloud SQL.
+    captured: dict = {}
+    def _fake_load_watchlist(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return ["AAPL", "MSFT", "GOOG"]
     monkeypatch.setattr(
-        cand_mod.Path,
-        "resolve",
-        lambda self: cand_mod.Path("/project_root/lib/agents/ranker/candidates.py"),
+        "gcp.fetchers._watchlist.load_watchlist",
+        _fake_load_watchlist,
     )
-    # Then replace `parents[3] / "alert_config.json"` with our fake.
-    real_truediv = cand_mod.Path.__truediv__
-    def fake_truediv(self, other):
-        if str(other) == "alert_config.json":
-            return FakePath()
-        return real_truediv(self, other)
-    monkeypatch.setattr(cand_mod.Path, "__truediv__", fake_truediv)
 
     wl = cand_mod._load_watchlist()
-    assert wl == ["AAPL", "MSFT", "GOOG"], "uppercased + stripped"
+    assert wl == ["AAPL", "MSFT", "GOOG"]
+    # Crucial: ranker calls with surface='all' to get the broad
+    # research universe, not just live-monitor signals.
+    assert captured["kwargs"].get("surface") == "all"
 
 
-def test_load_watchlist_falls_back_to_env(monkeypatch):
-    """If alert_config.json is missing, `INSIGHT_TICKERS` env var is
-    the next stop. Critical for Cloud Run deployments where the JSON
-    config isn't shipped in the image."""
+def test_load_watchlist_falls_back_to_env_when_helper_raises(monkeypatch):
+    """If the centralized helper raises (Cloud SQL connect failure on
+    a worker without DB creds), `INSIGHT_TICKERS` env var is the
+    safety net. Critical for one-off Cloud Run executions and local
+    dev shells without DB creds."""
     from lib.agents.ranker import candidates as cand_mod
 
-    class MissingPath:
-        def exists(self):
-            return False
-
-    real_truediv = cand_mod.Path.__truediv__
-    def fake_truediv(self, other):
-        if str(other) == "alert_config.json":
-            return MissingPath()
-        return real_truediv(self, other)
-    monkeypatch.setattr(cand_mod.Path, "__truediv__", fake_truediv)
+    def _raise(*args, **kwargs):
+        raise RuntimeError("Cloud SQL unreachable")
+    monkeypatch.setattr(
+        "gcp.fetchers._watchlist.load_watchlist",
+        _raise,
+    )
     monkeypatch.setenv("INSIGHT_TICKERS", "TSLA, NVDA ,amzn")
 
     wl = cand_mod._load_watchlist()
     assert wl == ["TSLA", "NVDA", "AMZN"]
 
 
-def test_load_watchlist_default_when_no_config_or_env(monkeypatch):
-    """Final fallback is the SPY/IWM/QQQ trio."""
+def test_load_watchlist_default_when_helper_raises_and_no_env(monkeypatch):
+    """Final fallback is the SPY/IWM/QQQ trio — the historical
+    research-default trio. Used only when the centralized helper
+    is unreachable AND no env override is set, which in practice
+    only happens in stripped-down local dev shells."""
     from lib.agents.ranker import candidates as cand_mod
 
-    class MissingPath:
-        def exists(self):
-            return False
-
-    real_truediv = cand_mod.Path.__truediv__
-    def fake_truediv(self, other):
-        if str(other) == "alert_config.json":
-            return MissingPath()
-        return real_truediv(self, other)
-    monkeypatch.setattr(cand_mod.Path, "__truediv__", fake_truediv)
+    def _raise(*args, **kwargs):
+        raise RuntimeError("Cloud SQL unreachable")
+    monkeypatch.setattr(
+        "gcp.fetchers._watchlist.load_watchlist",
+        _raise,
+    )
     monkeypatch.delenv("INSIGHT_TICKERS", raising=False)
 
     wl = cand_mod._load_watchlist()
