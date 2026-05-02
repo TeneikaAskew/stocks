@@ -170,7 +170,7 @@ gh run watch
 1. **Job completes in 10-25 minutes.** First run is at the high end (Claude Code cold-start + first BigQuery query authorization).
 2. **Step "Dump asset inventory" prints** `Inventory rows: 700-1000ish`. If it fails with permission errors → re-check the `cloudasset.viewer` grant.
 3. **Step "Dump 90-day billing rollup" prints** `wrote billing_90d.json with N rows`. If it fails with `404 Not found: Dataset billing_export` → BigQuery billing export isn't enabled for this project; turn it on at Cloud Console → Billing → Billing Export → BigQuery → choose dataset `billing_export`. It needs ~24 hours of warmup before the first row appears.
-4. **Steps "Regenerate ARCHITECTURE.md / DATA_DEPENDENCIES.md / COST_ANALYSIS.md" each take 2-8 minutes** and write the file. If they fail with `401 unauthorized` → re-check `ANTHROPIC_API_KEY`.
+4. **Steps "Regenerate ARCHITECTURE.md / DATA_DEPENDENCIES.md / COST_ANALYSIS.md / README.md" each take 1-8 minutes** and write the file. README runs last so it can read the freshly-regenerated other docs to populate its doc-map table + Mermaid embed + cost headlines. If any step fails with `401 unauthorized` → re-check `ANTHROPIC_API_KEY`.
 5. **Step "Detect meaningful changes" reports** which files changed. On the first run after this PR lands, the docs are already current → expect "no meaningful changes" or only minor wording shifts.
 
 ### Validate the dry-run output
