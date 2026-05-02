@@ -315,3 +315,40 @@ def risk_config():
 def exit_config():
     from lib.config import ExitConfig
     return ExitConfig()
+
+
+# ───────────────────────────────────────────────────────────────────
+# Default load_watchlist stub for unit tests
+# ───────────────────────────────────────────────────────────────────
+# After the alert_config.json watchlist removal, SignalMonitor()
+# requires Cloud SQL access at construction time (it queries
+# watchlists for signals=TRUE rows). Unit tests that don't care
+# about the watchlist source still need the constructor to succeed.
+# This fixture stubs load_watchlist to return a default 3-ticker
+# list for EVERY test, automatically. Tests that DO care can patch
+# `gcp.fetchers._watchlist.load_watchlist` themselves inside their
+# own with-block to override.
+@pytest.fixture(autouse=True)
+def _default_load_watchlist_stub(monkeypatch, request):
+    """Patch the centralized watchlist loader with a 3-ticker default
+    so unit tests don't need to touch Cloud SQL. Override in-test by
+    re-patching with a context manager when a specific list is needed.
+
+    Skipped for tests that intentionally exercise the real
+    load_watchlist resolution chain (test_watchlist_helper.py).
+    """
+    # The watchlist-helper tests are testing the loader itself; they
+    # need the real function. Same for any other test file that opts
+    # out by name.
+    if "test_watchlist_helper.py" in str(request.fspath):
+        return
+    try:
+        from gcp.fetchers import _watchlist as wl_module
+    except ImportError:
+        # _watchlist module unavailable in this test environment
+        # (e.g. minimal install without psycopg2) — nothing to patch.
+        return
+    monkeypatch.setattr(
+        wl_module, "load_watchlist",
+        lambda *a, **kw: ["IWM", "QQQ", "SPY"],
+    )

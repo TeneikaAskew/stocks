@@ -231,15 +231,16 @@ def _candidates_from_watchlist(
 
 
 def _load_watchlist() -> list[str]:
-    """Read `watchlist` from alert_config.json (project root). Falls back
-    to INSIGHT_TICKERS env var, then to SPY/IWM/QQQ."""
-    cfg_path = Path(__file__).resolve().parents[3] / "alert_config.json"
+    """Return the active research watchlist from the centralized helper.
+
+    Single source of truth: `watchlists` Cloud SQL table where
+    removed_at IS NULL, with INSIGHT_TICKERS env var as the only
+    fallback. The legacy alert_config.json watchlist key was removed
+    in favor of this DB-backed source.
+    """
     try:
-        if cfg_path.exists():
-            data = json.loads(cfg_path.read_text())
-            wl = data.get("watchlist") or []
-            if isinstance(wl, list) and wl:
-                return [str(t).upper().strip() for t in wl if str(t).strip()]
+        from gcp.fetchers._watchlist import load_watchlist
+        return load_watchlist(surface="all")
     except Exception as exc:
         logger.warning("watchlist load failed (%s); falling back to env", exc)
     env = os.environ.get("INSIGHT_TICKERS", "SPY,IWM,QQQ")

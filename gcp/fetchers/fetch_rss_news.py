@@ -733,20 +733,15 @@ def main():
     parser.add_argument("--gemini-max", type=int, default=20, help="Max Gemini API calls per run")
     args = parser.parse_args()
 
-    # Load watchlist
-    try:
-        from gcp.fetchers._watchlist import load_watchlist
-        watchlist = load_watchlist()
-    except ImportError:
-        cfg_path = Path(__file__).resolve().parents[2] / "alert_config.json"
-        if cfg_path.exists():
-            data = json.loads(cfg_path.read_text(encoding="utf-8"))
-            watchlist = [t.upper() for t in (data.get("watchlist") or [])]
-        else:
-            watchlist = []
+    # Load watchlist (single source of truth: watchlists Cloud SQL table)
+    from gcp.fetchers._watchlist import load_watchlist
+    watchlist = load_watchlist()
 
     if not watchlist:
-        logger.error("Watchlist empty — set alert_config.json watchlist or INSIGHT_TICKERS env var")
+        logger.error(
+            "Watchlist empty — no rows in `watchlists` table and "
+            "INSIGHT_TICKERS env var unset"
+        )
         return
 
     logger.info("Watchlist (%d): %s", len(watchlist), watchlist)

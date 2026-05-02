@@ -541,15 +541,9 @@ def refresh_watchlist_info() -> dict[str, dict]:
     try:
         from gcp.fetchers._watchlist import load_watchlist
     except ImportError:
-        cfg_path = _REPO_ROOT / "alert_config.json"
-        if cfg_path.exists():
-            data = json.loads(cfg_path.read_text(encoding="utf-8"))
-            tickers = [t.upper() for t in (data.get("watchlist") or [])]
-        else:
-            logger.error("Cannot load watchlist")
-            return {}
-    else:
-        tickers = load_watchlist()
+        logger.error("gcp.fetchers._watchlist not importable; cannot load watchlist")
+        return {}
+    tickers = load_watchlist()
 
     if not tickers:
         logger.info("Watchlist is empty, nothing to refresh")
