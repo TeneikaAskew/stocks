@@ -69,6 +69,29 @@ def get_sqlstate(exc: BaseException) -> str:
     return m.group(1) if m else ''
 
 
+def get_error_message(exc: BaseException) -> str:
+    """Pull the human-readable message from a pg8000/SQLAlchemy error.
+
+    pg8000 wraps Postgres errors as ProgrammingError(args=({'S':..,'C':..,
+    'M':<message>, ...},)) — str() on those renders the whole dict, which
+    is unreadable in summaries. Pull the M field directly when available;
+    fall back to str() otherwise.
+    """
+    orig = getattr(exc, 'orig', exc)
+    args = getattr(orig, 'args', None)
+    if args and isinstance(args[0], dict):
+        m = args[0].get('M')
+        if m:
+            return m
+    msg = str(orig).strip()
+    if msg:
+        return msg
+    msg = str(exc).strip()
+    if msg:
+        return msg
+    return exc.__class__.__name__
+
+
 def classify_error(exc: BaseException) -> str:
     """Return 'user' for SQL/data errors, 'system' for infra errors."""
     sqlstate = get_sqlstate(exc)
@@ -209,9 +232,7 @@ def execute_statement(conn, stmt: str, commit: bool, timeout_seconds: int) -> di
         cls = classify_error(e)
         out['status'] = 'user_error' if cls == 'user' else 'system_error'
         out['error_class'] = cls
-        out['error'] = (str(getattr(e, 'orig', e)).strip()
-                        or str(e).strip()
-                        or e.__class__.__name__)
+        out['error'] = get_error_message(e)
         out['sqlstate'] = get_sqlstate(e) or None
         out['mode'] = 'rolled_back'
     finally:
@@ -356,9 +377,7 @@ def main() -> int:
             'mode': 'rolled_back',
             'columns': [], 'rows': [], 'row_count': 0, 'truncated': False,
             'duration_ms': 0,
-            'error': (str(getattr(e, 'orig', e)).strip()
-                      or str(e).strip()
-                      or e.__class__.__name__),
+            'error': get_error_message(e),
             'error_class': cls,
             'sqlstate': get_sqlstate(e) or None,
             'row_cap_strategy': 'none',
