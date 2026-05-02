@@ -150,6 +150,110 @@ def test_helper_disagreement_no_agreement_payload():
     assert agreement is None
 
 
+# ── 4b) Phase 1.6 bonus flows into total_score ────────────────────────
+
+def test_evaluate_ticker_stacked_agreement_adds_bonus_to_total_score():
+    """A stacked-agreement fire must add AGREEMENT_BONUS (1.0) to
+    raw_score so the position-size + strength-label tier can shift
+    upward — not just the embed prefix.
+
+    Without the bonus, a 4.0 stacked fire gets the same 'strong' tier
+    + 75% size as a 4.0 solo fire. With the bonus → 5.0 raw → 'perfect'
+    tier + 100% size. That's the operational point of the feature.
+    """
+    from lib.strategies.agreement import AGREEMENT_BONUS
+
+    monitor = _make_monitor()
+    monitor.daily_trades = {"SPY": 0}
+    monitor.daily_pnl = {"SPY": 0.0}
+    monitor.orb_levels = {"SPY": {}}
+
+    bar = _mr_call_bar()
+    # enriched needs ≥ min_bars_for_signals (30) rows for evaluate_ticker
+    # to proceed. Build a 40-row fake by repeating the same bar.
+    enriched = pd.DataFrame([bar] * 40).reset_index(drop=True)
+    enriched.index = pd.date_range(
+        "2026-05-01 09:30", periods=40, freq="1min", tz="UTC"
+    )
+
+    # Mock indicator calc (returns the bar) + strategy eval (stacked agreement)
+    stacked_agreement = {
+        "agree": True,
+        "strategies": ["mean_reversion", "momentum"],
+        "directions": ["CALL", "CALL"],
+        "base_scores": [4.0, 4.0],
+        "composite_score": 4.0 + AGREEMENT_BONUS,
+    }
+    sig_dict = {
+        "direction": "CALL",
+        "base_score": 4,
+        "conditions_met": ["consecutive_down", "rsi_oversold_zone", "below_vwap"],
+    }
+    captured = {}
+
+    def fake_fire_alert(ticker, sig, total_score, strength, size, strat_bonus, latest):
+        captured["total_score"] = total_score
+        captured["strength"] = strength
+        captured["size"] = size
+
+    with patch.object(monitor, "calculate_indicators", return_value=enriched), \
+         patch.object(monitor, "_evaluate_strategies_for_bar",
+                      return_value=(sig_dict, stacked_agreement)), \
+         patch.object(monitor, "fire_alert", side_effect=fake_fire_alert), \
+         patch.object(monitor, "check_orb"), \
+         patch("lib.strategies.catalyst_proximity.get_catalyst_context",
+               return_value={"proximity_bucket": "quiet"}):
+        # Stub out strat-bonus path so it's deterministic 0
+        monitor.strat_cfg.enabled = False
+        monitor.evaluate_ticker("SPY")
+
+    # base_score (4) + strat_bonus (0) + agreement_bonus (1.0) = 5.0
+    # × proximity_mult (1.0 for quiet) = 5.0
+    assert captured["total_score"] == pytest.approx(5.0), (
+        f"Expected total_score=5.0 (base 4 + agreement bonus 1.0), "
+        f"got {captured.get('total_score')}. Stacked agreements should "
+        f"size up by one strength tier, not just show a prettier embed."
+    )
+
+
+def test_evaluate_ticker_solo_no_bonus_in_total_score():
+    """Solo fire (no agreement) → total_score = base_score + strat_bonus, no bonus added."""
+    monitor = _make_monitor()
+    monitor.daily_trades = {"SPY": 0}
+    monitor.daily_pnl = {"SPY": 0.0}
+    monitor.orb_levels = {"SPY": {}}
+
+    bar = _mr_call_bar()
+    # enriched needs ≥ min_bars_for_signals (30) rows for evaluate_ticker
+    # to proceed. Build a 40-row fake by repeating the same bar.
+    enriched = pd.DataFrame([bar] * 40).reset_index(drop=True)
+    enriched.index = pd.date_range(
+        "2026-05-01 09:30", periods=40, freq="1min", tz="UTC"
+    )
+
+    sig_dict = {
+        "direction": "CALL",
+        "base_score": 4,
+        "conditions_met": ["consecutive_down", "rsi_oversold_zone", "below_vwap"],
+    }
+    captured = {}
+    def fake_fire_alert(ticker, sig, total_score, strength, size, strat_bonus, latest):
+        captured["total_score"] = total_score
+
+    with patch.object(monitor, "calculate_indicators", return_value=enriched), \
+         patch.object(monitor, "_evaluate_strategies_for_bar",
+                      return_value=(sig_dict, None)), \
+         patch.object(monitor, "fire_alert", side_effect=fake_fire_alert), \
+         patch.object(monitor, "check_orb"), \
+         patch("lib.strategies.catalyst_proximity.get_catalyst_context",
+               return_value={"proximity_bucket": "quiet"}):
+        monitor.strat_cfg.enabled = False
+        monitor.evaluate_ticker("SPY")
+
+    # No agreement → no +1.0 bonus → total_score == base_score == 4.0
+    assert captured["total_score"] == pytest.approx(4.0)
+
+
 # ── 5) Persist: strategy_agreement carries the JSON when stacked ──────
 
 def test_persist_writes_strategy_agreement_json_when_stacked():
