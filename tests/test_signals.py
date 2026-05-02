@@ -29,6 +29,8 @@ def _make_row(**overrides):
 
 class TestCheckCallConditions:
     def test_all_conditions_met(self):
+        """Phase 0.7.2: max score is 4 (was 5). `near_below_emas`
+        was dropped per the §3.10 audit (84.6% free-fire rate)."""
         row = _make_row(
             Consecutive_Down=4,
             RSI14=35.0,
@@ -37,12 +39,13 @@ class TestCheckCallConditions:
             StochRSI_K=20.0,
         )
         score, conds = check_call_conditions(row)
-        assert score == 5
+        assert score == 4
         assert 'consecutive_down' in conds
         assert 'rsi_oversold_zone' in conds
         assert 'below_vwap' in conds
-        assert 'near_below_emas' in conds
         assert 'stoch_rsi_oversold' in conds
+        # Phase 0.7.2 — explicitly verify the dropped condition isn't there
+        assert 'near_below_emas' not in conds
 
     def test_no_conditions_met(self):
         row = _make_row(
@@ -83,6 +86,8 @@ class TestCheckCallConditions:
 
 class TestCheckPutConditions:
     def test_all_conditions_met(self):
+        """Phase 0.7.2 mirror: max score is 4 (was 5). `near_above_emas`
+        dropped (PUT-side mirror of the CALL drop)."""
         row = _make_row(
             Consecutive_Up=4,
             RSI14=65.0,
@@ -91,12 +96,12 @@ class TestCheckPutConditions:
             StochRSI_K=80.0,
         )
         score, conds = check_put_conditions(row)
-        assert score == 5
+        assert score == 4
         assert 'consecutive_up' in conds
         assert 'rsi_overbought_zone' in conds
         assert 'above_vwap' in conds
-        assert 'near_above_emas' in conds
         assert 'stoch_rsi_overbought' in conds
+        assert 'near_above_emas' not in conds
 
     def test_no_conditions_met(self):
         row = _make_row(
@@ -113,6 +118,8 @@ class TestCheckPutConditions:
 
 class TestEvaluateSignal:
     def test_call_signal_fires(self):
+        """Phase 0.7.2: 4/4 conditions instead of 5/5 (near_below_emas
+        dropped). Same fire decision; just lower score."""
         row = _make_row(
             Consecutive_Down=4,
             RSI14=35.0,
@@ -123,8 +130,8 @@ class TestEvaluateSignal:
         sig = evaluate_signal(row, min_conditions=3)
         assert sig is not None
         assert sig['direction'] == 'CALL'
-        assert sig['base_score'] == 5
-        assert sig['total_score'] == 5
+        assert sig['base_score'] == 4
+        assert sig['total_score'] == 4
 
     def test_put_signal_fires(self):
         row = _make_row(
@@ -137,7 +144,8 @@ class TestEvaluateSignal:
         sig = evaluate_signal(row, min_conditions=3)
         assert sig is not None
         assert sig['direction'] == 'PUT'
-        assert sig['base_score'] == 5
+        # Phase 0.7.2: 4/4 instead of 5/5 (near_above_emas dropped)
+        assert sig['base_score'] == 4
 
     def test_no_signal_below_threshold(self):
         row = _make_row(
@@ -231,20 +239,23 @@ class TestLevelBreakCondition:
         assert 'level_break_pdl' not in put_conds
 
     def test_missing_column_does_not_fire(self):
-        """With the column absent (default _make_row), the vote stays at 5 conditions."""
+        """With the column absent (default _make_row), the vote stays
+        at 4 conditions post-Phase 0.7.2 (was 5; near_below_emas dropped)."""
         row = _make_row(
             Consecutive_Down=4, RSI14=35.0, Price_vs_VWAP=-0.5,
             Price_vs_EMA9=-0.2, StochRSI_K=20.0,
         )
         score, _ = check_call_conditions(row)
-        assert score == 5
+        assert score == 4
 
-    def test_six_conditions_when_level_breaks(self):
+    def test_five_conditions_when_level_breaks(self):
+        """Phase 0.7.2: max is 5 with level_break (was 6 before
+        near_below_emas was dropped)."""
         row = _make_row(
             Consecutive_Down=4, RSI14=35.0, Price_vs_VWAP=-0.5,
             Price_vs_EMA9=-0.2, StochRSI_K=20.0,
             Broke_Prev_Day_High=1,
         )
         score, conds = check_call_conditions(row)
-        assert score == 6
+        assert score == 5
         assert 'level_break_pdh' in conds
