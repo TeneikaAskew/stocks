@@ -16,7 +16,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -580,6 +580,195 @@ def _earnings_tickers_in_window(
     return [str(t).upper() for t in df['ticker'].tolist()]
 
 
+# ────────────────────────────────────────────────────────────
+# Backfill mode (--backfill) — historical OHLCV bootstrap.
+#
+# Targets tickers in earnings_history that the brief would actually
+# render (options_volume > 0 + stock_volume >= 500K, OR watchlist).
+# Smart-switches between AV outputsize=full and =compact so we do not
+# re-pull tickers that are already current. Caps written rows at 10y
+# per the BACKFILL_LOOKBACK_DAYS policy.
+# ────────────────────────────────────────────────────────────
+
+BACKFILL_LOOKBACK_DAYS = 365 * 10
+BACKFILL_DEPTH_THRESHOLD_BARS = 1500   # ~6y; below this needs full pull
+
+
+def _backfill_targets() -> list[tuple[str, int, object]]:
+    """Tickers in earnings_history that the brief would render, with
+    their current OHLCV state. Returns (ticker, bar_count, max_date)."""
+    if not is_cloud_sql_configured():
+        return []
+    try:
+        from gcp.database import query_to_dataframe
+    except ImportError:
+        return []
+
+    sql = """
+        WITH eligible AS (
+            SELECT DISTINCT ticker FROM earnings_calendar
+             WHERE COALESCE(options_volume, 0) > 0
+               AND COALESCE(stock_volume,   0) >= 500000
+          UNION
+            SELECT ticker FROM watchlists
+             WHERE COALESCE(in_brief, false) OR COALESCE(in_insight, false)
+        ),
+        eh_eligible AS (
+            SELECT DISTINCT eh.ticker FROM earnings_history eh
+             WHERE eh.ticker IN (SELECT ticker FROM eligible)
+        )
+        SELECT eh.ticker,
+               COALESCE(mdd.n, 0)        AS bar_count,
+               mdd.max_date              AS max_date
+          FROM eh_eligible eh
+          LEFT JOIN (
+              SELECT ticker, COUNT(*) AS n, MAX(date) AS max_date
+                FROM market_data_daily
+               GROUP BY ticker
+          ) mdd ON mdd.ticker = eh.ticker
+         ORDER BY eh.ticker
+    """
+    df = query_to_dataframe(sql)
+    if df.empty:
+        return []
+    return [(r['ticker'], int(r['bar_count']), r['max_date'])
+            for _, r in df.iterrows()]
+
+
+def _pick_backfill_outputsize(bar_count: int, max_date,
+                              today_et: date) -> str | None:
+    """Decide AV outputsize — or skip entirely. Returns 'full',
+    'compact', or None (skip)."""
+    if bar_count == 0:
+        return 'full'
+    days_stale = (today_et - max_date).days if max_date else 99999
+    if bar_count >= BACKFILL_DEPTH_THRESHOLD_BARS:
+        if days_stale <= 1:
+            return None
+        if days_stale <= 90:
+            return 'compact'
+        return 'full'
+    return 'full'  # partial history → bootstrap to full depth
+
+
+def _av_get_full_daily_series(ticker: str, api_key: str,
+                              outputsize: str) -> pd.DataFrame:
+    """Pull the entire daily series response from AV TIME_SERIES_DAILY_ADJUSTED.
+
+    Uses adjusted endpoint so split-adjusted close is available
+    downstream. Returns a DataFrame with columns
+        ticker, date, open, high, low, close, volume
+    or empty on any error. The caller is responsible for filtering
+    to the lookback cap and upserting to market_data_daily.
+    """
+    av_symbol = AV_SYMBOL_MAP.get(ticker, ticker)
+    if not av_symbol or not api_key:
+        return pd.DataFrame()
+    try:
+        resp = requests.get(AV_BASE_URL, params={
+            'function': 'TIME_SERIES_DAILY_ADJUSTED',
+            'symbol': av_symbol,
+            'outputsize': outputsize,
+            'datatype': 'json',
+            'apikey': api_key,
+        }, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        if 'Information' in data or 'Error Message' in data or 'Note' in data:
+            log.warning("    AV daily error for %s: %s",
+                        ticker, data.get('Information') or data.get('Error Message'))
+            return pd.DataFrame()
+        ts = data.get('Time Series (Daily)') or {}
+        if not ts:
+            return pd.DataFrame()
+        rows = []
+        for d_str, v in ts.items():
+            rows.append({
+                'ticker': ticker,
+                'date':   pd.to_datetime(d_str).date(),
+                'open':   float(v['1. open']),
+                'high':   float(v['2. high']),
+                'low':    float(v['3. low']),
+                'close':  float(v['4. close']),
+                'volume': int(v['6. volume']),
+            })
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows).sort_values('date').reset_index(drop=True)
+    except Exception as e:
+        log.warning("    AV daily fetch failed for %s: %s", ticker, e)
+        return pd.DataFrame()
+
+
+def _run_backfill() -> None:
+    """--backfill mode: pull historical daily bars for every ticker in
+    earnings_history that the brief would render but lacks depth.
+
+    Skip + smart-switch keep this idempotent and cheap on re-runs:
+    already-current tickers do zero AV calls."""
+    from zoneinfo import ZoneInfo
+    today_et = datetime.now(ZoneInfo("America/New_York")).date()
+    av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
+
+    if not is_cloud_sql_configured():
+        log.error("Cloud SQL not configured — backfill cannot proceed")
+        sys.exit(1)
+    if not av_api_key:
+        log.error("ALPHA_VANTAGE_API_KEY not set — backfill cannot proceed")
+        sys.exit(1)
+
+    targets = _backfill_targets()
+    plan = [(t, n, mx, _pick_backfill_outputsize(n, mx, today_et))
+            for (t, n, mx) in targets]
+    pending = [(t, n, mx, sz) for (t, n, mx, sz) in plan if sz is not None]
+
+    n_full = sum(1 for _, _, _, sz in pending if sz == 'full')
+    n_compact = sum(1 for _, _, _, sz in pending if sz == 'compact')
+    skipped = len(plan) - len(pending)
+
+    log.info("Backfill mode")
+    log.info("  Eligible targets: %d", len(plan))
+    log.info("  Already current (skipped): %d", skipped)
+    log.info("  Full pulls (~20y, filtered to 10y on write): %d", n_full)
+    log.info("  Compact pulls (last 100 days): %d", n_compact)
+    log.info("  Estimated wall clock: %d min (13s rate limit)",
+             len(pending) * 13 // 60 + 1)
+
+    if not pending:
+        log.info("Nothing to do — all eligible tickers are already current.")
+        return
+
+    cutoff = today_et - timedelta(days=BACKFILL_LOOKBACK_DAYS)
+    upserted = 0
+    failures = []
+
+    # Lazy import to avoid pulling SQL deps when --backfill is not used
+    from gcp.database import upsert_dataframe
+
+    import time as _time
+    for i, (ticker, bar_count, max_dt, outputsize) in enumerate(pending):
+        log.info("  [%d/%d] %s (have=%d bars, max=%s, mode=%s)",
+                 i + 1, len(pending), ticker, bar_count, max_dt, outputsize)
+        df = _av_get_full_daily_series(ticker, av_api_key, outputsize)
+        if df.empty:
+            failures.append(ticker)
+            log.warning("    (no data returned)")
+        else:
+            df = df[df['date'] >= cutoff]  # enforce 10y cap on write
+            if not df.empty:
+                upsert_dataframe(df, 'market_data_daily', ['ticker', 'date'])
+                upserted += len(df)
+                log.info("    %d bars upserted: %s..%s",
+                         len(df), df['date'].min(), df['date'].max())
+        if i < len(pending) - 1:
+            _time.sleep(13)  # AV rate limit (5 rpm)
+
+    log.info("Backfill done: %d bars upserted across %d tickers",
+             upserted, len(pending) - len(failures))
+    if failures:
+        log.warning("Failures (%d): %s", len(failures), failures[:20])
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch daily market data to Cloud SQL + GCS')
     parser.add_argument('--tickers', default='ALL',
@@ -599,7 +788,17 @@ def main():
                               'names by market cap (optionable first) are added. Keeps '
                               'AV rate-limit budget reserved for core + watchlist. 0 = '
                               'no cap (legacy unbounded behaviour). Default: 25.'))
+    parser.add_argument('--backfill', action='store_true',
+                        help=('Historical OHLCV backfill mode: pull 10y of daily bars '
+                              'for every ticker in earnings_history that has options + '
+                              'volume but lacks depth in market_data_daily. Smart-switch '
+                              'between AV outputsize=full (bootstrap) and compact (catch-up) '
+                              'so we do not waste bandwidth on already-current tickers. '
+                              'Skips the intraday + indicator path; only writes daily bars.'))
     args = parser.parse_args()
+
+    if args.backfill:
+        return _run_backfill()
 
     # Use ET (market timezone), not the container's UTC. The 23:00 ET cron
     # fires at 03:00–04:00 UTC the NEXT calendar day, so a UTC-based
