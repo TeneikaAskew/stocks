@@ -230,6 +230,145 @@ Follow this rigorous testing approach:
   (FastAPI router, AI agents, CLI scripts) import from the same `lib/`
   modules so behaviour can't drift.
 
+### Database access
+
+Direct DB connections from Claude Code on the web sandbox are blocked: the
+sandbox firewall only allows outbound TCP on port 443, and Cloud SQL needs
+5432 (Postgres) or 3307 (Auth Proxy backend). Both time out. Adding the
+sandbox IP to authorized networks does not help — the binding constraint is
+the sandbox's outbound firewall, not the DB's inbound ACL.
+
+To query Cloud SQL Postgres (`trading` database) from any session, dispatch
+the `.github/workflows/db-query.yml` workflow. It runs the SQL inside a
+GitHub Actions runner (which has unrestricted egress to Cloud SQL via the
+project's existing `gcp/database.py` connector), captures structured results,
+posts a phone-friendly summary as a comment on a tracking issue if specified,
+and uploads the full results as a workflow artifact.
+
+#### Invocation patterns
+
+**Single read query** (default — transaction is rolled back, which is a no-op
+for SELECT):
+```bash
+gh workflow run db-query.yml \
+  -f sql='SELECT count(*) FROM trades WHERE date > current_date - 7' \
+  -f issue_number=<TRACKING_ISSUE>
+```
+
+**Multi-statement in one dispatch** — this is the answer to "varying amounts
+of queries." Batch into one dispatch instead of dispatching N times. Each
+statement runs in its own transaction:
+```bash
+gh workflow run db-query.yml \
+  -f sql='SELECT count(*) FROM trades; SELECT count(*) FROM signal_alerts; SELECT max(date) FROM market_data_daily' \
+  -f issue_number=<TRACKING_ISSUE>
+```
+
+**File-based** (for SQL too large for a dispatch input or DDL with embedded
+semicolons like `DO $$ ... $$` blocks or `CREATE FUNCTION ... LANGUAGE
+plpgsql`):
+```bash
+# Commit the .sql file to gcp/queries/ first, then:
+gh workflow run db-query.yml \
+  -f sql_file=gcp/queries/check_freshness.sql \
+  -f issue_number=<TRACKING_ISSUE>
+```
+The file content is sent as **one** statement. Multi-statement splitting
+only happens for the inline `sql` input. For DO blocks or function
+definitions, always use `sql_file`.
+
+**Write query** (must explicitly opt in to commit):
+```bash
+gh workflow run db-query.yml \
+  -f sql="UPDATE trades SET status='reviewed' WHERE id IN (1,2,3)" \
+  -f commit=true \
+  -f issue_number=<TRACKING_ISSUE>
+```
+Without `commit=true`, every transaction rolls back at the end. A write
+without `commit=true` is a deliberate no-op — the summary will show
+`↩️ rolled back` so the user knows. This is the load-bearing safety
+guarantee: a typo'd UPDATE/DELETE without `commit=true` cannot persist.
+
+#### Reading results
+
+Each dispatch takes ~30–90 s end-to-end (queue + cold runner + connection +
+query + summary). After dispatch:
+```bash
+sleep 5
+RUN_ID=$(gh run list --workflow=db-query.yml --limit=1 --json databaseId -q '.[0].databaseId')
+gh run watch $RUN_ID                                       # blocks until done
+gh issue view <TRACKING_ISSUE> --comments | tail -120      # phone-friendly summary
+# OR for full results:
+gh run download $RUN_ID --name "query-results-$RUN_ID"
+```
+
+Artifact contents:
+- `results.json` — structured per-statement results (columns, rows,
+  row_count, truncated, duration_ms, mode, error, sqlstate,
+  row_cap_strategy)
+- `result_NNN.csv` — per-statement CSV (only for statements that returned
+  rows)
+- `summary.md` — full markdown summary, untruncated
+- `summary_for_comment.md` — same content, hard-truncated to 60 KB for the
+  issue comment
+
+#### Inputs reference
+
+| Input | Default | Notes |
+|---|---|---|
+| `sql` | `""` | Inline SQL; multi-statement separated by `;`. Exclusive with `sql_file`. |
+| `sql_file` | `""` | Path to `.sql` file in repo. Sent as one statement. Exclusive with `sql`. |
+| `commit` | `false` | `true` to persist writes; otherwise transaction rolls back. |
+| `issue_number` | `""` | Issue # to post summary comment to. Empty → falls back to `vars.DB_QUERY_TRACKING_ISSUE`, then to artifact-only. |
+| `statement_timeout_seconds` | `120` | Per-statement Postgres `statement_timeout`. |
+
+If you create a single tracking issue once and set the repo variable
+`DB_QUERY_TRACKING_ISSUE` to its number (`gh variable set
+DB_QUERY_TRACKING_ISSUE -b <num>`), every dispatch posts there by default
+without needing `issue_number=` each time.
+
+#### Limits
+
+- **Statement timeout**: 120 s default (override with
+  `statement_timeout_seconds`).
+- **Row cap**: 50,000 per statement in the artifact, top 50 in the issue
+  comment. For single-SELECT statements the cap is enforced server-side via
+  subquery wrap (`row_cap_strategy: server_limit`); for multi-statement,
+  non-SELECT, or queries with `FOR UPDATE`/`FOR SHARE`/`SELECT INTO` it's
+  enforced client-side via `fetchmany(50001)` (`row_cap_strategy:
+  client_fetchmany`). The latter is slower for huge result sets but the
+  timeout caps wall-time.
+- **Issue comment**: 60 KB hard truncation (GitHub's limit is 65 KB);
+  truncated comments link to the artifact.
+- **Concurrency**: all dispatches serialize through one queue (group
+  `db-query`). A read dispatched while a write is in flight waits ~30–60 s
+  for the queue.
+
+#### What not to do
+
+- **Don't paste secrets, API keys, or passwords as SQL string literals** in
+  `inputs.sql`. The `sql` input is recorded in plaintext in the workflow
+  run history and is visible to anyone with **read** access to the repo.
+- **Don't dispatch the workflow N times for N queries.** Batch into
+  multi-statement SQL (`-f sql='SELECT 1; SELECT 2; ...'`) or commit a
+  `.sql` file with the full batch and use `sql_file`. Each dispatch costs
+  30–90 s.
+- **Don't use this for production migrations.** For schema changes,
+  `gcp/schema.sql` + `gcp/apply_schema.py` is the source of truth. This
+  workflow is for ad-hoc inspection and one-off data fixes.
+
+#### Why this exists
+
+Phone-only sessions on Claude Code on the web cannot reach Cloud SQL on any
+port (sandbox blocks all egress except 443). A GH-Actions-mediated query
+workflow is the only path that works without a desktop fallback. The
+runner reuses `gcp/database.py:get_engine()` and the existing
+`CLOUD_SQL_CONNECTION_NAME` / `DB_USER` / `DB_PASS` / `DB_NAME` repo
+secrets. Auth uses a dedicated SA key
+(`CLAUDE_CODE_WEB_GCP_SA_KEY`, distinct from the data-pipeline workflows'
+`GCP_SA_KEY`) so a key compromise here doesn't put scheduled fetchers at
+risk simultaneously.
+
 ### Testing Commands
 ```bash
 # Add project-specific test commands here
