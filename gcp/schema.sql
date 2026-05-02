@@ -1423,6 +1423,37 @@ END $$;
 ALTER TABLE watchlists ALTER COLUMN in_brief   SET DEFAULT FALSE;
 ALTER TABLE watchlists ALTER COLUMN in_insight SET DEFAULT FALSE;
 
+-- ── signals: live signal-monitor watchlist source-of-truth ───────────
+-- The live signal monitor (gcp/signal_monitor.py) used to read its
+-- ticker list from alert_config.json — a static config file. This
+-- column promotes the live watchlist to the same DB-backed shape as
+-- in_brief and in_insight: query rows where signals = TRUE AND
+-- removed_at IS NULL, and that's the live monitor's universe.
+--
+-- Initial population (idempotent, only runs if no rows are TRUE):
+-- IWM, QQQ, SPY get signals=TRUE — the historical alert_config.json
+-- watchlist's three core tickers, matching in_brief/in_insight.
+-- Re-runs of apply-schema-migrations don't clobber subsequent user
+-- toggles because the gate "no rows currently TRUE" only matches on
+-- a fresh migration.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'watchlists' AND column_name = 'signals'
+    ) THEN
+        ALTER TABLE watchlists
+            ADD COLUMN signals BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM watchlists WHERE signals = TRUE) THEN
+        UPDATE watchlists
+           SET signals = TRUE
+         WHERE ticker IN ('IWM', 'QQQ', 'SPY')
+           AND removed_at IS NULL;
+    END IF;
+END $$;
+
 
 -- ─────────────────────────────────────────────────────────
 -- TICKER CALIBRATION (Phase 0.6)

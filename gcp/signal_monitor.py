@@ -56,22 +56,86 @@ class SignalMonitor:
         self.webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
         self.av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
-        tickers = self.market_cfg.tickers
+        # Resolve live signal-monitor watchlist:
+        # 1. Cloud SQL `watchlists` table where signals = TRUE AND
+        #    removed_at IS NULL — production source of truth, parity
+        #    with the in_brief / in_insight pattern.
+        # 2. Falls back to alert_config.json's "watchlist" list when
+        #    Cloud SQL isn't configured (local dev / pre-migration) or
+        #    when the DB query returns zero rows.
+        self.tickers = self._resolve_watchlist()
+
         # Rolling data windows per ticker
-        self.windows: dict = {t: pd.DataFrame() for t in tickers}
-        self.daily_trades: dict = {t: 0 for t in tickers}
-        self.daily_pnl: dict = {t: 0.0 for t in tickers}
-        self.active_positions: dict = {t: None for t in tickers}
-        self.orb_levels: dict = {t: {} for t in tickers}
+        self.windows: dict = {t: pd.DataFrame() for t in self.tickers}
+        self.daily_trades: dict = {t: 0 for t in self.tickers}
+        self.daily_pnl: dict = {t: 0.0 for t in self.tickers}
+        self.active_positions: dict = {t: None for t in self.tickers}
+        self.orb_levels: dict = {t: {} for t in self.tickers}
 
         # Strat level map per ticker, refreshed each loop iteration. Used to
         # detect level breaks (PDH, PDL, PWH, PWL, ...) once per crossing.
-        self.level_maps: dict = {t: None for t in tickers}
+        self.level_maps: dict = {t: None for t in self.tickers}
         # Last seen price per ticker, for crossing detection. Avoids firing
         # the same level-break alert on every tick after the break.
-        self.last_prices: dict = {t: None for t in tickers}
+        self.last_prices: dict = {t: None for t in self.tickers}
         # Set of (ticker, level_name) that have already fired today.
         self.fired_breaks: set = set()
+
+    def _resolve_watchlist(self) -> list[str]:
+        """Return the active live-signal-monitor watchlist.
+
+        Source of truth: `watchlists.signals = TRUE AND removed_at IS NULL`.
+        This matches the existing in_brief / in_insight pattern so
+        per-surface watchlists are managed in one place (the table)
+        rather than split between DB + a static config file.
+
+        Falls back to `alert_config.json`'s `watchlist` list when:
+          * Cloud SQL is not configured (local dev shell), OR
+          * the DB query raises (transient connection issue), OR
+          * the DB query returns zero matching rows (e.g. immediately
+            after the column was added but before population).
+
+        Single startup-time query — not per-cycle. A toggle to a
+        ticker's `signals` flag mid-session requires a monitor
+        restart to take effect (matches prior alert_config.json
+        behavior).
+        """
+        try:
+            from gcp.database import is_cloud_sql_configured, get_engine
+            from sqlalchemy import text
+        except ImportError:
+            logger.info("watchlist source: alert_config.json (DB libs not importable)")
+            return list(self.market_cfg.tickers)
+
+        if not is_cloud_sql_configured():
+            logger.info("watchlist source: alert_config.json (Cloud SQL not configured)")
+            return list(self.market_cfg.tickers)
+
+        try:
+            engine = get_engine()
+            with engine.connect() as conn:
+                rows = conn.execute(text("""
+                    SELECT DISTINCT ticker FROM watchlists
+                     WHERE signals = TRUE AND removed_at IS NULL
+                     ORDER BY ticker
+                """)).fetchall()
+            tickers = [r[0] for r in rows]
+            if tickers:
+                logger.info(
+                    "watchlist source: watchlists.signals=TRUE — %d tickers: %s",
+                    len(tickers), ", ".join(tickers),
+                )
+                return tickers
+            logger.warning(
+                "watchlist: no rows with signals=TRUE in watchlists; "
+                "falling back to alert_config.json (%s)",
+                self.market_cfg.tickers,
+            )
+        except Exception as e:
+            logger.warning(
+                "watchlist: DB query failed (%s); falling back to alert_config.json", e,
+            )
+        return list(self.market_cfg.tickers)
 
     def is_market_hours(self) -> bool:
         now = datetime.now()
@@ -533,7 +597,7 @@ class SignalMonitor:
 
     def run_loop(self):
         """Main market-hours loop."""
-        tickers = self.market_cfg.tickers
+        tickers = self.tickers
         poll_interval = self.monitor_cfg.poll_interval
 
         print("Signal Monitor started")
@@ -572,7 +636,7 @@ def run_orb_snapshot(window: str) -> int:
         return 2
 
     monitor = SignalMonitor()
-    for ticker in monitor.market_cfg.tickers:
+    for ticker in monitor.tickers:
         df = monitor.fetch_latest_bar(ticker)
         if df.empty:
             logger.warning("No intraday data for %s", ticker)
