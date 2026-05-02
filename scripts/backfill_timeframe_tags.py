@@ -68,6 +68,7 @@ def fetch_rows_to_backfill(
                h.entry_time,
                h.strategy,
                h.signal_strength,
+               h.entry_rsi,
                m.atr_5m_pct
           FROM historical_signals h
           LEFT JOIN signal_metrics m
@@ -96,10 +97,14 @@ def apply_tags(df: pd.DataFrame) -> pd.DataFrame:
         atr = row.get("atr_5m_pct")
         if atr is not None and pd.isna(atr):
             atr = None
+        rsi = row.get("entry_rsi")
+        if rsi is not None and pd.isna(rsi):
+            rsi = None
         tag, hold = assign_timeframe_for_backfill(
             strategy=row.get("strategy"),
             signal_strength=int(row.get("signal_strength") or 0),
             atr_5m_pct=float(atr) if atr is not None else None,
+            entry_rsi=float(rsi) if rsi is not None else None,
         )
         tags.append(tag)
         holds.append(hold)
