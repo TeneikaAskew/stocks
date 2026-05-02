@@ -116,37 +116,56 @@ def apply_tags(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def upsert_chunk(engine, chunk: pd.DataFrame) -> int:
-    """Bulk UPDATE one chunk via multi-row VALUES → table CTE pattern.
+    """Bulk UPDATE one chunk via multi-row VALUES + JOIN.
 
-    Same shape as gcp.historical_signals.bulk_insert: builds a single
-    multi-row INSERT into a temp values table, then UPDATE ... FROM
-    so the entire chunk is one network round-trip.
+    Issues a single network round-trip per chunk via UPDATE...FROM.
+
+    Type-binding subtlety (pg8000 / SQLAlchemy):
+      Without explicit bindparam types, pg8000 sends every parameter
+      as text. The VALUES clause then infers a `text` column type
+      for entry_time, and the JOIN against historical_signals.entry_time
+      (TIMESTAMPTZ) fails with:
+          operator does not exist: timestamp with time zone = text
+
+      Adding `CAST(:e0 AS timestamptz)` in the SQL doesn't fix it
+      because pg8000's prepared-statement type inference happens
+      BEFORE the CAST is parsed. Casting on the alias side
+      (`v.entry_time::timestamptz`) confuses SQLAlchemy's
+      named-parameter rewriter.
+
+      The actual fix: use SQLAlchemy `bindparam(name, type_=...)`
+      to declare each parameter's type. SQLAlchemy then tells pg8000
+      to send the value with the right OID, and Postgres infers the
+      VALUES column type correctly. Verified working against Cloud
+      SQL with native datetime objects.
     """
     if chunk.empty:
         return 0
-    from sqlalchemy import text
+    from sqlalchemy import text, bindparam
+    from sqlalchemy.types import TIMESTAMP, String, Integer
 
     rows = chunk.to_dict(orient="records")
     value_tuples: list[str] = []
+    bind_specs: list = []
     params: dict = {}
     for i, r in enumerate(rows):
-        params[f"t{i}"]  = r["ticker"]
-        # pg8000 sends pandas Timestamp objects as text and Postgres
-        # then can't infer timestamptz even with a CAST in the query.
-        # Convert to ISO 8601 string so the CAST has clean text input.
+        # Native datetime — Pandas Timestamp inherits from datetime,
+        # so SQLAlchemy's TIMESTAMP type sends it as a real timestamp.
         et = r["entry_time"]
-        params[f"e{i}"]  = et.isoformat() if hasattr(et, "isoformat") else str(et)
+        params[f"t{i}"]  = r["ticker"]
+        params[f"e{i}"]  = et
         params[f"s{i}"]  = r["strategy"]
         params[f"tf{i}"] = r["timeframe_tag"]
         params[f"hm{i}"] = r["expected_hold_min"]
-        # CAST(... AS timestamptz) instead of ::timestamptz: SQLAlchemy's
-        # parameter rewriter for pg8000 stops at named-param boundaries,
-        # and the `::` immediately after `:e0` (no space) confuses it
-        # into emitting `:e0::timestamptz` literally instead of
-        # rewriting to `%s::timestamptz`. The CAST() syntax has clean
-        # whitespace boundaries so the rewriter handles it.
+        bind_specs.extend([
+            bindparam(f"t{i}",  type_=String()),
+            bindparam(f"e{i}",  type_=TIMESTAMP(timezone=True)),
+            bindparam(f"s{i}",  type_=String()),
+            bindparam(f"tf{i}", type_=String()),
+            bindparam(f"hm{i}", type_=Integer()),
+        ])
         value_tuples.append(
-            f"(:t{i}, CAST(:e{i} AS timestamptz), :s{i}, :tf{i}, :hm{i})"
+            f"(:t{i}, :e{i}, :s{i}, :tf{i}, :hm{i})"
         )
 
     sql = text(f"""
@@ -158,7 +177,8 @@ def upsert_chunk(engine, chunk: pd.DataFrame) -> int:
          WHERE h.ticker = v.ticker
            AND h.entry_time = v.entry_time
            AND h.strategy = v.strategy
-    """)
+    """).bindparams(*bind_specs)
+
     with engine.begin() as conn:
         result = conn.execute(sql, params)
     return result.rowcount or 0
