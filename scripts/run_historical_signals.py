@@ -175,7 +175,14 @@ def resolve_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
 
 def map_signals_to_table(signals_df: pd.DataFrame, ticker: str,
                           strategy: str = 'momentum') -> pd.DataFrame:
-    """Reshape MarketAnalyzer output into the historical_signals schema."""
+    """Reshape MarketAnalyzer output into the historical_signals schema.
+
+    Phase 1: also populates timeframe_tag + expected_hold_min via the
+    approximate `assign_timeframe_for_backfill` helper, since this
+    layer has access to strategy + signal_strength but NOT RVOL or
+    ATR at the per-signal level. Same limitation as the backfill
+    script — see lib/strategies/timeframe.py for the full doc.
+    """
     if signals_df.empty:
         return signals_df
 
@@ -191,6 +198,26 @@ def map_signals_to_table(signals_df: pd.DataFrame, ticker: str,
     if 'entry_volume' in out.columns:
         # Cast NaN-tolerant int — keep nullable
         out['entry_volume'] = out['entry_volume'].astype('Int64')
+
+    # Phase 1: timeframe tagging on every research-pipeline row.
+    # We don't have ATR at this layer (signals_df is post-MarketAnalyzer,
+    # no per-row ATR snapshot), so the approximate helper tier-defaults
+    # from strategy + signal_strength.
+    from lib.strategies.timeframe import assign_timeframe_for_backfill
+    if 'signal_strength' in out.columns:
+        tags_holds = [
+            assign_timeframe_for_backfill(
+                strategy=strategy,
+                signal_strength=int(ss) if pd.notna(ss) else None,
+                atr_5m_pct=None,
+            )
+            for ss in out['signal_strength']
+        ]
+        out['timeframe_tag'] = [t for t, _ in tags_holds]
+        out['expected_hold_min'] = [h for _, h in tags_holds]
+    else:
+        out['timeframe_tag'] = None
+        out['expected_hold_min'] = None
 
     # Bundle every "extra" column into the JSONB blob
     extra_cols = [c for c in signals_df.columns if c.startswith(EXTRA_PREFIXES)]

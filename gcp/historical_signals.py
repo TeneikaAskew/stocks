@@ -54,6 +54,12 @@ COLS = (
     'entry_vwap',
     'entry_volume',
     'extra',
+    # Phase 1: research-pipeline rows are tagged via
+    # scripts/run_historical_signals.py:map_signals_to_table at
+    # write-time. NULL tolerated for rows produced before this
+    # column flowed through (covered by the backfill script).
+    'timeframe_tag',
+    'expected_hold_min',
 )
 
 
