@@ -268,3 +268,60 @@ def test_predict_with_placeholder_uses_live_heuristic_branches():
     assert predict_with_placeholder({
         "strategy": "mean_reversion", "signal_strength": 3, "atr_5m_pct": 0.0005,
     }) == "30m"
+
+
+# ── 9) build_lookup_table — alternative targets ────────────────────────
+
+def test_build_lookup_max_clean_rate_picks_tf_with_highest_clean_rate():
+    """In one bucket, 5m is clean 1/3 times but 30m is clean 3/3.
+    max_clean_rate target must pick 30m, not 5m."""
+    df = _make_train_df([
+        # Three rows in same bucket, varying clean-rate per TF
+        {"strategy": "momentum", "signal_strength": 4,
+         "atr_5m_pct": 0.002, "entry_rsi": 50.0, "best_tf": "5m",
+         "cls_5m": "CLEAN_HIT", "cls_15m": "CLEAN_HIT", "cls_30m": "CLEAN_HIT",
+         "cls_60m": None, "cls_90m": None, "cls_120m": None, "cls_240m": None},
+        {"strategy": "momentum", "signal_strength": 4,
+         "atr_5m_pct": 0.002, "entry_rsi": 50.0, "best_tf": "30m",
+         "cls_5m": "WRONG_DIRECTION", "cls_15m": "CLEAN_HIT", "cls_30m": "CLEAN_HIT",
+         "cls_60m": None, "cls_90m": None, "cls_120m": None, "cls_240m": None},
+        {"strategy": "momentum", "signal_strength": 4,
+         "atr_5m_pct": 0.002, "entry_rsi": 50.0, "best_tf": "30m",
+         "cls_5m": "NOISE", "cls_15m": "CLEAN_HIT", "cls_30m": "CLEAN_HIT",
+         "cls_60m": None, "cls_90m": None, "cls_120m": None, "cls_240m": None},
+    ])
+    lookup = build_lookup_table(df, target="max_clean_rate")
+    bucket = make_bucket(df.iloc[0].to_dict())
+    # 5m: 1/3 clean = 33%; 15m: 3/3 = 100%; 30m: 3/3 = 100%
+    # Tie at 100% → first one encountered in VALID_TFS order: 15m
+    assert lookup[bucket] in ("15m", "30m")
+
+
+def test_build_lookup_max_clean_rate_min_15m_excludes_5m():
+    """Even when 5m has the highest clean-rate, the min_15m target
+    excludes it from the candidate set."""
+    df = _make_train_df([
+        {"strategy": "momentum", "signal_strength": 4,
+         "atr_5m_pct": 0.002, "entry_rsi": 50.0, "best_tf": "5m",
+         "cls_5m": "CLEAN_HIT", "cls_15m": "WRONG_DIRECTION", "cls_30m": "WRONG_DIRECTION",
+         "cls_60m": "WRONG_DIRECTION", "cls_90m": "WRONG_DIRECTION",
+         "cls_120m": "WRONG_DIRECTION", "cls_240m": "WRONG_DIRECTION"},
+    ])
+    lookup = build_lookup_table(df, target="max_clean_rate_min_15m")
+    bucket = make_bucket(df.iloc[0].to_dict())
+    # 5m would win on raw clean-rate (100%) but is excluded
+    assert lookup[bucket] != "5m"
+    assert lookup[bucket] in VALID_TFS_NON_5M
+
+
+def test_build_lookup_unknown_target_raises():
+    df = _make_train_df([
+        {"strategy": "momentum", "signal_strength": 4,
+         "atr_5m_pct": 0.002, "entry_rsi": 50.0, "best_tf": "30m"},
+    ])
+    import pytest
+    with pytest.raises(ValueError, match="unknown target"):
+        build_lookup_table(df, target="garbage")
+
+
+VALID_TFS_NON_5M = ("15m", "30m", "60m", "90m", "120m", "240m")

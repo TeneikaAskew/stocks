@@ -128,32 +128,74 @@ def make_bucket(row: dict) -> Bucket:
     )
 
 
-def build_lookup_table(train_df: pd.DataFrame) -> dict[Bucket, str]:
-    """Empirical mapping bucket → mode of best_tf on the train set.
+def build_lookup_table(
+    train_df: pd.DataFrame,
+    target: str = "mode_best_tf",
+) -> dict[Bucket, str]:
+    """Empirical mapping bucket → predicted TF on the train set.
 
-    Rows where best_tf is NULL (no timeframe classified CLEAN_HIT) are
-    INCLUDED — they get a special 'none' value. We don't want to drop
-    them because that would bias the heuristic toward predicting clean
-    where the historical truth was "this signal class doesn't work".
+    Three target methodologies:
+
+    * 'mode_best_tf' (DEFAULT, naive): per-bucket mode of best_tf.
+      Found in #218 to underperform the placeholder by 12.6pp because
+      best_tf is biased toward shortest clean TF (5m everywhere).
+
+    * 'max_clean_rate': per-bucket pick the TF that has the highest
+      CLEAN_HIT rate ACROSS ALL ROWS IN THE BUCKET. Methodologically
+      correct: optimizes the metric we evaluate on.
+
+    * 'max_clean_rate_min_15m': same as max_clean_rate but EXCLUDES
+      5m from the candidate set. The 5m bucket has structurally
+      noisy returns and the live monitor's exit logic isn't built
+      around 5m holds. Restricting to 15m+ floors the predictions
+      at a tradeable horizon.
+
+    Rows where best_tf is NULL (no timeframe classified CLEAN_HIT)
+    naturally have low cls_<tf> across all timeframes — the
+    max_clean_rate target picks the LEAST BAD tf for those buckets.
     """
     lookup: dict[Bucket, str] = {}
     train = train_df.copy()
-    train["_target"] = train["best_tf"].fillna("none")
     train["_bucket"] = train.apply(lambda r: make_bucket(r.to_dict()), axis=1)
 
-    # sort=False because Bucket isn't ordered; pandas would otherwise
-    # try to sort the group keys and fail with TypeError on '<'.
-    for bucket, group in train.groupby("_bucket", sort=False):
-        # Use the most common best_tf in this bucket. If "none" is the
-        # mode it means historically this signal class rarely classified
-        # clean — the heuristic should still pick A timeframe (the live
-        # monitor needs SOMETHING), so fall back to second-most-common.
-        counts = Counter(group["_target"])
-        ranked = [tf for tf, _ in counts.most_common() if tf != "none"]
-        chosen = ranked[0] if ranked else "30m"
-        lookup[bucket] = chosen
+    if target == "mode_best_tf":
+        train["_mode_target"] = train["best_tf"].fillna("none")
+        for bucket, group in train.groupby("_bucket", sort=False):
+            counts = Counter(group["_mode_target"])
+            ranked = [tf for tf, _ in counts.most_common() if tf != "none"]
+            lookup[bucket] = ranked[0] if ranked else "30m"
+        return lookup
 
-    return lookup
+    if target in ("max_clean_rate", "max_clean_rate_min_15m"):
+        candidate_tfs = (
+            VALID_TFS if target == "max_clean_rate"
+            else tuple(t for t in VALID_TFS if t != "5m")
+        )
+        for bucket, group in train.groupby("_bucket", sort=False):
+            best_tf_pick = "30m"
+            best_rate = -1.0
+            for tf in candidate_tfs:
+                col = f"cls_{tf}"
+                if col not in group.columns:
+                    continue
+                # Exclude INSUFFICIENT_DATA from the denominator —
+                # consistent with how evaluate_predictions scores
+                eligible = group[col].notna() & (group[col] != "INSUFFICIENT_DATA")
+                n = int(eligible.sum())
+                if n == 0:
+                    continue
+                clean = int((group.loc[eligible, col] == "CLEAN_HIT").sum())
+                rate = clean / n
+                if rate > best_rate:
+                    best_rate = rate
+                    best_tf_pick = tf
+            lookup[bucket] = best_tf_pick
+        return lookup
+
+    raise ValueError(
+        f"unknown target {target!r}; expected one of "
+        "{'mode_best_tf', 'max_clean_rate', 'max_clean_rate_min_15m'}"
+    )
 
 
 def predict_with_lookup(row: dict, lookup: dict[Bucket, str],
@@ -275,6 +317,17 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                    help="Filter to one strategy (default: both)")
     p.add_argument("--top-buckets", type=int, default=20,
                    help="How many of the most-populated buckets to print (default 20)")
+    p.add_argument(
+        "--target", default="mode_best_tf",
+        choices=("mode_best_tf", "max_clean_rate", "max_clean_rate_min_15m"),
+        help=(
+            "Lookup-table target methodology: "
+            "'mode_best_tf' (per-bucket mode of best_tf — naive, biased to 5m), "
+            "'max_clean_rate' (per-bucket pick TF with highest clean-hit rate), "
+            "'max_clean_rate_min_15m' (same but excludes 5m to floor at "
+            "tradeable horizon). Default is mode_best_tf for backward compat."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -352,7 +405,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     train, holdout = split_train_holdout(df, args.holdout_pct, args.seed)
     logger.info("train=%d holdout=%d", len(train), len(holdout))
 
-    lookup = build_lookup_table(train)
+    logger.info("building lookup with target=%s", args.target)
+    lookup = build_lookup_table(train, target=args.target)
     print_lookup_table(lookup, train, limit=args.top_buckets)
 
     # Predict + evaluate
