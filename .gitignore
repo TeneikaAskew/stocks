@@ -124,3 +124,8 @@ reports/
 
 # Local Claude scheduler state
 .claude/scheduled_tasks.lock
+
+# GCP inventory dumps (local only, not for commit)
+gcp_inventory.json
+gcp_iam.json
+gcp_schedulers.json
