@@ -9,7 +9,7 @@ codebase — every tunable value flows from these config objects.
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +233,42 @@ class ExitConfig:
 
 
 # ---------------------------------------------------------------------------
+# Catalyst proximity score weighting (Phase 1.5)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ProximityConfig:
+    """Score multipliers per proximity_bucket.
+
+    Applied at fire time to total_score so signals fired *during* a
+    catalyst window get de-weighted (8-10pp empirically worse) and
+    signals fired in the *next_day* window after a catalyst get
+    amplified (3pp better).
+
+    Defaults are the universal-tier (Tier B) values derived from the
+    Apr 1-28 holdout chi-squared validation. Per-ticker overrides
+    (Tier A) live in the ticker_calibration table — not yet wired;
+    until then every ticker gets these defaults.
+    """
+    multipliers: Dict[str, float] = field(default_factory=lambda: {
+        'imminent': 0.95,
+        'pre':      1.00,
+        'during':   0.75,
+        'post':     0.85,
+        'next_day': 1.10,
+        'quiet':    1.00,
+    })
+
+    def get(self, bucket: Optional[str]) -> float:
+        """Return multiplier for a bucket, or 1.0 (no-op) for None /
+        unrecognized values. NULL-safe so a fresh DB row with no
+        proximity_bucket set still scores normally."""
+        if not bucket:
+            return 1.0
+        return self.multipliers.get(bucket, 1.0)
+
+
+# ---------------------------------------------------------------------------
 # Strat integration
 # ---------------------------------------------------------------------------
 
@@ -346,6 +382,7 @@ class AppConfig:
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     walk_forward: WalkForwardConfig = field(default_factory=WalkForwardConfig)
+    proximity: ProximityConfig = field(default_factory=ProximityConfig)
 
     def validate(self) -> None:
         """Run range checks on all config values. Raises ConfigValidationError."""
@@ -395,6 +432,12 @@ class AppConfig:
         # Strat
         if not (0.0 <= self.strat.ftfc_threshold <= 1.0):
             errors.append(f"strat.ftfc_threshold={self.strat.ftfc_threshold}, expected [0, 1]")
+
+        # Proximity multipliers — clamp to [0.1, 2.0]; outside this
+        # range strongly suggests a config error (e.g. signed or %-vs-decimal).
+        for bucket, mult in self.proximity.multipliers.items():
+            if not (0.1 <= mult <= 2.0):
+                errors.append(f"proximity.multipliers[{bucket}]={mult}, expected [0.1, 2.0]")
 
         if errors:
             raise ConfigValidationError(
@@ -584,6 +627,20 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
         app.strat.orb_filter_enabled = strat_data.get('orb_filter_enabled', app.strat.orb_filter_enabled)
         app.strat.timeframes = strat_data.get('timeframes', app.strat.timeframes)
         app.strat.ftfc_weights = strat_data.get('ftfc_weights', app.strat.ftfc_weights)
+
+    # --- Proximity multipliers (Phase 1.5) ---
+    pm_data = data.get('proximity_multipliers', {})
+    if pm_data:
+        # Skip the _doc string field and any other non-numeric keys.
+        merged = dict(app.proximity.multipliers)
+        for k, v in pm_data.items():
+            if k.startswith('_'):
+                continue
+            try:
+                merged[k] = float(v)
+            except (TypeError, ValueError):
+                continue
+        app.proximity.multipliers = merged
 
     # --- Indicator config ---
     ind_data = data.get('indicators', {})
