@@ -44,6 +44,15 @@ def _rsi_col_name() -> str:
 
 
 def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
+    """Phase 0.7.1: dropped `stoch_rsi_not_overbought`.
+
+    Per the §3.10 strategy audit (273 morning bars, 5/1):
+    `stoch_rsi_not_overbought` (StochRSI_K < 80) fired on 72.2% of bars
+    — pure free score that didn't discriminate setup quality. Removing
+    it tightens the score distribution: previously a bar with NO real
+    momentum could score 3/5 just from above_vwap + above_ema9 + the
+    free StochRSI condition. Now those bars score 2/4 and don't fire.
+    """
     score = 0
     conditions: list[str] = []
 
@@ -55,10 +64,6 @@ def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
     if CALL_RSI_RANGE[0] < rsi < CALL_RSI_RANGE[1]:
         score += 1
         conditions.append("rsi_bullish_recovery")
-
-    if row.get("StochRSI_K", 50.0) < STOCH_RSI_OVERBOUGHT:
-        score += 1
-        conditions.append("stoch_rsi_not_overbought")
 
     last = row.get("Close", row.get("Last", 0.0))
     vwap = row.get("VWAP", last)
@@ -75,6 +80,7 @@ def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
 
 
 def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
+    """Phase 0.7.1 mirror: dropped `stoch_rsi_not_oversold` (free score)."""
     score = 0
     conditions: list[str] = []
 
@@ -86,10 +92,6 @@ def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
     if PUT_RSI_RANGE[0] < rsi < PUT_RSI_RANGE[1]:
         score += 1
         conditions.append("rsi_bearish_recovery")
-
-    if row.get("StochRSI_K", 50.0) > STOCH_RSI_OVERSOLD:
-        score += 1
-        conditions.append("stoch_rsi_not_oversold")
 
     last = row.get("Close", row.get("Last", 0.0))
     vwap = row.get("VWAP", last)

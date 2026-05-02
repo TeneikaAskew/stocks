@@ -51,6 +51,15 @@ def _ema_mid_col() -> str:
 
 
 def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
+    """Phase 0.7.2: dropped `near_below_emas`.
+
+    Per the §3.10 strategy audit: `near_below_emas` (EMA proximity ≤ 0.1)
+    fired on 84.6% of bars — the same "free score" pathology momentum
+    had with stoch_rsi_not_overbought. Removing it tightens score
+    distribution: bars in the meandering middle of the EMA stack no
+    longer get a free contribution to score on top of their other
+    conditions.
+    """
     score = 0
     conditions: list[str] = []
 
@@ -67,12 +76,6 @@ def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
         score += 1
         conditions.append("below_vwap")
 
-    pf = row.get(_ema_fast_col(), 0.0)
-    pm = row.get(_ema_mid_col(),  0.0)
-    if pf < EMA_PROXIMITY or pm < EMA_PROXIMITY:
-        score += 1
-        conditions.append("near_below_emas")
-
     if row.get("StochRSI_K", 50.0) < STOCH_RSI_OVERSOLD:
         score += 1
         conditions.append("stoch_rsi_oversold")
@@ -85,6 +88,7 @@ def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
 
 
 def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
+    """Phase 0.7.2 mirror: dropped `near_above_emas` (free score)."""
     score = 0
     conditions: list[str] = []
 
@@ -100,12 +104,6 @@ def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
     if row.get("Price_vs_VWAP", 0.0) > 0:
         score += 1
         conditions.append("above_vwap")
-
-    pf = row.get(_ema_fast_col(), 0.0)
-    pm = row.get(_ema_mid_col(),  0.0)
-    if pf > -EMA_PROXIMITY or pm > -EMA_PROXIMITY:
-        score += 1
-        conditions.append("near_above_emas")
 
     if row.get("StochRSI_K", 50.0) > STOCH_RSI_OVERBOUGHT:
         score += 1

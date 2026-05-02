@@ -80,20 +80,25 @@ def test_put_fires_when_dominant():
 
 def test_strict_tie_breaker_no_fire_when_call_eq_put():
     """Original lib/trading_analysis.py uses STRICT > for tie-breaking.
-    A bar where call_score == put_score must NOT fire."""
-    # Set up a row where 3 CALL + 3 PUT conditions hold simultaneously.
-    # (Possible because they can both check generic conditions like
-    # StochRSI_K vs different thresholds.)
+    A bar where call_score == put_score must NOT fire.
+
+    Phase 0.7.1: dropped `stoch_rsi_not_overbought` (free score). The
+    fixture now needs above_vwap / above_ema9 to reach 3 CALL conditions
+    instead of relying on the dropped stoch contribution.
+    """
     row = _bar(
-        # CALL: Consec_Up=3, RSI 35, stoch_not_overbought
+        # CALL conditions (3): Consec_Up, RSI in bull band, above_vwap
         Consecutive_Up=3,
         RSI14_W=35.0,                            # in CALL band (25, 50)
-        StochRSI_K=50.0,                         # < 80 = call's stoch_not_ob; > 20 = put's stoch_not_os
-        # PUT: Consec_Down=3 (also true)
+        Close=101.0, Last=101.0,
+        VWAP=100.0,                               # price > VWAP → above_vwap fires
+        EMA9=102.0,                               # price < EMA9 → above_ema9 doesn't fire
+        # PUT conditions: Consec_Down only (RSI 35 NOT in put band, price
+        # > VWAP rules out below_vwap, price < EMA9 rules out below_ema9)
         Consecutive_Down=3,
     )
-    # call_n: Consec_Up + rsi_bullish + stoch_not_ob = 3
-    # put_n:  Consec_Down + stoch_not_os = 2 (RSI 35 NOT in put band)
+    # call_n: consec_up + rsi_bullish_recovery + above_vwap = 3
+    # put_n:  consec_down + below_ema9 = 2
     # call > put → fires CALL
     sig = STRAT.evaluate(row)
     assert sig is not None
