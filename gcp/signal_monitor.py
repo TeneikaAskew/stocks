@@ -29,7 +29,7 @@ from lib.strat import StratClassifier
 from lib.strat_levels import LevelMap, build_level_map
 from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
-from lib.strategies.agreement import detect_agreement
+from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
 from lib.strategies.base import Signal
 from lib.strategies.timeframe import assign_timeframe
 from lib.strategies.catalyst_proximity import get_catalyst_context
@@ -441,7 +441,15 @@ class SignalMonitor:
 
         prox_bucket = self._latest_proximity.get('proximity_bucket')
         prox_mult = self.proximity_cfg.get(prox_bucket)
-        raw_score = sig['base_score'] + strat_bonus
+        # Phase 1.6: agreement bonus flows into total_score so a stacked
+        # fire actually gets a larger position size (not just a prettier
+        # Discord embed). Order: raw_score includes strat + agreement
+        # bonuses; proximity multiplier moderates the whole thing — so a
+        # stacked fire during an FOMC window still gets de-weighted, but
+        # a stacked fire in quiet hours sizes up to the next strength
+        # tier.
+        agreement_bonus = AGREEMENT_BONUS if agreement else 0.0
+        raw_score = sig['base_score'] + strat_bonus + agreement_bonus
         total_score = raw_score * prox_mult
         self._latest_proximity_mult = prox_mult
         self._latest_raw_score = raw_score
