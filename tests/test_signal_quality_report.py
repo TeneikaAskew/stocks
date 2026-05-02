@@ -20,6 +20,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -31,14 +32,19 @@ if str(_REPO) not in sys.path:
 
 from scripts.signal_quality_report import (  # noqa: E402
     CLEAN_THRESHOLD,
+    EXTENDED_TFS_MIN,
     NOISE_THRESHOLD,
+    _resolve_window,
+    _slice_intraday,
     best_clean_timeframe,
     classify,
     compute_atr_pct,
     compute_metrics_for_signal,
     determine_status,
     extend_returns_from_intraday,
+    main,
     parse_args,
+    process_ticker_batch,
 )
 
 
@@ -346,3 +352,235 @@ def test_parse_args_strategy_default_all():
 def test_parse_args_rejects_unknown_mode():
     with pytest.raises(SystemExit):
         parse_args(["--mode", "garbage"])
+
+
+def test_parse_args_accepts_lookback_days():
+    args = parse_args(["--mode", "historical", "--lookback-days", "2"])
+    assert args.mode == "historical"
+    assert args.lookback_days == 2
+
+
+# ── _resolve_window: CLI → datetime window translation ────────────────
+
+def test_resolve_window_rolling_uses_lookback_hours():
+    args = parse_args(["--mode", "rolling", "--lookback-hours", "6"])
+    start, end = _resolve_window(args)
+    assert (end - start) == timedelta(hours=6)
+
+
+def test_resolve_window_historical_with_explicit_dates():
+    args = parse_args(["--mode", "historical", "--start", "2026-04-01", "--end", "2026-05-01"])
+    start, end = _resolve_window(args)
+    assert start == datetime(2026, 4, 1, tzinfo=timezone.utc)
+    assert end == datetime(2026, 5, 1, tzinfo=timezone.utc)
+
+
+def test_resolve_window_historical_with_lookback_days():
+    args = parse_args(["--mode", "historical", "--lookback-days", "7"])
+    start, end = _resolve_window(args)
+    assert (end - start) == timedelta(days=7)
+
+
+def test_resolve_window_historical_without_dates_or_lookback_raises():
+    """The bug that caused the nightly scheduler to fail with exit 2:
+    historical mode with no --start/--end and no --lookback-days."""
+    args = parse_args(["--mode", "historical"])
+    with pytest.raises(ValueError, match="lookback-days"):
+        _resolve_window(args)
+
+
+# ── _slice_intraday: in-memory window cut for one signal ──────────────
+
+def test_slice_intraday_forward_includes_entry_minute_through_max_tf():
+    entry = pd.Timestamp("2026-04-29 14:30:00", tz="UTC")
+    full = _make_synthetic_intraday(entry - timedelta(minutes=120), bars=400)
+    forward, lookback = _slice_intraday(full, entry)
+    assert forward["Time"].min() == entry
+    # Forward window is entry through entry + max_tf (240m) + 5m headroom
+    assert forward["Time"].max() <= entry + timedelta(minutes=max(EXTENDED_TFS_MIN) + 5)
+
+
+def test_slice_intraday_lookback_excludes_entry_minute():
+    entry = pd.Timestamp("2026-04-29 14:30:00", tz="UTC")
+    full = _make_synthetic_intraday(entry - timedelta(minutes=120), bars=200)
+    forward, lookback = _slice_intraday(full, entry)
+    # Lookback is [entry-120m, entry) — entry is NOT included in lookback
+    assert lookback["Time"].max() < entry
+    # Forward starts AT entry
+    assert forward["Time"].min() == entry
+
+
+def test_slice_intraday_handles_entries_at_window_edge():
+    """If entry_t is at the very end of the cached DataFrame, forward
+    is empty (no future bars yet) but lookback should still be intact."""
+    entry = pd.Timestamp("2026-04-29 14:30:00", tz="UTC")
+    full = _make_synthetic_intraday(entry - timedelta(minutes=60), bars=61)  # ends at entry
+    forward, lookback = _slice_intraday(full, entry)
+    assert len(forward) == 1   # just the entry-minute bar
+    assert not lookback.empty
+
+
+# ── process_ticker_batch: per-ticker batched processing ───────────────
+
+def _three_signals_for_ticker(ticker: str, base_time: pd.Timestamp) -> pd.DataFrame:
+    """Three CALL signals 30 minutes apart for one ticker."""
+    return pd.DataFrame([
+        {
+            "ticker": ticker, "entry_time": base_time + timedelta(minutes=30 * i),
+            "strategy": "momentum", "trade_type": "CALL", "entry_price": 100.0,
+            "return_5min": 0.001, "return_15min": 0.002,
+            "return_30min": 0.005, "return_60min": 0.008,
+        }
+        for i in range(3)
+    ])
+
+
+def test_process_ticker_batch_makes_one_intraday_fetch_per_ticker():
+    """The whole point of the refactor: N signals for the same ticker
+    must trigger exactly ONE call to fetch_intraday_window — not N."""
+    base = pd.Timestamp("2026-04-29 14:30:00", tz="UTC")
+    group = _three_signals_for_ticker("SPY", base)
+    # Cache covers earliest_entry-120m to latest_entry+max_tf+5m
+    cache = _make_synthetic_intraday(base - timedelta(minutes=120), bars=600)
+
+    fetch_calls: list[dict] = []
+    def _capture(_engine, ticker, start, end):
+        fetch_calls.append({"ticker": ticker, "start": start, "end": end})
+        return cache
+
+    with patch("scripts.signal_quality_report.fetch_intraday_window",
+                side_effect=_capture), \
+         patch("scripts.signal_quality_report.upsert_signal_metrics",
+                return_value=3):
+        processed, upserted, _ = process_ticker_batch(
+            engine=object(), ticker="SPY", group=group,
+            mode="historical", dry_run=False,
+        )
+
+    assert processed == 3
+    assert upserted == 3
+    assert len(fetch_calls) == 1, (
+        f"expected ONE fetch_intraday_window call per ticker, got {len(fetch_calls)}"
+    )
+    # The single fetch must cover ALL signals' windows
+    f = fetch_calls[0]
+    assert f["ticker"] == "SPY"
+    assert f["start"] <= base - timedelta(minutes=120)
+    assert f["end"] >= base + timedelta(minutes=30 * 2 + max(EXTENDED_TFS_MIN))
+
+
+def test_process_ticker_batch_skips_when_no_intraday_bars():
+    """If the intraday fetch returns empty (e.g. ticker not yet ingested),
+    the batch logs and skips — does NOT crash the whole job."""
+    base = pd.Timestamp("2026-04-29 14:30:00", tz="UTC")
+    group = _three_signals_for_ticker("WEIRD", base)
+
+    with patch("scripts.signal_quality_report.fetch_intraday_window",
+                return_value=pd.DataFrame()), \
+         patch("scripts.signal_quality_report.upsert_signal_metrics") as mock_upsert:
+        processed, upserted, counts = process_ticker_batch(
+            engine=object(), ticker="WEIRD", group=group,
+            mode="historical", dry_run=False,
+        )
+
+    assert processed == 3        # we count signals attempted
+    assert upserted == 0          # but nothing got written
+    assert mock_upsert.call_count == 0
+
+
+def test_process_ticker_batch_dry_run_does_not_upsert():
+    base = pd.Timestamp("2026-04-29 14:30:00", tz="UTC")
+    group = _three_signals_for_ticker("SPY", base)
+    cache = _make_synthetic_intraday(base - timedelta(minutes=120), bars=600)
+
+    with patch("scripts.signal_quality_report.fetch_intraday_window",
+                return_value=cache), \
+         patch("scripts.signal_quality_report.upsert_signal_metrics") as mock_upsert:
+        processed, upserted, _ = process_ticker_batch(
+            engine=object(), ticker="SPY", group=group,
+            mode="historical", dry_run=True,
+        )
+
+    assert processed == 3
+    assert upserted == 0
+    assert mock_upsert.call_count == 0
+
+
+def test_process_ticker_batch_empty_group_returns_zeros():
+    processed, upserted, counts = process_ticker_batch(
+        engine=object(), ticker="SPY", group=pd.DataFrame(),
+        mode="historical", dry_run=False,
+    )
+    assert processed == 0
+    assert upserted == 0
+    assert counts == {}
+
+
+# ── main(): end-to-end orchestration with batching ────────────────────
+
+def test_main_batches_one_intraday_fetch_per_ticker():
+    """Acceptance test for the perf fix: 3 tickers × 3 signals = 9 source
+    rows must produce exactly 3 fetch_intraday_window calls — not 9, not 18."""
+    base = pd.Timestamp("2026-04-29 14:30:00", tz="UTC")
+    src = pd.concat([
+        _three_signals_for_ticker("SPY", base),
+        _three_signals_for_ticker("QQQ", base),
+        _three_signals_for_ticker("IWM", base),
+    ], ignore_index=True)
+    cache = _make_synthetic_intraday(base - timedelta(minutes=120), bars=600)
+
+    fetch_calls: list[str] = []
+    def _capture(_engine, ticker, start, end):
+        fetch_calls.append(ticker)
+        return cache
+
+    with patch("scripts.signal_quality_report.get_engine", create=True,
+                return_value=object()), \
+         patch("gcp.database.get_engine", return_value=object()), \
+         patch("scripts.signal_quality_report.fetch_source_rows",
+                return_value=src), \
+         patch("scripts.signal_quality_report.fetch_intraday_window",
+                side_effect=_capture), \
+         patch("scripts.signal_quality_report.upsert_signal_metrics",
+                return_value=3):
+        rc = main([
+            "--mode", "historical",
+            "--start", "2026-04-29", "--end", "2026-04-30",
+            "--skip-freshness-check",
+        ])
+
+    assert rc == 0
+    assert len(fetch_calls) == 3, (
+        f"expected 3 fetches (one per ticker), got {len(fetch_calls)}: {fetch_calls}"
+    )
+    assert sorted(fetch_calls) == ["IWM", "QQQ", "SPY"]
+
+
+def test_main_historical_without_dates_or_lookback_returns_2():
+    """Repro for the nightly scheduler bug: --mode=historical with no
+    window specifier must exit non-zero with a clear error log, not
+    silently drift behavior."""
+    with patch("gcp.database.get_engine", return_value=object()):
+        rc = main(["--mode", "historical"])
+    assert rc == 2
+
+
+def test_main_historical_with_lookback_days_succeeds():
+    """The fix path: nightly scheduler can pass --lookback-days=2."""
+    base = pd.Timestamp("2026-04-29 14:30:00", tz="UTC")
+    src = _three_signals_for_ticker("SPY", base)
+    cache = _make_synthetic_intraday(base - timedelta(minutes=120), bars=600)
+
+    with patch("scripts.signal_quality_report.get_engine", create=True,
+                return_value=object()), \
+         patch("gcp.database.get_engine", return_value=object()), \
+         patch("scripts.signal_quality_report.fetch_source_rows",
+                return_value=src), \
+         patch("scripts.signal_quality_report.fetch_intraday_window",
+                return_value=cache), \
+         patch("scripts.signal_quality_report.upsert_signal_metrics",
+                return_value=3):
+        rc = main(["--mode", "historical", "--lookback-days", "2",
+                   "--skip-freshness-check"])
+
+    assert rc == 0
