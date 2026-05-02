@@ -1,7 +1,7 @@
 name: Monthly architecture doc refresh
 
-# Regenerates ARCHITECTURE.md, DATA_DEPENDENCIES.md, and COST_ANALYSIS.md
-# from live GCP state on the first day of every month.
+# Regenerates ARCHITECTURE.md, DATA_DEPENDENCIES.md, COST_ANALYSIS.md, and
+# README.md from live GCP state on the first day of every month.
 #
 # How it works:
 #   1. Authenticates to GCP via Workload Identity Federation
@@ -167,6 +167,17 @@ jobs:
             --max-turns 40 \
             --output-format text
 
+      # README runs LAST so it can read the freshly-regenerated other docs
+      # to populate the doc-map table + Mermaid embed + cost headlines.
+      - name: Regenerate README.md
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude -p "$(cat .github/prompts/readme.md)" \
+            --allowed-tools "Read Bash Write Edit Grep Glob" \
+            --max-turns 30 \
+            --output-format text
+
       # ── Decide whether the changes are meaningful ─────────────────────────
       # Strip the "Generated YYYY-MM-DD" footer + row-count noise before
       # diffing. If only the date moved, skip the PR and revert the file.
@@ -175,7 +186,7 @@ jobs:
         run: |
           set +e
           MEANINGFUL=0
-          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md; do
+          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md; do
             if [ ! -f "$FILE" ]; then continue; fi
             git diff --no-color "$FILE" \
               | grep -vE '^[-+]Generated 20[0-9]{2}-[0-9]{2}-[0-9]{2}' \
@@ -208,7 +219,7 @@ jobs:
 
           # Stage only the regenerated docs. JSON dumps are gitignored
           # (see .gitignore: gcp_inventory.json / gcp_iam.json / billing_90d.json).
-          git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md
+          git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md
 
           if git diff --cached --quiet; then
             echo "nothing staged — exit clean"
@@ -218,7 +229,7 @@ jobs:
           git commit -m "docs: monthly architecture doc refresh ${MONTH}"
           git push -u origin "$BRANCH"
 
-          STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md)
+          STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md)
 
           gh pr create \
             --base main --head "$BRANCH" \
