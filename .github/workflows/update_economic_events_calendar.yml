@@ -147,15 +147,6 @@ jobs:
           # Default: fetch next 90 days of earnings
           python scripts/fetch_earnings_calendar.py --days 90
         fi
-
-        # Verify the earnings file was created
-        if [ -f "data/earnings/earnings_calendar.json" ]; then
-          echo "✓ earnings_calendar.json created successfully"
-          echo "EARNINGS_CALENDAR_EXISTS=true" >> $GITHUB_ENV
-        else
-          echo "✗ Warning: earnings_calendar.json was not created"
-          echo "EARNINGS_CALENDAR_EXISTS=false" >> $GITHUB_ENV
-        fi
       continue-on-error: true
     
     - name: Fetch economic calendar data

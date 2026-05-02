@@ -902,12 +902,18 @@ def persist_to_cloud_sql(df: pd.DataFrame) -> int:
 
 
 class EarningsCalendarFetcher:
-    """Fetch and manage earnings calendar data from Unusual Whales + Earnings Whispers."""
+    """Fetch and manage earnings calendar data from Unusual Whales + Earnings Whispers.
+
+    Cloud SQL (`earnings_calendar` table, written via persist_to_cloud_sql) is
+    the canonical store. The legacy `data/earnings/earnings_calendar.json`
+    cache was removed 2026-05-01 — no Python code in the repo read it, the
+    workflow file-existence check that flagged its absence wasn't consumed
+    downstream, and double-writing created drift risk between sources.
+    """
 
     def __init__(self):
-        self.output_dir = Path("data/earnings")
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.earnings_file = self.output_dir / "earnings_calendar.json"
+        # Intentionally no JSON output path — the canonical write is Cloud SQL.
+        pass
 
     def fetch_unusual_whales_earnings(self, days_ahead=90):
         """
@@ -1033,60 +1039,6 @@ class EarningsCalendarFetcher:
 
             traceback.print_exc()
             return pd.DataFrame()
-
-    def save_earnings(self, earnings_df):
-        """
-        Save earnings data to JSON file with deduplication.
-        Merges new data with existing data and removes duplicates.
-
-        Args:
-            earnings_df: DataFrame with earnings data
-        """
-        if earnings_df.empty:
-            print("No earnings data to save")
-            return
-
-        # Load existing earnings if file exists
-        if self.earnings_file.exists():
-            try:
-                with open(self.earnings_file, "r") as f:
-                    existing_data = json.load(f)
-                existing_df = pd.DataFrame(existing_data)
-                print(f"Loaded {len(existing_df)} existing earnings records")
-
-                # Combine new and existing data
-                combined_df = pd.concat([existing_df, earnings_df], ignore_index=True)
-
-                # Remove duplicates based on ticker and date
-                before_dedup = len(combined_df)
-                combined_df = combined_df.drop_duplicates(
-                    subset=['ticker', 'date'],
-                    keep='last'  # Keep the most recent fetch
-                )
-                after_dedup = len(combined_df)
-                duplicates_removed = before_dedup - after_dedup
-
-                print(f"Merged data: {len(existing_df)} existing + {len(earnings_df)} new = {after_dedup} total ({duplicates_removed} duplicates removed)")
-
-                earnings_df = combined_df
-
-            except Exception as e:
-                print(f"Note: Could not load existing earnings file: {e}")
-                print("Saving new data only")
-
-        # Sort by date for easier reading
-        earnings_df = earnings_df.sort_values('date').reset_index(drop=True)
-
-        # Convert to list of dicts for JSON
-        earnings_data = earnings_df.to_dict(orient="records")
-
-        # Save to JSON file
-        with open(self.earnings_file, "w") as f:
-            json.dump(earnings_data, f, indent=2)
-
-        print(f"\n{'='*80}")
-        print(f"Saved {len(earnings_data)} earnings announcements to {self.earnings_file} (sorted by date)")
-        print(f"{'='*80}")
 
     def print_summary(self, earnings_df):
         """Print summary statistics of earnings data."""
@@ -1285,8 +1237,8 @@ def main():
         subset=['ticker', 'date'], keep='first'
     ).drop(columns=['_priority']).sort_values('date').reset_index(drop=True)
 
-    # Save JSON cache (deduped) and summary
-    fetcher.save_earnings(earnings_df)
+    # Print summary — Cloud SQL is the canonical store; the legacy JSON
+    # cache was removed (no consumers, drift risk).
     fetcher.print_summary(earnings_df)
 
     # Persist un-deduped frame to Cloud SQL so each source lands as its own
