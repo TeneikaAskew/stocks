@@ -84,58 +84,36 @@ class SignalMonitor:
     def _resolve_watchlist(self) -> list[str]:
         """Return the active live-signal-monitor watchlist.
 
-        Source of truth: `watchlists.signals = TRUE AND removed_at IS NULL`.
-        This matches the existing in_brief / in_insight pattern so
-        per-surface watchlists are managed in one place (the table)
-        rather than split between DB + a static config file.
-
-        Falls back to `alert_config.json`'s `watchlist` list when:
-          * Cloud SQL is not configured (local dev shell), OR
-          * the DB query raises (transient connection issue), OR
-          * the DB query returns zero matching rows (e.g. immediately
-            after the column was added but before population).
+        SINGLE source of truth: `watchlists.signals = TRUE AND
+        removed_at IS NULL`, queried via the centralized
+        `gcp.fetchers._watchlist.load_watchlist(surface='signals')`.
 
         Single startup-time query — not per-cycle. A toggle to a
         ticker's `signals` flag mid-session requires a monitor
-        restart to take effect (matches prior alert_config.json
-        behavior).
+        restart to take effect.
+
+        On empty result, the helper itself fires a Discord alert
+        AND returns []. This method then raises — failing the
+        monitor startup loudly rather than silently watching no
+        tickers. The Cloud Run failure-notifier sink picks up the
+        non-zero exit and creates a GitHub issue.
         """
-        try:
-            from gcp.database import is_cloud_sql_configured, get_engine
-            from sqlalchemy import text
-        except ImportError:
-            logger.info("watchlist source: alert_config.json (DB libs not importable)")
-            return list(self.market_cfg.tickers)
+        from gcp.fetchers._watchlist import load_watchlist
 
-        if not is_cloud_sql_configured():
-            logger.info("watchlist source: alert_config.json (Cloud SQL not configured)")
-            return list(self.market_cfg.tickers)
-
-        try:
-            engine = get_engine()
-            with engine.connect() as conn:
-                rows = conn.execute(text("""
-                    SELECT DISTINCT ticker FROM watchlists
-                     WHERE signals = TRUE AND removed_at IS NULL
-                     ORDER BY ticker
-                """)).fetchall()
-            tickers = [r[0] for r in rows]
-            if tickers:
-                logger.info(
-                    "watchlist source: watchlists.signals=TRUE — %d tickers: %s",
-                    len(tickers), ", ".join(tickers),
-                )
-                return tickers
-            logger.warning(
-                "watchlist: no rows with signals=TRUE in watchlists; "
-                "falling back to alert_config.json (%s)",
-                self.market_cfg.tickers,
+        tickers = load_watchlist(surface="signals")
+        if not tickers:
+            raise RuntimeError(
+                "signal_monitor watchlist is empty — no rows in watchlists "
+                "with signals=TRUE AND removed_at IS NULL, and no INSIGHT_TICKERS "
+                "env override set. Cannot start monitor. Set the signals flag "
+                "for at least one ticker via the platform UI or:\n"
+                "  UPDATE watchlists SET signals = TRUE WHERE ticker IN (...)"
             )
-        except Exception as e:
-            logger.warning(
-                "watchlist: DB query failed (%s); falling back to alert_config.json", e,
-            )
-        return list(self.market_cfg.tickers)
+        logger.info(
+            "watchlist source: watchlists.signals=TRUE — %d tickers: %s",
+            len(tickers), ", ".join(tickers),
+        )
+        return tickers
 
     def is_market_hours(self) -> bool:
         now = datetime.now()

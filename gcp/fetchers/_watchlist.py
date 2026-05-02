@@ -1,49 +1,44 @@
-"""Shared helper: load the configured watchlist for fetcher ticker unions.
+"""Shared helper: load the configured watchlist for every consumer.
 
-The new fetchers (`fetch_sec_filings`, `fetch_earnings_history`,
-`fetch_insider_transactions`, `fetch_news_sentiment`) default their
-ticker universe to the next-7-day earnings_calendar window. That misses
-names the user actively cares about whose next earnings are far out
-(e.g. AVGO with a June report won't appear in the April 7d window).
+The `watchlists` Cloud SQL table is the SINGLE source of truth. The
+platform API writes here on add/remove; every consumer reads from
+here with a surface-specific filter:
 
-This helper loads the curated watchlist so each fetcher can union it
-into its default ticker pool.
+  surface='all'     → every active row (research fetchers, ranker,
+                       historical-signals iterator)
+  surface='brief'   → in_brief = TRUE   (morning premarket brief)
+  surface='insight' → in_insight = TRUE (AI insight pipeline)
+  surface='signals' → signals = TRUE    (live signal monitor)
 
-Resolution order (each layer is the source-of-truth fallback if the
-prior layer is empty or unreachable):
+Resolution order:
 
-  1. `watchlists` Cloud SQL table — durable, per-user, the production
-     source of truth. The platform API writes here on add/remove.
-  2. `alert_config.json` `"watchlist"` array — repo file, used for
-     local dev and as the seed at first deploy. Read-only at runtime.
-  3. `INSIGHT_TICKERS` env var (comma-separated) — last-ditch override
-     for one-off Cloud Run executions.
-  4. Empty list — caller decides whether to fall back to its own
-     hardcoded default. When this happens we fire a Discord alert
-     so the gap surfaces instead of failing silently.
+  1. `watchlists` Cloud SQL table — production source of truth.
+  2. `INSIGHT_TICKERS` env var (comma-separated) — last-ditch
+     override for one-off Cloud Run executions and local dev that
+     doesn't have Cloud SQL configured.
+  3. Empty list — fires a Discord alert so the gap surfaces instead
+     of failing silently. Caller decides whether to bail or proceed.
 
-Cost note: the SQL query runs once per fetcher invocation (~few hundred
-microseconds against the partial index) and is wrapped in a try/except
-so a Cloud SQL outage transparently falls back to the JSON file.
+The legacy `alert_config.json` `"watchlist"` array was removed in the
+refactor that introduced the surface='signals' filter — single
+source of truth, no more split-brain between DB and JSON.
+
+Cost: one SQL query per consumer invocation (~few hundred microseconds
+against the partial index on (ticker) WHERE removed_at IS NULL).
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# alert_config.json lives at the repo root; this file is at gcp/fetchers/.
-_CFG_PATH = Path(__file__).resolve().parents[2] / "alert_config.json"
-
 DEFAULT_USER_ID = "default"
 
 
-_VALID_SURFACES = ("all", "brief", "insight")
+_VALID_SURFACES = ("all", "brief", "insight", "signals")
 
 
 def _surface_predicate(surface: str) -> str:
@@ -52,6 +47,7 @@ def _surface_predicate(surface: str) -> str:
     'all'      → no extra predicate (every active row)
     'brief'    → AND in_brief = TRUE
     'insight'  → AND in_insight = TRUE
+    'signals'  → AND signals = TRUE
     """
     if surface not in _VALID_SURFACES:
         raise ValueError(
@@ -59,6 +55,8 @@ def _surface_predicate(surface: str) -> str:
         )
     if surface == "all":
         return ""
+    if surface == "signals":
+        return " AND signals = TRUE"
     return f" AND in_{surface} = TRUE"
 
 
@@ -108,20 +106,6 @@ def _load_from_cloud_sql(
     return _dedupe_upper(r[0] for r in rows)
 
 
-def _load_from_alert_config() -> list[str]:
-    """Read the alert_config.json watchlist on disk. Returns [] if the
-    file is missing or the field is empty."""
-    try:
-        if _CFG_PATH.exists():
-            data = json.loads(_CFG_PATH.read_text(encoding="utf-8"))
-            wl = data.get("watchlist") or []
-            if isinstance(wl, list) and wl:
-                return _dedupe_upper(wl)
-    except Exception as exc:
-        logger.warning("watchlist file load failed (%s)", exc)
-    return []
-
-
 def _post_fallback_alert(reason: str) -> None:
     """Fire a Discord alert when load_watchlist falls through every
     layer and returns []. The alert tells the operator that the system
@@ -149,22 +133,25 @@ def load_watchlist(
 ) -> list[str]:
     """Return the configured watchlist (uppercased, deduped, order preserved).
 
-    Cloud SQL → alert_config.json → INSIGHT_TICKERS env → []. When the
-    final layer is reached (i.e. the system is about to use a hardcoded
-    default), a Discord alert is posted so the gap is observable.
+    Cloud SQL → INSIGHT_TICKERS env → []. When the final layer is
+    reached (i.e. the system is about to return an empty list), a
+    Discord alert is posted so the gap is observable.
 
     `surface` selects which subset of the watchlist to return:
       * 'all'      — every active ticker (default; used by historical-
-                     signals-watchlist, /replay autocomplete, /similar)
+                     signals-watchlist, research fetchers, /replay
+                     autocomplete, /similar)
       * 'brief'    — only tickers with in_brief = TRUE
                      (the morning premarket brief at 8:30 AM EDT)
       * 'insight'  — only tickers with in_insight = TRUE
                      (the AI insight pipeline at 8:45 AM EDT)
+      * 'signals'  — only tickers with signals = TRUE
+                     (the live signal monitor)
 
     The surface filter only applies to the Cloud SQL layer. The
-    alert_config.json + env-var fallbacks return their full list
-    regardless of `surface` — they're used for local dev where the
-    full set is fine.
+    INSIGHT_TICKERS env-var fallback returns its full list regardless
+    of `surface` — it's an emergency override for local dev / one-off
+    Cloud Run executions where the full set is fine.
 
     Raises ValueError if `surface` isn't a recognised value — fail
     fast so a typo at a callsite doesn't silently cascade to "watchlist
@@ -180,13 +167,7 @@ def load_watchlist(
     if out:
         return out
 
-    # Layer 2 — repo JSON file (dev / seed)
-    out = _load_from_alert_config()
-    if out:
-        logger.info("watchlist sourced from alert_config.json (Cloud SQL empty/unreachable)")
-        return out
-
-    # Layer 3 — env var (one-off override)
+    # Layer 2 — env var (one-off override / local dev escape hatch)
     env = os.environ.get("INSIGHT_TICKERS", "")
     if env:
         out = _dedupe_upper(env.split(","))
@@ -194,8 +175,11 @@ def load_watchlist(
             logger.info("watchlist sourced from INSIGHT_TICKERS env var")
             return out
 
-    # Layer 4 — empty: fire alert so the silent failure becomes loud
-    _post_fallback_alert("Cloud SQL `watchlists` empty, alert_config.json empty, INSIGHT_TICKERS unset")
+    # Layer 3 — empty: fire alert so the silent failure becomes loud
+    _post_fallback_alert(
+        f"Cloud SQL `watchlists` returned 0 rows for surface={surface!r} "
+        "and INSIGHT_TICKERS env var is unset"
+    )
     return []
 
 
