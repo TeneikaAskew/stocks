@@ -369,6 +369,62 @@ secrets. Auth uses a dedicated SA key
 `GCP_SA_KEY`) so a key compromise here doesn't put scheduled fetchers at
 risk simultaneously.
 
+### GitHub API access from the sandbox
+
+The sandbox cannot run `gh` (not installed). To dispatch workflows, read
+runs, download artifacts, or post comments via the REST API, fetch the
+GitHub PAT from GCP Secret Manager and use `curl` against `api.github.com`.
+
+The PAT lives at `projects/adept-mountain-474619-d4/secrets/gh-stocks-repo-pat`.
+The `claude-web@` SA already has `roles/editor` at the project level, which
+includes `secretmanager.secretAccessor` on every secret in the project, so
+no per-secret IAM binding is needed.
+
+```bash
+# Fetch once per session (avoid embedding in argv where it'd land in process listings)
+GH_TOKEN=$(gcloud secrets versions access latest \
+  --secret=gh-stocks-repo-pat \
+  --project=adept-mountain-474619-d4)
+
+# Dispatch the db-query workflow against any branch
+curl -sS -X POST \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  https://api.github.com/repos/TeneikaAskew/stocks/actions/workflows/db-query.yml/dispatches \
+  -d '{"ref":"main","inputs":{"sql":"SELECT now()"}}'
+
+# Poll most recent run
+RUN_ID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+  "https://api.github.com/repos/TeneikaAskew/stocks/actions/workflows/db-query.yml/runs?per_page=1" \
+  | python -c "import sys,json; print(json.load(sys.stdin)['workflow_runs'][0]['id'])")
+
+# Download the artifact (returns a ZIP)
+ARTIFACT_ID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+  "https://api.github.com/repos/TeneikaAskew/stocks/actions/runs/$RUN_ID/artifacts" \
+  | python -c "import sys,json; print(json.load(sys.stdin)['artifacts'][0]['id'])")
+curl -sS -L -H "Authorization: Bearer $GH_TOKEN" \
+  -o /tmp/results.zip \
+  "https://api.github.com/repos/TeneikaAskew/stocks/actions/artifacts/$ARTIFACT_ID/zip"
+```
+
+**Important caveats:**
+- **Workflow registration**: GitHub registers `workflow_dispatch` workflows
+  only after their file lands on the **default branch** (`main`). Until
+  then both `gh workflow run` and the REST API return 404. To smoke-test a
+  new workflow, the file must merge to `main` first.
+- **Don't pass the PAT in argv** (`-H "Authorization: Bearer ghp_xxx"`
+  inline). Other processes can read `/proc/<pid>/cmdline`. Always assign
+  to a shell variable first and reference via `$GH_TOKEN`.
+- **Don't echo or log the PAT.** It will land in shell history and Bash
+  tool transcripts visible in conversation summaries.
+- **Rotation**: rotate by writing a new version to the secret; consumers
+  fetch `latest` and pick up the new value transparently.
+  ```bash
+  read -s NEW && echo -n "$NEW" | gcloud secrets versions add gh-stocks-repo-pat \
+    --data-file=- --project=adept-mountain-474619-d4 && unset NEW
+  ```
+
 ### Testing Commands
 ```bash
 # Add project-specific test commands here
