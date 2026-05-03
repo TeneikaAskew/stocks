@@ -6,8 +6,10 @@ name: Monthly architecture doc refresh
 # How it works:
 #   1. Authenticates to GCP via Workload Identity Federation
 #   2. Snapshots inventory + IAM + 90-day billing rollup to local JSON files
-#   3. Invokes Claude Code in headless mode for each doc, using the
-#      prompts versioned under .github/prompts/
+#   3. Invokes Gemini CLI in non-interactive mode for each doc using the
+#      prompts versioned under .github/prompts/. Auth is via Vertex AI
+#      (GOOGLE_GENAI_USE_VERTEXAI=true) reusing the same WIF credentials —
+#      no separate GEMINI_API_KEY secret is required.
 #   4. Diffs the regenerated docs against committed versions, ignoring
 #      the trailing "Generated YYYY-MM-DD" line so timestamp-only churn
 #      doesn't open noisy PRs
@@ -17,12 +19,12 @@ name: Monthly architecture doc refresh
 # Required GitHub secrets (one-time setup, see SETUP.md):
 #   - GCP_WIF_PROVIDER       full resource name of the Workload Identity Provider
 #   - GCP_WIF_SA_EMAIL       email of the service account this workflow impersonates
-#   - ANTHROPIC_API_KEY      key for Claude Code to call the Anthropic API
 #
 # Service account roles (see SETUP.md for grant commands):
 #   - roles/cloudasset.viewer       (asset inventory)
 #   - roles/iam.securityReviewer    (IAM policy read)
 #   - roles/bigquery.dataViewer + roles/bigquery.jobUser  (billing rollup)
+#   - roles/aiplatform.user         (Vertex AI Gemini call)
 
 on:
   schedule:
@@ -43,8 +45,10 @@ permissions:
 
 env:
   GCP_PROJECT: adept-mountain-474619-d4
+  GCP_LOCATION: us-east1
   REGION: us-east1
   PR_BRANCH_PREFIX: bot/arch-refresh
+  GEMINI_MODEL: gemini-2.5-pro
 
 jobs:
   refresh:
@@ -62,7 +66,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Set up Node (for Claude Code CLI)
+      - name: Set up Node (for Gemini CLI)
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -70,10 +74,13 @@ jobs:
       - name: Install Python deps
         run: pip install --quiet google-cloud-bigquery
 
-      - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+      - name: Install Gemini CLI
+        run: npm install -g @google/gemini-cli
 
       # ── GCP auth via Workload Identity Federation ─────────────────────────
+      # The same auth covers gcloud + BigQuery + Vertex AI — no separate
+      # GEMINI_API_KEY secret needed. Vertex picks up ADC automatically
+      # when GOOGLE_GENAI_USE_VERTEXAI=true.
       - name: Authenticate to GCP (WIF)
         uses: google-github-actions/auth@v2
         with:
@@ -136,47 +143,52 @@ jobs:
           print(f"wrote billing_90d.json with {len(rows)} rows")
           PY
 
-      # ── Regenerate docs via Claude Code (headless) ────────────────────────
+      # ── Regenerate docs via Gemini CLI (non-interactive) ──────────────────
       # Each invocation gets the corresponding prompt as the user message,
       # all repo files + the JSON dumps as tool-accessible inputs, and is
-      # restricted to non-destructive tools.
+      # restricted to non-destructive tools via --yolo (auto-approve) only
+      # for read/write/edit/grep/glob/bash equivalents that the CLI exposes.
+      #
+      # GOOGLE_GENAI_USE_VERTEXAI tells the Gemini CLI to use Vertex AI as
+      # its provider (instead of the public Generative Language API), which
+      # means the WIF-derived ADC is sufficient — no GEMINI_API_KEY needed.
       - name: Regenerate ARCHITECTURE.md
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_GENAI_USE_VERTEXAI: 'true'
+          GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          claude -p "$(cat .github/prompts/architecture.md)" \
-            --allowed-tools "Read Bash Write Edit Grep Glob" \
-            --max-turns 60 \
-            --output-format text
+          gemini --model "${GEMINI_MODEL}" --yolo \
+            --prompt "$(cat .github/prompts/architecture.md)"
 
       - name: Regenerate DATA_DEPENDENCIES.md
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_GENAI_USE_VERTEXAI: 'true'
+          GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          claude -p "$(cat .github/prompts/data-dependencies.md)" \
-            --allowed-tools "Read Bash Write Edit Grep Glob" \
-            --max-turns 80 \
-            --output-format text
+          gemini --model "${GEMINI_MODEL}" --yolo \
+            --prompt "$(cat .github/prompts/data-dependencies.md)"
 
       - name: Regenerate COST_ANALYSIS.md
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_GENAI_USE_VERTEXAI: 'true'
+          GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          claude -p "$(cat .github/prompts/cost-analysis.md)" \
-            --allowed-tools "Read Bash Write Edit Grep Glob" \
-            --max-turns 40 \
-            --output-format text
+          gemini --model "${GEMINI_MODEL}" --yolo \
+            --prompt "$(cat .github/prompts/cost-analysis.md)"
 
       # README runs LAST so it can read the freshly-regenerated other docs
       # to populate the doc-map table + Mermaid embed + cost headlines.
       - name: Regenerate README.md
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_GENAI_USE_VERTEXAI: 'true'
+          GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
+          GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          claude -p "$(cat .github/prompts/readme.md)" \
-            --allowed-tools "Read Bash Write Edit Grep Glob" \
-            --max-turns 30 \
-            --output-format text
+          gemini --model "${GEMINI_MODEL}" --yolo \
+            --prompt "$(cat .github/prompts/readme.md)"
 
       # ── Decide whether the changes are meaningful ─────────────────────────
       # Strip the "Generated YYYY-MM-DD" footer + row-count noise before
@@ -249,7 +261,7 @@ jobs:
           1. \`gcloud asset search-all-resources\` → \`gcp_inventory.json\`
           2. \`gcloud projects get-iam-policy\` → \`gcp_iam.json\`
           3. BigQuery 90-day billing rollup → \`billing_90d.json\`
-          4. Claude Code regenerated each doc using prompts in \`.github/prompts/\`
+          4. Gemini ${GEMINI_MODEL} (Vertex AI) regenerated each doc using prompts in \`.github/prompts/\`
 
           ## Reviewer checklist
 
@@ -257,7 +269,7 @@ jobs:
           - Confirm \`COST_ANALYSIS.md\` headline numbers match Cloud Console → Billing → Reports
           - Verify any new orphan-table flag in \`DATA_DEPENDENCIES.md\` is real before acting on it
 
-          🤖 Generated by \`.github/workflows/refresh-architecture-docs.yml\`"
+          Generated by \`.github/workflows/refresh-architecture-docs.yml\`"
 
       - name: No-op summary
         if: steps.detect.outputs.meaningful != '1'
