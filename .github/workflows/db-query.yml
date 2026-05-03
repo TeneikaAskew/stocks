@@ -1,0 +1,212 @@
+name: DB Query
+
+# Ad-hoc SQL execution against Cloud SQL Postgres for Claude Code on the web
+# sessions whose sandbox cannot reach Cloud SQL on TCP 5432/3307. Runs the
+# query inside GitHub's network via the project's existing Cloud SQL Python
+# Connector (gcp/database.py), captures structured results, posts a phone-
+# friendly summary to a tracking issue if specified, and uploads the full
+# results as a workflow artifact.
+#
+# Safety: every statement runs in its own transaction. Default is ROLLBACK at
+# the end (read-safe, no-op for SELECT, makes accidental writes harmless).
+# Pass commit=true to persist writes.
+#
+# See CLAUDE.md `## Database access` for the full usage guide.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sql:
+        description: 'Inline SQL (multi-statement OK separated by ;). Exclusive with sql_file.'
+        required: false
+        default: ''
+        type: string
+      sql_file:
+        description: 'Path to .sql file in repo (sent as ONE statement). Exclusive with sql.'
+        required: false
+        default: ''
+        type: string
+      commit:
+        description: 'Commit transactions (default: rollback). Required for writes to persist.'
+        required: false
+        default: false
+        type: boolean
+      issue_number:
+        description: 'Issue # to post summary comment to (empty: artifact only).'
+        required: false
+        default: ''
+        type: string
+      statement_timeout_seconds:
+        description: 'Per-statement Postgres statement_timeout, in seconds.'
+        required: false
+        default: '120'
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  actions: read
+
+# All dispatches serialize through one queue. Keeps reasoning simple and avoids
+# read-vs-write timing surprises (Postgres MVCC already gives reads a consistent
+# snapshot, but global ordering is easier to reason about for ad-hoc usage).
+concurrency:
+  group: db-query
+  cancel-in-progress: false
+
+jobs:
+  run-query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-db-query-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-db-query-
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install 'cloud-sql-python-connector[pg8000]' sqlparse tabulate
+
+      - name: Validate inputs
+        env:
+          SQL: ${{ inputs.sql }}
+          SQL_FILE: ${{ inputs.sql_file }}
+        run: |
+          if [ -z "$SQL" ] && [ -z "$SQL_FILE" ]; then
+            echo "::error::Provide exactly one of: sql, sql_file"
+            exit 2
+          fi
+          if [ -n "$SQL" ] && [ -n "$SQL_FILE" ]; then
+            echo "::error::Provide exactly one of: sql, sql_file (got both)"
+            exit 2
+          fi
+          if [ -n "$SQL_FILE" ] && [ ! -f "$SQL_FILE" ]; then
+            echo "::error::sql_file does not exist: $SQL_FILE"
+            exit 2
+          fi
+
+      - name: Write GCP service account key
+        env:
+          SA_KEY: ${{ secrets.CLAUDE_CODE_WEB_GCP_SA_KEY }}
+        run: |
+          if [ -z "$SA_KEY" ]; then
+            echo "::error::CLAUDE_CODE_WEB_GCP_SA_KEY secret is not set"
+            exit 1
+          fi
+          echo "$SA_KEY" > "$RUNNER_TEMP/gcp-key.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-key.json" >> "$GITHUB_ENV"
+
+      - name: Run query
+        env:
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          INPUT_SQL: ${{ inputs.sql }}
+          INPUT_SQL_FILE: ${{ inputs.sql_file }}
+          INPUT_COMMIT: ${{ inputs.commit }}
+          INPUT_TIMEOUT: ${{ inputs.statement_timeout_seconds }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          for var in CLOUD_SQL_CONNECTION_NAME DB_USER DB_PASS DB_NAME; do
+            if [ -z "${!var}" ]; then
+              echo "::error::$var secret is not set"
+              exit 1
+            fi
+          done
+
+          mkdir -p artifacts
+          ARGS=(
+            --output-dir artifacts
+            --statement-timeout-seconds "$INPUT_TIMEOUT"
+            --run-url "$RUN_URL"
+          )
+          if [ "$INPUT_COMMIT" = "true" ]; then
+            ARGS+=(--commit)
+          fi
+          if [ -n "$INPUT_SQL_FILE" ]; then
+            ARGS+=(--sql-file "$INPUT_SQL_FILE")
+          else
+            ARGS+=(--sql "$INPUT_SQL")
+          fi
+
+          # The runner exits 0 on user errors (syntax, constraint, statement_timeout)
+          # and exits 1 only on system errors (auth, connection lost). The job's
+          # success/failure status mirrors this so handle-failure only fires on
+          # genuine infra problems, not user typos.
+          python gcp/queries/run_query.py "${ARGS[@]}"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: query-results-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 30
+
+      - name: Post comment to tracking issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # Resolve issue number: explicit input wins, else fall back to the
+          # repo variable DB_QUERY_TRACKING_ISSUE if set. Empty → skip comment.
+          ISSUE: ${{ inputs.issue_number != '' && inputs.issue_number || vars.DB_QUERY_TRACKING_ISSUE }}
+        run: |
+          if [ -z "$ISSUE" ]; then
+            echo "no issue_number provided and DB_QUERY_TRACKING_ISSUE var not set, skipping comment"
+            exit 0
+          fi
+          if [ ! -f artifacts/summary_for_comment.md ]; then
+            echo "::warning::artifacts/summary_for_comment.md not found, skipping comment"
+            exit 0
+          fi
+          # Comment posting is optional metadata. A failed comment (deleted
+          # issue, rate limit, perms) must NOT fail the run-query job and
+          # trip handle-failure when the SQL itself succeeded — the artifact
+          # is the source of truth.
+          gh issue comment "$ISSUE" --repo "$REPO" --body-file artifacts/summary_for_comment.md \
+            || echo "::warning::failed to post issue comment to $ISSUE; see artifact for results"
+
+  handle-failure:
+    needs: run-query
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "DB Query"
+      failure_title: "❌ db-query workflow system failure"
+      issue_labels: "workflow-failure,db-query,automated"
+      workflow_file: "db-query.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false

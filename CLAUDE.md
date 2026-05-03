@@ -230,6 +230,207 @@ Follow this rigorous testing approach:
   (FastAPI router, AI agents, CLI scripts) import from the same `lib/`
   modules so behaviour can't drift.
 
+### Database access
+
+> **See also: [`docs/CLAUDE_CODE_ON_WEB.md`](docs/CLAUDE_CODE_ON_WEB.md)** — the
+> full field guide for working from a Claude Code on the web sandbox: the
+> SessionStart bootstrap script, PAT-via-Secret-Manager pattern, GH Actions
+> gotchas, MCP caveats, and the rationale behind the patterns documented
+> below.
+
+Direct DB connections from Claude Code on the web sandbox are blocked: the
+sandbox firewall only allows outbound TCP on port 443, and Cloud SQL needs
+5432 (Postgres) or 3307 (Auth Proxy backend). Both time out. Adding the
+sandbox IP to authorized networks does not help — the binding constraint is
+the sandbox's outbound firewall, not the DB's inbound ACL.
+
+To query Cloud SQL Postgres (`trading` database) from any session, dispatch
+the `.github/workflows/db-query.yml` workflow. It runs the SQL inside a
+GitHub Actions runner (which has unrestricted egress to Cloud SQL via the
+project's existing `gcp/database.py` connector), captures structured results,
+posts a phone-friendly summary as a comment on a tracking issue if specified,
+and uploads the full results as a workflow artifact.
+
+#### Invocation patterns
+
+**Single read query** (default — transaction is rolled back, which is a no-op
+for SELECT):
+```bash
+gh workflow run db-query.yml \
+  -f sql='SELECT count(*) FROM trades WHERE date > current_date - 7' \
+  -f issue_number=<TRACKING_ISSUE>
+```
+
+**Multi-statement in one dispatch** — this is the answer to "varying amounts
+of queries." Batch into one dispatch instead of dispatching N times. Each
+statement runs in its own transaction:
+```bash
+gh workflow run db-query.yml \
+  -f sql='SELECT count(*) FROM trades; SELECT count(*) FROM signal_alerts; SELECT max(date) FROM market_data_daily' \
+  -f issue_number=<TRACKING_ISSUE>
+```
+
+**File-based** (for SQL too large for a dispatch input or DDL with embedded
+semicolons like `DO $$ ... $$` blocks or `CREATE FUNCTION ... LANGUAGE
+plpgsql`):
+```bash
+# Commit the .sql file to gcp/queries/ first, then:
+gh workflow run db-query.yml \
+  -f sql_file=gcp/queries/check_freshness.sql \
+  -f issue_number=<TRACKING_ISSUE>
+```
+The file content is sent as **one** statement. Multi-statement splitting
+only happens for the inline `sql` input. For DO blocks or function
+definitions, always use `sql_file`.
+
+**Write query** (must explicitly opt in to commit):
+```bash
+gh workflow run db-query.yml \
+  -f sql="UPDATE trades SET status='reviewed' WHERE id IN (1,2,3)" \
+  -f commit=true \
+  -f issue_number=<TRACKING_ISSUE>
+```
+Without `commit=true`, every transaction rolls back at the end. A write
+without `commit=true` is a deliberate no-op — the summary will show
+`↩️ rolled back` so the user knows. This is the load-bearing safety
+guarantee: a typo'd UPDATE/DELETE without `commit=true` cannot persist.
+
+#### Reading results
+
+Each dispatch takes ~30–90 s end-to-end (queue + cold runner + connection +
+query + summary). After dispatch:
+```bash
+sleep 5
+RUN_ID=$(gh run list --workflow=db-query.yml --limit=1 --json databaseId -q '.[0].databaseId')
+gh run watch $RUN_ID                                       # blocks until done
+gh issue view <TRACKING_ISSUE> --comments | tail -120      # phone-friendly summary
+# OR for full results:
+gh run download $RUN_ID --name "query-results-$RUN_ID"
+```
+
+Artifact contents:
+- `results.json` — structured per-statement results (columns, rows,
+  row_count, truncated, duration_ms, mode, error, sqlstate,
+  row_cap_strategy)
+- `result_NNN.csv` — per-statement CSV (only for statements that returned
+  rows)
+- `summary.md` — full markdown summary, untruncated
+- `summary_for_comment.md` — same content, hard-truncated to 60 KB for the
+  issue comment
+
+#### Inputs reference
+
+| Input | Default | Notes |
+|---|---|---|
+| `sql` | `""` | Inline SQL; multi-statement separated by `;`. Exclusive with `sql_file`. |
+| `sql_file` | `""` | Path to `.sql` file in repo. Sent as one statement. Exclusive with `sql`. |
+| `commit` | `false` | `true` to persist writes; otherwise transaction rolls back. |
+| `issue_number` | `""` | Issue # to post summary comment to. Empty → falls back to `vars.DB_QUERY_TRACKING_ISSUE`, then to artifact-only. |
+| `statement_timeout_seconds` | `120` | Per-statement Postgres `statement_timeout`. |
+
+If you create a single tracking issue once and set the repo variable
+`DB_QUERY_TRACKING_ISSUE` to its number (`gh variable set
+DB_QUERY_TRACKING_ISSUE -b <num>`), every dispatch posts there by default
+without needing `issue_number=` each time.
+
+#### Limits
+
+- **Statement timeout**: 120 s default (override with
+  `statement_timeout_seconds`).
+- **Row cap**: 50,000 per statement in the artifact, top 50 in the issue
+  comment. For single-SELECT statements the cap is enforced server-side via
+  subquery wrap (`row_cap_strategy: server_limit`); for multi-statement,
+  non-SELECT, or queries with `FOR UPDATE`/`FOR SHARE`/`SELECT INTO` it's
+  enforced client-side via `fetchmany(50001)` (`row_cap_strategy:
+  client_fetchmany`). The latter is slower for huge result sets but the
+  timeout caps wall-time.
+- **Issue comment**: 60 KB hard truncation (GitHub's limit is 65 KB);
+  truncated comments link to the artifact.
+- **Concurrency**: all dispatches serialize through one queue (group
+  `db-query`). A read dispatched while a write is in flight waits ~30–60 s
+  for the queue.
+
+#### What not to do
+
+- **Don't paste secrets, API keys, or passwords as SQL string literals** in
+  `inputs.sql`. The `sql` input is recorded in plaintext in the workflow
+  run history and is visible to anyone with **read** access to the repo.
+- **Don't dispatch the workflow N times for N queries.** Batch into
+  multi-statement SQL (`-f sql='SELECT 1; SELECT 2; ...'`) or commit a
+  `.sql` file with the full batch and use `sql_file`. Each dispatch costs
+  30–90 s.
+- **Don't use this for production migrations.** For schema changes,
+  `gcp/schema.sql` + `gcp/apply_schema.py` is the source of truth. This
+  workflow is for ad-hoc inspection and one-off data fixes.
+
+#### Why this exists
+
+Phone-only sessions on Claude Code on the web cannot reach Cloud SQL on any
+port (sandbox blocks all egress except 443). A GH-Actions-mediated query
+workflow is the only path that works without a desktop fallback. The
+runner reuses `gcp/database.py:get_engine()` and the existing
+`CLOUD_SQL_CONNECTION_NAME` / `DB_USER` / `DB_PASS` / `DB_NAME` repo
+secrets. Auth uses a dedicated SA key
+(`CLAUDE_CODE_WEB_GCP_SA_KEY`, distinct from the data-pipeline workflows'
+`GCP_SA_KEY`) so a key compromise here doesn't put scheduled fetchers at
+risk simultaneously.
+
+### GitHub API access from the sandbox
+
+The sandbox cannot run `gh` (not installed). To dispatch workflows, read
+runs, download artifacts, or post comments via the REST API, fetch the
+GitHub PAT from GCP Secret Manager and use `curl` against `api.github.com`.
+
+The PAT lives at `projects/adept-mountain-474619-d4/secrets/gh-stocks-repo-pat`.
+The `claude-web@` SA already has `roles/editor` at the project level, which
+includes `secretmanager.secretAccessor` on every secret in the project, so
+no per-secret IAM binding is needed.
+
+```bash
+# Fetch once per session (avoid embedding in argv where it'd land in process listings)
+GH_TOKEN=$(gcloud secrets versions access latest \
+  --secret=gh-stocks-repo-pat \
+  --project=adept-mountain-474619-d4)
+
+# Dispatch the db-query workflow against any branch
+curl -sS -X POST \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  https://api.github.com/repos/TeneikaAskew/stocks/actions/workflows/db-query.yml/dispatches \
+  -d '{"ref":"main","inputs":{"sql":"SELECT now()"}}'
+
+# Poll most recent run
+RUN_ID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+  "https://api.github.com/repos/TeneikaAskew/stocks/actions/workflows/db-query.yml/runs?per_page=1" \
+  | python -c "import sys,json; print(json.load(sys.stdin)['workflow_runs'][0]['id'])")
+
+# Download the artifact (returns a ZIP)
+ARTIFACT_ID=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+  "https://api.github.com/repos/TeneikaAskew/stocks/actions/runs/$RUN_ID/artifacts" \
+  | python -c "import sys,json; print(json.load(sys.stdin)['artifacts'][0]['id'])")
+curl -sS -L -H "Authorization: Bearer $GH_TOKEN" \
+  -o /tmp/results.zip \
+  "https://api.github.com/repos/TeneikaAskew/stocks/actions/artifacts/$ARTIFACT_ID/zip"
+```
+
+**Important caveats:**
+- **Workflow registration**: GitHub registers `workflow_dispatch` workflows
+  only after their file lands on the **default branch** (`main`). Until
+  then both `gh workflow run` and the REST API return 404. To smoke-test a
+  new workflow, the file must merge to `main` first.
+- **Don't pass the PAT in argv** (`-H "Authorization: Bearer ghp_xxx"`
+  inline). Other processes can read `/proc/<pid>/cmdline`. Always assign
+  to a shell variable first and reference via `$GH_TOKEN`.
+- **Don't echo or log the PAT.** It will land in shell history and Bash
+  tool transcripts visible in conversation summaries.
+- **Rotation**: rotate by writing a new version to the secret; consumers
+  fetch `latest` and pick up the new value transparently.
+  ```bash
+  read -s NEW && echo -n "$NEW" | gcloud secrets versions add gh-stocks-repo-pat \
+    --data-file=- --project=adept-mountain-474619-d4 && unset NEW
+  ```
+
 ### Testing Commands
 ```bash
 # Add project-specific test commands here

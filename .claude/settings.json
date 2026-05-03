@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq 'if (.prompt // \"\" | contains(\"<github-webhook-activity>\")) then {hookSpecificOutput: {hookEventName: \"UserPromptSubmit\", additionalContext: \"Before acting on this webhook event: fetch the current state of the referenced GitHub object (PR comment, review, issue, run, commit) via the GitHub REST API before reasoning. Webhooks lag — the underlying state may have already changed (comment edited, CI run finished, review dismissed, PR merged). Reconcile against live state, then decide. Use the gh-stocks-repo-pat token from Secret Manager (see CLAUDE.md ### GitHub API access).\"}} else empty end'"
+          }
+        ]
+      }
+    ]
+  }
+}
