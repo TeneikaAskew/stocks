@@ -290,7 +290,7 @@ Each ticker has tuned parameters in `alert_config.json`:
 | CALL stop | -0.15% | -0.10% | -0.12% | -0.12% |
 | PUT stop | -0.20% | -0.12% | -0.15% | -0.15% |
 | RSI Call range | 25–50 | 30–48 | 28–50 | 30–50 |
-| RSI Put range | 50–75 | 52–72 | 50–73 | 50–72 |
+| RSI Put range | 50–75 | 50–75 | 50–75 | 50–75 |
 
 ---
 
