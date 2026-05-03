@@ -232,6 +232,12 @@ Follow this rigorous testing approach:
 
 ### Database access
 
+> **See also: [`docs/CLAUDE_CODE_ON_WEB.md`](docs/CLAUDE_CODE_ON_WEB.md)** — the
+> full field guide for working from a Claude Code on the web sandbox: the
+> SessionStart bootstrap script, PAT-via-Secret-Manager pattern, GH Actions
+> gotchas, MCP caveats, and the rationale behind the patterns documented
+> below.
+
 Direct DB connections from Claude Code on the web sandbox are blocked: the
 sandbox firewall only allows outbound TCP on port 443, and Cloud SQL needs
 5432 (Postgres) or 3307 (Auth Proxy backend). Both time out. Adding the
