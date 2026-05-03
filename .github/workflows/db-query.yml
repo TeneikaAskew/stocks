@@ -176,11 +176,16 @@ jobs:
             echo "no issue_number provided and DB_QUERY_TRACKING_ISSUE var not set, skipping comment"
             exit 0
           fi
-          if [ -f artifacts/summary_for_comment.md ]; then
-            gh issue comment "$ISSUE" --repo "$REPO" --body-file artifacts/summary_for_comment.md
-          else
+          if [ ! -f artifacts/summary_for_comment.md ]; then
             echo "::warning::artifacts/summary_for_comment.md not found, skipping comment"
+            exit 0
           fi
+          # Comment posting is optional metadata. A failed comment (deleted
+          # issue, rate limit, perms) must NOT fail the run-query job and
+          # trip handle-failure when the SQL itself succeeded — the artifact
+          # is the source of truth.
+          gh issue comment "$ISSUE" --repo "$REPO" --body-file artifacts/summary_for_comment.md \
+            || echo "::warning::failed to post issue comment to $ISSUE; see artifact for results"
 
   handle-failure:
     needs: run-query

@@ -194,16 +194,40 @@ def execute_statement(conn, stmt: str, commit: bool, timeout_seconds: int) -> di
         return out
 
     wrappable = can_wrap_for_limit(stmt)
-    to_execute = (
-        f"SELECT * FROM ({cleaned}) _claude_q LIMIT {ROW_CAP + 1}"
-        if wrappable else cleaned
-    )
 
     tx = conn.begin()
     try:
         timeout_ms = max(1, int(timeout_seconds)) * 1000
         conn.execute(text(f"SET LOCAL statement_timeout = {timeout_ms}"))
-        result = conn.execute(text(to_execute))
+
+        if wrappable:
+            # Path A: server-side LIMIT via subquery wrap. Postgres caps the
+            # result at ROW_CAP+1 before pg8000 buffers anything client-side.
+            wrapped = f"SELECT * FROM ({cleaned}) _claude_q LIMIT {ROW_CAP + 1}"
+            result = conn.execute(text(wrapped))
+            out['row_cap_strategy'] = 'server_limit'
+        else:
+            # Path B: try a server-side cursor inside a SAVEPOINT so DECLARE
+            # CURSOR failures (utility statements, certain DDL, write-only
+            # statements) don't poison the outer transaction. Cursor caps via
+            # FETCH FORWARD N — server-side, like Path A. Fall back to plain
+            # execute (Path C) only if cursor isn't supported for this query.
+            sp = conn.begin_nested()
+            try:
+                conn.execute(text(f"DECLARE _claude_cur NO SCROLL CURSOR FOR {cleaned}"))
+                result = conn.execute(text(f"FETCH FORWARD {ROW_CAP + 1} FROM _claude_cur"))
+                sp.commit()
+                out['row_cap_strategy'] = 'server_cursor'
+            except SQLAlchemyError:
+                sp.rollback()
+                # Path C: last-resort plain execute. pg8000 buffers the full
+                # result client-side, so very large result sets in this path
+                # (e.g. a SELECT that DECLARE CURSOR rejected and returns
+                # millions of rows) can OOM the runner before fetchmany caps.
+                # statement_timeout bounds wall-time, not memory. Reached
+                # only for statement types Postgres won't cursor.
+                result = conn.execute(text(cleaned))
+                out['row_cap_strategy'] = 'client_fetchmany'
 
         if result.returns_rows:
             out['columns'] = list(result.keys())
@@ -212,10 +236,11 @@ def execute_statement(conn, stmt: str, commit: bool, timeout_seconds: int) -> di
             rows = fetched[:ROW_CAP]
             out['rows'] = [[serialize_value(v) for v in r] for r in rows]
             out['row_count'] = len(rows)
-            out['row_cap_strategy'] = 'server_limit' if wrappable else 'client_fetchmany'
         else:
             rc = result.rowcount
             out['row_count'] = rc if (rc is not None and rc >= 0) else 0
+            # No rows = strategy doesn't apply, even if we tried to cursor.
+            out['row_cap_strategy'] = 'none'
 
         if commit:
             tx.commit()
