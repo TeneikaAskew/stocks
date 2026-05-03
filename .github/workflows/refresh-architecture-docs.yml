@@ -145,9 +145,21 @@ jobs:
 
       # ── Regenerate docs via Gemini CLI (non-interactive) ──────────────────
       # Each invocation gets the corresponding prompt as the user message,
-      # all repo files + the JSON dumps as tool-accessible inputs, and is
-      # restricted to non-destructive tools via --yolo (auto-approve) only
-      # for read/write/edit/grep/glob/bash equivalents that the CLI exposes.
+      # repo files + the JSON dumps as tool-accessible inputs, and is
+      # restricted to a hard-coded allowlist of safe tools.
+      #
+      # SECURITY: We do NOT pass bare --yolo. Bare --yolo auto-approves
+      # *every* tool the CLI exposes, including run_shell_command and
+      # web_fetch — both of which would let a prompt-injection vector in
+      # the asset/IAM/billing JSON dumps execute arbitrary commands with
+      # GITHUB_TOKEN write scope and WIF-derived cloud creds in the
+      # environment. Instead we pair --yolo with an explicit
+      # --allowed-tools allowlist that excludes shell + network tools.
+      # The allowlist enumerates only what the doc prompts genuinely need:
+      # read_file / write_file / replace (for the regenerated doc) /
+      # glob + grep + list_directory + read_many_files (to traverse the
+      # repo). No run_shell_command, no web_fetch, no web_search, no
+      # save_memory.
       #
       # GOOGLE_GENAI_USE_VERTEXAI tells the Gemini CLI to use Vertex AI as
       # its provider (instead of the public Generative Language API), which
@@ -158,7 +170,9 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          gemini --model "${GEMINI_MODEL}" --yolo \
+          gemini --model "${GEMINI_MODEL}" \
+            --allowed-tools "read_file,write_file,replace,glob,grep,list_directory,read_many_files" \
+            --yolo \
             --prompt "$(cat .github/prompts/architecture.md)"
 
       - name: Regenerate DATA_DEPENDENCIES.md
@@ -167,7 +181,9 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          gemini --model "${GEMINI_MODEL}" --yolo \
+          gemini --model "${GEMINI_MODEL}" \
+            --allowed-tools "read_file,write_file,replace,glob,grep,list_directory,read_many_files" \
+            --yolo \
             --prompt "$(cat .github/prompts/data-dependencies.md)"
 
       - name: Regenerate COST_ANALYSIS.md
@@ -176,7 +192,9 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          gemini --model "${GEMINI_MODEL}" --yolo \
+          gemini --model "${GEMINI_MODEL}" \
+            --allowed-tools "read_file,write_file,replace,glob,grep,list_directory,read_many_files" \
+            --yolo \
             --prompt "$(cat .github/prompts/cost-analysis.md)"
 
       # README runs LAST so it can read the freshly-regenerated other docs
@@ -187,7 +205,9 @@ jobs:
           GOOGLE_CLOUD_PROJECT: ${{ env.GCP_PROJECT }}
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
-          gemini --model "${GEMINI_MODEL}" --yolo \
+          gemini --model "${GEMINI_MODEL}" \
+            --allowed-tools "read_file,write_file,replace,glob,grep,list_directory,read_many_files" \
+            --yolo \
             --prompt "$(cat .github/prompts/readme.md)"
 
       # ── Decide whether the changes are meaningful ─────────────────────────
