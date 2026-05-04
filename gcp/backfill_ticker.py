@@ -251,31 +251,14 @@ def add_to_watchlist(ticker: str) -> None:
     log.info("✓ added %s to watchlists", ticker.upper())
 
 
-# Multi-day indicator → DB column mapping. Module-level so
-# compute_indicators_for_full_range and compute_indicators_for_dates
-# stay in sync when we add or rename indicators.
-_IND_MAP = {
-    "MA5": "ma_5", "MA10": "ma_10", "MA20": "ma_20", "MA50": "ma_50",
-    "EMA9": "ema_9", "EMA20": "ema_20", "EMA50": "ema_50", "SMA200": "sma_200",
-    "RSI": "rsi_14", "RSI9": "rsi_9", "RSI30": "rsi_30",
-    "StochRSI_K": "stoch_rsi_k", "StochRSI_D": "stoch_rsi_d",
-    "ATR14": "atr_14", "ATR20": "atr_20",
-    "OBV": "obv", "RVOL": "rvol", "RVOL10": "rvol_10",
-    "Volume_MA10": "volume_ma_10", "Volume_MA20": "volume_ma_20",
-    "Volume_USD": "volume_usd",
-    "MACD": "macd", "MACD_Signal": "macd_signal", "MACD_Histogram": "macd_histogram",
-    "BB_Upper": "bb_upper", "BB_Lower": "bb_lower",
-    "BB_Width": "bb_width", "BB_Pct": "bb_pct",
-    "Return": "return", "volatility_5d": "volatility_5d",
-    "volatility_20d": "volatility_20d",
-    "high_low_spread": "high_low_spread",
-    "high_low_spread_pct": "high_low_spread_pct",
-    "consecutive_up": "consecutive_up",
-    "consecutive_down": "consecutive_down",
-    "VWAP": "vwap", "Price_vs_VWAP": "price_vs_vwap",
-    "Price_vs_EMA9": "price_vs_ema9",
-    "Price_vs_EMA20": "price_vs_ema20",
-}
+# Multi-day indicator → DB column mapping. Re-uses the canonical
+# DAILY_INDICATOR_TO_SQL_COLUMN dict from gcp.database so backfill_ticker
+# and the daily fetcher's compute_and_upsert_daily_indicators stay in
+# sync. The local copy this file used to carry was wrong on several
+# entries (e.g. "RSI" instead of "RSI14", "MA5" instead of "SMA5") so
+# RSI/MA columns silently went unpopulated for any ticker that came
+# in via /replay rather than the daily fetch.
+from gcp.database import DAILY_INDICATOR_TO_SQL_COLUMN as _IND_MAP
 _INT_COLS = {"consecutive_up", "consecutive_down"}
 
 
