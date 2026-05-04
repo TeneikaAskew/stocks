@@ -544,25 +544,92 @@ def _bars_with_atr(prices_per_day):
 
 
 class TestComputeReactionATR:
-    """ATR-around-earnings columns: atr_14_d_minus_1, atr_pct_d_minus_1,
-    atr_14_d, day_range_in_atr_units."""
+    """Timing-aware ATR columns:
+       pre_report_atr / pre_report_atr_pct / post_report_atr /
+       reaction_day_range / reaction_day_range_in_atr_units.
 
-    def test_atr_columns_populated_when_atr_14_present(self):
+    Mapping:
+       BMO: pre = atr on D-1, post = atr on D, reaction_bar = D
+       AMC: pre = atr on D,  post = atr on D+1, reaction_bar = D+1
+    """
+
+    def test_amc_uses_d_for_pre_and_d_plus_1_for_reaction(self):
+        """AMC report: D is normal trading (pre), D+1 is the reaction day."""
         df = _bars_with_atr([
             (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0, 2.0),    # D-1
-            (date(2026, 3, 4), 100.0, 105.0, 99.0, 102.0, 2.2),   # D — range = 6.0
-            (date(2026, 3, 5), 105.0, 107.0, 104.0, 106.0, 2.4),  # D+1
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 101.0, 2.2),   # D = pre
+            (date(2026, 3, 5), 105.0, 115.0, 104.0, 110.0, 3.0),  # D+1 = reaction (range 11.0)
+            (date(2026, 3, 6), 110.0, 111.0, 109.0, 110.0, 3.1),
+            (date(2026, 3, 9), 110.0, 111.0, 109.0, 110.0, 3.2),
+            (date(2026, 3, 10), 110.0, 111.0, 109.0, 110.0, 3.3),
+            (date(2026, 3, 11), 110.0, 111.0, 109.0, 110.0, 3.4),
         ])
         r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
         assert r is not None
-        # T-1 ATR is what trade-sizing uses (going INTO earnings)
-        assert r['atr_14_d_minus_1'] == 2.0
-        # ATR % of T-1 close: 2.0 / 100.0 * 100 = 2.0
-        assert abs(r['atr_pct_d_minus_1'] - 2.0) < 0.01
-        # Same-day ATR for completeness
-        assert r['atr_14_d'] == 2.2
-        # The headline number: day range / T-1 ATR = 6.0 / 2.0 = 3.0
-        assert r['day_range_in_atr_units'] == 3.0
+        # AMC: pre = D's atr (2.2), post = D+1's atr (3.0)
+        assert r['pre_report_atr'] == 2.2
+        assert r['post_report_atr'] == 3.0
+        # pre_atr_pct: 2.2 / 101.0 (D close) * 100 ≈ 2.178
+        assert abs(r['pre_report_atr_pct'] - 2.178) < 0.01
+        # reaction-day range: D+1 high - D+1 low = 115 - 104 = 11.0
+        assert r['reaction_day_range'] == 11.0
+        # range/pre_atr: 11.0 / 2.2 = 5.0
+        assert abs(r['reaction_day_range_in_atr_units'] - 5.0) < 0.001
+
+    def test_bmo_uses_d_minus_1_for_pre_and_d_for_reaction(self):
+        """BMO report: D-1 is pre-report (last bar before), D is the
+        reaction day (gap-and-go on the open)."""
+        df = _bars_with_atr([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0, 2.0),    # D-1 = pre
+            (date(2026, 3, 4), 105.0, 115.0, 104.0, 110.0, 3.0),  # D = reaction (range 11.0)
+            (date(2026, 3, 5), 110.0, 112.0, 109.0, 111.0, 3.1),
+            (date(2026, 3, 6), 111.0, 112.0, 110.0, 111.0, 3.2),
+            (date(2026, 3, 9), 111.0, 112.0, 110.0, 111.0, 3.3),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'BMO')
+        assert r is not None
+        # BMO: pre = D-1's atr (2.0), post = D's atr (3.0)
+        assert r['pre_report_atr'] == 2.0
+        assert r['post_report_atr'] == 3.0
+        # pre_atr_pct: 2.0 / 100.0 (D-1 close) * 100 = 2.0
+        assert abs(r['pre_report_atr_pct'] - 2.0) < 0.001
+        # reaction-day range: D high - D low = 115 - 104 = 11.0
+        assert r['reaction_day_range'] == 11.0
+        # range/pre_atr: 11.0 / 2.0 = 5.5
+        assert abs(r['reaction_day_range_in_atr_units'] - 5.5) < 0.001
+
+    def test_amc_mck_2026_02_screenshot_match(self):
+        """Smoke test against the McKesson 2026-02-04 AMC report. Real
+        numbers from market_data_daily — confirms the timing-aware
+        calc reproduces the third-party screenshot's 6.0× day-range/ATR
+        for AMC reports (the buggy first cut produced 1.92×)."""
+        df = _bars_with_atr([
+            (date(2026, 1, 21), 800.0, 802.0, 798.0, 800.0, 17.0),
+            (date(2026, 1, 22), 800.0, 802.0, 798.0, 800.0, 17.1),
+            (date(2026, 1, 23), 800.0, 802.0, 798.0, 800.0, 17.2),
+            (date(2026, 1, 26), 800.0, 802.0, 798.0, 800.0, 17.3),
+            (date(2026, 1, 27), 800.0, 802.0, 798.0, 800.0, 17.4),
+            (date(2026, 1, 28), 800.0, 802.0, 798.0, 800.0, 17.5),
+            (date(2026, 1, 29), 800.0, 802.0, 798.0, 800.0, 17.6),
+            (date(2026, 1, 30), 800.0, 802.0, 798.0, 800.0, 17.7),
+            (date(2026, 2, 2),  800.0, 802.0, 798.0, 800.0, 17.7),
+            (date(2026, 2, 3),  850.0, 852.0, 848.0, 851.12, 17.68),  # D-1
+            # D = AMC report day (still a regular session, 33.94 range)
+            (date(2026, 2, 4),  845.0, 851.11, 817.17, 822.0, 18.80),  # D = pre
+            # D+1 = reaction day. $109.93 range — the 6× ATR move.
+            (date(2026, 2, 5),  862.0, 971.93, 862.0, 957.80, 22.50),  # D+1 = reaction
+            (date(2026, 2, 6),  957.0, 960.0, 950.0, 955.0, 22.0),
+            (date(2026, 2, 9),  955.0, 957.0, 950.0, 953.0, 21.8),
+            (date(2026, 2, 10), 953.0, 955.0, 949.0, 952.0, 21.6),
+        ])
+        r = compute_reaction(_eps(date(2026, 2, 4)), df, 'AMC')
+        assert r is not None
+        # Pre-report ATR for AMC = atr on D = 18.80 (matches third-party)
+        assert r['pre_report_atr'] == 18.80
+        # Reaction day range = 971.93 - 862.00 = 109.93
+        assert abs(r['reaction_day_range'] - 109.93) < 0.01
+        # 109.93 / 18.80 = 5.847... ≈ the screenshot's 6.0×
+        assert abs(r['reaction_day_range_in_atr_units'] - 5.847) < 0.01
 
     def test_atr_columns_null_when_atr_14_missing_from_frame(self):
         """Legacy daily windows (no atr_14 column at all) — the populator
@@ -574,40 +641,46 @@ class TestComputeReactionATR:
         ])
         r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
         assert r is not None
-        assert r['atr_14_d_minus_1'] is None
-        assert r['atr_pct_d_minus_1'] is None
-        assert r['atr_14_d'] is None
-        assert r['day_range_in_atr_units'] is None
+        assert r['pre_report_atr'] is None
+        assert r['pre_report_atr_pct'] is None
+        assert r['post_report_atr'] is None
+        # reaction_day_range comes from raw OHLC, doesn't need atr_14
+        assert r['reaction_day_range'] is not None
+        # but the ratio needs pre_atr — null without it
+        assert r['reaction_day_range_in_atr_units'] is None
         # And the existing reaction fields are unaffected
         assert r['reaction_gap_pct'] is not None
 
-    def test_atr_columns_null_when_d_minus_1_atr_is_nan(self):
-        """Even if the column exists, individual NaN values stay NULL."""
+    def test_amc_pre_atr_null_when_d_atr_is_nan(self):
+        """Even if the column exists, individual NaN values stay NULL.
+        For AMC, pre_report_atr looks at D — if D's atr is NaN, pre is null."""
         import numpy as np
         df = _bars_with_atr([
-            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0, np.nan),  # D-1 atr missing
-            (date(2026, 3, 4), 100.0, 105.0, 99.0, 102.0, 2.2),
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0, 2.0),
+            (date(2026, 3, 4), 100.0, 105.0, 99.0, 102.0, np.nan),  # D atr missing
             (date(2026, 3, 5), 105.0, 107.0, 104.0, 106.0, 2.4),
         ])
         r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
         assert r is not None
-        assert r['atr_14_d_minus_1'] is None
-        assert r['atr_pct_d_minus_1'] is None
-        # T-1 ATR drives the ratio — without it day_range_in_atr_units is null
-        assert r['day_range_in_atr_units'] is None
-        # Same-day atr is independent and still populated
-        assert r['atr_14_d'] == 2.2
+        assert r['pre_report_atr'] is None       # AMC pre = D's atr (NaN)
+        assert r['pre_report_atr_pct'] is None
+        # reaction-day range computable from raw OHLC
+        assert r['reaction_day_range'] is not None
+        # But ratio needs pre — null
+        assert r['reaction_day_range_in_atr_units'] is None
+        # post_report_atr (D+1 for AMC) is independent and present
+        assert r['post_report_atr'] == 2.4
 
-    def test_atr_columns_null_when_atr_is_zero(self):
-        """A zero ATR (synthetic / market-closed edge case) shouldn't
-        produce a divide-by-zero — the ratio stays NULL."""
+    def test_atr_ratio_null_when_pre_atr_is_zero(self):
+        """A zero pre-report ATR (synthetic / market-closed edge case)
+        shouldn't produce a divide-by-zero — the ratio stays NULL."""
         df = _bars_with_atr([
-            (date(2026, 3, 3), 100.0, 100.0, 100.0, 100.0, 0.0),
-            (date(2026, 3, 4), 100.0, 105.0, 99.0, 102.0, 0.5),
+            (date(2026, 3, 3), 100.0, 100.0, 100.0, 100.0, 1.0),
+            (date(2026, 3, 4), 100.0, 100.0, 100.0, 100.0, 0.0),  # D atr = 0 (AMC pre)
             (date(2026, 3, 5), 105.0, 107.0, 104.0, 106.0, 0.7),
         ])
         r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
         assert r is not None
-        assert r['atr_14_d_minus_1'] == 0.0
-        # zero ATR — ratio undefined, must be None not inf
-        assert r['day_range_in_atr_units'] is None
+        assert r['pre_report_atr'] == 0.0
+        # zero pre — ratio undefined, must be None not inf
+        assert r['reaction_day_range_in_atr_units'] is None

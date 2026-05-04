@@ -202,7 +202,49 @@ Both fit comfortably. Caps (`--max-tickers=800` for market, `--max-tickers=1500`
 | **Indicator backfill writes only 1 row.** Both `compute_indicators_for_dates` (backfill_ticker) and `compute_and_upsert_daily_indicators` (fetch_market_data) compute on a 250-bar window but upsert only the LAST row. New tickers get OHLC for 250+ days but ATR/RSI/MA for only 1 day. | After backfill, MCK had 400 days OHLC but only 8 days of `atr_14` populated. Brief / report queries returned NULL for historical indicator context. | Fix 1: new `compute_indicators_for_full_range(ticker)` in `backfill_ticker.py` writes indicators for every bar in the loaded range, in chunks of 200. |
 | **History fetcher 90d × 6,402 cap=500.** Sunday's earnings-history-weekly resolved 6,402 tickers from a 90-day lookahead and truncated to 500 alphabetical. Tickers beyond row 500 by ticker symbol got no quarterly EPS pulled. | MCK was outside the alphabetical first 500; no `earnings_history` rows; downstream `compute_earnings_reactions` silently skipped MCK. | Fix 3: tighten lookahead 90d → 14d, add `has_options=true` filter, raise cap 500 → 1,500 (safety belt only). |
 | **Ticker reports today with no historical reaction data.** Brief queries `earnings_reactions` for the 12-quarter rollup; if upstream missed the ticker, brief shows "no historical reaction data." | Trader sees a placeholder for an actively-traded earnings event. | Fixes 1–3 above ensure the ticker is in `market_data_daily` with indicators + in `earnings_history` + in `earnings_reactions` by the time the morning brief runs. |
-| **ATR around earnings was a one-off SQL query, not a column.** Trade-sizing question "what's the day-of range in ATR units?" required ad-hoc SQL every time. | One-off queries with risk of drift. | Fix 4: `earnings_reactions` schema gained `atr_14_d_minus_1`, `atr_pct_d_minus_1`, `atr_14_d`, `day_range_in_atr_units`. Populator computes them from the existing market_data_daily join. |
+| **ATR around earnings was a one-off SQL query, not a column.** Trade-sizing question "what's the reaction-day range in ATR units?" required ad-hoc SQL every time. | One-off queries with risk of drift. | Fix 4: `earnings_reactions` schema gained `pre_report_atr`, `pre_report_atr_pct`, `post_report_atr`, `reaction_day_range`, `reaction_day_range_in_atr_units`. Populator computes them from the existing market_data_daily join with **timing-aware** D-vs-D+1 selection (see below). |
+| **First-cut Fix 4 used the wrong day for AMC reports.** Initial schema had `atr_14_d_minus_1` / `atr_14_d` / `day_range_in_atr_units` always anchored at D. For AMC reports D is normal trading (the report drops AFTER close), and the actual reaction trades on D+1 — so the column showed ~2× ATR ranges when third-party analytics showed 6×. | MCK 2026-02-04 AMC: the first-cut populator wrote 1.92× when the real reaction-day move was 6.22× ATR. | Replaced with timing-aware columns. The buggy first-cut columns were dropped in the same migration before any production consumer existed. |
+
+---
+
+## Timing-aware ATR columns (Fix 4)
+
+The `earnings_reactions` table now has 5 ATR columns that are populated based on the report's `reaction_basis`:
+
+| Column | BMO (open report) | AMC (after-close report) |
+|---|---|---|
+| `pre_report_atr` | `atr_14` on **D-1** (last bar before report) | `atr_14` on **D** (last full bar before reaction) |
+| `pre_report_atr_pct` | pre_report_atr / D-1 close × 100 | pre_report_atr / D close × 100 |
+| `post_report_atr` | `atr_14` on **D** (reaction day) | `atr_14` on **D+1** (reaction day) |
+| `reaction_day_range` | high − low on **D** | high − low on **D+1** |
+| `reaction_day_range_in_atr_units` | reaction_day_range / pre_report_atr (BMO) | reaction_day_range / pre_report_atr (AMC) |
+
+**Why this matters.** For AMC reports D is normal trading — the report drops only after the close, so D's range is irrelevant to the earnings reaction. The actual move trades on D+1 (gap + intraday extension). Anchoring the day-range column on D instead of D+1 turns a 6× ATR explosion into a misleading 2× number. Use `pre_report_atr` as the natural denominator: it's the volatility regime traders actually saw going into the print.
+
+**Validated against third-party analytics for MCK 2026-02-04 AMC:**
+
+| Metric | Value | Source |
+|---|---:|---|
+| Pre-report ATR(14) (D for AMC) | $18.80 | our market_data_daily |
+| Reaction-day range (D+1) | $109.93 | our market_data_daily |
+| **Reaction range / pre ATR** | **5.85×** | our compute |
+| Third-party analytics | 6.0× | screenshot reference |
+
+Discrepancy is rounding + slight ATR-smoothing variant (Wilder vs SMA-of-TR).
+
+---
+
+## 12-quarter coverage
+
+`compute_earnings_reactions` skips any quarter where `market_data_daily` doesn't have D-10..D+10 surrounding bars. To populate **12 quarters of reactions per ticker** the OHLC backfill needs ~3.2 years of bars: `12 × 63 trading days + 21d (D±10) + 14d (ATR warm-up) = ~800 calendar days`.
+
+**`backfill_ticker.py` default `BACKFILL_HISTORY_DAYS` is now 800** (was 250). Lower values silently produce fewer reaction rows — `compute_earnings_reactions` doesn't error, it just skips quarters without bars.
+
+For one-off `/replay` requests where you only want the recent context, override:
+```bash
+gcloud run jobs execute backfill-ticker \
+  --update-env-vars="BACKFILL_TICKER=MCK,BACKFILL_HISTORY_DAYS=400"
+```
 
 ---
 

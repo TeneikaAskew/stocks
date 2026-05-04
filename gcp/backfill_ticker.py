@@ -5,9 +5,11 @@ Triggered by the Discord `/replay` command when the requested ticker has
 no daily history in `market_data_daily`. The job:
 
   1. Calls AV TIME_SERIES_DAILY_ADJUSTED (outputsize=full) and writes
-     the most recent ``BACKFILL_HISTORY_DAYS`` rows (default 250) into
-     market_data_daily — enough history for ATR14, SMA200, weekly /
-     monthly / quarterly level computation.
+     the most recent ``BACKFILL_HISTORY_DAYS`` rows (default 800 ≈ 12
+     quarters of earnings reactions + ATR-14 warm-up + D±10 buffer)
+     into market_data_daily — enough for compute_earnings_reactions
+     to populate all 12 historical quarters, plus ATR/SMA200/weekly
+     timeframe computation.
   2. Calls AV TIME_SERIES_INTRADAY for every month touched by
      BACKFILL_DATES + the prior trading day so pre-market context can
      be computed using the prior-close reference.
@@ -471,7 +473,13 @@ def run() -> int:
         log.error("ALPHA_VANTAGE_API_KEY is required")
         return 1
 
-    history_days = int(_env("BACKFILL_HISTORY_DAYS", "250"))
+    # 800 days (~3.2 years) is the floor that lets compute_earnings_reactions
+    # populate 12 quarters per ticker (12 × 63 trading days + D±10 buffer +
+    # ATR-14 warm-up). With the prior default of 250 days, fresh tickers
+    # like MCK ended up with only 4-6 reaction quarters even though
+    # earnings_history had 30+ quarters loaded — the populator silently
+    # skipped any quarter without surrounding bars.
+    history_days = int(_env("BACKFILL_HISTORY_DAYS", "800"))
     include_news = (_env("BACKFILL_INCLUDE_NEWS", "true") or "true").lower() == "true"
     news_window = int(_env("BACKFILL_NEWS_WINDOW", "7"))
     dates = _parse_dates(_env("BACKFILL_DATES"))
