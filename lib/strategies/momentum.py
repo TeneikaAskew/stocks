@@ -43,7 +43,10 @@ def _rsi_col_name() -> str:
     return "RSI14_W"   # the enriched-DF convention from MarketAnalyzer
 
 
-def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
+def _check_call_conditions(
+    row: pd.Series,
+    call_rsi_range: tuple[float, float] = CALL_RSI_RANGE,
+) -> tuple[int, list[str]]:
     """Phase 0.7.1: dropped `stoch_rsi_not_overbought`.
 
     Per the §3.10 strategy audit (273 morning bars, 5/1):
@@ -52,6 +55,10 @@ def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
     it tightens the score distribution: previously a bar with NO real
     momentum could score 3/5 just from above_vwap + above_ema9 + the
     free StochRSI condition. Now those bars score 2/4 and don't fire.
+
+    `call_rsi_range` defaults to the Tier-B universal constant; callers
+    that have a ticker in scope should pass the Tier-A resolved range
+    via `lib.strategies.calibration.get_call_rsi_range(ticker)`.
     """
     score = 0
     conditions: list[str] = []
@@ -61,7 +68,7 @@ def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
         conditions.append("consecutive_up")
 
     rsi = row.get(_rsi_col_name(), row.get("RSI14", 50.0))
-    if CALL_RSI_RANGE[0] < rsi < CALL_RSI_RANGE[1]:
+    if call_rsi_range[0] < rsi < call_rsi_range[1]:
         score += 1
         conditions.append("rsi_bullish_recovery")
 
@@ -79,8 +86,16 @@ def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
     return score, conditions
 
 
-def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
-    """Phase 0.7.1 mirror: dropped `stoch_rsi_not_oversold` (free score)."""
+def _check_put_conditions(
+    row: pd.Series,
+    put_rsi_range: tuple[float, float] = PUT_RSI_RANGE,
+) -> tuple[int, list[str]]:
+    """Phase 0.7.1 mirror: dropped `stoch_rsi_not_oversold` (free score).
+
+    `put_rsi_range` defaults to the Tier-B universal constant; callers
+    that have a ticker in scope should pass the Tier-A resolved range
+    via `lib.strategies.calibration.get_put_rsi_range(ticker)`.
+    """
     score = 0
     conditions: list[str] = []
 
@@ -89,7 +104,7 @@ def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
         conditions.append("consecutive_down")
 
     rsi = row.get(_rsi_col_name(), row.get("RSI14", 50.0))
-    if PUT_RSI_RANGE[0] < rsi < PUT_RSI_RANGE[1]:
+    if put_rsi_range[0] < rsi < put_rsi_range[1]:
         score += 1
         conditions.append("rsi_bearish_recovery")
 
@@ -111,7 +126,19 @@ class MomentumStrategy(Strategy):
     """Momentum: ride strength. Opposite call logic from mean_reversion."""
     name = "momentum"
 
-    def evaluate(self, row: pd.Series) -> Optional[Signal]:
+    def evaluate(
+        self,
+        row: pd.Series,
+        *,
+        call_rsi_range: tuple[float, float] = CALL_RSI_RANGE,
+        put_rsi_range: tuple[float, float] = PUT_RSI_RANGE,
+    ) -> Optional[Signal]:
+        """Evaluate one bar.
+
+        `call_rsi_range` / `put_rsi_range` default to Tier-B universal
+        constants. The signal_monitor caller resolves Tier-A values via
+        `lib.strategies.calibration` and passes them in per-ticker.
+        """
         # Skip warmup bars where indicators are still NaN.
         rsi_val = row.get(_rsi_col_name(), row.get("RSI14"))
         if pd.isna(rsi_val):
@@ -119,8 +146,8 @@ class MomentumStrategy(Strategy):
         if pd.isna(row.get("StochRSI_K")):
             return None
 
-        call_score, call_conds = _check_call_conditions(row)
-        put_score,  put_conds  = _check_put_conditions(row)
+        call_score, call_conds = _check_call_conditions(row, call_rsi_range)
+        put_score,  put_conds  = _check_put_conditions(row, put_rsi_range)
 
         # Per the original MarketAnalyzer logic: strict greater-than to
         # break ties (one direction must dominate). MIN_CONDITIONS = 3.
