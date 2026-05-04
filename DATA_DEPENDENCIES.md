@@ -6,6 +6,8 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 
 > ⚠️ **Partition handling.** `market_data_intraday` is a Postgres LIST-partitioned table. The 5 child tables (`_spy`, `_iwm`, `_qqq`, `_spx`, `_other`) are **routed transparently** — every writer/reader targets the parent and Postgres routes by `ticker`. They appear in the inventory below for completeness but the §2/§3 entries collapse them under the parent.
 
+> 🔧 **Ad-hoc data access.** [`.github/workflows/db-query.yml`](.github/workflows/db-query.yml) (added in #235) runs arbitrary SQL inside a GitHub-Actions runner — it's the only path that works from the sandboxed Claude Code on the web environment, which can't reach Cloud SQL on TCP 5432/3307. Reads default to rolled-back transactions; writes require explicit `commit=true`. It is not enumerated as a writer/reader in §2/§3 because it can target any table — treat it as a generic operator tool, not a pipeline component. See [`CLAUDE.md`](CLAUDE.md#database-access) for invocation patterns.
+
 ---
 
 ## 1. Table inventory
@@ -115,7 +117,7 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 - [`lib/agents/ranker/rank.py:154`](lib/agents/ranker/rank.py#L154) — `INSERT INTO ranker_runs ...` (audit trail, swallowed on error)
 
 ### `signal_alerts`
-- [`gcp/signal_monitor.py:566`](gcp/signal_monitor.py#L566) — `upsert_dataframe`
+- [`gcp/signal_monitor.py:566`](gcp/signal_monitor.py#L566) — `upsert_dataframe`. Persisted columns include both `base_score` (raw 3-of-5 condition count) and `total_score = (base_score + strat_bonus + agreement_bonus) × proximity_multiplier` per Phase 1.5 (#227) + Phase 1.6 (#231). `strategy_agreement` JSONB carries the per-fire agreement detail; `proximity_multiplier` persists for post-hoc weighting analysis. Free-score conditions (`stoch_rsi_not_*`, `near_*_emas`) were dropped in Phase 0.7 (#229), reducing candidate fires by 77% and stacked-agreement rate from 16.3% → 0% on the SPY 2026-05-01 holdout.
 - [`scripts/backfill_signals.py:227`](scripts/backfill_signals.py#L227) — one-shot replay
 
 ### `trades`
@@ -169,8 +171,8 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 
 ### `historical_signals`
 - [`gcp/historical_signals.py:114,117`](gcp/historical_signals.py#L114) — `DELETE` (cleanup before replay)
-- [`gcp/historical_signals.py:180`](gcp/historical_signals.py#L180) — bulk INSERT
-- [`scripts/backfill_timeframe_tags.py:153`](scripts/backfill_timeframe_tags.py#L153) — `UPDATE … SET timeframe_tag` (one-shot)
+- [`gcp/historical_signals.py:180`](gcp/historical_signals.py#L180) — bulk INSERT. `timeframe_tag` is assigned from `lib/strategies/timeframe.py::EMPIRICAL_LOOKUP` (28-bucket dict literal, auto-generated from full 91k-row signal_metrics dataset) per #223 — 91.5% holdout clean-rate vs the prior 83.3% placeholder. Cold-start buckets fall back to the placeholder. Re-train cadence: weekly during early operational period, monthly steady-state — regenerate via `scripts/analyze_timeframe_heuristic.py`.
+- [`scripts/backfill_timeframe_tags.py:153`](scripts/backfill_timeframe_tags.py#L153) — `UPDATE … SET timeframe_tag` (one-shot, re-tags existing rows after a lookup refresh)
 - [`gcp/backfill_ticker.py:435`](gcp/backfill_ticker.py#L435) — Discord `/replay` (likely; table name resolved at runtime)
 
 ### `ticker_info`

@@ -1,6 +1,8 @@
 # Prompt: regenerate DATA_DEPENDENCIES.md
 
-You are Claude. Regenerate `DATA_DEPENDENCIES.md` from scratch.
+You are an automated documentation agent. Regenerate `DATA_DEPENDENCIES.md` from scratch.
+
+**Output discipline (read this twice).** Produce the regenerated file by calling the **`write_file` tool** with `file_path: "DATA_DEPENDENCIES.md"` and the full markdown body as `content`. **Do not** print the file contents to stdout, write a preamble like "Here's the regenerated doc:", or summarize what you did at the end. The workflow inspects the file on disk; any text you emit beyond tool calls is noise.
 
 ## Inputs
 

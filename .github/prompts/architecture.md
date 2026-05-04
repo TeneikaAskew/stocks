@@ -1,6 +1,8 @@
 # Prompt: regenerate ARCHITECTURE.md
 
-You are Claude. The user has dropped you into the GitHub repo `TeneikaAskew/stocks` (a private stocks/trading platform deployed to GCP project `adept-mountain-474619-d4`). Your job is to regenerate `ARCHITECTURE.md` from scratch using the inputs available in the workspace.
+You are an automated documentation agent operating inside the GitHub repo `TeneikaAskew/stocks` (a private stocks/trading platform deployed to GCP project `adept-mountain-474619-d4`). Your job is to regenerate `ARCHITECTURE.md` from scratch using the inputs available in the workspace.
+
+**Output discipline (read this twice).** Produce the regenerated file by calling the **`write_file` tool** with `file_path: "ARCHITECTURE.md"` and the full markdown body as `content`. **Do not** print the file contents to stdout, write a preamble like "Here's the regenerated doc:", or summarize what you did at the end. The workflow inspects the file on disk; any text you emit beyond tool calls is wasted tokens and noise in the run log.
 
 ## Inputs you have
 

@@ -2,13 +2,13 @@
 
 A private stocks-trading research and signal-delivery platform on GCP. **Discord** is the primary surface (scheduled briefs + slash-command interactions); a secondary internal **React + FastAPI dashboard** lives at the `trading-platform` Cloud Run Service. Single-user / small-team — no public auth, no per-user partitioning. The fetcher fleet runs as Cloud Run Jobs orchestrated by Cloud Scheduler; math is concentrated in `lib/` so Cloud Run, the FastAPI router, and CLI scripts all consume the same code.
 
-![Last refresh](https://img.shields.io/badge/last_doc_refresh-2026--05--02-blue)
+![Last refresh](https://img.shields.io/badge/last_doc_refresh-2026--05--03-blue)
 ![Monthly cost](https://img.shields.io/badge/monthly_cost-~%2413-green)
 ![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-27-blue)
 ![Cloud Scheduler crons](https://img.shields.io/badge/scheduled_crons-40%2B-blue)
 ![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/workflows/refresh-architecture-docs.yml/badge.svg)
 
-> Static badges (last refresh / monthly cost / job count) get bumped by the [monthly auto-refresh workflow](.github/workflows/refresh-architecture-docs.yml). Last hand-bump 2026-05-02.
+> Static badges (last refresh / monthly cost / job count) get bumped by the [monthly auto-refresh workflow](.github/workflows/refresh-architecture-docs.yml). Last hand-bump 2026-05-03.
 
 ---
 
@@ -146,6 +146,10 @@ Available routes once running:
 
 The failure-notifier auto-creates labeled GitHub issues for any Cloud Run Job ERROR — see [ARCHITECTURE.md §3 "Failure notification"](ARCHITECTURE.md#failure-notification) for how that flow works.
 
+### I want to query Cloud SQL from a sandboxed session
+
+The Claude Code on the web sandbox can't reach Cloud SQL on TCP 5432/3307. Use [`db-query.yml`](.github/workflows/db-query.yml) to run SQL inside a GitHub-Actions runner instead — reads roll back by default, writes need explicit `commit=true`. Full invocation patterns and safety rules are in [CLAUDE.md → Database access](CLAUDE.md#database-access).
+
 ---
 
 ## Maintenance
@@ -154,11 +158,11 @@ Documentation auto-refreshes monthly via [`.github/workflows/refresh-architectur
 
 - Runs on the 1st of every month at 06:00 UTC, plus manual dispatch
 - Authenticates to GCP via Workload Identity Federation (no service-account JSON keys checked in)
-- Snapshots inventory + IAM + 90-day billing rollup, then invokes Claude Code in headless mode using prompts versioned under [`.github/prompts/`](.github/prompts/)
+- Snapshots inventory + IAM + 90-day billing rollup, then invokes Gemini 2.5 Pro (via Vertex AI) in non-interactive mode using prompts versioned under [`.github/prompts/`](.github/prompts/)
 - Opens a PR titled `Monthly architecture doc refresh: YYYY-MM` if any of `ARCHITECTURE.md` / `DATA_DEPENDENCIES.md` / `COST_ANALYSIS.md` / `README.md` changed meaningfully
 - Bot PRs should be reviewed and merged within a week — stale auto-PRs accumulate noise
 
-One-time setup is documented in [SETUP.md](SETUP.md). Cost: ~\$3-5/month in Anthropic API spend.
+One-time setup is documented in [SETUP.md](SETUP.md). Cost: **~\$0.50-1/month in Vertex AI Gemini 2.5 Pro spend** (the workflow uses Vertex via the existing WIF auth — no separate API key).
 
 The `RUNBOOK.md` and `DASHBOARD_SPEC.md` are **not** auto-regenerated — they're operator-edited (incident playbook + forward-looking spec, not state snapshots). Edit them by hand and PR like any other code change.
 
