@@ -30,6 +30,11 @@ from lib.strat_levels import LevelMap, build_level_map
 from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
+from lib.strategies.calibration import (
+    get_call_rsi_range,
+    get_put_rsi_range,
+    get_resolution_tier,
+)
 from lib.strategies.base import Signal
 from lib.strategies.timeframe import assign_timeframe
 from lib.strategies.catalyst_proximity import get_catalyst_context
@@ -324,15 +329,30 @@ class SignalMonitor:
         rationale: ~21% of overlapping fires AGREE on direction (high-
         conviction stacked signals); ~79% DISAGREE (informative noise).
         """
+        # Resolve per-ticker RSI ranges (Tier A → Tier B fallback).
+        # Both strategies use the same resolved ranges so agreement
+        # detection compares apples-to-apples. See
+        # lib/strategies/calibration.py for the resolution chain.
+        call_rng = get_call_rsi_range(ticker)
+        put_rng = get_put_rsi_range(ticker)
+        call_tier = get_resolution_tier(ticker, "CALL")
+        put_tier = get_resolution_tier(ticker, "PUT")
+
         sig = evaluate_signal(
             latest,
             min_conditions=self.signal_cfg.min_conditions,
             consecutive_periods=self.signal_cfg.consecutive_periods,
-            call_rsi_range=self.signal_cfg.call_rsi_range,
-            put_rsi_range=self.signal_cfg.put_rsi_range,
+            call_rsi_range=call_rng,
+            put_rsi_range=put_rng,
         )
         if sig is None:
             return None, None
+
+        logger.info(
+            "%s fire: %s base_score=%.1f call_range=%s tier=%s put_range=%s tier=%s",
+            ticker, sig["direction"], sig["base_score"],
+            call_rng, call_tier, put_rng, put_tier,
+        )
 
         # Build a Signal facade from the mr dict so detect_agreement
         # can compare it against MomentumStrategy's Signal output. We
@@ -349,7 +369,9 @@ class SignalMonitor:
             weighted_score=float(sig["base_score"]),
             conditions_met=list(sig["conditions_met"]),
         )
-        mom_signal = MOMENTUM.evaluate(latest)
+        mom_signal = MOMENTUM.evaluate(
+            latest, call_rsi_range=call_rng, put_rsi_range=put_rng,
+        )
         agreement = detect_agreement(mom_signal, mr_signal)
         return sig, agreement
 

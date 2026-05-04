@@ -279,18 +279,54 @@ The core analysis logic has been extracted into a shared Python library under `l
 | `lib/backtest.py` | Bar-by-bar backtesting engine with FTFC/ORB trade filtering, risk management, and comprehensive metrics. |
 | `lib/walk_forward.py` | Walk-forward validation with expanding train windows and parameter sensitivity grids. |
 
-### Per-Ticker Configuration
+### Per-Ticker Threshold Resolution
 
-Each ticker has tuned parameters in `alert_config.json`:
+RSI ranges resolve through a two-tier chain at signal time, implemented
+in [`lib/strategies/calibration.py`](../lib/strategies/calibration.py):
 
-| Parameter | IWM | SPY | QQQ | SPX |
-|-----------|-----|-----|-----|-----|
-| CALL target | 0.30% | 0.15% | 0.25% | 0.20% |
-| PUT target | 0.38% | 0.20% | 0.30% | 0.25% |
-| CALL stop | -0.15% | -0.10% | -0.12% | -0.12% |
-| PUT stop | -0.20% | -0.12% | -0.15% | -0.15% |
-| RSI Call range | 25–50 | 30–48 | 28–50 | 30–50 |
-| RSI Put range | 50–75 | 50–75 | 50–75 | 50–75 |
+| Tier | Source | When used | Update mechanism |
+|------|--------|-----------|------------------|
+| **A — per-ticker** | `ticker_calibration` Cloud SQL table, columns `rsi_p10..p90` | Default when a fresh row exists for the ticker (≤180 days old) and percentiles are non-NULL | Quarterly Cloud Run Job `calibrate-thresholds` (Jan 1 / Apr 1 / Jul 1 / Oct 1, 02:00 ET). Source: `market_data_intraday` 60-day rolling history. Script: [`scripts/calibrate_thresholds.py`](../scripts/calibrate_thresholds.py). Manual run: `gcloud run jobs execute calibrate-thresholds`. |
+| **B — universal fallback** | [`lib/strategies/config.py:25-26`](../lib/strategies/config.py): CALL `(25, 50)`, PUT `(50, 75)` | When no calibration row exists, row is >180 days old, or percentile columns are NULL | Manual code change, governed by `tests/test_universal_param_validity.py`. |
+
+**Derivation rule (Tier A):**
+- PUT range = `(rsi_p50, rsi_p90)` — fire PUTs when this ticker's RSI is
+  between its median and 90th percentile (high enough to mean-revert,
+  not so high it's already topped).
+- CALL range = `(rsi_p10, rsi_p50)` — fire CALLs when this ticker's RSI
+  is between its 10th percentile and median.
+
+**Why per-ticker matters:** RSI distribution is ticker-specific. QQQ
+(momentum-led, tech-concentrated) spends more time in higher-RSI regimes
+than SPY; IWM (small-cap, choppy) has wider tails. A single universal
+range produces different fire-rates per ticker; per-ticker percentiles
+produce comparable fire-rates. See
+`docs/plans/SIGNAL_QUALITY_TEST_PLAN.md` §3.
+
+**Current resolved values** (calibration of 2026-05-04 — 60-day lookback,
+~31-33k 1-min bars per ticker):
+
+| Ticker | rsi_p10 | rsi_p50 | rsi_p90 | CALL RSI range (p10, p50) | PUT RSI range (p50, p90) | Source tier |
+|--------|--------:|--------:|--------:|:---:|:---:|:-----------:|
+| IWM    | 36.2 | 50.2 | 63.7 | (36.2, 50.2) | (50.2, 63.7) | A |
+| QQQ    | 35.4 | 50.5 | 65.1 | (35.4, 50.5) | (50.5, 65.1) | A |
+| SPY    | 35.5 | 50.5 | 64.3 | (35.5, 50.5) | (50.5, 64.3) | A |
+
+**Inspecting the table at any time:**
+```bash
+gh workflow run db-query.yml -f sql='SELECT ticker, calibration_date, rsi_p10, rsi_p50, rsi_p90 FROM ticker_calibration ORDER BY ticker, calibration_date DESC'
+```
+
+**Audit-trail logging:** `gcp/signal_monitor.py` logs the resolved range
+and tier on every fire (`tier=A` or `tier=B`) so every persisted signal
+records where its threshold came from.
+
+**Note on CALL/PUT targets and stops:** the prior version of this section
+listed per-ticker CALL/PUT targets and stops (e.g. `0.30%` for IWM
+CALL). Those values were aspirational — not anchored in
+`alert_config.json` or any other live code. They are tracked as a
+separate follow-up audit item; canonical exit logic today uses the
+universal thresholds in `alert_config.json:exit_alerts`.
 
 ---
 
