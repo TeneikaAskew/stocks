@@ -805,11 +805,18 @@ class MarketAnalyzer:
             #   - dropped `stoch_rsi_not_overbought` (free score, fired ~72%)
             #   - relaxed `consecutive_up` from 3-of-3 to 3-of-5
             #   - added `rvol_above_recent` (volume confirmation)
+            #   - added `atr_expansion` (volatility regime gate)
             rvol_recent = current.get('RVol_Recent_20')
             rvol_recent_fires = (
                 rvol_recent is not None
                 and not pd.isna(rvol_recent)
                 and rvol_recent > 1.2
+            )
+            atr_exp = current.get('ATR_Expansion')
+            atr_expansion_fires = (
+                atr_exp is not None
+                and not pd.isna(atr_exp)
+                and atr_exp > 1.15
             )
 
             call_conditions = 0
@@ -823,6 +830,8 @@ class MarketAnalyzer:
                 call_conditions += 1
             if rvol_recent_fires:  # current vol > 1.2x rolling-20 median
                 call_conditions += 1
+            if atr_expansion_fires:  # ATR(5) > 1.15x ATR(20) — vol expanding
+                call_conditions += 1
 
             # PUT Signal Conditions — Phase 0.7.x mirror.
             put_conditions = 0
@@ -835,6 +844,8 @@ class MarketAnalyzer:
             if current['Last'] < current.get('EMA9', current['Last']):  # Price below EMA9
                 put_conditions += 1
             if rvol_recent_fires:  # direction-agnostic volume confirmation
+                put_conditions += 1
+            if atr_expansion_fires:  # direction-agnostic vol regime gate
                 put_conditions += 1
             
             # Generate signal if enough conditions are met

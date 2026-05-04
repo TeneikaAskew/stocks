@@ -58,6 +58,14 @@ CONSECUTIVE_THRESHOLD: int = 3
 # the mean-based `RVOL` column downward on subsequent bars.
 RVOL_RECENT_THRESHOLD: float = 1.2
 
+# Phase 0.7.x — `atr_expansion` momentum condition. Fires when the
+# 5-bar ATR exceeds the 20-bar ATR by at least this multiple, indicating
+# current volatility is above its longer-window baseline (regime
+# expansion = tradeable conditions). Direction-agnostic — vol regime
+# confirms either side of a setup. Reads from the `ATR_Expansion`
+# column populated by `lib.indicators.add_all_indicators`.
+ATR_EXPANSION_THRESHOLD: float = 1.15
+
 # Minimum number of conditions met (out of 5/6) for a signal to fire.
 # Same definition across both strategies for comparability.
 MIN_CONDITIONS: int = 3

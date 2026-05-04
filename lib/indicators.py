@@ -136,6 +136,23 @@ def calculate_atr(
     return wilder_moving_average(tr, period)
 
 
+def calculate_atr_expansion(
+    high: pd.Series, low: pd.Series, close: pd.Series,
+    short: int = 5, long: int = 20,
+) -> pd.Series:
+    """Ratio of short-window ATR to long-window ATR.
+
+    Phase 0.7.x — used by the `atr_expansion` momentum condition.
+    Values > 1 indicate recent volatility is above its longer-window
+    baseline (vol expansion regime); < 1 indicates contraction. The
+    momentum strategy fires the gate when the ratio exceeds
+    `ATR_EXPANSION_THRESHOLD`, indicating tradeable conditions.
+    """
+    atr_short = calculate_atr(high, low, close, short)
+    atr_long  = calculate_atr(high, low, close, long)
+    return atr_short / atr_long.where(atr_long > 0, np.nan)
+
+
 def calculate_bollinger_bands(
     close: pd.Series, period: int = 20, std_mult: float = 2.0,
 ) -> Tuple[pd.Series, pd.Series, pd.Series]:
@@ -593,6 +610,9 @@ def add_all_indicators(
 
     # ATR
     out[ind.atr_col] = calculate_atr(h, l, c, ind.atr_period)
+    # Phase 0.7.x — short/long ATR ratio for the `atr_expansion` gate.
+    # Values > 1 = recent volatility above baseline (regime expansion).
+    out['ATR_Expansion'] = calculate_atr_expansion(h, l, c, short=5, long=20)
 
     # RSI
     out[ind.rsi_col] = calculate_rsi(c, ind.rsi_period)

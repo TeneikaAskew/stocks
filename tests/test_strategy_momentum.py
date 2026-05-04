@@ -35,6 +35,9 @@ def _bar(**overrides) -> pd.Series:
         # 1.0 (below threshold) so existing fixtures don't accidentally
         # pick up the new condition.
         "RVol_Recent_20": 1.0,
+        # Phase 0.7.x: `atr_expansion` fires when > 1.15. Default to 1.0
+        # so fixtures don't accidentally pick it up either.
+        "ATR_Expansion": 1.0,
         "Price_vs_VWAP": 0.0, "Price_vs_EMA9": 0.0, "Price_vs_EMA20": 0.0,
         "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
     }
@@ -211,6 +214,75 @@ def test_rvol_above_recent_adds_to_put_score():
     assert sig.direction == "PUT"
     assert sig.base_score == 5
     assert "rvol_above_recent" in sig.conditions_met
+
+
+def test_atr_expansion_adds_to_call_score():
+    """Phase 0.7.x: `atr_expansion` is a sixth scoring condition (vol
+    regime gate). Bars with ATR_Expansion > 1.15 pick up +1.
+    """
+    row = _bar(
+        Consecutive_Up_5=3,
+        RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=100.0,
+        RVol_Recent_20=1.5,                         # fires
+        ATR_Expansion=1.30,                         # > 1.15 → fires
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.direction == "CALL"
+    assert sig.base_score == 6                     # all 6 conditions met
+    assert "atr_expansion" in sig.conditions_met
+
+
+def test_atr_expansion_below_threshold_does_not_count():
+    row = _bar(
+        Consecutive_Up_5=3,
+        RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=100.0,
+        ATR_Expansion=1.14,                         # just below 1.15
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.base_score == 4                     # 4 of 6 (no rvol, no atr_exp)
+    assert "atr_expansion" not in sig.conditions_met
+
+
+def test_atr_expansion_alone_does_not_fire():
+    """Vol expansion alone (without trend / RSI / VWAP / EMA) must not fire."""
+    row = _bar(
+        ATR_Expansion=2.0,                          # major vol expansion
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is None                              # 1 of 6 < min_conditions=3
+
+
+def test_atr_expansion_missing_or_nan_does_not_fire():
+    import numpy as np
+    row = _bar(
+        Consecutive_Up_5=3, RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,
+        ATR_Expansion=np.nan,
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert "atr_expansion" not in sig.conditions_met
+
+
+def test_atr_expansion_adds_to_put_score():
+    """PUT mirror: vol expansion confirms the bearish setup symmetrically."""
+    row = _bar(
+        Consecutive_Down_5=3,
+        RSI14_W=65.0,
+        Last=99.0, Close=99.0, VWAP=100.0,
+        EMA9=100.0,
+        ATR_Expansion=1.25,                         # fires
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.direction == "PUT"
+    assert "atr_expansion" in sig.conditions_met
 
 
 def test_signal_carries_indicator_snapshots():

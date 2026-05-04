@@ -50,6 +50,9 @@ def _bar(**overrides) -> pd.Series:
         # Default below the 1.2 threshold so `rvol_above_recent` doesn't
         # fire by accident in parity fixtures (it's not in legacy logic).
         "RVol_Recent_20": 1.0,
+        # Default below the 1.15 threshold so `atr_expansion` doesn't
+        # fire by accident in parity fixtures (also not in legacy logic).
+        "ATR_Expansion": 1.0,
         "Price_vs_VWAP": 0.0, "Price_vs_EMA9": 0.0, "Price_vs_EMA20": 0.0,
         "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
     }

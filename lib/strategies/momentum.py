@@ -24,6 +24,7 @@ import pandas as pd
 
 from .base import Signal, Strategy
 from .config import (
+    ATR_EXPANSION_THRESHOLD,
     CALL_RSI_RANGE,
     CONSECUTIVE_THRESHOLD,
     MIN_CONDITIONS,
@@ -47,13 +48,12 @@ def _rsi_col_name() -> str:
 def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
     """Phase 0.7.1: dropped `stoch_rsi_not_overbought`.
     Phase 0.7.2: relaxed `consecutive_up` from 3-of-3 to 3-of-5.
-    Phase 0.7.x: added `rvol_above_recent` (volume confirmation).
+    Phase 0.7.x: added `rvol_above_recent` (volume confirmation) and
+    `atr_expansion` (volatility regime gate).
 
-    The strict 3-of-3 gate misses obvious uptrends with a single
-    pullback bar. Reading from `Consecutive_Up_5` (rolling sum of up
-    bars over a 5-bar window, populated by add_all_indicators) lets one
-    pullback inside an otherwise-trending sequence still satisfy the
-    momentum gate.
+    Six conditions total; min_conditions=3 still gates fires. Bars with
+    full volume + vol-expansion confirmation reach score=6 (max
+    conviction, room for tiered scoring to differentiate).
     """
     score = 0
     conditions: list[str] = []
@@ -83,14 +83,20 @@ def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
         score += 1
         conditions.append("rvol_above_recent")
 
+    atr_exp = row.get("ATR_Expansion")
+    if atr_exp is not None and not pd.isna(atr_exp) and atr_exp > ATR_EXPANSION_THRESHOLD:
+        score += 1
+        conditions.append("atr_expansion")
+
     return score, conditions
 
 
 def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
     """Phase 0.7.1 mirror: dropped `stoch_rsi_not_oversold` (free score).
     Phase 0.7.2 mirror: relaxed `consecutive_down` from 3-of-3 to 3-of-5.
-    Phase 0.7.x mirror: added `rvol_above_recent` (volume confirmation,
-    direction-agnostic — high volume confirms either side of a setup).
+    Phase 0.7.x mirror: added `rvol_above_recent` and `atr_expansion`
+    (both direction-agnostic — high volume / vol expansion confirm
+    either side of a setup).
     """
     score = 0
     conditions: list[str] = []
@@ -119,6 +125,11 @@ def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
     if rvol_recent is not None and not pd.isna(rvol_recent) and rvol_recent > RVOL_RECENT_THRESHOLD:
         score += 1
         conditions.append("rvol_above_recent")
+
+    atr_exp = row.get("ATR_Expansion")
+    if atr_exp is not None and not pd.isna(atr_exp) and atr_exp > ATR_EXPANSION_THRESHOLD:
+        score += 1
+        conditions.append("atr_expansion")
 
     return score, conditions
 
