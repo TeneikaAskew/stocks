@@ -8,19 +8,19 @@ One-time setup for `.github/workflows/refresh-architecture-docs.yml`. After this
 
 ## What the workflow needs
 
-1. **A GCP service account** with read-only access to: Cloud Asset Inventory, IAM, BigQuery (for the billing-export query)
+1. **A GCP service account** with read-only access to: Cloud Asset Inventory, IAM, BigQuery (for the billing-export query), and Vertex AI (for the Gemini doc-generation calls)
 2. **Workload Identity Federation (WIF)** so GitHub Actions can impersonate that service account without a long-lived JSON key
-3. **Three GitHub repository secrets** holding the WIF config and the Anthropic API key
-4. **One enabled API** (Cloud Asset API) — the rest are typically already on for any GCP project
+3. **Two GitHub repository secrets** holding the WIF config — no separate `GEMINI_API_KEY` is needed because the workflow uses Vertex AI, which authenticates via the same WIF-derived ADC
+4. **Two enabled APIs** (Cloud Asset + Vertex AI) — the rest are typically already on for any GCP project
 
 Total operator time: ~30 minutes for a first-time WIF setup, ~10 minutes if you've done WIF before.
 
 ---
 
-## 1. Enable the Cloud Asset API
+## 1. Enable the Cloud Asset + Vertex AI APIs
 
 ```bash
-gcloud services enable cloudasset.googleapis.com \
+gcloud services enable cloudasset.googleapis.com aiplatform.googleapis.com \
   --project=adept-mountain-474619-d4
 ```
 
@@ -48,7 +48,7 @@ echo "SA_EMAIL=${SA_EMAIL}"   # save this — you'll need it as a GitHub secret
 
 ## 3. Grant the IAM roles
 
-Three roles cover everything the workflow does:
+Five roles cover everything the workflow does:
 
 ```bash
 # Read asset inventory
@@ -69,6 +69,11 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
 gcloud projects add-iam-policy-binding "${PROJECT}" \
   --member="serviceAccount:${SA_EMAIL}" \
   --role="roles/bigquery.jobUser"
+
+# Call Vertex AI Gemini for doc generation
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/aiplatform.user"
 ```
 
 > **Note on `roles/bigquery.dataViewer`:** This grant is project-wide. If you'd rather scope tighter, grant it on the `billing_export` dataset specifically:
@@ -130,16 +135,9 @@ Save both `WIF_PROVIDER` and `SA_EMAIL` — they go in GitHub secrets next.
 
 ---
 
-## 5. Get the Anthropic API key
+## 5. Add two GitHub repository secrets
 
-The workflow invokes Claude Code in headless mode to regenerate the docs. That requires an API key with Claude model access.
-
-1. Anthropic Console → API Keys → Create key (or use an existing one with Claude access)
-2. Save the value — you'll need it for the next step
-
----
-
-## 6. Add three GitHub repository secrets
+The workflow calls Vertex AI Gemini using the same WIF-derived ADC it already has — there is **no `GEMINI_API_KEY` secret to create.** That's the whole point of routing Gemini through Vertex instead of the public Generative Language API. Just two secrets:
 
 Repo → Settings → Secrets and variables → Actions → New repository secret. Add:
 
@@ -147,11 +145,12 @@ Repo → Settings → Secrets and variables → Actions → New repository secre
 |---|---|
 | `GCP_WIF_PROVIDER` | The `WIF_PROVIDER` string from step 4c |
 | `GCP_WIF_SA_EMAIL` | The `SA_EMAIL` from step 2 |
-| `ANTHROPIC_API_KEY` | The Anthropic key from step 5 |
+
+> **Why no API key?** Gemini is invoked with `GOOGLE_GENAI_USE_VERTEXAI=true`, which makes the Gemini CLI / SDK use Vertex AI as the provider. Vertex authenticates with Application Default Credentials, and the WIF auth step already populates ADC for the runner. One auth path covers asset inventory, BigQuery, and Gemini — strictly less secret sprawl than the previous Anthropic-key flow.
 
 ---
 
-## 7. Test the workflow end-to-end before relying on it
+## 6. Test the workflow end-to-end before relying on it
 
 The workflow has a `dry_run` input that generates the docs but skips the PR. Use it for the first run.
 
@@ -167,10 +166,10 @@ gh run watch
 
 ### What "passing" looks like
 
-1. **Job completes in 10-25 minutes.** First run is at the high end (Claude Code cold-start + first BigQuery query authorization).
+1. **Job completes in 10-25 minutes.** First run is at the high end (Gemini CLI cold-start + first BigQuery query authorization + Vertex AI cold-call).
 2. **Step "Dump asset inventory" prints** `Inventory rows: 700-1000ish`. If it fails with permission errors → re-check the `cloudasset.viewer` grant.
 3. **Step "Dump 90-day billing rollup" prints** `wrote billing_90d.json with N rows`. If it fails with `404 Not found: Dataset billing_export` → BigQuery billing export isn't enabled for this project; turn it on at Cloud Console → Billing → Billing Export → BigQuery → choose dataset `billing_export`. It needs ~24 hours of warmup before the first row appears.
-4. **Steps "Regenerate ARCHITECTURE.md / DATA_DEPENDENCIES.md / COST_ANALYSIS.md / README.md" each take 1-8 minutes** and write the file. README runs last so it can read the freshly-regenerated other docs to populate its doc-map table + Mermaid embed + cost headlines. If any step fails with `401 unauthorized` → re-check `ANTHROPIC_API_KEY`.
+4. **Steps "Regenerate ARCHITECTURE.md / DATA_DEPENDENCIES.md / COST_ANALYSIS.md / README.md" each take 1-6 minutes** and write the file. README runs last so it can read the freshly-regenerated other docs to populate its doc-map table + Mermaid embed + cost headlines. If a step fails with `403 PERMISSION_DENIED ... Vertex AI` → re-check the `roles/aiplatform.user` grant. If it fails with `404 model not found: gemini-2.5-pro` → confirm the model is available in `GCP_LOCATION` (`us-east1`); falling back to `us-central1` is safe.
 5. **Step "Detect meaningful changes" reports** which files changed. On the first run after this PR lands, the docs are already current → expect "no meaningful changes" or only minor wording shifts.
 
 ### Validate the dry-run output
@@ -191,18 +190,19 @@ In practice: run `dry_run=false` once after dry-run passes, review the resulting
 | `Permission denied on resource project ${PROJECT}` (asset step) | `cloudasset.viewer` not granted | Step 3, first command |
 | `403 ... iamcredentials.generateAccessToken` | WIF binding wrong | Step 4b — verify `attribute.repository` matches your repo |
 | `404 Not found: Dataset billing_export` | Billing export not enabled | Cloud Console → Billing → Billing Export |
-| `401 ... invalid x-api-key` | Anthropic key not set or wrong | Step 6 |
-| Workflow runs but docs don't change | Claude returned text without writing the file | Check the Claude Code logs in the step output — usually a max-turns timeout. Bump `--max-turns` in the workflow. |
+| `403 PERMISSION_DENIED ... aiplatform.googleapis.com` | `roles/aiplatform.user` not granted, or Vertex AI API not enabled | Step 1 + Step 3 last command |
+| `404 model not found: gemini-2.5-pro` | Model not available in `GCP_LOCATION` | Edit the workflow to set `GCP_LOCATION: us-central1` |
+| Workflow runs but docs don't change | Gemini returned text without writing the file | Check the Gemini CLI logs in the step output — usually the model added preamble before the markdown instead of calling the Write tool. Tighten the relevant prompt under `.github/prompts/`. |
 
 ---
 
-## 8. Rotation + ongoing maintenance
+## 7. Rotation + ongoing maintenance
 
 | Resource | Rotation cadence | How |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | When you rotate Anthropic keys (typically annual or on suspected leak) | Generate a new key in Anthropic Console, update the GitHub secret, delete the old one |
 | WIF provider trust | Never (the OIDC issuer is Google's) | n/a |
-| Service account roles | Audit annually — confirm the 4 grants in step 3 are the only ones | `gcloud projects get-iam-policy ${PROJECT} --flatten=bindings --filter=bindings.members:serviceAccount:${SA_EMAIL}` |
+| Service account roles | Audit annually — confirm the 5 grants in step 3 are the only ones | `gcloud projects get-iam-policy ${PROJECT} --flatten=bindings --filter=bindings.members:serviceAccount:${SA_EMAIL}` |
+| Gemini model pin | Bump when a newer GA model lands (Gemini 2.5 Pro → 2.6 Pro etc.) | Edit `GEMINI_MODEL` in the workflow `env:` block, run a `dry_run=true`, merge if the diff looks reasonable |
 
 The workflow itself is checked into git — changes to its behavior go through the normal PR flow. Same for the prompts under `.github/prompts/` (edit a prompt, the next refresh picks it up).
 
@@ -212,7 +212,7 @@ The workflow itself is checked into git — changes to its behavior go through t
 
 The workflow runs once per month plus any manual triggers. Per run:
 - **GitHub Actions**: ~15-30 min on `ubuntu-latest` (free tier covers ~2000 min/month; this is rounding error)
-- **GCP**: cents (asset inventory + IAM read + one BigQuery query against ~1k rows)
-- **Anthropic**: a few dollars in tokens for 3 doc regenerations (each one is a long-context tool-using session — the bulk of the cost is the input-token reads of `gcp_inventory.json` ~700KB + repo source files)
+- **GCP (non-AI)**: cents (asset inventory + IAM read + one BigQuery query against ~1k rows)
+- **Vertex AI Gemini 2.5 Pro**: ~$0.50–$1.00 per run for 4 doc regenerations. Pricing at the time of this writing is $1.25/M input tokens (≤200K context) and $10/M output tokens; a typical run reads ~200K context tokens (gcp_inventory.json + IAM dump + repo source files) and writes ~40K output tokens across all four files
 
-Total: **~$3-5/month** in Anthropic API spend, $0-1/month in GCP, $0 in GitHub Actions. The cost is negligible vs. the value of always-current docs.
+Total: **~$0.50–$1.00/month** in Vertex AI spend on a monthly cadence, $0-1/month in GCP infra, $0 in GitHub Actions. Roughly half the cost of the previous Anthropic-keyed flow at comparable quality. Verify current pricing at [`ai.google.dev/pricing`](https://ai.google.dev/pricing) before assuming this is still accurate.
