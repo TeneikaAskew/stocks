@@ -50,6 +50,14 @@ CONSECUTIVE_PERIODS: int = 3
 CONSECUTIVE_WINDOW: int = 5
 CONSECUTIVE_THRESHOLD: int = 3
 
+# Phase 0.7.x — `rvol_above_recent` momentum condition. Fires when
+# current bar volume exceeds the rolling median over the last 20 bars
+# by at least this multiple. Reads from the `RVol_Recent_20` column
+# populated by `lib.indicators.add_all_indicators`. Median-based to be
+# robust to single-bar volume spikes (news, opening minute) that bias
+# the mean-based `RVOL` column downward on subsequent bars.
+RVOL_RECENT_THRESHOLD: float = 1.2
+
 # Minimum number of conditions met (out of 5/6) for a signal to fire.
 # Same definition across both strategies for comparability.
 MIN_CONDITIONS: int = 3

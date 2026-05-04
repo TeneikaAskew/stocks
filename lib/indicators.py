@@ -186,6 +186,18 @@ def calculate_rvol(volume: pd.Series, period: int = 20) -> pd.Series:
     return volume / rolling_avg.where(rolling_avg > 0, np.nan)
 
 
+def calculate_rvol_recent(volume: pd.Series, period: int = 20) -> pd.Series:
+    """Median-based relative volume — current / rolling MEDIAN volume.
+
+    Phase 0.7.x — used by the `rvol_above_recent` momentum condition.
+    Median is robust to outlier high-volume bars (news spikes, opening
+    minute) that depress the mean-based RVOL on subsequent bars and
+    cause the gate to mis-fire.
+    """
+    rolling_med = volume.rolling(window=period, min_periods=1).median()
+    return volume / rolling_med.where(rolling_med > 0, np.nan)
+
+
 def calculate_rvol_minute_of_day(
     times: pd.Series, volume: pd.Series,
 ) -> pd.Series:
@@ -601,6 +613,9 @@ def add_all_indicators(
 
     # RVOL
     out['RVOL'] = calculate_rvol(v, ind.rvol_period)
+    # Phase 0.7.x — median-based RVOL for the `rvol_above_recent` gate
+    # (robust to outlier-volume bars vs. the mean-based RVOL above).
+    out['RVol_Recent_20'] = calculate_rvol_recent(v, ind.rvol_period)
 
     # OBV
     out['OBV'] = calculate_obv(c, v)

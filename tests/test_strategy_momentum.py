@@ -31,6 +31,10 @@ def _bar(**overrides) -> pd.Series:
         # Phase 0.7.2: relaxed gate reads `Consecutive_Up_5` / `Consecutive_Down_5`
         # (3-of-5 windows) instead of the strict 3-of-3 columns above.
         "Consecutive_Up_5": 0, "Consecutive_Down_5": 0,
+        # Phase 0.7.x: `rvol_above_recent` fires when > 1.2. Default to
+        # 1.0 (below threshold) so existing fixtures don't accidentally
+        # pick up the new condition.
+        "RVol_Recent_20": 1.0,
         "Price_vs_VWAP": 0.0, "Price_vs_EMA9": 0.0, "Price_vs_EMA20": 0.0,
         "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
     }
@@ -136,6 +140,77 @@ def test_strict_tie_breaker_no_fire_when_call_eq_put():
 def test_warmup_bar_returns_none():
     row = _bar(RSI14_W=float("nan"))
     assert STRAT.evaluate(row) is None
+
+
+def test_rvol_above_recent_adds_to_call_score():
+    """Phase 0.7.x: `rvol_above_recent` is a fifth scoring condition
+    (volume confirmation). Bars with RVol_Recent_20 > 1.2 pick up +1.
+    """
+    row = _bar(
+        Consecutive_Up_5=3,
+        RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,       # above_vwap fires
+        EMA9=100.0,                                 # above_ema9 fires
+        RVol_Recent_20=1.5,                         # > 1.2 → fires
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.direction == "CALL"
+    assert sig.base_score == 5                     # all 5 conditions met
+    assert "rvol_above_recent" in sig.conditions_met
+
+
+def test_rvol_below_threshold_does_not_count():
+    row = _bar(
+        Consecutive_Up_5=3,
+        RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=100.0,
+        RVol_Recent_20=1.19,                        # just below 1.2
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.base_score == 4                     # rvol condition NOT met
+    assert "rvol_above_recent" not in sig.conditions_met
+
+
+def test_rvol_above_recent_alone_does_not_fire():
+    """Volume alone (without trend / RSI / VWAP / EMA) must not fire."""
+    row = _bar(
+        RVol_Recent_20=2.5,                         # massive volume spike
+        # All other conditions defaulted to NOT firing.
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is None                              # 1 of 5 < min_conditions=3
+
+
+def test_rvol_missing_or_nan_does_not_fire():
+    """Warmup / missing volume data must not satisfy the gate."""
+    import numpy as np
+    row_missing = _bar(
+        Consecutive_Up_5=3, RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,
+        RVol_Recent_20=np.nan,
+    )
+    sig = STRAT.evaluate(row_missing)
+    assert sig is not None
+    assert "rvol_above_recent" not in sig.conditions_met
+
+
+def test_rvol_above_recent_adds_to_put_score():
+    """PUT mirror: high volume confirms the bearish setup symmetrically."""
+    row = _bar(
+        Consecutive_Down_5=3,
+        RSI14_W=65.0,
+        Last=99.0, Close=99.0, VWAP=100.0,         # below_vwap
+        EMA9=100.0,                                 # below_ema9
+        RVol_Recent_20=1.5,                         # fires
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.direction == "PUT"
+    assert sig.base_score == 5
+    assert "rvol_above_recent" in sig.conditions_met
 
 
 def test_signal_carries_indicator_snapshots():

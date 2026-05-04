@@ -28,6 +28,7 @@ from .config import (
     CONSECUTIVE_THRESHOLD,
     MIN_CONDITIONS,
     PUT_RSI_RANGE,
+    RVOL_RECENT_THRESHOLD,
     STOCH_RSI_OVERBOUGHT,
     STOCH_RSI_OVERSOLD,
 )
@@ -46,6 +47,7 @@ def _rsi_col_name() -> str:
 def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
     """Phase 0.7.1: dropped `stoch_rsi_not_overbought`.
     Phase 0.7.2: relaxed `consecutive_up` from 3-of-3 to 3-of-5.
+    Phase 0.7.x: added `rvol_above_recent` (volume confirmation).
 
     The strict 3-of-3 gate misses obvious uptrends with a single
     pullback bar. Reading from `Consecutive_Up_5` (rolling sum of up
@@ -76,12 +78,19 @@ def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
         score += 1
         conditions.append("above_ema9")
 
+    rvol_recent = row.get("RVol_Recent_20")
+    if rvol_recent is not None and not pd.isna(rvol_recent) and rvol_recent > RVOL_RECENT_THRESHOLD:
+        score += 1
+        conditions.append("rvol_above_recent")
+
     return score, conditions
 
 
 def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
     """Phase 0.7.1 mirror: dropped `stoch_rsi_not_oversold` (free score).
     Phase 0.7.2 mirror: relaxed `consecutive_down` from 3-of-3 to 3-of-5.
+    Phase 0.7.x mirror: added `rvol_above_recent` (volume confirmation,
+    direction-agnostic — high volume confirms either side of a setup).
     """
     score = 0
     conditions: list[str] = []
@@ -105,6 +114,11 @@ def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
     if last < ema9:
         score += 1
         conditions.append("below_ema9")
+
+    rvol_recent = row.get("RVol_Recent_20")
+    if rvol_recent is not None and not pd.isna(rvol_recent) and rvol_recent > RVOL_RECENT_THRESHOLD:
+        score += 1
+        conditions.append("rvol_above_recent")
 
     return score, conditions
 

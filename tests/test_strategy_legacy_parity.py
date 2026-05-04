@@ -47,6 +47,9 @@ def _bar(**overrides) -> pd.Series:
         "StochRSI_K": 50.0,
         "Consecutive_Up": 0, "Consecutive_Down": 0,
         "Consecutive_Up_5": 0, "Consecutive_Down_5": 0,
+        # Default below the 1.2 threshold so `rvol_above_recent` doesn't
+        # fire by accident in parity fixtures (it's not in legacy logic).
+        "RVol_Recent_20": 1.0,
         "Price_vs_VWAP": 0.0, "Price_vs_EMA9": 0.0, "Price_vs_EMA20": 0.0,
         "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
     }

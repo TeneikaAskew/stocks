@@ -804,6 +804,14 @@ class MarketAnalyzer:
             # CALL Signal Conditions — Phase 0.7.x:
             #   - dropped `stoch_rsi_not_overbought` (free score, fired ~72%)
             #   - relaxed `consecutive_up` from 3-of-3 to 3-of-5
+            #   - added `rvol_above_recent` (volume confirmation)
+            rvol_recent = current.get('RVol_Recent_20')
+            rvol_recent_fires = (
+                rvol_recent is not None
+                and not pd.isna(rvol_recent)
+                and rvol_recent > 1.2
+            )
+
             call_conditions = 0
             if current.get('Consecutive_Up_5', 0) >= 3:  # 3-of-last-5 up bars
                 call_conditions += 1
@@ -812,6 +820,8 @@ class MarketAnalyzer:
             if current['Last'] > current.get('VWAP', current['Last']):  # Price above VWAP
                 call_conditions += 1
             if current['Last'] > current.get('EMA9', current['Last']):  # Price above EMA9
+                call_conditions += 1
+            if rvol_recent_fires:  # current vol > 1.2x rolling-20 median
                 call_conditions += 1
 
             # PUT Signal Conditions — Phase 0.7.x mirror.
@@ -823,6 +833,8 @@ class MarketAnalyzer:
             if current['Last'] < current.get('VWAP', current['Last']):  # Price below VWAP
                 put_conditions += 1
             if current['Last'] < current.get('EMA9', current['Last']):  # Price below EMA9
+                put_conditions += 1
+            if rvol_recent_fires:  # direction-agnostic volume confirmation
                 put_conditions += 1
             
             # Generate signal if enough conditions are met
