@@ -75,7 +75,47 @@ jobs:
         run: pip install --quiet google-cloud-bigquery
 
       - name: Install Gemini CLI
-        run: npm install -g @google/gemini-cli
+        # Pinned: --allowed-tools was deprecated and YOLO behaviour changed
+        # between minor versions. Without a pin, a future minor bump can
+        # silently change the security model under us.
+        run: npm install -g @google/gemini-cli@^0.40
+
+      # ── Gemini Policy Engine: default-deny + explicit allowlist ───────────
+      # Rationale: --yolo + --allowed-tools (the previous design) does NOT
+      # restrict the toolset. Per the policy-engine docs, YOLO mode injects
+      # a high-priority built-in rule that allows ALL tools — including
+      # run_shell_command, web_fetch, save_memory — defeating any
+      # --allowed-tools intent. --allowed-tools is itself flagged
+      # [DEPRECATED] in the current CLI's --help.
+      #
+      # The supported security model is the Policy Engine: a TOML file at
+      # ~/.gemini/policies/*.toml that the CLI auto-loads. Default-deny
+      # priority 1, then an explicit allow priority 100 for the seven
+      # tools the doc-regen prompts genuinely need:
+      #   read_file, write_file, replace, glob, grep_search,
+      #   list_directory, read_many_files.
+      # Notably absent: run_shell_command (no shell), web_fetch +
+      # google_web_search (no network — workflow already gives the model
+      # the gcp_*.json and billing_90d.json snapshots it needs), and
+      # save_memory (no cross-run state).
+      - name: Write Gemini policy (default-deny + allowlist)
+        run: |
+          mkdir -p "${HOME}/.gemini/policies"
+          cat > "${HOME}/.gemini/policies/refresh-docs.toml" <<'TOML'
+          # Default-deny everything
+          [[rule]]
+          toolName = "*"
+          decision = "deny"
+          priority = 1
+
+          # Explicit allow for the doc-regen toolset
+          [[rule]]
+          toolName = ["read_file", "write_file", "replace", "glob", "grep_search", "list_directory", "read_many_files"]
+          decision = "allow"
+          priority = 100
+          TOML
+          echo "::notice::Wrote Gemini policy:"
+          cat "${HOME}/.gemini/policies/refresh-docs.toml"
 
       # ── GCP auth via Workload Identity Federation ─────────────────────────
       # The same auth covers gcloud + BigQuery + Vertex AI — no separate
@@ -144,22 +184,10 @@ jobs:
           PY
 
       # ── Regenerate docs via Gemini CLI (non-interactive) ──────────────────
-      # Each invocation gets the corresponding prompt as the user message,
-      # repo files + the JSON dumps as tool-accessible inputs, and is
-      # restricted to a hard-coded allowlist of safe tools.
-      #
-      # SECURITY: We do NOT pass bare --yolo. Bare --yolo auto-approves
-      # *every* tool the CLI exposes, including run_shell_command and
-      # web_fetch — both of which would let a prompt-injection vector in
-      # the asset/IAM/billing JSON dumps execute arbitrary commands with
-      # GITHUB_TOKEN write scope and WIF-derived cloud creds in the
-      # environment. Instead we pair --yolo with an explicit
-      # --allowed-tools allowlist that excludes shell + network tools.
-      # The allowlist enumerates only what the doc prompts genuinely need:
-      # read_file / write_file / replace (for the regenerated doc) /
-      # glob + grep + list_directory + read_many_files (to traverse the
-      # repo). No run_shell_command, no web_fetch, no web_search, no
-      # save_memory.
+      # Tool restriction is enforced by the policy file written above
+      # (~/.gemini/policies/refresh-docs.toml), NOT by --allowed-tools or
+      # --yolo. We pass neither: --allowed-tools is deprecated and --yolo
+      # would override the policy with an "allow all" built-in rule.
       #
       # GOOGLE_GENAI_USE_VERTEXAI tells the Gemini CLI to use Vertex AI as
       # its provider (instead of the public Generative Language API), which
@@ -171,8 +199,6 @@ jobs:
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
           gemini --model "${GEMINI_MODEL}" \
-            --allowed-tools "read_file,write_file,replace,glob,grep,list_directory,read_many_files" \
-            --yolo \
             --prompt "$(cat .github/prompts/architecture.md)"
 
       - name: Regenerate DATA_DEPENDENCIES.md
@@ -182,8 +208,6 @@ jobs:
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
           gemini --model "${GEMINI_MODEL}" \
-            --allowed-tools "read_file,write_file,replace,glob,grep,list_directory,read_many_files" \
-            --yolo \
             --prompt "$(cat .github/prompts/data-dependencies.md)"
 
       - name: Regenerate COST_ANALYSIS.md
@@ -193,8 +217,6 @@ jobs:
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
           gemini --model "${GEMINI_MODEL}" \
-            --allowed-tools "read_file,write_file,replace,glob,grep,list_directory,read_many_files" \
-            --yolo \
             --prompt "$(cat .github/prompts/cost-analysis.md)"
 
       # README runs LAST so it can read the freshly-regenerated other docs
@@ -206,8 +228,6 @@ jobs:
           GOOGLE_CLOUD_LOCATION: ${{ env.GCP_LOCATION }}
         run: |
           gemini --model "${GEMINI_MODEL}" \
-            --allowed-tools "read_file,write_file,replace,glob,grep,list_directory,read_many_files" \
-            --yolo \
             --prompt "$(cat .github/prompts/readme.md)"
 
       # ── Decide whether the changes are meaningful ─────────────────────────
