@@ -24,6 +24,7 @@ available.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 from functools import lru_cache
 from typing import Optional, Tuple
@@ -33,6 +34,25 @@ from .config import CALL_RSI_RANGE, PUT_RSI_RANGE
 log = logging.getLogger(__name__)
 
 _STALE_DAYS = 180
+
+
+def _is_usable_number(v) -> bool:
+    """True iff `v` is a non-None, non-NaN finite number.
+
+    pd.read_sql materializes SQL NULL as NaN for numeric columns
+    (DOUBLE PRECISION rsi_p10..p90), not as Python None. A pure
+    `is not None` check would let NaN through and we'd return a
+    (nan, nan) Tier-A range — causing the RSI gate `low < rsi < high`
+    to silently always be False for that ticker (NaN comparisons
+    return False). We must also reject NaN/inf to fall back to Tier-B.
+    """
+    if v is None:
+        return False
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(f)
 
 
 @lru_cache(maxsize=64)
@@ -85,7 +105,7 @@ def _latest_calibration(ticker: str) -> Optional[dict]:
 def get_put_rsi_range(ticker: str) -> Tuple[float, float]:
     """Resolve the PUT RSI range for `ticker`. Tier A → Tier B fallback."""
     row = _latest_calibration(ticker)
-    if row and row.get("rsi_p50") is not None and row.get("rsi_p90") is not None:
+    if row and _is_usable_number(row.get("rsi_p50")) and _is_usable_number(row.get("rsi_p90")):
         rng = (float(row["rsi_p50"]), float(row["rsi_p90"]))
         log.debug(
             "PUT_RSI_RANGE Tier-A for %s: %s (cal=%s)",
@@ -98,7 +118,7 @@ def get_put_rsi_range(ticker: str) -> Tuple[float, float]:
 def get_call_rsi_range(ticker: str) -> Tuple[float, float]:
     """Resolve the CALL RSI range for `ticker`. Tier A → Tier B fallback."""
     row = _latest_calibration(ticker)
-    if row and row.get("rsi_p10") is not None and row.get("rsi_p50") is not None:
+    if row and _is_usable_number(row.get("rsi_p10")) and _is_usable_number(row.get("rsi_p50")):
         rng = (float(row["rsi_p10"]), float(row["rsi_p50"]))
         log.debug(
             "CALL_RSI_RANGE Tier-A for %s: %s (cal=%s)",
@@ -118,5 +138,5 @@ def get_resolution_tier(ticker: str, side: str) -> str:
     if not row:
         return "B"
     if side == "PUT":
-        return "A" if (row.get("rsi_p50") is not None and row.get("rsi_p90") is not None) else "B"
-    return "A" if (row.get("rsi_p10") is not None and row.get("rsi_p50") is not None) else "B"
+        return "A" if (_is_usable_number(row.get("rsi_p50")) and _is_usable_number(row.get("rsi_p90"))) else "B"
+    return "A" if (_is_usable_number(row.get("rsi_p10")) and _is_usable_number(row.get("rsi_p50"))) else "B"

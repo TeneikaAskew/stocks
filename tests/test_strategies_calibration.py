@@ -68,6 +68,70 @@ def test_null_p50_falls_back_put():
         assert calibration.get_put_rsi_range("QQQ") == PUT_RSI_RANGE
 
 
+def test_nan_p50_falls_back_put():
+    """pd.read_sql returns SQL NULL as NaN for numeric columns (not None).
+
+    Regression for the P1 bug Codex flagged on PR #248: a pure `is not None`
+    check would let NaN through, producing a (nan, nan) Tier-A range that
+    silently disables the RSI gate (NaN comparisons return False).
+    """
+    import math
+    row = {
+        "calibration_date": date.today(),
+        "rsi_p50": math.nan,
+        "rsi_p90": 65.0,
+    }
+    with patch.object(calibration, "_latest_calibration", return_value=row):
+        assert calibration.get_put_rsi_range("QQQ") == PUT_RSI_RANGE
+
+
+def test_nan_p90_falls_back_put():
+    import math
+    row = {
+        "calibration_date": date.today(),
+        "rsi_p50": 50.5,
+        "rsi_p90": math.nan,
+    }
+    with patch.object(calibration, "_latest_calibration", return_value=row):
+        assert calibration.get_put_rsi_range("QQQ") == PUT_RSI_RANGE
+
+
+def test_nan_p10_falls_back_call():
+    import math
+    row = {
+        "calibration_date": date.today(),
+        "rsi_p10": math.nan,
+        "rsi_p50": 50.5,
+    }
+    with patch.object(calibration, "_latest_calibration", return_value=row):
+        assert calibration.get_call_rsi_range("QQQ") == CALL_RSI_RANGE
+
+
+def test_resolution_tier_b_when_columns_nan():
+    """Tier reporting must also see NaN as 'unusable' to avoid claiming
+    Tier-A audit when the calibration is effectively NULL."""
+    import math
+    row = {
+        "calibration_date": date.today(),
+        "rsi_p10": 35.0, "rsi_p50": math.nan, "rsi_p90": 65.0,
+    }
+    with patch.object(calibration, "_latest_calibration", return_value=row):
+        assert calibration.get_resolution_tier("X", "PUT") == "B"
+        assert calibration.get_resolution_tier("X", "CALL") == "B"
+
+
+def test_inf_falls_back():
+    """Inf should also be rejected — math.isfinite catches it."""
+    import math
+    row = {
+        "calibration_date": date.today(),
+        "rsi_p50": math.inf,
+        "rsi_p90": 65.0,
+    }
+    with patch.object(calibration, "_latest_calibration", return_value=row):
+        assert calibration.get_put_rsi_range("QQQ") == PUT_RSI_RANGE
+
+
 def test_null_p90_falls_back_put():
     row = {
         "calibration_date": date.today(),
