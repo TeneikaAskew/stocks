@@ -1,4 +1,5 @@
 {
+  "_doc": "Business policy for the trading app: position sizing, daily loss/profit limits, ranker weights, proximity multipliers, Discord webhook config, and a legacy IWM-only alert template. The `alerts.primary_*.conditions.rsi_range` fields ARE loaded by lib/config.load_config into SignalConfig.{call,put}_rsi_range, but `gcp/signal_monitor.py` overrides them per-ticker at signal time via lib/strategies/calibration.py (Tier-A from ticker_calibration table; Tier-B fallback to lib/strategies/config.py constants). So in production, the rsi_range values here are effectively only the cold-start fallback when no caller passes a resolved range.",
   "alerts": {
     "primary_call_alert": {
       "name": "IWM Contrarian CALL Setup",

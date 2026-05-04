@@ -43,6 +43,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+from sqlalchemy import text
 
 # Repo root on path so we can import gcp.* helpers
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -202,18 +203,15 @@ def fetch_bars(ticker: str, lookback_days: int, eng) -> pd.DataFrame:
     query hits the per-ticker partition directly.
     """
     cutoff = date.today() - timedelta(days=lookback_days)
-    df = pd.read_sql(
-        """
+    sql = text("""
         SELECT ts, open, high, low, close, volume
           FROM market_data_intraday
-         WHERE ticker = %s
+         WHERE ticker = :ticker
            AND interval = '1min'
-           AND ts >= %s
+           AND ts >= :cutoff
          ORDER BY ts
-        """,
-        eng,
-        params=[ticker, cutoff],
-    )
+    """)
+    df = pd.read_sql(sql, eng, params={"ticker": ticker, "cutoff": cutoff})
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     return df
 
