@@ -572,6 +572,20 @@ ALTER TABLE earnings_reactions
     DROP COLUMN IF EXISTS atr_14_d,
     DROP COLUMN IF EXISTS day_range_in_atr_units;
 
+-- Best-exit / worst-drawdown over the swing window (added 2026-05-04).
+-- The sustain_*_pct columns above use the CLOSE on day N — but a swing
+-- trader can exit at any point during the hold window. These give the
+-- actual high/low touched, expressed as % vs reaction_anchor_price
+-- (the same anchor the sustain columns use). Bounded by the same
+-- anomaly threshold so stock-split artifacts don't poison the values.
+ALTER TABLE earnings_reactions
+    ADD COLUMN IF NOT EXISTS max_high_3d_pct  DOUBLE PRECISION,    -- best UP exit within 3 trading days
+    ADD COLUMN IF NOT EXISTS min_low_3d_pct   DOUBLE PRECISION,    -- worst drawdown within 3 trading days
+    ADD COLUMN IF NOT EXISTS max_high_5d_pct  DOUBLE PRECISION,    -- best UP exit within 5 trading days
+    ADD COLUMN IF NOT EXISTS min_low_5d_pct   DOUBLE PRECISION,    -- worst drawdown within 5 trading days
+    ADD COLUMN IF NOT EXISTS max_high_10d_pct DOUBLE PRECISION,    -- best UP exit within 10 trading days
+    ADD COLUMN IF NOT EXISTS min_low_10d_pct  DOUBLE PRECISION;    -- worst drawdown within 10 trading days
+
 
 -- ─────────────────────────────────────────────────────────
 -- SEC EDGAR FILINGS (8-K material events, 10-Q/10-K, etc.)

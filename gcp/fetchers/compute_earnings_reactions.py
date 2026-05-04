@@ -187,6 +187,57 @@ def compute_reaction(
     d_plus_5_close, sustain_5d = sustain_at(5)
     d_plus_10_close, sustain_10d = sustain_at(10)
 
+    # Best-exit / worst-drawdown over the swing window (added 2026-05-04).
+    # The "sustain" columns above use the close on day N — a swing trader
+    # holding the position can exit at any point in the window. These give
+    # the actual high/low touched, expressed as % vs reaction_anchor_price
+    # (the reaction-day close for BMO, D+1 open for AMC). This converts
+    # "did the position make money on day N close?" into "did the position
+    # have a profitable exit point during days 1..N?" Cheap — pure agg
+    # over the same daily window already loaded for sustain math.
+    #
+    # Window: [reaction_idx, d_idx + n_days] inclusive — matches the
+    # existing sustain_N_pct convention where sustain_5d uses bar at
+    # d_idx + 5. For AMC the reaction starts at D+1, so the window
+    # spans D+1..D+N (N bars). For BMO the reaction is on D itself,
+    # so the window spans D..D+N (N+1 bars). The reaction-day bar
+    # itself is included so an intraday gap-and-fade isn't missed.
+    reaction_idx = d_idx if reaction_basis == 'BMO' else d_idx + 1
+
+    def best_worst_in_window(n_days):
+        """Return (max_high_pct, min_low_pct) over the swing window.
+
+        Anchor = reaction_anchor_price (D close for BMO, D+1 open for
+        AMC). Anomaly cap matches the sustain logic so split artifacts
+        don't poison the columns.
+        """
+        end_idx = d_idx + n_days
+        # Slice valid bars within the loaded window
+        if end_idx >= len(daily) or reaction_idx >= len(daily):
+            return None, None
+        slice_ = daily.iloc[reaction_idx:end_idx + 1]
+        if slice_.empty:
+            return None, None
+        try:
+            hi = float(slice_['high'].max())
+            lo = float(slice_['low'].min())
+        except (TypeError, ValueError):
+            return None, None
+        max_pct = (hi - anchor_price) / anchor_price * 100
+        min_pct = (lo - anchor_price) / anchor_price * 100
+        # Same split-artifact cap used by sustain — null if either side
+        # exceeds the anomaly threshold so downstream aggregates skip
+        # this quarter for this horizon.
+        if abs(max_pct) > SUSTAIN_ANOMALY_PCT:
+            max_pct = None
+        if abs(min_pct) > SUSTAIN_ANOMALY_PCT:
+            min_pct = None
+        return max_pct, min_pct
+
+    max_high_3d, min_low_3d = best_worst_in_window(3)
+    max_high_5d, min_low_5d = best_worst_in_window(5)
+    max_high_10d, min_low_10d = best_worst_in_window(10)
+
     direction_consistent = None
     is_reversal = None
     if sustain_5d is not None and reaction_gap != 0:
@@ -295,6 +346,13 @@ def compute_reaction(
         'post_report_atr': post_report_atr,
         'reaction_day_range': reaction_day_range,
         'reaction_day_range_in_atr_units': reaction_day_range_in_atr_units,
+        # Best-exit / worst-drawdown over the swing window
+        'max_high_3d_pct':  max_high_3d,
+        'min_low_3d_pct':   min_low_3d,
+        'max_high_5d_pct':  max_high_5d,
+        'min_low_5d_pct':   min_low_5d,
+        'max_high_10d_pct': max_high_10d,
+        'min_low_10d_pct':  min_low_10d,
     }
 
 
