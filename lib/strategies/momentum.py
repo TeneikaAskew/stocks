@@ -27,7 +27,10 @@ from .config import (
     ATR_EXPANSION_THRESHOLD,
     CALL_RSI_RANGE,
     CONSECUTIVE_THRESHOLD,
+    CORE_CALL_CONDITIONS,
+    CORE_PUT_CONDITIONS,
     MIN_CONDITIONS,
+    MIN_CORE_CONDITIONS,
     PUT_RSI_RANGE,
     RSI_THRUST_THRESHOLD,
     RVOL_RECENT_THRESHOLD,
@@ -163,16 +166,34 @@ class MomentumStrategy(Strategy):
         call_score, call_conds = _check_call_conditions(row)
         put_score,  put_conds  = _check_put_conditions(row)
 
-        # Per the original MarketAnalyzer logic: strict greater-than to
-        # break ties (one direction must dominate). MIN_CONDITIONS = 3.
-        if call_score >= MIN_CONDITIONS and call_score > put_score:
-            direction = "CALL"
-            score = call_score
-            conds = call_conds
-        elif put_score >= MIN_CONDITIONS and put_score > call_score:
-            direction = "PUT"
-            score = put_score
-            conds = put_conds
+        # Phase 0.7.x — tier gate. Total-score floor (MIN_CONDITIONS=3)
+        # alone allows 3 confirmers + 0 core to fire ("noise + activity").
+        # Require at least MIN_CORE_CONDITIONS core conditions so every
+        # fire has a credible setup before confirmers can pile on. A
+        # gate-blocked direction can't block the other from firing —
+        # leaky CALL noise must not suppress a legitimate PUT setup.
+        call_core = sum(1 for c in call_conds if c in CORE_CALL_CONDITIONS)
+        put_core  = sum(1 for c in put_conds  if c in CORE_PUT_CONDITIONS)
+
+        call_eligible = (call_score >= MIN_CONDITIONS
+                         and call_core >= MIN_CORE_CONDITIONS)
+        put_eligible  = (put_score  >= MIN_CONDITIONS
+                         and put_core  >= MIN_CORE_CONDITIONS)
+
+        # Strict greater-than tie-break only matters when both directions
+        # are eligible. A non-eligible direction is silenced — its score
+        # cannot suppress the eligible direction's fire.
+        if call_eligible and put_eligible:
+            if call_score > put_score:
+                direction, score, conds, core_count = "CALL", call_score, call_conds, call_core
+            elif put_score > call_score:
+                direction, score, conds, core_count = "PUT", put_score, put_conds, put_core
+            else:
+                return None
+        elif call_eligible:
+            direction, score, conds, core_count = "CALL", call_score, call_conds, call_core
+        elif put_eligible:
+            direction, score, conds, core_count = "PUT", put_score, put_conds, put_core
         else:
             return None
 
@@ -184,6 +205,7 @@ class MomentumStrategy(Strategy):
             base_score=float(score),
             weighted_score=float(score),
             conditions_met=conds,
+            core_count=core_count,
             rsi=_safe_float(rsi_val),
             rvol=_safe_float(row.get("RVOL")),
             ema9=_safe_float(row.get("EMA9")),

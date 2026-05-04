@@ -76,6 +76,39 @@ ATR_EXPANSION_THRESHOLD: float = 1.15
 # populated by `lib.indicators.add_all_indicators`.
 RSI_THRUST_THRESHOLD: float = 5.0
 
-# Minimum number of conditions met (out of 5/6) for a signal to fire.
+# Minimum number of conditions met (out of 7) for a signal to fire.
 # Same definition across both strategies for comparability.
 MIN_CONDITIONS: int = 3
+
+# Phase 0.7.x — tiered scoring. PRs 2-4 added three CONFIRMING conditions
+# (rvol_above_recent, atr_expansion, rsi_thrust) but kept MIN_CONDITIONS=3
+# flat, walking the gate from 75% → 43% required. A bar can now fire from
+# 3 confirmers with zero CORE conditions — "noise + activity," not a setup.
+# This floor enforces "setup first, then confirmation" as a discretionary
+# trader thinks about it. CORE = defines the setup; CONFIRMING = validates
+# it but can't define it.
+#
+# Provisional: `2` is asserted from the truth table, NOT measured against
+# production data. PR-6 (production-replay calibration) decides whether
+# this stays at 2, moves to 3 (stricter), or stays at 2 with a stricter
+# total-score floor.
+#
+# Forward-compatibility: every new condition added after this point gets
+# a tier classification at addition time. Default is CONFIRMING unless
+# the condition independently defines a setup. Failure to classify =
+# the next person repeats PR-2's mistake.
+MIN_CORE_CONDITIONS: int = 2
+
+CORE_CALL_CONDITIONS: frozenset = frozenset({
+    "consecutive_up",
+    "rsi_bullish_recovery",
+    "above_vwap",
+    "above_ema9",
+})
+
+CORE_PUT_CONDITIONS: frozenset = frozenset({
+    "consecutive_down",
+    "rsi_bearish_recovery",
+    "below_vwap",
+    "below_ema9",
+})
