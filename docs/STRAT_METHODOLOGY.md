@@ -309,15 +309,17 @@ When multiple patterns match the same bar, assign the highest-priority label. Lo
 |---|---|---|
 | 1 | 212 REV | 3-bar reversal after coil — highest conviction |
 | 2 | 312 REV | 3-bar outside-digested reversal |
-| 3 | 212 CON | 3-bar continuation after coil |
-| 4 | 132 | 3-bar coil-explode-follow |
-| 5 | 322 | 3-bar expansion-confirmed |
+| 3 | 132 | 3-bar coil-explode-follow |
+| 4 | 322 | 3-bar expansion-confirmed |
+| 5 | 212 CON | 3-bar continuation after coil |
 | 6 | 32 REV | 2-bar outside then directional |
 | 7 | 22 REV | 2-bar consecutive reversal |
 | 8 | 22 CON | 2-bar consecutive continuation |
-| 9 | 11 / 111 | Multi-inside compression |
+| 9 | 111 then 11 | Multi-inside compression (triple checked first) |
 | 10 | Failed_2U / Failed_2D | Single-bar close-vs-open |
 | 11 | Clean 2U / Clean 2D | No multi-bar context |
+
+Source: `lib/strat.py` `detect_combos` priority blocks 1–12.
 
 ---
 
@@ -325,33 +327,35 @@ When multiple patterns match the same bar, assign the highest-priority label. Lo
 
 ### Combo bonuses (per direction)
 
+Values reflect the calibrated weights shipped in `lib/strat.py` after deploy tuning. **PUT is the exact negation of CALL** (`COMBO_BONUS_PUT = {k: -v for k, v in COMBO_BONUS_CALL.items()}`), so an opposing high-conviction pattern produces a strong negative — a 212 bullish reversal forming during a PUT signal contributes −1.5, telling the scorer to back off hard.
+
 | Pattern | Label | CALL bonus | PUT bonus |
 |---|---|---|---|
-| Failed 2D | `f2d_bull_reversal` | +1.0 | -0.5 |
-| Failed 2U | `f2u_bear_reversal` | -0.5 | +1.0 |
-| 212 REV Up | `212_bull_reversal` | +1.0 | 0.0 |
-| 212 REV Down | `212_bear_reversal` | 0.0 | +1.0 |
-| 212 CON Up | `212_bull_continuation` | +0.75 | 0.0 |
-| 212 CON Down | `212_bear_continuation` | 0.0 | +0.75 |
-| 312 REV Up | `312_bull_reversal` | +1.0 | 0.0 |
-| 312 REV Down | `312_bear_reversal` | 0.0 | +1.0 |
-| 132U | `132_bull_continuation` | +1.0 | 0.0 |
-| 132D | `132_bear_continuation` | 0.0 | +1.0 |
-| 322U | `322_bull_continuation` | +0.75 | 0.0 |
-| 322D | `322_bear_continuation` | 0.0 | +0.75 |
-| 32 REV Up | `32_bull_reversal` | +0.75 | 0.0 |
-| 32 REV Down | `32_bear_reversal` | 0.0 | +0.75 |
-| 22 REV Up | `22_bull_reversal` | +1.0 | -0.5 |
-| 22 REV Down | `22_bear_reversal` | -0.5 | +1.0 |
-| 22 CON Up | `22_bull_continuation` | +0.5 | 0.0 |
-| 22 CON Down | `22_bear_continuation` | 0.0 | +0.5 |
-| Clean 2U | `clean_2u_bull` | +0.25 | 0.0 |
-| Clean 2D | `clean_2d_bear` | 0.0 | +0.25 |
+| 212 REV Up | `212_bull_reversal` | +1.5 | -1.5 |
+| 212 REV Down | `212_bear_reversal` | -1.5 | +1.5 |
+| 312 REV Up | `312_bull_reversal` | +1.5 | -1.5 |
+| 312 REV Down | `312_bear_reversal` | -1.5 | +1.5 |
+| 132U | `132_bull_continuation` | +1.25 | -1.25 |
+| 132D | `132_bear_continuation` | -1.25 | +1.25 |
+| 322U | `322_bull_continuation` | +1.25 | -1.25 |
+| 322D | `322_bear_continuation` | -1.25 | +1.25 |
+| 212 CON Up | `212_bull_continuation` | +1.0 | -1.0 |
+| 212 CON Down | `212_bear_continuation` | -1.0 | +1.0 |
+| 32 REV Up | `32_bull_reversal` | +1.0 | -1.0 |
+| 32 REV Down | `32_bear_reversal` | -1.0 | +1.0 |
+| 22 REV Up | `22_bull_reversal` | +1.0 | -1.0 |
+| 22 REV Down | `22_bear_reversal` | -1.0 | +1.0 |
+| 22 CON Up | `22_bull_continuation` | +0.75 | -0.75 |
+| 22 CON Down | `22_bear_continuation` | -0.75 | +0.75 |
+| Failed 2D | `f2d_bull_reversal` | +0.5 | -0.5 |
+| Failed 2U | `f2u_bear_reversal` | -0.5 | +0.5 |
+| Clean 2U | `clean_2u_bull` | +0.25 | -0.25 |
+| Clean 2D | `clean_2d_bear` | -0.25 | +0.25 |
 | Double Inside | `11_inside_compression` | 0.0 | 0.0 |
 | Triple Inside | `111_inside_compression` | 0.0 | 0.0 |
 | None / Type 1 / Type 3 | `none` | 0.0 | 0.0 |
 
-Negative bonuses = pattern opposes your direction (warning to exit or reduce).
+Source: `lib/strat.py` `COMBO_BONUS_CALL` (and the derived `COMBO_BONUS_PUT`).
 
 ### FTFC bonus
 
@@ -498,7 +502,7 @@ The next sections describe how those algorithms wire into the
 deployed system — schedulers, persistence, naming conventions,
 and source-of-truth file locations.
 
-## 18. Catalyst-aware ORB selection
+## 21. Catalyst-aware ORB selection
 
 The premarket brief picks the ORB window per-ticker based on the
 day's economic calendar:
@@ -519,7 +523,7 @@ intraday level-break detection.
 
 ---
 
-## 19. Naming conventions (locked)
+## 22. Naming convention rename mapping (operational)
 
 | Surface | Old | New |
 |---|---|---|
@@ -533,7 +537,7 @@ intraday level-break detection.
 
 ---
 
-## 20. Source-of-truth inventory
+## 23. Source-of-truth deployment status
 
 | Concept | Authoritative location | Status |
 |---|---|---|
