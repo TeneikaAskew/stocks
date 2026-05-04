@@ -778,6 +778,9 @@ class MarketAnalyzer:
         # Count consecutive movements
         df['Consecutive_Up'] = df['Up_Move'].rolling(consecutive_periods).sum()
         df['Consecutive_Down'] = df['Down_Move'].rolling(consecutive_periods).sum()
+        # Phase 0.7.2: relaxed 3-of-5 windows for the momentum gate.
+        df['Consecutive_Up_5'] = df['Up_Move'].rolling(5).sum()
+        df['Consecutive_Down_5'] = df['Down_Move'].rolling(5).sum()
         
         signals = []
         total_rows = len(df)
@@ -798,26 +801,24 @@ class MarketAnalyzer:
             signal = None
             signal_strength = 0
             
-            # CALL Signal Conditions
+            # CALL Signal Conditions — Phase 0.7.x:
+            #   - dropped `stoch_rsi_not_overbought` (free score, fired ~72%)
+            #   - relaxed `consecutive_up` from 3-of-3 to 3-of-5
             call_conditions = 0
-            if current['Consecutive_Up'] >= consecutive_periods:  # Consecutive up moves
+            if current.get('Consecutive_Up_5', 0) >= 3:  # 3-of-last-5 up bars
                 call_conditions += 1
             if current['RSI14_W'] < 50 and current['RSI14_W'] > 25:  # RSI in bullish range
-                call_conditions += 1
-            if current.get('StochRSI_K', 50) < 80:  # StochRSI not overbought
                 call_conditions += 1
             if current['Last'] > current.get('VWAP', current['Last']):  # Price above VWAP
                 call_conditions += 1
             if current['Last'] > current.get('EMA9', current['Last']):  # Price above EMA9
                 call_conditions += 1
-            
-            # PUT Signal Conditions
+
+            # PUT Signal Conditions — Phase 0.7.x mirror.
             put_conditions = 0
-            if current['Consecutive_Down'] >= consecutive_periods:  # Consecutive down moves
+            if current.get('Consecutive_Down_5', 0) >= 3:  # 3-of-last-5 down bars
                 put_conditions += 1
             if current['RSI14_W'] > 50 and current['RSI14_W'] < 75:  # RSI in bearish range
-                put_conditions += 1
-            if current.get('StochRSI_K', 50) > 20:  # StochRSI not oversold
                 put_conditions += 1
             if current['Last'] < current.get('VWAP', current['Last']):  # Price below VWAP
                 put_conditions += 1

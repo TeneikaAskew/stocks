@@ -41,6 +41,15 @@ STOCH_RSI_OVERBOUGHT: float = 70.0
 # Don't tune.
 CONSECUTIVE_PERIODS: int = 3
 
+# Phase 0.7.2 — relaxed "3-of-last-5" momentum gate. The strict
+# `Consecutive_Up >= 3` (3-of-3) misses obvious uptrends with one
+# pullback bar. The relaxed gate counts up-bars in a 5-bar window and
+# fires when at least CONSECUTIVE_THRESHOLD of them are up. Reads from
+# the `Consecutive_Up_5` / `Consecutive_Down_5` columns populated by
+# `lib.indicators.add_all_indicators`.
+CONSECUTIVE_WINDOW: int = 5
+CONSECUTIVE_THRESHOLD: int = 3
+
 # Minimum number of conditions met (out of 5/6) for a signal to fire.
 # Same definition across both strategies for comparability.
 MIN_CONDITIONS: int = 3

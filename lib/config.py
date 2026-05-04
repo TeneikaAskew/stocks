@@ -34,6 +34,7 @@ class IndicatorConfig:
     macd_slow: int = 26
     macd_signal: int = 9
     consecutive_periods: int = 3
+    consecutive_relaxed_window: int = 5
     orb_windows: List[Dict] = field(default_factory=lambda: [
         {'minutes': 5, 'label': '5m'},
         {'minutes': 15, 'label': '15m'},

@@ -28,6 +28,9 @@ def _bar(**overrides) -> pd.Series:
         "VWAP": 100.0, "EMA9": 100.0, "EMA20": 100.0,
         "StochRSI_K": 50.0,
         "Consecutive_Up": 0, "Consecutive_Down": 0,
+        # Phase 0.7.2: relaxed gate reads `Consecutive_Up_5` / `Consecutive_Down_5`
+        # (3-of-5 windows) instead of the strict 3-of-3 columns above.
+        "Consecutive_Up_5": 0, "Consecutive_Down_5": 0,
         "Price_vs_VWAP": 0.0, "Price_vs_EMA9": 0.0, "Price_vs_EMA20": 0.0,
         "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
     }
@@ -36,9 +39,9 @@ def _bar(**overrides) -> pd.Series:
 
 
 def test_call_fires_with_3_conditions():
-    """Consec_Up + RSI bullish + above VWAP — exactly 3, dominant over PUT."""
+    """Consec_Up_5 (3-of-5) + RSI bullish + above VWAP — exactly 3, dominant over PUT."""
     row = _bar(
-        Consecutive_Up=3,
+        Consecutive_Up_5=3,                       # 3-of-last-5 up bars
         RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0,
     )
@@ -52,9 +55,9 @@ def test_call_fires_with_3_conditions():
 
 
 def test_call_does_not_fire_with_2_conditions():
-    """Only 2 of 5 met — below MIN_CONDITIONS=3."""
+    """Only 2 of 4 met — below MIN_CONDITIONS=3."""
     row = _bar(
-        Consecutive_Up=3,
+        Consecutive_Up_5=3,
         Last=101.0, Close=101.0, VWAP=100.0,   # above VWAP = 2nd condition
         # RSI=55 outside (25,50) so no RSI condition
     )
@@ -62,12 +65,41 @@ def test_call_does_not_fire_with_2_conditions():
     assert sig is None or sig.base_score >= 3
 
 
+def test_consecutive_up_5_below_threshold_does_not_count():
+    """Phase 0.7.2: 2-of-5 (below threshold of 3) must NOT satisfy the gate."""
+    row = _bar(
+        Consecutive_Up_5=2,                       # only 2-of-5 — below threshold
+        RSI14_W=35.0,                             # in CALL band
+        Last=101.0, Close=101.0, VWAP=100.0,      # above VWAP
+        EMA9=99.0,                                # above EMA9
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None                        # still fires (3 of 4 without consec)
+    assert "consecutive_up" not in sig.conditions_met
+
+
+def test_consecutive_up_3_of_5_with_pullback_fires():
+    """Phase 0.7.2: the relaxation's whole point — fires when 3 of last 5
+    are up even with a pullback bar in between (would have failed strict 3-of-3).
+    """
+    row = _bar(
+        Consecutive_Up_5=3,                       # 3 up, 2 down/flat in window
+        Consecutive_Up=0,                         # strict 3-of-3 NOT met
+        RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.direction == "CALL"
+    assert "consecutive_up" in sig.conditions_met
+
+
 def test_put_fires_when_dominant():
     row = _bar(
-        Consecutive_Down=3,
-        RSI14_W=65.0,                           # in (50, 75)
-        Last=99.0, Close=99.0, VWAP=100.0,      # below VWAP
-        EMA9=100.0,                             # below EMA9
+        Consecutive_Down_5=3,                     # 3-of-5 down bars
+        RSI14_W=65.0,                             # in (50, 75)
+        Last=99.0, Close=99.0, VWAP=100.0,        # below VWAP
+        EMA9=100.0,                               # below EMA9
     )
     sig = STRAT.evaluate(row)
     assert sig is not None
@@ -81,21 +113,17 @@ def test_put_fires_when_dominant():
 def test_strict_tie_breaker_no_fire_when_call_eq_put():
     """Original lib/trading_analysis.py uses STRICT > for tie-breaking.
     A bar where call_score == put_score must NOT fire.
-
-    Phase 0.7.1: dropped `stoch_rsi_not_overbought` (free score). The
-    fixture now needs above_vwap / above_ema9 to reach 3 CALL conditions
-    instead of relying on the dropped stoch contribution.
     """
     row = _bar(
-        # CALL conditions (3): Consec_Up, RSI in bull band, above_vwap
-        Consecutive_Up=3,
+        # CALL conditions (3): Consec_Up_5, RSI in bull band, above_vwap
+        Consecutive_Up_5=3,
         RSI14_W=35.0,                            # in CALL band (25, 50)
         Close=101.0, Last=101.0,
-        VWAP=100.0,                               # price > VWAP → above_vwap fires
-        EMA9=102.0,                               # price < EMA9 → above_ema9 doesn't fire
-        # PUT conditions: Consec_Down only (RSI 35 NOT in put band, price
+        VWAP=100.0,                              # price > VWAP → above_vwap fires
+        EMA9=102.0,                              # price < EMA9 → above_ema9 doesn't fire
+        # PUT conditions: Consec_Down_5 only (RSI 35 NOT in put band, price
         # > VWAP rules out below_vwap, price < EMA9 rules out below_ema9)
-        Consecutive_Down=3,
+        Consecutive_Down_5=3,
     )
     # call_n: consec_up + rsi_bullish_recovery + above_vwap = 3
     # put_n:  consec_down + below_ema9 = 2
@@ -112,7 +140,7 @@ def test_warmup_bar_returns_none():
 
 def test_signal_carries_indicator_snapshots():
     row = _bar(
-        Consecutive_Up=3, RSI14_W=35.0,
+        Consecutive_Up_5=3, RSI14_W=35.0,
         Last=101.0, Close=101.0,
         VWAP=100.0, EMA9=100.0, EMA20=99.0,
         RVOL=1.4,
@@ -126,7 +154,7 @@ def test_signal_carries_indicator_snapshots():
 
 
 def test_strategy_name_is_momentum():
-    row = _bar(Consecutive_Up=3, RSI14_W=35.0,
+    row = _bar(Consecutive_Up_5=3, RSI14_W=35.0,
                 Last=101.0, Close=101.0, VWAP=100.0)
     sig = STRAT.evaluate(row)
     assert sig is not None
@@ -144,6 +172,7 @@ def test_generate_signals_returns_list_of_signals():
             "VWAP": 100.0, "EMA9": 100.0, "EMA20": 100.0,
             "StochRSI_K": 50.0,
             "Consecutive_Up": 0, "Consecutive_Down": 0,
+            "Consecutive_Up_5": 0, "Consecutive_Down_5": 0,
             "Price_vs_VWAP": 0.0, "Price_vs_EMA9": 0.0, "Price_vs_EMA20": 0.0,
             "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
         })

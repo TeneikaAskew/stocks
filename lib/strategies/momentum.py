@@ -25,7 +25,7 @@ import pandas as pd
 from .base import Signal, Strategy
 from .config import (
     CALL_RSI_RANGE,
-    CONSECUTIVE_PERIODS,
+    CONSECUTIVE_THRESHOLD,
     MIN_CONDITIONS,
     PUT_RSI_RANGE,
     STOCH_RSI_OVERBOUGHT,
@@ -45,18 +45,18 @@ def _rsi_col_name() -> str:
 
 def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
     """Phase 0.7.1: dropped `stoch_rsi_not_overbought`.
+    Phase 0.7.2: relaxed `consecutive_up` from 3-of-3 to 3-of-5.
 
-    Per the §3.10 strategy audit (273 morning bars, 5/1):
-    `stoch_rsi_not_overbought` (StochRSI_K < 80) fired on 72.2% of bars
-    — pure free score that didn't discriminate setup quality. Removing
-    it tightens the score distribution: previously a bar with NO real
-    momentum could score 3/5 just from above_vwap + above_ema9 + the
-    free StochRSI condition. Now those bars score 2/4 and don't fire.
+    The strict 3-of-3 gate misses obvious uptrends with a single
+    pullback bar. Reading from `Consecutive_Up_5` (rolling sum of up
+    bars over a 5-bar window, populated by add_all_indicators) lets one
+    pullback inside an otherwise-trending sequence still satisfy the
+    momentum gate.
     """
     score = 0
     conditions: list[str] = []
 
-    if row.get("Consecutive_Up", 0) >= CONSECUTIVE_PERIODS:
+    if row.get("Consecutive_Up_5", 0) >= CONSECUTIVE_THRESHOLD:
         score += 1
         conditions.append("consecutive_up")
 
@@ -80,11 +80,13 @@ def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
 
 
 def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
-    """Phase 0.7.1 mirror: dropped `stoch_rsi_not_oversold` (free score)."""
+    """Phase 0.7.1 mirror: dropped `stoch_rsi_not_oversold` (free score).
+    Phase 0.7.2 mirror: relaxed `consecutive_down` from 3-of-3 to 3-of-5.
+    """
     score = 0
     conditions: list[str] = []
 
-    if row.get("Consecutive_Down", 0) >= CONSECUTIVE_PERIODS:
+    if row.get("Consecutive_Down_5", 0) >= CONSECUTIVE_THRESHOLD:
         score += 1
         conditions.append("consecutive_down")
 

@@ -629,6 +629,9 @@ def add_all_indicators(
     out['Consecutive_Up'], out['Consecutive_Down'] = calculate_consecutive_moves(
         price_change, ind.consecutive_periods,
     )
+    out['Consecutive_Up_5'], out['Consecutive_Down_5'] = calculate_consecutive_moves(
+        price_change, ind.consecutive_relaxed_window,
+    )
 
     # Price position relative to first two EMAs
     ema_fast_p = ind.ema_fast_period

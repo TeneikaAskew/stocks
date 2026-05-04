@@ -46,10 +46,19 @@ def _bar(**overrides) -> pd.Series:
         "VWAP": 100.0, "EMA9": 100.0, "EMA20": 100.0,
         "StochRSI_K": 50.0,
         "Consecutive_Up": 0, "Consecutive_Down": 0,
+        "Consecutive_Up_5": 0, "Consecutive_Down_5": 0,
         "Price_vs_VWAP": 0.0, "Price_vs_EMA9": 0.0, "Price_vs_EMA20": 0.0,
         "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
     }
     base.update(overrides)
+    # Phase 0.7.2: 3-of-3 trivially satisfies 3-of-5. If a fixture sets
+    # only the strict legacy column, mirror it onto the relaxed column so
+    # the new MomentumStrategy gate fires in the same scenarios the
+    # legacy inline logic does.
+    if "Consecutive_Up_5" not in overrides:
+        base["Consecutive_Up_5"] = base["Consecutive_Up"]
+    if "Consecutive_Down_5" not in overrides:
+        base["Consecutive_Down_5"] = base["Consecutive_Down"]
     return pd.Series(base)
 
 
