@@ -69,3 +69,11 @@ google-cloud-storage>=2.14.0
 SQLAlchemy>=2.0.0
 psycopg2-binary>=2.9.9
 pandas-market-calendars>=4.3.1
+
+# LLM agent adapters (lib/agents/*) — pydantic schemas drive the
+# structured-output contract; both anthropic and vertex adapters import
+# pydantic at module load, so tests fail to collect without it. Kept in
+# the base requirements (not just requirements-gcp.txt) because pytest
+# collects every tests/ file regardless of which deploy environment
+# you're running in.
+pydantic>=2.12.0
