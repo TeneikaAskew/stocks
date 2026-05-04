@@ -537,6 +537,41 @@ CREATE INDEX IF NOT EXISTS idx_earnings_reactions_ticker_reported
 CREATE INDEX IF NOT EXISTS idx_earnings_reactions_reported
     ON earnings_reactions (reported_date DESC);
 
+-- ATR context around earnings (added 2026-05-04, refined same day).
+-- The first cut (atr_14_d_minus_1 / atr_14_d / day_range_in_atr_units)
+-- always picked D as the reaction day, which is wrong for AMC reports —
+-- AMC reports drop AFTER D's close, so the reaction trades on D+1.
+-- That made every AMC name (the majority) show ~2× ATR ranges when
+-- third-party analytics show 6×. Replaced with timing-aware columns:
+--
+--   pre_report_atr  = ATR through the last full bar BEFORE the reaction
+--                     (D-1 for BMO, D for AMC). The "going-in" volatility
+--                     regime — the natural denominator for sizing.
+--   post_report_atr = ATR through the reaction day (D for BMO, D+1 for
+--                     AMC). Includes the spike; delta vs pre is a
+--                     regime-shift signal.
+--   reaction_day_range = high - low on the reaction-day bar.
+--   reaction_day_range_in_atr_units = reaction_day_range / pre_report_atr.
+--
+-- Computed in compute_earnings_reactions.py from the existing
+-- market_data_daily window — pure-join, no extra API calls.
+ALTER TABLE earnings_reactions
+    ADD COLUMN IF NOT EXISTS pre_report_atr                    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS pre_report_atr_pct                DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS post_report_atr                   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS reaction_day_range                DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS reaction_day_range_in_atr_units   DOUBLE PRECISION;
+
+-- Drop the buggy first-cut columns. No downstream consumers — they were
+-- added the same day in the same PR and only my SQL UPDATE populated
+-- them. Safer to drop now while the surface area is small than to leave
+-- them lurking with wrong values.
+ALTER TABLE earnings_reactions
+    DROP COLUMN IF EXISTS atr_14_d_minus_1,
+    DROP COLUMN IF EXISTS atr_pct_d_minus_1,
+    DROP COLUMN IF EXISTS atr_14_d,
+    DROP COLUMN IF EXISTS day_range_in_atr_units;
+
 
 -- ─────────────────────────────────────────────────────────
 -- SEC EDGAR FILINGS (8-K material events, 10-Q/10-K, etc.)

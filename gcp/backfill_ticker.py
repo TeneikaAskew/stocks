@@ -5,9 +5,11 @@ Triggered by the Discord `/replay` command when the requested ticker has
 no daily history in `market_data_daily`. The job:
 
   1. Calls AV TIME_SERIES_DAILY_ADJUSTED (outputsize=full) and writes
-     the most recent ``BACKFILL_HISTORY_DAYS`` rows (default 250) into
-     market_data_daily — enough history for ATR14, SMA200, weekly /
-     monthly / quarterly level computation.
+     the most recent ``BACKFILL_HISTORY_DAYS`` rows (default 800 ≈ 12
+     quarters of earnings reactions + ATR-14 warm-up + D±10 buffer)
+     into market_data_daily — enough for compute_earnings_reactions
+     to populate all 12 historical quarters, plus ATR/SMA200/weekly
+     timeframe computation.
   2. Calls AV TIME_SERIES_INTRADAY for every month touched by
      BACKFILL_DATES + the prior trading day so pre-market context can
      be computed using the prior-close reference.
@@ -249,6 +251,92 @@ def add_to_watchlist(ticker: str) -> None:
     log.info("✓ added %s to watchlists", ticker.upper())
 
 
+# Multi-day indicator → DB column mapping. Re-uses the canonical
+# DAILY_INDICATOR_TO_SQL_COLUMN dict from gcp.database so backfill_ticker
+# and the daily fetcher's compute_and_upsert_daily_indicators stay in
+# sync. The local copy this file used to carry was wrong on several
+# entries (e.g. "RSI" instead of "RSI14", "MA5" instead of "SMA5") so
+# RSI/MA columns silently went unpopulated for any ticker that came
+# in via /replay rather than the daily fetch.
+from gcp.database import DAILY_INDICATOR_TO_SQL_COLUMN as _IND_MAP
+_INT_COLS = {"consecutive_up", "consecutive_down"}
+
+
+def compute_indicators_for_full_range(ticker: str) -> int:
+    """Compute multi-day indicators (RSI, MA, EMA, ATR, etc.) for EVERY
+    OHLC row we have for this ticker, and upsert them in chunks.
+
+    Closes the gap where ``compute_indicators_for_dates`` (and the
+    daily fetcher's ``compute_and_upsert_daily_indicators``) only write
+    indicator values for one target date even though the full
+    rolling-window context was already computed in memory. Without
+    this, a freshly-backfilled ticker has 250+ days of OHLC but
+    indicators populated on only a handful of rows — every historical
+    ATR/RSI/MA query against the rest of the range returns NULL.
+
+    Strat fields and pre-market context are *not* written here — those
+    require per-date intraday bars and stay in
+    ``compute_indicators_for_dates``.
+
+    Returns the number of rows upserted.
+    """
+    from gcp.database import query_to_dataframe, upsert_dataframe
+    from lib.indicators import add_all_indicators
+
+    df = query_to_dataframe(
+        'SELECT date, open AS "Open", high AS "High", low AS "Low", '
+        'close AS "Close", volume AS "Volume" '
+        "FROM market_data_daily "
+        "WHERE ticker = :ticker "
+        "ORDER BY date ASC",
+        {"ticker": ticker.upper()},
+    )
+    if df.empty or len(df) < 2:
+        log.warning(
+            "insufficient daily history for %s (%d rows) — "
+            "skipping full-range indicators", ticker, len(df),
+        )
+        return 0
+
+    enriched = add_all_indicators(df, close_col="Close")
+    enriched["volatility_20d"] = (
+        enriched["Close"].pct_change().rolling(20).std() * np.sqrt(252)
+    )
+
+    rows: list[dict] = []
+    for i in range(len(enriched)):
+        bar = enriched.iloc[i]
+        row: dict = {"ticker": ticker.upper(), "date": df["date"].iloc[i]}
+        any_set = False
+        for src, dst in _IND_MAP.items():
+            v = bar.get(src)
+            if v is not None and pd.notna(v):
+                row[dst] = int(v) if dst in _INT_COLS else float(v)
+                any_set = True
+        if any_set:
+            rows.append(row)
+
+    if not rows:
+        log.warning("no indicator rows produced for %s", ticker)
+        return 0
+
+    # Chunked upsert (CLAUDE.md §0.4): bound memory and let a partial
+    # crash leave durable progress instead of losing the whole batch.
+    CHUNK = 200
+    total = 0
+    for start in range(0, len(rows), CHUNK):
+        chunk = rows[start:start + CHUNK]
+        upsert_dataframe(
+            pd.DataFrame(chunk),
+            "market_data_daily", ["ticker", "date"],
+        )
+        total += len(chunk)
+        log.info("  ✓ indicators %s rows %d-%d/%d",
+                 ticker, start, start + len(chunk), len(rows))
+    log.info("✓ full-range indicators %s: %d rows upserted", ticker, total)
+    return total
+
+
 def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
     """For each target_date, recompute multi-day indicators + pre-market
     context from the data we just loaded. Mirrors gcp.fetchers.
@@ -280,34 +368,11 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
         )
         last = enriched.iloc[-1]
 
-        IND_MAP = {
-            "MA5": "ma_5", "MA10": "ma_10", "MA20": "ma_20", "MA50": "ma_50",
-            "EMA9": "ema_9", "EMA20": "ema_20", "EMA50": "ema_50", "SMA200": "sma_200",
-            "RSI": "rsi_14", "RSI9": "rsi_9", "RSI30": "rsi_30",
-            "StochRSI_K": "stoch_rsi_k", "StochRSI_D": "stoch_rsi_d",
-            "ATR14": "atr_14", "ATR20": "atr_20",
-            "OBV": "obv", "RVOL": "rvol", "RVOL10": "rvol_10",
-            "Volume_MA10": "volume_ma_10", "Volume_MA20": "volume_ma_20",
-            "Volume_USD": "volume_usd",
-            "MACD": "macd", "MACD_Signal": "macd_signal", "MACD_Histogram": "macd_histogram",
-            "BB_Upper": "bb_upper", "BB_Lower": "bb_lower",
-            "BB_Width": "bb_width", "BB_Pct": "bb_pct",
-            "Return": "return", "volatility_5d": "volatility_5d",
-            "volatility_20d": "volatility_20d",
-            "high_low_spread": "high_low_spread",
-            "high_low_spread_pct": "high_low_spread_pct",
-            "consecutive_up": "consecutive_up",
-            "consecutive_down": "consecutive_down",
-            "VWAP": "vwap", "Price_vs_VWAP": "price_vs_vwap",
-            "Price_vs_EMA9": "price_vs_ema9",
-            "Price_vs_EMA20": "price_vs_ema20",
-        }
-        INT_COLS = {"consecutive_up", "consecutive_down"}
         row: dict = {"ticker": ticker.upper(), "date": fd}
-        for src, dst in IND_MAP.items():
+        for src, dst in _IND_MAP.items():
             v = last.get(src)
             if v is not None and pd.notna(v):
-                row[dst] = int(v) if dst in INT_COLS else float(v)
+                row[dst] = int(v) if dst in _INT_COLS else float(v)
 
         # Strat fields
         try:
@@ -391,7 +456,13 @@ def run() -> int:
         log.error("ALPHA_VANTAGE_API_KEY is required")
         return 1
 
-    history_days = int(_env("BACKFILL_HISTORY_DAYS", "250"))
+    # 800 days (~3.2 years) is the floor that lets compute_earnings_reactions
+    # populate 12 quarters per ticker (12 × 63 trading days + D±10 buffer +
+    # ATR-14 warm-up). With the prior default of 250 days, fresh tickers
+    # like MCK ended up with only 4-6 reaction quarters even though
+    # earnings_history had 30+ quarters loaded — the populator silently
+    # skipped any quarter without surrounding bars.
+    history_days = int(_env("BACKFILL_HISTORY_DAYS", "800"))
     include_news = (_env("BACKFILL_INCLUDE_NEWS", "true") or "true").lower() == "true"
     news_window = int(_env("BACKFILL_NEWS_WINDOW", "7"))
     dates = _parse_dates(_env("BACKFILL_DATES"))
@@ -450,9 +521,15 @@ def run() -> int:
                              ["ticker", "published_ts", "url"])
             log.info("✓ wrote %d news rows", len(rows))
 
-    # 4. Indicators + pre-market context for each target date AND its
-    #    prior trading day (so the brief's iloc[-2] reference is correct
-    #    on the very first replayed day).
+    # 4a. Multi-day indicators for the FULL backfilled range. Without
+    #     this only the BACKFILL_DATES rows below get indicators, and
+    #     downstream queries (ATR around historical earnings, RSI on
+    #     a 6-month chart, etc.) hit NULLs even though OHLC is loaded.
+    compute_indicators_for_full_range(ticker)
+
+    # 4b. Strat fields + pre-market context for each target date and
+    #     its prior trading day (needs intraday bars per date — that's
+    #     why this stays per-date, while 4a is a single full pass).
     target = set(dates)
     for d in dates:
         prior = d - timedelta(days=1)
