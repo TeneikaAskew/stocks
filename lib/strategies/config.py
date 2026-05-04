@@ -66,6 +66,16 @@ RVOL_RECENT_THRESHOLD: float = 1.2
 # column populated by `lib.indicators.add_all_indicators`.
 ATR_EXPANSION_THRESHOLD: float = 1.15
 
+# Phase 0.7.x — `rsi_thrust` momentum condition. Directional, unlike
+# rvol/atr_expansion. CALL fires when the 3-bar RSI delta exceeds
+# +RSI_THRUST_THRESHOLD (RSI accelerating up); PUT fires when it falls
+# below -RSI_THRUST_THRESHOLD (RSI accelerating down). Complements the
+# existing `rsi_bullish_recovery` band check (which is a level test):
+# a bar with RSI=70 (out of recovery band) but +10 over 3 bars has
+# thrust without recovery. Reads from the `RSI_Thrust_3` column
+# populated by `lib.indicators.add_all_indicators`.
+RSI_THRUST_THRESHOLD: float = 5.0
+
 # Minimum number of conditions met (out of 5/6) for a signal to fire.
 # Same definition across both strategies for comparability.
 MIN_CONDITIONS: int = 3

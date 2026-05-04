@@ -686,6 +686,9 @@ class MarketAnalyzer:
         # RSI with Wilder
         print("2/11 - Calculating RSI (Relative Strength Index)...")
         df['RSI14_W'] = self.calculate_rsi(df['Last'], 14)
+        # Phase 0.7.x — signed 3-bar RSI delta for the directional
+        # `rsi_thrust` momentum gate (mirrors `add_all_indicators`).
+        df['RSI_Thrust_3'] = df['RSI14_W'] - df['RSI14_W'].shift(3)
 
         # EMAs with SMA seeding
         print("3/11 - Calculating EMAs (Exponential Moving Averages)...")
@@ -806,6 +809,7 @@ class MarketAnalyzer:
             #   - relaxed `consecutive_up` from 3-of-3 to 3-of-5
             #   - added `rvol_above_recent` (volume confirmation)
             #   - added `atr_expansion` (volatility regime gate)
+            #   - added `rsi_thrust` (directional RSI velocity)
             rvol_recent = current.get('RVol_Recent_20')
             rvol_recent_fires = (
                 rvol_recent is not None
@@ -818,6 +822,8 @@ class MarketAnalyzer:
                 and not pd.isna(atr_exp)
                 and atr_exp > 1.15
             )
+            rsi_thrust = current.get('RSI_Thrust_3')
+            rsi_thrust_valid = rsi_thrust is not None and not pd.isna(rsi_thrust)
 
             call_conditions = 0
             if current.get('Consecutive_Up_5', 0) >= 3:  # 3-of-last-5 up bars
@@ -831,6 +837,8 @@ class MarketAnalyzer:
             if rvol_recent_fires:  # current vol > 1.2x rolling-20 median
                 call_conditions += 1
             if atr_expansion_fires:  # ATR(5) > 1.15x ATR(20) — vol expanding
+                call_conditions += 1
+            if rsi_thrust_valid and rsi_thrust > 5.0:  # RSI accelerating up
                 call_conditions += 1
 
             # PUT Signal Conditions — Phase 0.7.x mirror.
@@ -846,6 +854,8 @@ class MarketAnalyzer:
             if rvol_recent_fires:  # direction-agnostic volume confirmation
                 put_conditions += 1
             if atr_expansion_fires:  # direction-agnostic vol regime gate
+                put_conditions += 1
+            if rsi_thrust_valid and rsi_thrust < -5.0:  # RSI accelerating down
                 put_conditions += 1
             
             # Generate signal if enough conditions are met

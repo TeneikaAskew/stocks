@@ -50,6 +50,19 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
     return rsi
 
 
+def calculate_rsi_thrust(rsi: pd.Series, lookback: int = 3) -> pd.Series:
+    """Signed RSI delta over `lookback` bars (current - lookback bars ago).
+
+    Phase 0.7.x — used by the directional `rsi_thrust` momentum condition.
+    Positive values = RSI accelerating up (bullish thrust); negative =
+    accelerating down (bearish thrust). Complements the existing band
+    check (`rsi_bullish_recovery`) which is a level test, not a velocity
+    test — a bar with RSI=70 (out of recovery band) but delta=+10 has
+    thrust without recovery.
+    """
+    return rsi - rsi.shift(lookback)
+
+
 def calculate_stoch_rsi(
     rsi: pd.Series,
     period: int = 14,
@@ -617,6 +630,9 @@ def add_all_indicators(
     # RSI
     out[ind.rsi_col] = calculate_rsi(c, ind.rsi_period)
     out[ind.rsi_fast_col] = calculate_rsi(c, ind.rsi_fast_period)
+    # Phase 0.7.x — signed 3-bar RSI delta for the directional
+    # `rsi_thrust` momentum gate.
+    out['RSI_Thrust_3'] = calculate_rsi_thrust(out[ind.rsi_col], lookback=3)
 
     # EMAs
     for p in ind.ema_periods:

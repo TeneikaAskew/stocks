@@ -29,6 +29,7 @@ from .config import (
     CONSECUTIVE_THRESHOLD,
     MIN_CONDITIONS,
     PUT_RSI_RANGE,
+    RSI_THRUST_THRESHOLD,
     RVOL_RECENT_THRESHOLD,
     STOCH_RSI_OVERBOUGHT,
     STOCH_RSI_OVERSOLD,
@@ -48,12 +49,13 @@ def _rsi_col_name() -> str:
 def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
     """Phase 0.7.1: dropped `stoch_rsi_not_overbought`.
     Phase 0.7.2: relaxed `consecutive_up` from 3-of-3 to 3-of-5.
-    Phase 0.7.x: added `rvol_above_recent` (volume confirmation) and
-    `atr_expansion` (volatility regime gate).
+    Phase 0.7.x: added `rvol_above_recent` (volume confirmation),
+    `atr_expansion` (volatility regime gate), and `rsi_thrust`
+    (directional RSI velocity).
 
-    Six conditions total; min_conditions=3 still gates fires. Bars with
-    full volume + vol-expansion confirmation reach score=6 (max
-    conviction, room for tiered scoring to differentiate).
+    Seven conditions total; min_conditions=3 still gates fires. Bars
+    with full alignment reach score=7 (max conviction, room for tiered
+    scoring to differentiate).
     """
     score = 0
     conditions: list[str] = []
@@ -88,6 +90,11 @@ def _check_call_conditions(row: pd.Series) -> tuple[int, list[str]]:
         score += 1
         conditions.append("atr_expansion")
 
+    rsi_thrust = row.get("RSI_Thrust_3")
+    if rsi_thrust is not None and not pd.isna(rsi_thrust) and rsi_thrust > RSI_THRUST_THRESHOLD:
+        score += 1
+        conditions.append("rsi_thrust")
+
     return score, conditions
 
 
@@ -95,8 +102,8 @@ def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
     """Phase 0.7.1 mirror: dropped `stoch_rsi_not_oversold` (free score).
     Phase 0.7.2 mirror: relaxed `consecutive_down` from 3-of-3 to 3-of-5.
     Phase 0.7.x mirror: added `rvol_above_recent` and `atr_expansion`
-    (both direction-agnostic — high volume / vol expansion confirm
-    either side of a setup).
+    (direction-agnostic confirmers) and `rsi_thrust` (directional —
+    fires on negative RSI delta, opposite of CALL's positive-delta gate).
     """
     score = 0
     conditions: list[str] = []
@@ -130,6 +137,13 @@ def _check_put_conditions(row: pd.Series) -> tuple[int, list[str]]:
     if atr_exp is not None and not pd.isna(atr_exp) and atr_exp > ATR_EXPANSION_THRESHOLD:
         score += 1
         conditions.append("atr_expansion")
+
+    rsi_thrust = row.get("RSI_Thrust_3")
+    # PUT mirrors CALL: looking for negative RSI delta (RSI accelerating
+    # down). Threshold is symmetric — same magnitude, opposite sign.
+    if rsi_thrust is not None and not pd.isna(rsi_thrust) and rsi_thrust < -RSI_THRUST_THRESHOLD:
+        score += 1
+        conditions.append("rsi_thrust")
 
     return score, conditions
 

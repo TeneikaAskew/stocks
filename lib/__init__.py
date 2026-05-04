@@ -6,6 +6,7 @@ configuration, Strat classification, and backtesting.
 from lib.indicators import (
     wilder_moving_average,
     calculate_rsi,
+    calculate_rsi_thrust,
     calculate_atr,
     calculate_atr_expansion,
     calculate_ema,
@@ -23,6 +24,7 @@ from lib.config import load_config, RiskConfig, ExitConfig
 __all__ = [
     'wilder_moving_average',
     'calculate_rsi',
+    'calculate_rsi_thrust',
     'calculate_atr',
     'calculate_atr_expansion',
     'calculate_ema',

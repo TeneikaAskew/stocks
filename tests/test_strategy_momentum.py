@@ -38,6 +38,9 @@ def _bar(**overrides) -> pd.Series:
         # Phase 0.7.x: `atr_expansion` fires when > 1.15. Default to 1.0
         # so fixtures don't accidentally pick it up either.
         "ATR_Expansion": 1.0,
+        # Phase 0.7.x: directional `rsi_thrust` fires on |delta| > 5.
+        # Default 0 so fixtures don't accidentally fire either side.
+        "RSI_Thrust_3": 0.0,
         "Price_vs_VWAP": 0.0, "Price_vs_EMA9": 0.0, "Price_vs_EMA20": 0.0,
         "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
     }
@@ -283,6 +286,110 @@ def test_atr_expansion_adds_to_put_score():
     assert sig is not None
     assert sig.direction == "PUT"
     assert "atr_expansion" in sig.conditions_met
+
+
+def test_rsi_thrust_positive_fires_for_call():
+    """Phase 0.7.x: directional `rsi_thrust` fires CALL on positive delta."""
+    row = _bar(
+        Consecutive_Up_5=3,
+        RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=100.0,
+        RSI_Thrust_3=8.0,                           # > +5 → bullish thrust
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.direction == "CALL"
+    assert "rsi_thrust" in sig.conditions_met
+
+
+def test_rsi_thrust_negative_does_not_fire_for_call():
+    """Negative delta is bearish thrust — must NOT count for CALL."""
+    row = _bar(
+        Consecutive_Up_5=3,
+        RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,
+        RSI_Thrust_3=-8.0,                          # bearish — wrong direction for CALL
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.direction == "CALL"
+    assert "rsi_thrust" not in sig.conditions_met
+
+
+def test_rsi_thrust_negative_fires_for_put():
+    row = _bar(
+        Consecutive_Down_5=3,
+        RSI14_W=65.0,
+        Last=99.0, Close=99.0, VWAP=100.0,
+        EMA9=100.0,
+        RSI_Thrust_3=-8.0,                          # < -5 → bearish thrust
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.direction == "PUT"
+    assert "rsi_thrust" in sig.conditions_met
+
+
+def test_rsi_thrust_positive_does_not_fire_for_put():
+    """Positive delta is bullish thrust — must NOT count for PUT."""
+    row = _bar(
+        Consecutive_Down_5=3,
+        RSI14_W=65.0,
+        Last=99.0, Close=99.0, VWAP=100.0,
+        RSI_Thrust_3=8.0,                           # bullish — wrong direction for PUT
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.direction == "PUT"
+    assert "rsi_thrust" not in sig.conditions_met
+
+
+def test_rsi_thrust_below_threshold_magnitude_does_not_count():
+    """|delta| <= 5 is below threshold."""
+    row_call = _bar(
+        Consecutive_Up_5=3, RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0, EMA9=100.0,
+        RSI_Thrust_3=4.99,                          # just below +5
+    )
+    sig = STRAT.evaluate(row_call)
+    assert "rsi_thrust" not in sig.conditions_met
+
+
+def test_rsi_thrust_alone_does_not_fire():
+    """Thrust alone (1 of 7) stays below min_conditions=3."""
+    row = _bar(RSI_Thrust_3=20.0)                   # massive bullish thrust
+    sig = STRAT.evaluate(row)
+    assert sig is None
+
+
+def test_rsi_thrust_missing_or_nan_does_not_fire():
+    import numpy as np
+    row = _bar(
+        Consecutive_Up_5=3, RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,
+        RSI_Thrust_3=np.nan,
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert "rsi_thrust" not in sig.conditions_met
+
+
+def test_rsi_thrust_full_alignment_scores_seven():
+    """Bar with all 7 conditions met (max conviction)."""
+    row = _bar(
+        Consecutive_Up_5=3,
+        RSI14_W=35.0,                               # rsi_bullish_recovery
+        Last=101.0, Close=101.0, VWAP=100.0,        # above_vwap
+        EMA9=100.0,                                  # above_ema9
+        RVol_Recent_20=1.5,                         # rvol_above_recent
+        ATR_Expansion=1.30,                         # atr_expansion
+        RSI_Thrust_3=8.0,                           # rsi_thrust
+    )
+    sig = STRAT.evaluate(row)
+    assert sig is not None
+    assert sig.direction == "CALL"
+    assert sig.base_score == 7
 
 
 def test_signal_carries_indicator_snapshots():
