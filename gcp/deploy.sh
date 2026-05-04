@@ -849,6 +849,67 @@ deploy_compute_earnings_reactions() {
         --quiet
 }
 
+deploy_fetch_market_data_backfill() {
+    echo "Deploying fetch-market-data-backfill job..."
+    # Sibling to fetch-market-data — same image, same code path, but
+    # invoked with --backfill so it runs the historical OHLCV bootstrap
+    # logic in gcp/fetchers/fetch_market_data._run_backfill instead of
+    # the daily-cron path. Sharded across 4 parallel tasks via
+    # --parallelism=4 --tasks=4: each task picks every 4th ticker
+    # (CLOUD_RUN_TASK_INDEX % CLOUD_RUN_TASK_COUNT). At AV's 13s rate
+    # limit, 310 tickers / 4 tasks ≈ 17 min wall-clock vs ~67 min
+    # serial. 4 tasks × 1 call/13s = ~18 RPM, well under AV's 150 RPM.
+    # 3600s task-timeout gives 4× headroom over the 17-min estimate
+    # per the CLAUDE.md §0.5 sizing rule.
+    gcloud run jobs create fetch-market-data-backfill \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 3600 \
+        --parallelism 4 --tasks 4 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_market_data" \
+        --args "--backfill" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-market-data-backfill \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 3600 \
+        --parallelism 4 --tasks 4 \
+        --command "python,-m,gcp.fetchers.fetch_market_data" \
+        --args "--backfill" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+deploy_cleanup_stale_data() {
+    echo "Deploying cleanup-stale-data job..."
+    # Weekly maintenance: prune earnings_calendar rows outside the
+    # configured window plus market_data_daily / market_data_intraday
+    # rows for tickers no longer in the active set (in-window calendar
+    # ∪ watchlists ∪ STATIC_SET). Pure SQL; ~10s wall clock for ~1.5k
+    # row deletes. --max-retries=0 because the cron schedule means a
+    # missed run gets corrected on the following Saturday — the cost
+    # of a duplicate-emails retry isn't worth the marginal benefit.
+    gcloud run jobs create cleanup-stale-data \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.cleanup_stale_data" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update cleanup-stale-data \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,gcp.cleanup_stale_data" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 deploy_fetch_news_sentiment() {
     echo "Deploying fetch-news-sentiment (ticker mode) job..."
     local av_key av_env
@@ -911,6 +972,8 @@ deploy_fetch_news_sentiment_topics() {
 
 deploy_fetchers() {
     deploy_fetch_market_data
+    deploy_fetch_market_data_backfill
+    deploy_cleanup_stale_data
     deploy_fetch_alphavantage
     deploy_fetch_fred_rates
     deploy_fetch_economic_events
@@ -1307,6 +1370,16 @@ deploy_schedulers() {
     # Earnings history (AV EARNINGS, per-ticker quarterly EPS) — Sunday 6 AM ET.
     # Weekly cadence is enough since past quarters never change.
     _schedule "earnings-history-weekly"  "0 6 * * 0"  "fetch-earnings-history"
+
+    # Stale-data cleanup — Saturday 4 AM ET. Prunes earnings_calendar
+    # rows outside [today-21, today+14] plus market_data_daily /
+    # intraday rows for tickers no longer in the active set
+    # (in-window calendar ∪ watchlists ∪ STATIC_SET). Saturday so it
+    # runs BEFORE the Sunday earnings-history-weekly fetch — that way
+    # any tickers added by the weekly fetch can immediately have OHLC
+    # backfilled by the next weekday's fetch-market-data-daily run
+    # without colliding with the cleanup pass.
+    _schedule "cleanup-stale-data-weekly"  "0 4 * * 6"  "cleanup-stale-data"
 
     # Compute earnings reactions — daily at 11 PM ET (after market
     # close + EW strike eval at 11 PM, so the latest market_data_daily

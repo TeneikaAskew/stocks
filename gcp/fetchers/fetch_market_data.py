@@ -242,6 +242,42 @@ def build_daily_row(ticker: str, minute_df: pd.DataFrame, fetch_date: str,
 from gcp.database import DAILY_INDICATOR_TO_SQL_COLUMN as _DAILY_IND_TO_SQL
 
 
+# Below this fraction of bars with atr_14 populated, the daily fetcher
+# treats the ticker as having an indicator gap and triggers a full-range
+# recompute via gcp.backfill_ticker.compute_indicators_for_full_range
+# before doing the single-day upsert. Heuristic — too aggressive triggers
+# unnecessary recompute (still cheap, pure pandas), too loose leaves
+# permanent NULLs that block downstream joins like compute_earnings_reactions.
+INDICATOR_COVERAGE_THRESHOLD = 0.95
+
+
+def _indicator_coverage(ticker: str) -> dict:
+    """Return per-ticker indicator coverage stats.
+
+    Used by the self-healing chain in compute_and_upsert_daily_indicators
+    to detect when a ticker has OHLC bars but multi-day indicators were
+    only ever written for one date (the gap that left ATR NULL on
+    ~99% of historical earnings_reactions rows). Returned dict has
+    keys: bar_count (int), atr_coverage (float in [0, 1]).
+    """
+    from gcp.database import query_to_dataframe
+    sql = """
+        SELECT COUNT(*)::bigint                                          AS bar_count,
+               COALESCE(COUNT(atr_14)::double precision
+                        / NULLIF(COUNT(*), 0), 0.0)                      AS atr_coverage
+          FROM market_data_daily
+         WHERE ticker = :ticker
+    """
+    df = query_to_dataframe(sql, {'ticker': ticker.upper()})
+    if df.empty:
+        return {'bar_count': 0, 'atr_coverage': 0.0}
+    row = df.iloc[0]
+    return {
+        'bar_count': int(row['bar_count']),
+        'atr_coverage': float(row['atr_coverage']),
+    }
+
+
 def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
     """
     Query the last 250 daily bars from Cloud SQL, compute all multi-day
@@ -249,10 +285,39 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
 
     Calling this after the OHLCV row for fetch_date has been upserted ensures
     that every indicator uses the correct daily-close series (not 1-min bars).
+
+    SELF-HEALING (added 2026-05-04): before computing today's row, check
+    whether historical bars have multi-day indicators (atr_14, rsi_14,
+    etc.) populated. If atr_coverage < INDICATOR_COVERAGE_THRESHOLD,
+    trigger compute_indicators_for_full_range to backfill the gaps. The
+    single-row upsert path still runs at the end so today's strat /
+    pre-market context land regardless.
+
+    Without this, compute_and_upsert_daily_indicators only ever wrote
+    indicator values for fetch_date — historical rows stayed NULL, which
+    prevented compute_earnings_reactions from finding atr_14 for any
+    quarter older than the day a ticker first hit the daily fetcher.
     """
     import numpy as np
     from lib.indicators import add_all_indicators
     from gcp.database import query_to_dataframe, upsert_dataframe
+
+    # Self-heal historical indicator gaps before computing today's row.
+    # This is the bridge from the daily-cron path to the full-range
+    # computer that previously only ran on Discord /replay invocations.
+    coverage = _indicator_coverage(ticker)
+    if coverage['bar_count'] >= 2 and coverage['atr_coverage'] < INDICATOR_COVERAGE_THRESHOLD:
+        log.info(
+            "    Indicator gap detected for %s "
+            "(bars=%d, atr_coverage=%.1f%%) — running full-range recompute",
+            ticker, coverage['bar_count'], coverage['atr_coverage'] * 100,
+        )
+        try:
+            from gcp.backfill_ticker import compute_indicators_for_full_range
+            compute_indicators_for_full_range(ticker)
+        except Exception as e:
+            log.warning("    Full-range indicator recompute failed for %s: %s",
+                        ticker, e)
 
     sql = """
         SELECT date,
@@ -710,13 +775,31 @@ def _run_backfill() -> None:
             for (t, n, mx) in targets]
     pending = [(t, n, mx, sz) for (t, n, mx, sz) in plan if sz is not None]
 
+    # Cloud Run Jobs --tasks=N --parallelism=N exposes CLOUD_RUN_TASK_INDEX
+    # (0..N-1) and CLOUD_RUN_TASK_COUNT (N) as env vars. Sharding is
+    # deterministic on the sorted target list (_backfill_targets ORDER BY
+    # ticker) so two tasks can never both pick the same ticker even on
+    # retry. With 4 parallel tasks at the AV 13s/call rate limit, ~310
+    # tickers complete in ~17 min vs ~67 min serial — 4× faster — while
+    # staying at ~18 RPM (well under AV's 150 RPM cap).
+    task_count = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1') or '1')
+    task_index = int(os.environ.get('CLOUD_RUN_TASK_INDEX', '0') or '0')
+    if task_count > 1:
+        full_pending = pending
+        pending = [item for i, item in enumerate(full_pending)
+                   if i % task_count == task_index]
+        log.info("Sharded backfill: task %d/%d → %d of %d targets",
+                 task_index, task_count, len(pending), len(full_pending))
+
     n_full = sum(1 for _, _, _, sz in pending if sz == 'full')
     n_compact = sum(1 for _, _, _, sz in pending if sz == 'compact')
-    skipped = len(plan) - len(pending)
+    already_current = sum(1 for _, _, _, sz in plan if sz is None)
 
     log.info("Backfill mode")
     log.info("  Eligible targets: %d", len(plan))
-    log.info("  Already current (skipped): %d", skipped)
+    log.info("  Already current (skipped): %d", already_current)
+    log.info("  This task's pending: %d (task %d/%d)",
+             len(pending), task_index, task_count)
     log.info("  Full pulls (~20y, filtered to 10y on write): %d", n_full)
     log.info("  Compact pulls (last 100 days): %d", n_compact)
     log.info("  Estimated wall clock: %d min (13s rate limit)",

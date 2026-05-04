@@ -572,6 +572,18 @@ ALTER TABLE earnings_reactions
     DROP COLUMN IF EXISTS atr_14_d,
     DROP COLUMN IF EXISTS day_range_in_atr_units;
 
+-- Short-window pre-earnings drift (added 2026-05-04). Complements the
+-- existing pre_earnings_drift_10d_pct column so the brief can show how
+-- the stock has moved over the immediate run-up to the print, not just
+-- the wider 10-day window. Both are reference points; the 10-day window
+-- is the canonical "drifted into earnings" signal, but a clean +5% over
+-- D-3 vs D-5 vs D-10 lets the analyst spot accumulation that started
+-- mid-week vs mid-month. Pure compute from the same daily window the
+-- populator already pulls — zero extra API calls.
+ALTER TABLE earnings_reactions
+    ADD COLUMN IF NOT EXISTS pre_drift_3d_pct  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS pre_drift_5d_pct  DOUBLE PRECISION;
+
 
 -- ─────────────────────────────────────────────────────────
 -- SEC EDGAR FILINGS (8-K material events, 10-Q/10-K, etc.)

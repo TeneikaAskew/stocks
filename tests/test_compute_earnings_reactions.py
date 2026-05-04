@@ -197,6 +197,20 @@ class TestComputeReactionAMC:
         assert r['d_minus_1_close'] == 110.0
         assert abs(r['pre_earnings_drift_10d_pct'] - 9.4527) < 0.01
 
+    def test_amc_pre_drift_5d(self):
+        df = self._build_bars()
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        # D-5 close = 105.0 (2026-02-25). D-1 close = 110.0
+        # drift = (110.0 - 105.0) / 105.0 ≈ 4.7619%
+        assert abs(r['pre_drift_5d_pct'] - 4.7619) < 0.01
+
+    def test_amc_pre_drift_3d(self):
+        df = self._build_bars()
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        # D-3 close = 107.0 (2026-02-27). D-1 close = 110.0
+        # drift = (110.0 - 107.0) / 107.0 ≈ 2.8037%
+        assert abs(r['pre_drift_3d_pct'] - 2.8037) < 0.01
+
     def test_amc_max_run_and_drawdown(self):
         df = self._build_bars()
         r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
@@ -310,7 +324,7 @@ class TestComputeReactionEdgeCases:
         assert r is None
 
     def test_no_d_minus_10_leaves_drift_null_but_returns_row(self):
-        """Window only has D-1, D, D+1 — drift_10d should be null but row is OK."""
+        """Window only has D-1, D, D+1 — every pre-drift should be null but row is OK."""
         df = _bars([
             (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),
             (date(2026, 3, 4), 100.0, 102.0, 99.0, 101.0),
@@ -320,8 +334,28 @@ class TestComputeReactionEdgeCases:
         assert r is not None
         assert r['d_minus_10_close'] is None
         assert r['pre_earnings_drift_10d_pct'] is None
+        assert r['pre_drift_5d_pct'] is None
+        assert r['pre_drift_3d_pct'] is None
         # But the reaction itself is computed
         assert r['reaction_gap_pct'] is not None
+
+    def test_d_minus_5_present_but_d_minus_3_partially_in(self):
+        """Edge case: window reaches D-3 but not D-5 → 3d set, 5d/10d null."""
+        df = _bars([
+            # 4 bars before D — exactly enough for D-3 (index 0) but not D-5
+            (date(2026, 2, 27), 100.0, 101.0, 99.0, 100.0),  # D-3
+            (date(2026, 3, 2),  101.0, 102.0, 100.0, 102.0),  # D-2
+            (date(2026, 3, 3),  102.0, 104.0, 101.0, 105.0),  # D-1 close=105
+            (date(2026, 3, 4),  106.0, 108.0, 105.5, 107.0),  # D
+            (date(2026, 3, 5),  107.5, 109.0, 106.0, 108.0),  # D+1
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # D-3 reachable: d_idx=3, d_idx-3=0 → close=100
+        # drift_3d = (105 - 100)/100 = 5.0
+        assert abs(r['pre_drift_3d_pct'] - 5.0) < 0.001
+        assert r['pre_drift_5d_pct'] is None
+        assert r['pre_earnings_drift_10d_pct'] is None
 
     def test_no_d_plus_5_leaves_sustain_null_but_returns_row(self):
         df = _bars([

@@ -110,13 +110,19 @@ def compute_reaction(
         return daily.iloc[idx] if 0 <= idx < len(daily) else None
 
     d_minus_10 = safe(d_idx - 10)
+    d_minus_5 = safe(d_idx - 5)
+    d_minus_3 = safe(d_idx - 3)
     d_minus_1 = safe(d_idx - 1)
     d = safe(d_idx)
     d_plus_1 = safe(d_idx + 1)
     if any(x is None for x in (d_minus_1, d, d_plus_1)):
         return None
 
-    # Pre-earnings drift (only when D-10 is in window)
+    # Pre-earnings drift over multiple windows. Each is independent — if
+    # the daily window doesn't reach back that far, the column stays
+    # NULL but the row is still produced. D-10 is the canonical
+    # "drifted into earnings" signal; D-3 / D-5 give the analyst a
+    # tighter view of accumulation in the immediate run-up.
     pre_drift_10d = None
     d_minus_10_close = None
     if d_minus_10 is not None:
@@ -124,6 +130,22 @@ def compute_reaction(
         pre_drift_10d = (
             (float(d_minus_1['close']) - d_minus_10_close)
             / d_minus_10_close * 100
+        )
+
+    pre_drift_5d = None
+    if d_minus_5 is not None:
+        d_minus_5_close = float(d_minus_5['close'])
+        pre_drift_5d = (
+            (float(d_minus_1['close']) - d_minus_5_close)
+            / d_minus_5_close * 100
+        )
+
+    pre_drift_3d = None
+    if d_minus_3 is not None:
+        d_minus_3_close = float(d_minus_3['close'])
+        pre_drift_3d = (
+            (float(d_minus_1['close']) - d_minus_3_close)
+            / d_minus_3_close * 100
         )
 
     # Raw gap math (always computed; raw inputs to reaction_gap)
@@ -266,6 +288,8 @@ def compute_reaction(
         'd_minus_10_close': d_minus_10_close,
         'd_minus_1_close': float(d_minus_1['close']),
         'pre_earnings_drift_10d_pct': pre_drift_10d,
+        'pre_drift_5d_pct': pre_drift_5d,
+        'pre_drift_3d_pct': pre_drift_3d,
         'd_open': float(d['open']),
         'd_high': float(d['high']),
         'd_low': float(d['low']),
