@@ -478,31 +478,44 @@ def process_ticker(ticker: str, fetch_date: str, bucket: str, av_api_key: str):
 def _earnings_tickers_in_window(
     days_back: int,
     days_ahead: int,
-    top_n: int = 25,
+    top_n: int | None = None,
+    require_options: bool = True,
 ) -> list[str]:
-    """Resolve **top-N** tickers reporting earnings within [today-back, today+ahead].
+    """Resolve tickers reporting earnings within [today-back, today+ahead].
 
     Used to extend the always-on watchlist with single-name catalyst
     tickers so the historical-earnings-reaction signal in the ranker
     has daily bars to measure against.
 
-    Ranking — optionable names by market cap descending. Non-optionable
-    earnings names (no listed contracts) and rows missing market_cap fall
-    to the bottom; we still keep them if there's room under ``top_n`` so
-    a thin earnings week doesn't starve the union.
+    Filtering:
+      - ``require_options=True`` (default): only return tickers with at
+        least one source row marking ``has_options=true``. EW and UW
+        populate this flag; AV and Yahoo never do, so this is effectively
+        "EW or UW listed it as options-tradable" — the right cut for an
+        earnings-options pipeline. In a typical 7d window this collapses
+        a ~3,500-ticker universe to ~500.
+      - ``require_options=False``: legacy behaviour, returns all reporters
+        (sorted by the same liquidity signals). Use for non-options
+        signal coverage.
 
-    Why a cap: AlphaVantage allows 150 req/min on the current tier, and
-    each ticker costs ~3 calls (intraday + daily + supporting). The full
-    earnings calendar can return 200+ tickers, blowing through the
-    minute budget before the loop reaches IWM/QQQ/SPY — those silently
-    skip with empty AV responses, leaving the core tickers stale. The
-    cap stays well under the budget.
+    DO NOT use ``is_s_p_500`` as a hard filter — that flag is only ever
+    populated by Unusual Whales (other sources leave it NULL), and even
+    UW leaves it NULL on many rows including JPM/UNH/MCK. The
+    ``has_options`` filter strictly contains every is_s_p_500=true name
+    in the window plus another ~450 optionable non-S&P500 names.
+
+    Capacity (CLAUDE.md §0.2): with require_options=True, the universe
+    is ~500 tickers in a typical 7d window. AV is 150 RPM × ~3 calls
+    per ticker = ~10 min — fits comfortably in the 30-min Cloud Run
+    task-timeout. ``top_n=None`` (default) disables the cap because the
+    options filter is the real cap.
 
     Args:
         days_back / days_ahead: symmetric window around today.
-        top_n: max tickers to return. Default 25; ``0`` disables the
-            cap and returns the full set (legacy behaviour, NOT
-            recommended for the daily Cloud Run Job).
+        top_n: max tickers to return. ``None`` (default) disables the
+            cap. Set explicitly for ad-hoc runs that want a subset.
+        require_options: if True, only return tickers where at least one
+            data_source marked ``has_options=true``.
     """
     if days_back <= 0 and days_ahead <= 0:
         return []
@@ -514,10 +527,10 @@ def _earnings_tickers_in_window(
     # Aggregate per ticker. UW liquidity signals (stock_volume,
     # options_volume, is_s_p_500) outrank market_cap because market_cap is
     # only filled on UW rows, while many UW rows ALSO have stock_volume.
-    # An SP500 name with high options volume is the canonical "tradeable
-    # earnings ticker" — exactly what we want the daily fetcher to backfill.
-    # NULLS LAST on every signal so AV-only / EW-only rows sink without
-    # disappearing entirely.
+    # An optionable name with high options volume is the canonical
+    # "tradeable earnings ticker" — exactly what we want the daily
+    # fetcher to backfill. NULLS LAST on every signal so AV-only /
+    # EW-only rows sink without disappearing entirely.
     sql = """
         SELECT ticker,
                BOOL_OR(COALESCE(has_options, false))   AS optionable,
@@ -530,7 +543,10 @@ def _earnings_tickers_in_window(
             CURRENT_DATE - (:back || ' days')::interval AND
             CURRENT_DATE + (:ahead || ' days')::interval
         GROUP BY ticker
-        ORDER BY optionable      DESC,
+    """
+    if require_options:
+        sql += '        HAVING BOOL_OR(COALESCE(has_options, false)) = true\n'
+    sql += """        ORDER BY optionable      DESC,
                  sp500           DESC NULLS LAST,
                  options_volume  DESC NULLS LAST,
                  stock_volume    DESC NULLS LAST,
@@ -752,14 +768,28 @@ def main():
                         help=('Augment ticker list with anyone reporting earnings within N '
                               'days before AND after today (symmetric window). 0 disables.'))
     parser.add_argument('--max-tickers', type=int,
-                        default=int(os.environ.get('MAX_TICKERS', '300')),
-                        help='Safety cap on total ticker count (default: 300).')
+                        default=int(os.environ.get('MAX_TICKERS', '800')),
+                        help='Safety cap on total ticker count (default: 800). '
+                             'Headroom above the optionable-earnings universe '
+                             '(~500/week) + 16 static + watchlist.')
     parser.add_argument('--max-earnings-tickers', type=int,
-                        default=int(os.environ.get('MAX_EARNINGS_TICKERS', '25')),
-                        help=('Within --earnings-window-days, only the top N earnings '
-                              'names by market cap (optionable first) are added. Keeps '
-                              'AV rate-limit budget reserved for core + watchlist. 0 = '
-                              'no cap (legacy unbounded behaviour). Default: 25.'))
+                        default=int(os.environ.get('MAX_EARNINGS_TICKERS', '0')),
+                        help=('Within --earnings-window-days, cap the earnings '
+                              'union to the top N (sorted optionable→sp500→'
+                              'options_volume→stock_volume→market_cap). '
+                              '0 = no cap (default) — relies on the '
+                              '--require-options filter to bound the universe. '
+                              'AV at 150 RPM × 3 calls/ticker = ~10 min for '
+                              '500 names, well within the 30-min timeout.'))
+    parser.add_argument('--require-options', action='store_true',
+                        default=os.environ.get('REQUIRE_OPTIONS', 'true').lower() != 'false',
+                        help=('Filter the earnings union to tickers with '
+                              '`has_options=true` from EW or UW. Default: '
+                              'true. AV/Yahoo never set this flag, so the '
+                              'filter effectively means "EW or UW confirmed '
+                              'this is options-tradable around earnings" — '
+                              'the right cut for an earnings-options pipeline. '
+                              'Set REQUIRE_OPTIONS=false to disable.'))
     parser.add_argument('--backfill', action='store_true',
                         help=('Historical OHLCV backfill mode: pull 10y of daily bars '
                               'for every ticker in earnings_history that has options + '
@@ -796,15 +826,21 @@ def main():
             tickers.extend(wl_added)
 
     if args.earnings_window_days > 0:
+        # Asymmetric window: lookahead-only is the actually-actionable
+        # cut. Looking back 7d only matters for reaction backfill, which
+        # compute_earnings_reactions handles on its own SQL join — the
+        # daily fetcher doesn't need to re-pull yesterday's reporters.
         earnings = _earnings_tickers_in_window(
-            args.earnings_window_days,
-            args.earnings_window_days,
-            top_n=args.max_earnings_tickers,
+            days_back=0,
+            days_ahead=args.earnings_window_days,
+            top_n=args.max_earnings_tickers if args.max_earnings_tickers > 0 else None,
+            require_options=args.require_options,
         )
         added = [t for t in earnings if t not in tickers]
         if added:
-            log.info("  Adding %d earnings tickers (±%dd window): %s",
+            log.info("  Adding %d earnings tickers (next %dd, options=%s): %s",
                      len(added), args.earnings_window_days,
+                     args.require_options,
                      added[:10] + (['...'] if len(added) > 10 else []))
             tickers.extend(added)
 

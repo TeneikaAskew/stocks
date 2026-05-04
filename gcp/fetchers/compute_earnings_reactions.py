@@ -194,6 +194,32 @@ def compute_reaction(
         sign_flipped = (reaction_gap > 0) != (sustain_5d > 0)
         is_reversal = sign_flipped and abs(sustain_5d) >= abs(reaction_gap) * 0.5
 
+    # ATR context. atr_14 may be NULL on either bar (older history
+    # before the indicator backfill ran) — keep the row, just leave
+    # the ATR fields NULL. Computed only when both sides are present
+    # so the ratio doesn't lie about a column-missing case.
+    def _atr(bar) -> Optional[float]:
+        if bar is None:
+            return None
+        v = bar.get('atr_14')
+        try:
+            return float(v) if v is not None and pd.notna(v) else None
+        except (TypeError, ValueError):
+            return None
+
+    atr_d_minus_1 = _atr(d_minus_1)
+    atr_d = _atr(d)
+    d_minus_1_close_f = float(d_minus_1['close'])
+    atr_pct_d_minus_1 = (
+        atr_d_minus_1 / d_minus_1_close_f * 100
+        if atr_d_minus_1 is not None and d_minus_1_close_f
+        else None
+    )
+    day_range_in_atr_units = (
+        (float(d['high']) - float(d['low'])) / atr_d_minus_1
+        if atr_d_minus_1 and atr_d_minus_1 > 0 else None
+    )
+
     return {
         'ticker': eps_row['ticker'],
         'fiscal_date_ending': eps_row['fiscal_date_ending'],
@@ -227,6 +253,10 @@ def compute_reaction(
         'sustain_10d_pct': sustain_10d,
         'direction_consistent_5d': direction_consistent,
         'is_reversal_5d': is_reversal,
+        'atr_14_d_minus_1': atr_d_minus_1,
+        'atr_pct_d_minus_1': atr_pct_d_minus_1,
+        'atr_14_d': atr_d,
+        'day_range_in_atr_units': day_range_in_atr_units,
     }
 
 
@@ -283,12 +313,16 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
     """Return ~30 trading days centered on reported_date for this ticker.
 
     Wide enough to handle weekends/holidays around D and to reach D+10
-    for the 10-day sustain calculation.
+    for the 10-day sustain calculation. Includes atr_14 so the
+    populator can write ATR-context columns without a second pull
+    (the column is populated by the daily fetcher's full-range
+    indicator pass; rows without it stay NULL in the output).
     """
     sql = """
-        SELECT date, open, high, low, close, volume FROM market_data_daily
-        WHERE ticker = :t AND date BETWEEN :start AND :end
-        ORDER BY date
+        SELECT date, open, high, low, close, volume, atr_14
+          FROM market_data_daily
+         WHERE ticker = :t AND date BETWEEN :start AND :end
+         ORDER BY date
     """
     params = {
         't': ticker,

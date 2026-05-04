@@ -537,6 +537,18 @@ CREATE INDEX IF NOT EXISTS idx_earnings_reactions_ticker_reported
 CREATE INDEX IF NOT EXISTS idx_earnings_reactions_reported
     ON earnings_reactions (reported_date DESC);
 
+-- ATR context around earnings (added 2026-05-04). The reaction stats
+-- above are size-relative to the stock's price; these are size-relative
+-- to its NORMAL daily range so the brief and report can say things
+-- like "earnings day ranged 1.7× ATR." Computed in
+-- compute_earnings_reactions.py from the same market_data_daily
+-- window, so this is a pure-join enrichment with no extra API calls.
+ALTER TABLE earnings_reactions
+    ADD COLUMN IF NOT EXISTS atr_14_d_minus_1         DOUBLE PRECISION,    -- ATR(14) on the trading day BEFORE earnings
+    ADD COLUMN IF NOT EXISTS atr_pct_d_minus_1        DOUBLE PRECISION,    -- atr_14_d_minus_1 / d_minus_1_close × 100
+    ADD COLUMN IF NOT EXISTS atr_14_d                 DOUBLE PRECISION,    -- ATR(14) on the report day
+    ADD COLUMN IF NOT EXISTS day_range_in_atr_units   DOUBLE PRECISION;    -- (d_high - d_low) / atr_14_d_minus_1
+
 
 -- ─────────────────────────────────────────────────────────
 -- SEC EDGAR FILINGS (8-K material events, 10-Q/10-K, etc.)

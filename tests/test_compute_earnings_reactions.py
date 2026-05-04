@@ -520,3 +520,94 @@ class TestResolveTickersBroadScope:
                             lambda sql, params=None: pd.DataFrame())
         args = argparse.Namespace(tickers=None, dry_run=False)
         assert cer._resolve_tickers(args) == []
+
+
+# ────────────────────────────────────────────────────────────
+# ATR context (added 2026-05-04). Extends the daily window with an
+# atr_14 column and asserts compute_reaction emits the 4 new
+# size-relative fields. Independent test class so the existing
+# _bars() helper stays untouched (it builds frames WITHOUT atr_14
+# to confirm graceful-NULL behaviour for legacy data).
+# ────────────────────────────────────────────────────────────
+
+def _bars_with_atr(prices_per_day):
+    """Build a daily OHLCV DataFrame WITH an atr_14 column.
+
+    Each row tuple: (date, o, h, l, c, atr_14)
+    """
+    rows = [
+        {'date': d, 'open': o, 'high': h, 'low': l, 'close': c,
+         'volume': 100_000, 'atr_14': atr}
+        for d, o, h, l, c, atr in prices_per_day
+    ]
+    return pd.DataFrame(rows)
+
+
+class TestComputeReactionATR:
+    """ATR-around-earnings columns: atr_14_d_minus_1, atr_pct_d_minus_1,
+    atr_14_d, day_range_in_atr_units."""
+
+    def test_atr_columns_populated_when_atr_14_present(self):
+        df = _bars_with_atr([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0, 2.0),    # D-1
+            (date(2026, 3, 4), 100.0, 105.0, 99.0, 102.0, 2.2),   # D — range = 6.0
+            (date(2026, 3, 5), 105.0, 107.0, 104.0, 106.0, 2.4),  # D+1
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # T-1 ATR is what trade-sizing uses (going INTO earnings)
+        assert r['atr_14_d_minus_1'] == 2.0
+        # ATR % of T-1 close: 2.0 / 100.0 * 100 = 2.0
+        assert abs(r['atr_pct_d_minus_1'] - 2.0) < 0.01
+        # Same-day ATR for completeness
+        assert r['atr_14_d'] == 2.2
+        # The headline number: day range / T-1 ATR = 6.0 / 2.0 = 3.0
+        assert r['day_range_in_atr_units'] == 3.0
+
+    def test_atr_columns_null_when_atr_14_missing_from_frame(self):
+        """Legacy daily windows (no atr_14 column at all) — the populator
+        must return the row with reaction stats intact and ATR fields NULL."""
+        df = _bars([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),
+            (date(2026, 3, 4), 100.0, 105.0, 99.0, 102.0),
+            (date(2026, 3, 5), 105.0, 107.0, 104.0, 106.0),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        assert r['atr_14_d_minus_1'] is None
+        assert r['atr_pct_d_minus_1'] is None
+        assert r['atr_14_d'] is None
+        assert r['day_range_in_atr_units'] is None
+        # And the existing reaction fields are unaffected
+        assert r['reaction_gap_pct'] is not None
+
+    def test_atr_columns_null_when_d_minus_1_atr_is_nan(self):
+        """Even if the column exists, individual NaN values stay NULL."""
+        import numpy as np
+        df = _bars_with_atr([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0, np.nan),  # D-1 atr missing
+            (date(2026, 3, 4), 100.0, 105.0, 99.0, 102.0, 2.2),
+            (date(2026, 3, 5), 105.0, 107.0, 104.0, 106.0, 2.4),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        assert r['atr_14_d_minus_1'] is None
+        assert r['atr_pct_d_minus_1'] is None
+        # T-1 ATR drives the ratio — without it day_range_in_atr_units is null
+        assert r['day_range_in_atr_units'] is None
+        # Same-day atr is independent and still populated
+        assert r['atr_14_d'] == 2.2
+
+    def test_atr_columns_null_when_atr_is_zero(self):
+        """A zero ATR (synthetic / market-closed edge case) shouldn't
+        produce a divide-by-zero — the ratio stays NULL."""
+        df = _bars_with_atr([
+            (date(2026, 3, 3), 100.0, 100.0, 100.0, 100.0, 0.0),
+            (date(2026, 3, 4), 100.0, 105.0, 99.0, 102.0, 0.5),
+            (date(2026, 3, 5), 105.0, 107.0, 104.0, 106.0, 0.7),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        assert r['atr_14_d_minus_1'] == 0.0
+        # zero ATR — ratio undefined, must be None not inf
+        assert r['day_range_in_atr_units'] is None
