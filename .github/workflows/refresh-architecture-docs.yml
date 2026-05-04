@@ -49,6 +49,14 @@ env:
   REGION: us-east1
   PR_BRANCH_PREFIX: bot/arch-refresh
   GEMINI_MODEL: gemini-2.5-pro
+  # Gemini CLI refuses to run in a directory that hasn't been trusted via
+  # the interactive `gemini trust` command. CI has no interactive shell,
+  # so the run dies at the first invocation with exit code 55:
+  #   "Gemini CLI is not running in a trusted directory."
+  # Setting this env var explicitly trusts the workspace for headless use.
+  # Equivalent to passing --skip-trust on every gemini call, but one edit
+  # instead of four.
+  GEMINI_CLI_TRUST_WORKSPACE: 'true'
 
 jobs:
   refresh:
