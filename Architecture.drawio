@@ -346,43 +346,43 @@
                 <mxCell id="flow_e" value="💬 Discord Slash-Command Path&#xa;&#xa;1️⃣  Discord sends interaction (e.g. /replay TICKER, /backtest, /validate)&#xa;2️⃣  discord-interactions Cloud Run Service receives on port 8080&#xa;3️⃣  Service verifies via discord-public-key secret&#xa;4️⃣  Service invokes appropriate Cloud Run Job via Run API&#xa;     • /replay → backfill-ticker&#xa;     • /backtest → backtest (2 GiB)&#xa;     • /validate → validate-brief&#xa;5️⃣  Triggered Job posts results back to Discord via discord-webhook" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" vertex="1" parent="1">
                     <mxGeometry x="1900" y="1280" width="440" height="170" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_av_fmd" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_av" target="job_fmd">
+                <mxCell id="e_av_fmd" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_av" target="job_fmd">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_av_feh" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_av" target="job_feh">
+                <mxCell id="e_av_feh" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_av" target="job_feh">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_av_favi" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_av" target="job_favi">
+                <mxCell id="e_av_favi" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_av" target="job_favi">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_av_fns" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_av" target="job_fns">
+                <mxCell id="e_av_fns" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_av" target="job_fns">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_fred_ffr" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_fred" target="job_ffr">
+                <mxCell id="e_fred_ffr" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_fred" target="job_ffr">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_fred_fec2" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_fred" target="job_fec2">
+                <mxCell id="e_fred_fec2" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_fred" target="job_fec2">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_edgar_fsec" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_edgar" target="job_fsec">
+                <mxCell id="e_edgar_fsec" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_edgar" target="job_fsec">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_ew_fec" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_ew" target="job_fec">
+                <mxCell id="e_ew_fec" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_ew" target="job_fec">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_ff_fec2" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_ff" target="job_fec2">
+                <mxCell id="e_ff_fec2" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_ff" target="job_fec2">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_benzinga_fcc" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_benzinga" target="job_fcc">
+                <mxCell id="e_benzinga_fcc" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;" edge="1" parent="1" source="ext_benzinga" target="job_fcc">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_sched_fetch" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#d6b656;strokeWidth=2;" edge="1" parent="1" source="sched_group" target="fetch_group">
+                <mxCell id="e_sched_fetch" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#d6b656;strokeWidth=2;" edge="1" parent="1" source="sched_group" target="fetch_group">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_sched_comp" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#d6b656;strokeWidth=2;" edge="1" parent="1" source="sched_group" target="comp_group">
+                <mxCell id="e_sched_comp" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#d6b656;strokeWidth=2;" edge="1" parent="1" source="sched_group" target="comp_group">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_fmd_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;strokeWidth=2;" edge="1" parent="1" source="job_fmd" target="sql_box">
+                <mxCell id="e_fmd_sql" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;strokeWidth=2;" edge="1" parent="1" source="job_fmd" target="sql_box">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="10" y="365"/>
@@ -390,40 +390,40 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e_fmd_gcs" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b46504;" edge="1" parent="1" source="job_fmd" target="gcs_box">
+                <mxCell id="e_fmd_gcs" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b46504;" edge="1" parent="1" source="job_fmd" target="gcs_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_fns_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_fns" target="sql_box">
+                <mxCell id="e_fns_sql" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_fns" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_fpr_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_fpr" target="sql_box">
+                <mxCell id="e_fpr_sql" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_fpr" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_cer_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_cer" target="sql_box">
+                <mxCell id="e_cer_sql" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_cer" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_ews_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_ews" target="sql_box">
+                <mxCell id="e_ews_sql" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_ews" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_pmb_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#b46504;" edge="1" parent="1" source="job_pmb" target="sql_box">
+                <mxCell id="e_pmb_sql" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#b46504;" edge="1" parent="1" source="job_pmb" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_ip_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#b46504;" edge="1" parent="1" source="job_ip" target="sql_box">
+                <mxCell id="e_ip_sql" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#b46504;" edge="1" parent="1" source="job_ip" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_sm_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#b46504;" edge="1" parent="1" source="job_sm" target="sql_box">
+                <mxCell id="e_sm_sql" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#b46504;" edge="1" parent="1" source="job_sm" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_wr_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_wr" target="sql_box">
+                <mxCell id="e_wr_sql" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_wr" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_sqa_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_sqa" target="sql_box">
+                <mxCell id="e_sqa_sql" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_sqa" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_pmb_disc" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="job_pmb" target="ext_discord">
+                <mxCell id="e_pmb_disc" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="job_pmb" target="ext_discord">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_idp_disc" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="job_idp" target="ext_discord">
+                <mxCell id="e_idp_disc" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="job_idp" target="ext_discord">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="1710" y="330"/>
@@ -431,7 +431,7 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e_sm_disc" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="job_sm" target="ext_discord">
+                <mxCell id="e_sm_disc" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="job_sm" target="ext_discord">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="1910" y="330"/>
@@ -439,7 +439,7 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e_wr_disc" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;" edge="1" parent="1" source="job_wr" target="ext_discord">
+                <mxCell id="e_wr_disc" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;" edge="1" parent="1" source="job_wr" target="ext_discord">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="2110" y="330"/>
@@ -447,7 +447,7 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e_sqa_disc" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;" edge="1" parent="1" source="job_sqa" target="ext_discord">
+                <mxCell id="e_sqa_disc" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;" edge="1" parent="1" source="job_sqa" target="ext_discord">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="1410" y="440"/>
@@ -456,10 +456,10 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e_ip_anth" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;startArrow=classic;startFill=1;" edge="1" parent="1" source="job_ip" target="ext_anth">
+                <mxCell id="e_ip_anth" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;startArrow=classic;startFill=1;" edge="1" parent="1" source="job_ip" target="ext_anth">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_disc_di" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="ext_discord" target="svc_di">
+                <mxCell id="e_disc_di" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="ext_discord" target="svc_di">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="1530" y="290"/>
@@ -467,22 +467,22 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e_di_bft" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;" edge="1" parent="1" source="svc_di" target="job_bft">
+                <mxCell id="e_di_bft" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;" edge="1" parent="1" source="svc_di" target="job_bft">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_di_bt" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;" edge="1" parent="1" source="svc_di" target="job_bt">
+                <mxCell id="e_di_bt" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;" edge="1" parent="1" source="svc_di" target="job_bt">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_di_vb" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;" edge="1" parent="1" source="svc_di" target="job_vb">
+                <mxCell id="e_di_vb" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;" edge="1" parent="1" source="svc_di" target="job_vb">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_browser_tp" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="ext_browser" target="svc_tp">
+                <mxCell id="e_browser_tp" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="ext_browser" target="svc_tp">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_tp_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#0e8088;strokeWidth=2;" edge="1" parent="1" source="svc_tp" target="sql_box">
+                <mxCell id="e_tp_sql" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#0e8088;strokeWidth=2;" edge="1" parent="1" source="svc_tp" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_tp_ct" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#9673a6;strokeWidth=2;" edge="1" parent="1" source="svc_tp" target="ct_box">
+                <mxCell id="e_tp_ct" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#9673a6;strokeWidth=2;" edge="1" parent="1" source="svc_tp" target="ct_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="e_ct_ip" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#9673a6;strokeWidth=2;" edge="1" parent="1">
@@ -497,13 +497,13 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e_artn_ct" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#9673a6;" edge="1" parent="1" source="job_artn" target="ct_box">
+                <mxCell id="e_artn_ct" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#9673a6;" edge="1" parent="1" source="job_artn" target="ct_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_jobs_sink" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b85450;" edge="1" parent="1" source="comp_group" target="sink_box">
+                <mxCell id="e_jobs_sink" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b85450;" edge="1" parent="1" source="comp_group" target="sink_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_fetch_sink" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b85450;entryX=0.464;entryY=0.978;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="fetch_group" target="sink_box">
+                <mxCell id="e_fetch_sink" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b85450;entryPerimeter=0;" edge="1" parent="1" source="fetch_group" target="sink_box">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="1190" y="460"/>
@@ -512,37 +512,37 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e_sink_ps" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b85450;strokeWidth=2;" edge="1" parent="1" source="sink_box" target="ps_topic">
+                <mxCell id="e_sink_ps" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b85450;strokeWidth=2;" edge="1" parent="1" source="sink_box" target="ps_topic">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_ps_fn" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b85450;strokeWidth=2;" edge="1" parent="1" source="ps_topic" target="svc_fn">
+                <mxCell id="e_ps_fn" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b85450;strokeWidth=2;" edge="1" parent="1" source="ps_topic" target="svc_fn">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_fn_gh" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;" edge="1" parent="1" source="svc_fn" target="ext_gh">
+                <mxCell id="e_fn_gh" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;" edge="1" parent="1" source="svc_fn" target="ext_gh">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_dbq_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#d6b656;" edge="1" parent="1" source="gha_dbq" target="sql_box">
+                <mxCell id="e_dbq_sql" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;startArrow=classic;startFill=1;strokeColor=#d6b656;" edge="1" parent="1" source="gha_dbq" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_dep_pages" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#d6b656;" edge="1" parent="1" source="gha_dep" target="ext_ghpages">
+                <mxCell id="e_dep_pages" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#d6b656;" edge="1" parent="1" source="gha_dep" target="ext_ghpages">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_lib_comp" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" edge="1" parent="1" source="lib_group" target="comp_group">
+                <mxCell id="e_lib_comp" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" edge="1" parent="1" source="lib_group" target="comp_group">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_lib_ond" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" edge="1" parent="1" source="lib_group" target="ond_group">
+                <mxCell id="e_lib_ond" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" edge="1" parent="1" source="lib_group" target="ond_group">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_lib_tp" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" edge="1" parent="1" source="lib_group" target="svc_tp">
+                <mxCell id="e_lib_tp" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" edge="1" parent="1" source="lib_group" target="svc_tp">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_lib_fetch" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" edge="1" parent="1" source="lib_group" target="fetch_group">
+                <mxCell id="e_lib_fetch" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" edge="1" parent="1" source="lib_group" target="fetch_group">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_sec_fetch" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b46504;" edge="1" parent="1" source="sec_box" target="fetch_group">
+                <mxCell id="e_sec_fetch" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b46504;" edge="1" parent="1" source="sec_box" target="fetch_group">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_sec_comp" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b46504;exitX=0.638;exitY=-0.007;exitDx=0;exitDy=0;exitPerimeter=0;" edge="1" parent="1" source="sec_box" target="comp_group">
+                <mxCell id="e_sec_comp" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b46504;exitPerimeter=0;" edge="1" parent="1" source="sec_box" target="comp_group">
                     <mxGeometry relative="1" as="geometry">
                         <Array as="points">
                             <mxPoint x="759" y="780"/>
@@ -550,25 +550,25 @@
                         </Array>
                     </mxGeometry>
                 </mxCell>
-                <mxCell id="e_sec_svc" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b46504;" edge="1" parent="1" source="sec_box" target="svc_group">
+                <mxCell id="e_sec_svc" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b46504;" edge="1" parent="1" source="sec_box" target="svc_group">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_ip_vertex" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#9673a6;" edge="1" parent="1" source="job_ip" target="vertex_box">
+                <mxCell id="e_ip_vertex" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#9673a6;" edge="1" parent="1" source="job_ip" target="vertex_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_bt_lib" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" edge="1" parent="1" source="job_bt" target="lib_bt">
+                <mxCell id="e_bt_lib" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;dashPattern=1 4;strokeColor=#9673a6;" edge="1" parent="1" source="job_bt" target="lib_bt">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_asm_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_asm" target="sql_box">
+                <mxCell id="e_asm_sql" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_asm" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_mt_sql" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_mtgcp" target="sql_box">
+                <mxCell id="e_mt_sql" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;" edge="1" parent="1" source="job_mtgcp" target="sql_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_mt_gcs" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b46504;" edge="1" parent="1" source="job_mtgcp" target="gcs_box">
+                <mxCell id="e_mt_gcs" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;dashed=1;strokeColor=#b46504;" edge="1" parent="1" source="job_mtgcp" target="gcs_box">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="e_gas_ds" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#d6b656;" edge="1" parent="1" source="ext_gas" target="gha_ds">
+                <mxCell id="e_gas_ds" style="exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#d6b656;" edge="1" parent="1" source="ext_gas" target="gha_ds">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
             </root>
