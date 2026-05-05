@@ -340,6 +340,32 @@ def canned_bundle(monkeypatch):
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
 
+    # `summarize_strat_status` calls `lib.strat.compute_strat_status`
+    # which internally invokes `DataLoader.load_daily`. That bypasses the
+    # `summarizers._query` patch above (different code path). Without
+    # also patching here, the strat analyst always lands as failed
+    # because there's no Cloud SQL row AND no fallback Parquet in the
+    # test environment.  See test_agent_summarizers.py for the canonical
+    # pattern used in unit-level coverage.
+    import lib.strat as _strat_mod
+
+    def _fake_compute_strat_status(ticker, **_kwargs):
+        return {
+            "available": True,
+            "ticker": ticker,
+            "date": "2026-04-15",
+            "last_candle": "2U",
+            "in_force_combo": "212_bull_reversal",
+            "strat_setup": True,
+            "ftfc_score": 0.6,
+            "ftfc_direction": "bullish",
+            "ftfc_labels": {"D": "2U", "W": "2U", "M": "1"},
+            "trigger_high": 503.5,
+            "trigger_low": 498.2,
+        }
+
+    monkeypatch.setattr(_strat_mod, "compute_strat_status", _fake_compute_strat_status)
+
 
 @pytest.fixture
 def seven_role_snapshot() -> RouteSnapshot:
