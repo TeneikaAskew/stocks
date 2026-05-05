@@ -118,9 +118,16 @@ _PG_PARAM_SAFETY_MARGIN = 5000
 
 
 def _max_safe_chunksize(n_cols: int, requested_chunksize: int) -> int:
+    # No artificial floor — Codex review on PR #256 caught that an earlier
+    # `max(100, ...)` floor would silently overflow on pathologically wide
+    # tables (n_cols=1000 → 100×1000 + 5000 = 105 000 > 65535, the exact
+    # failure this helper exists to prevent). PostgreSQL caps tables at
+    # 1600 columns, so (65535-5000) // n_cols is always >= 37 for any
+    # legal table — the `max(1, …)` guard only activates on impossible
+    # input and prevents `range(0, len, 0)` from crashing.
     if n_cols <= 0:
         return requested_chunksize
-    max_safe = max(100, (PG_PARAM_LIMIT - _PG_PARAM_SAFETY_MARGIN) // n_cols)
+    max_safe = max(1, (PG_PARAM_LIMIT - _PG_PARAM_SAFETY_MARGIN) // n_cols)
     return min(requested_chunksize, max_safe)
 
 

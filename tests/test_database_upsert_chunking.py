@@ -51,12 +51,29 @@ def test_post_pr240_size_does_not_overflow():
     assert chunk * 41 + 5000 <= PG_PARAM_LIMIT
 
 
-def test_extreme_width_falls_back_to_floor_chunksize():
-    """A pathological 1000-col table should still produce a usable
-    chunk size, not zero or negative.
+def test_extreme_width_still_satisfies_safety_invariant():
+    """A pathological 1000-col table must NOT overflow.
+
+    Earlier draft used a `max(100, ...)` floor which Codex flagged on PR
+    #256: 100 × 1000 + 5000 = 105 000 > 65 535, reproducing the exact
+    failure the helper is meant to prevent. The floor is now max(1, ...)
+    so the safety invariant always holds.
     """
     chunk = _max_safe_chunksize(n_cols=1000, requested_chunksize=2000)
-    assert chunk >= 100  # floor in the helper
+    # The only invariant that matters: we never blow past pg8000's cap.
+    assert chunk * 1000 + 5000 <= PG_PARAM_LIMIT
+    # And we still produce a usable batch size (not 0).
+    assert chunk >= 1
+
+
+def test_max_legal_postgres_table_width_satisfies_invariant():
+    """PostgreSQL caps tables at 1600 columns (`MaxHeapAttributeNumber`).
+    Any legal table must produce a working chunksize >= 1 that doesn't
+    overflow the bind-param cap.
+    """
+    chunk = _max_safe_chunksize(n_cols=1600, requested_chunksize=2000)
+    assert chunk * 1600 + 5000 <= PG_PARAM_LIMIT
+    assert chunk >= 1
 
 
 def test_zero_or_negative_n_cols_returns_requested():
