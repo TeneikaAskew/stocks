@@ -48,7 +48,7 @@ List every modified, added, and deleted file. Do not proceed until you have a co
 | `scripts/run_backtest.py` | `BACKTEST_RESULTS.md` | CLI changes, new flags |
 | `scripts/analysis/` | `reports/` (phase reports) | New analysis phases, changed methodology |
 | `scripts/generate_backtest_report.py` | `BACKTEST_RESULTS.md` | Report format changes |
-| `website/` or `chart-viewer/` or `options-heatseeker/` or `success-report-site/` | `google-apps-script/WEB_APP_ISSUES_ANALYSIS.md` | UI/UX changes, new features |
+| `website/` or `options-heatseeker/` or `success-report-site/` | `google-apps-script/WEB_APP_ISSUES_ANALYSIS.md` | UI/UX changes, new features |
 | `google-apps-script/` | `google-apps-script/CODE_STRUCTURE.md` | New scripts, API changes |
 | `platform/api/` | `docs/GCP_IMPLEMENTATION_GUIDE.md` §10 (Platform API) | New routers, endpoint changes, response shape changes |
 | `platform/src/` | (no primary doc) | N/A |
@@ -82,7 +82,7 @@ List every modified, added, and deleted file. Do not proceed until you have a co
    | `feat(indicators)` | `lib/indicators.py` changes |
    | `feat(scripts)` | `scripts/` CLI scripts |
    | `feat(analysis)` | `scripts/analysis/` + `reports/phase*.md` together |
-   | `feat(web)` | Web app directories (options-heatseeker, chart-viewer, website, success-report-site) |
+   | `feat(web)` | Web app directories (options-heatseeker, website, success-report-site) |
    | `feat(platform-api)` | `platform/api/` changes (FastAPI routers, endpoints) |
    | `feat(platform-ui)` | `platform/src/` changes (React components, hooks, routes) |
    | `feat(platform)` | Cross-cutting platform changes spanning both `platform/api/` and `platform/src/` |

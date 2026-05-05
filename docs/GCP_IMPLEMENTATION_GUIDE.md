@@ -218,7 +218,6 @@ stocks/
 │   └── test_scripts.py            # CLI regression (18 tests)
 │
 ├── website/                       # Trading dashboard web app (port 8104)
-├── chart-viewer/                  # Chart viewer web app (port 8103)
 ├── options-heatseeker/            # Options heatseeker (port 8101)
 ├── success-report-site/           # Success report (port 8102)
 │
