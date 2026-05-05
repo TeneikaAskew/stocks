@@ -507,7 +507,7 @@
                 <mxCell id="p2_e9" value="7️⃣  scores" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;strokeWidth=2;" edge="1" parent="1" source="p2_ews" target="p2_sql_ec">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p2_note" value="Production notes:&#xa;• Auth via Cloud SQL Connector (cloud-sql-connection-name secret)&#xa;• Watchlist resolved via gcp/fetchers/_watchlist.py (~25 tickers)&#xa;• Idempotent: re-run after partial failure converges, not duplicates&#xa;• --max-retries 0 — Cloud Run can't distinguish transient from permanent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+                <mxCell id="p2_note" value="Production notes:&#xa;• Auth via Cloud SQL Connector (cloud-sql-connection-name secret)&#xa;• Watchlist resolved via gcp/fetchers/_watchlist.py (~25 tickers)&#xa;• Idempotent: re-run after partial failure converges, not duplicates&#xa;• --max-retries 0 — Cloud Run can&#39;t distinguish transient from permanent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
                     <mxGeometry x="700" y="130" width="480" height="130" as="geometry"/>
                 </mxCell>
             </root>
@@ -554,7 +554,7 @@
                 <mxCell id="p3_j2" value="fetch-insider-transactions&#xa;Form 4 → insider_transactions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="150" y="220" width="360" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="p3_j3" value="fetch-earnings-calendar&#xa;EW → earnings_calendar (today's reporters)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p3_j3" value="fetch-earnings-calendar&#xa;EW → earnings_calendar (today&#39;s reporters)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="150" y="310" width="360" height="60" as="geometry"/>
                 </mxCell>
                 <mxCell id="p3_j4" value="fetch-premarket-refresh&#xa;~50 tickers → gap_pct, pre_high/low/vwap" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
@@ -649,7 +649,7 @@
                 <mxCell id="p4_sql" value="Cloud SQL&#xa;insight_reports + insight_runs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=11;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="700" y="530" width="280" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p4_e1" value="1️⃣  click 'Refresh insight'" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="p4_browser" target="p4_tp">
+                <mxCell id="p4_e1" value="1️⃣  click &#39;Refresh insight&#39;" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="p4_browser" target="p4_tp">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
                 <mxCell id="p4_e2" value="2️⃣  HTTP POST" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;strokeWidth=2;" edge="1" parent="1" source="p4_tp" target="p4_router">
@@ -674,139 +674,139 @@
         </mxGraphModel>
     </diagram>
     <diagram name="🚨 Failure Pipeline" id="6c12f9c9c134409b894c">
-        <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1320" pageHeight="700" math="0" shadow="0">
+        <mxGraphModel dx="963" dy="1033" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1320" pageHeight="700" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-                <mxCell id="p5_title" value="🚨 Cloud Run Job Failure Pipeline — auto GitHub issue" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p5_title" value="🚨 Cloud Run Job Failure Pipeline — auto GitHub issue" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="40" y="30" width="1300" height="32" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_sub" value="Any Job exiting non-zero (or logging severity≥ERROR) → labeled GitHub issue with last 50 log lines" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontStyle=2;" vertex="1" parent="1">
+                <mxCell id="p5_sub" value="Any Job exiting non-zero (or logging severity≥ERROR) → labeled GitHub issue with last 50 log lines" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontStyle=2;" parent="1" vertex="1">
                     <mxGeometry x="40" y="64" width="1300" height="22" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_job" value="Cloud Run Job&#xa;exits non-zero OR logs severity≥ERROR" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p5_job" value="Cloud Run Job&#xa;exits non-zero OR logs severity≥ERROR" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="80" y="150" width="280" height="80" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_sqa" value="signal-quality-alarm&#xa;⚡ deliberate non-zero exit&#xa;(7d clean-rate drop &gt; 3pp)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+                <mxCell id="p5_sqa" value="signal-quality-alarm&#xa;⚡ deliberate non-zero exit&#xa;(7d clean-rate drop &gt; 3pp)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="80" y="260" width="280" height="80" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_log" value="Cloud Logging&#xa;structured logs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+                <mxCell id="p5_log" value="Cloud Logging&#xa;structured logs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d5e7;strokeColor=#9673a6;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="420" y="150" width="220" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_sink" value="gcp-job-failures-sink&#xa;filter: severity≥ERROR ∧&#xa;resource.type=cloud_run_job ∧&#xa;job_name≠failure-notifier" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p5_sink" value="gcp-job-failures-sink&#xa;filter: severity≥ERROR ∧&#xa;resource.type=cloud_run_job ∧&#xa;job_name≠failure-notifier" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="420" y="250" width="280" height="110" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_topic" value="Pub/Sub topic&#xa;gcp-job-failures" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p5_topic" value="Pub/Sub topic&#xa;gcp-job-failures" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="760" y="250" width="220" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_dlq" value="DLQ topic&#xa;gcp-job-failures-dlq" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+                <mxCell id="p5_dlq" value="DLQ topic&#xa;gcp-job-failures-dlq" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d5e7;strokeColor=#9673a6;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="760" y="340" width="220" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_pushsub" value="Push subscription&#xa;gcp-job-failures-push" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+                <mxCell id="p5_pushsub" value="Push subscription&#xa;gcp-job-failures-push" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6d5e7;strokeColor=#9673a6;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="1020" y="250" width="220" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_fn" value="failure-notifier&#xa;Cloud Run Service&#xa;fetches log tail, calls GitHub API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p5_fn" value="failure-notifier&#xa;Cloud Run Service&#xa;fetches log tail, calls GitHub API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="1020" y="360" width="240" height="90" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_secrets" value="Secret Manager&#xa;github-pat • github-repo" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=11;" vertex="1" parent="1">
+                <mxCell id="p5_secrets" value="Secret Manager&#xa;github-pat • github-repo" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="1020" y="470" width="240" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_gh" value="GitHub Issue&#xa;labels: workflow-failure, automated&#xa;body: last 50 log lines + run URL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p5_gh" value="GitHub Issue&#xa;labels: workflow-failure, automated&#xa;body: last 50 log lines + run URL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="1020" y="560" width="240" height="90" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_e1" value="1️⃣  emits log entry" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;" edge="1" parent="1" source="p5_job" target="p5_log">
+                <mxCell id="p5_e1" value="1️⃣  emits log entry" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;" parent="1" source="p5_job" target="p5_log" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_e1b" value="deliberate failure" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;dashed=1;" edge="1" parent="1" source="p5_sqa" target="p5_log">
+                <mxCell id="p5_e1b" value="deliberate failure" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;dashed=1;" parent="1" source="p5_sqa" target="p5_log" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_e2" value="2️⃣  filtered" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;" edge="1" parent="1" source="p5_log" target="p5_sink">
+                <mxCell id="p5_e2" value="2️⃣  filtered" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;" parent="1" source="p5_log" target="p5_sink" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_e3" value="3️⃣  publishes" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;dashed=1;" edge="1" parent="1" source="p5_sink" target="p5_topic">
+                <mxCell id="p5_e3" value="3️⃣  publishes" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;dashed=1;" parent="1" source="p5_sink" target="p5_topic" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_e4" value="4️⃣  delivers" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;dashed=1;" edge="1" parent="1" source="p5_topic" target="p5_sub">
+                <mxCell id="p5_e4" value="4️⃣  delivers" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;dashed=1;" parent="1" source="p5_topic" target="p5_sub" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_e5" value="5️⃣  push" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;" edge="1" parent="1" source="p5_pushsub" target="p5_fn">
+                <mxCell id="p5_e5" value="5️⃣  push" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b85450;strokeWidth=2;" parent="1" source="p5_pushsub" target="p5_fn" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_e6a" value="auth" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;strokeWidth=1;dashed=1;" edge="1" parent="1" source="p5_secrets" target="p5_fn">
+                <mxCell id="p5_e6a" value="auth" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;strokeWidth=1;dashed=1;" parent="1" source="p5_secrets" target="p5_fn" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_e6" value="6️⃣  creates labeled issue" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#d6b656;strokeWidth=2;" edge="1" parent="1" source="p5_fn" target="p5_gh">
+                <mxCell id="p5_e6" value="6️⃣  creates labeled issue" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#d6b656;strokeWidth=2;" parent="1" source="p5_fn" target="p5_gh" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p5_note" value="Why this exists:&#xa;• Replaces the old GitHub-Actions-based failure handler — Cloud Run Jobs ran outside GH&#xa;• Single issue per workflow type — duplicate failures append comments, don't spawn issues&#xa;• signal-quality-alarm reuses this pipeline as a deliberate monitoring channel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+                <mxCell id="p5_note" value="Why this exists:&#xa;• Replaces the old GitHub-Actions-based failure handler — Cloud Run Jobs ran outside GH&#xa;• Single issue per workflow type — duplicate failures append comments, don&#39;t spawn issues&#xa;• signal-quality-alarm reuses this pipeline as a deliberate monitoring channel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="80" y="460" width="880" height="110" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>
     </diagram>
     <diagram name="💬 Discord Slash-Cmd" id="594e255bd1834836ad10">
-        <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="520" math="0" shadow="0">
+        <mxGraphModel dx="598" dy="1033" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="520" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
-                <mxCell id="p6_title" value="💬 Discord Slash-Command Path — interactive Cloud Run Jobs" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p6_title" value="💬 Discord Slash-Command Path — interactive Cloud Run Jobs" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="40" y="30" width="1300" height="32" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_sub" value="Discord interaction → discord-interactions Service → On-Demand Cloud Run Job → Discord webhook reply" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontStyle=2;" vertex="1" parent="1">
+                <mxCell id="p6_sub" value="Discord interaction → discord-interactions Service → On-Demand Cloud Run Job → Discord webhook reply" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=0;fontStyle=2;" parent="1" vertex="1">
                     <mxGeometry x="40" y="64" width="1300" height="22" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_user" value="User in Discord&#xa;types /replay /backtest /validate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p6_user" value="User in Discord&#xa;types /replay /backtest /validate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="80" y="150" width="240" height="80" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_di" value="discord-interactions&#xa;Cloud Run Service (port 8080)&#xa;verifies via discord-public-key secret" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p6_di" value="discord-interactions&#xa;Cloud Run Service (port 8080)&#xa;verifies via discord-public-key secret" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="380" y="150" width="280" height="100" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_replay" value="/replay TICKER → backfill-ticker&#xa;daily + intraday + news + indicators" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b1ddf0;strokeColor=#10739e;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p6_replay" value="/replay TICKER → backfill-ticker&#xa;daily + intraday + news + indicators" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b1ddf0;strokeColor=#10739e;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="720" y="130" width="320" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_backtest" value="/backtest → backtest&#xa;walk-forward via lib.backtest (2 GiB job)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b1ddf0;strokeColor=#10739e;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p6_backtest" value="/backtest → backtest&#xa;walk-forward via lib.backtest (2 GiB job)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b1ddf0;strokeColor=#10739e;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="720" y="220" width="320" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_validate" value="/validate → validate-brief&#xa;verifies premarket brief accuracy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b1ddf0;strokeColor=#10739e;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p6_validate" value="/validate → validate-brief&#xa;verifies premarket brief accuracy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b1ddf0;strokeColor=#10739e;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="720" y="310" width="320" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_sql" value="Cloud SQL&#xa;trades / signal_alerts / market_data" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p6_sql" value="Cloud SQL&#xa;trades / signal_alerts / market_data" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="1100" y="220" width="240" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_disc_back" value="Discord channel&#xa;via discord-webhook secret" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p6_disc_back" value="Discord channel&#xa;via discord-webhook secret" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" parent="1" vertex="1">
                     <mxGeometry x="1100" y="400" width="240" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_e1" value="1️⃣  interaction (HTTP POST)" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="p6_user" target="p6_di">
+                <mxCell id="p6_e1" value="1️⃣  interaction (HTTP POST)" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" parent="1" source="p6_user" target="p6_di" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_e2a" value="2️⃣  invoke via Run API" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;strokeWidth=2;" edge="1" parent="1" source="p6_di" target="p6_replay">
+                <mxCell id="p6_e2a" value="2️⃣  invoke via Run API" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;strokeWidth=2;" parent="1" source="p6_di" target="p6_replay" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_e2b" value="2️⃣  invoke via Run API" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;strokeWidth=2;" edge="1" parent="1" source="p6_di" target="p6_backtest">
+                <mxCell id="p6_e2b" value="2️⃣  invoke via Run API" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;strokeWidth=2;" parent="1" source="p6_di" target="p6_backtest" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_e2c" value="2️⃣  invoke via Run API" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;strokeWidth=2;" edge="1" parent="1" source="p6_di" target="p6_validate">
+                <mxCell id="p6_e2c" value="2️⃣  invoke via Run API" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#0e8088;strokeWidth=2;" parent="1" source="p6_di" target="p6_validate" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_e3a" value="3️⃣  fetches/writes" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;strokeWidth=1;startArrow=classic;startFill=1;" edge="1" parent="1" source="p6_replay" target="p6_sql">
+                <mxCell id="p6_e3a" value="3️⃣  fetches/writes" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;strokeWidth=1;startArrow=classic;startFill=1;" parent="1" source="p6_replay" target="p6_sql" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_e3b" value="3️⃣  reads" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;strokeWidth=1;" edge="1" parent="1" source="p6_backtest" target="p6_sql">
+                <mxCell id="p6_e3b" value="3️⃣  reads" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;strokeWidth=1;" parent="1" source="p6_backtest" target="p6_sql" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_e3c" value="3️⃣  reads" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;strokeWidth=1;" edge="1" parent="1" source="p6_validate" target="p6_sql">
+                <mxCell id="p6_e3c" value="3️⃣  reads" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#b46504;strokeWidth=1;" parent="1" source="p6_validate" target="p6_sql" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_e4a" value="4️⃣  posts result" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="p6_replay" target="p6_disc_back">
+                <mxCell id="p6_e4a" value="4️⃣  posts result" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" parent="1" source="p6_replay" target="p6_disc_back" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_e4b" value="4️⃣  posts result" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="p6_backtest" target="p6_disc_back">
+                <mxCell id="p6_e4b" value="4️⃣  posts result" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" parent="1" source="p6_backtest" target="p6_disc_back" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_e4c" value="4️⃣  posts result" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" edge="1" parent="1" source="p6_validate" target="p6_disc_back">
+                <mxCell id="p6_e4c" value="4️⃣  posts result" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#5b6abf;strokeWidth=2;" parent="1" source="p6_validate" target="p6_disc_back" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
-                <mxCell id="p6_note" value="Two Discord secrets — different purposes:&#xa;• discord-public-key — verifies INCOMING interactions are signed by Discord&#xa;• discord-webhook — Job posts OUTGOING messages back to a channel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+                <mxCell id="p6_note" value="Two Discord secrets — different purposes:&#xa;• discord-public-key — verifies INCOMING interactions are signed by Discord&#xa;• discord-webhook — Job posts OUTGOING messages back to a channel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="80" y="280" width="600" height="90" as="geometry"/>
                 </mxCell>
             </root>
@@ -853,13 +853,13 @@
                 <mxCell id="p7_l2_sched" value="2️⃣  Cloud Scheduler&#xa;daily 7:15 ET" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="60" y="230" width="160" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p7_l2_job" value="fetch-earnings-calendar&#xa;EW credentials → today's reporters" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p7_l2_job" value="fetch-earnings-calendar&#xa;EW credentials → today&#39;s reporters" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="240" y="230" width="240" height="70" as="geometry"/>
                 </mxCell>
                 <mxCell id="p7_l2_ew" value="Earnings Whispers&#xa;calendar + recommended strikes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
                     <mxGeometry x="500" y="230" width="240" height="70" as="geometry"/>
                 </mxCell>
-                <mxCell id="p7_l2_tbl" value="earnings_calendar&#xa;today's reporters + recommended strikes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+                <mxCell id="p7_l2_tbl" value="earnings_calendar&#xa;today&#39;s reporters + recommended strikes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;fontSize=11;fontStyle=1;" vertex="1" parent="1">
                     <mxGeometry x="760" y="230" width="260" height="70" as="geometry"/>
                 </mxCell>
                 <mxCell id="p7_l3_sched" value="3️⃣  Cloud Scheduler&#xa;nightly post-close" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="1">
@@ -961,7 +961,7 @@
                 <mxCell id="p7_warn" value="⚠ fetch-earnings-options Job&#xa;CONFIRMED BROKEN — module gcp.fetchers.fetch_earnings_options does not exist.&#xa;No scheduler binding, every execution would ModuleNotFoundError. Safe to delete (per ARCHITECTURE.md reconciliation)." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
                     <mxGeometry x="60" y="640" width="660" height="80" as="geometry"/>
                 </mxCell>
-                <mxCell id="p7_note" value="Why earnings has its own page:&#xa;• Two-source pipeline (AV history + EW calendar) join into one analytical product&#xa;• premarket-brief 'conditional lean' is the consumer's main deliverable&#xa;• EW strikes scoring is the only place options-level fidelity is measured per-ticker daily" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+                <mxCell id="p7_note" value="Why earnings has its own page:&#xa;• Two-source pipeline (AV history + EW calendar) join into one analytical product&#xa;• premarket-brief &#39;conditional lean&#39; is the consumer&#39;s main deliverable&#xa;• EW strikes scoring is the only place options-level fidelity is measured per-ticker daily" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
                     <mxGeometry x="740" y="640" width="620" height="100" as="geometry"/>
                 </mxCell>
             </root>
