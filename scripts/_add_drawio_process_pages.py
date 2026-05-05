@@ -350,7 +350,7 @@ def page_failure_pipeline() -> str:
                         760, 250, 220, 70, "async", bold=True))
     cells.append(vertex("p5_dlq", "DLQ topic&#xa;gcp-job-failures-dlq",
                         760, 340, 220, 60, "async"))
-    cells.append(vertex("p5_sub", "Push subscription&#xa;gcp-job-failures-push",
+    cells.append(vertex("p5_pushsub", "Push subscription&#xa;gcp-job-failures-push",
                         1020, 250, 220, 70, "async"))
     cells.append(vertex("p5_fn", "failure-notifier&#xa;Cloud Run Service&#xa;fetches log tail, calls GitHub API",
                         1020, 360, 240, 90, "svc", bold=True))
@@ -369,7 +369,7 @@ def page_failure_pipeline() -> str:
                       color="#b85450", exit_side="right", entry_side="left", dashed=True))
     cells.append(edge("p5_e4", "p5_topic", "p5_sub", "4️⃣  delivers",
                       color="#b85450", exit_side="right", entry_side="left", dashed=True))
-    cells.append(edge("p5_e5", "p5_sub", "p5_fn", "5️⃣  push",
+    cells.append(edge("p5_e5", "p5_pushsub", "p5_fn", "5️⃣  push",
                       color="#b85450", exit_side="bottom", entry_side="top"))
     cells.append(edge("p5_e6a", "p5_secrets", "p5_fn", "auth",
                       color="#b46504", exit_side="top", entry_side="bottom",
