@@ -2,8 +2,10 @@
 
 **Audience:** engineers, operators, anyone trying to understand what's running, why, and where the data lives.
 **Scope:** every GCP service, Cloud Run job/service, Cloud SQL table, scheduled trigger, external integration, failure path, and cost line currently in production for this trading system.
-**Last updated:** 2026-04-30
+**Last updated:** 2026-05-04
 **Companion docs:** [`BRIEFING_DECK.md`](BRIEFING_DECK.md) (narrative overview), [`GCP_IMPLEMENTATION_GUIDE.md`](GCP_IMPLEMENTATION_GUIDE.md) (how to deploy), [`STRAT_METHODOLOGY.md`](STRAT_METHODOLOGY.md) (the analytical core).
+
+> For the live-state snapshot of Cloud Run Jobs/Services/Schedulers (auto-regenerated monthly by [`refresh-architecture-docs.yml`](../.github/workflows/refresh-architecture-docs.yml) against `gcloud asset search-all-resources`), see [`ARCHITECTURE.md`](../ARCHITECTURE.md). For the visual companion, see [`Architecture.drawio`](../Architecture.drawio). This deep-dive is hand-maintained and may lag the inventory by up to a month between regen runs.
 
 ---
 
@@ -63,13 +65,13 @@ flowchart LR
     EW[Earnings Whispers]:::ext
     UW[Unusual Whales]:::ext
 
-    SCH[Cloud Scheduler<br/>~30 cron triggers]:::gcp
-    JOBS[Cloud Run Jobs<br/>~24 fetchers + analyzers]:::gcp
+    SCH[Cloud Scheduler<br/>49 cron triggers]:::gcp
+    JOBS[Cloud Run Jobs<br/>28 fetchers + analyzers]:::gcp
     SVC1[Cloud Run Service:<br/>trading-platform<br/>FastAPI + React + IAP]:::gcp
     SVC2[Cloud Run Service:<br/>discord-interactions<br/>slash commands]:::gcp
     SVC3[Cloud Run Service:<br/>failure-notifier]:::gcp
     GCS[GCS<br/>raw parquets,<br/>archives]:::gcp
-    SQL[(Cloud SQL Postgres 15<br/>trading-db<br/>~30 tables)]:::db
+    SQL[(Cloud SQL Postgres 15<br/>trading-db<br/>38 tables)]:::db
     SECR[Secret Manager<br/>~14 secrets]:::gcp
     PS[Pub/Sub<br/>gcp-job-failures]:::gcp
     LG[Cloud Logging<br/>sink on ERROR]:::gcp
@@ -118,10 +120,10 @@ Every GCP service the system actually uses, with the role it plays.
 
 | Service | Role | Always-free covers it? |
 |---|---|---|
-| **Cloud SQL (Postgres 15)** | Single source of truth for all structured data. ~30 tables. Always-on. | ❌ No free tier — $35–50/mo |
+| **Cloud SQL (Postgres 15)** | Single source of truth for all structured data. **38 tables (33 logical + 5 partition children of `market_data_intraday`)**. Always-on. | ❌ No free tier — $35–50/mo |
 | **Cloud Run Jobs** | All scheduled batch work. Every fetcher, every analyzer, every backfill is a Cloud Run Job. | ✅ Mostly within free tier (180k vCPU-sec, 360k GB-sec/mo) |
 | **Cloud Run Services** | 3 long-lived HTTP services, all `min-instances=0`. | ✅ Free at idle |
-| **Cloud Scheduler** | ~30 cron triggers. Each is an HTTP push that invokes a Cloud Run Job's `:run` endpoint with OAuth identity = the runtime SA. | ⚠️ Only 3 free; ~27 paid jobs ≈ $2.70/mo |
+| **Cloud Scheduler** | **49 cron triggers** (31 distinct scheduler jobs / 49 when hourly news-sentiment + news-topics loops are expanded — verified 2026-05-02). Each is an HTTP push that invokes a Cloud Run Job's `:run` endpoint with OAuth identity = the runtime SA. | ⚠️ Only 3 free; ~46 paid jobs ≈ $4.60/mo |
 | **Artifact Registry** | Single Docker repo `trading` holds the `trading-system` image. | ⚠️ 0.5 GB free; one image stays under |
 | **Cloud Build** | Builds the Docker image when `gcp/deploy.sh build` runs. | ✅ 120 min/day free, plenty |
 | **Cloud Storage (GCS)** | Raw parquet archives, daily snapshots, archived Yahoo data. Bucket lifecycle rule moves old objects to nearline. | ✅ 5 GB-month free |
@@ -180,14 +182,15 @@ The single library entry point is `gcp/database.py`. Every consumer (every fetch
 
 ## 5. Cloud SQL schema catalog
 
-The full table list is broken into seven logical domains. **Bold** = primary writer, *italics* = primary reader.
+The full table list — **38 tables (33 logical + 5 partition children of `market_data_intraday`)** per [`gcp/schema.sql`](../gcp/schema.sql) — is broken into seven logical domains. **Bold** = primary writer, *italics* = primary reader.
 
 ### 5.1 Market data (raw OHLCV + indicators)
 
 | Table | Purpose | Writers | Readers |
 |---|---|---|---|
 | `market_data_daily` | Daily OHLCV + 60+ derived indicator columns + pre-market context per ticker per date. The single most-read table in the system. | **`fetch-market-data`** (11 PM nightly), **`fetch-premarket-refresh`** (8:20 AM), **`fetch-fred-rates`** (writes SPX row), **`backfill-ticker`** (on demand) | *premarket-brief*, *insight-pipeline*, *historical_signals*, *signal-monitor*, *trading-platform* (`/api/dashboard/brief/{ticker}`), *Charts page* |
-| `market_data_intraday` | 1-minute OHLCV bars. **Partitioned by ticker** (`PARTITION BY LIST (ticker)`) with hot partitions for SPY / IWM / QQQ / SPX and a default partition for everything else. ~30M+ rows. | **`fetch-alphavantage-intraday`** (monthly), **`fetch-market-data`** (current month) | *signal-monitor*, *historical_signals*, *brief premarket-context calc* |
+| `market_data_intraday` | 1-minute OHLCV bars. **Partitioned by ticker** (`PARTITION BY LIST (ticker)`) — five child partitions: `market_data_intraday_spy`, `_iwm`, `_qqq`, `_spx`, `_other` ([`gcp/schema.sql:106-114`](../gcp/schema.sql#L106)). ~30M+ rows. | **`fetch-alphavantage-intraday`** (monthly), **`fetch-market-data`** (current month) | *signal-monitor*, *historical_signals*, *brief premarket-context calc* |
+| `earnings_reactions` | Per-event playability scores + archetype tags joining `earnings_history × market_data_daily` ([`gcp/schema.sql:472`](../gcp/schema.sql#L472)). | **`compute-earnings-reactions`** (weekdays 23:00) | *premarket-brief earnings reaction profile*, *insight-pipeline* |
 | `daily_rates` | Risk-free rate (`DGS3MO`) + S&P dividend yield (configured constant). Used by Black-Scholes Greeks computations. | **`fetch-fred-rates`** (daily 6:30 AM) | *`lib.options_greeks`*, *backtest job* |
 | `archive_yahoo_*` | Frozen archive of pre-AV-migration Yahoo data (4 tables: daily, intraday, etf_options, earnings_options). Read-only forensics. | one-shot migration script, never written again | manual queries only |
 
@@ -217,6 +220,7 @@ The full table list is broken into seven logical domains. **Bold** = primary wri
 | Table | Purpose | Writers | Readers |
 |---|---|---|---|
 | `strat_levels` | Long table of horizontal price markers (PDH, PDL, PWH, PWL, PMH, PML, PQH, PQL, PYH, PYL, current opens, gaps). Populated nightly per ticker. | **`premarket-brief`** via `lib.strat_levels.persist_level_map()` | *brief playbook*, *signal-monitor `check_level_breaks`*, *trade planner `select_trigger_and_regime`* |
+| `ticker_calibration` | Per-ticker calibrated RSI bands and other Tier A inputs (PR #248) — drives the `lib.strategies.mean_reversion` per-ticker thresholds ([`gcp/schema.sql:1506`](../gcp/schema.sql#L1506)). | **`calibrate-thresholds`** (quarterly) | *`lib.strategies.mean_reversion`*, *signal-monitor* |
 
 ### 5.5 Pipeline output tables
 
@@ -233,6 +237,7 @@ The full table list is broken into seven logical domains. **Bold** = primary wri
 | `insight_runs` | Durable run-state for async pipeline execution — `queued / running / done / failed` + `trigger ∈ {on_demand, scheduled, local_dev, manual_batch}` + reference to `report_id`. | insight-pipeline (state machine) | *platform UI status indicator* |
 | `ranker_runs` | One row per `lib.agents.ranker.rank_tickers` call — captures inputs (weights) + ranked output (JSONB). Reproducibility audit. | **`auto-refresh-top-n`**, *platform UI ranker calls* | *rationale display*, *historical comparison* |
 | `model_routing` | Per-role model routing config (e.g. PM persona = Gemini Pro, Analyst = Flash). One row per role. | seed migration, occasional manual UPDATE | *insight pipeline* |
+| `signal_metrics` | Trailing clean-rate / fire-rate / agreement metrics computed by the Phase 0.5 quality jobs ([`gcp/schema.sql:1673`](../gcp/schema.sql#L1673)). Drives the alarm threshold in `signal-quality-alarm`. | **`signal-quality-report`** (hourly + nightly) | *`signal-quality-alarm`*, *trading-platform analytics router* |
 
 ### 5.6 Schema relationships
 
@@ -261,7 +266,7 @@ There are **no formal foreign keys** between domain tables — only the `insight
 
 ## 6. Cloud Run Jobs catalog
 
-24 jobs. Every one runs on the same `trading-system` image, differing only in `--command` and `--args`. All defaulting to retry policy `--max-retries 1` unless noted.
+28 jobs (per [`gcp/deploy.sh`](../gcp/deploy.sh)). Every one runs on the same `trading-system` image, differing only in `--command` and `--args`. All defaulting to retry policy `--max-retries 1` unless noted.
 
 ### 6.1 Data ingestion (the fetchers)
 
@@ -279,8 +284,9 @@ There are **no formal foreign keys** between domain tables — only the `insight
 | `fetch-top-movers` | 512 MiB / – | weekdays 16:15 | AV `TOP_GAINERS_LOSERS` snapshot | `top_movers_daily` |
 | `fetch-news-sentiment` | 512 MiB / – | weekdays hourly during market hours | AV `NEWS_SENTIMENT` per watchlist ticker | `news_sentiment` |
 | `fetch-news-sentiment-topics` | 512 MiB / – | weekdays hourly @ :05 | AV `NEWS_SENTIMENT` by topic (M&A, earnings, etc.) — captures non-watchlist names | `news_sentiment` |
-| `fetch-rss-news` | 512 MiB / – | (run via dispatcher; no fixed cron) | 11 RSS feeds + FinViz per-ticker news → FinBERT score → Gemini for top articles | `news_sentiment` (data_source='rss'/'finviz') |
-| `fetch-av-historical-options` | – | weekdays after-close | AV `HISTORICAL_OPTIONS` for ETFs + earnings tickers | `etf_options_snapshots`, `earnings_options_snapshots` |
+| `fetch-av-options-backfill` ¹ | – | one-shot historical | AV `HISTORICAL_OPTIONS` for ETFs (SPY/IWM/QQQ/SPX) + earnings tickers; module is [`gcp/fetchers/fetch_av_historical_options.py`](../gcp/fetchers/fetch_av_historical_options.py). | `etf_options_snapshots`, `earnings_options_snapshots` |
+
+¹ Deployed manually outside [`gcp/deploy.sh`](../gcp/deploy.sh) — see [`ARCHITECTURE.md`](../ARCHITECTURE.md) reconciliation §5 (item 2). The repo also contains [`gcp/fetchers/fetch_rss_news.py`](../gcp/fetchers/fetch_rss_news.py) but it is **not** deployed as a Cloud Run Job; per [`DATA_DEPENDENCIES.md`](../DATA_DEPENDENCIES.md) it is pending an "either deploy or delete" decision.
 
 ### 6.2 Analysis + delivery
 
@@ -292,8 +298,12 @@ There are **no formal foreign keys** between domain tables — only the `insight
 | `insight-discord-push` | 512 MiB / 2 min | weekdays 09:15 | Reads today's `insight_reports`, formats one Discord embed per ticker with title-led news field |
 | `signal-monitor` | 2 GiB / 8 hr | weekdays 09:25 (runs until close) | Polls AV every 60 sec → maintains rolling indicator window → fires `signal_alerts` + writes `trades` on close |
 | `signal-monitor` (ORB modes) | 2 GiB / – | weekdays 09:45 (15-min ORB), 10:00 (30-min ORB) | Same image, different `--args`: `--mode=orb-snapshot --window=15m / 30m` |
+| `signal-quality-report` | 1 GiB / 60 min / `--max-retries 0` ([`gcp/deploy.sh:184`](../gcp/deploy.sh#L184)) | weekdays hourly 10:00–16:00 + nightly Tue–Sat 01:00 | Phase 0.5 quality monitoring — computes trailing clean-rate / fire-rate / agreement metrics across `signal_alerts` and writes to `signal_metrics`. |
+| `signal-quality-alarm` | 512 MiB / 2 min / `--max-retries 0` ([`gcp/deploy.sh:225`](../gcp/deploy.sh#L225)) | weekdays Tue–Sat 02:00 | Reads `signal_metrics`; deliberately exits non-zero when trailing-7d clean-rate drops > 3 pp vs prior 7d, which the failure-notifier converts into a labeled GitHub issue. |
 | `weekend-review` | 1 GiB / – | Sat 09:00 | Aggregates the week's trades, compares actual vs backtest, posts Discord summary |
 | `evaluate-ew-strikes` | 512 MiB / 10 min | weekdays 23:00 | Scores how each EW strike pick played out: HIT / MISS / KEPT / ASSIGNED + minutes-to-hit + minutes-in-zone |
+| `compute-earnings-reactions` | 1 GiB / 30 min ([`gcp/deploy.sh:834`](../gcp/deploy.sh#L834)) | weekdays 23:00 | Joins `earnings_history × market_data_daily` → playability scores + archetype tags → `earnings_reactions`. |
+| `calibrate-thresholds` | 1 GiB / 10 min ([`gcp/deploy.sh:986`](../gcp/deploy.sh#L986)) | quarterly (1st of Jan/Apr/Jul/Oct, 02:00) | Per-ticker RSI band recalibration (PR #248) — writes `ticker_calibration` consumed by `lib.strategies.mean_reversion`. |
 | `historical-signals-watchlist` | 2 GiB / 30 min | Tue–Sat 01:00 | Iterates watchlist → runs `trading_analysis.py` → bulk-inserts to `historical_signals` |
 | `validate-brief` | 1 GiB / 5 min | on-demand (Discord `/validate` Slice 3) | Replays a trading day's brief playbook + AI plan against the actual intraday session |
 | `backtest` | 2 GiB / 15 min | on-demand (Discord `/backtest` Slice 3) | Wraps `scripts/run_backtest.py` for arbitrary ticker + window |
@@ -323,6 +333,7 @@ Three long-lived HTTP services, all with `min-instances=0` so they cost nothing 
 | Endpoints | `/api/health`, `/api/me`, `/api/dashboard/*`, `/api/insights/*`, `/api/signals/*`, `/api/catalysts/*`, `/api/admin/*`, `/api/journal/*`, `/api/charts/*`, `/api/ranker/*`, `/dev` (admin-only diagnostic), and the SPA at `/` |
 | Cloud SQL | `--add-cloudsql-instances` connector path |
 | URL | `trading-platform-…run.app` |
+| Deploy path | Deployed by [`platform/deploy.sh`](../platform/deploy.sh) (separate from [`gcp/deploy.sh`](../gcp/deploy.sh)). Image lives in `gcr.io/adept-mountain-474619-d4/trading-platform`, **not** `us-east1-docker.pkg.dev/.../trading`. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) reconciliation §5 (item 4). |
 
 This is the only thing a human directly hits in a browser.
 
@@ -354,7 +365,7 @@ This is the only thing a human directly hits in a browser.
 
 ## 8. Cloud Scheduler — the daily timeline
 
-All times Eastern. **Weekdays = Mon–Fri** unless otherwise noted.
+**31 distinct scheduler jobs / 49 when the hourly `news-sentiment-{0800..1700}` and `news-topics-{0805..1705}` loops are expanded** (verified 2026-05-02 against [`gcp/deploy.sh`](../gcp/deploy.sh)). All times Eastern. **Weekdays = Mon–Fri** unless otherwise noted.
 
 ```mermaid
 gantt
@@ -379,15 +390,19 @@ gantt
     orb-15m-alert                 :b3, 09:45, 5m
     orb-30m-alert                 :b4, 10:00, 5m
     fetch-sec-filings (slot 2/4)  :b5, 10:00, 5m
-    fetch-sec-filings (slot 3/4)  :b6, 13:00, 5m
-    fetch-news-sentiment          :b7, 14:00, 10m
+    signal-quality-report-hourly  :b6, 10:00, 60m
+    fetch-sec-filings (slot 3/4)  :b7, 13:00, 5m
+    fetch-news-sentiment*         :b8, 14:00, 10m
 
     section Post-market
     fetch-top-movers              :c1, 16:15, 5m
     fetch-sec-filings (slot 4/4)  :c2, 17:00, 5m
     fetch-market-data             :c3, 23:00, 30m
     evaluate-ew-strikes           :c4, 23:00, 10m
+    compute-earnings-reactions    :c5, 23:00, 30m
 ```
+
+> *`fetch-news-sentiment` represents an hourly loop: `news-sentiment-{0800..1700}` and `news-topics-{0805..1705}` run every market hour 08:00–17:00 ET (10 entries each, 20 total). The Gantt shows one representative entry to keep the daily-rhythm visualization readable.
 
 **Why these times** (the load-bearing rationale):
 
@@ -411,7 +426,10 @@ gantt
 | Sun 06:00 | `fetch-earnings-history` | Backfill historical EPS for new tickers |
 | Sun 09:00 | `premarket-brief` | Week-ahead earnings + economic calendar digest |
 | Tue–Sat 01:00 | `historical-signals-watchlist` | Nightly signal-history extension for every watchlist ticker |
+| Tue–Sat 01:00 | `signal-quality-report-nightly` | Phase 0.5 nightly quality rollup into `signal_metrics` ([`gcp/deploy.sh:1365`](../gcp/deploy.sh#L1365)) |
+| Tue–Sat 02:00 | `signal-quality-alarm-daily` | Reads `signal_metrics`, exits non-zero on > 3 pp clean-rate drop ([`gcp/deploy.sh:1375`](../gcp/deploy.sh#L1375)) |
 | 1st of month, 21:00 | `fetch-alphavantage-intraday` | Full-month 1-min bars per ticker |
+| 1st of Jan/Apr/Jul/Oct, 02:00 | `calibrate-thresholds-quarterly` | Per-ticker RSI band recalibration → `ticker_calibration` ([`gcp/deploy.sh:1347`](../gcp/deploy.sh#L1347)) |
 
 ---
 
@@ -617,7 +635,7 @@ Estimated monthly run-rate at current usage. **Cloud SQL is ~70% of the bill.**
 | Service | Estimate | Notes |
 |---|---|---|
 | Cloud SQL `db-g1-small` + 20 GB SSD + backups | **$35–50** | Always-on, never-free. Biggest lever: stop instance during quiet windows or downsize to `db-f1-micro` |
-| Cloud Scheduler (~30 jobs, 3 free) | **$2.70** | Each paid job is $0.10/mo |
+| Cloud Scheduler (49 jobs, 3 free) | **$4.60** | Each paid job is $0.10/mo |
 | Cloud Run Jobs vCPU + memory | **$1–5** | Slight overage on the 180k vCPU-sec free tier; biggest consumers are signal-monitor (8 hr/day) and historical-signals-watchlist |
 | Cloud Run Services | **$0–1** | All min-instances=0, near-zero idle cost |
 | Vertex AI Gemini Flash | **$3–5** | Per-brief ~$0.005, per-insight ~$0.10. Can be killed via `BRIEF_LLM_DISABLE=1` |
