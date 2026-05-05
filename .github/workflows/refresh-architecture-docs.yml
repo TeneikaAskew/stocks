@@ -268,13 +268,19 @@ jobs:
           MEANINGFUL=0
           for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md; do
             if [ ! -f "$FILE" ]; then continue; fi
+            # Mangle slashes so files in subdirs (e.g. docs/X.md) don't
+            # try to redirect into /tmp/docs/ which doesn't exist. Without
+            # this, set +e silently swallows the redirect failure, the
+            # diff file is absent, the -s check is false, and we revert
+            # the file we just regenerated. (Caught by Codex on PR #254.)
+            DIFF_NAME="${FILE//\//_}"
             git diff --no-color "$FILE" \
               | grep -vE '^[-+]Generated 20[0-9]{2}-[0-9]{2}-[0-9]{2}' \
               | grep -vE '^[-+]\*\*Generated\*\* 20[0-9]{2}' \
               | grep -E '^[-+][^-+]' \
-              > /tmp/${FILE}.diff
-            if [ -s /tmp/${FILE}.diff ]; then
-              CHANGED_LINES=$(wc -l < /tmp/${FILE}.diff)
+              > "/tmp/${DIFF_NAME}.diff"
+            if [ -s "/tmp/${DIFF_NAME}.diff" ]; then
+              CHANGED_LINES=$(wc -l < "/tmp/${DIFF_NAME}.diff")
               echo "::notice::$FILE has meaningful changes ($CHANGED_LINES lines)"
               MEANINGFUL=1
             else
