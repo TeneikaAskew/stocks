@@ -61,9 +61,18 @@ function useOptionsData(ticker: string, date: string, enabled: boolean) {
   return useQuery<OptionsResponse>({
     queryKey: ['options', ticker, date],
     queryFn: async () => {
+      // Cloud SQL EOD path first — populated by the 9 PM ET fetcher.
       const r = await fetch(`/api/options/${ticker}/${date}`);
-      if (!r.ok) throw new Error(await parseApiError(r, 'Failed to fetch options data'));
-      return r.json();
+      if (r.ok) return r.json();
+
+      // 404 → fall back to the live AlphaVantage proxy (replaces the old
+      // Cloudflare Worker). Anything else propagates as an error.
+      if (r.status === 404) {
+        const live = await fetch(`/api/options/live/${ticker}/${date}`);
+        if (live.ok) return live.json();
+        throw new Error(await parseApiError(live, 'Failed to fetch live options data'));
+      }
+      throw new Error(await parseApiError(r, 'Failed to fetch options data'));
     },
     enabled: enabled && !!ticker && !!date,
     staleTime: 3_600_000, // 1 hour
@@ -601,7 +610,9 @@ export default function OptionsFlowPage() {
       {/* Source footer */}
       {optionsData && options.length > 0 && (
         <div className="text-right text-[10px] text-[var(--color-text-muted)]">
-          Source: AlphaVantage EOD · Cloud SQL · {options.length} contracts · snapshot {optionsData.snapshot_timestamp?.slice(0, 10) ?? selectedDate}
+          Source: {optionsData.metadata?.source === 'alphavantage_live'
+            ? 'AlphaVantage Live'
+            : 'AlphaVantage EOD · Cloud SQL'} · {options.length} contracts · snapshot {optionsData.snapshot_timestamp?.slice(0, 10) ?? selectedDate}
         </div>
       )}
     </div>

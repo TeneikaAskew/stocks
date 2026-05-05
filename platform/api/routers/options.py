@@ -14,6 +14,13 @@ GET /api/options/{ticker}/{date_str}
     Data is ingested by `gcp.fetchers.fetch_av_historical_options` via the
     daily GitHub Actions workflow.
 
+GET /api/options/live/{ticker}/{date_str}
+    Live AlphaVantage HISTORICAL_OPTIONS proxy. Replaces the decommissioned
+    Cloudflare Worker (options-heatseeker/worker.js). Used by the React page
+    as a fallback when Cloud SQL doesn't yet have rows for the requested
+    snapshot (e.g. today's intraday chain before the 9 PM EOD fetcher runs).
+    Response shape is identical to GET /api/options/{ticker}/{date_str}.
+
 Design notes
 ------------
 * Data source: `etf_options_snapshots WHERE data_source='alphavantage'`.
@@ -26,6 +33,7 @@ Design notes
     last_price                    → last
 """
 import logging
+import os
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -33,9 +41,10 @@ import sys
 
 import math
 
+import httpx
 import pandas as pd
 from cachetools import TTLCache
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 # Project root so we can import gcp.database the same way the journal router does.
@@ -63,6 +72,15 @@ _CHAIN_CACHE: TTLCache = TTLCache(maxsize=512, ttl=43200)
 # scan on cold caches (which is expensive on db-g1-small without the composite
 # (ticker, data_source, snapshot_date) index in place).
 _DATES_CACHE: TTLCache = TTLCache(maxsize=16, ttl=43200)
+# Live AV proxy cache: (ticker, date_str) → response dict; 5-min TTL.
+# Live data is fresher than EOD; the 5-min ceiling bounds AV rate-limit
+# exposure on the free tier (5 calls/min, 500/day).
+_LIVE_CACHE: TTLCache = TTLCache(maxsize=128, ttl=300)
+
+# AlphaVantage proxy config — mirrors api.routers.live so the env-var
+# resolution + endpoint URL stay in lockstep.
+_AV_API_KEY = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
+_AV_BASE = "https://www.alphavantage.co/query"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -115,6 +133,74 @@ _CONTRACT_COLUMNS = [
     "bid", "ask", "mark", "last_price", "volume", "open_interest",
     "implied_volatility", "delta", "gamma", "theta", "vega", "rho",
 ]
+
+
+def _av_to_contracts(rows: list[dict]) -> list[dict]:
+    """Convert AlphaVantage HISTORICAL_OPTIONS rows into the same JSON shape
+    `_df_to_contracts` produces, so the live endpoint and the Cloud SQL
+    endpoint return byte-identical contracts. Frontend code path stays unified.
+
+    AV row keys (verified against the public schema):
+        contractID, symbol, type ('call'|'put'), strike, expiration,
+        bid, ask, mark, last, volume, open_interest, implied_volatility,
+        delta, gamma, theta, vega, rho, date
+    All numeric values arrive as strings; we cast to float and drop rows
+    missing the core fields the frontend requires (type, strike, expiration).
+    """
+    if not rows:
+        return []
+
+    type_map = {"call": "call", "calls": "call", "put": "put", "puts": "put"}
+
+    def _maybe_float(v):
+        if v is None or v == "":
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(f):
+            return None
+        return f
+
+    def _maybe_int(v):
+        if v is None or v == "":
+            return None
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return None
+
+    out: list[dict] = []
+    for r in rows:
+        type_raw = (r.get("type") or "").lower()
+        type_val = type_map.get(type_raw)
+        strike_val = _maybe_float(r.get("strike"))
+        exp_val = r.get("expiration")
+        if not type_val or strike_val is None or not exp_val:
+            continue
+        # Map AV's `contractID` to our `contract_symbol` for display parity
+        # with the Cloud SQL row shape.
+        contract_symbol = r.get("contractID") or r.get("contract_symbol")
+        out.append({
+            "contract_symbol": contract_symbol,
+            "expiration": str(exp_val),
+            "strike": strike_val,
+            "type": type_val,
+            "bid": _maybe_float(r.get("bid")),
+            "ask": _maybe_float(r.get("ask")),
+            "mark": _maybe_float(r.get("mark")),
+            "last": _maybe_float(r.get("last")),
+            "volume": _maybe_int(r.get("volume")),
+            "open_interest": _maybe_int(r.get("open_interest")),
+            "implied_volatility": _maybe_float(r.get("implied_volatility")),
+            "delta": _maybe_float(r.get("delta")),
+            "gamma": _maybe_float(r.get("gamma")),
+            "theta": _maybe_float(r.get("theta")),
+            "vega": _maybe_float(r.get("vega")),
+            "rho": _maybe_float(r.get("rho")),
+        })
+    return out
 
 
 def _df_to_contracts(df: pd.DataFrame) -> list[dict]:
@@ -316,6 +402,91 @@ async def get_options(ticker: str, date_str: str):
     }
     _CHAIN_CACHE[cache_key] = response
     return {**response, "cached": False}
+
+
+# ── Live AlphaVantage proxy (replaces the decommissioned Cloudflare Worker) ──
+
+
+@router.get("/api/options/live/{ticker}/{date_str}")
+async def get_options_live(ticker: str, date_str: str, response: Response):
+    """Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same
+    response shape as `/api/options/{ticker}/{date_str}`.
+
+    Used by the React page as a fallback when Cloud SQL doesn't yet have a
+    snapshot for the requested date (typically: today's intraday chain
+    before the 9 PM EOD fetcher runs). Equivalent to the prior Cloudflare
+    Worker at options-heatseeker/worker.js — same validation, error mapping,
+    and 5-minute caching, but reading the API key from GCP Secret Manager
+    via the AV_API_KEY env var.
+    """
+    ticker_upper = _validate_ticker(ticker)
+    _validate_date(date_str)
+
+    if not _AV_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AlphaVantage API key not configured. Set AV_API_KEY (or "
+                "ALPHA_VANTAGE_API_KEY) in the environment / Secret Manager."
+            ),
+        )
+
+    cache_key = (ticker_upper, date_str)
+    cached = _LIVE_CACHE.get(cache_key)
+    if cached is not None:
+        # Mirror the Worker's Cache-Control behaviour but tighter (5 min vs 1 hr).
+        response.headers["Cache-Control"] = "public, max-age=300"
+        return {**cached, "cached": True}
+
+    params = {
+        "function": "HISTORICAL_OPTIONS",
+        "symbol": ticker_upper,
+        "date": date_str,
+        "apikey": _AV_API_KEY,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(_AV_BASE, params=params)
+            r.raise_for_status()
+            data = r.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=503, detail="AlphaVantage request timed out")
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"AlphaVantage request failed: {exc}")
+
+    # Standard AV soft-error envelope checks (identical to live.py).
+    if "Note" in data:
+        raise HTTPException(status_code=429, detail=f"AlphaVantage rate limit: {data['Note']}")
+    if "Information" in data:
+        raise HTTPException(status_code=429, detail=f"AlphaVantage limit: {data['Information']}")
+    if "Error Message" in data:
+        raise HTTPException(status_code=400, detail=f"AlphaVantage error: {data['Error Message']}")
+
+    rows = data.get("data") or []
+    contracts = _av_to_contracts(rows)
+    if not contracts:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No live options data returned by AlphaVantage for "
+                f"{ticker_upper} on {date_str}."
+            ),
+        )
+
+    payload = {
+        "ticker": ticker_upper,
+        "date": date_str,
+        "options": contracts,
+        "snapshot_timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "metadata": {
+            "source": "alphavantage_live",
+            "data_source": "alphavantage",
+            "row_count": len(contracts),
+        },
+    }
+    _LIVE_CACHE[cache_key] = payload
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return {**payload, "cached": False}
 
 
 # ── Greeks + Nodes (canonical compute, single source of truth) ──────────────
