@@ -238,6 +238,26 @@ jobs:
           gemini --model "${GEMINI_MODEL}" \
             --prompt "$(cat .github/prompts/readme.md)"
 
+      # ── Refresh INVESTMENT_MODELS_SUMMARY.md resolved-values table ────────
+      # Closes the doc-drift loop for ticker_calibration (issue #251). This
+      # is a deterministic SQL→markdown render — no LLM involved — so it
+      # runs as a separate Python step. Reads ticker_calibration via the
+      # standard gcp.database engine (Cloud SQL Connector + WIF auth from
+      # the workflow-level google-github-actions/auth step above).
+      - name: Refresh ticker_calibration resolved-values table
+        env:
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          # Best-effort: the resolved-values table is nice-to-have but
+          # should not block ARCHITECTURE/COST/README refresh if the DB
+          # is unreachable (e.g. transient Cloud SQL outage).
+          pip install --quiet sqlalchemy pg8000 pandas cloud-sql-python-connector
+          python -m scripts.refresh_calibration_table || \
+            echo "::warning::refresh_calibration_table failed; continuing without ticker_calibration update"
+
       # ── Decide whether the changes are meaningful ─────────────────────────
       # Strip the "Generated YYYY-MM-DD" footer + row-count noise before
       # diffing. If only the date moved, skip the PR and revert the file.
@@ -246,7 +266,7 @@ jobs:
         run: |
           set +e
           MEANINGFUL=0
-          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md; do
+          for FILE in ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md; do
             if [ ! -f "$FILE" ]; then continue; fi
             git diff --no-color "$FILE" \
               | grep -vE '^[-+]Generated 20[0-9]{2}-[0-9]{2}-[0-9]{2}' \
@@ -279,7 +299,7 @@ jobs:
 
           # Stage only the regenerated docs. JSON dumps are gitignored
           # (see .gitignore: gcp_inventory.json / gcp_iam.json / billing_90d.json).
-          git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md
+          git add ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md
 
           if git diff --cached --quiet; then
             echo "nothing staged — exit clean"
@@ -289,7 +309,7 @@ jobs:
           git commit -m "docs: monthly architecture doc refresh ${MONTH}"
           git push -u origin "$BRANCH"
 
-          STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md)
+          STAT=$(git diff --stat HEAD~1 HEAD -- ARCHITECTURE.md DATA_DEPENDENCIES.md COST_ANALYSIS.md README.md docs/INVESTMENT_MODELS_SUMMARY.md)
 
           gh pr create \
             --base main --head "$BRANCH" \
