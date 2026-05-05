@@ -91,7 +91,10 @@ class _MockLLM(LLMClient):
             parsed = AnalystOutput(
                 section=(
                     section
-                    if section in ("market", "strat", "options", "catalyst")
+                    if section in (
+                        "market", "strat", "options", "gamma",
+                        "catalyst", "sentiment",
+                    )
                     else "market"
                 ),
                 summary=f"Mock {section} summary.",
@@ -339,6 +342,30 @@ def canned_bundle(monkeypatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
+
+    # `summarize_strat_status` calls `lib.strat.compute_strat_status`, which
+    # loads bars via `DataLoader.load_daily` rather than the `_query` shim
+    # patched above. Without an override the real loader returns no bars,
+    # the strat section reports `available: False`, and the orchestrator
+    # marks 'strat' as a failed_section — making the green-path test red.
+    # Inject a canned snapshot that matches the OHLCV fixture above so the
+    # strat block looks like a normal bullish 2U trigger day.
+    def fake_compute_strat_status(ticker, *args, **kwargs):
+        return {
+            "available": True,
+            "ticker": ticker.upper(),
+            "date": "2026-04-15",
+            "last_candle": "2U",
+            "in_force_combo": "212_bull_reversal",
+            "strat_setup": True,
+            "ftfc_score": 0.6,
+            "ftfc_direction": "bullish",
+            "trigger_high": 502.5,
+            "trigger_low": 497.0,
+        }
+
+    import lib.strat as _lib_strat
+    monkeypatch.setattr(_lib_strat, "compute_strat_status", fake_compute_strat_status)
 
 
 @pytest.fixture
