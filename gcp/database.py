@@ -102,6 +102,28 @@ def query_to_dataframe(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+# pg8000 packs the bind-parameter count as an unsigned 16-bit short, so
+# any single statement with more than 65535 params crashes deep in
+# `struct.pack('H', ...)`. The fixed `chunksize=2000` default is only
+# safe when the target table has ≤ 32 columns; wider tables (e.g.
+# `earnings_reactions` at 35+ cols, growing as PR #239/#240 add ATR and
+# swing-window cols) silently overflow and the job exits 1.
+#
+# `_max_safe_chunksize` shrinks the requested chunksize so
+# `chunksize × n_cols + safety_margin ≤ PG_PARAM_LIMIT`. The 5000-param
+# margin reserves headroom for the ON CONFLICT … SET clause params (one
+# per `update_col`, scaled per-row in pg_insert's compiled form).
+PG_PARAM_LIMIT = 65535
+_PG_PARAM_SAFETY_MARGIN = 5000
+
+
+def _max_safe_chunksize(n_cols: int, requested_chunksize: int) -> int:
+    if n_cols <= 0:
+        return requested_chunksize
+    max_safe = max(100, (PG_PARAM_LIMIT - _PG_PARAM_SAFETY_MARGIN) // n_cols)
+    return min(requested_chunksize, max_safe)
+
+
 def upsert_dataframe(
     df: pd.DataFrame,
     table: str,
@@ -157,10 +179,17 @@ def upsert_dataframe(
 
     total = 0
     records = df.to_dict(orient='records')
+    effective_chunksize = _max_safe_chunksize(len(df.columns), chunksize)
+    if effective_chunksize < chunksize:
+        logger.info(
+            "upsert_dataframe(%s): table has %d columns; capping chunksize "
+            "from %d to %d to stay under pg8000's 65535 bind-param limit.",
+            table, len(df.columns), chunksize, effective_chunksize,
+        )
 
     with engine.begin() as conn:
-        for i in range(0, len(records), chunksize):
-            batch = records[i: i + chunksize]
+        for i in range(0, len(records), effective_chunksize):
+            batch = records[i: i + effective_chunksize]
             stmt = pg_insert(tbl).values(batch)
 
             if update_cols:
@@ -218,13 +247,21 @@ def bulk_insert_dataframe(
 
     records = df.to_dict(orient='records')
     total = 0
+    effective_chunksize = _max_safe_chunksize(len(df.columns), chunksize)
+    if effective_chunksize < chunksize:
+        logger.info(
+            "bulk_insert_dataframe(%s): table has %d columns; capping "
+            "chunksize from %d to %d to stay under pg8000's 65535 bind-param "
+            "limit.",
+            table, len(df.columns), chunksize, effective_chunksize,
+        )
 
     # Commit after every batch rather than wrapping all rows in one giant
     # transaction.  A single transaction for millions of rows creates excessive
     # WAL pressure on Cloud SQL and may never commit within query-timeout limits.
     with engine.connect() as conn:
-        for i in range(0, len(records), chunksize):
-            batch = records[i: i + chunksize]
+        for i in range(0, len(records), effective_chunksize):
+            batch = records[i: i + effective_chunksize]
             # Use .values(batch) to emit ONE multi-row INSERT per chunk, not
             # executemany (conn.execute(stmt, list)) which sends one INSERT per
             # row and is extremely slow for millions of rows.
