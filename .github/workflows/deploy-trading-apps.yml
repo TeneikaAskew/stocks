@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - 'chart-viewer/**'
-      - 'options-heatseeker/**'
       - 'index.html'
       - '.github/workflows/deploy-trading-apps.yml'
   workflow_dispatch:
@@ -42,7 +41,7 @@ jobs:
           </head>
           <body>
             <p><a href="./chart-viewer/">Chart Viewer</a></p>
-            <p><a href="./options-heatseeker/">Options Heatseeker</a></p>
+            <p><a href="https://trading-platform-5sjtb3yl7a-ue.a.run.app/options">Options Flow (React platform)</a></p>
           </body>
           </html>
           EOF
@@ -59,11 +58,6 @@ jobs:
           echo "✅ Chart Viewer prepared with token injection"
         env:
           GH_TRADING_APP_KEY: ${{ secrets.GH_TRADING_APP_KEY }}
-
-      - name: Prepare Options Heatseeker
-        run: |
-          cp -r options-heatseeker _site/
-          echo "✅ Options Heatseeker prepared"
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
