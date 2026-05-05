@@ -62,3 +62,40 @@ test.describe('Options Flow', () => {
     expect(Date.now() - start).toBeLessThan(5000);
   });
 });
+
+// ── Live fallback: Cloud SQL 404 → AlphaVantage live proxy ────────────────
+// Replaces the decommissioned Cloudflare Worker. When the EOD Cloud SQL
+// endpoint returns 404 (e.g. today's date before the 9 PM fetcher), the page
+// must fall through to /api/options/live/{ticker}/{date} and render the same
+// heatmap with an "AlphaVantage Live" source badge.
+
+test.describe('Options Flow — live AV fallback', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockCommon(page);
+    await page.route('**/api/options/dates/IWM', (r) => r.fulfill(M.ok(MOCK_DATES)));
+    // Cloud SQL endpoint 404s — segment glob is single-level so it does NOT
+    // capture /api/options/live/IWM/...
+    await page.route('**/api/options/IWM/*', (r) =>
+      r.fulfill({
+        status: 404,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'No AlphaVantage options data ingested for IWM.' }),
+      })
+    );
+    // Live endpoint returns the chain with the live source badge.
+    await page.route('**/api/options/live/IWM/*', (r) =>
+      r.fulfill(
+        M.ok({
+          ...MOCK_CHAIN,
+          metadata: { source: 'alphavantage_live', data_source: 'alphavantage', row_count: 10 },
+        })
+      )
+    );
+  });
+
+  test('falls back to live endpoint and shows AlphaVantage Live badge', async ({ page }) => {
+    await page.goto('/options');
+    await page.waitForLoadState('networkidle');
+    await expect(page.getByText(/AlphaVantage Live/).first()).toBeVisible();
+  });
+});

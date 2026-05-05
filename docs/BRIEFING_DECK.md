@@ -574,7 +574,7 @@ Pre-deploy verification (per `dreamy-churning-lovelace`): `pre-deploy-check` age
 | `analyze-market-data.yml` | Daily 22:00 UTC + manual | Compute indicators + strat classification on daily series; backfill Cloud SQL |
 | `backtest-pipeline.yml` | Manual | Full backtest run (base + strat) for configured tickers; report generation |
 | `daily-insight-reports.yml` | Daily 12:45 UTC weekdays + manual | Multi-agent pipeline trigger (alongside Cloud Scheduler) for observable failure surface |
-| `deploy-trading-apps.yml` | Push to main | Deploy standalone web tools to GH Pages / Cloudflare |
+| `deploy-trading-apps.yml` | Push to main | Deploy standalone web tools (chart-viewer) to GitHub Pages |
 | `download-google-sheets.yml` | Scheduled | Fetch Google Sheets data (watchlists, manual trades) → GCS |
 | `earnings-options-analytics.yml` | Weekly | Earnings options strategy analysis (the standalone `earnings_options_analytics/` package) |
 | `fetch-alphavantage-intraday-monthly.yml` | Monthly + manual | 1-min intraday backfill from AV |
@@ -630,7 +630,7 @@ Four tools under their own top-level directories. Each predates the Platform but
 
 | Tool | Path | Port | Tech | Purpose |
 | --- | --- | --- | --- | --- |
-| **Options Heatseeker** | `options-heatseeker/` | 8101 | Cloudflare Worker + HTML5 + JS | IV heatmap, gamma exposure surface, contract flow, implied move calcs. Source of `greeksCalculator.js` and `nodeAnalyzer.js` ported into platform |
+| ~~**Options Heatseeker**~~ | `archive/old-apps/options-heatseeker/` | — | (archived 2026-05-04) | Replaced by the React platform's `/options` route. FastAPI now serves both Cloud SQL EOD (`/api/options/{ticker}/{date}`) and live AV (`/api/options/live/{ticker}/{date}`) — Cloudflare Worker decommissioned |
 | **Success Report** | `success-report-site/` | 8102 | Python + HTML | Earnings options strategy backtests; trade-by-trade P&L, win rates, equity curves |
 | **Chart Viewer** | `chart-viewer/` | 8103 | Static HTML5 + Recharts/D3 | Lightweight price + indicator + order block viewer; reads parquet from local or GCS |
 | **Trading Dashboard** | `website/trading-dashboard.html` | 8104 | Self-contained HTML + JS | Offline-capable dashboard with live quote, Greeks calculator, earnings calendar, basic alerts |
