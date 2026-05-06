@@ -14,6 +14,12 @@ import time as time_module
 import requests
 from pathlib import Path
 from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
+# Cloud Run runs in UTC. All market-hours comparisons must be in ET so the
+# monitor doesn't think the market closes at noon ET (= 16:00 UTC, which
+# matches the configured market_close='16:00' under naive comparison).
+_ET = ZoneInfo("America/New_York")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -123,7 +129,7 @@ class SignalMonitor:
         return tickers
 
     def is_market_hours(self) -> bool:
-        now = datetime.now()
+        now = datetime.now(_ET)
         if now.weekday() >= 5:
             return False
         return self.market_cfg.market_open_time <= now.time() <= self.market_cfg.market_close_time
@@ -677,15 +683,15 @@ class SignalMonitor:
 
         while True:
             if not self.is_market_hours():
-                now = datetime.now()
+                now = datetime.now(_ET)
                 if now.time() > self.market_cfg.market_close_time:
                     print("Market closed. Shutting down.")
                     break
-                print(f"Waiting for market open ({now.strftime('%H:%M:%S')})...")
+                print(f"Waiting for market open ({now.strftime('%H:%M:%S %Z')})...")
                 time_module.sleep(self.monitor_cfg.pre_market_sleep)
                 continue
 
-            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Polling...")
+            print(f"\n[{datetime.now(_ET).strftime('%H:%M:%S %Z')}] Polling...")
 
             for ticker in tickers:
                 new_data = self.fetch_latest_bar(ticker)
