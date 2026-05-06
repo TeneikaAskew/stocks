@@ -1,10 +1,9 @@
 """
 End-to-end Playwright tests for static web applications.
 
-Tests the four web frontends by spinning up a local HTTP server for each:
+Tests the static web frontends by spinning up a local HTTP server for each:
   - options-heatseeker   (port 8101)
   - success-report-site  (port 8102)
-  - chart-viewer         (port 8103)
   - website              (port 8104)
 
 Run these separately from the unit suite:
@@ -28,13 +27,11 @@ REPO_ROOT = Path(__file__).parent.parent
 APPS = {
     "heatseeker": REPO_ROOT / "options-heatseeker",
     "success_report": REPO_ROOT / "success-report-site",
-    "chart_viewer": REPO_ROOT / "chart-viewer",
     "website": REPO_ROOT / "website",
 }
 PORTS = {
     "heatseeker": 8101,
     "success_report": 8102,
-    "chart_viewer": 8103,
     "website": 8104,
 }
 
@@ -169,65 +166,6 @@ class TestSuccessReportSite:
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(url("success_report"))
-        page.wait_for_load_state("domcontentloaded")
-        fatal = [e for e in errors if "SyntaxError" in e or "ReferenceError" in e]
-        assert fatal == [], f"Fatal JS errors: {fatal}"
-
-
-# ---------------------------------------------------------------------------
-# Chart Viewer tests
-# ---------------------------------------------------------------------------
-
-class TestChartViewer:
-    """Smoke tests for chart-viewer/index.html."""
-
-    def test_page_loads(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("body").is_visible()
-
-    def test_ticker_selector_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("#tickerSelect").count() == 1
-
-    def test_date_selector_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("#dateSelect").count() == 1
-
-    def test_timeframe_selector_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("#timeframeSelect").count() == 1
-
-    def test_chart_container_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("#chartContainer").count() == 1
-
-    def test_control_buttons_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        for btn_id in ["#refreshBtn", "#saveDataBtn", "#exportBtn", "#markEntryBtn"]:
-            assert page.locator(btn_id).count() == 1, f"Missing button: {btn_id}"
-
-    def test_volume_toggle_present(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        assert page.locator("#volumeToggle").count() == 1
-
-    def test_timeframe_options_available(self, page, servers):
-        page.goto(url("chart_viewer"))
-        page.wait_for_load_state("domcontentloaded")
-        options = page.locator("#timeframeSelect option")
-        # 1, 5, 15, 30, 60 minute options
-        assert options.count() >= 3
-
-    def test_no_fatal_js_errors(self, page, servers):
-        errors = []
-        page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(url("chart_viewer"))
         page.wait_for_load_state("domcontentloaded")
         fatal = [e for e in errors if "SyntaxError" in e or "ReferenceError" in e]
         assert fatal == [], f"Fatal JS errors: {fatal}"

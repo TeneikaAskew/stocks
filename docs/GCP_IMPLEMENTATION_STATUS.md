@@ -280,7 +280,7 @@
 
 ## Platform: Unified Trading Dashboard (`platform/`)
 
-A production-grade React/TypeScript web app that replaces 4 separate vanilla JS apps (chart-viewer, options-heatseeker, website, success-report-site) with a single unified platform backed by the GCP data stack.
+A production-grade React/TypeScript web app that replaces the legacy vanilla JS apps (options-heatseeker, website, success-report-site) with a single unified platform backed by the GCP data stack. The original chart-viewer app was removed 2026-05-05; its functionality is served by the React platform's `/charts` route.
 
 ### Stack
 | Layer | Technology |
