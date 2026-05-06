@@ -66,6 +66,12 @@ python-dotenv>=1.0.0
 # Google Cloud
 cloud-sql-python-connector[pg8000]>=1.7.0
 google-cloud-storage>=2.14.0
+# google-genai is imported at module load by lib/agents/vertex_adapter.py
+# (`from google.genai import types`), so tests/test_agent_vertex_adapter.py
+# fails collection / execution without it. Kept in the base requirements
+# for the same reason as the LLM adapter pydantic block below: pytest
+# collects every tests/ file regardless of deploy environment.
+google-genai>=1.0.0
 SQLAlchemy>=2.0.0
 psycopg2-binary>=2.9.9
 pandas-market-calendars>=4.3.1
