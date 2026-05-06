@@ -224,20 +224,36 @@ def fetch_history_for_ticker(
     return df
 
 
-def _earnings_calendar_tickers(lookahead_days: int) -> list[str]:
-    """Resolve tickers reporting earnings in the next N days from Cloud SQL."""
+def _earnings_calendar_tickers(
+    lookahead_days: int,
+    require_options: bool = True,
+) -> list[str]:
+    """Resolve tickers reporting earnings in the next N days from Cloud SQL.
+
+    With ``require_options=True`` (default), only returns tickers where
+    at least one earnings_calendar row marks ``has_options=true`` (set
+    by EW or UW). This collapses a typical 7d window from ~3,500
+    reporters to ~500 actually-tradable names, eliminating the silent
+    truncation we used to hit at the 500-ticker cap. AV/Yahoo never set
+    has_options, so the filter effectively means "EW or UW confirmed
+    this is options-tradable around earnings" — the right cut for an
+    earnings-options pipeline.
+    """
     try:
         from gcp.database import query_to_dataframe
     except ImportError:
         return []
 
     sql = """
-        SELECT DISTINCT ticker
+        SELECT ticker
         FROM earnings_calendar
         WHERE earnings_date BETWEEN CURRENT_DATE
             AND CURRENT_DATE + (:days || ' days')::interval
-        ORDER BY ticker
+        GROUP BY ticker
     """
+    if require_options:
+        sql += '        HAVING BOOL_OR(COALESCE(has_options, false)) = true\n'
+    sql += "        ORDER BY ticker\n"
     try:
         df = query_to_dataframe(sql, {"days": lookahead_days})
     except Exception as e:
@@ -282,14 +298,27 @@ def main():
     )
     parser.add_argument(
         "--lookahead-days", type=int,
-        default=int(os.environ.get("EARNINGS_HISTORY_LOOKAHEAD_DAYS", "90")),
+        default=int(os.environ.get("EARNINGS_HISTORY_LOOKAHEAD_DAYS", "14")),
         help="When --tickers is unset, pull history for any ticker reporting "
-             "earnings in the next N days (default: 90).",
+             "earnings in the next N days (default: 14). Was 90 — tightened "
+             "because pulling history for tickers reporting 60+ days out "
+             "wastes the AV budget (the weekly Sunday cron will catch them "
+             "naturally as their reports approach).",
     )
     parser.add_argument(
         "--max-tickers", type=int,
-        default=int(os.environ.get("MAX_TICKERS", "500")),
-        help="Safety cap on total ticker count (default: 500).",
+        default=int(os.environ.get("MAX_TICKERS", "1500")),
+        help="Safety cap on total ticker count (default: 1500). Bumped "
+             "from 500 because the new 14d + has_options filter typically "
+             "returns ~200-400 names, well under the cap, which is now a "
+             "true safety belt rather than a silent truncator.",
+    )
+    parser.add_argument(
+        "--require-options", action="store_true",
+        default=os.environ.get("REQUIRE_OPTIONS", "true").lower() != "false",
+        help="Filter earnings_calendar tickers to those with "
+             "has_options=true (EW or UW confirmed). Default: true. "
+             "Set REQUIRE_OPTIONS=false to disable for non-options use.",
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and print without writing to DB.")
@@ -314,7 +343,9 @@ def main():
     else:
         from gcp.fetchers._watchlist import load_watchlist
 
-        ec = _earnings_calendar_tickers(args.lookahead_days)
+        ec = _earnings_calendar_tickers(
+            args.lookahead_days, require_options=args.require_options,
+        )
         wl = load_watchlist()
         eh = _earnings_history_tickers()  # self-heal source — see fn docstring
         seen: set[str] = set()

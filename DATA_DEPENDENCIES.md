@@ -6,6 +6,8 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 
 > ⚠️ **Partition handling.** `market_data_intraday` is a Postgres LIST-partitioned table. The 5 child tables (`_spy`, `_iwm`, `_qqq`, `_spx`, `_other`) are **routed transparently** — every writer/reader targets the parent and Postgres routes by `ticker`. They appear in the inventory below for completeness but the §2/§3 entries collapse them under the parent.
 
+> 🔧 **Ad-hoc data access.** [`.github/workflows/db-query.yml`](.github/workflows/db-query.yml) (added in #235) runs arbitrary SQL inside a GitHub-Actions runner — it's the only path that works from the sandboxed Claude Code on the web environment, which can't reach Cloud SQL on TCP 5432/3307. Reads default to rolled-back transactions; writes require explicit `commit=true`. It is not enumerated as a writer/reader in §2/§3 because it can target any table — treat it as a generic operator tool, not a pipeline component. See [`CLAUDE.md`](CLAUDE.md#database-access) for invocation patterns.
+
 ---
 
 ## 1. Table inventory
@@ -48,7 +50,7 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 | `historical_signals` | Backtested/replayed signals — entry_time, strategy, outcome features. |
 | `ticker_info` | Cached AV OVERVIEW + FinViz peers JSON per ticker (24h TTL). |
 | `watchlists` | Active ticker watchlist `(user_id, ticker, source, signals/insights flags, soft-delete)`. |
-| `ticker_calibration` | Per-ticker calibrated thresholds from `scripts/calibrate_thresholds.py` (**write-only**). |
+| `ticker_calibration` | Per-ticker calibrated thresholds from `scripts/calibrate_thresholds.py`; read at signal time by `lib/strategies/calibration.py` (Tier-A resolver) with Tier-B fallback to `lib/strategies/config.py` constants. |
 | `signal_metrics` | Per-`(ticker, entry_time, strategy)` quality metrics row from `signal_quality_report`. |
 
 **38 tables.** 5 are intraday partitions of `market_data_intraday`; the remaining 33 are independent.
@@ -115,7 +117,7 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 - [`lib/agents/ranker/rank.py:154`](lib/agents/ranker/rank.py#L154) — `INSERT INTO ranker_runs ...` (audit trail, swallowed on error)
 
 ### `signal_alerts`
-- [`gcp/signal_monitor.py:566`](gcp/signal_monitor.py#L566) — `upsert_dataframe`
+- [`gcp/signal_monitor.py:566`](gcp/signal_monitor.py#L566) — `upsert_dataframe`. Persisted columns include both `base_score` (raw 3-of-5 condition count) and `total_score = (base_score + strat_bonus + agreement_bonus) × proximity_multiplier` per Phase 1.5 (#227) + Phase 1.6 (#231). `strategy_agreement` JSONB carries the per-fire agreement detail; `proximity_multiplier` persists for post-hoc weighting analysis. Free-score conditions (`stoch_rsi_not_*`, `near_*_emas`) were dropped in Phase 0.7 (#229), reducing candidate fires by 77% and stacked-agreement rate from 16.3% → 0% on the SPY 2026-05-01 holdout.
 - [`scripts/backfill_signals.py:227`](scripts/backfill_signals.py#L227) — one-shot replay
 
 ### `trades`
@@ -169,8 +171,8 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 
 ### `historical_signals`
 - [`gcp/historical_signals.py:114,117`](gcp/historical_signals.py#L114) — `DELETE` (cleanup before replay)
-- [`gcp/historical_signals.py:180`](gcp/historical_signals.py#L180) — bulk INSERT
-- [`scripts/backfill_timeframe_tags.py:153`](scripts/backfill_timeframe_tags.py#L153) — `UPDATE … SET timeframe_tag` (one-shot)
+- [`gcp/historical_signals.py:180`](gcp/historical_signals.py#L180) — bulk INSERT. `timeframe_tag` is assigned from `lib/strategies/timeframe.py::EMPIRICAL_LOOKUP` (28-bucket dict literal, auto-generated from full 91k-row signal_metrics dataset) per #223 — 91.5% holdout clean-rate vs the prior 83.3% placeholder. Cold-start buckets fall back to the placeholder. Re-train cadence: weekly during early operational period, monthly steady-state — regenerate via `scripts/analyze_timeframe_heuristic.py`.
+- [`scripts/backfill_timeframe_tags.py:153`](scripts/backfill_timeframe_tags.py#L153) — `UPDATE … SET timeframe_tag` (one-shot, re-tags existing rows after a lookup refresh)
 - [`gcp/backfill_ticker.py:435`](gcp/backfill_ticker.py#L435) — Discord `/replay` (likely; table name resolved at runtime)
 
 ### `ticker_info`
@@ -340,7 +342,7 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 - `gcp/discord_interactions/main.py:173,654` — `/replay` recent-tickers + `/watch list`
 
 ### `ticker_calibration`
-**Zero readers in code.** [`lib/strategies/config.py:6,17`](lib/strategies/config.py#L6) documents reading from this table but still uses hardcoded thresholds. **Populated but unconsumed.**
+- [`lib/strategies/calibration.py:_latest_calibration`](lib/strategies/calibration.py) — Tier-A resolver, called by `gcp/signal_monitor.py` per-ticker on every fire to resolve `CALL_RSI_RANGE` / `PUT_RSI_RANGE`. Falls back to Tier-B constants in `lib/strategies/config.py` when row is missing/stale (>180d)/NULL-percentiled.
 
 ### `signal_metrics`
 - [`gcp/signal_quality_alarm.py:174`](gcp/signal_quality_alarm.py#L174) — clean-rate trailing-7d compute
@@ -377,12 +379,11 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 | `earnings_options_snapshots` | 1 (one-shot Yahoo migration) | 1 (`lib/data_loader.py` dynamic, only when `source='earnings'`, no live caller passes that) | **Effectively orphan.** Cloud Run Job `fetch-earnings-options` is broken per ARCHITECTURE.md:271. |
 | `ranker_runs` | 1 (`lib/agents/ranker/rank.py`) | 0 | Write-only audit (intentional) |
 | `strat_levels` | 1 (`lib/strat_levels.py`) | 0 | Write-only persistence; engine recomputes at runtime |
-| `ticker_calibration` | 1 (`scripts/calibrate_thresholds.py`) | 0 | **Populated but unconsumed.** `lib/strategies/config.py` documents reading from this table but still uses hardcoded thresholds. |
 | `premarket_analysis_history` | 2 | 0 live | Append-only audit / future replay |
 | `insight_reports_history` | 2 | 0 live | Append-only audit / future replay |
 
 **Drop candidates:** the 4 `archive_yahoo_*` tables (forensic-only, no automated workflow) + `earnings_options_snapshots` (broken job + zero live callers).
-**Decision-needed:** `ticker_calibration` (either wire it up or drop the calibration script).
+**Resolved (was decision-needed):** `ticker_calibration` is now read by `lib/strategies/calibration.py` (Tier-A resolver) as of the per-ticker RSI calibration PR. The Cloud Run Job `calibrate-thresholds` was also missing from production at that time and was deployed as part of the same change.
 
 ---
 
@@ -568,7 +569,7 @@ flowchart LR
 
 1. **The `earnings_options_snapshots` orphan** — Cloud Run Job `fetch-earnings-options` is confirmed broken per ARCHITECTURE.md:271. Either rebuild the fetcher (probably `gcp/fetchers/fetch_earnings_options.py`) or drop the table from the schema.
 
-2. **`ticker_calibration` is populated but unread** — `scripts/calibrate_thresholds.py` writes it nightly (or on-demand?), but `lib/strategies/config.py` still hardcodes thresholds. Either wire the lib config to the table (preferred — that's the whole point) or stop running the calibration script.
+2. **~~`ticker_calibration` is populated but unread~~** — RESOLVED. `lib/strategies/calibration.py` reads the table at signal time (Tier A) with Tier-B fallback to `lib/strategies/config.py` constants. `gcp/signal_monitor.py` calls the resolver per-ticker on every fire and logs the resolved range with a `tier=A|B` audit tag. Investigation also surfaced that the `calibrate-thresholds` Cloud Run Job had never been deployed (scheduler was firing into a 404 void); the job and a SQLAlchemy 2.x bind-param bug in the calibrator were both fixed in the same change.
 
 3. **`fetch_rss_news.py` writes `news_sentiment` but isn't in ARCHITECTURE.md's 27-job list.** Either deploy it or delete it.
 

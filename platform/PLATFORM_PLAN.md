@@ -128,22 +128,28 @@ The options-heatseeker is one of the most sophisticated apps and requires carefu
 +---------------------------------------------------+
 ```
 
-### Cloudflare Worker → GCP Migration
+### Cloudflare Worker → GCP Migration ✅ DONE (2026-05-04)
 
-The Cloudflare Worker (`options-heatseeker/worker.js`) is a simple API proxy that:
-- Validates inputs (ticker: SPY/IWM/QQQ, date: YYYY-MM-DD format)
-- Forwards to Alpha Vantage options API (hides API key)
-- Adds CORS headers + 1-hour HTTP cache
-- Returns standardized `{ ticker, date, options[], metadata }` response
+The Cloudflare Worker (`options-heatseeker/worker.js`, archived to
+`archive/old-apps/options-heatseeker/`) was a simple API proxy that:
+- Validated inputs (ticker: SPY/IWM/QQQ, date: YYYY-MM-DD format)
+- Forwarded to Alpha Vantage options API (hid API key)
+- Added CORS headers + 1-hour HTTP cache
+- Returned standardized `{ ticker, date, options[], metadata }` response
 
-This gets absorbed into FastAPI as `/api/options/{ticker}/{date}`:
-- Same validation + transformation logic
-- API key from GCP Secret Manager (already configured)
-- Same 1-hour caching (via `Cache-Control` headers + optional Redis/in-memory)
-- No separate Cloudflare account/deployment needed
-- Consolidates all API proxying into one backend
+It is now absorbed into FastAPI as two endpoints in
+`platform/api/routers/options.py`:
+- `GET /api/options/{ticker}/{date_str}` — Cloud SQL EOD reader (primary)
+- `GET /api/options/live/{ticker}/{date_str}` — AlphaVantage live proxy
+  (fallback for today's intraday chain before the 9 PM EOD fetcher runs)
 
-**After verification:** Decommission Cloudflare Worker via `wrangler delete`
+Both share the same response shape (`_av_to_contracts` mirrors
+`_df_to_contracts`). API key resolved from `AV_API_KEY` /
+`ALPHA_VANTAGE_API_KEY` env (Secret Manager-injected). The React page
+(`OptionsFlowPage.tsx`) calls Cloud SQL first and falls back to live on
+404 — no other call sites reference Cloudflare.
+
+**Decommission step (run by user):** `wrangler delete options-heatseeker-api`
 
 ### D3.js Integration Strategy
 

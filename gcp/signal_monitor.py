@@ -23,6 +23,7 @@ import numpy as np
 from lib.indicators import (
     calculate_rsi, calculate_ema, calculate_atr, calculate_vwap,
     calculate_rvol, calculate_obv, calculate_stoch_rsi, calculate_consecutive_moves,
+    calculate_rvol_recent, calculate_atr_expansion, calculate_rsi_thrust,
 )
 from lib.signals import evaluate_signal
 from lib.strat import StratClassifier
@@ -30,6 +31,11 @@ from lib.strat_levels import LevelMap, build_level_map
 from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
+from lib.strategies.calibration import (
+    get_call_rsi_range,
+    get_put_rsi_range,
+    get_resolution_tier,
+)
 from lib.strategies.base import Signal
 from lib.strategies.timeframe import assign_timeframe
 from lib.strategies.catalyst_proximity import get_catalyst_context
@@ -220,6 +226,16 @@ class SignalMonitor:
         df['Consecutive_Up'], df['Consecutive_Down'] = calculate_consecutive_moves(
             price_change, ind.consecutive_periods,
         )
+        # Phase 0.7.x — relaxed 3-of-5 gate columns + 3 new momentum
+        # confirmer indicators read by `lib.strategies.MOMENTUM.evaluate`.
+        # Without these, every Phase 0.7.x condition silently fails to
+        # fire in production because the row.get(...) calls return None.
+        df['Consecutive_Up_5'], df['Consecutive_Down_5'] = calculate_consecutive_moves(
+            price_change, ind.consecutive_relaxed_window,
+        )
+        df['RVol_Recent_20'] = calculate_rvol_recent(volume, ind.rvol_period)
+        df['ATR_Expansion'] = calculate_atr_expansion(high, low, close, short=5, long=20)
+        df['RSI_Thrust_3'] = calculate_rsi_thrust(df[ind.rsi_col], lookback=3)
 
         df['Price_vs_VWAP'] = (close - df['VWAP']) / df['VWAP'] * 100
         df[ind.price_vs_ema_fast_col] = (close - df[f'EMA{ind.ema_fast_period}']) / df[f'EMA{ind.ema_fast_period}'] * 100
@@ -324,15 +340,30 @@ class SignalMonitor:
         rationale: ~21% of overlapping fires AGREE on direction (high-
         conviction stacked signals); ~79% DISAGREE (informative noise).
         """
+        # Resolve per-ticker RSI ranges (Tier A → Tier B fallback).
+        # Both strategies use the same resolved ranges so agreement
+        # detection compares apples-to-apples. See
+        # lib/strategies/calibration.py for the resolution chain.
+        call_rng = get_call_rsi_range(ticker)
+        put_rng = get_put_rsi_range(ticker)
+        call_tier = get_resolution_tier(ticker, "CALL")
+        put_tier = get_resolution_tier(ticker, "PUT")
+
         sig = evaluate_signal(
             latest,
             min_conditions=self.signal_cfg.min_conditions,
             consecutive_periods=self.signal_cfg.consecutive_periods,
-            call_rsi_range=self.signal_cfg.call_rsi_range,
-            put_rsi_range=self.signal_cfg.put_rsi_range,
+            call_rsi_range=call_rng,
+            put_rsi_range=put_rng,
         )
         if sig is None:
             return None, None
+
+        logger.info(
+            "%s fire: %s base_score=%.1f call_range=%s tier=%s put_range=%s tier=%s",
+            ticker, sig["direction"], sig["base_score"],
+            call_rng, call_tier, put_rng, put_tier,
+        )
 
         # Build a Signal facade from the mr dict so detect_agreement
         # can compare it against MomentumStrategy's Signal output. We
@@ -349,7 +380,9 @@ class SignalMonitor:
             weighted_score=float(sig["base_score"]),
             conditions_met=list(sig["conditions_met"]),
         )
-        mom_signal = MOMENTUM.evaluate(latest)
+        mom_signal = MOMENTUM.evaluate(
+            latest, call_rsi_range=call_rng, put_rsi_range=put_rng,
+        )
         agreement = detect_agreement(mom_signal, mr_signal)
         return sig, agreement
 

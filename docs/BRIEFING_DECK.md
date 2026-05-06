@@ -44,7 +44,7 @@ A full-stack equity trading research and execution platform centered on four pri
 | Cloud SQL tables | 31 (adds `daily_rates` for FRED-driven historical Greeks; `ticker_info` for AV/FinViz metadata cache; `earnings_calendar` now 47–48 cols incl. UW liquidity) |
 | Cloud Run jobs | 17 (15 scheduled + `apply-schema-migrations` one-shot + `compute-spx-greeks-backfill` on-demand) |
 | GitHub Actions workflows | 14 (composition: `fetch_etf_options.yml` removed, `freshness-watchdog.yml` added) |
-| Standalone web tools | 4 (heatseeker, success-report, chart-viewer, website) |
+| Standalone web tools | 3 (heatseeker, success-report, website) |
 | Google Apps Script files | 33 |
 | Test files | ~35 Python (`make test` ~703 tests after PR #94's +251), 34+ E2E specs (includes `admin-auth.spec.ts` — 13 IAP auth tests), 18 script regression |
 | Plans logged Apr 10–26 | 17 (13 ✅ shipped, 3 🟡 partial, 1 📋 investigation) |
@@ -160,12 +160,12 @@ The application has **five distinct surfaces**, all rooted in the same git repo.
 | Surface | Path | Primary use | Status |
 | --- | --- | --- | --- |
 | **Platform** (React + FastAPI) | `platform/` | Day-to-day research, live trading, journaling, AI insights | Primary, active |
-| **Standalone web tools** | `options-heatseeker/`, `success-report-site/`, `chart-viewer/`, `website/` | Specialized exploratory views (heatmaps, reports, raw charts) | Active, some legacy |
+| **Standalone web tools** | `options-heatseeker/`, `success-report-site/`, `website/` | Specialized exploratory views (heatmaps, reports) | Active, some legacy |
 | **Google Apps Script** | `google-apps-script/` | Spreadsheet-based trade tracking, options premium backfill, web app | Legacy, in maintenance |
 | **TradingView Pine Scripts** | `tradingview-pine-scripts/` | Mobile and TV-native indicators (v6 API) | Active (no .pine in git currently — see §16) |
 | **Earnings options analytics** | `earnings_options_analytics/` | Standalone earnings strategy backtester | Maintained, separate from platform |
 
-The Platform is the source of truth for live trading workflows. The standalone tools predate the unified dashboard; some are still actively used (heatseeker for IV surface) and others are in maintenance mode (chart-viewer, website).
+The Platform is the source of truth for live trading workflows. The standalone tools predate the unified dashboard; some are still actively used (heatseeker for IV surface) and others are in maintenance mode (website).
 
 ---
 
@@ -574,7 +574,6 @@ Pre-deploy verification (per `dreamy-churning-lovelace`): `pre-deploy-check` age
 | `analyze-market-data.yml` | Daily 22:00 UTC + manual | Compute indicators + strat classification on daily series; backfill Cloud SQL |
 | `backtest-pipeline.yml` | Manual | Full backtest run (base + strat) for configured tickers; report generation |
 | `daily-insight-reports.yml` | Daily 12:45 UTC weekdays + manual | Multi-agent pipeline trigger (alongside Cloud Scheduler) for observable failure surface |
-| `deploy-trading-apps.yml` | Push to main | Deploy standalone web tools to GH Pages / Cloudflare |
 | `download-google-sheets.yml` | Scheduled | Fetch Google Sheets data (watchlists, manual trades) → GCS |
 | `earnings-options-analytics.yml` | Weekly | Earnings options strategy analysis (the standalone `earnings_options_analytics/` package) |
 | `fetch-alphavantage-intraday-monthly.yml` | Monthly + manual | 1-min intraday backfill from AV |
@@ -626,16 +625,16 @@ Implemented by `scripts/handle_workflow_failure.py` (Python). Behavior:
 
 ## 9. Standalone Web Tools
 
-Four tools under their own top-level directories. Each predates the Platform but remains in the repo for niche or legacy use.
+Tools under their own top-level directories. Each predates the Platform but remains in the repo for niche or legacy use.
 
 | Tool | Path | Port | Tech | Purpose |
 | --- | --- | --- | --- | --- |
-| **Options Heatseeker** | `options-heatseeker/` | 8101 | Cloudflare Worker + HTML5 + JS | IV heatmap, gamma exposure surface, contract flow, implied move calcs. Source of `greeksCalculator.js` and `nodeAnalyzer.js` ported into platform |
+| ~~**Options Heatseeker**~~ | `archive/old-apps/options-heatseeker/` | — | (archived 2026-05-04) | Replaced by the React platform's `/options` route. FastAPI now serves both Cloud SQL EOD (`/api/options/{ticker}/{date}`) and live AV (`/api/options/live/{ticker}/{date}`) — Cloudflare Worker decommissioned |
+| ~~**Chart Viewer**~~ | (removed 2026-05-05) | — | — | Replaced by the React platform's `/charts` route. Legacy app and intraday bar JSON data deleted |
 | **Success Report** | `success-report-site/` | 8102 | Python + HTML | Earnings options strategy backtests; trade-by-trade P&L, win rates, equity curves |
-| **Chart Viewer** | `chart-viewer/` | 8103 | Static HTML5 + Recharts/D3 | Lightweight price + indicator + order block viewer; reads parquet from local or GCS |
 | **Trading Dashboard** | `website/trading-dashboard.html` | 8104 | Self-contained HTML + JS | Offline-capable dashboard with live quote, Greeks calculator, earnings calendar, basic alerts |
 
-Heatseeker is the most actively used today (IV surface visualization is its niche). Chart Viewer and Trading Dashboard are in maintenance — superseded by the Platform's `/charts` and `/dashboard` routes.
+Heatseeker is the most actively used today (IV surface visualization is its niche). Trading Dashboard is in maintenance — superseded by the Platform's `/dashboard` route.
 
 ---
 
@@ -1292,7 +1291,6 @@ cd platform && uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 # Standalone tools
 cd options-heatseeker && npm run dev  # port 8101
 cd success-report-site && python serve.py  # port 8102
-python -m http.server 8103 -d chart-viewer
 python -m http.server 8104 -d website
 ```
 

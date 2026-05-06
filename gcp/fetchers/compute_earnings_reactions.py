@@ -194,6 +194,67 @@ def compute_reaction(
         sign_flipped = (reaction_gap > 0) != (sustain_5d > 0)
         is_reversal = sign_flipped and abs(sustain_5d) >= abs(reaction_gap) * 0.5
 
+    # ATR context — TIMING-AWARE. The "reaction day" is the bar where
+    # the earnings reaction actually trades:
+    #   BMO: D itself (report drops before open → D is the reaction day)
+    #   AMC: D+1 (report drops after close → D+1 is the reaction day)
+    #
+    # Pre-report ATR  = ATR through the last full bar BEFORE the reaction.
+    #                   This is the volatility regime traders see going INTO
+    #                   the print. It's the natural denominator for "this
+    #                   reaction was Nx ATR."
+    #     BMO: atr_14 on D-1
+    #     AMC: atr_14 on D       (D is normal trading; report drops after close)
+    #
+    # Post-report ATR = ATR through the reaction day. Includes the spike,
+    #                   so it's the volatility regime AFTER the print. The
+    #                   delta vs pre is a "regime shift" signal.
+    #     BMO: atr_14 on D
+    #     AMC: atr_14 on D+1
+    #
+    # Reaction-day range is high-low on the reaction-day bar (D for BMO,
+    # D+1 for AMC). Dividing by pre-report ATR gives the "this print was
+    # Nx normal volatility" number that matches third-party analytics.
+    def _atr(bar) -> Optional[float]:
+        if bar is None:
+            return None
+        v = bar.get('atr_14')
+        try:
+            return float(v) if v is not None and pd.notna(v) else None
+        except (TypeError, ValueError):
+            return None
+
+    if reaction_basis == 'BMO':
+        pre_report_bar = d_minus_1
+        post_report_bar = d
+        reaction_bar = d
+    else:  # AMC
+        pre_report_bar = d
+        post_report_bar = d_plus_1
+        reaction_bar = d_plus_1
+
+    pre_report_atr = _atr(pre_report_bar)
+    post_report_atr = _atr(post_report_bar)
+    pre_report_close = (
+        float(pre_report_bar['close'])
+        if pre_report_bar is not None else None
+    )
+    pre_report_atr_pct = (
+        pre_report_atr / pre_report_close * 100
+        if pre_report_atr is not None and pre_report_close
+        else None
+    )
+    reaction_day_range = (
+        float(reaction_bar['high']) - float(reaction_bar['low'])
+        if reaction_bar is not None else None
+    )
+    reaction_day_range_in_atr_units = (
+        reaction_day_range / pre_report_atr
+        if reaction_day_range is not None
+        and pre_report_atr is not None and pre_report_atr > 0
+        else None
+    )
+
     return {
         'ticker': eps_row['ticker'],
         'fiscal_date_ending': eps_row['fiscal_date_ending'],
@@ -227,6 +288,13 @@ def compute_reaction(
         'sustain_10d_pct': sustain_10d,
         'direction_consistent_5d': direction_consistent,
         'is_reversal_5d': is_reversal,
+        # Timing-aware ATR context (replaces the buggy atr_14_d_minus_1 /
+        # atr_14_d / day_range_in_atr_units columns from the first cut).
+        'pre_report_atr': pre_report_atr,
+        'pre_report_atr_pct': pre_report_atr_pct,
+        'post_report_atr': post_report_atr,
+        'reaction_day_range': reaction_day_range,
+        'reaction_day_range_in_atr_units': reaction_day_range_in_atr_units,
     }
 
 
@@ -283,12 +351,16 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
     """Return ~30 trading days centered on reported_date for this ticker.
 
     Wide enough to handle weekends/holidays around D and to reach D+10
-    for the 10-day sustain calculation.
+    for the 10-day sustain calculation. Includes atr_14 so the
+    populator can write ATR-context columns without a second pull
+    (the column is populated by the daily fetcher's full-range
+    indicator pass; rows without it stay NULL in the output).
     """
     sql = """
-        SELECT date, open, high, low, close, volume FROM market_data_daily
-        WHERE ticker = :t AND date BETWEEN :start AND :end
-        ORDER BY date
+        SELECT date, open, high, low, close, volume, atr_14
+          FROM market_data_daily
+         WHERE ticker = :t AND date BETWEEN :start AND :end
+         ORDER BY date
     """
     params = {
         't': ticker,
