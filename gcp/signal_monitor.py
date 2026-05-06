@@ -82,7 +82,13 @@ class SignalMonitor:
         self.windows: dict = {t: pd.DataFrame() for t in self.tickers}
         self.daily_trades: dict = {t: 0 for t in self.tickers}
         self.daily_pnl: dict = {t: 0.0 for t in self.tickers}
-        self.active_positions: dict = {t: None for t in self.tickers}
+        # Open positions awaiting exit. Each tick the exit-watcher walks
+        # this list and fires TARGET HIT / TIME STOP / RSI EXIT alerts +
+        # writes the exit details back to signal_alerts. Lifetime is the
+        # signal_monitor process itself (≤ one trading session), which is
+        # always longer than max(call_time_stop, put_time_stop) = 35 min,
+        # so in-memory tracking is sufficient for now.
+        self.active_positions: dict = {t: [] for t in self.tickers}
         self.orb_levels: dict = {t: {} for t in self.tickers}
 
         # Strat level map per ticker, refreshed each loop iteration. Used to
@@ -392,6 +398,11 @@ class SignalMonitor:
         latest = df.iloc[-1]
         last_price = float(latest.get('Close', latest.get('Last', 0)))
 
+        # Exit-watcher — runs FIRST so target/stop alerts fire on the
+        # same bar that pushed price across the threshold, before any
+        # new entry signal is evaluated for this ticker.
+        self._check_exits(ticker, latest, last_price)
+
         # Level-break detection. Refreshes lazily once per day per ticker.
         if self.level_maps.get(ticker) is None:
             self.refresh_level_map(ticker)
@@ -636,6 +647,11 @@ class SignalMonitor:
             # post-Phase-1 (always tagged with at least the default).
             'timeframe_tag': getattr(self, '_latest_timeframe_tag', None),
             'expected_hold_min': getattr(self, '_latest_expected_hold_min', None),
+            # Exit-watcher lifecycle — flipped to FALSE by _persist_exit
+            # when the exit-watcher fires a TARGET HIT / TIME STOP / RSI
+            # EXIT alert. Lets analytics filter for live positions in O(1)
+            # via the partial index idx_signal_alerts_open.
+            'is_open': True,
         }
 
         # Phase 1.5: catalyst proximity — already looked up + stashed
@@ -670,6 +686,161 @@ class SignalMonitor:
             logger.info("Trade logged for %s %s", ticker, sig['direction'])
         except Exception as e:
             logger.warning("Trade logging failed: %s", e)
+
+        # Track the open position for the exit-watcher. alert_ts here is
+        # the same naive UTC value written to the DB row, so the UPDATE
+        # in _persist_exit can match by (ticker, alert_ts) PK.
+        self.active_positions.setdefault(ticker, []).append({
+            'ticker': ticker,
+            'alert_ts': now,
+            'direction': sig['direction'],
+            'entry_price': float(latest.get('Close', latest.get('Last', 0))),
+            'target_price': float(target),
+            'time_stop_minutes': int(time_stop),
+            'score': float(total_score),
+            'strength': strength,
+        })
+
+    # ── Exit-watcher ─────────────────────────────────────────────────
+    # Each tick (per ticker) walks open positions and fires a Discord
+    # alert + persists exit details when target/time/RSI conditions are
+    # met. Universal RSI thresholds (call_rsi_exit=80, put_rsi_exit=20)
+    # come from ExitConfig today; per-ticker calibration is a follow-up
+    # that will read from ticker_calibration.rsi_p10/rsi_p90.
+
+    def _check_exits(self, ticker, latest, current_price):
+        """Walk open positions for `ticker`, fire exit alerts + persist."""
+        positions = self.active_positions.get(ticker)
+        if not positions:
+            return
+
+        rsi_col = self.indicator_cfg.rsi_col
+        current_rsi = float(latest.get(rsi_col, 0) or 0)
+        # Naive UTC — matches alert_ts in signal_alerts so elapsed math
+        # and the UPDATE WHERE clause stay consistent.
+        now_utc = datetime.now()
+
+        for pos in positions[:]:
+            elapsed_min = (now_utc - pos['alert_ts']).total_seconds() / 60.0
+            exit_reason = None
+
+            if pos['direction'] == 'CALL':
+                if current_price >= pos['target_price']:
+                    exit_reason = 'target_hit'
+                elif elapsed_min >= pos['time_stop_minutes']:
+                    exit_reason = 'time_stop'
+                elif current_rsi >= self.exit.call_rsi_exit:
+                    exit_reason = 'rsi_extreme'
+            else:  # PUT
+                if current_price <= pos['target_price']:
+                    exit_reason = 'target_hit'
+                elif elapsed_min >= pos['time_stop_minutes']:
+                    exit_reason = 'time_stop'
+                elif 0 < current_rsi <= self.exit.put_rsi_exit:
+                    exit_reason = 'rsi_extreme'
+
+            if exit_reason:
+                self._fire_exit_alert(pos, current_price, exit_reason,
+                                      elapsed_min, current_rsi)
+                self._persist_exit(pos, current_price, exit_reason, now_utc)
+                positions.remove(pos)
+
+    @staticmethod
+    def _exit_return_pct(direction, entry_price, exit_price):
+        if direction == 'CALL':
+            return (exit_price - entry_price) / entry_price * 100.0
+        return (entry_price - exit_price) / entry_price * 100.0
+
+    def _fire_exit_alert(self, pos, exit_price, exit_reason, elapsed_min,
+                         current_rsi):
+        """Post exit alert to Discord."""
+        if not self.webhook_url:
+            return
+
+        direction = pos['direction']
+        return_pct = self._exit_return_pct(direction, pos['entry_price'], exit_price)
+
+        reason_label = {
+            'target_hit':  '\U0001F3AF TARGET HIT',
+            'time_stop':   '⏰ TIME STOP',
+            'rsi_extreme': '\U0001F4CA RSI EXIT',
+        }.get(exit_reason, exit_reason.upper())
+
+        # Green for profitable target, amber for time, purple for RSI.
+        color = (0x00ff00 if exit_reason == 'target_hit'
+                 else 0xffaa00 if exit_reason == 'time_stop'
+                 else 0xaa00ff)
+
+        # Convert naive-UTC alert_ts to ET for human-readable display.
+        try:
+            entry_et = pos['alert_ts'].replace(tzinfo=ZoneInfo("UTC")).astimezone(_ET)
+            entry_str = entry_et.strftime('%H:%M:%S ET')
+        except Exception:
+            entry_str = pos['alert_ts'].strftime('%H:%M:%S')
+
+        title = (f"{reason_label} — {pos['ticker']} {direction} "
+                 f"{return_pct:+.2f}%")
+        description = (
+            f"Entry: ${pos['entry_price']:.2f} @ {entry_str} "
+            f"(score {pos['score']:.1f} {pos['strength']})\n"
+            f"Exit:  ${exit_price:.2f} after {elapsed_min:.0f} min\n"
+            f"Target was: ${pos['target_price']:.2f}"
+        )
+        if exit_reason == 'rsi_extreme':
+            threshold = (self.exit.call_rsi_exit if direction == 'CALL'
+                         else self.exit.put_rsi_exit)
+            description += f"\nRSI: {current_rsi:.1f} (threshold {threshold:.0f})"
+
+        embed = {
+            'title': title,
+            'description': description,
+            'color': color,
+            'timestamp': datetime.now(_ET).isoformat(),
+        }
+        try:
+            requests.post(self.webhook_url, json={'embeds': [embed]},
+                          timeout=self.monitor_cfg.discord_timeout)
+            logger.info("Exit alert posted: %s %s %s (%+.2f%%)",
+                        pos['ticker'], direction, exit_reason, return_pct)
+        except Exception as e:
+            logger.warning("Exit alert Discord post failed: %s", e)
+
+    def _persist_exit(self, pos, exit_price, exit_reason, exit_ts):
+        """Update the signal_alerts row with exit details."""
+        try:
+            from gcp.database import get_engine, is_cloud_sql_configured
+        except ImportError:
+            return
+        if not is_cloud_sql_configured():
+            return
+
+        return_pct = self._exit_return_pct(
+            pos['direction'], pos['entry_price'], exit_price)
+
+        from sqlalchemy import text
+        sql = text("""
+            UPDATE signal_alerts
+               SET exit_ts          = :exit_ts,
+                   exit_reason      = :reason,
+                   exit_price       = :price,
+                   exit_return_pct  = :ret,
+                   is_open          = FALSE
+             WHERE ticker   = :ticker
+               AND alert_ts = :alert_ts
+        """)
+        try:
+            with get_engine().begin() as conn:
+                conn.execute(sql, {
+                    'exit_ts':  exit_ts,
+                    'reason':   exit_reason,
+                    'price':    float(exit_price),
+                    'ret':      float(return_pct),
+                    'ticker':   pos['ticker'],
+                    'alert_ts': pos['alert_ts'],
+                })
+        except Exception as e:
+            logger.warning("Exit persist failed for %s %s: %s",
+                           pos['ticker'], pos['alert_ts'], e)
 
     def run_loop(self):
         """Main market-hours loop."""

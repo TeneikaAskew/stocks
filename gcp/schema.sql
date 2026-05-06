@@ -1787,3 +1787,29 @@ ALTER TABLE historical_signals
     ADD COLUMN IF NOT EXISTS last_catalyst_type  VARCHAR(20),
     ADD COLUMN IF NOT EXISTS catalyst_session    VARCHAR(12),
     ADD COLUMN IF NOT EXISTS proximity_bucket    VARCHAR(12);
+
+
+-- ─── Exit-watcher columns — entry/exit lifecycle on signal_alerts ──
+-- Persists the resolution of each signal: when/why/at-what-price the
+-- position was closed. Filled in by gcp/signal_monitor.py:_persist_exit
+-- when the in-memory exit-watcher fires a TARGET HIT / TIME STOP /
+-- RSI EXTREME alert. is_open lets analytics filter for live-this-minute
+-- positions without scanning the whole table.
+--
+-- exit_reason values:
+--   target_hit   — price reached call_target / put_target before time stop
+--   time_stop    — call_time_stop / put_time_stop minutes elapsed
+--   rsi_extreme  — RSI crossed call_rsi_exit (>=80) / put_rsi_exit (<=20)
+--   eod_close    — market close hit while position still open
+--                  (only set if exit-watcher adds end-of-day reconciliation
+--                   in a follow-up; today the loop just terminates)
+
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS exit_ts          TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS exit_reason      VARCHAR(32),
+    ADD COLUMN IF NOT EXISTS exit_price       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS exit_return_pct  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS is_open          BOOLEAN;
+
+CREATE INDEX IF NOT EXISTS idx_signal_alerts_open
+    ON signal_alerts (ticker, alert_ts) WHERE is_open IS TRUE;
