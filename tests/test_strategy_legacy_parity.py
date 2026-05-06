@@ -46,10 +46,28 @@ def _bar(**overrides) -> pd.Series:
         "VWAP": 100.0, "EMA9": 100.0, "EMA20": 100.0,
         "StochRSI_K": 50.0,
         "Consecutive_Up": 0, "Consecutive_Down": 0,
+        "Consecutive_Up_5": 0, "Consecutive_Down_5": 0,
+        # Default below the 1.2 threshold so `rvol_above_recent` doesn't
+        # fire by accident in parity fixtures (it's not in legacy logic).
+        "RVol_Recent_20": 1.0,
+        # Default below the 1.15 threshold so `atr_expansion` doesn't
+        # fire by accident in parity fixtures (also not in legacy logic).
+        "ATR_Expansion": 1.0,
+        # Default 0 so directional `rsi_thrust` doesn't fire either way
+        # in parity fixtures (also not in legacy logic).
+        "RSI_Thrust_3": 0.0,
         "Price_vs_VWAP": 0.0, "Price_vs_EMA9": 0.0, "Price_vs_EMA20": 0.0,
         "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
     }
     base.update(overrides)
+    # Phase 0.7.2: 3-of-3 trivially satisfies 3-of-5. If a fixture sets
+    # only the strict legacy column, mirror it onto the relaxed column so
+    # the new MomentumStrategy gate fires in the same scenarios the
+    # legacy inline logic does.
+    if "Consecutive_Up_5" not in overrides:
+        base["Consecutive_Up_5"] = base["Consecutive_Up"]
+    if "Consecutive_Down_5" not in overrides:
+        base["Consecutive_Down_5"] = base["Consecutive_Down"]
     return pd.Series(base)
 
 
