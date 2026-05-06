@@ -36,6 +36,8 @@ from lib.strat_levels import LevelMap, build_level_map
 from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
+from lib.strategies.brief_bias import alignment as _brief_alignment
+from lib.strategies.brief_bias import get_premarket_bias
 from lib.strategies.calibration import (
     get_call_rsi_range,
     get_put_rsi_range,
@@ -99,6 +101,13 @@ class SignalMonitor:
         self.last_prices: dict = {t: None for t in self.tickers}
         # Set of (ticker, level_name) that have already fired today.
         self.fired_breaks: set = set()
+
+        # Premarket-brief bias cache (filled lazily, once per ticker per
+        # session). Bias is purely informational in Phase 1 — it's
+        # displayed in the Discord embed and persisted to signal_alerts
+        # so we can later analyse whether brief-aligned signals win more
+        # often than brief-opposed ones, without changing fire behavior.
+        self._brief_bias_cache: dict = {}
 
     def _resolve_watchlist(self) -> list[str]:
         """Return the active live-signal-monitor watchlist.
@@ -544,9 +553,25 @@ class SignalMonitor:
             if mins is not None:
                 time_clause = f' in {mins}m' if prox_bucket in ('imminent', 'pre') else f' {mins}m ago'
             prox_label = f' [{prox_bucket}{":" + ev_type if ev_type else ""}{time_clause}]'
+
+        # Phase 2: brief-bias tag \u2014 surfaces alignment between this fired
+        # signal and the morning premarket brief. Visibility only \u2014 does
+        # not modify the fire decision, score, or position size.
+        brief = self._resolve_brief_bias(ticker)
+        align = _brief_alignment(direction, brief)
+        self._latest_brief_bias = brief
+        self._latest_brief_alignment = align
+        brief_label = ''
+        if brief['bias'] == 'CONFLICTED':
+            brief_label = ' [brief: CONFLICTED]'
+        elif align == 'aligned':
+            brief_label = f" [brief: {brief['bias']} \u2713 ({brief['setup_count']}/5)]"
+        elif align == 'opposed':
+            brief_label = f" [AGAINST BRIEF: {brief['bias']} ({brief['setup_count']}/5)]"
+
         title = (
             f"{title_prefix}{'CALL' if direction == 'CALL' else 'PUT'} SIGNAL"
-            f"{tf_label}{prox_label} \u2014 {ticker} @ ${price:.2f}"
+            f"{tf_label}{prox_label}{brief_label} \u2014 {ticker} @ ${price:.2f}"
         )
         agreement_block = ''
         if agreement:
@@ -652,6 +677,11 @@ class SignalMonitor:
             # EXIT alert. Lets analytics filter for live positions in O(1)
             # via the partial index idx_signal_alerts_open.
             'is_open': True,
+            # Phase 2: brief-bias capture — persists the alignment for
+            # later analysis without changing fire behavior.
+            'brief_bias':        (getattr(self, '_latest_brief_bias', {}) or {}).get('bias'),
+            'brief_alignment':   getattr(self, '_latest_brief_alignment', None),
+            'brief_setup_count': (getattr(self, '_latest_brief_bias', {}) or {}).get('setup_count'),
         }
 
         # Phase 1.5: catalyst proximity — already looked up + stashed
@@ -700,6 +730,21 @@ class SignalMonitor:
             'score': float(total_score),
             'strength': strength,
         })
+
+    def _resolve_brief_bias(self, ticker: str) -> dict:
+        """Lookup-and-cache the premarket-brief bias for this ticker today."""
+        if ticker in self._brief_bias_cache:
+            return self._brief_bias_cache[ticker]
+        try:
+            today_et = datetime.now(_ET).date()
+            bias = get_premarket_bias(ticker, today_et)
+        except Exception as e:
+            logger.debug("brief bias lookup failed for %s: %s", ticker, e)
+            bias = {'bias': 'UNAVAILABLE', 'alignment': None,
+                    'setup_count': 0, 'ftfc_direction': None,
+                    'reason': 'lookup_failed'}
+        self._brief_bias_cache[ticker] = bias
+        return bias
 
     # ── Exit-watcher ─────────────────────────────────────────────────
     # Each tick (per ticker) walks open positions and fires a Discord

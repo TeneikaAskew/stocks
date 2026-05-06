@@ -1813,3 +1813,23 @@ ALTER TABLE signal_alerts
 
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_open
     ON signal_alerts (ticker, alert_ts) WHERE is_open IS TRUE;
+
+
+-- ─── Phase 2 — Brief↔Live coordination (visibility-only) ─────────
+-- The premarket brief (premarket_analysis) and the live signal monitor
+-- run as parallel systems with no coordination layer. On 2026-05-05 they
+-- produced opposite directional opinions on QQQ — brief said PUT, live
+-- fired CALL at 9:25 and was correct. We need data to decide whether
+-- brief-aligned or brief-opposed live signals win more often, so this
+-- phase persists the alignment without changing fire behavior.
+--
+-- brief_bias values match lib/strategies/brief_bias.py:
+--   CALL | PUT | NEUTRAL | CONFLICTED | UNAVAILABLE
+-- brief_alignment values:
+--   aligned | opposed | NULL (when bias is NEUTRAL/CONFLICTED/UNAVAILABLE)
+-- brief_setup_count: 0..5 (the N from "CALL setup (N/5)" in signal_status)
+
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS brief_bias        VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS brief_alignment   VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS brief_setup_count INTEGER;
