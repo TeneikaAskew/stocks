@@ -709,6 +709,19 @@ class MarketAnalyzer:
         df['RVOL20'] = self.calculate_rvol(df, 20)
         print("    - RVOL minute of day...")
         df['RVOL_MOD'], df['RVOL_MOD_EXCL'] = self.calculate_rvol_minute_of_day(df, exclude_current=True)
+        # Phase 0.7.x — `rvol_above_recent` confirmer column. Median-based
+        # rolling RVOL (robust to outlier spikes), read by the new
+        # momentum condition. Mirrors `lib.indicators.calculate_rvol_recent`
+        # so the legacy MarketAnalyzer path stays in sync with the canonical
+        # add_all_indicators output. Without this, the rvol confirmer never
+        # fires on this code path (Codex P2 review on PR #262).
+        _rvol_med = df['Volume'].rolling(window=20, min_periods=1).median()
+        df['RVol_Recent_20'] = df['Volume'] / _rvol_med.where(_rvol_med > 0, np.nan)
+        # Phase 0.7.x — `atr_expansion` confirmer column. Short-ATR / long-ATR
+        # ratio. Mirrors `lib.indicators.calculate_atr_expansion`.
+        _atr_short = self.calculate_atr(df, 5)
+        _atr_long  = self.calculate_atr(df, 20)
+        df['ATR_Expansion'] = _atr_short / _atr_long.where(_atr_long > 0, np.nan)
 
         # OBV
         print("6/11 - Calculating OBV (On-Balance Volume)...")
