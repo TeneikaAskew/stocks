@@ -50,6 +50,19 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
     return rsi
 
 
+def calculate_rsi_thrust(rsi: pd.Series, lookback: int = 3) -> pd.Series:
+    """Signed RSI delta over `lookback` bars (current - lookback bars ago).
+
+    Phase 0.7.x — used by the directional `rsi_thrust` momentum condition.
+    Positive values = RSI accelerating up (bullish thrust); negative =
+    accelerating down (bearish thrust). Complements the existing band
+    check (`rsi_bullish_recovery`) which is a level test, not a velocity
+    test — a bar with RSI=70 (out of recovery band) but delta=+10 has
+    thrust without recovery.
+    """
+    return rsi - rsi.shift(lookback)
+
+
 def calculate_stoch_rsi(
     rsi: pd.Series,
     period: int = 14,
@@ -136,6 +149,23 @@ def calculate_atr(
     return wilder_moving_average(tr, period)
 
 
+def calculate_atr_expansion(
+    high: pd.Series, low: pd.Series, close: pd.Series,
+    short: int = 5, long: int = 20,
+) -> pd.Series:
+    """Ratio of short-window ATR to long-window ATR.
+
+    Phase 0.7.x — used by the `atr_expansion` momentum condition.
+    Values > 1 indicate recent volatility is above its longer-window
+    baseline (vol expansion regime); < 1 indicates contraction. The
+    momentum strategy fires the gate when the ratio exceeds
+    `ATR_EXPANSION_THRESHOLD`, indicating tradeable conditions.
+    """
+    atr_short = calculate_atr(high, low, close, short)
+    atr_long  = calculate_atr(high, low, close, long)
+    return atr_short / atr_long.where(atr_long > 0, np.nan)
+
+
 def calculate_bollinger_bands(
     close: pd.Series, period: int = 20, std_mult: float = 2.0,
 ) -> Tuple[pd.Series, pd.Series, pd.Series]:
@@ -184,6 +214,18 @@ def calculate_rvol(volume: pd.Series, period: int = 20) -> pd.Series:
     """Relative Volume — current volume / rolling average volume."""
     rolling_avg = volume.rolling(window=period, min_periods=1).mean()
     return volume / rolling_avg.where(rolling_avg > 0, np.nan)
+
+
+def calculate_rvol_recent(volume: pd.Series, period: int = 20) -> pd.Series:
+    """Median-based relative volume — current / rolling MEDIAN volume.
+
+    Phase 0.7.x — used by the `rvol_above_recent` momentum condition.
+    Median is robust to outlier high-volume bars (news spikes, opening
+    minute) that depress the mean-based RVOL on subsequent bars and
+    cause the gate to mis-fire.
+    """
+    rolling_med = volume.rolling(window=period, min_periods=1).median()
+    return volume / rolling_med.where(rolling_med > 0, np.nan)
 
 
 def calculate_rvol_minute_of_day(
@@ -581,10 +623,16 @@ def add_all_indicators(
 
     # ATR
     out[ind.atr_col] = calculate_atr(h, l, c, ind.atr_period)
+    # Phase 0.7.x — short/long ATR ratio for the `atr_expansion` gate.
+    # Values > 1 = recent volatility above baseline (regime expansion).
+    out['ATR_Expansion'] = calculate_atr_expansion(h, l, c, short=5, long=20)
 
     # RSI
     out[ind.rsi_col] = calculate_rsi(c, ind.rsi_period)
     out[ind.rsi_fast_col] = calculate_rsi(c, ind.rsi_fast_period)
+    # Phase 0.7.x — signed 3-bar RSI delta for the directional
+    # `rsi_thrust` momentum gate.
+    out['RSI_Thrust_3'] = calculate_rsi_thrust(out[ind.rsi_col], lookback=3)
 
     # EMAs
     for p in ind.ema_periods:
@@ -601,6 +649,9 @@ def add_all_indicators(
 
     # RVOL
     out['RVOL'] = calculate_rvol(v, ind.rvol_period)
+    # Phase 0.7.x — median-based RVOL for the `rvol_above_recent` gate
+    # (robust to outlier-volume bars vs. the mean-based RVOL above).
+    out['RVol_Recent_20'] = calculate_rvol_recent(v, ind.rvol_period)
 
     # OBV
     out['OBV'] = calculate_obv(c, v)
@@ -628,6 +679,9 @@ def add_all_indicators(
     out['Price_Change'] = price_change
     out['Consecutive_Up'], out['Consecutive_Down'] = calculate_consecutive_moves(
         price_change, ind.consecutive_periods,
+    )
+    out['Consecutive_Up_5'], out['Consecutive_Down_5'] = calculate_consecutive_moves(
+        price_change, ind.consecutive_relaxed_window,
     )
 
     # Price position relative to first two EMAs

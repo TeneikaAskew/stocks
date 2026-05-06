@@ -23,6 +23,7 @@ import numpy as np
 from lib.indicators import (
     calculate_rsi, calculate_ema, calculate_atr, calculate_vwap,
     calculate_rvol, calculate_obv, calculate_stoch_rsi, calculate_consecutive_moves,
+    calculate_rvol_recent, calculate_atr_expansion, calculate_rsi_thrust,
 )
 from lib.signals import evaluate_signal
 from lib.strat import StratClassifier
@@ -225,6 +226,16 @@ class SignalMonitor:
         df['Consecutive_Up'], df['Consecutive_Down'] = calculate_consecutive_moves(
             price_change, ind.consecutive_periods,
         )
+        # Phase 0.7.x — relaxed 3-of-5 gate columns + 3 new momentum
+        # confirmer indicators read by `lib.strategies.MOMENTUM.evaluate`.
+        # Without these, every Phase 0.7.x condition silently fails to
+        # fire in production because the row.get(...) calls return None.
+        df['Consecutive_Up_5'], df['Consecutive_Down_5'] = calculate_consecutive_moves(
+            price_change, ind.consecutive_relaxed_window,
+        )
+        df['RVol_Recent_20'] = calculate_rvol_recent(volume, ind.rvol_period)
+        df['ATR_Expansion'] = calculate_atr_expansion(high, low, close, short=5, long=20)
+        df['RSI_Thrust_3'] = calculate_rsi_thrust(df[ind.rsi_col], lookback=3)
 
         df['Price_vs_VWAP'] = (close - df['VWAP']) / df['VWAP'] * 100
         df[ind.price_vs_ema_fast_col] = (close - df[f'EMA{ind.ema_fast_period}']) / df[f'EMA{ind.ema_fast_period}'] * 100
