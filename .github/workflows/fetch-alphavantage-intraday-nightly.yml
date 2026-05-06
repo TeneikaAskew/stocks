@@ -135,11 +135,19 @@ jobs:
             fi
           done
 
+          # --force re-fetches the current month every night so we don't
+          # skip on the GCS parquet-exists cache. The DB upsert is idempotent
+          # (conflict_cols=ticker,interval,ts) so re-fetching is safe.
+          # Monthly fetcher (fetch-alphavantage-intraday-monthly.yml) stays
+          # as the gap-filler backstop — it skips months already in GCS, so
+          # after nightly populates each month's parquet, monthly only acts
+          # on months where every nightly run failed.
           python -m gcp.fetchers.fetch_alphavantage_intraday \
             --symbol     "${{ steps.dates.outputs.SYMBOL }}" \
             --interval   "${{ steps.dates.outputs.INTERVAL }}" \
             --start-date "${{ steps.dates.outputs.START_DATE }}" \
-            --end-date   "${{ steps.dates.outputs.END_DATE }}"
+            --end-date   "${{ steps.dates.outputs.END_DATE }}" \
+            --force
 
   handle-failure:
     needs: fetch-intraday-data
