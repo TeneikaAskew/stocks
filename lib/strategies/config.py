@@ -87,9 +87,25 @@ ATR_EXPANSION_THRESHOLD: float = 1.15
 # populated by `lib.indicators.add_all_indicators`.
 RSI_THRUST_THRESHOLD: float = 5.0
 
-# Minimum number of conditions met (out of 7) for a signal to fire.
-# Same definition across both strategies for comparability.
+# Minimum number of conditions met (out of N) for a signal to fire.
+# Per-strategy because the two strategies have different N (momentum has 7
+# after the Phase 0.7.x additions; mean_reversion still has its original
+# condition set) and walk-forward calibration has only been done for
+# momentum so far.
+#
+# - MIN_CONDITIONS (legacy name, kept for mean_reversion back-compat) = 3
+# - MIN_CONDITIONS_MOMENTUM (B+ 2026-05-06) = 5 — score-bucket walk-forward
+#   against IWM Nov 2025 + QQQ Sep 2020 (5-min bars) showed score 3 and 4
+#   fires net-negative after typical 0.02-0.04% spread+slippage costs. Only
+#   score>=5 clears costs (QQQ score=5: +0.085% mean, score=7: +0.334%).
+#   Pairs with the consecutive_up/down revert to 3-of-3 strict — PR-1's
+#   walk-forward showed the 3-of-5 relaxation regressed mean returns on
+#   both datasets while inflating fire counts ~3x.
+#
+# Mean-reversion's threshold should be re-calibrated independently when its
+# own walk-forward analysis runs.
 MIN_CONDITIONS: int = 3
+MIN_CONDITIONS_MOMENTUM: int = 5
 
 # Phase 0.7.x — tiered scoring. PRs 2-4 added three CONFIRMING conditions
 # (rvol_above_recent, atr_expansion, rsi_thrust) but kept MIN_CONDITIONS=3

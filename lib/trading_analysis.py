@@ -845,7 +845,7 @@ class MarketAnalyzer:
             # EMA9). CONFIRMING = rvol, atr_expansion, rsi_thrust.
             call_conditions = 0
             call_core = 0
-            if current.get('Consecutive_Up_5', 0) >= 3:  # 3-of-last-5 up bars
+            if current.get('Consecutive_Up', 0) >= 3:  # 3-of-3 strict up bars
                 call_conditions += 1
                 call_core += 1
             if current['RSI14_W'] < 50 and current['RSI14_W'] > 25:  # RSI in bullish range
@@ -867,7 +867,7 @@ class MarketAnalyzer:
             # PUT Signal Conditions — Phase 0.7.x mirror.
             put_conditions = 0
             put_core = 0
-            if current.get('Consecutive_Down_5', 0) >= 3:  # 3-of-last-5 down bars
+            if current.get('Consecutive_Down', 0) >= 3:  # 3-of-3 strict down bars
                 put_conditions += 1
                 put_core += 1
             if current['RSI14_W'] > 50 and current['RSI14_W'] < 75:  # RSI in bearish range
@@ -889,7 +889,7 @@ class MarketAnalyzer:
             # Generate signal if enough conditions are met. A gate-blocked
             # direction can't suppress the eligible direction — see
             # MomentumStrategy.evaluate for the parallel logic.
-            min_conditions = 3
+            min_conditions = 5  # B+: raised from 3, only score>=5 clears costs
             min_core_conditions = 2
 
             call_eligible = (call_conditions >= min_conditions

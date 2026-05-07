@@ -22,7 +22,7 @@ from lib.strategies import MEAN_REVERSION, MOMENTUM
 
 
 def _firing_call_bar() -> pd.Series:
-    """A bar that fires a momentum CALL."""
+    """A bar that fires a momentum CALL — needs score>=5 under B+."""
     return pd.Series({
         "Time": pd.Timestamp("2026-05-01 13:30:00", tz="UTC"),
         "Close": 101.0, "Last": 101.0,
@@ -30,6 +30,9 @@ def _firing_call_bar() -> pd.Series:
         "VWAP": 100.0, "EMA9": 100.0, "EMA20": 100.0,
         "StochRSI_K": 50.0,
         "Consecutive_Up": 3, "Consecutive_Down": 0,
+        # B+ scaffolding: rvol_above_recent → score 5 (clears MIN_CONDITIONS_MOMENTUM=5)
+        "RVol_Recent_20": 1.5,
+        "ATR_Expansion": 1.0, "RSI_Thrust_3": 0.0,
         "Price_vs_VWAP": 1.0, "Price_vs_EMA9": 1.0, "Price_vs_EMA20": 1.0,
         "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
     })
