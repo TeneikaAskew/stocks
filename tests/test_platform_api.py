@@ -23,19 +23,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 # Many endpoints below read from Cloud SQL or GCS. CI runs without
-# either by default, so the data-backed routes return 404/502. Mark
-# those classes as requiring a backend so they skip cleanly in
-# unconfigured environments and still run for any developer who has
-# Cloud SQL env vars or Application Default Credentials set up.
-_HAS_DATA_BACKEND = bool(
-    os.environ.get("CLOUD_SQL_CONNECTION_NAME")
-    or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    or os.environ.get("DB_HOST")
-)
-requires_data_backend = pytest.mark.skipif(
-    not _HAS_DATA_BACKEND,
-    reason="needs Cloud SQL (DB_HOST/CLOUD_SQL_CONNECTION_NAME) or GCS (GOOGLE_APPLICATION_CREDENTIALS)",
-)
+# either by default, so the data-backed routes return 404/502/503.
+# Use the shared marker from conftest so we don't fork the env-var
+# detection logic.
+from tests.conftest import requires_data_backend  # noqa: E402
 
 
 @pytest.fixture(scope="module")
