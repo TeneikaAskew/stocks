@@ -303,6 +303,7 @@ range produces different fire-rates per ticker; per-ticker percentiles
 produce comparable fire-rates. See
 `docs/plans/SIGNAL_QUALITY_TEST_PLAN.md` §3.
 
+<!-- BEGIN ticker_calibration_resolved_values -->
 **Current resolved values** (calibration of 2026-05-04 — 60-day lookback,
 ~31-33k 1-min bars per ticker):
 
@@ -311,6 +312,9 @@ produce comparable fire-rates. See
 | IWM    | 36.2 | 50.2 | 63.7 | (36.2, 50.2) | (50.2, 63.7) | A |
 | QQQ    | 35.4 | 50.5 | 65.1 | (35.4, 50.5) | (50.5, 65.1) | A |
 | SPY    | 35.5 | 50.5 | 64.3 | (35.5, 50.5) | (50.5, 64.3) | A |
+
+_Auto-refreshed monthly by `.github/workflows/refresh-architecture-docs.yml` via `scripts/refresh_calibration_table.py`. Manual refresh: `python -m scripts.refresh_calibration_table`._
+<!-- END ticker_calibration_resolved_values -->
 
 **Inspecting the table at any time:**
 ```bash
