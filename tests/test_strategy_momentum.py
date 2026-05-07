@@ -20,7 +20,16 @@ TS = pd.Timestamp("2026-05-01 13:30:00", tz="UTC")
 
 
 def _bar(**overrides) -> pd.Series:
-    """Default bar that satisfies NO conditions — overrides flip them on."""
+    """Default bar that satisfies NO conditions — overrides flip them on.
+
+    B+ (2026-05-06): the strict gate now reads `Consecutive_Up`/`Consecutive_Down`
+    (3-of-3 strict). Pre-existing fixtures pass `Consecutive_Up_5=N` to flip the
+    consecutive condition on; we mirror that into the strict column too so those
+    fixtures continue to express "this bar credits the consecutive condition"
+    without per-test edits. Tests that specifically need to pin the relaxed-only
+    semantics (e.g. 3-of-5-with-pullback) override `Consecutive_Up` explicitly
+    to a value below CONSECUTIVE_PERIODS.
+    """
     base = {
         "Time": TS,
         "Close": 100.0, "Last": 100.0,
@@ -28,8 +37,9 @@ def _bar(**overrides) -> pd.Series:
         "VWAP": 100.0, "EMA9": 100.0, "EMA20": 100.0,
         "StochRSI_K": 50.0,
         "Consecutive_Up": 0, "Consecutive_Down": 0,
-        # Phase 0.7.2: relaxed gate reads `Consecutive_Up_5` / `Consecutive_Down_5`
-        # (3-of-5 windows) instead of the strict 3-of-3 columns above.
+        # Pre-existing relaxed-window fixtures still set these; the bridge
+        # below mirrors them into the strict columns when the strict columns
+        # aren't explicitly overridden, so existing fixtures keep working.
         "Consecutive_Up_5": 0, "Consecutive_Down_5": 0,
         # Phase 0.7.x: `rvol_above_recent` fires when > 1.2. Default to
         # 1.0 (below threshold) so existing fixtures don't accidentally
@@ -45,20 +55,29 @@ def _bar(**overrides) -> pd.Series:
         "Broke_Prev_Day_High": 0, "Broke_Prev_Day_Low": 0,
     }
     base.update(overrides)
+    # B+ bridge: if Consecutive_Up_5 was overridden but Consecutive_Up wasn't,
+    # mirror the value so fixtures expressing "credit consecutive_up" via the
+    # old relaxed column still credit it under the new strict gate.
+    if "Consecutive_Up_5" in overrides and "Consecutive_Up" not in overrides:
+        base["Consecutive_Up"] = overrides["Consecutive_Up_5"]
+    if "Consecutive_Down_5" in overrides and "Consecutive_Down" not in overrides:
+        base["Consecutive_Down"] = overrides["Consecutive_Down_5"]
     return pd.Series(base)
 
 
-def test_call_fires_with_3_conditions():
-    """Consec_Up_5 (3-of-5) + RSI bullish + above VWAP — exactly 3, dominant over PUT."""
+def test_call_fires_with_5_conditions():
+    """B+ MIN_CONDITIONS_MOMENTUM=5: consec + RSI + VWAP + EMA9 + rvol = 5."""
     row = _bar(
-        Consecutive_Up_5=3,                       # 3-of-last-5 up bars
+        Consecutive_Up=3,                          # 3-of-3 strict up bars
         RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=99.0,                                 # above_ema9 fires
+        RVol_Recent_20=1.5,                        # rvol_above_recent fires
     )
     sig = STRAT.evaluate(row)
     assert sig is not None
     assert sig.direction == "CALL"
-    assert sig.base_score >= 3
+    assert sig.base_score >= 5
     assert "consecutive_up" in sig.conditions_met
     assert "rsi_bullish_recovery" in sig.conditions_met
     assert "above_vwap" in sig.conditions_met
@@ -75,41 +94,45 @@ def test_call_does_not_fire_with_2_conditions():
     assert sig is None or sig.base_score >= 3
 
 
-def test_consecutive_up_5_below_threshold_does_not_count():
-    """Phase 0.7.2: 2-of-5 (below threshold of 3) must NOT satisfy the gate."""
+def test_consecutive_up_below_threshold_does_not_count():
+    """Strict 3-of-3: Consecutive_Up == 2 must NOT credit consecutive_up.
+    Bar still fires because 3 other conditions + 2 confirming = 5 (B+ floor)."""
     row = _bar(
-        Consecutive_Up_5=2,                       # only 2-of-5 — below threshold
+        Consecutive_Up=2,                         # below CONSECUTIVE_PERIODS=3
         RSI14_W=35.0,                             # in CALL band
         Last=101.0, Close=101.0, VWAP=100.0,      # above VWAP
         EMA9=99.0,                                # above EMA9
+        RVol_Recent_20=1.5,                       # confirmer
+        ATR_Expansion=1.30,                       # confirmer (total = 5)
     )
     sig = STRAT.evaluate(row)
-    assert sig is not None                        # still fires (3 of 4 without consec)
+    assert sig is not None                        # 5 conditions without consec_up
     assert "consecutive_up" not in sig.conditions_met
 
 
-def test_consecutive_up_3_of_5_with_pullback_fires():
-    """Phase 0.7.2: the relaxation's whole point — fires when 3 of last 5
-    are up even with a pullback bar in between (would have failed strict 3-of-3).
-    """
+def test_consecutive_up_3_of_5_with_pullback_does_not_fire():
+    """B+ revert to 3-of-3 strict: a 3-of-5 with pullback (which the relaxed
+    gate previously fired on) MUST NOT credit the consecutive_up condition,
+    and without it the bar can't reach MIN_CONDITIONS_MOMENTUM=5."""
     row = _bar(
         Consecutive_Up_5=3,                       # 3 up, 2 down/flat in window
-        Consecutive_Up=0,                         # strict 3-of-3 NOT met
+        Consecutive_Up=0,                         # strict 3-of-3 NOT met (overrides bridge)
         RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=99.0,                                # above EMA9
     )
+    # 4 conditions met (rsi + vwap + ema9 + nothing-else); below score=5 floor.
     sig = STRAT.evaluate(row)
-    assert sig is not None
-    assert sig.direction == "CALL"
-    assert "consecutive_up" in sig.conditions_met
+    assert sig is None or "consecutive_up" not in sig.conditions_met
 
 
 def test_put_fires_when_dominant():
     row = _bar(
-        Consecutive_Down_5=3,                     # 3-of-5 down bars
+        Consecutive_Down=3,                       # strict 3-of-3 down
         RSI14_W=65.0,                             # in (50, 75)
         Last=99.0, Close=99.0, VWAP=100.0,        # below VWAP
         EMA9=100.0,                               # below EMA9
+        RVol_Recent_20=1.5,                       # +1 → reach MIN=5
     )
     sig = STRAT.evaluate(row)
     assert sig is not None
@@ -120,24 +143,19 @@ def test_put_fires_when_dominant():
     assert "below_ema9" in sig.conditions_met
 
 
-def test_strict_tie_breaker_no_fire_when_call_eq_put():
-    """Original lib/trading_analysis.py uses STRICT > for tie-breaking.
-    A bar where call_score == put_score must NOT fire.
-    """
+def test_call_dominates_when_more_conditions():
+    """When CALL eligible (>=5) and PUT not, CALL fires regardless of put score."""
     row = _bar(
-        # CALL conditions (3): Consec_Up_5, RSI in bull band, above_vwap
-        Consecutive_Up_5=3,
-        RSI14_W=35.0,                            # in CALL band (25, 50)
+        # CALL: consec_up + rsi_bull + above_vwap + rvol + atr = 5
+        Consecutive_Up=3,
+        RSI14_W=35.0,                            # in CALL band
         Close=101.0, Last=101.0,
-        VWAP=100.0,                              # price > VWAP → above_vwap fires
-        EMA9=102.0,                              # price < EMA9 → above_ema9 doesn't fire
-        # PUT conditions: Consec_Down_5 only (RSI 35 NOT in put band, price
-        # > VWAP rules out below_vwap, price < EMA9 rules out below_ema9)
-        Consecutive_Down_5=3,
+        VWAP=100.0,                              # above_vwap
+        EMA9=102.0,                              # NOT above_ema9 (101 < 102)
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,  # +2 confirmers → CALL = 5
+        # PUT: only below_ema9 (since RSI=35 not in put band, price > VWAP)
+        Consecutive_Down=0,
     )
-    # call_n: consec_up + rsi_bullish_recovery + above_vwap = 3
-    # put_n:  consec_down + below_ema9 = 2
-    # call > put → fires CALL
     sig = STRAT.evaluate(row)
     assert sig is not None
     assert sig.direction == "CALL"
@@ -168,15 +186,16 @@ def test_rvol_above_recent_adds_to_call_score():
 
 def test_rvol_below_threshold_does_not_count():
     row = _bar(
-        Consecutive_Up_5=3,
+        Consecutive_Up=3,
         RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0,
-        EMA9=100.0,
-        RVol_Recent_20=1.19,                        # just below 1.2
+        EMA9=99.0,
+        RVol_Recent_20=1.19,                        # just below 1.2 → NOT credited
+        ATR_Expansion=1.30, RSI_Thrust_3=6.0,       # confirmers, push to score=6
     )
     sig = STRAT.evaluate(row)
     assert sig is not None
-    assert sig.base_score == 4                     # rvol condition NOT met
+    assert sig.base_score == 6                     # 4 core + atr + rsi_thrust, NOT rvol
     assert "rvol_above_recent" not in sig.conditions_met
 
 
@@ -190,12 +209,15 @@ def test_rvol_above_recent_alone_does_not_fire():
     assert sig is None                              # 1 of 5 < min_conditions=3
 
 
-def test_rvol_missing_or_nan_does_not_fire():
-    """Warmup / missing volume data must not satisfy the gate."""
+def test_rvol_missing_or_nan_does_not_credit():
+    """Warmup / missing volume data must not credit rvol_above_recent.
+    Bar still fires because other conditions reach MIN=5."""
     import numpy as np
     row_missing = _bar(
-        Consecutive_Up_5=3, RSI14_W=35.0,
+        Consecutive_Up=3, RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=99.0,                                  # above_ema9 fires
+        ATR_Expansion=1.30, RSI_Thrust_3=6.0,       # +2 confirmers → 6
         RVol_Recent_20=np.nan,
     )
     sig = STRAT.evaluate(row_missing)
@@ -240,15 +262,16 @@ def test_atr_expansion_adds_to_call_score():
 
 def test_atr_expansion_below_threshold_does_not_count():
     row = _bar(
-        Consecutive_Up_5=3,
+        Consecutive_Up=3,
         RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0,
-        EMA9=100.0,
-        ATR_Expansion=1.14,                         # just below 1.15
+        EMA9=99.0,
+        ATR_Expansion=1.14,                         # just below 1.15 → NOT credited
+        RVol_Recent_20=1.5, RSI_Thrust_3=6.0,       # +2 confirmers → reach 6
     )
     sig = STRAT.evaluate(row)
     assert sig is not None
-    assert sig.base_score == 4                     # 4 of 6 (no rvol, no atr_exp)
+    assert sig.base_score == 6                     # 4 core + rvol + rsi_thrust, NOT atr
     assert "atr_expansion" not in sig.conditions_met
 
 
@@ -261,11 +284,13 @@ def test_atr_expansion_alone_does_not_fire():
     assert sig is None                              # 1 of 6 < min_conditions=3
 
 
-def test_atr_expansion_missing_or_nan_does_not_fire():
+def test_atr_expansion_missing_or_nan_does_not_credit():
     import numpy as np
     row = _bar(
-        Consecutive_Up_5=3, RSI14_W=35.0,
+        Consecutive_Up=3, RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=99.0,                                  # above_ema9
+        RVol_Recent_20=1.5, RSI_Thrust_3=6.0,       # +2 confirmers
         ATR_Expansion=np.nan,
     )
     sig = STRAT.evaluate(row)
@@ -303,12 +328,15 @@ def test_rsi_thrust_positive_fires_for_call():
     assert "rsi_thrust" in sig.conditions_met
 
 
-def test_rsi_thrust_negative_does_not_fire_for_call():
-    """Negative delta is bearish thrust — must NOT count for CALL."""
+def test_rsi_thrust_negative_does_not_credit_call():
+    """Negative delta is bearish thrust — must NOT count for CALL.
+    Bar still fires CALL via 4 core + 2 confirming = 6."""
     row = _bar(
-        Consecutive_Up_5=3,
+        Consecutive_Up=3,
         RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=99.0,                                  # above_ema9
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,     # +2 confirmers → 6
         RSI_Thrust_3=-8.0,                          # bearish — wrong direction for CALL
     )
     sig = STRAT.evaluate(row)
@@ -331,12 +359,15 @@ def test_rsi_thrust_negative_fires_for_put():
     assert "rsi_thrust" in sig.conditions_met
 
 
-def test_rsi_thrust_positive_does_not_fire_for_put():
-    """Positive delta is bullish thrust — must NOT count for PUT."""
+def test_rsi_thrust_positive_does_not_credit_put():
+    """Positive delta is bullish thrust — must NOT count for PUT.
+    Bar still fires PUT via 4 core + 2 confirming = 6."""
     row = _bar(
-        Consecutive_Down_5=3,
+        Consecutive_Down=3,
         RSI14_W=65.0,
         Last=99.0, Close=99.0, VWAP=100.0,
+        EMA9=100.0,                                 # below_ema9
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,     # +2 confirmers → 6
         RSI_Thrust_3=8.0,                           # bullish — wrong direction for PUT
     )
     sig = STRAT.evaluate(row)
@@ -345,14 +376,16 @@ def test_rsi_thrust_positive_does_not_fire_for_put():
     assert "rsi_thrust" not in sig.conditions_met
 
 
-def test_rsi_thrust_below_threshold_magnitude_does_not_count():
-    """|delta| <= 5 is below threshold."""
+def test_rsi_thrust_below_threshold_magnitude_does_not_credit():
+    """|delta| <= 5 is below threshold. Bar still fires via 5 other conditions."""
     row_call = _bar(
-        Consecutive_Up_5=3, RSI14_W=35.0,
-        Last=101.0, Close=101.0, VWAP=100.0, EMA9=100.0,
-        RSI_Thrust_3=4.99,                          # just below +5
+        Consecutive_Up=3, RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0, EMA9=99.0,
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,     # +2 → score=6
+        RSI_Thrust_3=4.99,                          # just below +5 → NOT credited
     )
     sig = STRAT.evaluate(row_call)
+    assert sig is not None
     assert "rsi_thrust" not in sig.conditions_met
 
 
@@ -363,11 +396,13 @@ def test_rsi_thrust_alone_does_not_fire():
     assert sig is None
 
 
-def test_rsi_thrust_missing_or_nan_does_not_fire():
+def test_rsi_thrust_missing_or_nan_does_not_credit():
     import numpy as np
     row = _bar(
-        Consecutive_Up_5=3, RSI14_W=35.0,
+        Consecutive_Up=3, RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=99.0,
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,     # +2 → score=6
         RSI_Thrust_3=np.nan,
     )
     sig = STRAT.evaluate(row)
@@ -394,22 +429,27 @@ def test_rsi_thrust_full_alignment_scores_seven():
 
 def test_signal_carries_indicator_snapshots():
     row = _bar(
-        Consecutive_Up_5=3, RSI14_W=35.0,
+        Consecutive_Up=3, RSI14_W=35.0,
         Last=101.0, Close=101.0,
-        VWAP=100.0, EMA9=100.0, EMA20=99.0,
+        VWAP=100.0, EMA9=99.0, EMA20=99.0,
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,     # reach MIN=5 (+ rvol+atr → 6)
         RVOL=1.4,
     )
     sig = STRAT.evaluate(row)
     assert sig is not None
     assert sig.rsi == 35.0
     assert sig.vwap == 100.0
-    assert sig.ema9 == 100.0
+    assert sig.ema9 == 99.0
     assert sig.rvol == 1.4
 
 
 def test_strategy_name_is_momentum():
-    row = _bar(Consecutive_Up_5=3, RSI14_W=35.0,
-                Last=101.0, Close=101.0, VWAP=100.0)
+    row = _bar(
+        Consecutive_Up=3, RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=99.0,
+        RVol_Recent_20=1.5,                          # +1 → score=5
+    )
     sig = STRAT.evaluate(row)
     assert sig is not None
     assert sig.strategy == "momentum"
@@ -449,44 +489,40 @@ def test_tier_blocks_one_core_two_confirm():
     assert sig is None
 
 
-def test_tier_allows_two_core_one_confirm():
-    """Two core + one confirm = score 3, core 2 — minimum credible fire."""
+def test_tier_blocks_two_core_one_confirm_under_score5_floor():
+    """B+ MIN_CONDITIONS_MOMENTUM=5: 2 core + 1 confirm = total 3, blocked."""
     row = _bar(
-        Consecutive_Up_5=3,                          # core
+        Consecutive_Up=3,                            # core
         RSI14_W=35.0,                                # core (bullish band)
-        RVol_Recent_20=1.5,                          # confirm
-        # No VWAP/EMA9 edge, no atr_exp, no thrust
+        RVol_Recent_20=1.5,                          # confirm — total 3 < 5
     )
     sig = STRAT.evaluate(row)
-    assert sig is not None
-    assert sig.direction == "CALL"
-    assert sig.base_score == 3
-    assert sig.core_count == 2
+    assert sig is None
 
 
-def test_tier_allows_three_core_zero_confirm():
-    """Three core, no confirmers — strong setup without confirmation."""
+def test_tier_allows_three_core_two_confirm():
+    """3 core + 2 confirm = score 5, core 3 — minimum credible fire under B+."""
     row = _bar(
-        Consecutive_Up_5=3,                          # core
+        Consecutive_Up=3,                            # core
         RSI14_W=35.0,                                # core
         Last=101.0, Close=101.0, VWAP=100.0,         # above_vwap (core)
         EMA9=102.0,                                  # NOT above_ema9
-        # No confirmers
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,      # 2 confirm → 5
     )
     sig = STRAT.evaluate(row)
     assert sig is not None
     assert sig.direction == "CALL"
-    assert sig.base_score == 3
+    assert sig.base_score == 5
     assert sig.core_count == 3
 
 
 def test_tier_full_alignment_scores_seven():
     """Max conviction: 4 core + 3 confirm = 7."""
     row = _bar(
-        Consecutive_Up_5=3,
+        Consecutive_Up=3,
         RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0,
-        EMA9=100.0,
+        EMA9=99.0,
         RVol_Recent_20=1.5,
         ATR_Expansion=1.30,
         RSI_Thrust_3=8.0,
@@ -524,54 +560,45 @@ def test_tier_put_mirror_blocks_one_core_two_confirm():
 
 
 def test_tier_cross_direction_blocked_call_does_not_suppress_put():
-    """Cross-direction: CALL has 1 core + 2 confirm = 3 (gate-blocked),
-    PUT has 3 core + 1 confirm = 4 (eligible). Pre-PR-5 PUT fired since
-    PUT > CALL anyway. The behavior we're pinning: the tier gate doesn't
-    accidentally suppress PUT just because CALL has a non-eligible score.
+    """Tier-gate behavior: CALL eligible by core but doesn't reach total=5;
+    PUT has 4 core + 2 confirm = 6, eligible. Confirms cross-direction
+    blocking doesn't suppress the eligible direction.
     """
     row = _bar(
-        Consecutive_Down_5=3,                        # PUT +1 core
+        Consecutive_Down=3,                          # PUT +1 core
         RSI14_W=65.0,                                # PUT +1 core (bearish band)
         Last=101.0, Close=101.0,
-        VWAP=200.0,                                  # below_vwap (PUT +1 core)
-        EMA9=100.0,                                  # CALL +1 core (above_ema9)
-        ATR_Expansion=1.30,                          # +1 confirm both
-        RSI_Thrust_3=8.0,                            # CALL-only confirm
-        # RVol not set → no rvol confirm
+        VWAP=200.0,                                  # PUT below_vwap (+1 core)
+        EMA9=100.0,                                  # PUT below_ema9? 101>100 NO → CALL above_ema9
+        # Switch EMA so PUT gets all 4 core
     )
+    # Recompute: with EMA9=100 and Close=101, CALL above_ema9 (+1).
+    # PUT core: consec_down + rsi_bearish + below_vwap = 3 (no below_ema9).
+    # Need to give PUT 5+. Use EMA9=102 so 101<102 → PUT below_ema9.
+    row["EMA9"] = 102.0
+    row["RVol_Recent_20"] = 1.5
+    row["ATR_Expansion"] = 1.30
     sig = STRAT.evaluate(row)
     assert sig is not None
     assert sig.direction == "PUT"
-    assert sig.core_count == 3                       # 3 PUT core conditions
-    assert sig.base_score == 4                       # 3 core + atr_exp
+    assert sig.core_count == 4                       # 4 PUT core
+    assert sig.base_score == 6                       # 4 core + 2 confirm
 
 
-def test_tier_silenced_call_lets_put_fire_at_score_tie():
-    """The reviewer's load-bearing scenario (adapted to feasible
-    confirmer mix): both directions reach score=3, but CALL has only 1
-    core (gate-blocked) and PUT has 2 cores (eligible). Pre-PR-5: tie
-    3-3 with strict-> tie-breaker → neither fires. Post-PR-5: CALL is
-    silenced (core<2), only PUT eligible → PUT fires. The gate-blocked
-    direction must not block the eligible one.
+def test_tier_score5_floor_blocks_below_threshold():
+    """B+ MIN_CONDITIONS_MOMENTUM=5: a bar with 4 core + 0 confirm (total 4)
+    must NOT fire even though core gate (>=2) would have passed it under
+    PR-5's MIN_CONDITIONS=3.
     """
     row = _bar(
-        Consecutive_Down_5=3,                        # PUT +1 core
-        RSI14_W=80.0,                                # outside both bands
-        Last=101.0, Close=101.0,
-        VWAP=200.0,                                  # below_vwap (PUT +1 core)
-        EMA9=100.0,                                  # above_ema9 (CALL +1 core)
-        RVol_Recent_20=1.5,                          # +1 confirm both
-        RSI_Thrust_3=8.0,                            # CALL-only confirm
+        Consecutive_Up=3,
+        RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,
+        EMA9=99.0,
+        # 4 core, no confirmers → score=4, below MIN=5
     )
-    # CALL: above_ema9 (1 core) + rvol (1 confirm) + rsi_thrust+ (1 confirm) = 3, core=1
-    # PUT:  consec_down + below_vwap (2 core) + rvol (1 confirm) = 3, core=2
-    # Pre-PR-5: 3-3 tie → neither fires.
-    # Post-PR-5: CALL silenced (core=1<2), PUT eligible → PUT fires.
     sig = STRAT.evaluate(row)
-    assert sig is not None
-    assert sig.direction == "PUT"
-    assert sig.core_count == 2
-    assert sig.base_score == 3
+    assert sig is None
 
 
 def test_tier_strict_tie_breaker_unchanged_when_both_eligible():
@@ -597,9 +624,10 @@ def test_tier_strict_tie_breaker_unchanged_when_both_eligible():
 def test_signal_carries_core_count():
     """The Signal dataclass exposes core_count for downstream auditing."""
     row = _bar(
-        Consecutive_Up_5=3, RSI14_W=35.0,
+        Consecutive_Up=3, RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0,
-        # EMA9=100 default → 101 > 100 fires above_ema9 too
+        # EMA9=100 default → 101 > 100 fires above_ema9 too (4 core)
+        RVol_Recent_20=1.5,                          # +1 confirm → reach MIN=5
     )
     sig = STRAT.evaluate(row)
     assert sig is not None
@@ -730,11 +758,15 @@ def _bucket_strong_call() -> dict:
 
 
 def _bucket_threshold_call() -> dict:
-    """2 core + 1 confirm = 3."""
+    """B+ minimum credible fire: 3 core + 2 confirm = 5 (the new floor).
+    Pre-B+ this bucket was 2 core + 1 confirm = 3; the new MIN=5 floor
+    means a credible fire now requires more confluence.
+    """
     return dict(
-        Consecutive_Up_5=3, RSI14_W=35.0,
-        # No VWAP/EMA9 edge (defaults: Last=VWAP=EMA9=100)
-        RVol_Recent_20=1.5,
+        Consecutive_Up=3, RSI14_W=35.0,
+        Last=101.0, Close=101.0, VWAP=100.0,         # above_vwap (3rd core)
+        EMA9=102.0,                                   # NOT above_ema9
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,      # 2 confirmers → score 5
     )
 
 
@@ -767,10 +799,12 @@ def _bucket_strong_put() -> dict:
 
 
 def _bucket_threshold_put() -> dict:
+    """B+ minimum credible PUT fire: 3 core + 2 confirm = 5."""
     return dict(
-        Consecutive_Down_5=3, RSI14_W=65.0,
-        # No VWAP/EMA9 edge
-        RVol_Recent_20=1.5,
+        Consecutive_Down=3, RSI14_W=65.0,
+        Last=99.0, Close=99.0, VWAP=100.0,           # below_vwap (3rd core)
+        EMA9=98.0,                                    # NOT below_ema9
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,      # 2 confirmers → score 5
     )
 
 
@@ -803,11 +837,11 @@ def test_synthetic_100_bar_replay_buckets_match_expected_fire_pattern():
     bar_specs = (
         [("full_call", _bucket_full_conviction_call(), "CALL", 7)] * 15
         + [("strong_call", _bucket_strong_call(), "CALL", 5)] * 20
-        + [("threshold_call", _bucket_threshold_call(), "CALL", 3)] * 15
+        + [("threshold_call", _bucket_threshold_call(), "CALL", 5)] * 15
         + [("pure_noise_call", _bucket_pure_noise(), None, None)] * 20
         + [("full_put", _bucket_full_conviction_put(), "PUT", 7)] * 5
         + [("strong_put", _bucket_strong_put(), "PUT", 5)] * 5
-        + [("threshold_put", _bucket_threshold_put(), "PUT", 3)] * 5
+        + [("threshold_put", _bucket_threshold_put(), "PUT", 5)] * 5
         + [("pure_noise_put", _bucket_pure_noise_put(), None, None)] * 10
         + [("empty", _bucket_empty(), None, None)] * 5
     )

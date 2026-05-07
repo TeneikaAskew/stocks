@@ -26,10 +26,10 @@ from .base import Signal, Strategy
 from .config import (
     ATR_EXPANSION_THRESHOLD,
     CALL_RSI_RANGE,
-    CONSECUTIVE_THRESHOLD,
+    CONSECUTIVE_PERIODS,
     CORE_CALL_CONDITIONS,
     CORE_PUT_CONDITIONS,
-    MIN_CONDITIONS,
+    MIN_CONDITIONS_MOMENTUM as MIN_CONDITIONS,
     MIN_CORE_CONDITIONS,
     PUT_RSI_RANGE,
     RSI_THRUST_THRESHOLD,
@@ -75,7 +75,7 @@ def _check_call_conditions(
     score = 0
     conditions: list[str] = []
 
-    if row.get("Consecutive_Up_5", 0) >= CONSECUTIVE_THRESHOLD:
+    if row.get("Consecutive_Up", 0) >= CONSECUTIVE_PERIODS:
         score += 1
         conditions.append("consecutive_up")
 
@@ -130,7 +130,7 @@ def _check_put_conditions(
     score = 0
     conditions: list[str] = []
 
-    if row.get("Consecutive_Down_5", 0) >= CONSECUTIVE_THRESHOLD:
+    if row.get("Consecutive_Down", 0) >= CONSECUTIVE_PERIODS:
         score += 1
         conditions.append("consecutive_down")
 

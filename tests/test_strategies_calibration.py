@@ -190,6 +190,9 @@ def test_strategy_uses_resolved_range_put():
         "Close": 100.0,
         "VWAP": 102.0,
         "EMA9": 103.0,
+        # B+: MIN_CONDITIONS_MOMENTUM=5 → need scaffolding to push score to 5.
+        # 4 core (consec_down + rsi + below_vwap + below_ema9) + rvol = 5.
+        "RVol_Recent_20": 1.5,
     })
 
     sig_b = MOMENTUM.evaluate(row)  # Tier-B default (50, 75) — RSI 72 in range
