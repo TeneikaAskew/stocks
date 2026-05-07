@@ -36,13 +36,12 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from gcp.database import get_engine, is_cloud_sql_configured  # noqa: E402
-from lib.indicators import (  # noqa: E402
-    calculate_rsi, calculate_ema, calculate_vwap, calculate_stoch_rsi,
-    calculate_consecutive_moves,
-)
+from lib.indicators import add_all_indicators  # noqa: E402
 from lib.strategies import momentum, mean_reversion  # noqa: E402
 from lib.strategies.config import (  # noqa: E402
-    CALL_RSI_RANGE, PUT_RSI_RANGE, MIN_CONDITIONS,
+    CALL_RSI_RANGE, PUT_RSI_RANGE,
+    MIN_CONDITIONS,           # mean_reversion threshold (3)
+    MIN_CONDITIONS_MOMENTUM,  # momentum threshold (5, B+ phase-0.7.6)
 )
 from lib.strategies.calibration import (  # noqa: E402
     get_call_rsi_range, get_put_rsi_range, _latest_calibration,
@@ -75,25 +74,27 @@ def load_bars(engine, ticker: str, start: datetime, end: datetime) -> pd.DataFra
 
 
 def enrich(df: pd.DataFrame) -> pd.DataFrame:
-    """Add the indicator columns the strategies expect."""
-    df = df.copy()
-    df["RSI14_W"] = calculate_rsi(df["Close"], period=14)
-    df["RSI14"] = df["RSI14_W"]
-    df["EMA9"] = calculate_ema(df["Close"], period=9)
-    df["EMA20"] = calculate_ema(df["Close"], period=20)
-    df["VWAP"] = calculate_vwap(
-        df["High"], df["Low"], df["Close"], df["Volume"], df["Time"],
-    )
-    sk, sd = calculate_stoch_rsi(df["RSI14_W"])
-    df["StochRSI_K"] = sk
-    df["StochRSI_D"] = sd
-    cu, cd = calculate_consecutive_moves(df["Close"].diff())
-    df["Consecutive_Up"] = cu
-    df["Consecutive_Down"] = cd
-    df["Price_vs_VWAP"] = (df["Close"] - df["VWAP"]) / df["VWAP"]
-    df["Broke_Prev_Day_High"] = 0
-    df["Broke_Prev_Day_Low"] = 0
-    return df
+    """Add the indicator columns the strategies expect.
+
+    Routes through `lib.indicators.add_all_indicators` so the enrichment
+    matches what `lib/strategies/momentum.py` reads — including the four
+    Phase 0.7.x derived columns (`Consecutive_Up_5`/`Down_5`,
+    `RVol_Recent_20`, `ATR_Expansion`, `RSI_Thrust_3`) that the new
+    momentum confirmer conditions credit. Without these, momentum scores
+    cap below `MIN_CONDITIONS_MOMENTUM=5` and the script under-reports
+    fire counts (Codex P2 review on PR #280).
+    """
+    enriched = add_all_indicators(df, close_col="Close")
+    # Compatibility aliases the rest of the script reads:
+    if "RSI14_W" not in enriched.columns and "RSI14" in enriched.columns:
+        enriched["RSI14_W"] = enriched["RSI14"]
+    if "RSI14" not in enriched.columns and "RSI14_W" in enriched.columns:
+        enriched["RSI14"] = enriched["RSI14_W"]
+    if "Broke_Prev_Day_High" not in enriched.columns:
+        enriched["Broke_Prev_Day_High"] = 0
+    if "Broke_Prev_Day_Low" not in enriched.columns:
+        enriched["Broke_Prev_Day_Low"] = 0
+    return enriched
 
 
 def count_fires_for_ranges(
@@ -120,15 +121,15 @@ def count_fires_for_ranges(
         if put_range[0] < rsi < put_range[1]:
             out["bars_with_rsi_in_put_range"] += 1
 
-        # Momentum
+        # Momentum — gated by MIN_CONDITIONS_MOMENTUM (B+ phase-0.7.6: 5)
         m_call_score, _ = momentum._check_call_conditions(row, call_range)
         m_put_score,  _ = momentum._check_put_conditions(row, put_range)
-        if m_call_score >= MIN_CONDITIONS and m_call_score > m_put_score:
+        if m_call_score >= MIN_CONDITIONS_MOMENTUM and m_call_score > m_put_score:
             out["momentum_call"] += 1
-        elif m_put_score >= MIN_CONDITIONS and m_put_score > m_call_score:
+        elif m_put_score >= MIN_CONDITIONS_MOMENTUM and m_put_score > m_call_score:
             out["momentum_put"] += 1
 
-        # Mean reversion
+        # Mean reversion — gated by the original MIN_CONDITIONS (3)
         mr_call_score, _ = mean_reversion._check_call_conditions(row, call_range)
         mr_put_score,  _ = mean_reversion._check_put_conditions(row, put_range)
         if mr_call_score >= MIN_CONDITIONS and mr_call_score >= mr_put_score:

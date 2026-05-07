@@ -198,10 +198,13 @@ def _legacy_momentum_score(row: pd.Series) -> tuple[int, int, str | None]:
 
 
 @pytest.mark.parametrize("name,row_kwargs", [
+    # B+ MIN_CONDITIONS_MOMENTUM=5: "fires" fixtures need 5+ conditions.
+    # Added rvol + atr_exp confirmers to push score from 4 (legacy minimum) to 6.
     ("strong uptrend CALL", dict(
         Consecutive_Up=3, RSI14_W=35.0,
         Last=101.0, Close=101.0, VWAP=100.0, EMA9=100.0,
         StochRSI_K=50.0,
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,
     )),
     ("weak signal — no fire", dict(
         Consecutive_Up=3, RSI14_W=55.0,   # RSI 55 outside (25,50)
@@ -211,6 +214,7 @@ def _legacy_momentum_score(row: pd.Series) -> tuple[int, int, str | None]:
         Consecutive_Down=3, RSI14_W=65.0,
         Last=99.0, Close=99.0, VWAP=100.0, EMA9=100.0,
         StochRSI_K=50.0,
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,
     )),
     ("flat — no fire", dict(
         StochRSI_K=50.0,
@@ -267,12 +271,11 @@ def test_momentum_matches_legacy_inline_logic(name, row_kwargs):
     assert new_sig.direction == legacy_dir, (
         f"[{name}] direction mismatch — legacy={legacy_dir} new={new_sig.direction}"
     )
-    expected_new_score = legacy_score - (1 if legacy_had_dropped else 0)
-    assert new_sig.base_score == expected_new_score, (
-        f"[{name}] score mismatch — legacy={legacy_score} "
-        f"dropped_in_legacy={legacy_had_dropped} "
-        f"expected_new={expected_new_score} got={new_sig.base_score}"
-    )
+    # B+: strict score equality no longer holds because PRs 2-4 added 3 new
+    # conditions (rvol_above_recent, atr_expansion, rsi_thrust) that legacy
+    # doesn't know about. Fixtures that intentionally include them score
+    # higher than legacy. The MEANINGFUL parity is direction — strategy logic
+    # still picks the same side; the score-band has shifted by design.
 
 
 # ── Cross-strategy: same bar, opposite directions ───────────────────────
@@ -287,12 +290,15 @@ def test_complementary_strategies_fire_opposite_on_overbought_pop():
         VWAP=100.5, EMA9=100.5, EMA20=100.5,
         StochRSI_K=80.0,
         Price_vs_VWAP=0.5, Price_vs_EMA9=0.5, Price_vs_EMA20=0.5,
+        # B+ scaffolding: momentum needs score>=5; rvol+atr push CALL from
+        # 3 (consec+vwap+ema9, RSI 65 outside CALL band) to 5.
+        RVol_Recent_20=1.5, ATR_Expansion=1.30,
     )
     mom = MOM_NEW.evaluate(row)
     mr  = MR_NEW.evaluate(row)
 
     # Both should fire on this bar
-    assert mom is not None, "MOMENTUM should fire — Consec_Up=3 + above VWAP/EMA9"
+    assert mom is not None, "MOMENTUM should fire — Consec_Up=3 + above VWAP/EMA9 + 2 confirmers = 5"
     assert mr  is not None, "MEAN_REVERSION should fire — Consec_Up=3 + above VWAP + RSI 65"
 
     # And in opposite directions
