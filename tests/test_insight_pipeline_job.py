@@ -10,9 +10,41 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import pytest
 
 from gcp import insight_pipeline_job as job
+
+
+def _run(coro):
+    """Run an async coroutine synchronously in a fresh thread.
+
+    Bypasses Python 3.12's stricter ``_get_running_loop()`` check (issue
+    #282): if any prior test in the suite leaks a running-loop reference
+    into the pytest main thread (observed under pytest-asyncio 1.x +
+    transitive anyio 4.x via httpx), ``asyncio.run`` and same-thread
+    ``loop.run_until_complete`` both refuse to start with
+    ``RuntimeError: cannot be called from a running event loop`` /
+    ``Cannot run the event loop while another loop is running``.
+
+    A fresh thread has its own thread-local asyncio state, so
+    ``asyncio.run`` inside the worker is unaffected by whatever the
+    main thread inherited from earlier tests.
+    """
+    box: dict = {}
+
+    def _runner():
+        try:
+            box["result"] = asyncio.run(coro)
+        except BaseException as exc:  # re-raise on the caller thread
+            box["error"] = exc
+
+    t = threading.Thread(target=_runner, name="insight-pipeline-job-test")
+    t.start()
+    t.join()
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +184,7 @@ def test_run_scheduled_explicit_env_overrides_watchlist(stub_run_pipeline, monke
     monkeypatch.setattr(wl_mod, "load_watchlist", lambda **kw: ["FROM_DB", "ALSO_DB"])
     _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert stub_run_pipeline == ["SPY", "IWM", "QQQ"]
 
@@ -163,7 +195,7 @@ def test_run_scheduled_falls_back_to_watchlist_when_env_unset(stub_run_pipeline,
     monkeypatch.setattr(wl_mod, "load_watchlist", lambda **kw: ["AVGO", "MSFT", "IWM"])
     _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert stub_run_pipeline == ["AVGO", "MSFT", "IWM"]
 
@@ -174,7 +206,7 @@ def test_run_scheduled_falls_back_to_default_when_watchlist_empty(stub_run_pipel
     monkeypatch.setattr(wl_mod, "load_watchlist", lambda **kw: [])
     _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert stub_run_pipeline == list(job.DEFAULT_TICKERS)
 
@@ -188,7 +220,7 @@ def test_run_scheduled_falls_back_to_default_when_watchlist_raises(stub_run_pipe
     monkeypatch.setattr(wl_mod, "load_watchlist", explode)
     _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert stub_run_pipeline == list(job.DEFAULT_TICKERS)
 
@@ -199,7 +231,7 @@ def test_run_scheduled_explicit_env_blank_string_treated_as_unset(stub_run_pipel
     monkeypatch.setattr(wl_mod, "load_watchlist", lambda **kw: ["AVGO"])
     _set_env(monkeypatch, INSIGHT_TICKERS="   ", INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert stub_run_pipeline == ["AVGO"]
 
@@ -208,7 +240,7 @@ def test_run_scheduled_refuses_when_over_cap(stub_run_pipeline, monkeypatch):
     big = ",".join(f"T{i:03d}" for i in range(15))
     _set_env(monkeypatch, INSIGHT_TICKERS=big, INSIGHT_MAX_BATCH="10",
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 1
     assert stub_run_pipeline == [], "no tickers should have been processed"
 
@@ -217,7 +249,7 @@ def test_run_scheduled_override_bypasses_cap(stub_run_pipeline, monkeypatch):
     big = ",".join(f"T{i:03d}" for i in range(15))
     _set_env(monkeypatch, INSIGHT_TICKERS=big, INSIGHT_MAX_BATCH="10",
              INSIGHT_BATCH_OVERRIDE="1", INSIGHT_RUN_ID=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert len(stub_run_pipeline) == 15
 
@@ -227,7 +259,7 @@ def test_run_scheduled_at_cap_runs(stub_run_pipeline, monkeypatch):
     csv = ",".join(f"T{i:03d}" for i in range(10))
     _set_env(monkeypatch, INSIGHT_TICKERS=csv, INSIGHT_MAX_BATCH="10",
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert len(stub_run_pipeline) == 10
 
@@ -242,7 +274,7 @@ def test_run_scheduled_empty_env_falls_through_to_watchlist_then_default(
     monkeypatch.setattr(wl_mod, "load_watchlist", lambda **kw: [])
     _set_env(monkeypatch, INSIGHT_TICKERS="", INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert stub_run_pipeline == list(job.DEFAULT_TICKERS)
 
@@ -250,7 +282,7 @@ def test_run_scheduled_empty_env_falls_through_to_watchlist_then_default(
 def test_run_scheduled_json_array_input(stub_run_pipeline, monkeypatch):
     _set_env(monkeypatch, INSIGHT_TICKERS='["SPY","IWM","QQQ","AVGO"]',
              INSIGHT_MAX_BATCH="10", INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert stub_run_pipeline == ["SPY", "IWM", "QQQ", "AVGO"]
 
@@ -262,7 +294,7 @@ def test_run_scheduled_tags_default_as_scheduled(captured_triggers, monkeypatch)
     monkeypatch.setattr(wl_mod, "load_watchlist", lambda **kw: list(job.DEFAULT_TICKERS))
     _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    asyncio.run(job._run_scheduled())
+    _run(job._run_scheduled())
     assert all(trig == "scheduled" for _, trig in captured_triggers)
 
 
@@ -277,21 +309,21 @@ def test_run_scheduled_tags_extended_watchlist_as_manual_batch(captured_triggers
     )
     _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    asyncio.run(job._run_scheduled())
+    _run(job._run_scheduled())
     assert all(trig == "manual_batch" for _, trig in captured_triggers)
 
 
 def test_run_scheduled_tags_custom_list_as_manual_batch(captured_triggers, monkeypatch):
     _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ,AVGO", INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    asyncio.run(job._run_scheduled())
+    _run(job._run_scheduled())
     assert all(trig == "manual_batch" for _, trig in captured_triggers)
 
 
 def test_run_scheduled_invalid_max_batch_falls_back_to_default(stub_run_pipeline, monkeypatch):
     _set_env(monkeypatch, INSIGHT_TICKERS="SPY,IWM,QQQ", INSIGHT_MAX_BATCH="not-an-int",
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert stub_run_pipeline == ["SPY", "IWM", "QQQ"]
 
@@ -380,7 +412,7 @@ def test_run_scheduled_threads_as_of_to_each_run(captured_as_of, monkeypatch):
     _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None,
              INSIGHT_AS_OF="2026-04-26")
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert all(as_of == date(2026, 4, 26) for _, as_of in captured_as_of)
 
@@ -389,7 +421,7 @@ def test_run_scheduled_no_as_of_passes_none(captured_as_of, monkeypatch):
     _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None,
              INSIGHT_AS_OF=None)
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 0
     assert all(as_of is None for _, as_of in captured_as_of)
 
@@ -398,7 +430,7 @@ def test_run_scheduled_invalid_as_of_returns_one(captured_as_of, monkeypatch):
     _set_env(monkeypatch, INSIGHT_TICKERS=None, INSIGHT_MAX_BATCH=None,
              INSIGHT_BATCH_OVERRIDE=None, INSIGHT_RUN_ID=None,
              INSIGHT_AS_OF="not-a-date")
-    code = asyncio.run(job._run_scheduled())
+    code = _run(job._run_scheduled())
     assert code == 1
     assert captured_as_of == [], "no tickers should have run"
 
@@ -406,7 +438,7 @@ def test_run_scheduled_invalid_as_of_returns_one(captured_as_of, monkeypatch):
 def test_run_on_demand_threads_as_of(captured_as_of, monkeypatch):
     _set_env(monkeypatch, INSIGHT_RUN_ID="rid-1", INSIGHT_TICKER="AVGO",
              INSIGHT_AS_OF="2026-04-27T13:15:00Z")
-    code = asyncio.run(job._run_on_demand())
+    code = _run(job._run_on_demand())
     assert code == 0
     assert len(captured_as_of) == 1
     ticker, as_of = captured_as_of[0]
@@ -418,6 +450,6 @@ def test_run_on_demand_threads_as_of(captured_as_of, monkeypatch):
 def test_run_on_demand_invalid_as_of_returns_one(captured_as_of, monkeypatch):
     _set_env(monkeypatch, INSIGHT_RUN_ID="rid-1", INSIGHT_TICKER="AVGO",
              INSIGHT_AS_OF="2099-01-01")  # future
-    code = asyncio.run(job._run_on_demand())
+    code = _run(job._run_on_demand())
     assert code == 1
     assert captured_as_of == []
