@@ -21,6 +21,14 @@ plotly>=5.18.0
 # Web apps
 streamlit>=1.28.0
 
+# Finviz peers + news scraper. lib/ticker_info.py imports
+# `finvizfinance` lazily inside get_peers / get_finviz_news, but
+# tests/test_ticker_info.py uses @patch("finvizfinance.quote.finvizfinance")
+# which requires the module to be importable at patch time. Kept in the
+# base requirements alongside google-genai for the same reason — pytest
+# collects every tests/ file regardless of deploy environment.
+finvizfinance>=1.0.0
+
 # Jupyter notebook support
 jupyter>=1.0.0
 jupyterlab>=4.0.9

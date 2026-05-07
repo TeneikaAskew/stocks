@@ -40,12 +40,23 @@ def mock_cloud_sql(monkeypatch):
     from gcp import database
     from gcp import premarket_brief as pb
 
-    captured = {"sql": None, "params": None}
+    captured = {"sql": None, "params": {}, "sqls": [], "all_params": []}
 
     def install(df: pd.DataFrame):
         def fake_query(sql, params=None):
+            # The brief loaders issue more than one query (main earnings
+            # select + reversal-rate CTE + AMC-walkback lookup). Tests
+            # assert on parameters by name (`captured["params"]["prior"]`,
+            # `["start"]`, `["end"]`, etc.) — store the union of every
+            # call's params so an assertion never fails just because
+            # the last query happened to omit a key set by an earlier
+            # one. Per-call detail is preserved in `sqls` / `all_params`
+            # for tests that need to inspect query order or count.
             captured["sql"] = sql
-            captured["params"] = dict(params or {})
+            captured["sqls"].append(sql)
+            new_params = dict(params or {})
+            captured["all_params"].append(new_params)
+            captured["params"] = {**captured["params"], **new_params}
             return df.copy() if df is not None else pd.DataFrame()
 
         monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
@@ -1304,15 +1315,18 @@ class TestGapPctPropagation:
 
     def test_sql_joins_market_data_daily(self, mock_cloud_sql):
         """The SQL the loader sends must reference market_data_daily so
-        the join happens at query time, not Python-side."""
+        the join happens at query time, not Python-side. The loader
+        issues multiple queries (main earnings select + reversal-rate
+        CTE); assert against every captured SQL so we don't depend on
+        which one runs last."""
         install, captured = mock_cloud_sql
         install(pd.DataFrame([_row("AAPL", "alphavantage")]))
         from gcp.premarket_brief import load_earnings_for_brief
 
         load_earnings_for_brief(date(2026, 4, 27))
-        sql = captured["sql"].lower()
-        assert "left join market_data_daily" in sql
-        assert "gap_pct" in sql
+        joined = " | ".join(s.lower() for s in captured["sqls"])
+        assert "left join market_data_daily" in joined
+        assert "gap_pct" in joined
 
 
 # ──────────────────────────────────────────────────────────────────────

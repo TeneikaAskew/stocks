@@ -26,6 +26,23 @@ import pandas as pd
 import pytest
 
 
+# ───── Data-backend availability marker ───────────────────────────────
+# Many integration tests hit FastAPI routes that read from Cloud SQL or
+# GCS. CI runs without either by default — the routes return 404/502/503
+# and tests asserting `r.status_code == 200` fail. Tests that genuinely
+# need a backend opt in via `@requires_data_backend` so they skip cleanly
+# when neither is configured. Local dev with creds set still runs them.
+_HAS_DATA_BACKEND = bool(
+    os.environ.get("CLOUD_SQL_CONNECTION_NAME")
+    or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    or os.environ.get("DB_HOST")
+)
+requires_data_backend = pytest.mark.skipif(
+    not _HAS_DATA_BACKEND,
+    reason="needs Cloud SQL (DB_HOST/CLOUD_SQL_CONNECTION_NAME) or GCS (GOOGLE_APPLICATION_CREDENTIALS)",
+)
+
+
 # ───── --mode=live|mock flag ──────────────────────────────────────────
 
 
