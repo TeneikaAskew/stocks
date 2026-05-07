@@ -455,6 +455,135 @@ class TestComputeReactionEdgeCases:
 
 
 # ────────────────────────────────────────────────────────────
+# Best-exit / worst-drawdown over the swing window (PR #240)
+# Window starts at reaction-day bar (D for BMO, D+1 for AMC).
+# Anchor matches sustain math: D close (BMO) or D+1 open (AMC).
+# ────────────────────────────────────────────────────────────
+
+class TestComputeReactionSwingWindowExtremes:
+
+    def test_amc_max_high_3d_above_d_plus_3_close(self):
+        """The screenshot's PRIME case: stock spikes to a peak on day +1
+        but closes lower; sustain_3d_close shows 0% but max_high captures
+        the actual best exit."""
+        df = _bars([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),     # D-1
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 100.0),    # D close=100
+            (date(2026, 3, 5), 105.0, 115.0, 104.0, 106.0),   # D+1: anchor=105, high=115 (+9.52%)
+            (date(2026, 3, 6), 106.0, 108.0, 102.0, 105.0),
+            (date(2026, 3, 9), 105.0, 106.0, 101.0, 105.0),   # D+3 close = 105 (sustain ≈ 0)
+            (date(2026, 3, 10), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 11), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 12), 105.0, 106.0, 102.0, 105.0),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # sustain_3d at the close: D+3 close (105) vs anchor (105) ≈ 0%
+        assert abs(r['sustain_3d_pct']) < 0.01
+        # But max_high_3d captures the actual peak: high (115) on D+1 vs anchor (105)
+        # = (115 - 105) / 105 × 100 = 9.524%
+        assert abs(r['max_high_3d_pct'] - 9.524) < 0.01
+
+    def test_amc_min_low_3d_below_d_plus_3_close(self):
+        """Mirror case: stock dipped below anchor intraday but recovered."""
+        df = _bars([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 100.0),
+            (date(2026, 3, 5), 105.0, 106.0, 95.0, 105.0),    # D+1 open=105 (anchor), low=95
+            (date(2026, 3, 6), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 9), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 10), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 11), 105.0, 106.0, 102.0, 105.0),
+            (date(2026, 3, 12), 105.0, 106.0, 102.0, 105.0),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # min_low_3d: 95 vs 105 anchor = -9.524%
+        assert abs(r['min_low_3d_pct'] - (-9.524)) < 0.01
+
+    def test_bmo_window_starts_at_d(self):
+        """For BMO reports, the reaction is on D itself; the window
+        should INCLUDE D's high/low, not start at D+1."""
+        df = _bars([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),    # D-1
+            (date(2026, 3, 4), 105.0, 115.0, 104.0, 110.0),  # D = reaction day, high=115 (+10.0%)
+            (date(2026, 3, 5), 110.0, 112.0, 108.0, 110.0),
+            (date(2026, 3, 6), 110.0, 112.0, 108.0, 110.0),
+            (date(2026, 3, 9), 110.0, 112.0, 108.0, 110.0),
+            (date(2026, 3, 10), 110.0, 112.0, 108.0, 110.0),
+            (date(2026, 3, 11), 110.0, 112.0, 108.0, 110.0),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'BMO')
+        assert r is not None
+        # BMO anchor = D close = 110. max_high_3d = max high in [D, D+1, D+2, D+3]
+        # = 115 on D itself = (115-110)/110 = +4.55%
+        assert abs(r['max_high_3d_pct'] - 4.5455) < 0.01
+
+    def test_5d_and_10d_windows_extend_past_3d(self):
+        """A spike on day +6 should appear in 10d but NOT in 3d or 5d windows."""
+        df = _bars([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 100.0),
+            (date(2026, 3, 5), 100.0, 101.0, 99.0, 100.0),    # D+1: anchor=100
+            (date(2026, 3, 6), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 9), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 10), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 11), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 12), 100.0, 120.0, 99.0, 100.0),   # D+7: spike to 120
+            (date(2026, 3, 13), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 16), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 17), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 18), 100.0, 101.0, 99.0, 100.0),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # 3d window: [D+1..D+4] = max high 101 → +1.0%
+        assert abs(r['max_high_3d_pct'] - 1.0) < 0.01
+        # 5d window: [D+1..D+6] = still 101 (spike on D+7 not yet) → +1.0%
+        assert abs(r['max_high_5d_pct'] - 1.0) < 0.01
+        # 10d window: [D+1..D+11] = includes D+7 spike → +20.0%
+        assert abs(r['max_high_10d_pct'] - 20.0) < 0.01
+
+    def test_truncated_window_returns_null(self):
+        """If the daily window doesn't reach D+10, max_high_10d_pct stays NULL
+        but the 3d / 5d versions still populate when their windows fit."""
+        df = _bars([
+            (date(2026, 3, 3), 99.0, 100.5, 98.5, 100.0),
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 100.0),
+            (date(2026, 3, 5), 100.0, 105.0, 99.0, 100.0),    # D+1
+            (date(2026, 3, 6), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 9), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 10), 100.0, 101.0, 99.0, 100.0),
+            # No data past D+5 — 10d window can't fit
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # 3d fits — should be populated (max high 105 vs anchor 100 = +5%)
+        assert abs(r['max_high_3d_pct'] - 5.0) < 0.01
+        # 10d doesn't fit — should be NULL
+        assert r['max_high_10d_pct'] is None
+        assert r['min_low_10d_pct'] is None
+
+    def test_split_anomaly_nulls_the_extreme(self):
+        """A 3-for-1 split between D+1 and D+5 produces a fictitious -66%
+        min_low. Should be nulled the same way sustain handles it."""
+        df = _bars([
+            (date(2026, 3, 3), 100.0, 101.0, 99.0, 100.0),
+            (date(2026, 3, 4), 100.0, 102.0, 99.0, 100.0),
+            (date(2026, 3, 5), 105.0, 107.0, 104.0, 106.0),   # D+1 anchor=105
+            (date(2026, 3, 6), 106.0, 108.0, 105.0, 107.0),
+            (date(2026, 3, 9), 107.0, 109.0, 106.0, 108.0),
+            (date(2026, 3, 10), 108.0, 110.0, 107.0, 109.0),
+            (date(2026, 3, 11), 36.0, 37.0, 35.0, 36.5),       # 3-for-1 split → low 35
+            (date(2026, 3, 12), 36.5, 37.5, 36.0, 37.0),
+        ])
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        assert r is not None
+        # min_low_5d would be 35 vs 105 = -66.7%, exceeds 50% anomaly cap → null
+        assert r['min_low_5d_pct'] is None
+
+
+# ────────────────────────────────────────────────────────────
 # _resolve_tickers — broadened default scope (Phase 1.6 fix)
 # ────────────────────────────────────────────────────────────
 

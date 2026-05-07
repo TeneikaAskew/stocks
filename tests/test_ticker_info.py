@@ -22,6 +22,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from tests.conftest import requires_data_backend  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Mock AV responses
@@ -389,6 +391,7 @@ class TestGetTickerInfoCaching:
 # ---------------------------------------------------------------------------
 
 
+@requires_data_backend
 class TestTickerInfoAPI:
     @pytest.fixture(scope="class")
     def client(self):

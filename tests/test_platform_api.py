@@ -10,6 +10,7 @@ Tests cover:
 - Frontend route serving (SPA shell)
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,13 @@ import pytest
 # Ensure project root is on sys.path so the platform API can import lib/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# Many endpoints below read from Cloud SQL or GCS. CI runs without
+# either by default, so the data-backed routes return 404/502/503.
+# Use the shared marker from conftest so we don't fork the env-var
+# detection logic.
+from tests.conftest import requires_data_backend  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -66,6 +74,7 @@ class TestHealth:
 
 # ── Signals API ─────────────────────────────────────────────────────────────
 
+@requires_data_backend
 class TestSignalsAPI:
     def test_signals_live(self, client):
         r = client.get("/api/signals/IWM?limit=5")
@@ -113,6 +122,7 @@ class TestSignalsAPI:
 
 # ── Similar Signals API (analog matcher) ────────────────────────────────────
 
+@requires_data_backend
 class TestSimilarSignalsAPI:
     """`GET /api/signals/{ticker}/similar` — historical analog matcher.
 
@@ -388,6 +398,7 @@ class TestJournalCRUD:
 
 # ── Market Data API ─────────────────────────────────────────────────────────
 
+@requires_data_backend
 class TestMarketDataAPI:
     def test_market_dates(self, client):
         r = client.get("/api/market/dates/IWM")
@@ -426,6 +437,7 @@ class TestMarketDataAPI:
 
 # ── Dashboard Brief API ─────────────────────────────────────────────────────
 
+@requires_data_backend
 class TestDashboardBriefAPI:
     def test_brief_live(self, client):
         r = client.get("/api/dashboard/brief/IWM")
@@ -464,6 +476,7 @@ class TestDashboardBriefAPI:
 
 # ── Reference Levels API ────────────────────────────────────────────────────
 
+@requires_data_backend
 class TestReferenceAPI:
     def test_reference_recent_uses_alphavantage(self, client):
         """Recent dates should prefer AlphaVantage over Cloud SQL."""
@@ -497,6 +510,7 @@ class TestReferenceAPI:
 
 # ── Backtest API ────────────────────────────────────────────────────────────
 
+@requires_data_backend
 class TestBacktestAPI:
     def test_backtest_results(self, client):
         r = client.get("/api/backtest/results/IWM")
@@ -538,6 +552,7 @@ class TestBacktestAPI:
 
 # ── Playbook API ────────────────────────────────────────────────────────────
 
+@requires_data_backend
 class TestPlaybookAPI:
     def test_playbook(self, client):
         r = client.get("/api/playbook/IWM")
@@ -559,6 +574,7 @@ class TestPlaybookAPI:
 
 # ── /api/health/freshness ───────────────────────────────────────────────────
 
+@requires_data_backend
 class TestHealthFreshnessAPI:
     """`GET /api/health/freshness` — wraps `scripts/audit_data_freshness.py`.
 
@@ -666,6 +682,7 @@ class TestHealthFreshnessAPI:
 
 # ── Phase-report markdown fetch ─────────────────────────────────────────────
 
+@requires_data_backend
 class TestReportMarkdownAPI:
     """`GET /api/reports/{ticker}/{phase}` — raw markdown text from GCS.
 
@@ -710,6 +727,7 @@ class TestReportMarkdownAPI:
 
 # ── Insights watchlist (catalyst ranker output) ─────────────────────────────
 
+@requires_data_backend
 class TestInsightsWatchlistAPI:
     """`GET /api/insights/watchlist` — wraps `lib.agents.ranker.rank_tickers`.
 
@@ -815,6 +833,7 @@ class TestJournalAPI:
 
 # ── Live Market API ─────────────────────────────────────────────────────────
 
+@requires_data_backend
 class TestLiveMarketAPI:
     def test_live_quote(self, client):
         r = client.get("/api/live/quote/IWM")
@@ -835,6 +854,7 @@ class TestLiveMarketAPI:
 
 # ── Review Mode Integration ─────────────────────────────────────────────────
 
+@requires_data_backend
 class TestReviewModeIntegration:
     """End-to-end tests simulating a full review-mode session at a specific point in time."""
 
