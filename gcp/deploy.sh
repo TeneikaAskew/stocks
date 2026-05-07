@@ -1295,6 +1295,18 @@ deploy_schedulers() {
     # AlphaVantage monthly intraday — 1st of each month 9 PM ET
     _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
 
+    # AlphaVantage nightly intraday — 9 PM ET Tue–Sat (after each weekday's
+    # session settles). Tue 9 PM picks up Mon's bars, Sat 9 PM picks up Fri's.
+    # Passes --force so the GCS parquet-exists short-circuit doesn't skip
+    # the still-incomplete current month; the DB upsert is idempotent on
+    # (ticker,interval,ts) so re-fetching is safe. The default date range
+    # ("first of previous month → today") means each night re-fetches last
+    # month too — that's ~26s of redundant AV calls per night, well below
+    # the 150 RPM premium budget. Closes the month-end-to-1st-of-next-month
+    # gap that left the table stale for fresh signal-quality analysis.
+    _schedule_with_args "av-intraday-nightly"  "0 21 * * 2-6"  "fetch-alphavantage-intraday" \
+        "--symbol=ALL" "--force"
+
     # FRED rates — 6:30 AM ET daily (after FRED's nightly publication ~04:30 UTC)
     _schedule "fred-rates-daily"  "30 6 * * *"  "fetch-fred-rates"
 
