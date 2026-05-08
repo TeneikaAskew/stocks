@@ -670,13 +670,22 @@ class SignalMonitor:
             'orb_5m_low': self.orb_levels[ticker].get('5m_low'),
             'orb_15m_high': self.orb_levels[ticker].get('15m_high'),
             'orb_15m_low': self.orb_levels[ticker].get('15m_low'),
-            'conditions_met': json.dumps(sig['conditions_met']),
+            # Pass the Python list/dict directly — SQLAlchemy + pg8000 adapt
+            # to native JSONB array/object via the column type reflected by
+            # `meta.reflect()` in `gcp/database.upsert_dataframe`. Calling
+            # `json.dumps(...)` first causes the value to bind as a JSONB
+            # scalar string (a JSON-encoded JSON-array), which breaks
+            # `jsonb_array_length` / `@>` predicates and forces every
+            # downstream reader to do `(col #>> '{}')::jsonb`. See Track D
+            # audit § 6 / G.P0.6.
+            'conditions_met': sig['conditions_met'],
             'level_broken': ','.join(getattr(self, '_latest_broken_levels', []) or []) or None,
             # Phase 1.6: JSONB payload (or None) describing the stacked-
             # agreement state. NULL on the common solo-fire path so the
             # column doesn't bloat for the 99% of rows that aren't
-            # stacked.
-            'strategy_agreement': json.dumps(agreement) if agreement else None,
+            # stacked. Pass dict directly (same JSONB-bind reasoning as
+            # `conditions_met` above).
+            'strategy_agreement': agreement if agreement else None,
             # Phase 1: timeframe horizon (one of 5m,15m,30m,60m,90m,120m,240m)
             # and the planned hold window. Tagged at fire time by the
             # heuristic in lib/strategies/timeframe.py — never None
