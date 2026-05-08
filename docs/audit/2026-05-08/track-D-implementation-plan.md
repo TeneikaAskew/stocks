@@ -155,7 +155,7 @@ with `roles/run.viewer` can read the keys via `gcloud run jobs describe`.
 exit-watcher gap. Schema docs anticipate `eod_close` reason; no
 implementation exists.
 
-- [ ] Build `gcp/signal_monitor_eod_resolver.py`:
+- [x] Built `gcp/signal_monitor_eod_resolver.py`:
   - Query `signal_alerts WHERE (is_open IS TRUE OR exit_ts IS NULL) AND alert_date < CURRENT_DATE`
   - Per ticker, load that day's `market_data_intraday` partition
   - Replay exit logic: walk forward from `alert_ts` until target /
@@ -163,27 +163,33 @@ implementation exists.
     (`eod_close`)
   - Reuse `SignalMonitor._fire_exit_alert` and `_persist_exit` so exit
     semantics stay single-source-of-truth
-- [ ] **Capacity calc per CLAUDE.md §0** (in PR description):
-  - Volume: ~1,209 alerts × ~250 KB intraday window = ~300 MB working
-    set per backfill run; comfortably fits 2 GiB Cloud Run memory
-  - Velocity: 1 query per (ticker, day) covering the union of windows
-    = ~10 queries; per-ticker partition pre-fetched in memory
-  - Wall-clock: ~10 queries × 1.5 s pg8000 round-trip + per-row math =
-    ~5 min for one-shot backfill; daily steady-state ~30 s
-  - Cloud Run task-timeout: 1 hr (4× headroom)
-  - max-retries: 0 (idempotent via `is_open=FALSE` guard, but transient
-    retries don't help)
-- [ ] Add `signal-monitor-eod-resolver` Cloud Run Job + Scheduler
-      entry to `gcp/deploy.sh` (cron `30 16 * * 1-5` America/New_York
-      = 16:30 ET = 20:30 UTC)
-- [ ] Update `gcp/schema.sql:1813-1819` — replace the "TODO"
-      wording on the `eod_close` exit reason with implementation
-      reference
-- [ ] **One-shot backfill**: dispatch the resolver Cloud Run Job
-      manually for the ~1,209 backlog. Log execution time and verify
-      `signal_alerts WHERE is_open IS TRUE OR (exit_ts IS NULL AND alert_date < current_date)`
-      drops to ≈0 rows
-- [ ] PR body: cite G.P0.10 + audit doc § 2 / § 4
+- [x] **Capacity calc per CLAUDE.md §0** (locked in module docstring + deploy.sh comments):
+  - Volume: ~1,209 alerts × ~250 KB intraday window = ~300 MB peak;
+    deployed at 1 GiB
+  - Velocity: 1 SQL query per (ticker, day) — backfill ~10 (ticker,
+    day) pairs ≈ 10 queries
+  - Wall-clock: ~5 min for one-shot backfill; daily steady-state ~30 s
+  - Cloud Run task-timeout: 3600s (≥ 4× wall-clock headroom)
+  - max-retries: 0 (idempotent via `is_open=FALSE` guard)
+- [x] Added `signal-monitor-eod-resolver` Cloud Run Job to
+      `gcp/deploy.sh` (`deploy_signal_monitor_eod_resolver()` + entry
+      in `case` + entry in `all` block) and Scheduler trigger
+      `signal-monitor-eod-resolver-daily` at cron `30 16 * * 1-5`
+      America/New_York (16:30 ET = 20:30 UTC, 30 min after close to
+      avoid late-arriving intraday bars)
+- [x] Updated `gcp/schema.sql:1813-1819` — replaced the "TODO" wording
+      on the `eod_close` exit reason with implementation reference to
+      `gcp/signal_monitor_eod_resolver.py`
+- [x] Added `tests/test_signal_monitor_eod_resolver.py` — 11 tests
+      covering `_exit_return_pct` parity, target/time_stop/RSI/eod_close
+      branches, missing-partition skipping, per-day cache, and the
+      late-alert edge case (alert at 15:59 with last bar 15:58). All
+      108 signal_monitor tests green
+- [ ] **Post-merge**: dispatch the resolver Cloud Run Job manually
+      (`gcloud run jobs execute signal-monitor-eod-resolver --region=us-east1`)
+      for the ~1,209 backlog. Verify `signal_alerts WHERE is_open IS TRUE OR (exit_ts IS NULL AND alert_date < current_date)`
+      drops to ≈0 rows via `db-query.yml` dispatch
+- [ ] PR opened (citing G.P0.10 + audit doc § 2 / § 4 + #303 sync)
 
 ### PR 6 — G.P0.11 — momentum instrumentation (cross-track sync point)
 

@@ -1812,11 +1812,21 @@ ALTER TABLE historical_signals
 --
 -- exit_reason values:
 --   target_hit   — price reached call_target / put_target before time stop
+--                  (set by gcp/signal_monitor.py:_persist_exit during the
+--                   live in-process exit-watcher loop)
 --   time_stop    — call_time_stop / put_time_stop minutes elapsed
+--                  (set by gcp/signal_monitor.py:_persist_exit)
 --   rsi_extreme  — RSI crossed call_rsi_exit (>=80) / put_rsi_exit (<=20)
---   eod_close    — market close hit while position still open
---                  (only set if exit-watcher adds end-of-day reconciliation
---                   in a follow-up; today the loop just terminates)
+--                  (set by gcp/signal_monitor.py:_persist_exit)
+--   eod_close    — position still open at session close (16:00 ET); the
+--                  in-process watcher only resolves while the SignalMonitor
+--                  process is alive, so anything still open at close gets
+--                  swept by the daily Cloud Run Job
+--                  gcp/signal_monitor_eod_resolver.py at 16:30 ET / 20:30
+--                  UTC (cron: 30 16 * * 1-5 America/New_York). Per Track D
+--                  audit § 2 / G.P0.10 — implements the schema-anticipated
+--                  fallback that previously left ~1,209 alerts with
+--                  exit_ts NULL.
 
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS exit_ts          TIMESTAMPTZ,
