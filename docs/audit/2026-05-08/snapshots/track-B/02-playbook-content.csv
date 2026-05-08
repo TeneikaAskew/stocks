@@ -1,0 +1,189 @@
+analysis_date,ticker,playbook_preview,playbook_len,recommended_orb_window,recommended_orb_reason
+2026-05-04,IWM,"  CALLS: pre-market cleared every structural level on this side — wait for the 15-min ORB
+  CALLS above 278.13 (PDH)
+    Stop: 276.82 (CWO)
+    T1: 278.13 (PWH)
+    Room to trigger: 0.36%
+
+  PUTS below 276.82 (CWO) -- only if bias denied
+    Stop: 278.13 (PDH)
+    T1: 276.82 (CDO)
+    T2: 274.23 (PWL)
+    T3: 274.23 (PDL)
+    Room to trigger: 0.12%
+
+  PMG ZONES:
+    274.23 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    238.69 (PML, PQL) [strength: 2.5]
+    258.31 (PYH, GAP_H_2026-04-08) [strength: 2.5]",509,5m,"5-min ORB (default scalp window, no high-impact catalyst)"
+2026-05-04,QQQ,"  CALLS: pre-market cleared every structural level on this side — wait for the 15-min ORB
+  CALLS above 664.51 (PDH)
+    Stop: 663.40 (CWO)
+    T1: 664.51 (PWH)
+    Room to trigger: 0.04%
+
+  PUTS: extended gap — recommend 15-min ORB confirmation before entry
+  PUTS below 663.40 (CWO)
+    Stop: 664.51 (PDH)
+    T1: 663.40 (CDO)
+    T2: 656.53 (PWL)
+    T3: 656.53 (PDL)
+    Room to trigger: 0.12%
+
+  PMG ZONES:
+    656.53 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    555.60 (PML, PQL) [strength: 2.5]
+    636.81 (PQH, PYH) [strength: 2.5]",543,5m,"5-min ORB (default scalp window, no high-impact catalyst)"
+2026-05-04,SPY,"  CALLS: no near-term structural level -- wait for ORB confirmation
+
+  PUTS below 714.47 (PWH) -- only if bias denied
+    T1: 714.47 (PDH)
+    T2: 713.17 (CWO)
+    T3: 713.17 (CDO)
+    Room to trigger: 0.10%
+
+  PMG ZONES:
+    709.01 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    629.28 (PML, PQL) [strength: 2.5]
+    713.17 (CDO, CWO) [strength: 2.5]",353,5m,"5-min ORB (default scalp window, no high-impact catalyst)"
+2026-05-05,IWM,"  CALLS: pre-market cleared every structural level on this side — wait for the 15-min ORB
+  CALLS above 278.13 (PDH)
+    Stop: 276.82 (CWO)
+    T1: 278.13 (PWH)
+    Room to trigger: 0.36%
+
+  PUTS below 276.82 (CWO) -- only if bias denied
+    Stop: 278.13 (PDH)
+    T1: 276.82 (CDO)
+    T2: 274.23 (PWL)
+    T3: 274.23 (PDL)
+    Room to trigger: 0.12%
+
+  PMG ZONES:
+    274.23 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    238.69 (PML, PQL) [strength: 2.5]
+    258.31 (PYH, GAP_H_2026-04-08) [strength: 2.5]",509,30m,30-min ORB recommended (10:00 JOLTS Job Openings)
+2026-05-05,QQQ,"  CALLS: pre-market cleared every structural level on this side — wait for the 15-min ORB
+  CALLS above 664.51 (PDH)
+    Stop: 663.40 (CWO)
+    T1: 664.51 (PWH)
+    Room to trigger: 0.04%
+
+  PUTS: extended gap — recommend 15-min ORB confirmation before entry
+  PUTS below 663.40 (CWO)
+    Stop: 664.51 (PDH)
+    T1: 663.40 (CDO)
+    T2: 656.53 (PWL)
+    T3: 656.53 (PDL)
+    Room to trigger: 0.12%
+
+  PMG ZONES:
+    656.53 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    555.60 (PML, PQL) [strength: 2.5]
+    636.81 (PQH, PYH) [strength: 2.5]",543,30m,30-min ORB recommended (10:00 JOLTS Job Openings)
+2026-05-05,SPY,"  CALLS: no near-term structural level -- wait for ORB confirmation
+
+  PUTS below 714.47 (PWH) -- only if bias denied
+    T1: 714.47 (PDH)
+    T2: 713.17 (CWO)
+    T3: 713.17 (CDO)
+    Room to trigger: 0.10%
+
+  PMG ZONES:
+    709.01 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    629.28 (PML, PQL) [strength: 2.5]
+    713.17 (CDO, CWO) [strength: 2.5]",353,30m,30-min ORB recommended (10:00 JOLTS Job Openings)
+2026-05-06,IWM,"  CALLS: pre-market cleared every structural level on this side — wait for the 15-min ORB
+  CALLS above 278.13 (PDH)
+    Stop: 276.82 (CWO)
+    T1: 278.13 (PWH)
+    Room to trigger: 0.36%
+
+  PUTS below 276.82 (CWO) -- only if bias denied
+    Stop: 278.13 (PDH)
+    T1: 276.82 (CDO)
+    T2: 274.23 (PWL)
+    T3: 274.23 (PDL)
+    Room to trigger: 0.12%
+
+  PMG ZONES:
+    274.23 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    238.69 (PML, PQL) [strength: 2.5]
+    258.31 (PYH, GAP_H_2026-04-08) [strength: 2.5]",509,5m,"5-min ORB (default scalp window, no high-impact catalyst)"
+2026-05-06,QQQ,"  CALLS: pre-market cleared every structural level on this side — wait for the 15-min ORB
+  CALLS above 664.51 (PDH)
+    Stop: 663.40 (CWO)
+    T1: 664.51 (PWH)
+    Room to trigger: 0.04%
+
+  PUTS: extended gap — recommend 15-min ORB confirmation before entry
+  PUTS below 663.40 (CWO)
+    Stop: 664.51 (PDH)
+    T1: 663.40 (CDO)
+    T2: 656.53 (PWL)
+    T3: 656.53 (PDL)
+    Room to trigger: 0.12%
+
+  PMG ZONES:
+    656.53 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    555.60 (PML, PQL) [strength: 2.5]
+    636.81 (PQH, PYH) [strength: 2.5]",543,5m,"5-min ORB (default scalp window, no high-impact catalyst)"
+2026-05-06,SPY,"  CALLS: no near-term structural level -- wait for ORB confirmation
+
+  PUTS below 714.47 (PWH) -- only if bias denied
+    T1: 714.47 (PDH)
+    T2: 713.17 (CWO)
+    T3: 713.17 (CDO)
+    Room to trigger: 0.10%
+
+  PMG ZONES:
+    709.01 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    629.28 (PML, PQL) [strength: 2.5]
+    713.17 (CDO, CWO) [strength: 2.5]",353,5m,"5-min ORB (default scalp window, no high-impact catalyst)"
+2026-05-07,IWM,"  CALLS: pre-market cleared every structural level on this side — wait for the 15-min ORB
+  CALLS above 278.13 (PDH)
+    Stop: 276.82 (CWO)
+    T1: 278.13 (PWH)
+    Room to trigger: 0.36%
+
+  PUTS below 276.82 (CWO) -- only if bias denied
+    Stop: 278.13 (PDH)
+    T1: 276.82 (CDO)
+    T2: 274.23 (PWL)
+    T3: 274.23 (PDL)
+    Room to trigger: 0.12%
+
+  PMG ZONES:
+    274.23 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    238.69 (PML, PQL) [strength: 2.5]
+    258.31 (PYH, GAP_H_2026-04-08) [strength: 2.5]",509,5m,"5-min ORB (default scalp window, no high-impact catalyst)"
+2026-05-07,QQQ,"  CALLS: pre-market cleared every structural level on this side — wait for the 15-min ORB
+  CALLS above 664.51 (PDH)
+    Stop: 663.40 (CWO)
+    T1: 664.51 (PWH)
+    Room to trigger: 0.04%
+
+  PUTS: extended gap — recommend 15-min ORB confirmation before entry
+  PUTS below 663.40 (CWO)
+    Stop: 664.51 (PDH)
+    T1: 663.40 (CDO)
+    T2: 656.53 (PWL)
+    T3: 656.53 (PDL)
+    Room to trigger: 0.12%
+
+  PMG ZONES:
+    656.53 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    555.60 (PML, PQL) [strength: 2.5]
+    636.81 (PQH, PYH) [strength: 2.5]",543,5m,"5-min ORB (default scalp window, no high-impact catalyst)"
+2026-05-07,SPY,"  CALLS: no near-term structural level -- wait for ORB confirmation
+
+  PUTS below 714.47 (PWH) -- only if bias denied
+    T1: 714.47 (PDH)
+    T2: 713.17 (CWO)
+    T3: 713.17 (CDO)
+    Room to trigger: 0.10%
+
+  PMG ZONES:
+    709.01 (PDL, PWL, GAP_H_2026-04-24) [strength: 3.5]
+    629.28 (PML, PQL) [strength: 2.5]
+    713.17 (CDO, CWO) [strength: 2.5]",353,5m,"5-min ORB (default scalp window, no high-impact catalyst)"
