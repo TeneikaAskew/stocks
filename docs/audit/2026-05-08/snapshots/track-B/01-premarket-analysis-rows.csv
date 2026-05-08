@@ -1,0 +1,13 @@
+analysis_date,ticker,ftfc_direction,ftfc_score,signal_status,strat_candle,strat_combo,strat_setup,price,chg_pct,prev_day_high,prev_day_low,recommended_orb_window,analysis_ts_et
+2026-05-04,IWM,bullish,1.000,PUT setup (3/5),2U,322_bull_continuation,False,277.14,0.177,278.24,276.25,5m,2026-05-04 08:30:31.762922
+2026-05-04,QQQ,mixed,0.000,PUT setup (3/5),1,none,True,664.23,0.053,664.43,660.69,5m,2026-05-04 08:30:31.762922
+2026-05-04,SPY,bullish,1.000,PUT setup (4/5),2U,322_bull_continuation,False,715.17,0.172,715.63,712.295,5m,2026-05-04 08:30:31.762922
+2026-05-05,IWM,bullish,1.000,PUT setup (3/5),2U,322_bull_continuation,False,277.14,0.177,278.24,276.25,30m,2026-05-05 08:30:30.676240
+2026-05-05,QQQ,mixed,0.000,PUT setup (3/5),1,none,True,664.23,0.053,664.43,660.69,30m,2026-05-05 08:30:30.676240
+2026-05-05,SPY,bullish,1.000,PUT setup (4/5),2U,322_bull_continuation,False,715.17,0.172,715.63,712.295,30m,2026-05-05 08:30:30.676240
+2026-05-06,IWM,bullish,1.000,PUT setup (3/5),2U,322_bull_continuation,False,277.14,0.177,278.24,276.25,5m,2026-05-06 08:30:29.609338
+2026-05-06,QQQ,mixed,0.000,PUT setup (3/5),1,none,True,664.23,0.053,664.43,660.69,5m,2026-05-06 08:30:29.609338
+2026-05-06,SPY,bullish,1.000,PUT setup (4/5),2U,322_bull_continuation,False,715.17,0.172,715.63,712.295,5m,2026-05-06 08:30:29.609338
+2026-05-07,IWM,bullish,1.000,PUT setup (3/5),2U,322_bull_continuation,False,277.14,0.177,278.24,276.25,5m,2026-05-07 08:30:34.239447
+2026-05-07,QQQ,mixed,0.000,PUT setup (3/5),1,none,True,664.23,0.053,664.43,660.69,5m,2026-05-07 08:30:34.239447
+2026-05-07,SPY,bullish,1.000,PUT setup (4/5),2U,322_bull_continuation,False,715.17,0.172,715.63,712.295,5m,2026-05-07 08:30:34.239447
