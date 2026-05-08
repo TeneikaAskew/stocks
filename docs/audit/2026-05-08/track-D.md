@@ -30,12 +30,19 @@ fundamentally bound what we can conclude about live performance:
 
 Beyond the P0 gaps, the May 7 dataset itself reveals real strategy issues:
 
+- **`max_daily_trades=5` and `daily_loss_limit=-2%` are dead code.** Both
+  counters are read at `gcp/signal_monitor.py:437,439` but **never
+  incremented or updated anywhere**. IWM/SPY/QQQ each blew through the
+  5-fire/day cap by 6–28× in window. (Found in audit-pass § 8.3.)
+- **94.8% of alerts are tagged `weak`** (741/782) at 0.25x position
+  size; only 3 are `strong`. The system spams Discord with low-conviction
+  signals. (Audit-pass § 8.5.)
 - **Score quartiles are non-discriminative** (Q1 12.2%, Q2 8.9%, Q3 13.3%,
   Q4 11.1% target-hit rate). High-conviction signals do not win more.
-- **`MIN_CONDITIONS_MOMENTUM=5` floor is being bypassed.** 14 of 17
-  stacked-agreement payloads show momentum firing at base_score=3,
-  including 5 alerts on May 7 — the first day after the 2026-05-06
-  threshold raise.
+- **`MIN_CONDITIONS_MOMENTUM=5` not enforced in window — image-lag
+  artifact.** Commit 0cfab76 raising the floor landed 2026-05-07 12:31
+  ET, mid-session; image rebuilt 13:49 UTC = 9:49 ET. The May 7 monitor
+  ran on the older image. Verify enforcement holds on May 8+ data.
 - **Brief-aligned vs brief-opposed**: opposed CALLs win 20.5% (16/78) vs
   aligned PUTs 17.0% (9/53). Direction inverted from the brief's premise
   on a single-day n.
@@ -44,6 +51,15 @@ Beyond the P0 gaps, the May 7 dataset itself reveals real strategy issues:
 - **timeframe_tag is 81% "60m"** (633/782) — heuristic isn't differentiating.
 - **Catalyst proximity = "quiet" for 100% of alerts** — bucket logic added
   no signal-quality information in window.
+- **Plaintext API keys** in the Cloud Run job spec (AV/Discord/Benzinga/
+  FRED). Only DB_PASS uses Secret Manager. (Audit-pass § 8.12.)
+- **trades and signal_alerts in lockstep — but spammy.** 786 trades in
+  4 days for 3 tickers; both tables are bloated by the broken caps.
+  (Audit-pass § 8.2.)
+- **No same-minute / same-second duplicates** — the 60s poll-loop dedup
+  is clean. (Audit-pass § 8.4.)
+- **ORB snapshots fire correctly** at 9:45 / 10:00 ET every weekday in
+  window. (Audit-pass § 8.1.)
 
 ---
 
@@ -297,7 +313,7 @@ distribution in window:
 of "~21% historically". On 765 of 782 alerts, only mean-reversion fired
 on the bar; momentum returned None (eligible neither call nor put).
 
-### `MIN_CONDITIONS_MOMENTUM=5` is being bypassed
+### `MIN_CONDITIONS_MOMENTUM=5` not enforced in window — image-lag artifact
 
 The 17 stacked payloads' `base_scores[1]` (momentum's score; sort is
 alphabetical so mean_reversion is index 0):
@@ -314,17 +330,27 @@ floor.** Per `lib/strategies/momentum.py:209-212`:
 call_eligible = (call_score >= MIN_CONDITIONS and call_core >= MIN_CORE_CONDITIONS)
 ```
 where `MIN_CONDITIONS = MIN_CONDITIONS_MOMENTUM` from
-`lib/strategies/config.py:108` (= 5 since 2026-05-06). Stacked alerts
-include 5 entries on May 7 — the first full session after the raise — all
-showing momentum=3.
+`lib/strategies/config.py:108` (= 5 since 2026-05-06).
 
-Two non-exclusive explanations:
-1. **Cloud Run image lag**: the deployed `signal-monitor` image was built
-   before the threshold raise. Need to verify image timestamp.
-2. **Per-ticker calibration override**: `lib/strategies/calibration.py`
-   resolves Tier-A RSI ranges per ticker, which subtly widens the
-   `rsi_bullish_recovery` band and gives a free score for many bars. Even
-   so the 5-condition floor should still gate.
+**Audit-pass root cause: image lag, not a runtime bypass.** Commit
+`0cfab76 feat(phase-0.7.6): require score>=5 + revert 3-of-5 relaxation`
+landed **2026-05-07 12:31:29 ET**, mid-session on the eval window's
+final day. The signal-monitor image tagged `latest` was rebuilt
+2026-05-07 17:49:43 UTC (= 13:49 ET) — after market open. The May 7
+9:25-ET execution (`signal-monitor-vhzhx`) pulled an image built at
+13:15 UTC (= 9:15 ET), pre-commit-0cfab76. So during the entire eval
+window, the deployed code still had `MIN_CONDITIONS_MOMENTUM=3` (or the
+original pre-Phase-0.7.6 value), which is consistent with the data.
+
+This is **not a runtime gate-bypass bug**; it is a **deploy-timing
+issue**: the threshold raise wasn't on the box during the eval window.
+Backlog still tracks it because the May 8+ data must be re-checked to
+confirm the new floor enforces. If May 8+ alerts still show momentum
+firing at score=3, the runtime-bypass hypothesis is back on.
+
+`MOMENTUM` import from `lib.strategies.__init__:32` resolves to
+`MomentumStrategy()` singleton, so there's no alternate code path —
+once the new image is deployed, the floor should hold.
 
 ### Conditions inventory (window)
 
@@ -376,10 +402,195 @@ mechanism added zero signal-quality information in window.
 
 ---
 
-## 8. Backlog (prioritized)
+## 8. Audit-pass items (second-pass verification)
+
+This section is the result of a self-audit walking the full Track D
+scope to make sure no area was missed by the first pass. Each
+sub-section is OK, NEW FINDING, or PARTIAL.
+
+### 8.1 ORB snapshot scheduler (9:45 / 10:00 ET) — OK ✓
+
+Verified by Cloud Scheduler + Cloud Run executions:
+
+| Scheduler job   | Cron        | Args (decoded)                              |
+|-----------------|-------------|---------------------------------------------|
+| signal-monitor-daily | `25 9 * * 1-5` | (defaults — `--mode=loop`)               |
+| orb-15m-alert   | `45 9 * * 1-5` | `--mode=orb-snapshot --window=15m`           |
+| orb-30m-alert   | `0 10 * * 1-5` | `--mode=orb-snapshot --window=30m`           |
+
+All three executions present every weekday in window:
+- 5/4: vrl2j (9:25 loop) + scjnt (9:45 ORB) + b6jnk (10:00 ORB) ✓
+- 5/5: 8xhfx + nvsbp + kfsrj ✓
+- 5/6: 226l4 + k8tpw + mk4lf ✓
+- 5/7: vhzhx + 2zvwh + f2vwg ✓
+
+ORB-snapshot executions all completed in 20–30s with status=True. Discord
+embed dispatch from `run_orb_snapshot()` is fire-and-forget (non-fatal
+on send failure) but logs at DEBUG; would need Discord-side audit to
+confirm receipt — out of scope for Track D.
+
+### 8.2 trades-table consistency — OK ✓
+
+```sql
+SELECT s.alert_date, COUNT(DISTINCT s.id) alerts, COUNT(DISTINCT t.id) trades
+FROM signal_alerts s LEFT JOIN trades t
+  ON t.ticker=s.ticker AND t.entry_time=s.alert_ts
+WHERE s.alert_date BETWEEN '2026-05-04' AND '2026-05-07'
+GROUP BY s.alert_date;
+```
+Every `signal_alerts` row has a matching `trades` row (79/155/162/386).
+`TradeLogger().log_trade(...)` at `gcp/signal_monitor.py:726` runs
+synchronously in the persist path so the two grow in lockstep. **The
+spam-volume issue (§ 8.3) means the `trades` table is also bloated** —
+786+ entries in 4 days for 3 tickers — but consistency is intact.
+
+### 8.3 Daily trade caps — NEW P0 FINDING
+
+`lib/config.py:205,207` defines `max_daily_trades=5` and
+`daily_loss_limit=-0.02`. `gcp/signal_monitor.py:437,439` reads them:
+```python
+if self.daily_trades[ticker] >= self.risk.max_daily_trades:
+    return
+if self.daily_pnl[ticker] <= self.risk.daily_loss_limit:
+    return
+```
+
+But — `grep -n "daily_trades\|daily_pnl" gcp/signal_monitor.py` shows
+**neither counter is ever incremented or updated anywhere in the file**.
+Lines 86–87 init them to 0; lines 437/439 read them; nothing writes.
+
+Confirmed empirically: every (ticker × day) in window blew through the
+5-fire cap. May 7 worst cases:
+- IWM: 111 fires (cap = 5)
+- QQQ: 138 fires
+- SPY: 137 fires
+
+**Both risk caps are non-functional dead code.** Backlog: P0.
+
+### 8.4 Same-minute / same-second duplicates — OK ✓
+
+```sql
+WITH x AS (
+  SELECT ticker, direction, date_trunc('minute', alert_ts) as m, COUNT(*) c
+  FROM signal_alerts WHERE alert_date BETWEEN '2026-05-04' AND '2026-05-07'
+  GROUP BY ticker, direction, m
+)
+SELECT c, COUNT(*) FROM x GROUP BY c;
+```
+Result: every minute bucket holds exactly **1** fire per
+(ticker, direction). The 60-second poll-loop dedup is clean — no
+within-minute storms or repolling bugs. Same-second check also returned
+zero rows.
+
+### 8.5 Strength-label distribution — NEW QUALITY FINDING
+
+```sql
+SELECT strength_label, COUNT(*), AVG(total_score), AVG(position_size)
+FROM signal_alerts WHERE alert_date BETWEEN '2026-05-04' AND '2026-05-07'
+GROUP BY strength_label;
+```
+
+| Strength | Count | % of total | Avg score | Avg position_size |
+|----------|-------|------------|-----------|-------------------|
+| weak     | 741   | **94.8%**  | 2.90      | 0.25              |
+| medium   |  38   |  4.9%      | 4.68      | 0.50              |
+| strong   |   3   |  0.4%      | 5.50      | 0.75              |
+
+**95% of alerts are tagged `weak` and sized at 0.25x position.** The
+position-sizing tier is doing its job (smaller size on weaker signals),
+but the system is firing weak signals at scale (741 in 4 days) and
+sending each as a Discord embed. Combined with the score-quartile
+non-discrimination finding (§ 3), the strength label is descriptive but
+not predictive: fire rate ≠ win rate by score band.
+
+This is a `Discord noise` problem too: 741 weak embeds buried the 41
+real (medium / strong) calls. Backlog: P2.
+
+### 8.6 Per-ticker stacked rate — OK / context
+
+| Ticker | Stacked | Solo | Total | Stacked %  |
+|--------|---------|------|-------|------------|
+| IWM    |    3    | 219  | 222   | 1.4%       |
+| SPY    |    5    | 273  | 278   | 1.8%       |
+| QQQ    |    9    | 273  | 282   | 3.2%       |
+
+QQQ has the highest agreement rate (3.2%) — consistent with QQQ being
+trendier than the other two. All three are far below the schema's claim
+of ~21% historical. After the §6 image-lag finding lands and momentum's
+new floor is enforced, the *expected* stacked rate goes DOWN further (a
+stricter momentum gate fires less often, so two-strategy agreement is
+rarer). The 21% figure is from pre-Phase-0.7.x measurements and is
+stale — schema doc should be updated with current expectations.
+
+### 8.7 `daily_pnl` (mirror of 8.3) — confirmed dead
+
+Same finding as 8.3 — `daily_pnl[ticker]` is read at line 439 against
+`daily_loss_limit` but is never incremented anywhere in the file. The
+-2% session loss-limit guard is non-functional.
+
+### 8.8 `fired_breaks` (level-break dedup) — OK
+
+`self.fired_breaks: set` is initialized at line 104 (per process), keys
+are added at line 322 to dedup level crossings within the session. Since
+the SignalMonitor instance is constructed fresh per Cloud Run job
+execution (one per day), the set is freshly empty each session — no
+cross-day leak. **However**, since `level_broken` is NULL on every alert
+(§ 3), this dedup never had anything to dedupe — `check_level_breaks`
+returned [] every iteration. The dedup logic is correct; the level-break
+detection upstream is what's broken.
+
+### 8.9 Discord webhook health — OUT OF SCOPE
+
+The plan's scope did not require verifying that Discord embeds actually
+arrived. The persistence-side data shows alerts were composed correctly
+(per-row JSON visible in dispatch logs). Discord-side receipt audit
+would need access to the Discord channel history; not in scope here.
+
+### 8.10 Polling cadence vs poll_interval — OK
+
+Default `monitor_cfg.poll_interval = 60s` (config). With 3 tickers
+processed sequentially, each round takes ~3–5s + 60s sleep. Observed
+alert timestamps spread across 60-78s intervals matches expected
+cadence; no signs of throttling or stalls.
+
+### 8.11 fire_alert → persist ordering — OK
+
+`gcp/signal_monitor.py:519-639`: `fire_alert` first prints embed, then
+posts to Discord, then calls `_persist_signal_alert`. `_persist_signal_alert`
+upserts to `signal_alerts`, then logs to `trades`, then appends to
+`active_positions`. Order is consistent — if a Discord post fails, the
+alert is still persisted (good). If `_persist_signal_alert` fails, the
+trade-log and active-positions append are inside individual `try/except`
+blocks, so they won't break each other. **No regressions in the persist
+ordering.**
+
+### 8.12 Cloud Run job spec — OK
+
+`gcp/signal_monitor` job: 1 CPU, 2 Gi memory, `maxRetries=0`,
+`timeoutSeconds=28800` (8 h). Conforms to CLAUDE.md rule §0.5 (no
+retries unless transient retries justified; per-job timeout headroom).
+Two minor concerns:
+- 1 CPU + 2 Gi is conservative; the rolling-window fits comfortably.
+- All env vars (AV_API_KEY, DISCORD_WEBHOOK_URL, BENZINGA_API_KEY,
+  FRED_API_KEY) are baked **as plaintext values** in the job spec
+  rather than `valueFrom: secretKeyRef`. Only `DB_PASS` uses Secret
+  Manager. Backlog item — not a Track D blocker, but a security
+  concern: leaks via `gcloud run jobs describe` output.
+
+---
+
+## 9. Backlog (prioritized)
 
 ### P0 — fix before any further analysis trusts the data
 
+- **`max_daily_trades` and `daily_loss_limit` caps are dead code** (§ 8.3,
+  § 8.7). `gcp/signal_monitor.py:86-87` initializes the counters; lines
+  437/439 read them; **nothing increments or updates them anywhere**.
+  IWM/SPY/QQQ each blew through the 5-fire/day cap by 6–28× in the eval
+  window. Fix: increment `self.daily_trades[ticker] += 1` in
+  `fire_alert` (once per fire) and update `self.daily_pnl[ticker] += return_pct`
+  in `_persist_exit`. Add a regression test that asserts the cap fires
+  on the 6th sim signal of a (ticker, day).
 - **TZ-fix verification**: confirm 2026-05-07 deploy's market-hours loop
   uses ET-aware comparison. Add a smoke test: `is_market_hours()` at
   16:00 UTC must return True (=12:00 ET, market still open).
@@ -395,16 +606,20 @@ mechanism added zero signal-quality information in window.
 - **End-of-day reconciliation**: 26 of 360 May 7 resolved alerts (~7%)
   are stuck `is_open=true`. Implement the `eod_close` exit reason that
   the schema doc anticipates so positions don't leak across sessions.
+- **Plaintext API keys in Cloud Run job spec** (§ 8.12). AV_API_KEY,
+  DISCORD_WEBHOOK_URL, BENZINGA_API_KEY, FRED_API_KEY are stored as
+  literal env values; only DB_PASS uses Secret Manager `secretKeyRef`.
+  Anyone with `roles/run.viewer` can `gcloud run jobs describe
+  signal-monitor` and read them. Move to secretKeyRef.
 
 ### P1 — strategy-correctness fixes
 
-- **`MIN_CONDITIONS_MOMENTUM=5` enforcement**: verify the deployed
-  `signal-monitor` Cloud Run image actually contains
-  `lib/strategies/config.py` post-2026-05-06. If yes, find the
-  bypass path (likely a per-ticker calibration override in
-  `lib/strategies/calibration.py` that lowers the RSI-band gate enough
-  to backfill score). Either way, momentum should stop returning Signal
-  at score=3.
+- **`MIN_CONDITIONS_MOMENTUM=5` deploy verification**: per § 6 audit-pass,
+  the score>=5 raise (commit 0cfab76) committed mid-session 5/7, image
+  rebuilt 13:49 UTC = 9:49 ET. Re-pull May 8+ stacked-payload data and
+  confirm `momentum base_score >= 5` on every stacked alert. If May 8+
+  still shows momentum=3 fires, the runtime-bypass hypothesis is back
+  on; otherwise close the finding.
 - **`level_broken` always-NULL**: trace why `check_level_breaks()`
   produces no crossings. Most likely `self.level_maps[ticker]` is None
   because `refresh_level_map()` is silently failing — convert the
@@ -417,6 +632,13 @@ mechanism added zero signal-quality information in window.
 
 ### P2 — strategy-quality questions
 
+- **94.8% of alerts are "weak"** (§ 8.5). The system fires 741 weak
+  signals in 4 days at 0.25x position size — that's not a tradeable
+  cadence, that's noise. Combined with the score-quartile
+  non-discrimination (Q4 11.1% vs Q1 12.2% wins), the strength label
+  is descriptive but not predictive. Either raise the fire floor (so
+  `weak` doesn't fire at all) or stop emitting weak signals to Discord
+  (keep persisted for analysis).
 - **Score quartiles don't discriminate** (Q4 11.1% vs Q1 12.2% wins) —
   the composite-score system isn't doing its job. Track C's factor
   analysis is the right place to fix this; backstop is to add a
@@ -432,6 +654,10 @@ mechanism added zero signal-quality information in window.
   catalyst-free week, or a lookup failure. Add a smoke test on the
   `get_catalyst_context` cache to confirm it can return non-`quiet` when
   events are seeded.
+- **Stacked-rate schema doc is stale** (§ 8.6). Schema claims ~21%
+  historically; current data shows 1.4–3.2% per ticker. Update the
+  schema-doc rationale comment at `gcp/schema.sql:744-760` to reflect
+  current expectations after Phase 0.7.x's tightened momentum gate.
 
 ### P3 — observability
 
