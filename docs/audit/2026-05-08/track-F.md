@@ -289,9 +289,45 @@ ls scripts/fetch_catalyst_calendar.py             # → exists
 
 ---
 
+## Self-audit (post-edit, 2026-05-08)
+
+After the first round of edits, I audited my own findings to look for missed drift and regressions. Six additional issues surfaced. All have been folded back into the same `Architecture.drawio` + `ARCHITECTURE.md` files in a follow-up commit.
+
+### Audit findings
+
+1. **Cloud Run Job count was off by 1.** I claimed 30. `deploy.sh` actually creates **29** via `gcloud run jobs create`. The 30 figure is correct only if you include `fetch-av-options-backfill` (manually deployed outside `deploy.sh`, real per the existing 2026-05-02 reconciliation §2). **Fixed:** both files now say "30 production Cloud Run Jobs (29 in `gcp/deploy.sh` + 1 manually-deployed `fetch-av-options-backfill`)" and call out which is which.
+
+2. **Cloud SQL table count was meaningless drift.** Both files said "27 tables." `gcp/schema.sql` actually has **38 `CREATE TABLE IF NOT EXISTS`** statements. The "27" figure isn't wrong if you exclude the LIST partitions of `market_data_intraday` (5 partition children — `_spy`/`_iwm`/`_qqq`/`_spx`/`_other`), the 4 `archive_yahoo_*` archives, and the 2 `*_history` audit copies (38 − 5 − 4 − 2 = 27). But neither file explained that — readers comparing the doc to `schema.sql` would see drift. **Fixed:** Code modules row for `gcp/schema.sql` now reads "38 statements; ~27 logical user-facing tables — the rest are LIST-partition children + archives + history." GCP resources `trading-db` row updated. Mermaid label updated. Drawio `sql_box` updated to the same wording.
+
+3. **Drawio `sql_box` listed 3 phantom tables.** `options_chain`, `gex_snapshots`, and `alert_config` appeared in the "Core: ..." enumeration but **none of them exist** in `schema.sql` (verified by `grep -c "CREATE TABLE.*\b<name>\b" gcp/schema.sql` → 0 for each). `alert_config` is in fact `alert_config.json` at the repo root (a config file, not a table). The actual options tables are `etf_options_snapshots` and `earnings_options_snapshots`. **Fixed:** drawio `sql_box` now lists the actual ~27 user-facing tables and explicitly notes "alert_config is alert_config.json (repo root), NOT a Cloud SQL table" — but trimmed back for layout fit.
+
+4. **Drawio `sql_box` had two wrong table names.** `top_movers` → actual `top_movers_daily`; `fred_rates` → actual `daily_rates`. **Fixed.**
+
+5. **5 lib/ modules were undocumented.** ARCHITECTURE.md's Code modules table didn't enumerate `lib/walk_forward.py`, `lib/trading_analysis.py`, `lib/ticker_info.py`, `lib/api_client.py`, or `lib/logging_config.py`. The two big ones — `trading_analysis.py` (~1.7 KLOC) and `ticker_info.py` (620 LOC) — are real production dependencies (`scripts/run_historical_signals.py:40` imports `MarketAnalyzer` from `trading_analysis`; the FastAPI insights router imports five symbols from `ticker_info`). **Fixed:** five new rows added to the table. Drawio's `lib_group` is more compact and doesn't enumerate every file by row, so I left it as-is — flagged as P3 cosmetic in the backlog.
+
+6. **`gcp/fetchers/fetch_rss_news.py` is undeployed code.** Surfaced when verifying `lib.ticker_info` consumers. The module implements a 5-step RSS + FinViz → FinBERT (CPU sentiment) → Gemini Flash (summarization) pipeline, but there's no `deploy.sh` block, no scheduler, no GH Actions workflow to run it. It's either a feature mid-flight or a half-landed module. **Fixed:** new row in Code modules table; new Reconciliation §12 entry asking "is this intended to ship?"
+
+### What I checked and did NOT find drift on
+
+- **Routers**: claim says 13. Actual: `ls platform/api/routers/*.py | grep -v __init__` → 13. ✓
+- **GH Actions workflows**: claim says 14. Actual: 14 active `.yml` files (+ 1 disabled). ✓
+- **Cloud Run Services**: 4 (trading-platform, discord-interactions, failure-notifier, signal-monitor [confirmed broken]). ✓
+- **Schedulers**: ~50, broken down as 22 distinct names + 4 sec-filings + 10 news-sentiment + 10 news-topics + 2 ORB + 2 brief variants. ✓
+- **`fetch-news-sentiment-topics` representation**: The drawio's `job_fns` cell labels itself "fetch-news-sentiment / ticker mode + topic mode / hourly 08-17" — i.e. it represents both Cloud Run Jobs (fetch-news-sentiment + fetch-news-sentiment-topics) as one box because they share the `gcp.fetchers.fetch_news_sentiment` Python module. This is intentional consolidation per the existing Open question §6, not a missing job.
+- **6 flow-detail diagrams** in the .drawio (Nightly Write, Morning Read, Insight Refresh, Failure Pipeline, Discord Slash-Cmd, Earnings Pipeline): spot-checked. The new jobs (`calibrate-thresholds`, `historical-signals-watchlist`, `compute-spx-greeks-backfill`) don't fit thematically into any of the existing 6 flow paths, so I didn't add them to the detail diagrams. Flagged as P3 enhancement (a 7th "Daily 1am batch / quarterly calibration" diagram).
+- **Failure-handling pipeline** (Logging sink → Pub/Sub → DLQ → push subscription → failure-notifier service → labeled GitHub issue): both files describe this correctly. No drift.
+
+### Regressions introduced by my edits (none)
+
+- XML re-validated post-edits: 7 diagrams parse, main diagram has 150 mxCells (was 144 + 5 added + 1 sql_box edited = 150). No parse errors.
+- ARCHITECTURE.md Mermaid block re-checked syntactically — `SQL[("Cloud SQL trading-db<br/>~27 user-facing tables<br/>(38 CREATE TABLE total)")]` is valid Mermaid `flowchart` shape syntax (round brackets + double-quoted with HTML).
+- All claimed module paths verified to exist (`ls -la` against `scripts/calibrate_thresholds.py`, `scripts/run_historical_signals.py`, `scripts/maintenance/compute_spx_greeks.py`, the 5 new `lib/*.py` rows, and `gcp/fetchers/fetch_rss_news.py`).
+- All claimed importers verified by `grep -rE "from <module>" lib/ gcp/ platform/ scripts/` (the `auto_refresh_top_n` claim for `lib.ticker_info` was wrong in my draft and corrected before commit — the actual consumers are FastAPI's insights router and `gcp/fetchers/fetch_rss_news.py`).
+
 ## Files touched
 
 - `Architecture.drawio` — main diagram only (6 flow-detail diagrams untouched).
+- `ARCHITECTURE.md` — System overview, Code modules table (8 new rows + ~3 edits), GCP resources table, Daily nightly write path, Reconciliation §11–12, Resources-not-in-inventory §1, Open questions §9–10.
 - `docs/audit/2026-05-08/track-F.md` — this file.
 
-No other files modified. Per Track F's file-boundary contract, no source code, no schema, no FastAPI routers, no fetchers were touched.
+No source code, schema SQL, FastAPI routers, or fetcher Python modules were modified. Track F's file-boundary contract preserved.
