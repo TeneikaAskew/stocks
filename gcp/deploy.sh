@@ -542,6 +542,40 @@ deploy_monitor() {
         --quiet
 }
 
+# ── Signal-monitor EOD resolver (Cloud Run Job — runs after close) ──────────
+# Per Track D audit § 2 / G.P0.10: closes positions still open at 16:00 ET
+# (the in-process exit-watcher in signal-monitor only resolves while the
+# Job is alive; anything still-open at close lands here). Replays the same
+# exit logic against historical intraday bars and records target_hit /
+# time_stop / rsi_extreme / eod_close.
+#
+# Capacity calc (CLAUDE.md §0):
+#   Volume:    ~1,209 alerts × 250KB intraday window ≈ 300 MB peak
+#   Velocity:  1 SQL query per (ticker, day) — backfill ~10 (ticker, day)
+#              pairs ≈ 10 round-trips × 1.5s pg8000 = 15s + per-row math
+#   Wall:      ~5 min for one-shot backfill, ~30s daily steady-state
+#   timeout:   3600s = 1hr (≥ 4× wall-clock headroom)
+#   memory:    1Gi (peak 300 MB × 2 safety factor + Python overhead)
+#   retries:   0 (idempotent via is_open=FALSE; transient retries don't help)
+deploy_signal_monitor_eod_resolver() {
+    echo "Deploying signal-monitor-eod-resolver job..."
+    gcloud run jobs create signal-monitor-eod-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_monitor_eod_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-monitor-eod-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.signal_monitor_eod_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Weekend review (Cloud Run Job) ───────────────────────────────────────────
 deploy_weekend() {
     echo "Deploying weekend review job..."
@@ -1276,6 +1310,11 @@ deploy_schedulers() {
     _schedule_brief "premarket-brief-sunday"   "0 9 * * 0"      "premarket-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
+    # Signal monitor EOD resolver — 4:30 PM ET weekdays (30 min after close
+    # so any late-arriving intraday bars are queryable). Sweeps any alerts
+    # still is_open=TRUE or with exit_ts NULL and resolves them via the
+    # gcp.signal_monitor_eod_resolver replay path. Per Track D G.P0.10.
+    _schedule "signal-monitor-eod-resolver-daily" "30 16 * * 1-5"  "signal-monitor-eod-resolver"
     # ORB scheduled snapshots — 9:45 ET (15-min ORB) and 10:00 ET (30-min ORB).
     # Uses the same signal-monitor job image with --mode=orb-snapshot.
     _schedule_with_args "orb-15m-alert"  "45 9 * * 1-5"  "signal-monitor" \
@@ -1504,6 +1543,7 @@ case "${1:-help}" in
     build)       build_image ;;
     premarket)   build_image && deploy_premarket ;;
     monitor)     build_image && deploy_monitor ;;
+    eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
     insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;
@@ -1521,6 +1561,7 @@ case "${1:-help}" in
         build_image
         deploy_premarket
         deploy_monitor
+        deploy_signal_monitor_eod_resolver
         deploy_weekend
         deploy_fetchers
         setup_insight_tasks_queue
