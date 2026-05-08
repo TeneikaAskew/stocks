@@ -1,0 +1,13 @@
+analysis_date,ticker,run_kind,written_et,triggered_by,notes
+2026-05-04,IWM,scheduled,2026-05-04 08:30:31.605766,cloud-scheduler:premarket-brief-daily,
+2026-05-04,QQQ,scheduled,2026-05-04 08:30:31.605766,cloud-scheduler:premarket-brief-daily,
+2026-05-04,SPY,scheduled,2026-05-04 08:30:31.605766,cloud-scheduler:premarket-brief-daily,
+2026-05-05,IWM,scheduled,2026-05-05 08:30:30.533650,cloud-scheduler:premarket-brief-daily,
+2026-05-05,QQQ,scheduled,2026-05-05 08:30:30.533650,cloud-scheduler:premarket-brief-daily,
+2026-05-05,SPY,scheduled,2026-05-05 08:30:30.533650,cloud-scheduler:premarket-brief-daily,
+2026-05-06,IWM,scheduled,2026-05-06 08:30:29.468525,cloud-scheduler:premarket-brief-daily,
+2026-05-06,QQQ,scheduled,2026-05-06 08:30:29.468525,cloud-scheduler:premarket-brief-daily,
+2026-05-06,SPY,scheduled,2026-05-06 08:30:29.468525,cloud-scheduler:premarket-brief-daily,
+2026-05-07,IWM,scheduled,2026-05-07 08:30:34.058901,cloud-scheduler:premarket-brief-daily,
+2026-05-07,QQQ,scheduled,2026-05-07 08:30:34.058901,cloud-scheduler:premarket-brief-daily,
+2026-05-07,SPY,scheduled,2026-05-07 08:30:34.058901,cloud-scheduler:premarket-brief-daily,
