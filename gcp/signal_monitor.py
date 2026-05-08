@@ -274,7 +274,7 @@ class SignalMonitor:
             from lib.data_loader import DataLoader
             from lib.indicators import calculate_historical_levels
             loader = DataLoader(data_dir=self.market_cfg.data_dir)
-            df = loader.load_daily(ticker)
+            df = loader.load_daily(ticker, on_stale='warn')
             if df.empty:
                 self.level_maps[ticker] = None
                 return

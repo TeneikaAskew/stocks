@@ -1,11 +1,14 @@
 """Tests for lib/data_loader.py — Data loading and normalization."""
 
+import logging
+from datetime import date, datetime
+
 import pandas as pd
 import numpy as np
 import pytest
 from pathlib import Path
 
-from lib.data_loader import DataLoader, COLUMN_MAP, RESAMPLE_RULES
+from lib.data_loader import DataLoader, COLUMN_MAP, RESAMPLE_RULES, _check_staleness
 
 
 @pytest.fixture
@@ -401,3 +404,107 @@ class TestLoadBestAvailable:
         result = loader.load_best_available('NONEXISTENT')
         assert isinstance(result, pd.DataFrame)
         assert result.empty
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Staleness check (Track A G.P1.17)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _df_with_last_date(d: date) -> pd.DataFrame:
+    return pd.DataFrame(
+        {'Close': [100.0, 101.0]},
+        index=pd.DatetimeIndex([d - pd.Timedelta(days=1), d]),
+    )
+
+
+class TestCheckStaleness:
+    def test_silent_returns_without_check(self):
+        df = _df_with_last_date(date(2026, 1, 1))
+        # Even though df is months old, silent never warns or raises
+        _check_staleness(df, 'SPY', max_age_days=2, on_stale='silent',
+                         today=date(2026, 5, 8))
+
+    def test_within_threshold_passes(self):
+        today = date(2026, 5, 8)
+        df = _df_with_last_date(today)
+        _check_staleness(df, 'SPY', max_age_days=2, on_stale='warn',
+                         today=today)
+        # 1-day-old df is within threshold of 2 days
+        df2 = _df_with_last_date(date(2026, 5, 7))
+        _check_staleness(df2, 'SPY', max_age_days=2, on_stale='warn',
+                         today=today)
+
+    def test_warn_logs_warning(self, caplog):
+        today = date(2026, 5, 8)
+        df = _df_with_last_date(date(2026, 4, 27))  # 11 days old
+        with caplog.at_level(logging.WARNING, logger='lib.data_loader'):
+            _check_staleness(df, 'SPY', max_age_days=2, on_stale='warn',
+                             today=today)
+        assert any('SPY' in r.message and '11 days old' in r.message
+                   for r in caplog.records)
+
+    def test_error_raises(self):
+        today = date(2026, 5, 8)
+        df = _df_with_last_date(date(2026, 4, 27))
+        with pytest.raises(RuntimeError) as exc:
+            _check_staleness(df, 'SPY', max_age_days=2, on_stale='error',
+                             today=today)
+        assert 'SPY' in str(exc.value)
+        assert '11 days' in str(exc.value)
+
+    def test_empty_df_is_noop(self):
+        # Empty df: caller decides; staleness check skips.
+        _check_staleness(pd.DataFrame(), 'SPY', max_age_days=2,
+                         on_stale='error', today=date(2026, 5, 8))
+
+    def test_uses_date_col_when_provided(self, caplog):
+        df = pd.DataFrame({
+            'date': [date(2026, 4, 27), date(2026, 4, 28)],
+            'close': [100.0, 101.0],
+        })
+        with caplog.at_level(logging.WARNING, logger='lib.data_loader'):
+            _check_staleness(df, 'SPY', max_age_days=2, on_stale='warn',
+                             date_col='date', today=date(2026, 5, 8))
+        assert any('10 days old' in r.message for r in caplog.records)
+
+
+class TestLoadDailyStaleness:
+    """End-to-end check that load_daily wires `on_stale` through."""
+
+    def test_load_daily_warn_on_stale_parquet(self, loader, caplog):
+        # Plant a stale daily parquet
+        ticker_dir = loader.data_dir / 'spy'
+        ticker_dir.mkdir(parents=True)
+        df = pd.DataFrame(
+            {'Open': [100.0], 'High': [102.0], 'Low': [99.0],
+             'Close': [101.0], 'Volume': [1_000_000]},
+            index=pd.DatetimeIndex([pd.Timestamp('2025-01-01')]),
+        )
+        df.to_parquet(ticker_dir / 'spy_2025.parquet')
+
+        # year=None triggers staleness check
+        with caplog.at_level(logging.WARNING, logger='lib.data_loader'):
+            out = loader.load_daily('SPY', on_stale='warn')
+
+        assert not out.empty
+        # Should have logged a warning (>2 days stale)
+        assert any('SPY' in r.message and 'days old' in r.message
+                   for r in caplog.records)
+
+    def test_load_daily_year_scoped_skips_check(self, loader, caplog):
+        """year != None means caller wants historical data on purpose."""
+        ticker_dir = loader.data_dir / 'spy'
+        ticker_dir.mkdir(parents=True)
+        df = pd.DataFrame(
+            {'Open': [100.0], 'High': [102.0], 'Low': [99.0],
+             'Close': [101.0], 'Volume': [1_000_000]},
+            index=pd.DatetimeIndex([pd.Timestamp('2025-01-01')]),
+        )
+        df.to_parquet(ticker_dir / 'spy_2025.parquet')
+
+        with caplog.at_level(logging.WARNING, logger='lib.data_loader'):
+            out = loader.load_daily('SPY', year=2025, on_stale='error')
+        # Even with on_stale='error', year-scoped query doesn't raise
+        assert not out.empty
+        assert not any('days old' in r.message for r in caplog.records)

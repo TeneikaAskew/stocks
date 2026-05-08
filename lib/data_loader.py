@@ -11,13 +11,17 @@ load_intraday() and load_daily() query Cloud SQL first and fall back to local
 Parquet files if the query returns no rows.  All call-site code is unchanged.
 """
 
+import logging
 import os
 import pandas as pd
 import numpy as np
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict
 import warnings
 warnings.filterwarnings('ignore')
+
+log = logging.getLogger(__name__)
 
 
 # Canonical column mapping: normalize any source to these names
@@ -65,6 +69,59 @@ def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _check_staleness(df: pd.DataFrame, ticker: str, *,
+                     max_age_days: int, on_stale: str,
+                     date_col: Optional[str] = None,
+                     today: Optional[date] = None) -> None:
+    """Compare the most recent row's date against today; warn or raise
+    if the gap exceeds `max_age_days`.
+
+    `on_stale` values:
+      'silent' — return without checking (back-compat default for legacy callers)
+      'warn'   — log a WARNING with the gap; do not raise
+      'error'  — raise RuntimeError
+
+    `date_col`: when provided, use that column. When None, use the
+    DataFrame's index (assumed to be a DatetimeIndex). Empty df is a
+    no-op (an empty result is a different failure mode than a stale
+    result; the caller decides how to handle empty).
+    """
+    if on_stale == 'silent':
+        return
+    if df is None or df.empty:
+        return
+    if today is None:
+        today = date.today()
+
+    if date_col is not None and date_col in df.columns:
+        last = df[date_col].max()
+    else:
+        try:
+            last = df.index.max()
+        except Exception:
+            return
+
+    if hasattr(last, 'date'):
+        last_d = last.date()
+    elif isinstance(last, date):
+        last_d = last
+    else:
+        try:
+            last_d = pd.to_datetime(last).date()
+        except Exception:
+            return
+
+    gap_days = (today - last_d).days
+    if gap_days <= max_age_days:
+        return
+
+    msg = (f"data_loader: {ticker} most recent row {last_d} is "
+           f"{gap_days} days old (threshold: {max_age_days})")
+    if on_stale == 'error':
+        raise RuntimeError(msg)
+    log.warning(msg)
+
+
 class DataLoader:
     """Load market data from multiple sources with consistent column naming.
 
@@ -109,6 +166,9 @@ class DataLoader:
         ticker: str,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
+        *,
+        max_age_days: int = 2,
+        on_stale: str = 'silent',
     ) -> pd.DataFrame:
         """Load intraday (1-minute) data for a ticker.
 
@@ -118,47 +178,58 @@ class DataLoader:
         2. Monthly AlphaVantage parquets in intraday/
         3. Daily minute parquets in minute/ (e.g. SPX format)
         4. Empty DataFrame if nothing found
+
+        Staleness (Track A G.P1.17): if the most recent bar is older
+        than `max_age_days` calendar days, `on_stale` controls behavior:
+          'silent' — default, no check (legacy callers).
+          'warn'   — log WARNING with the gap.
+          'error'  — raise RuntimeError; caller refuses to proceed.
+        Always called LAST so all paths (Cloud SQL + parquet) are
+        covered by one check.
         """
+        df_out: pd.DataFrame = pd.DataFrame()
+
         # Priority 0: Cloud SQL
         if _cloud_sql_active():
             df = self._load_intraday_from_sql(ticker, start_date, end_date)
             if not df.empty:
-                return df
+                df_out = df
 
-        ticker_lower = ticker.lower()
-        intraday_dir = self.data_dir / ticker_lower / 'intraday'
+        if df_out.empty:
+            ticker_lower = ticker.lower()
+            intraday_dir = self.data_dir / ticker_lower / 'intraday'
 
-        # Priority 1: combined parquet
-        combined = intraday_dir / f'{ticker_lower}_av_1min_combined.parquet'
-        if combined.exists():
-            df = pd.read_parquet(combined)
-            df = self.normalize_columns(df)
-            df = self._strip_timezone(df)
-            df = self._filter_dates(df, start_date, end_date)
-            return df.sort_index()
+            # Priority 1: combined parquet
+            combined = intraday_dir / f'{ticker_lower}_av_1min_combined.parquet'
+            if combined.exists():
+                df = pd.read_parquet(combined)
+                df = self.normalize_columns(df)
+                df = self._strip_timezone(df)
+                df = self._filter_dates(df, start_date, end_date)
+                df_out = df.sort_index()
+            else:
+                # Priority 2: monthly parquets
+                monthly_files = sorted(intraday_dir.glob(f'{ticker_lower}_av_1min_*.parquet'))
+                if monthly_files:
+                    frames = [pd.read_parquet(f) for f in monthly_files]
+                    df = pd.concat(frames).sort_index()
+                    df = self.normalize_columns(df)
+                    df = self._strip_timezone(df)
+                    df_out = self._filter_dates(df, start_date, end_date)
+                else:
+                    # Priority 3: daily minute parquets (e.g. data/spx/minute/spx_minute_YYYYMMDD.parquet)
+                    minute_dir = self.data_dir / ticker_lower / 'minute'
+                    daily_files = sorted(minute_dir.glob(f'{ticker_lower}_minute_*.parquet'))
+                    if daily_files:
+                        frames = [pd.read_parquet(f) for f in daily_files]
+                        df = pd.concat(frames).sort_index()
+                        df = self.normalize_columns(df)
+                        df = self._strip_timezone(df)
+                        df_out = self._filter_dates(df, start_date, end_date)
 
-        # Priority 2: monthly parquets
-        monthly_files = sorted(intraday_dir.glob(f'{ticker_lower}_av_1min_*.parquet'))
-        if monthly_files:
-            frames = [pd.read_parquet(f) for f in monthly_files]
-            df = pd.concat(frames).sort_index()
-            df = self.normalize_columns(df)
-            df = self._strip_timezone(df)
-            df = self._filter_dates(df, start_date, end_date)
-            return df
-
-        # Priority 3: daily minute parquets (e.g. data/spx/minute/spx_minute_YYYYMMDD.parquet)
-        minute_dir = self.data_dir / ticker_lower / 'minute'
-        daily_files = sorted(minute_dir.glob(f'{ticker_lower}_minute_*.parquet'))
-        if daily_files:
-            frames = [pd.read_parquet(f) for f in daily_files]
-            df = pd.concat(frames).sort_index()
-            df = self.normalize_columns(df)
-            df = self._strip_timezone(df)
-            df = self._filter_dates(df, start_date, end_date)
-            return df
-
-        return pd.DataFrame()
+        _check_staleness(df_out, ticker,
+                         max_age_days=max_age_days, on_stale=on_stale)
+        return df_out
 
     def _load_intraday_from_sql(
         self,
@@ -197,35 +268,53 @@ class DataLoader:
         self,
         ticker: str,
         year: Optional[int] = None,
+        *,
+        max_age_days: int = 2,
+        on_stale: str = 'silent',
     ) -> pd.DataFrame:
         """Load daily OHLCV + indicators for a ticker.
 
         Tries Cloud SQL first (when configured), then local yearly Parquet files.
+
+        Staleness (Track A G.P1.17): if the most recent row is older
+        than `max_age_days` calendar days, `on_stale` controls behavior:
+          'silent' — default, no check (legacy callers).
+          'warn'   — log WARNING with the gap.
+          'error'  — raise RuntimeError; caller refuses to proceed.
+
+        Year-scoped queries (year != None) skip the staleness check
+        because the caller is intentionally requesting historical data.
         """
+        df_out: pd.DataFrame = pd.DataFrame()
+
         # Cloud SQL path
         if _cloud_sql_active():
             df = self._load_daily_from_sql(ticker, year)
             if not df.empty:
-                return df
+                df_out = df
 
-        ticker_lower = ticker.lower()
-        ticker_dir = self.data_dir / ticker_lower
+        if df_out.empty:
+            ticker_lower = ticker.lower()
+            ticker_dir = self.data_dir / ticker_lower
 
-        if year:
-            parquet_file = ticker_dir / f'{ticker_lower}_{year}.parquet'
-            if parquet_file.exists():
-                df = pd.read_parquet(parquet_file)
-                return self.normalize_columns(df).sort_index()
-            return pd.DataFrame()
+            if year:
+                parquet_file = ticker_dir / f'{ticker_lower}_{year}.parquet'
+                if parquet_file.exists():
+                    df = pd.read_parquet(parquet_file)
+                    df_out = self.normalize_columns(df).sort_index()
+            else:
+                # Load all years
+                files = sorted(ticker_dir.glob(f'{ticker_lower}_*.parquet'))
+                if files:
+                    frames = [pd.read_parquet(f) for f in files]
+                    df = pd.concat(frames).sort_index()
+                    df_out = self.normalize_columns(df)
 
-        # Load all years
-        files = sorted(ticker_dir.glob(f'{ticker_lower}_*.parquet'))
-        if not files:
-            return pd.DataFrame()
-
-        frames = [pd.read_parquet(f) for f in files]
-        df = pd.concat(frames).sort_index()
-        return self.normalize_columns(df)
+        # Skip staleness when caller asked for a specific year (historical query).
+        if year is None:
+            _check_staleness(df_out, ticker,
+                             max_age_days=max_age_days, on_stale=on_stale)
+        return df_out
 
     def _load_daily_from_sql(
         self,
