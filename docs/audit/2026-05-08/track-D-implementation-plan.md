@@ -120,17 +120,33 @@ but never incremented anywhere. IWM blew through the 5-fire/day cap by
 `signal-monitor` job spec; only `DB_PASS` uses `secretKeyRef`. Anyone
 with `roles/run.viewer` can read the keys via `gcloud run jobs describe`.
 
-- [ ] In `gcp/deploy.sh:294-313`, drop the four secret literals from
-      `_env_string()`
-- [ ] At `gcp/deploy.sh:505-506`, add a new `--set-secrets` clause
-      bundling the four keys, mirroring the existing `DB_SECRET_FLAG`
-      pattern at line 291
-- [ ] Audit other Cloud Run job definitions in `gcp/deploy.sh` for the
-      same anti-pattern; record findings in PR body (do not fix in this
-      PR — out of scope per CLAUDE.md "extend, don't duplicate")
-- [ ] Test: `gcloud run jobs describe signal-monitor` after deploy →
-      env vars empty, secrets list populated
-- [ ] PR body: cite G.P0.9 + audit doc § 8.12
+- [x] Dropped the four secret literals from `_env_string()` (lines
+      294-313 → 304-309 post-edit). `_env_string()` now only carries
+      non-secret values (`CLOUD_SQL_CONNECTION_NAME`, `DB_USER`,
+      `DB_NAME`, `GCS_BUCKET`)
+- [x] Expanded `DB_SECRET_FLAG` (line 291 → 300-306 post-edit) to
+      bundle all 5 secrets via `--set-secrets`, mirroring the
+      existing DB_PASS pattern. AV is mapped to two env names
+      (`AV_API_KEY` + `ALPHA_VANTAGE_API_KEY`) since callers are
+      split across the legacy and canonical names
+- [x] Audited all other Cloud Run job definitions: 8 fetcher
+      functions (`deploy_fetch_alphavantage`, `_fred_rates`,
+      `_economic_events`, `_insider_transactions`, `_top_movers`,
+      `_earnings_history`, `_news_sentiment`,
+      `_news_sentiment_topics`) had the same anti-pattern via
+      per-deploy `av_env`/`fred_env` bake-ins. **Fixed in same PR** —
+      same investigation, same root cause, same fix shape. EW
+      (Earnings Whispers `EW_USER`/`EW_PASS`) shows the same pattern
+      but is OUT OF SCOPE for G.P0.9; tracked as a follow-up
+- [x] `bash -n gcp/deploy.sh` passes; manual sourcing of the new
+      DB_SECRET_FLAG resolves to a single-line, comma-separated
+      `--set-secrets=DB_PASS=...,AV_API_KEY=...,...` value
+      acceptable to `gcloud run jobs deploy`
+- [ ] PR opened (citing G.P0.9 + audit doc § 8.12 + EW follow-up
+      finding)
+- [ ] Post-merge verification: `gcloud run jobs describe
+      signal-monitor` → env vars empty for the 4 keys, secrets list
+      populated
 
 ### PR 5 — G.P0.10 — EOD reconciliation Cloud Run Job (top-5 priority)
 
