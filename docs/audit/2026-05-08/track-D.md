@@ -41,7 +41,7 @@ Beyond the P0 gaps, the May 7 dataset itself reveals real strategy issues:
   Q4 11.1% target-hit rate). High-conviction signals do not win more.
 - **`MIN_CONDITIONS_MOMENTUM=5` not enforced in window — image-lag
   artifact.** Commit 0cfab76 raising the floor landed 2026-05-07 12:31
-  ET, mid-session; image rebuilt 13:49 UTC = 9:49 ET. The May 7 monitor
+  ET, mid-session; image rebuilt 17:49 UTC = 13:49 ET. The May 7 monitor
   ran on the older image. Verify enforcement holds on May 8+ data.
 - **Brief-aligned vs brief-opposed**: opposed CALLs win 20.5% (16/78) vs
   aligned PUTs 17.0% (9/53). Direction inverted from the brief's premise
@@ -616,7 +616,7 @@ Two minor concerns:
 
 - **`MIN_CONDITIONS_MOMENTUM=5` deploy verification**: per § 6 audit-pass,
   the score>=5 raise (commit 0cfab76) committed mid-session 5/7, image
-  rebuilt 13:49 UTC = 9:49 ET. Re-pull May 8+ stacked-payload data and
+  rebuilt 17:49 UTC = 13:49 ET. Re-pull May 8+ stacked-payload data and
   confirm `momentum base_score >= 5` on every stacked alert. If May 8+
   still shows momentum=3 fires, the runtime-bypass hypothesis is back
   on; otherwise close the finding.
