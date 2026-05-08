@@ -456,13 +456,9 @@ temperature.
    block. Suppress the trigger block on the cleared side or print
    the *next unbroken* level above spot instead.
 
-7. **P2 — Brief should write its own freshness assertion.** Add a
-   `data_freshness_days` field to `premarket_analysis` (and to
-   `premarket_analysis_history`) that records `(analysis_date -
-   df.iloc[-1].name)` in trading days. Today this is computable from
-   the data but not stored, so any audit (like this one) has to
-   re-derive it. Storing it makes Track G's synthesis trivial:
-   `WHERE data_freshness_days > 1` is the broken-brief filter.
+7. **(superseded by P1 #10 below — was P2 "freshness assertion field";
+   the audit-of-audit pass upgraded this to user-facing P1 with a
+   wider scope, see item #10.)**
 
 8. **P2 — Earnings / calendar embed quality not yet sampled.** This
    audit treated the bias/levels half of the brief and inferred from
@@ -615,18 +611,67 @@ are new files in a new directory, so nothing existing is modified.
 
 ### Updated backlog items (additions)
 
-9. **P1 — Persist stale-replicated `strat_levels` defensively.** The
-   `persist_level_map` call at `gcp/premarket_brief.py:1030` writes
-   17 stale rows per ticker every morning when the underlying daily
-   data hasn't moved. This corrupts the signal monitor's level-break
-   detection (Track D will see this as `level_broken` firing against
-   levels that were already gone). Either:
-   - Skip the persist if `(analysis_date - last_daily_bar_date) > 1
-     trading day`, OR
-   - Stamp each row with a `data_age_trading_days` column so
-     downstream consumers can decide whether to trust it.
+9. **P1 — Auto-backfill on staleness, then defensively skip `strat_levels`
+   persistence.** When the brief detects that
+   `(analysis_date - last_daily_bar_date) > 1` trading day, do two
+   things in this order:
+   1. **Kick off a backfill of the missing daily bars before continuing.**
+      The fetcher is the `fetch-market-data` Cloud Run Job; the brief
+      can invoke it synchronously via the Cloud Run Admin API
+      (`gcloud run jobs execute fetch-market-data --wait`) or the
+      Python `google-cloud-run` client, scoped to the missing date
+      range. Make it idempotent: check for an in-flight execution
+      before launching a new one so a 9:25 AM signal-monitor restart
+      doesn't double-trigger. After the backfill, re-load the daily
+      df and re-run the per-ticker analysis loop. If the backfill
+      itself fails (e.g. AlphaVantage rate-limited), fall through to
+      step 2.
+   2. **Skip the `persist_level_map` call** at
+      `gcp/premarket_brief.py:1030` for any ticker whose data is
+      still stale post-backfill. Today this writes 17 rows per
+      ticker every morning regardless of staleness; the rows
+      directly corrupt the signal monitor's level-break detection
+      (Track D will see `level_broken` firing against levels that
+      were gone pre-market). Either skip the persist entirely or
+      stamp each row with a `data_age_trading_days` column so
+      downstream consumers can decide whether to trust it.
 
-10. **P2 — Persist LLM-generated brief commentary.** Add columns
+   Combining backfill + skip is important: a pure skip leaves users
+   without a brief; a pure backfill leaves us with corrupted
+   downstream state when the backfill itself fails. The two-phase
+   approach degrades gracefully.
+
+10. **P1 — Brief and report outputs must surface the data window.**
+    Today the brief publishes prices, levels, and bias with no
+    indication of which underlying data window produced them. Two
+    additions, both for human validation and for downstream consumers:
+
+    - **Per-ticker `data_as_of` field**: every (date, ticker) row in
+      `premarket_analysis` should record the timestamp of the last
+      OHLCV bar used for that ticker (i.e. `df.iloc[-1].name` in the
+      brief loop). Add the column to `premarket_analysis` and
+      `premarket_analysis_history`. Track G can then run
+      `WHERE data_as_of < analysis_date - INTERVAL '1 trading day'`
+      as a single-query freshness audit, and the AI insights pipeline
+      (Track C) can read `data_as_of` to know whether the brief it's
+      summarizing is current.
+    - **User-facing "based on data from X to Y" line in the Discord
+      embed**: render in the overview embed (or the per-ticker
+      analysis field) something like
+      `Based on data from 2026-04-27 → 2026-04-27 (1 trading day,
+      stale by 6 sessions)` for a stuck-fetcher day, or
+      `Based on data from 2025-05-08 → 2026-05-07 (252 trading days)`
+      for a healthy day where SMA200 is in scope. This makes
+      staleness visible to the trader the moment they read the brief
+      on their phone, instead of requiring them to spot it from
+      bias/levels that don't move.
+
+    Together with item #9, this means: the brief tries to fix the
+    staleness (#9.1), guards downstream state when it can't (#9.2),
+    and tells the user exactly what window it's working from
+    regardless (#10).
+
+11. **P2 — Persist LLM-generated brief commentary.** Add columns
     `llm_overview`, `llm_orb_explanation`, and per-ticker
     `llm_analysis` / `llm_playbook` to either `premarket_analysis` or
     a sidecar `premarket_llm_explanations` table. Without this, no
