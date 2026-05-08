@@ -61,7 +61,7 @@ def _exit_bar(close, rsi=50.0):
     })
 
 
-# ── 1) fire_alert increments daily_trades ─────────────────────────────
+# ── 1) fire_alert increments daily_trades ───────────────────────────
 
 def test_fire_alert_increments_daily_trades():
     """Every successful fire bumps the per-ticker daily_trades counter
@@ -93,14 +93,19 @@ def test_fire_alert_increments_daily_trades():
     assert monitor.daily_trades[ticker] == starting + 2
 
 
-# ── 2) _check_exits increments daily_pnl ──────────────────────────────
+# ── 2) _check_exits increments daily_pnl ──────────────────────────
 
 def test_check_exits_increments_daily_pnl_on_target_hit():
-    """Every exit bumps the per-ticker daily_pnl counter by the realized
-    return_pct, so the loss-limit cap at evaluate_ticker line 439 can
-    short-circuit once `daily_pnl[ticker] <= daily_loss_limit`."""
+    """Every exit bumps daily_pnl by realized fractional return × size.
+
+    The cap at evaluate_ticker line 439 compares against
+    `risk.daily_loss_limit` which is normalized to a fraction in
+    `lib/config.py` (e.g. -0.02 = -2%). The backtest path accumulates
+    `return_pct * position_size` fractional (lib/backtest.py:522).
+    This test locks in the same units in the live monitor."""
     monitor = _make_monitor()
     ticker = 'QQQ'  # exit-watcher tests use QQQ
+    size = 0.10
     monitor.active_positions.setdefault(ticker, []).append({
         'ticker': ticker,
         'alert_ts': datetime.utcnow() - timedelta(minutes=5),
@@ -110,28 +115,37 @@ def test_check_exits_increments_daily_pnl_on_target_hit():
         'time_stop_minutes': 30,
         'score': 4.0,
         'strength': 'medium',
+        'size': size,
     })
     starting = monitor.daily_pnl.get(ticker, 0.0)
 
     with patch.object(monitor, '_fire_exit_alert'), \
          patch.object(monitor, '_persist_exit'):
-        # Bar @ 679.70 hits the 679.66 target → realized +0.31% on a CALL
+        # Bar @ 679.70 hits the 679.66 target → +0.31% raw, +0.000305 sized
         monitor._check_exits(ticker, _exit_bar(679.70), 679.70)
 
-    expected_pnl = (679.70 - 677.63) / 677.63 * 100.0
-    assert monitor.daily_pnl[ticker] == pytest.approx(starting + expected_pnl,
-                                                       abs=1e-6), (
-        f"daily_pnl[{ticker}] should bump by realized return ~{expected_pnl:.3f}%, "
-        f"got delta={monitor.daily_pnl[ticker] - starting:.3f}%"
+    expected_frac = (679.70 - 677.63) / 677.63 * size
+    delta = monitor.daily_pnl[ticker] - starting
+    assert delta == pytest.approx(expected_frac, abs=1e-9), (
+        f"daily_pnl[{ticker}] should bump by FRACTIONAL sized return "
+        f"~{expected_frac:.6f}, got {delta:.6f}"
+    )
+    # Sanity: must be a fraction, not a percent — never exceed 1.0 for
+    # a single trade with size <= 1.0
+    assert abs(delta) < 1.0, (
+        f"daily_pnl bump must be in fractional units to compare against "
+        f"daily_loss_limit (fraction); got {delta} which looks like a "
+        f"percent. See lib/config.py:207 / lib/backtest.py:522."
     )
 
 
 def test_check_exits_increments_daily_pnl_negative_on_put_loss():
     """A PUT that exits via time_stop above entry is a loss; daily_pnl
-    bumps NEGATIVE so the loss-limit (a negative threshold) can fire."""
+    bumps NEGATIVE in fractional units."""
     monitor = _make_monitor()
     ticker = 'IWM'
     alert_ts = datetime.utcnow() - timedelta(minutes=40)
+    size = 0.20
     monitor.active_positions.setdefault(ticker, []).append({
         'ticker': ticker,
         'alert_ts': alert_ts,
@@ -141,6 +155,7 @@ def test_check_exits_increments_daily_pnl_negative_on_put_loss():
         'time_stop_minutes': 30,  # already elapsed → time_stop will fire
         'score': 4.0,
         'strength': 'medium',
+        'size': size,
     })
     starting = monitor.daily_pnl.get(ticker, 0.0)
 
@@ -149,13 +164,54 @@ def test_check_exits_increments_daily_pnl_negative_on_put_loss():
         # Price went UP to 201.00 → PUT is a loss
         monitor._check_exits(ticker, _exit_bar(201.00, rsi=50.0), 201.00)
 
-    # PUT P&L = (entry - exit) / entry * 100 = (200 - 201) / 200 * 100 = -0.5%
-    expected_pnl = (200.00 - 201.00) / 200.00 * 100.0
+    # PUT P&L fractional sized = (entry - exit) / entry * size
+    expected_frac = (200.00 - 201.00) / 200.00 * size
     delta = monitor.daily_pnl[ticker] - starting
-    assert delta == pytest.approx(expected_pnl, abs=1e-6), (
-        f"PUT loss should bump daily_pnl by {expected_pnl:+.3f}%, got {delta:+.3f}%"
+    assert delta == pytest.approx(expected_frac, abs=1e-9), (
+        f"PUT loss should bump daily_pnl by fractional {expected_frac:+.6f}, "
+        f"got {delta:+.6f}"
     )
     assert delta < 0, "loss should bump daily_pnl in the negative direction"
+
+
+def test_daily_pnl_units_match_daily_loss_limit_units():
+    """Direct unit-mismatch regression: a sequence of small losses
+    must NOT trip `daily_loss_limit=-0.02` until the accumulated
+    fractional sized P&L actually reaches the limit. Pre-Codex-fix,
+    `_check_exits` accumulated *percent* values (-0.5 for -0.5%) and
+    one such loss tripped the -0.02 (-2%) limit on the next eval."""
+    monitor = _make_monitor()
+    ticker = monitor.tickers[0]
+    monitor.risk.daily_loss_limit = -0.02   # canonical -2% fraction
+    # One -0.5% sized@10% loss = -0.0005 fractional. Three of these
+    # = -0.0015. Limit is -0.02 → must NOT trip yet.
+    starting = monitor.daily_pnl.get(ticker, 0.0)
+    for _ in range(3):
+        monitor.active_positions.setdefault(ticker, []).append({
+            'ticker': ticker,
+            'alert_ts': datetime.utcnow() - timedelta(minutes=40),
+            'direction': 'PUT',
+            'entry_price': 200.00,
+            'target_price': 197.50,
+            'time_stop_minutes': 30,
+            'score': 4.0,
+            'strength': 'medium',
+            'size': 0.10,
+        })
+        with patch.object(monitor, '_fire_exit_alert'), \
+             patch.object(monitor, '_persist_exit'):
+            # +0.5% PUT loss: price goes 200 -> 201
+            monitor._check_exits(ticker, _exit_bar(201.00), 201.00)
+
+    # Accumulated -0.0015, well above -0.02 limit → must NOT trip
+    assert monitor.daily_pnl[ticker] > monitor.risk.daily_loss_limit, (
+        f"3 × -0.5%@10% losses should sum to ~-0.0015 fractional, "
+        f"NOT trip -0.02 limit. daily_pnl={monitor.daily_pnl[ticker]} "
+        f"vs limit={monitor.risk.daily_loss_limit}. If this fails, the "
+        f"unit-mismatch (percent vs fraction) regression is back."
+    )
+    delta = monitor.daily_pnl[ticker] - starting
+    assert delta == pytest.approx(-0.0015, abs=1e-9)
 
 
 # ── 3) evaluate_ticker short-circuits at max_daily_trades ─────────────

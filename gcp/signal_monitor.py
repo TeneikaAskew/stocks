@@ -545,12 +545,12 @@ class SignalMonitor:
         # Phase 1.6: stacked-agreement signals get a visual prefix so
         # they jump out in the Discord channel scroll.
         title_prefix = '\U0001F3AF STACKED ' if agreement else ''
-        # Phase 1: timeframe tag in the title \u2014 '[15m]' or '[60m]' etc.
+        # Phase 1: timeframe tag in the title — '[15m]' or '[60m]' etc.
         tf_tag = getattr(self, '_latest_timeframe_tag', None)
         tf_label = f" [{tf_tag}]" if tf_tag else ''
         # Phase 1.5: catalyst proximity tag. Non-quiet buckets get a
         # bracket suffix so the trader sees "during FOMC in 0m" or
-        # "next_day \u00b7 earnings_post 4h ago" at fire time.
+        # "next_day · earnings_post 4h ago" at fire time.
         proximity = getattr(self, '_latest_proximity', None) or {}
         prox_bucket = proximity.get('proximity_bucket')
         prox_label = ''
@@ -565,8 +565,8 @@ class SignalMonitor:
                 time_clause = f' in {mins}m' if prox_bucket in ('imminent', 'pre') else f' {mins}m ago'
             prox_label = f' [{prox_bucket}{":" + ev_type if ev_type else ""}{time_clause}]'
 
-        # Phase 2: brief-bias tag \u2014 surfaces alignment between this fired
-        # signal and the morning premarket brief. Visibility only \u2014 does
+        # Phase 2: brief-bias tag — surfaces alignment between this fired
+        # signal and the morning premarket brief. Visibility only — does
         # not modify the fire decision, score, or position size.
         brief = self._resolve_brief_bias(ticker)
         align = _brief_alignment(direction, brief)
@@ -576,18 +576,18 @@ class SignalMonitor:
         if brief['bias'] == 'CONFLICTED':
             brief_label = ' [brief: CONFLICTED]'
         elif align == 'aligned':
-            brief_label = f" [brief: {brief['bias']} \u2713 ({brief['setup_count']}/5)]"
+            brief_label = f" [brief: {brief['bias']} ✓ ({brief['setup_count']}/5)]"
         elif align == 'opposed':
             brief_label = f" [AGAINST BRIEF: {brief['bias']} ({brief['setup_count']}/5)]"
 
         title = (
             f"{title_prefix}{'CALL' if direction == 'CALL' else 'PUT'} SIGNAL"
-            f"{tf_label}{prox_label}{brief_label} \u2014 {ticker} @ ${price:.2f}"
+            f"{tf_label}{prox_label}{brief_label} — {ticker} @ ${price:.2f}"
         )
         agreement_block = ''
         if agreement:
             agreement_block = (
-                f"\U0001F3AF STACKED \u2014 momentum + mean_reversion both fire {direction}\n"
+                f"\U0001F3AF STACKED — momentum + mean_reversion both fire {direction}\n"
                 f"Composite score: {agreement['composite_score']:.1f}\n"
             )
 
@@ -601,15 +601,15 @@ class SignalMonitor:
         if prox_bucket and prox_bucket != 'quiet' and abs(prox_mult - 1.0) > 0.001:
             verb = 'de-weighted' if prox_mult < 1.0 else 'amplified'
             proximity_block = (
-                f"\u26a0\ufe0f Catalyst window: **{prox_bucket}** \u2014 "
-                f"score {verb} {prox_mult:.2f}\u00d7 ({raw_score} \u2192 {total_score:.1f})\n"
+                f"⚠️ Catalyst window: **{prox_bucket}** — "
+                f"score {verb} {prox_mult:.2f}× ({raw_score} → {total_score:.1f})\n"
             )
 
         message = {
             'embeds': [{
                 'title': title,
                 'description': (
-                    f"**Strength: {total_score:.1f}/{max_score} ({strength}) \u2192 {size:.0%} size**\n"
+                    f"**Strength: {total_score:.1f}/{max_score} ({strength}) → {size:.0%} size**\n"
                     f"{agreement_block}"
                     f"{proximity_block}"
                     f"Base: {sig['base_score']}/5 | Strat bonus: +{strat_bonus}\n\n"
@@ -758,6 +758,13 @@ class SignalMonitor:
             'time_stop_minutes': int(time_stop),
             'score': float(total_score),
             'strength': strength,
+            # Track D / G.P0.8: store the position size so `_check_exits`
+            # can accumulate sized P&L into `daily_pnl` (matches the
+            # backtest path at lib/backtest.py:522 — `return_pct *
+            # position_size`). Without this, `_check_exits` would fall
+            # back to `size=1.0` and over-count loss accumulation by
+            # 5-20× (typical sizes are 5-20% per trade).
+            'size': float(size),
         })
 
     def _resolve_brief_bias(self, ticker: str) -> dict:
@@ -775,7 +782,7 @@ class SignalMonitor:
         self._brief_bias_cache[ticker] = bias
         return bias
 
-    # ── Exit-watcher ─────────────────────────────────────────────────
+    # ── Exit-watcher ───────────────────────────────────
     # Each tick (per ticker) walks open positions and fires a Discord
     # alert + persists exit details when target/time/RSI conditions are
     # met. Universal RSI thresholds (call_rsi_exit=80, put_rsi_exit=20)
@@ -819,14 +826,22 @@ class SignalMonitor:
                 self._persist_exit(pos, current_price, exit_reason, now_utc)
                 # Track D / G.P0.8: bump the running P&L counter so the
                 # `daily_loss_limit` cap at evaluate_ticker line 439 is
-                # enforced. `_exit_return_pct` is a staticmethod with O(1)
-                # work; recomputing it here keeps the increment local and
-                # decoupled from `_persist_exit`'s DB-write success path
-                # (the trade exits in-memory regardless of persist outcome).
-                pnl = self._exit_return_pct(
+                # enforced. The cap is in *fractional* units (-0.02 =
+                # -2%, per lib/config.py:207 + the input-normalization
+                # at lib/config.py:541), and the backtest path
+                # accumulates `return_pct * position_size` fractional
+                # (lib/backtest.py:516-522). Match those units exactly:
+                # divide _exit_return_pct's percent by 100 and apply the
+                # position size. Legacy positions without a 'size' key
+                # default to 1.0 (no sizing). Decoupled from
+                # `_persist_exit`'s DB-write success path — the trade
+                # exits in-memory regardless of persist outcome.
+                pct = self._exit_return_pct(
                     pos['direction'], pos['entry_price'], current_price)
+                size = float(pos.get('size', 1.0))
                 self.daily_pnl[pos['ticker']] = (
-                    self.daily_pnl.get(pos['ticker'], 0.0) + pnl
+                    self.daily_pnl.get(pos['ticker'], 0.0)
+                    + (pct / 100.0) * size
                 )
                 positions.remove(pos)
 
