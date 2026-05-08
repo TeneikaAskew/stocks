@@ -99,10 +99,21 @@ class EODResolver:
     # ── 1. Find unresolved alerts ─────────────────────────────────────
 
     def find_open_alerts(self, since: Optional[str] = None) -> pd.DataFrame:
-        """Return rows of unresolved alerts strictly older than today.
+        """Return rows of unresolved alerts up to and including today.
 
-        Filter `alert_date < CURRENT_DATE` so we never touch the active
-        session — the in-process exit-watcher owns those.
+        Predicate is `alert_date <= CURRENT_DATE` so the daily 16:30 ET
+        scheduled run actually closes the session it was scheduled for.
+        Pre-fix this was `<` which skipped today's session entirely
+        (Codex P1 review on PR #319): at 16:30 ET = 20:30 UTC,
+        Postgres `CURRENT_DATE` is the same calendar day as the
+        alerts being reconciled, so `<` excluded every same-day row
+        and Friday alerts had to wait until Monday's run.
+
+        Including today is safe because the in-process exit-watcher
+        in signal_monitor.py exits at 16:00 ET; the 30-minute cushion
+        before this resolver fires guarantees no race. The
+        `is_open=FALSE` filter on individual rows ensures any row the
+        live monitor already resolved is excluded.
         """
         from gcp.database import is_cloud_sql_configured, query_to_dataframe
         if not is_cloud_sql_configured():
@@ -114,7 +125,7 @@ class EODResolver:
                    price_at_signal, target_price, time_stop_minutes
               FROM signal_alerts
              WHERE (is_open IS TRUE OR exit_ts IS NULL)
-               AND alert_date < CURRENT_DATE
+               AND alert_date <= CURRENT_DATE
         """
         params: dict = {}
         if since:
@@ -137,9 +148,17 @@ class EODResolver:
         if key in self._intraday_cache:
             return self._intraday_cache[key]
 
-        # Pull the full session window — alert is somewhere inside.
+        # Pull the full session window. DataLoader._load_intraday_from_sql
+        # binds these as Postgres timestamp comparisons (`ts >= :start AND
+        # ts <= :end`); a bare date string parses as midnight at the start
+        # of that day, so passing the same date for both bounds matches
+        # ZERO bars (Codex P1 review on PR #319). Use [00:00 of alert_date,
+        # 00:00 of next day] to capture the full session.
+        day = pd.Timestamp(alert_date)
         df = self.loader.load_intraday(
-            ticker, start_date=str(alert_date), end_date=str(alert_date),
+            ticker,
+            start_date=day.isoformat(),
+            end_date=(day + pd.Timedelta(days=1)).isoformat(),
         )
         if df.empty:
             logger.warning("no intraday partition for %s on %s", ticker, alert_date)

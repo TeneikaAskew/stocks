@@ -256,6 +256,73 @@ def test_intraday_cache_hits_once_per_ticker_day(make_resolver):
     )
 
 
+# ── 6b) Codex P1: predicate must include today's session ─────────────
+
+def test_find_open_alerts_predicate_uses_le_not_lt():
+    """Codex P1 review on PR #319 (#3211892819): the original
+    `alert_date < CURRENT_DATE` predicate skipped today's session
+    because at the 16:30 ET / 20:30 UTC schedule, Postgres
+    CURRENT_DATE IS the same calendar day as the alerts being
+    reconciled. Lock in `alert_date <= CURRENT_DATE` so the daily
+    EOD run actually closes its scheduled session."""
+    from gcp.signal_monitor_eod_resolver import EODResolver
+    from unittest.mock import patch
+    resolver = EODResolver()
+    with patch('gcp.database.is_cloud_sql_configured', return_value=True), \
+         patch('gcp.database.query_to_dataframe', return_value=pd.DataFrame()) as mock_q:
+        resolver.find_open_alerts()
+    sql_arg = mock_q.call_args[0][0]
+    # The fix: must be <= not <
+    assert 'alert_date <= CURRENT_DATE' in sql_arg, (
+        "predicate must use `alert_date <= CURRENT_DATE` so today's "
+        "alerts are included in the daily EOD sweep; got SQL:\n" + sql_arg
+    )
+    assert 'alert_date < CURRENT_DATE' not in sql_arg, (
+        "regression: `<` predicate excludes today's session entirely; "
+        "Friday alerts would wait until Monday's run"
+    )
+
+
+# ── 6c) Codex P1: load_intraday gets a full-day range ────────────────
+
+def test_load_day_passes_full_day_range_not_midnight_start():
+    """Codex P1 review on PR #319 (#3211892821): passing `start_date`
+    and `end_date` as the same bare date string produces a Postgres
+    predicate `ts >= :start AND ts <= :end` where Postgres parses both
+    as midnight start-of-day. With end_date='2026-05-07', `ts <=
+    '2026-05-07'` excludes every market-hours bar (which all have
+    ts > midnight). Lock in a full-day range — start at 00:00 of
+    alert_date, end at 00:00 of next day — so market hours bars are
+    captured."""
+    from gcp.signal_monitor_eod_resolver import EODResolver
+    from unittest.mock import MagicMock
+    resolver = EODResolver()
+    resolver.loader = MagicMock()
+    resolver.loader.load_intraday.return_value = pd.DataFrame()
+    # Trigger _load_day for (SPY, 2026-05-07)
+    resolver._load_day('SPY', '2026-05-07')
+    args, kwargs = resolver.loader.load_intraday.call_args
+    start = kwargs.get('start_date') or (args[1] if len(args) > 1 else None)
+    end = kwargs.get('end_date') or (args[2] if len(args) > 2 else None)
+    assert start and end, f"load_intraday must receive both start and end; got args={args} kwargs={kwargs}"
+    # start_date should resolve to midnight 5/7
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end)
+    assert start_ts == pd.Timestamp('2026-05-07 00:00:00'), (
+        f"start_date should be 5/7 midnight, got {start_ts}"
+    )
+    # end_date must be STRICTLY AFTER 5/7 midnight to capture market bars
+    assert end_ts > pd.Timestamp('2026-05-07 00:00:00'), (
+        f"end_date must be after 5/7 00:00:00 to capture market bars; "
+        f"got {end_ts} which would match zero bars (Codex P1 regression)"
+    )
+    # end should cover at least through end-of-day (16:00 ET = 20:00 UTC).
+    # The fix uses next-day midnight (5/8 00:00:00) which trivially covers it.
+    assert end_ts >= pd.Timestamp('2026-05-07 20:00:00'), (
+        f"end_date should cover through session close; got {end_ts}"
+    )
+
+
 # ── 7) RSI extreme fires on a CALL when RSI >= call_rsi_exit ──────────
 
 def test_resolve_one_rsi_extreme_call(make_resolver):
