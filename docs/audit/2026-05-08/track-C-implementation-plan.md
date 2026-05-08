@@ -73,18 +73,17 @@ Per the user's direction, file issues for each cross-track blocker so
 the wait is explicit and trackable. Expected open at the time of plan
 write (verify with `mcp__github__list_issues` before filing duplicates):
 
-| Issue to file | Blocks Track C item(s) | Owning track | Why I'm waiting |
-|---|---|---|---|
-| **Track-A: G.P0.1** unfreeze `fetch-market-data` daily fetcher (`--date=2026-04-27` baked into Cloud Run Job spec) | G.P1.10 verification | A | Until fresh daily data lands, every Track C re-evaluation runs against frozen 4-27 levels |
-| **Track-D: G.P0.6** `signal_alerts.conditions_met` JSONB writer fix + backfill | G.P2.1, G.P2.2, G.P2.3 | D | The double-encoded JSONB string is currently breaking factor expansion at the SQL layer; fixing the writer + backfilling unblocks the per-factor audit |
-| **Track-D: G.P0.11** momentum strategy zero-fires investigation (instrument "considered vs fired" counter) | G.P2.1, G.P2.2, G.P2.3 | D | I can't responsibly demote/keep Phase 0.7.x confirmers (`rvol_above_recent`, `atr_expansion`, `rsi_thrust`) on n=4-day evidence; needs Track D to first prove momentum can fire at all |
-| **Track-B: G.P1.5** brief `signal_status` ↔ `ftfc_direction` contradiction | G.P1.8 | B | The UI fix for brief↔insights divergence ships a clean version of a contradictory signal until Track B resolves the brief's internal inconsistency |
-| **Track-D: G.P1.10** `brief_bias` populated only on 5/7 (was `get_premarket_bias()` failing on 5/4-5/6?) | G.P1.10 (Track C verify) | D (via B) | Track C's role here is to verify the integration once Track D ships the lookup fix |
+| Issue # | Cross-track item | Blocks Track C item(s) | Owning track | Pre-flight status (2026-05-08 skim) |
+|---|---|---|---|---|
+| [#295](https://github.com/TeneikaAskew/stocks/issues/295) | **G.P0.1** unfreeze `fetch-market-data` daily fetcher (`--date=2026-04-27` in Cloud Run Job spec) | G.P1.10 verification | A | Identified, **not started**. 5-min config fix |
+| [#296](https://github.com/TeneikaAskew/stocks/issues/296) | **G.P0.6** `signal_alerts.conditions_met` JSONB writer fix + backfill | G.P2.1, G.P2.2, G.P2.3 | D | Identified, **not started**. Schema/insertion fix in `_persist_signal_alert` |
+| [#297](https://github.com/TeneikaAskew/stocks/issues/297) | **G.P0.11** momentum zero-fires investigation (instrument "considered vs fired" counter) | G.P2.1, G.P2.2, G.P2.3 | D | **Partially mitigated, unverified**: PR #280 raised `MIN_CONDITIONS_MOMENTUM=5` landed 2026-05-07 12:31 ET; image rebuilt 13:49 ET. Track G's specific ask (instrumentation) is **not started**. May 8+ data needs verification |
+| [#298](https://github.com/TeneikaAskew/stocks/issues/298) | **G.P1.5** brief `signal_status` ↔ `ftfc_direction` contradiction | G.P1.8 | B | Identified, **not started** |
+| [#299](https://github.com/TeneikaAskew/stocks/issues/299) | **G.P1.10** `brief_bias` populated only on 5/7 | G.P1.10 (Track C verify) | D (via B) | **Cause identified by Track D**: TZ bug fixed May 7; needs deploy + verification. Track B side: `premarket_analysis` lacks `data_as_of` column (separate P1) |
 
-**Action item before R1 work begins:** open these as GitHub issues
-linked to PR #294 / track-G.md, label `audit-2026-05-08`, `cross-track-block`.
-If an existing issue covers it (e.g. someone already filed Track A's
-fetcher fix), link instead of duplicating.
+**Pre-flight skim (2026-05-08, post-issue-filing):** all five blockers
+confirmed unshipped on `main`. Track C's plan ordering holds — Round 1
+work is genuinely independent, Round 2 work genuinely waits.
 
 ---
 
