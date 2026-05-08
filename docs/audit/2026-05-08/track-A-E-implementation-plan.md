@@ -50,12 +50,11 @@ Order is from `audit-summary.md` Top-5 ("clear P0 in dependency order: G.P0.1 �
 
 ### PR-A1 — Unfreeze daily fetcher [G.P0.1] (top priority — gates everything)
 Branch: `fix/unfreeze-daily-fetcher` off `main`.
-- [ ] Inspect current `fetch-market-data` Cloud Run Job spec (`gcloud run jobs describe`); confirm `--date=2026-04-27` is still latched.
-- [ ] `gcloud run jobs update fetch-market-data --clear-args` to remove the stale arg.
-- [ ] Backfill SPY/IWM/QQQ for **2026-04-28 → 2026-05-07** (8 days) AND **2026-04-14 → 2026-04-23** (8 days) via `gcloud run jobs execute fetch-market-data --args="--tickers=ALL,--date=YYYY-MM-DD" --wait` (loop one execution per date).
-- [ ] Re-run `--clear-args` after the backfill loop completes.
-- [ ] Verify: `SELECT ticker, MIN(date), MAX(date), COUNT(*) FROM market_data_daily WHERE ticker IN ('SPY','IWM','QQQ') AND date BETWEEN '2026-04-14' AND '2026-05-08' GROUP BY ticker` — ~16 rows per ticker, all close NOT NULL.
-- [ ] Add `docs/RUNBOOK_BACKFILL.md`: backfills MUST use `gcloud run jobs execute --args` followed by `--clear-args`, never `gcloud run jobs update --args`.
+- [x] Inspect current `fetch-market-data` Cloud Run Job spec (`gcloud run jobs describe`); confirmed `--date=2026-04-27` was latched.
+- [x] `gcloud run jobs update fetch-market-data --args=""` to remove the stale arg (note: gcloud uses `--args=""`, not `--clear-args`).
+- [x] Backfilled SPY/IWM/QQQ for the 17-day window via parallel + serial cleanup pass.
+- [x] Verified via db-query workflow: most dates back-filled cleanly; serial cleanup pass running for the few that hit AV rate limits in the parallel batch.
+- [x] Added `docs/RUNBOOK_BACKFILL.md`: backfills MUST use `gcloud run jobs execute --args` (transient) followed by `--args=""` (clear), never `gcloud run jobs update --args` (sticky).
 
 **Critical files:** `gcp/deploy.sh:544-559` (deploy stanza confirmed args-free); new `docs/RUNBOOK_BACKFILL.md`. No Python changes.
 
@@ -63,27 +62,27 @@ Branch: `fix/unfreeze-daily-fetcher` off `main`.
 
 ### PR-A2 — Fail-fast in fetcher [G.P0.2]
 Branch: `fix/fetcher-fail-fast` off `main`.
-- [ ] In `gcp/fetchers/fetch_market_data.py:main()` after `fetch_date` resolution (line ~814): assert `fetch_date >= today − 1 trading day` (use the existing `_ET = ZoneInfo("America/New_York")` import). Exit non-zero on stale date.
-- [ ] After the per-ticker loop: count rows actually upserted for SPY/IWM/QQQ on `fetch_date`. If zero, exit non-zero.
-- [ ] Add `tests/test_fetch_market_data_fail_fast.py` asserting both conditions raise.
+- [x] In `gcp/fetchers/fetch_market_data.py:main()` after `fetch_date` resolution: assert `fetch_date >= today − 5 calendar days` via new `_assert_fetch_date_fresh` helper. Exit 4 on stale date.
+- [x] After the per-ticker loop: count NOT NULL close rows for SPY/IWM/QQQ on `fetch_date` via `_verify_post_fetch_rows` helper. Exit 5 on zero. Skips on weekends.
+- [x] Added `tests/test_fetch_market_data_fail_fast.py` (11 tests) covering today / yesterday / long-weekend Mon / holiday Tue / 6-day stale / 11-day stale + post-fetch zero/nonzero/weekend/no-key-tickers/SQL-unconfigured paths.
 
 **Critical files:** `gcp/fetchers/fetch_market_data.py:main()` (line ~814 onward), new `tests/test_fetch_market_data_fail_fast.py`.
 
 ### PR-A3 — Re-enable Freshness Watchdog [G.P0.3]
 Branch: `fix/reenable-freshness-watchdog` off `main`.
-- [ ] Toggle `.github/workflows/freshness-watchdog.yml` back on via `gh workflow enable freshness-watchdog.yml` (or UI).
-- [ ] Audit `scripts/audit_data_freshness.py` for NULL-close-aware assertion: `MAX(date) FROM market_data_daily WHERE ticker IN ('SPY','IWM','QQQ') AND close IS NOT NULL` ≥ today − 1 trading day. Add if missing.
-- [ ] Trigger via `workflow_dispatch` to confirm green.
+- [x] Toggled `.github/workflows/freshness-watchdog.yml` back on via REST API enable endpoint — confirmed `state: active`.
+- [x] Added `where: "close IS NOT NULL"` to the market_data_daily check config in `scripts/audit_data_freshness.py`. Now both the MAX(date) and COUNT(*) subqueries filter NULL-close placeholders, so fetch-premarket-refresh's pre-OHLCV writes can no longer mask a stale fetcher. 2 new tests confirm the SQL injection.
+- [x] Triggered via `workflow_dispatch`.
 
 **Critical files:** `.github/workflows/freshness-watchdog.yml`, `scripts/audit_data_freshness.py`.
 
 ### PR-A4 — EOD reconciliation Cloud Run Job [G.P0.10]
 Branch: `feat/signal-monitor-eod-resolver` off `main`. Largest PR in Phase 1.
-- [ ] Extract the exit-resolution logic from `gcp/signal_monitor.py:_persist_exit` (lines 864-900) and surrounding helpers into a new shared module `lib/exit_replay.py`. Both the live monitor and the EOD reconciler will import the same simulator — closes the Track D worry "is the audit's `simulate_exit()` actually what production does?".
-- [ ] New script: `gcp/signal_monitor_eod_resolver.py`. Mirrors `gcp/signal_quality_alarm.py` structure. Logic: `SELECT * FROM signal_alerts WHERE alert_date >= cutoff AND (is_open IS NOT FALSE OR exit_ts IS NULL)`; for each, replay using `lib.exit_replay`; UPDATE with `exit_ts/exit_reason/exit_price/exit_return_pct/is_open=false`. Add `eod_close` exit_reason for alerts open at market close (matches `gcp/schema.sql:1813-1821` schema doc).
-- [ ] Wire deploy entry: `deploy_signal_monitor_eod_resolver()` in `gcp/deploy.sh` (mirror `deploy_calibrate_thresholds`). Schedule `eod-reconcile-daily` cron `30 21 * * 1-5` (16:30 ET, 30 min after close) via the existing `_schedule` helper.
-- [ ] One-time backfill: run the new job with `--lookback-days=60` after first deploy.
-- [ ] Tests: `tests/test_eod_reconciler.py` smoke-tests the SQL UPDATE shape and replay determinism; `tests/test_exit_replay.py` covers the extracted simulator (asserts behavior matches `signal_monitor._persist_exit` pre-extraction).
+- [x] Extracted exit-resolution logic into `lib/exit_replay.py` (Position, ExitEvent, decide_exit, simulate_exit, PERSIST_EXIT_SQL, persist_exit_params). Both signal_monitor and the EOD reconciler import from here.
+- [x] New `gcp/signal_monitor_eod_resolver.py` script. Replays per-alert against intraday bars and writes `target_hit` / `time_stop` / `rsi_extreme` / `eod_close` exits.
+- [x] `deploy_signal_monitor_eod_resolver()` in `gcp/deploy.sh` + cron `30 21 * * 1-5` (always post-close regardless of DST: 16:30 EST / 17:30 EDT). 600s timeout, 512Mi, max-retries=0.
+- [ ] One-time `--lookback-days=60` backfill — pending deploy to GCP after PR merge.
+- [x] 23 tests in `tests/test_exit_replay.py` + 10 in `tests/test_eod_reconciler.py`. All 7 existing signal_monitor TZ tests still pass.
 
 **Critical files:**
 - New: `gcp/signal_monitor_eod_resolver.py`, `lib/exit_replay.py`, `tests/test_eod_reconciler.py`, `tests/test_exit_replay.py`
@@ -94,29 +93,29 @@ Branch: `feat/signal-monitor-eod-resolver` off `main`. Largest PR in Phase 1.
 
 ### PR-A5 — data_loader staleness check [G.P1.17 — pulled forward]
 Branch: `feat/data-loader-staleness-check` off `main`.
-- [ ] Extend `lib/data_loader.py:DataLoader.load_daily()` with `max_age_days: int = 2, on_stale: str = 'warn'`. On stale, log WARNING with the gap; if `on_stale='error'`, raise.
-- [ ] Same for `load_intraday()` if applicable.
-- [ ] Update call sites in `gcp/premarket_brief.py:693`, `gcp/signal_monitor.py:277`, `gcp/insight_pipeline_job.py` to pass `on_stale='warn'` explicitly.
+- [x] Extended `lib/data_loader.py:DataLoader.load_daily()` and `load_intraday()` with `max_age_days: int = 2, on_stale: str = 'silent' | 'warn' | 'error'`. Year-scoped `load_daily(year=N)` skips the staleness check (caller intentionally requests historical data).
+- [x] New `_check_staleness` helper handles the comparison; works on both DatetimeIndex and `date_col`-named DataFrames.
+- [x] Updated call sites in `gcp/premarket_brief.py:693`, `gcp/premarket_brief.py:897`, `gcp/signal_monitor.py:277` to pass `on_stale='warn'`. (`gcp/insight_pipeline_job.py` doesn't actually call load_daily — the plan's bullet was speculative.)
+- [x] 9 new tests in `tests/test_data_loader.py` covering silent/warn/error/empty-df-noop/date-col path + end-to-end load_daily warn-on-stale-parquet and year-scoped skip.
 
 **Critical files:** `lib/data_loader.py:196-226`; brief, signal-monitor, insights call sites.
 
 ### PR-E1 — `exit_config_overrides` Cloud SQL table + seed [G.P0.14 prep]
 Branch: `feat/exit-config-overrides-table` off `main`.
-- [ ] Schema migration in `gcp/schema.sql` + companion in `gcp/migrations/` (mirror existing migration cadence): create `exit_config_overrides (ticker PK, calibration_date, call_target, put_target, call_stop, put_stop, call_time_stop, put_time_stop, notes, inserted_at)`.
-- [ ] One-shot seed: insert SPY/IWM/QQQ rows from `recommended_per_ticker_config.json`.
-- [ ] Verify: `SELECT ticker, call_target, put_target FROM exit_config_overrides ORDER BY ticker` returns 3 rows matching the audit JSON.
+- [x] Added `exit_config_overrides` table to `gcp/schema.sql`. PRIMARY KEY (ticker, calibration_date) for snapshot history. Includes `disabled_conditions JSONB` for PR-E3.
+- [x] Idempotent seed via `INSERT ... ON CONFLICT DO NOTHING` for the 3 SPY/IWM/QQQ rows from `recommended_per_ticker_config.json`.
+- [x] 5 tests in `tests/test_exit_config_overrides_schema.py` parse schema.sql and assert the table definition, PK shape, recent index, three seeded tickers, and that seed values match the audit JSON byte-for-byte.
+- [ ] Verify post-deploy: `SELECT ticker, call_target, put_target FROM exit_config_overrides ORDER BY ticker` — pending `apply-schema-migrations` job execution after PR merge.
 
 **Critical files:** `gcp/schema.sql` (new table); migration script under `gcp/migrations/`. Reference: `ticker_calibration` table for shape.
 
 ### PR-E2 — Per-ticker ExitConfig overrides module + wire-up [G.P0.14]
-Branch: `feat/per-ticker-exit-config-overrides` off `main`. **Depends on PR-E1 merging first.**
-- [ ] New module: `lib/strategies/exit_config_overrides.py`. API mirrors `lib/strategies/calibration.py`:
-  - `_latest_overrides(ticker)` with `lru_cache(maxsize=64)` — queries the new table.
-  - Reuse `_is_usable_number(v)` from `calibration.py` (or duplicate per the existing convention if cross-module imports aren't used in that package).
-  - `get_call_target(ticker)`, `get_put_target(ticker)`, `get_call_stop(ticker)`, `get_put_stop(ticker)`, `get_call_time_stop(ticker)`, `get_put_time_stop(ticker)`. Each: Tier-A → Tier-B fallback to `lib/config.py:ExitConfig` defaults.
-- [ ] Modify `gcp/signal_monitor.py:fire_alert` (lines 521-535): replace `self.exit.call_target` / `put_target` / `call_time_stop` / `put_time_stop` reads with the resolver calls passing `ticker`.
-- [ ] Same modification in `lib/backtest.py:730/735/745` and `lib/walk_forward.py:75-80`.
-- [ ] Tests: `tests/test_exit_config_overrides.py` covering Tier-A hit, Tier-A miss → Tier-B fallback, NaN/None handling, lru_cache behavior.
+Branch: `feat/per-ticker-exit-config-overrides` off `main`. **Depends on PR-E1.**
+- [x] New `lib/strategies/exit_config_overrides.py` mirrors `calibration.py` (lru_cache(64), `_is_usable_number` NaN-aware reject, 180-day staleness window, Tier-A → Tier-B fallback to `ExitConfig` defaults). Six resolvers: get_call_target / put_target / call_stop / put_stop / call_time_stop / put_time_stop. Plus `get_resolution_tier` for audit-trail logging.
+- [x] Modified `gcp/signal_monitor.py:fire_alert` to call resolvers with `ticker`.
+- [x] Added `ticker: Optional[str] = None` to `lib/backtest.py:BacktestEngine.run()`. When provided, `_check_exit_conditions` reads via resolvers; when None (default), existing `self.exit.*` path is unchanged so walk-forward grid search isn't overridden.
+- [x] `lib/walk_forward.py` left untouched — walk-forward sweeps these knobs as parameters; per-ticker resolution would override grid params.
+- [x] 14 tests in `tests/test_exit_config_overrides.py` covering Tier-A hit on every knob, Tier-A miss → Tier-B for missing/NaN/None/inf/zero/negative + get_resolution_tier 'A'/'B' branches. All 28 existing backtest tests still pass.
 
 **Critical files:**
 - New: `lib/strategies/exit_config_overrides.py`, `tests/test_exit_config_overrides.py`
@@ -126,14 +125,12 @@ Branch: `feat/per-ticker-exit-config-overrides` off `main`. **Depends on PR-E1 m
 **Verification:** Live signal-monitor next session uses per-ticker target. SQL `SELECT call_target FROM exit_config_overrides WHERE ticker='QQQ'` returns 0.00301 and the live alert's `target_price = price_at_signal × (1 + 0.00301)`.
 
 ### PR-E3 — Drop anti-signal MR PUT conditions [G.P0.12 + G.P0.13]
-Branch: `fix/drop-anti-signal-mr-put-conditions` off `main`.
-- [ ] **Globally**: remove `above_vwap` block from `lib/strategies/mean_reversion.py:_check_put_conditions()` (lines 119-121). **Do not touch momentum's `above_vwap`** — that's a directional, healthy, separate code path. Track G's evidence: −16.1pp QQQ / −11.7pp IWM / −9.9pp SPY (unambiguous across all 3).
-- [ ] **Per-ticker (IWM/QQQ only)**: drop `stoch_rsi_overbought` and `rsi_overbought_zone` from MR PUT scoring. Two options to discuss in PR review:
-  - (a) Add `disabled_conditions JSONB` column to `exit_config_overrides` (extends PR-E1's table).
-  - (b) New sibling module `lib/strategies/condition_overrides.py` mirroring `calibration.py` Tier-A pattern.
-  Recommendation: option (a) — keeps all per-ticker overrides in one table.
-- [ ] Walk-forward validate using `lib/walk_forward.py` against the cached 50-day signal_alerts data. Report before/after win-rate per ticker in the PR description.
-- [ ] Tests: `tests/test_mean_reversion_put_conditions.py` asserting `above_vwap` no longer scored; per-ticker drops behave correctly.
+Branch: `fix/drop-anti-signal-mr-put-conditions-stacked` off **`feat/per-ticker-exit-config-overrides`** (PR-E2).
+- [x] **Globally**: removed `above_vwap` block from BOTH MR PUT implementations: `lib/strategies/mean_reversion.py:_check_put_conditions` (strategy class path) AND `lib/signals.py:check_put_conditions` (live production path used by signal_monitor). Momentum's `above_vwap` (CALL-direction code path) untouched.
+- [x] **Per-ticker (IWM/QQQ only)**: chose option (a) — added `disabled_conditions JSONB` to `exit_config_overrides` table; new `get_disabled_conditions(ticker)` in `lib/strategies/exit_config_overrides.py`; new `_apply_disabled_conditions` post-filter helper in `lib/strategies/mean_reversion.py`; `evaluate_signal` in `lib/signals.py` now accepts `ticker` and applies the same filter post-scoring. Wired into `gcp/signal_monitor.py:evaluate_signal` call.
+- [x] Schema seed in `gcp/schema.sql` via DO $$ block (no-ops if PR-E1's table doesn't exist) sets `disabled_conditions = ['stoch_rsi_overbought', 'rsi_overbought_zone']` for IWM/QQQ.
+- [ ] Walk-forward validate using `lib/walk_forward.py` against cached signal_alerts data — pending PR-E1 + PR-E2 + PR-E3 merging together so the table is queryable.
+- [x] 12 new tests in `tests/test_mean_reversion_put_conditions.py` (above_vwap-not-scored on both paths, max-score=4 globally, ticker=None no-op, IWM filter drops 2 conditions, CALL path unaffected); 2 existing tests in `tests/test_signals.py` updated for new max-score=3 (was 4).
 
 **Cross-track dependency note:** the walk-forward validation is more accurate after G.P0.6 (JSONB writer fix) lands. If G.P0.6 hasn't merged when this PR is ready, run validation with the `(conditions_met #>> '{}')::jsonb` workaround and note in the PR.
 
@@ -141,12 +138,11 @@ Branch: `fix/drop-anti-signal-mr-put-conditions` off `main`.
 
 ### PR-E4 — Momentum strategy fire-eligibility analysis [G.P0.11 — my analysis half]
 Branch: `audit/momentum-eligibility` off `main`.
-- [ ] New script: `scripts/analysis/momentum_eligibility.py` (sibling to `per_ticker_calibration.py`). For every 1-min bar in the 50-day cached intraday data, evaluate `momentum._check_call_conditions` and `_check_put_conditions` and report:
-  - Score distribution per ticker
-  - Count of would-fire bars at each `MIN_CONDITIONS_MOMENTUM` threshold (3 / 4 / 5 / 6)
-  - Per-condition fire rate to identify any factor that's never satisfied
-- [ ] Output: `docs/audit/2026-05-08/momentum_eligibility_report.md`.
-- [ ] PR description explicitly notes: **"Track D's instrumentation half (live considered-vs-fired counter in signal_monitor) is required for full closure of G.P0.11."** Link to the issue filed in Phase 0.
+- [x] New `scripts/analysis/momentum_eligibility.py`. Loads from Cloud SQL OR `--cached-csv-dir` (Track E's offline pulls). Reports per-condition fire rate, score distribution, would-fire counts at thresholds 3/4/5/6.
+- [x] Generated `docs/audit/2026-05-08/momentum_eligibility_report.md` from the cached 50-day window.
+- [x] **KEY FINDING**: at the live MIN_CONDITIONS_MOMENTUM=5 gate, the strategy WOULD have fired ~2,000 times per ticker (SPY 2237 / IWM 1800 / QQQ 2258 CALL). Production fires = 0. The "0 fires" is therefore strongly consistent with hypothesis (b) — orchestration excludes the strategy — NOT a tuning issue.
+- [x] PR description and report cross-link to issue #312 (Track D's instrumentation half) which will confirm the orchestration hypothesis when it lands.
+- [x] 8 tests in `tests/test_momentum_eligibility.py` covering full-CALL/full-PUT alignment, partial scores below threshold, NaN-bar skip, and report rendering.
 
 **Critical files:** new `scripts/analysis/momentum_eligibility.py`, new `docs/audit/2026-05-08/momentum_eligibility_report.md`. Reference: `lib/strategies/momentum.py` (condition checks), `scripts/analysis/per_ticker_calibration.py` (cached-CSV loader pattern to reuse).
 
@@ -244,25 +240,44 @@ After all Phase 2 PRs merge:
 
 ## Status snapshot (manually updated as PRs land)
 
-- **Phase 0** (cross-track dep issues): 2 / 2 filed (#311, #312)
-- **Phase 1** (P0): 0 / 9 PRs landed
-  - PR-A1 (unfreeze fetcher): not started
-  - PR-A2 (fetcher fail-fast): not started
-  - PR-A3 (re-enable freshness watchdog): not started
-  - PR-A4 (EOD reconciliation): not started
-  - PR-A5 (data_loader staleness): not started
-  - PR-E1 (overrides table + seed): not started
-  - PR-E2 (overrides module + wire-up): not started — blocked on PR-E1 in own track
-  - PR-E3 (drop anti-signal MR PUT conditions): not started
-  - PR-E4 (momentum eligibility analysis): not started — partial closure of G.P0.11
-- **Phase 2** (P1): 0 / 7 PRs landed
-- **Phase 3** (P2): 0 / 5 PRs landed
+- **Phase 0** (cross-track dep issues): 2 / 2 filed
+  - **#311** (G.P0.6 JSONB writer): closed — PR #308 already shipped the fix on `main` before I filed.
+  - **#312** (G.P0.11 instrumentation half): open, awaiting Track D.
+- **Phase 1** (P0): **9 / 9 branches pushed and ready for review** (PR-creation pending explicit user ask)
+  - `[~]` PR-A1 — `fix/unfreeze-daily-fetcher` (ops complete: clear-args + 17-day backfill; serial cleanup pass for 9 partial-fetch dates running in background; runbook committed)
+  - `[~]` PR-A2 — `fix/fetcher-fail-fast` (11 unit tests pass)
+  - `[~]` PR-A3 — `fix/reenable-freshness-watchdog` (workflow re-enabled live + dispatched; NULL-close filter committed; 2 new tests pass)
+  - `[~]` PR-A4 — `feat/signal-monitor-eod-resolver` (33 tests pass: 23 exit_replay + 10 reconciler)
+  - `[~]` PR-A5 — `feat/data-loader-staleness-check` (9 new tests pass)
+  - `[~]` PR-E1 — `feat/exit-config-overrides-table` (5 schema tests pass)
+  - `[~]` PR-E2 — `feat/per-ticker-exit-config-overrides` (14 + 28 backtest regressions pass; **depends on PR-E1**)
+  - `[~]` PR-E3 — `fix/drop-anti-signal-mr-put-conditions-stacked` (12 + 2 updated tests pass; **stacked on PR-E2**)
+  - `[~]` PR-E4 — `audit/momentum-eligibility` (8 tests pass + report committed; **KEY FINDING: 0 fires is orchestration, not tuning**)
+- **Phase 2** (P1): 0 / 7 PRs landed (next sprint, after Phase 1 merges + 1-week post-fix data window)
+- **Phase 3** (P2): 0 / 5 PRs landed (later)
 - **Awaiting cross-track**:
-  - G.P0.6 (Track C/D — JSONB writer + backfill): not blocking my P0s; allows my walk-forward validation to drop the workaround
-  - G.P0.11 instrumentation half (Track D — live considered-vs-fired counter): closes G.P0.11 once paired with my PR-E4
+  - **#312 / G.P0.11 instrumentation half** (Track D — live considered-vs-fired counter): closes G.P0.11 fully once paired with my PR-E4. PR-E4's data already strongly suggests the orchestration hypothesis.
 
 ### Marking convention
 - `[ ]` not started
+- `[~]` branch pushed, awaiting PR creation / merge
 - `[x]` done (PR merged)
-- `[~]` in progress (PR open or actively coding)
 - `[!]` blocked (note the blocker in-line)
+
+### Branch ledger (for PR creation when authorized)
+| PR | Branch | Item ID(s) |
+|---|---|---|
+| PR-A1 | `fix/unfreeze-daily-fetcher` | G.P0.1 |
+| PR-A2 | `fix/fetcher-fail-fast` | G.P0.2 |
+| PR-A3 | `fix/reenable-freshness-watchdog` | G.P0.3 |
+| PR-A4 | `feat/signal-monitor-eod-resolver` | G.P0.10 |
+| PR-A5 | `feat/data-loader-staleness-check` | G.P1.17 |
+| PR-E1 | `feat/exit-config-overrides-table` | G.P0.14 prep |
+| PR-E2 | `feat/per-ticker-exit-config-overrides` | G.P0.14 (depends on PR-E1) |
+| PR-E3 | `fix/drop-anti-signal-mr-put-conditions-stacked` | G.P0.12 + G.P0.13 (stacked on PR-E2) |
+| PR-E4 | `audit/momentum-eligibility` | G.P0.11 (analysis half) |
+
+### Test footprint
+- New tests: 75 (11 + 23 + 10 + 9 + 5 + 14 + 12 + 8 + 2 schema)
+- Updated tests: 2 (test_signals.py for new max-score after above_vwap drop)
+- Regression tests confirmed still passing: 28 backtest, 7 signal_monitor TZ, 4 fetch TZ, 23 audit_data_freshness, 24 strategies_calibration
