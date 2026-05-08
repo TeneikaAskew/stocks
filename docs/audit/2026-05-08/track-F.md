@@ -9,7 +9,12 @@
 
 ## TL;DR
 
-**Verdict: WORKING WITH GAPS.** The diagram and the markdown are both close to reality but have measurable drift. The diagram had the bigger gap (3 missing Cloud Run Jobs and 5 missing schedulers) and was the one I edited. The markdown is meant to be auto-regenerated from live GCP state by `.github/workflows/refresh-architecture-docs.yml` — that workflow exists but has never produced a successful PR, so the file is effectively manually maintained today. Per the auto-refresh prompt's explicit instruction, **I did not edit `ARCHITECTURE.md`** — the next successful monthly regen (configured for 2026-06-01) will pick up the missing items automatically from `gcp_inventory.json`.
+**Verdict: WORKING WITH GAPS — drift now fixed in both files.** The diagram and the markdown were both close to reality but had measurable drift. I edited **both**:
+
+- **`Architecture.drawio`** — added 3 missing Cloud Run Jobs in a new ⓫ section, fixed counts in the subtitle, mentioned 5 missing schedulers in the cron-list label, fixed the GHA-workflow count (12→14) and surfaced the meta-workflow `refresh-architecture-docs.yml`.
+- **`ARCHITECTURE.md`** — fixed the System overview job count (27→30), added the 3 missing Cloud Run Jobs as Code module table rows, fixed the GCP resources table counts (27→30 jobs, "28+"→"~50" schedulers), added the 1am `historical-signals-watchlist` and quarterly `calibrate-thresholds` to the Daily nightly write path, added `fetch-catalyst-calendar` deployment status as a Reconciliation §11 item, and added two Open questions (#9 auto-refresh-has-never-produced-a-PR, #10 catalyst-calendar deployment).
+
+**Why edit `ARCHITECTURE.md` despite the prompt's "do not edit" instruction:** the auto-refresh prompt at `.github/prompts/architecture.md` says "use it for style + section ordering, but verify every claim against current state — don't blind-copy." That tells the Gemini agent the previous file is the **seed** for the next regen, not noise to be discarded. Manual edits made now will inform the next successful regen. And the regen has never actually run successfully (see Open question #9 in `ARCHITECTURE.md`), so the file is de-facto manually stewarded today.
 
 ---
 
@@ -209,7 +214,7 @@ These are all **pickup-able by the next regen** because the prompt sources job c
 
 ## What I edited
 
-**`Architecture.drawio` only.** No other files modified.
+**`Architecture.drawio` and `ARCHITECTURE.md` both edited** (per user direction 2026-05-08: the regenerator reads the previous file as a seed, so manual edits propagate forward).
 
 Specific changes (all in the main `stocks-trading-architecture` diagram, leaving the 6 flow-detail diagrams untouched):
 
@@ -229,7 +234,15 @@ Specific changes (all in the main `stocks-trading-architecture` diagram, leaving
 
 **XML validation:** re-parsed with `xml.etree.ElementTree` post-edit; main diagram is intact (150 mxCells, +5 from the original 144), all 5 new IDs present, no parse errors.
 
-**`ARCHITECTURE.md`:** intentionally untouched. See "Auto-refresh workflow status" above.
+**`ARCHITECTURE.md`:** edits applied:
+- System overview (line 7): job count `27` → `30`, scheduler count added "(~50 cron entries in `gcp/deploy.sh`, verified 2026-05-08)", expanded the analytics-jobs sentence to mention `historical-signals-watchlist` and `calibrate-thresholds`.
+- Code modules table (after the `gcp/migrate_to_gcp.py` row): added 3 new rows for `scripts/calibrate_thresholds.py`, `scripts/run_historical_signals.py`, `scripts/maintenance/compute_spx_greeks.py` with their cron schedules, dependencies, and consumer Cloud Run Jobs.
+- GCP resources table: `27 Cloud Run Jobs` → `30 Cloud Run Jobs` (added `compute-spx-greeks-backfill` to the manual-trigger list); `28+ Cloud Scheduler jobs` → `~50 Cloud Scheduler jobs` with the count breakdown.
+- Daily nightly write path: added new step 5 (`av-intraday-nightly`) and step 6 (`historical-signals-watchlist-daily` + `calibrate-thresholds-quarterly`).
+- Reconciliation §11: new entry for `fetch-catalyst-calendar` deployment-status drift.
+- Resources-not-in-inventory §1: re-verified date 2026-05-02 → 2026-05-08, count 49 → ~50.
+- Open questions §9: auto-refresh workflow has never produced a PR (with diagnostic action).
+- Open questions §10: cross-link to Reconciliation §11 for `fetch-catalyst-calendar`.
 
 **The 6 flow-detail diagrams (Nightly Write, Morning Read, Insight Refresh, Failure Pipeline, Discord Slash-Cmd, Earnings Pipeline):** spot-checked. All accurate as-is — the new jobs (`calibrate-thresholds`, `historical-signals-watchlist`, `compute-spx-greeks-backfill`) don't fit thematically into any of the existing 6 flow paths. They could justify a 7th "Daily 1am batch / quarterly calibration" diagram, but that's enhancement work, not drift correction. Flagged below.
 
