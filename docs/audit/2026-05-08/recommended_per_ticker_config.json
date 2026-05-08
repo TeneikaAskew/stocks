@@ -1,0 +1,86 @@
+{
+  "SPY": {
+    "call_rsi_range": [
+      35.46,
+      50.46
+    ],
+    "put_rsi_range": [
+      50.46,
+      64.33
+    ],
+    "min_conditions_momentum": null,
+    "min_conditions_mr": null,
+    "call_target": 0.00184,
+    "put_target": 0.00202,
+    "call_stop": 0.00075,
+    "put_stop": 0.00075,
+    "call_time_stop": 25,
+    "put_time_stop": 25,
+    "preferred_strategy_call": "mean_reversion",
+    "preferred_strategy_put": "mean_reversion",
+    "preferred_timeframe_call": "30m",
+    "preferred_timeframe_put": "60m",
+    "combo_bonus_overrides": null,
+    "n_signals_used": 555,
+    "n_signals_with_intraday": 545,
+    "lookback_days": 90,
+    "as_of": "2026-05-08",
+    "notes": "mean_reversion: no score bucket net-positive; best is score=4 net_mean=-0.0622%"
+  },
+  "IWM": {
+    "call_rsi_range": [
+      36.2,
+      50.16
+    ],
+    "put_rsi_range": [
+      50.16,
+      63.74
+    ],
+    "min_conditions_momentum": null,
+    "min_conditions_mr": null,
+    "call_target": 0.00281,
+    "put_target": 0.00249,
+    "call_stop": 0.00077,
+    "put_stop": 0.001,
+    "call_time_stop": 20,
+    "put_time_stop": 25,
+    "preferred_strategy_call": "mean_reversion",
+    "preferred_strategy_put": "mean_reversion",
+    "preferred_timeframe_call": "60m",
+    "preferred_timeframe_put": "15m",
+    "combo_bonus_overrides": null,
+    "n_signals_used": 493,
+    "n_signals_with_intraday": 488,
+    "lookback_days": 90,
+    "as_of": "2026-05-08",
+    "notes": "mean_reversion: no score bucket net-positive; best is score=1 net_mean=-0.0800%"
+  },
+  "QQQ": {
+    "call_rsi_range": [
+      35.36,
+      50.46
+    ],
+    "put_rsi_range": [
+      50.46,
+      65.11
+    ],
+    "min_conditions_momentum": null,
+    "min_conditions_mr": null,
+    "call_target": 0.00301,
+    "put_target": 0.00238,
+    "call_stop": 0.00075,
+    "put_stop": 0.00075,
+    "call_time_stop": 20,
+    "put_time_stop": 25,
+    "preferred_strategy_call": "mean_reversion",
+    "preferred_strategy_put": "mean_reversion",
+    "preferred_timeframe_call": "30m",
+    "preferred_timeframe_put": "60m",
+    "combo_bonus_overrides": null,
+    "n_signals_used": 544,
+    "n_signals_with_intraday": 536,
+    "lookback_days": 90,
+    "as_of": "2026-05-08",
+    "notes": "mean_reversion: no score bucket net-positive; best is score=1 net_mean=-0.0299%"
+  }
+}
