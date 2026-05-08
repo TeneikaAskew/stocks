@@ -4,7 +4,7 @@
 
 This is a private stocks-trading research and signal-delivery platform deployed on Google Cloud (project `adept-mountain-474619-d4`, region `us-east1`). It is single-user / small-team — there is no end-user account system, no public web auth, and no per-user data partitioning. The primary delivery surface is **Discord** (via webhooks for scheduled briefs and a Cloud Run service for slash-command interactions); a secondary delivery surface is the **internal React + FastAPI dashboard** at the `trading-platform` Cloud Run service.
 
-The system runs as a fleet of **30 production Cloud Run Jobs** orchestrated by Cloud Scheduler (~50 cron entries in `gcp/deploy.sh`, verified 2026-05-08). Most jobs follow a common shape: pull data from an external API (AlphaVantage, FRED, EDGAR, ForexFactory, Earnings Whispers), upsert to Cloud SQL Postgres (`trading-db`), optionally write a parquet snapshot to GCS (`adept-mountain-474619-d4-trading-data`), and exit. A second class of jobs (premarket-brief, insight-pipeline, signal-monitor, weekend-review, signal-quality-alarm, historical-signals-watchlist, calibrate-thresholds) reads from Cloud SQL, computes derived analytics using shared `lib/` modules, and posts results to Discord or writes back to calibration tables.
+The system runs as a fleet of **30 production Cloud Run Jobs** orchestrated by Cloud Scheduler (29 created via `gcp/deploy.sh` + 1 manually-deployed `fetch-av-options-backfill`, all verified 2026-05-08; ~50 cron entries in `gcp/deploy.sh`). Most jobs follow a common shape: pull data from an external API (AlphaVantage, FRED, EDGAR, ForexFactory, Earnings Whispers), upsert to Cloud SQL Postgres (`trading-db`), optionally write a parquet snapshot to GCS (`adept-mountain-474619-d4-trading-data`), and exit. A second class of jobs (premarket-brief, insight-pipeline, signal-monitor, weekend-review, signal-quality-alarm, historical-signals-watchlist, calibrate-thresholds) reads from Cloud SQL, computes derived analytics using shared `lib/` modules, and posts results to Discord or writes back to calibration tables.
 
 Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-notifier** Cloud Run service that consumes a Pub/Sub topic fed by a Cloud Logging sink filtered for Cloud Run Job ERRORs, and creates labeled GitHub issues; (2) a **Cloud Tasks queue** (`insight-pipeline-queue`) that lets the FastAPI dashboard enqueue on-demand AI-insight refreshes; (3) a **GitHub Actions** layer that mirrors several jobs as backups, runs heavier integration suites (backtests, freshness audits, sheet downloads), and provides ad-hoc Cloud SQL access via [`db-query.yml`](.github/workflows/db-query.yml) for sandboxed Claude Code on the web sessions that can't reach Cloud SQL directly. Math is concentrated in `lib/` and consumed identically by Cloud Run Jobs, the FastAPI router, and CLI scripts — per `CLAUDE.md` "one source of truth for math."
 
@@ -45,6 +45,8 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 | [`gcp/fetchers/fetch_top_movers.py`](gcp/fetchers/fetch_top_movers.py) | code | AV top movers post-close | AV API, Cloud SQL | Scheduler `top-movers-daily` |
 | [`gcp/fetchers/fetch_news_sentiment.py`](gcp/fetchers/fetch_news_sentiment.py) | code | News sentiment (ticker mode + topic mode) | AV API, Cloud SQL | Schedulers `news-sentiment-{08..17}00`, `news-topics-{08..17}05` |
 | [`gcp/fetchers/_watchlist.py`](gcp/fetchers/_watchlist.py) | code | Shared `load_watchlist()` helper (reads `watchlists` table) | Cloud SQL `watchlists` | All ticker-resolving fetchers |
+| [`gcp/fetchers/fetch_rss_news.py`](gcp/fetchers/fetch_rss_news.py) | code | RSS + FinViz news collector → FinBERT (CPU) bulk sentiment + Gemini Flash for top articles; per-watchlist-ticker | RSS feeds, FinViz, `lib.ticker_info`, FinBERT, Vertex Gemini | **NOT YET DEPLOYED** — exists in repo, no `gcp/deploy.sh` block, no scheduler binding (see Reconciliation §12) |
+| [`gcp/fetchers/fetch_av_historical_options.py`](gcp/fetchers/fetch_av_historical_options.py) | code | One-shot historical options chain backfill (SPY/IWM/QQQ/SPX from 2016 onward) | AV API, Cloud SQL `etf_options_snapshots` | Cloud Run Job `fetch-av-options-backfill` (manually deployed 2026-04-12) |
 | [`platform/api/main.py`](platform/api/main.py) | code | FastAPI app entry; mounts 13 routers | All `lib/`, Cloud SQL | Cloud Run service `trading-platform` |
 | [`platform/api/routers/insights.py`](platform/api/routers/insights.py) | code | AI insights CRUD; `/refresh` enqueues Cloud Tasks | Cloud Tasks `insight-pipeline-queue`, Cloud SQL | FastAPI |
 | [`platform/api/routers/*.py`](platform/api/routers/) | code | 12 other routers (live, options, playbook, backtest, signals, journal, dashboard, catalysts, admin, analytics, config, health) | Cloud SQL, `lib/` | FastAPI |
@@ -56,19 +58,24 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 | [`lib/strat.py`](lib/strat.py) | code | Rob Smith Strat (1/2U/2D/3, combos, FTFC) | `lib.indicators` | `premarket_brief`, `signal_monitor`, FastAPI |
 | [`lib/earnings_reactions.py`](lib/earnings_reactions.py) | code | Post-earnings playability + archetype | — | `compute_earnings_reactions`, `premarket_brief` |
 | [`lib/strat_levels.py`](lib/strat_levels.py) | code | Support/resistance levels from chart structure | `lib.indicators` | `premarket_brief`, `signal_monitor` |
-| [`lib/backtest.py`](lib/backtest.py) | code | Walk-forward backtester | `lib.signals`, `lib.indicators` | `backtest_job`, GitHub Actions |
+| [`lib/backtest.py`](lib/backtest.py) | code | Walk-forward backtester | `lib.signals`, `lib.indicators`, `lib.walk_forward` | `backtest_job`, GitHub Actions |
+| [`lib/walk_forward.py`](lib/walk_forward.py) | code | Walk-forward fold generator + replay engine | — | `lib.backtest`, Track E per-ticker calibration |
 | [`lib/options_greeks.py`](lib/options_greeks.py) | code | Black-Scholes Greeks | — | `lib.gamma`, FastAPI |
 | [`lib/insights.py`](lib/insights.py) | code | AI insights agent pipeline | Anthropic / Vertex SDK | `insight_pipeline_job` |
 | [`lib/data_loader.py`](lib/data_loader.py) | code | Cloud SQL / parquet loader | `gcp.database` | All consumers |
-| [`lib/config.py`](lib/config.py) | code | `IndicatorConfig`, `SignalConfig`, `StratConfig` | `alert_config.json`, env | Everywhere |
+| [`lib/config.py`](lib/config.py) | code | `IndicatorConfig`, `SignalConfig`, `StratConfig`, `RankerConfig` | `alert_config.json`, env | Everywhere |
+| [`lib/trading_analysis.py`](lib/trading_analysis.py) | code | Legacy `MarketAnalyzer` (~1.7 KLOC) — Phase 0.8 source for `lib/strategies/momentum.py` (split out from `trading_analysis.py:799-836`); still imported by `scripts/run_historical_signals.py` for the daily 1am backfill | `lib.indicators`, `lib.config` | `historical-signals-watchlist` Job, `lib.strategies.momentum` (lineage reference) |
+| [`lib/ticker_info.py`](lib/ticker_info.py) | code | Ticker metadata (AV OVERVIEW), peers (FinViz), news (FinViz), aliases (`ticker_info` table cache) | AV API, FinViz HTML, Cloud SQL `ticker_info`, `lib.api_client` | FastAPI [`platform/api/routers/insights.py`](platform/api/routers/insights.py), [`gcp/fetchers/fetch_rss_news.py`](gcp/fetchers/fetch_rss_news.py) |
+| [`lib/api_client.py`](lib/api_client.py) | code | Resilient HTTP helper (retry + exponential backoff) for external APIs | `requests` | `lib.ticker_info` (currently only consumer; available for fetchers) |
+| [`lib/logging_config.py`](lib/logging_config.py) | code | Cloud-Run-friendly structured-JSON logging setup | — | All Jobs / Services (single `setup_logging()` import) |
 | [`gcp/deploy.sh`](gcp/deploy.sh) | code (ops) | One-stop deploy: builds image, creates/updates 27 Jobs + 4 Services + 28+ Schedulers + Pub/Sub + Cloud Tasks queue | gcloud CLI | Manual ops |
-| [`gcp/schema.sql`](gcp/schema.sql) | code (ops) | All `CREATE TABLE IF NOT EXISTS` statements (27 tables) | — | `apply_schema.py` |
+| [`gcp/schema.sql`](gcp/schema.sql) | code (ops) | All `CREATE TABLE IF NOT EXISTS` statements (38 statements; ~27 logical user-facing tables — the rest are LIST-partition children of `market_data_intraday`, `archive_yahoo_*` archives, and `*_history` audit copies) | — | `apply_schema.py` |
 
 ### GCP resources
 
 | Component | Type | Purpose | Depends on | Used by |
 |---|---|---|---|---|
-| `trading-db` | Cloud SQL (Postgres) | Single instance, holds all 27 trading tables | — | Every Cloud Run Job, FastAPI |
+| `trading-db` | Cloud SQL (Postgres) | Single instance, holds 38 tables (~27 user-facing + LIST partitions + archives + history audit copies) | — | Every Cloud Run Job, FastAPI |
 | `adept-mountain-474619-d4-trading-data` | GCS Bucket | Parquet snapshots (raw OHLCV, intraday, options) | — | `fetch_market_data`, `migrate_to_gcp` |
 | `adept-mountain-474619-d4_cloudbuild` | GCS Bucket | Cloud Build source archive (auto-managed) | — | `gcloud builds submit` |
 | `trading` Artifact Registry | Docker repo | Holds `trading-system` image (one image, all jobs) | Cloud Build | All Cloud Run Jobs + Services |
@@ -88,7 +95,7 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 | `playwright-tester` | Service Account | E2E test runner | — | GitHub Actions |
 | `github-actions-sheets` | Service Account | Google Sheets download workflow | — | `download-google-sheets.yml` |
 | `28960574877-compute@developer` | Service Account | Default Compute SA | — | Default builds |
-| 30 Cloud Run Jobs | Cloud Run | Scheduled / on-demand processing | Cloud SQL, AV/FRED/EDGAR/EW, Discord | Cloud Scheduler (most), Cloud Tasks (insight-pipeline), manual (apply-schema-migrations, backtest, validate-brief, backfill-ticker, compute-spx-greeks-backfill) |
+| 30 Cloud Run Jobs | Cloud Run | Scheduled / on-demand processing (29 in `gcp/deploy.sh` + 1 manually-deployed `fetch-av-options-backfill`) | Cloud SQL, AV/FRED/EDGAR/EW, Discord | Cloud Scheduler (most), Cloud Tasks (insight-pipeline), manual (apply-schema-migrations, backtest, validate-brief, backfill-ticker, compute-spx-greeks-backfill, fetch-av-options-backfill) |
 | ~50 Cloud Scheduler jobs | Cloud Scheduler | Cron triggers for Run Jobs (verified 2026-05-08 against `gcp/deploy.sh`: 22 distinct named schedulers + 4 sec-filings hourly + 10 news-sentiment hourly + 10 news-topics hourly + 2 ORB + 2 brief variants) | Cloud Run Jobs | Cloud Run Job invocation API |
 | `billing_export` BigQuery Dataset | BigQuery | GCP billing export (auto-populated) | — | None in this repo (use for `/cost` analytics if added) |
 
@@ -197,7 +204,7 @@ flowchart LR
     end
 
     subgraph DATA["GCP Data Plane"]
-        SQL[("Cloud SQL trading-db<br/>27 tables")]
+        SQL[("Cloud SQL trading-db<br/>~27 user-facing tables<br/>(38 CREATE TABLE total)")]
         GCS[("GCS<br/>adept-mountain-474619-d4-trading-data")]
         SECRETS[Secret Manager<br/>19 secrets]
     end
@@ -283,6 +290,7 @@ flowchart LR
 9. **3 GitHub Actions–created service accounts (`playwright-tester`, `github-actions-sheets`)** — referenced in workflow YAMLs only; no Python code touches them. Not orphaned, but flagged here so you know they exist.
 10. **511 `run.googleapis.com/Execution` entries in inventory** — these are historical job-run records (one per scheduled execution since the project started). Not infrastructure to manage, but they pad the inventory; ignore.
 11. **Cloud Run Job `fetch-catalyst-calendar`** — **OPEN.** Surfaced by Track F audit 2026-05-08: appears as a deployed Cloud Run Job in `Architecture.drawio` (id `job_fcc`) but has no creation block in [`gcp/deploy.sh`](gcp/deploy.sh). The script [`scripts/fetch_catalyst_calendar.py`](scripts/fetch_catalyst_calendar.py) exists and is consumed by the FastAPI catalysts router; its consumer secret `benzinga-api-key` is real. Either the Job was created via a non-deploy.sh path (manual `gcloud run jobs create`) and is genuine, or the diagram reference is stale. **Action: run `gcloud run jobs list --filter="metadata.name=fetch-catalyst-calendar"` and either add the deployment block to `deploy.sh` or remove from the diagram.**
+12. **Module [`gcp/fetchers/fetch_rss_news.py`](gcp/fetchers/fetch_rss_news.py) is undeployed code.** Surfaced by Track F audit 2026-05-08. The module implements a 5-step RSS + FinViz news pipeline (collect → dedup → match-tickers → FinBERT sentiment → Gemini Flash summarization) but has no `gcloud run jobs create fetch-rss-news` block in `gcp/deploy.sh`, no scheduler binding, and no GH Actions workflow that invokes it. Either it's intended to ship soon (in which case there's a deployment-PR queue gap) or it's a half-landed feature that should be removed. **Action: confirm intended status before next ARCHITECTURE.md regen.**
 
 ### Resources the code references that are NOT in the inventory
 
