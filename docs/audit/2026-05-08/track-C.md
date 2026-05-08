@@ -11,25 +11,26 @@
 
 **WORKING WITH SIGNIFICANT GAPS.** The 8:45 AM AI Insights pipeline ran
 12-of-12 expected reports across the 4-day window (3 tickers × 4 days)
-with 100% success status, ~14–18 s wall-clock per ticker, and ~$0.0028
-per report on Vertex Gemini 2.0 Flash (≈ **$0.011/day, $3.30/month**).
-Strat integration is intact (single source of truth — both brief and
-insights call `lib.strat.compute_strat_status`). Schema enforces concrete
-entry/stop/targets via Pydantic — there is no "vague entries" surface in
-the JSON.
+with 100% success status, ~14–18 s wall-clock per ticker, and ~$0.0029
+average per report on Vertex Gemini 2.0 Flash (≈ **$0.0087/day,
+~$0.26/month, ~$3.18/year** at current cadence). Strat integration is
+intact (single source of truth — both brief and insights call
+`lib.strat.compute_strat_status`). Schema enforces concrete entry/stop/
+targets via Pydantic — there is no "vague entries" surface in the JSON.
+Discord push (`insight-discord-push` Cloud Run job) ran successfully on
+all 4 days at ~9:15 AM ET — delivery side is healthy.
 
 But the **executable plays** the reports produced were almost entirely
 **non-actionable**:
 
-* **9 of 12 reports** ended up in `regime=orb_only`. The deterministic
+* **10 of 12 reports** ended up in `regime=orb_only`. The deterministic
   trade-planner replaced the LLM's plan with a placeholder that tells the
   trader "wait for the 15-min ORB." `targets=[]`, `position_size_pct=0.0`.
 * **2 of 12 reports** were `direction=flat` (catalyst-blocked by the
-  conservative risk persona over upcoming high-impact events).
-* **1 of 12 reports** had a real, normal-regime, directional plan
-  (SPY 5/6 — but it was overwritten by `direction=flat` from risk
-  persona; the `regime=normal` rows in the output table all carried
-  `flat`, so genuinely actionable reports = **0/12**).
+  conservative risk persona over upcoming high-impact events on 5/6).
+* The two `regime=normal` rows are exactly those `flat` rows;
+  **0 of 12 reports produced a normal-regime *and* directional plan**
+  with concrete targets that a trader could execute at the open.
 
 The pipeline is **delivering at the schedule level** but **not delivering
 plays a discretionary trader can execute** for this window.
@@ -58,8 +59,9 @@ regime.
 | Trigger column | all `scheduled` (no manual reruns or failures) |
 | Wall-clock latency | min 12.4 s (QQQ 5/6), max 18.5 s (IWM 5/7) |
 | Per-report cost | $0.0026 – $0.0032 (Vertex Gemini 2.0 Flash, 7 roles) |
-| Daily cost | ≈ $0.0084 / day for 3 tickers, ~$3.30 / month |
-| Discord delivery | not in scope — not surfaced in this audit |
+| Daily cost | ≈ $0.0087 / day (sum 0.0348 / 4 days), $0.26 / month, $3.18 / year |
+| Discord delivery | ✅ verified — `insight-discord-push` Cloud Run job ran successfully on 5/4, 5/5, 5/6, 5/7 at ~13:15 UTC (9:15 AM ET), 19–25 s each, all `succeededCount=1` |
+| Cron schedule | `daily-insight-reports.yml` — cron `45 12 * * 1-5` (12:45 UTC = 8:45 AM ET, Mon-Fri) |
 
 Source: `insight_reports` (12 rows), `insight_runs` (12 rows
 status=done).
@@ -227,9 +229,12 @@ trimmed to `as_of`. If `as_of` was a stale day, the levels the planner
 walked are "already cleared" by today's pre-market — yielding a spurious
 `orb_only` classification.
 
-This makes sense of the data: 9 of 12 reports = `orb_only`, plus the
-two `flat` reports that got blocked by risk = **11 of 12 reports
-publishable but unactionable as concrete plays for the morning open**.
+The numbers: **10 of 12 reports = `orb_only`** (including SPY 5/6 which is
+`direction=long, regime=orb_only` — collapsed entry zone where
+`entry_low == entry_high == stop = 729.32` because the placeholder
+recipe collapses for missing-trigger-but-non-flat cases), plus **2 of
+12 `direction=flat`** (catalyst-blocked) — **0 of 12 publishable as
+concrete normal-regime directional plays for the morning open**.
 
 ### Thesis text (LLM narrative)
 
@@ -502,12 +507,14 @@ audit window.
 
 ## 6. Cost discipline
 
-12 reports / 4 days × 3 tickers = ~$0.011 / day. Annualized: $4.00 /
-year for the scheduled batch. The Cloud Run job's 8:45 AM cron is the
-only scheduled invocation (verified via `INSIGHT_TICKERS=SPY,IWM,QQQ`
-default in `gcp/insight_pipeline_job.py:56`). On-demand refreshes via
-the `/api/insights/report/{ticker}/refresh` endpoint are not in the
-window (no `trigger=on_demand` rows).
+12 reports / 4 days × 3 tickers, summed cost = **$0.0348** total / 4
+days = **$0.0087/day** average. Annualized: **~$3.18/year** for the
+scheduled batch. The Cloud Run job's 8:45 AM cron is the only
+scheduled invocation (verified via `INSIGHT_TICKERS=SPY,IWM,QQQ`
+default in `gcp/insight_pipeline_job.py:56` and the
+`daily-insight-reports.yml` cron `45 12 * * 1-5`). On-demand refreshes
+via the `/api/insights/report/{ticker}/refresh` endpoint are not in the
+window (no `trigger=on_demand` rows in `insight_runs`).
 
 The 4/24 incident referenced in `gcp/insight_pipeline_job.py:60` (a
 manual 152-ticker run that burned ~$1.20) is now guarded by
@@ -515,12 +522,108 @@ manual 152-ticker run that burned ~$1.20) is now guarded by
 Cost surface is tight.
 
 **No cost concerns.** The hard cost ceiling is well within budget;
-the soft cost concern would be quality (the 9/12 orb_only rate means
-~75 % of the $0.011/day is producing reports a trader can't act on).
+the soft cost concern would be quality (the 10/12 orb_only rate means
+~83 % of the $0.0087/day is producing reports a trader can't act on).
+Even at full waste the pipeline costs less than $0.30/month total.
 
 ---
 
-## 7. Backlog (issues to file)
+## 7. Other findings surfaced incidentally
+
+These were spotted while doing the planned work but warrant separate
+mention; they sit in the backlog at lower priority than the §8 P0s.
+
+**Confidence collapses to `medium`.** All 12 reports have
+`conviction = "medium"`. The `low|medium|high` enum exists for a reason;
+if the PM never picks `low` or `high`, the field provides zero
+discrimination. `confidence_score` (a separate float field) varies
+0.4–0.75, so the model *is* expressing relative confidence in a
+different field. Worth removing the unused `conviction` enum or fixing
+the PM prompt to actually use it. (Marked P3 in §8.)
+
+**`failed_sections` shows persistent analyst failures.** Of the 12
+reports, 8 had at least one analyst section fail:
+
+| failure pattern | reports |
+|---|---|
+| `[backtest]` only | 6 (IWM 5/6; QQQ 5/4, 5/6; SPY 5/4, 5/6) |
+| `[sentiment]` only | 2 (IWM 5/7; QQQ 5/5) |
+| `[backtest, sentiment]` | 1 (IWM 5/4) |
+| empty | 4 (IWM 5/5; QQQ 5/7; SPY 5/5, 5/7) |
+
+`backtest` failed on **7/12 = 58 %** of reports and `sentiment` on
+**3/12 = 25 %**. The orchestrator's `return_exceptions=True` correctly
+keeps the run alive when an analyst fails, but the failure rate on
+backtest is high enough to be silent quality erosion. Worth a
+separate Track-D dive into `summarize_backtest_metrics` / `summarize_news_sentiment`
+to find the recurring exception class.
+
+**`supporting_signals` direction can contradict report direction.**
+The QQQ 5/7 sample (full payload at `/tmp/qC/result_016.csv`) cites
+five `supporting_signals` rows, **all with `direction = "PUT"`** —
+while the report itself is `direction = "long"`. Picking
+`supporting_signals` from the most recent N alerts in the historical
+window without filtering for direction-alignment lets the report cite
+contradictory evidence. Either the signals_summarizer should
+filter by trade direction, or the report should explain why the cited
+signals are opposed.
+
+**`similar_past_trades` is empty in every report.** Reflection memory
+exists (pgvector `journal_entries.embedding` column populated, ivfflat
+index built — `gcp/schema.sql:920`) but the `query_embedding` argument
+to `run_insight_pipeline` is `None` in the production call path. The
+orchestrator skips reflection when no embedding is supplied
+(`orchestrator.py:478-484`). End result: the entire reflection-memory
+feature is dormant. Either commit to running the embed step at the
+pipeline entry, or remove the unused JournalRef wiring.
+
+**`time_horizon` distribution.** 9 of 12 reports = `swing`, 3 of 12 =
+`intraday`. For an 8:45 AM platform that calls itself "the morning
+play" surface, a 75 % `swing` rate is unexpected. Likely an LLM
+preference for the more conservative tag rather than a real difference
+in setup horizon — worth investigating in the trader-prompt review.
+
+**Dispatch contention on the `db-query` workflow.** During this audit I
+ran 5 query batches against tracking issue #236 and observed at least
+4 of my dispatches end in `conclusion = cancelled` despite the workflow
+having `cancel-in-progress: false`. The pattern was: my run sits in
+`pending`, another track's run completes, then a fresh dispatch shows
+up and my pending run flips to `cancelled` without ever starting.
+GitHub may auto-cancel duplicates from the same actor under some
+conditions even with `cancel-in-progress: false`. Worth surfacing to
+Track G — multi-track audits using the same DB workflow will keep
+trampling each other until this is understood. Workaround: dispatch,
+poll for the run id, retry on cancel. Real fix may be unobtainable
+(GitHub-side behavior).
+
+**Co-fire correlation matrix not computed.** The §5 plan asked for a
+top-30 co-fire pair table. My SQL for it was either cancelled by the
+workflow contention (twice) or returned 0 rows because of the
+`conditions_met` JSONB-string-of-array bug; once the writer fix lands,
+re-running the LATERAL-join query is a one-shot. From the sample
+inspection, the dominant CALL co-fire is
+`(stoch_rsi_oversold, below_vwap, rsi_oversold_zone)` and the dominant
+PUT co-fire is the symmetric overbought trio.
+
+**Cost is per-report, not per-role.** `insight_reports.cost_usd` is the
+total for one (ticker, as_of). Per-role cost / token breakdown is
+computed in `lib/agents/orchestrator.py:_Tracker` via
+`Usage.cost_usd()` per call but the per-role breakdown is **discarded**
+before persistence — only the sum lands in the table. Means we can't
+audit "which role is the most expensive" from production data. Low
+priority but worth flagging if model-routing diversification is ever
+revisited.
+
+**`insight_reports_history` not queried.** The schema declares a
+shadow-history table that captures replays (`gcp/schema.sql:1248`),
+but I didn't verify it's being written or check whether any of the 12
+reports were re-run mid-day. If an earlier intraday refresh is
+overwriting the morning row before the user reads the brief, the
+history table would surface that.
+
+---
+
+## 8. Backlog (issues to file)
 
 Priority follows the synthesis-track scheme: P0 = data correctness, P1 =
 quality regression, P2 = tuning, P3 = docs.
@@ -531,7 +634,7 @@ quality regression, P2 = tuning, P3 = docs.
 ticker. With `market_data_daily` actually fresh through 5/8, this points
 to a `compute_strat_status`-or-earlier upstream that's reading a fixed
 `as_of`. The downstream effect on insights is the spurious
-`regime=orb_only` classification on 9/12 reports — when the level set
+`regime=orb_only` classification on 10/12 reports — when the level set
 is stale, every fresh pre-market gap looks like it cleared every level.
 Owner: data-pipeline track. Surface area: `gcp/premarket_brief.py`,
 `lib.strat.compute_strat_status`, `lib.strat_levels.compute_previous_levels`.
