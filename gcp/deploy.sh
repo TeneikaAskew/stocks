@@ -297,12 +297,33 @@ setup_insight_tasks_queue() {
 # bit DB_PASS on 2026-04-30. AV is mapped to two env names (AV_API_KEY +
 # ALPHA_VANTAGE_API_KEY) because callers are split across the legacy and
 # canonical names; both resolve to the same Secret Manager secret.
-DB_SECRET_FLAG="--set-secrets=DB_PASS=db-trading-pass:latest,\
-AV_API_KEY=av-api-key:latest,\
-ALPHA_VANTAGE_API_KEY=av-api-key:latest,\
-FRED_API_KEY=fred-api-key:latest,\
-DISCORD_WEBHOOK_URL=discord-webhook:latest,\
-BENZINGA_API_KEY=benzinga-api-key:latest"
+#
+# Required vs optional secrets:
+#   * DB_PASS, av-api-key, discord-webhook are created by
+#     setup_cloud_sql.sh — assumed present; deploy fails fast if missing.
+#   * fred-api-key, benzinga-api-key are optional add-ons — deploys
+#     gracefully skip them when not provisioned, preserving the
+#     pre-PR-318 behaviour from `_env_string`'s `[ -n "$key" ] && ...`
+#     conditional. Codex P1 review on PR #318 caught the regression
+#     where requiring all 5 broke fresh deploys missing the optionals.
+_build_secret_flag() {
+    local pairs="DB_PASS=db-trading-pass:latest"
+    pairs="${pairs},AV_API_KEY=av-api-key:latest"
+    pairs="${pairs},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+    pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook:latest"
+    if gcloud secrets describe fred-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        pairs="${pairs},FRED_API_KEY=fred-api-key:latest"
+    else
+        echo "  (skipping FRED_API_KEY — secret 'fred-api-key' not in project)" >&2
+    fi
+    if gcloud secrets describe benzinga-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        pairs="${pairs},BENZINGA_API_KEY=benzinga-api-key:latest"
+    else
+        echo "  (skipping BENZINGA_API_KEY — secret 'benzinga-api-key' not in project)" >&2
+    fi
+    echo "--set-secrets=${pairs}"
+}
+DB_SECRET_FLAG="$(_build_secret_flag)"
 
 # ── Shared env vars injected into every Cloud Run job ─────────────────────────
 # Only non-secret values land here. The 4 API keys + DB_PASS go through
