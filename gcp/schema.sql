@@ -1578,6 +1578,68 @@ CREATE INDEX IF NOT EXISTS idx_ticker_calibration_recent
 
 
 -- ─────────────────────────────────────────────────────────
+-- EXIT_CONFIG_OVERRIDES: per-ticker target/stop/time overrides
+-- (Track A G.P0.14 — 2026-05-08 audit recommendation)
+--
+-- The audit's MFE/MAE-based per-ticker calibration found that the
+-- universal `lib/config.py:ExitConfig` defaults (target=0.003 / stop=
+-- 0.0015) are 1.5–2× too wide for SPY/IWM/QQQ. With the recommended
+-- per-ticker targets, QQQ's mean per-trade return flips from −0.0005%
+-- to +0.0127% (counterfactual replay over 50 days of cached intraday).
+--
+-- Read pattern: latest snapshot per ticker, like ticker_calibration.
+-- See lib/strategies/exit_config_overrides.py for the read-side helpers.
+-- Write pattern: PR-E1 seeds initial values; PR-E7 (quarterly job)
+-- writes refreshed values via INSERT ... ON CONFLICT DO UPDATE.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS exit_config_overrides (
+    ticker             VARCHAR(10)  NOT NULL,
+    calibration_date   DATE         NOT NULL,
+
+    -- Per-ticker exit thresholds. NULL means "use the lib/config.py
+    -- ExitConfig default for this knob" — the resolver in
+    -- exit_config_overrides.py treats NULL as Tier-A miss and falls
+    -- back to Tier-B.
+    call_target        DOUBLE PRECISION,   -- e.g. 0.00301 = +30 bps
+    put_target         DOUBLE PRECISION,
+    call_stop          DOUBLE PRECISION,
+    put_stop           DOUBLE PRECISION,
+    call_time_stop     INTEGER,            -- minutes
+    put_time_stop      INTEGER,
+
+    -- PR-E3: per-ticker dropped strategy conditions (e.g.
+    -- ['stoch_rsi_overbought', 'rsi_overbought_zone'] for IWM/QQQ MR PUT).
+    -- NULL = use the strategy's full condition list.
+    disabled_conditions JSONB,
+
+    notes              TEXT,
+    inserted_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (ticker, calibration_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_exit_config_overrides_recent
+    ON exit_config_overrides (ticker, calibration_date DESC);
+
+-- Initial seed from docs/audit/2026-05-08/recommended_per_ticker_config.json.
+-- Idempotent: re-applying schema.sql leaves later quarterly snapshots
+-- untouched (PRIMARY KEY conflict → DO NOTHING).
+INSERT INTO exit_config_overrides (
+    ticker, calibration_date,
+    call_target, put_target, call_stop, put_stop,
+    call_time_stop, put_time_stop, notes
+) VALUES
+    ('SPY', '2026-05-08', 0.00184, 0.00202, 0.00075, 0.00075, 25, 25,
+     'Audit 2026-05-08 (90-day MFE/MAE p70/p25, n=555). MR-only universe; momentum did not fire.'),
+    ('IWM', '2026-05-08', 0.00281, 0.00249, 0.00077, 0.00100, 20, 25,
+     'Audit 2026-05-08 (90-day MFE/MAE p70/p25, n=493). MR-only universe; momentum did not fire.'),
+    ('QQQ', '2026-05-08', 0.00301, 0.00238, 0.00075, 0.00075, 20, 25,
+     'Audit 2026-05-08 (90-day MFE/MAE p70/p25, n=544). Counterfactual: mean per-trade return −0.0005% → +0.0127%.')
+ON CONFLICT (ticker, calibration_date) DO NOTHING;
+
+
+-- ─────────────────────────────────────────────────────────
 -- HISTORICAL_SIGNALS: parallel-strategy support (Phase 0.7)
 -- ─────────────────────────────────────────────────────────
 -- The historical_signals table is now populated by TWO different signal
