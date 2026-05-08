@@ -30,15 +30,14 @@ Per user direction, every cross-track wait gets a tracking issue so the
 hand-off is visible. These get filed at the start of the work, before
 the first PR, so reviewers can see what's blocked.
 
-| GitHub issue title | Track D item | Blocking item | What it tracks |
+| GitHub issue | Track D item | Blocking item | What it tracks |
 |---|---|---|---|
-| `[Track D] G.P1.1 — level_broken always-NULL — awaiting Track A G.P0.1` | G.P1.1 | Track A's G.P0.1 (unfreeze daily fetcher) | Per track-G §2.4: until daily data is fresh, `strat_levels` are stale-replicated and `check_level_breaks()` legitimately returns no crossings. The `bare except` log-and-reraise change is safe to ship now, but the verify-on-fresh-data step waits for fetcher unfreeze on main. |
-| `[Track D] G.P1.3 — verify MIN_CONDITIONS_MOMENTUM=5 enforced — awaiting 1 week of data` | G.P1.3 | 1+ trading week of post-image-rebuild data | Image rebuilt 17:49 UTC on 5/7 mid-session, so 5/8 is the first session running the new floor. Earliest verification is ~5/15. Issue records the query to run. |
-| `[Track D] G.P0.10 — EOD resolver — coordinate exit replay logic with Track A intraday team` | G.P0.10 | None (informational) | Lets Track A flag any planned changes to `market_data_intraday` schema before the resolver locks in to a query shape |
-| `[Track D] G.P0.11 — momentum instrumentation — 5-day data sync point with Tracks C + E` | G.P0.11 | After 5 days of post-deploy counter data | Records the sync-point format (a comment thread on this issue) so all three tracks can read the diagnostic counters together before policy changes ship |
+| [#301](https://github.com/TeneikaAskew/stocks/issues/301) — `[Track D] G.P1.1 — level_broken always-NULL — awaiting Track A G.P0.1` | G.P1.1 | Track A's G.P0.1 (unfreeze daily fetcher) | Per track-G §2.4: until daily data is fresh, `strat_levels` are stale-replicated and `check_level_breaks()` legitimately returns no crossings. The `bare except` log-and-reraise change is safe to ship now, but the verify-on-fresh-data step waits for fetcher unfreeze on main. |
+| [#302](https://github.com/TeneikaAskew/stocks/issues/302) — `[Track D] G.P1.3 — verify MIN_CONDITIONS_MOMENTUM=5 enforced — awaiting 1 week of data` | G.P1.3 | 1+ trading week of post-image-rebuild data | Image rebuilt 17:49 UTC on 5/7 mid-session, so 5/8 is the first session running the new floor. Earliest verification is ~5/15. Issue records the query to run. |
+| [#303](https://github.com/TeneikaAskew/stocks/issues/303) — `[Track D] G.P0.10 — EOD resolver — coordinate exit replay logic with Track A intraday team` | G.P0.10 | None (informational) | Lets Track A flag any planned changes to `market_data_intraday` schema before the resolver locks in to a query shape |
+| [#304](https://github.com/TeneikaAskew/stocks/issues/304) — `[Track D] G.P0.11 — momentum instrumentation — 5-day data sync point with Tracks C + E` | G.P0.11 | After 5 days of post-deploy counter data | Records the sync-point format (a comment thread on this issue) so all three tracks can read the diagnostic counters together before policy changes ship |
 
-The G.P1.1 and G.P1.3 issues are **AWAITING** flags; the other two are
-**SYNC POINTS**. Issues filed via the GitHub MCP at start of work.
+Issues #301 and #302 are **AWAITING** flags; #303 and #304 are **SYNC POINTS**.
 
 ## PR sequence — one per investigation, batched fixes
 
