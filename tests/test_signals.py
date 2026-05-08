@@ -86,8 +86,15 @@ class TestCheckCallConditions:
 
 class TestCheckPutConditions:
     def test_all_conditions_met(self):
-        """Phase 0.7.2 mirror: max score is 4 (was 5). `near_above_emas`
-        dropped (PUT-side mirror of the CALL drop)."""
+        """Track A G.P0.12 (audit 2026-05-08): max score is 3 after
+        `above_vwap` dropped from PUT scoring. Audit measured
+        `above_vwap`-marked PUT signals as -16.1pp (QQQ) / -11.7pp (IWM)
+        / -9.9pp (SPY) win-rate vs no-above_vwap PUTs.
+
+        Previous: 4 (Phase 0.7.2 had dropped near_above_emas).
+        Current:  3 (above_vwap also dropped).
+        Without level_break_pdl, even the all-bullish row maxes at 3.
+        """
         row = _make_row(
             Consecutive_Up=4,
             RSI14=65.0,
@@ -96,10 +103,12 @@ class TestCheckPutConditions:
             StochRSI_K=80.0,
         )
         score, conds = check_put_conditions(row)
-        assert score == 4
+        assert score == 3
         assert 'consecutive_up' in conds
         assert 'rsi_overbought_zone' in conds
-        assert 'above_vwap' in conds
+        assert 'above_vwap' not in conds, (
+            "above_vwap removed from PUT scoring per Track A G.P0.12"
+        )
         assert 'stoch_rsi_overbought' in conds
         assert 'near_above_emas' not in conds
 
@@ -144,8 +153,9 @@ class TestEvaluateSignal:
         sig = evaluate_signal(row, min_conditions=3)
         assert sig is not None
         assert sig['direction'] == 'PUT'
-        # Phase 0.7.2: 4/4 instead of 5/5 (near_above_emas dropped)
-        assert sig['base_score'] == 4
+        # Track A G.P0.12: 3 instead of 4 (above_vwap dropped on top
+        # of Phase 0.7.2's near_above_emas drop)
+        assert sig['base_score'] == 3
 
     def test_no_signal_below_threshold(self):
         row = _make_row(

@@ -76,7 +76,8 @@ def check_put_conditions(
 ) -> Tuple[int, List[str]]:
     """Evaluate PUT signal conditions for a single bar.
 
-    Returns (score, list_of_conditions_met) where score is 0-5.
+    Returns (score, list_of_conditions_met) where score is 0-5 (now 0-4
+    after the 2026-05-08 audit dropped `above_vwap`).
     """
     ind = indicator_config or IndicatorConfig()
     score = 0
@@ -93,11 +94,12 @@ def check_put_conditions(
         score += 1
         conditions.append('rsi_overbought_zone')
 
-    # 3. Price above VWAP (contrarian — selling over fair value)
-    price_vs_vwap = row.get('Price_vs_VWAP', 0.0)
-    if price_vs_vwap > 0:
-        score += 1
-        conditions.append('above_vwap')
+    # `above_vwap` REMOVED — Track A G.P0.12 (audit 2026-05-08).
+    # Audit measured -16.1pp (QQQ), -11.7pp (IWM), -9.9pp (SPY)
+    # win-rate vs no-above_vwap PUTs across 90 days. The factor is
+    # ANTI-correlated with PUT success and was dragging strategy EV
+    # negative. Momentum's `above_vwap` (CALL direction) is a separate
+    # code path and remains unchanged.
 
     # Phase 0.7.2: dropped `near_above_emas` (PUT-side mirror of the
     # CALL-side `near_below_emas` drop). Same 84.6% free-fire issue.
@@ -125,6 +127,7 @@ def evaluate_signal(
     strat_bonus: int = 0,
     signal_config: SignalConfig = None,
     indicator_config: IndicatorConfig = None,
+    ticker: Optional[str] = None,
 ) -> Optional[dict]:
     """Evaluate both CALL and PUT conditions for a single bar.
 
@@ -133,6 +136,11 @@ def evaluate_signal(
 
     If `signal_config` is provided its values override the individual
     parameters for EMA proximity and StochRSI thresholds.
+
+    `ticker` (optional): when provided, per-ticker disabled conditions
+    from `exit_config_overrides.disabled_conditions` are filtered out
+    of CALL and PUT scores BEFORE the MIN_CONDITIONS gate. Track A
+    G.P0.13. None = no per-ticker filter (legacy default).
     """
     sig_cfg = signal_config
     ema_prox = sig_cfg.ema_proximity_threshold if sig_cfg else 0.1
@@ -149,6 +157,18 @@ def evaluate_signal(
         ema_proximity=ema_prox, stoch_rsi_threshold=stoch_overbought,
         indicator_config=indicator_config,
     )
+
+    # Per-ticker drop-list filter (Track A G.P0.13). Filters AFTER
+    # scoring so the inline math stays simple. Missing/empty list →
+    # no-op.
+    if ticker:
+        from lib.strategies.exit_config_overrides import get_disabled_conditions
+        disabled = set(get_disabled_conditions(ticker))
+        if disabled:
+            call_conds = [c for c in call_conds if c not in disabled]
+            call_score = len(call_conds)
+            put_conds = [c for c in put_conds if c not in disabled]
+            put_score = len(put_conds)
 
     signal = None
 

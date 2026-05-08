@@ -100,6 +100,19 @@ def _check_put_conditions(
 ) -> tuple[int, list[str]]:
     """Phase 0.7.2 mirror: dropped `near_above_emas` (free score).
 
+    Track A G.P0.12 (audit 2026-05-08): `above_vwap` is REMOVED from
+    PUT scoring. Across SPY/IWM/QQQ over 90 days the audit measured
+    `above_vwap`-marked PUT signals as -16.1pp (QQQ), -11.7pp (IWM),
+    and -9.9pp (SPY) win-rate vs no-above_vwap PUTs — i.e. the factor
+    is ANTI-correlated with PUT success and was dragging the strategy
+    into negative-EV territory. Momentum's `above_vwap` (CALL-direction)
+    is a separate code path and is untouched.
+
+    Per-ticker drops (G.P0.13) are applied by the caller via
+    `_apply_disabled_conditions(score, conditions, ticker)` after this
+    function returns — that keeps the scoring math and the per-ticker
+    overrides separate.
+
     `put_rsi_range` defaults to the Tier-B universal constant; callers
     that have a ticker in scope should pass the Tier-A resolved range
     via `lib.strategies.calibration.get_put_rsi_range(ticker)`.
@@ -116,9 +129,7 @@ def _check_put_conditions(
         score += 1
         conditions.append("rsi_overbought_zone")
 
-    if row.get("Price_vs_VWAP", 0.0) > 0:
-        score += 1
-        conditions.append("above_vwap")
+    # `above_vwap` REMOVED — Track A G.P0.12.
 
     if row.get("StochRSI_K", 50.0) > STOCH_RSI_OVERBOUGHT:
         score += 1
@@ -131,6 +142,34 @@ def _check_put_conditions(
     return score, conditions
 
 
+def _apply_disabled_conditions(
+    score: int,
+    conditions: list[str],
+    ticker: Optional[str],
+) -> tuple[int, list[str]]:
+    """Filter out per-ticker disabled conditions before MIN_CONDITIONS gate.
+
+    Reads the disabled list from `exit_config_overrides.disabled_conditions`
+    (PR-E1 schema). Returns the filtered (score, conditions) tuple.
+
+    For IWM/QQQ the audit recommends dropping `stoch_rsi_overbought` and
+    `rsi_overbought_zone` from MR PUT scoring (Track A G.P0.13). SPY's
+    PUT factor mix was acceptable so it gets no per-ticker drops.
+
+    `ticker=None` → no-op pass-through (keeps test/legacy callers working).
+    """
+    if not ticker or not conditions:
+        return score, conditions
+
+    from lib.strategies.exit_config_overrides import get_disabled_conditions
+    disabled = get_disabled_conditions(ticker)
+    if not disabled:
+        return score, conditions
+
+    kept = [c for c in conditions if c not in disabled]
+    return len(kept), kept
+
+
 class MeanReversionStrategy(Strategy):
     """Mean-reversion: fade overextensions, buy oversold dips."""
     name = "mean_reversion"
@@ -141,12 +180,17 @@ class MeanReversionStrategy(Strategy):
         *,
         call_rsi_range: tuple[float, float] = CALL_RSI_RANGE,
         put_rsi_range: tuple[float, float] = PUT_RSI_RANGE,
+        ticker: Optional[str] = None,
     ) -> Optional[Signal]:
         """Evaluate one bar.
 
         `call_rsi_range` / `put_rsi_range` default to Tier-B universal
         constants. The signal_monitor caller resolves Tier-A values via
         `lib.strategies.calibration` and passes them in per-ticker.
+
+        `ticker` (optional): when provided, per-ticker disabled conditions
+        from `exit_config_overrides.disabled_conditions` are removed from
+        the score before the MIN_CONDITIONS gate. Track A G.P0.13.
         """
         # Skip warmup bars where indicators are still NaN.
         if pd.isna(row.get(_rsi_col_name())):
@@ -156,6 +200,10 @@ class MeanReversionStrategy(Strategy):
 
         call_score, call_conds = _check_call_conditions(row, call_rsi_range)
         put_score,  put_conds  = _check_put_conditions(row, put_rsi_range)
+        # Per-ticker drops applied AFTER scoring so the inline scoring
+        # math stays simple. No-op when ticker=None.
+        call_score, call_conds = _apply_disabled_conditions(call_score, call_conds, ticker)
+        put_score,  put_conds  = _apply_disabled_conditions(put_score, put_conds, ticker)
 
         if call_score >= MIN_CONDITIONS and call_score >= put_score:
             direction = "CALL"
