@@ -1056,6 +1056,18 @@ def run_orb_snapshot(window: str) -> int:
 
 
 def main():
+    # Configure root logger BEFORE any logger.info call lands. Pre-fix
+    # the deployed `python -m gcp.signal_monitor` had no basicConfig, so
+    # Python's default WARNING level suppressed every INFO log including
+    # the new session_summary lines (Codex P1 review on PR #320). All
+    # existing logger.info calls in this module (watchlist source at
+    # line 141, mr fire at line 383, exit alerts, persist results, etc.)
+    # were also silently dropped from Cloud Logging — fixing this
+    # surfaces them as a positive externality.
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s %(name)s: %(message)s',
+    )
     import argparse
     parser = argparse.ArgumentParser(description='Real-time signal monitor')
     parser.add_argument('--mode', choices=['loop', 'orb-snapshot'], default='loop',

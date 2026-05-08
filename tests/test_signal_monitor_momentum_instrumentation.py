@@ -151,6 +151,33 @@ def test_counters_untouched_when_mr_does_not_fire():
     )
 
 
+# ── 4b) Codex P1 on #320: main() must configure INFO logging ────────
+
+def test_main_configures_info_logging_so_session_summary_appears():
+    """Codex P1 review on PR #320 (#3211919294): without
+    `logging.basicConfig(level=INFO)` in main(), the deployed Cloud
+    Run job runs with Python's default WARNING root level and every
+    `logger.info(...)` call — including the new session_summary —
+    is silently dropped. The 5-day rollup at #304 would see no data
+    even though the counters incremented correctly.
+
+    This test parses the source of `gcp.signal_monitor.main` and
+    asserts the basicConfig call is present and at INFO level. A
+    runtime test would have to clobber root logger state which is
+    flaky in the pytest harness."""
+    import inspect
+    from gcp.signal_monitor import main
+    src = inspect.getsource(main)
+    assert 'logging.basicConfig' in src, (
+        "main() must call logging.basicConfig so INFO-level logs "
+        "(including the new session_summary) reach Cloud Logging"
+    )
+    assert 'level=logging.INFO' in src, (
+        "main()'s basicConfig must set level=logging.INFO; "
+        "otherwise the root logger stays at WARNING and INFO is dropped"
+    )
+
+
 # ── 5) Counters survive multiple calls per ticker ────────────────────
 
 def test_counters_accumulate_across_multiple_calls():
