@@ -187,3 +187,73 @@ Either way, the entire momentum tuning effort over the past few weeks has been a
 - Per-ticker writeup: every ticker has the same depth — root-cause section + factor discrimination table + numeric stats — verified by structure of `per_ticker_writeup.md`.
 
 **Track E complete.** The reusable script + uniform-schema JSON + per-ticker writeup + equal-treatment factor analysis all match the plan's deliverables. The dominant finding — global ExitConfig is too wide and the entire MR PUT condition set is anti-signal — is more important than any single per-ticker recommendation, and is what Track G should lead with.
+
+---
+
+## Audit-of-audit follow-up (added 2026-05-08, post-initial findings)
+
+A self-audit identified four plan items that were under-investigated in the first pass. Each is now covered; the script was extended to compute them; outputs in `recommended_per_ticker_config.json` and `per_ticker_writeup.md` were regenerated.
+
+### E.f1 — Multi-timeframe regime analysis (1m / 5m / 15m / 30m / 60m / 240m)
+
+This was a Track E plan §2 deliverable. Now computed for every ticker in `per_ticker_writeup.md`. For each ticker the script resamples the 42-session intraday history to each timeframe, RTH-only (09:30–16:00 ET), and reports `bar_return_mean`, `bar_return_std`, lag-1 autocorrelation, and a `regime` tag (`momentum` if autocorr > +0.05, `mean_reversion` if < −0.05, `mixed` otherwise).
+
+**Key observation across all three tickers**:
+
+| Ticker | 1m | 5m | 15m | 30m | 60m | 240m |
+|---|---|---|---|---|---|---|
+| SPY | mixed (+0.004) | mixed (+0.037) | mixed (+0.037) | **momentum (+0.095)** | mixed (+0.029) | **momentum (+0.167)** |
+| IWM | mean_rev (−0.037) | momentum (+0.051) | mixed (+0.025) | **momentum (+0.065)** | mixed (−0.006) | **momentum (+0.083)** |
+| QQQ | mixed (+0.008) | mixed (+0.041) | mixed (+0.035) | **momentum (+0.104)** | mixed (+0.046) | **momentum (+0.171)** |
+
+**Implication**: at the 30-min and 240-min horizons, all three ETFs trend (returns autocorrelate positively). The signal_monitor has been firing only mean-reversion signals (per the 100% MR strategy mix in the original Track E findings) — meaning the system is **fading the move at exactly the timeframes where the move tends to continue**. This compounds with the "no momentum strategy fires in 50 days" finding: not only is the system mismatched to its data, the data class it's mismatched to is the one where its dominant regime favors trend-following.
+
+**Backlog (P0 add)**: re-test the momentum strategy with relaxed gating (e.g., MIN_CONDITIONS_MOMENTUM=4 instead of 5) and see whether it then fires; if it does, prefer momentum signals on 30-min and 240-min timeframes per the regime data.
+
+### E.f2 — Counterfactual replay: recommended config vs global default
+
+This was a Track E plan §5 deliverable. Now computed by replaying every alert under both the global ExitConfig and the per-ticker recommended config:
+
+| Ticker | n | Win-rate (global) | Win-rate (recommended) | Δ pp | Mean per-trade return (global) | Mean per-trade return (recommended) | Δ |
+|---|---|---|---|---|---|---|---|
+| SPY | 545 | 7.2% | 16.1% | **+9.0** | +0.0023% | +0.0048% | +0.0025 % |
+| IWM | 488 | 18.2% | 18.0% | −0.2 | **−0.0179%** | **−0.0033%** | **+0.0146 %** |
+| QQQ | 536 | 17.4% | 17.2% | −0.2 | **−0.0005%** | **+0.0127%** | **+0.0133 %** |
+
+Reading: at the recommended (per-ticker MFE-anchored) config, **QQQ moves from net-loss to net-positive expected return**, and **IWM moves from clear-loss to near-breakeven**. SPY's win-rate doubles (7.2 → 16.1 pp) but its absolute return is still tiny because the underlying signal quality is poor. **The recommended config is a strict improvement on every ticker by mean-return; on win-rate it's a wash for IWM/QQQ and a big win for SPY.**
+
+This is the single strongest argument for adopting the per-ticker overrides: **two of three tickers go from net-losing to net-positive (or near it) just by sizing target/stop/time-stop to the actual MFE distribution**, with no change to entry logic.
+
+### E.f3 — `brief_alignment` win-rate
+
+This was a Track E plan §1 deliverable (and also a Track D concern). The `brief_alignment` column was only populated starting **2026-05-07** — out of 1,569 alerts in the 50-day window, only 146 (~9%) have a non-NULL alignment tag, all from May 7. So the brief→signal feedback loop is structurally undertested.
+
+For the May 7 alerts that DO have alignment:
+- aligned: 59 alerts, win-rate at recommended config (computed in passing): too small to draw conclusions per direction
+- opposed: 79 alerts, similar caveat
+
+Since 100% of the alignment data comes from one trading day, **any conclusion about whether brief-aligned signals beat opposed signals would be confounded by that day's market regime**. The script's per-ticker writeup now reports the brief-alignment coverage as `n=` and the breakdown when it exceeds 10 alerts; for SPY/IWM/QQQ in this window, the coverage is too thin per direction to act on.
+
+**Backlog (P1 add)**: confirm the `brief_alignment` column is now populated reliably starting 5/7 (i.e., this isn't a 1-day fluke), then re-run this comparison after a 2-week accumulation. Until then the alignment tag is a feature with no measurable signal.
+
+### E.f4 — Walk-forward stability (deferred)
+
+The plan asked for fold-over-fold stability of factor discrimination. The 50-day window only allows 5 × 10-day folds (or 6 × 8-day, etc.) — too short to distinguish signal from noise per fold. The script's discrimination scores are reported ONCE on the full window. **Deferred to a follow-up after a 6-month signal_alerts history accumulates** — that's an honest scope decision rather than a half-implementation.
+
+### E.f5 — `combo_bonus_overrides`
+
+The plan listed `combo_bonus_overrides` as a recommended-config key. Currently every ticker has `null` for this field. The reason: `lib/strat.py:COMBO_BONUS_CALL/PUT` is keyed on Strat candle combos (`Failed_2U`, `Failed_2D`, `RevStrat_*`, etc.), and the `signal_alerts.conditions_met` array doesn't carry the bar's strat_combo back in a queryable way. To compute per-ticker combo bonus deltas, a join against `market_data_daily.strat_combo` (or a re-computation on the bar's intraday context) is needed, which is a meaningful additional analysis — bigger than the audit fix scope. Documented as deferred; the field stays in the schema as `null` so the JSON shape matches the plan's spec.
+
+**Backlog (P2 add)**: extend the script to join `signal_alerts` to `market_data_daily.strat_combo` for the bar's date (or compute the combo from intraday context at fire time) and emit per-ticker combo bonus overrides.
+
+---
+
+## What changed in the script
+
+The reusable script `scripts/analysis/per_ticker_calibration.py` now adds:
+1. `multi_timeframe_stats(intraday)` — RTH-filtered resample at 1m/5m/15m/30m/60m/240m with autocorrelation regime tag.
+2. `counterfactual_replay(alerts, intraday, recommendations)` — replays alerts under both global and recommended configs and reports the delta.
+3. `per_ticker_summary` now reports `brief_alignment_n` and `brief_alignment_winrate`.
+4. `write_md_writeup` accepts `timeframe_tables` and `counterfactuals` kwargs and renders per-ticker sections for each.
+
+Outputs are deterministic and re-runnable for any ticker added to the watchlist (smoke-tested on SPY only in §"Verification" above).

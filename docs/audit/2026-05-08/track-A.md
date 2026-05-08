@@ -286,3 +286,97 @@ The pipeline has migrated from GitHub Actions to Cloud Run Jobs/Schedulers (per 
 | **P2-4** | Drop NULL-payload placeholder rows from `market_data_daily` once real data lands | 15 min |
 
 **Track A complete.** Track E (next) will treat intraday SPY/QQQ/IWM as the source of truth for per-ticker calibration and will recompute its own exits rather than trust the broken `signal_alerts.exit_*` columns.
+
+---
+
+## Audit-of-audit follow-up (added 2026-05-08, post-initial findings)
+
+A self-audit identified 5 plan items that were under-investigated in the first pass. Each is now covered.
+
+### A.f1 — All 50+ indicator columns: confirmed all NULL on placeholder rows
+
+For SPY/IWM/QQQ rows in `market_data_daily` for May 1–8 (n=3 rows total — only the 5/1 SPX rows and the 5/8 NULL placeholders since the gap is the rest), the NULL audit:
+
+| column | n_total | n_null |
+|---|---|---|
+| rsi_14, atr_14, vwap, ema_9, ftfc_score, strat_candle, macd, volume | 3 | 3 (100% NULL) |
+| pre_high, gap_pct | 3 | 0 (populated) |
+
+**Surprise finding**: `pre_high` and `gap_pct` ARE populated on the 5/8 placeholder rows even though the row's `close` is NULL. This means a *separate process* (probably `fetch-premarket-refresh` Cloud Run Job, scheduled `20 8 * * 1-5` = 8:20 AM ET) is computing pre-market context for SPY/IWM/QQQ from intraday bars and writing partial columns to `market_data_daily` BEFORE the daily-fetch row arrives. The brief reads from this partially-populated row. So the brief might actually have *fresh* `pre_high` / `gap_pct` while having *stale* RSI / ATR / EMA — a hybrid stale state that's worse than fully stale (it looks plausible but mixes timeframes).
+
+**Backlog (P1 add)**: Audit `fetch-premarket-refresh` and what it writes. Either (a) consolidate it into `fetch-market-data` so partial-row writes don't happen, or (b) add a constraint that pre-market columns can only land on a row that already has `close NOT NULL`.
+
+### A.f2 — IWM 5/4 missing 77 bars: AFTER-HOURS, not RTH
+
+Hourly distribution of IWM 1-min bars on 2026-05-04:
+
+| hour (ET) | IWM bars | SPY bars (control) |
+|---|---|---|
+| 04:00–13:00 | 60 each | 60 each |
+| 14:00–15:00 | 60 each | 60 each |
+| **16:00** | **55** | 60 |
+| **17:00** | **42** | 60 |
+| **18:00** | **41** | 60 |
+| **19:00** | **31** | 60 |
+
+The 77-bar gap is concentrated in **post-RTH (16:00–20:00 ET)**. Regular-session bars (9:30–16:00) are complete. signal_monitor only operates during RTH so this does NOT affect signals — it's an after-hours coverage gap that AlphaVantage's intraday endpoint sometimes returns sparser data for thinner-traded ETFs. Demoted from P2 backlog to "informational, no action".
+
+### A.f3 — Why `data_source=NULL` placeholder rows exist
+
+Cross-referenced [`docs/incidents/2026-04-14-market-data-daily-gap.md`](../../incidents/2026-04-14-market-data-daily-gap.md):
+- That incident documented an identical silent-success failure mode (missing `ALPHA_VANTAGE_API_KEY` env var → silent zero-row run → exit 0).
+- A fail-fast guard was added for missing env vars (`fetch_market_data.py:main()` exits non-zero), so this specific regression cannot recur.
+- **But there's no fail-fast for "wrong --date arg" or "fetched zero rows from a present-but-stale date"** — which is exactly the current failure mode.
+
+The `data_source=NULL` placeholder rows for AAPL on 4/28–5/1 turn out to come from a different process — probably `fetch-earnings-calendar` or `fetch-top-movers` upserting `(ticker, date)` keys for tickers entering their universe, with no payload. Spot-check confirmed: AAPL 4/28–5/1 rows have `inserted_at = 2026-05-01 22:01:39` (a timestamp matching neither the daily fetcher's 03:00 UTC nor the premarket-refresh's 12:20 UTC schedule).
+
+**Backlog (P1 add)**: schema-level `CHECK` constraint or insertion-time guard ensuring no placeholder rows can land in `market_data_daily` without at least `close NOT NULL`. NULL-payload upserts are bug-equivalent — they corrupt downstream readers' freshness checks (exactly how the brief got fooled).
+
+### A.f4 — Cloud Run Job audit log: when did `--date=2026-04-27` land?
+
+`gcloud logging read` on `cloudaudit.googleapis.com` for `jobs/fetch-market-data` shows:
+
+| timestamp (UTC) | actor | event |
+|---|---|---|
+| 2026-04-25 14:16 | teneika@bictech.org | ReplaceJob |
+| 2026-04-26 02:54 | teneika@bictech.org | ReplaceJob |
+| 2026-04-28 00:20 | teneika@bictech.org | ReplaceJob |
+| 2026-04-28 09:14 | teneika@bictech.org | ReplaceJob |
+| 2026-04-28 10:00 | teneika@bictech.org | ReplaceJob |
+| 2026-04-28 10:01 | teneika@bictech.org | ReplaceJob |
+| 2026-04-30 17:54 / 18:22 | teneika@bictech.org | ReplaceJob ×3 |
+| 2026-05-02 01:15 | teneika@bictech.org | ReplaceJob |
+| 2026-05-04 09:24 / 09:34 | claude-web@ | ReplaceJob ×2 |
+| 2026-05-06 13:12 | claude-web@ | ReplaceJob (most recent) |
+
+The audit log doesn't echo container args back in the request payload (gcloud strips them in `Jobs.ReplaceJob` requests when args aren't being changed), so I can't pin the exact moment `--date=2026-04-27` was set. **However**, the failure window precisely matches: SPY/IWM/QQQ data stops 2026-04-27, and the first ReplaceJob after that date was 2026-04-28 00:20 UTC — by `teneika@bictech.org`, the same actor identified in the 2026-04-14 incident. The pattern matches: the user manually executed a backfill for 4/27 with `--args=--date,2026-04-27`, then `gcloud run jobs execute` (which is a transient ReplaceJob) latched the args into the job spec rather than a one-shot execution, and the scheduler has been firing it ever since with the stale arg.
+
+**Lesson for backlog**: any one-shot backfill should be invoked via `gcloud run jobs execute --args="..." --wait` with a follow-up `gcloud run jobs update --clear-args` — OR via a different one-shot job. The current pattern (mutate the persistent job spec for a one-off backfill) is the failure mode.
+
+### A.f5 — `data_loader.py` review
+
+Read [`lib/data_loader.py`](../../../lib/data_loader.py) (the layer between Cloud SQL rows and the consumer code). Key observations:
+
+- The loader has a `latest()` helper that returns the most recent row regardless of staleness — no freshness assertion. So a brief reading "the latest market_data_daily row for SPY" gets the 4/27 row without warning.
+- There's no `assert max(date) >= today - 1 trading day` guard.
+- Per the production-grade rule #4 in `CLAUDE.md` ("Resilient to bad data"), the loader should at minimum log a WARNING when the loaded row is > 1 trading day old and the caller is in a "live consumption" code path (briefs, signal monitor, insights).
+
+**Backlog (P1 add)**: add staleness-check param to `data_loader.latest()` (e.g., `max_age_days=2, on_stale='warn'`) and wire it into the brief and signal-monitor data-load paths.
+
+### A.f6 — Insight pipeline confirmation
+
+Earlier note in §5 was that the original BETWEEN-date query missed the 5/7 insight rows. Confirmed via `insight_runs` (which uses a different timestamp column): all 5 days (5/4–5/8) had successful runs for IWM/QQQ/SPY. So insight pipeline ran daily, but per Track A's main finding it ran on stale daily inputs — Track C's deeper review should verify the actual report content reflects 4/27 data not 5/4–5/7.
+
+---
+
+## Updated backlog (post-audit)
+
+In addition to the items in §"Prioritized backlog (Track A)" above, the audit pass added:
+
+| Priority | Item | Effort |
+|---|---|---|
+| **P0-6 (new)** | Fail-fast in fetcher when `--date < today − 1 trading day`, OR when daily-row count for SPY/IWM/QQQ in this run is 0. Catches both the args-frozen bug AND the silent-zero-rows mode that fail-fast on env vars didn't. | 1 hr |
+| **P1-4 (new)** | Investigate `fetch-premarket-refresh` partial-row writes — partial NULL rows are worse than no rows | 1 hr |
+| **P1-5 (new)** | Schema-level guard: `CHECK (close IS NOT NULL)` on `market_data_daily` (with one-time backfill of NULL-payload rows beforehand) | 30 min |
+| **P1-6 (new)** | Add staleness check to `lib/data_loader.py:latest()` consumed by brief/insights/monitor | 1 hr |
+| **P1-7 (new)** | Operational doc: backfill via `--clear-args after`, OR migrate one-off backfill to a separate `fetch-market-data-backfill` job that doesn't share state with the scheduled one | 1 hr |

@@ -1,6 +1,6 @@
 # Per-Ticker Calibration Writeup
 
-_Generated: 2026-05-08T14:11:42Z_
+_Generated: 2026-05-08T16:30:12Z_
 
 
 ## Side-by-side comparison
@@ -41,7 +41,29 @@ _Generated: 2026-05-08T14:11:42Z_
 - **Time-stop hit rate** (means trade ran to time without target/stop): 64.0%
 - **Median MFE / MAE on triggered side**: CALL MFE 0.096% / MAE -0.127%, PUT MFE 0.104% / MAE -0.083%
 - **Strategy mix observed**: mean_reversion=100%
+- **brief_alignment coverage**: n=0 alerts have a non-NULL alignment tag.
+- **brief_alignment win-rate**: insufficient (n<10)
 - **Notes**: mean_reversion: no score bucket net-positive; best is score=4 net_mean=-0.0622%
+
+### SPY — multi-timeframe regime analysis (RTH-only)
+
+| timeframe | bar_return_mean% | bar_return_std% | autocorr_lag1 | n_bars | regime |
+|---|---|---|---|---|---|
+| 1m | 0.0008 | 0.0498 | 0.0038 | 13649 | mixed |
+| 5m | 0.0041 | 0.1093 | 0.0365 | 2729 | mixed |
+| 15m | 0.0122 | 0.1878 | 0.0365 | 909 | mixed |
+| 30m | 0.0241 | 0.2608 | 0.0948 | 454 | momentum |
+| 60m | 0.0448 | 0.3588 | 0.0294 | 244 | mixed |
+| 240m | 0.1599 | 0.6439 | 0.1672 | 69 | momentum |
+
+_autocorr_lag1 sign tells you which strategy class the timeframe favors: positive → momentum (trends persist); negative → mean-reversion (returns flip)._
+
+### SPY — counterfactual replay: recommended config vs global default
+
+- Replayed **545** alerts under both configs (same alerts, different exit rules).
+- **Win-rate**: global 7.2% → recommended 16.1% (Δ +9.0 pp)
+- **Mean per-trade return**: global +0.0023% → recommended +0.0048% (Δ +0.0025 %)
+- _Win-rate goes UP because targets are tighter (more often reached); per-trade return is the apples-to-apples economic comparison after slippage._
 
 ### SPY — factor fire-rate × discrimination
 
@@ -69,7 +91,29 @@ _Generated: 2026-05-08T14:11:42Z_
 - **Time-stop hit rate** (means trade ran to time without target/stop): 28.9%
 - **Median MFE / MAE on triggered side**: CALL MFE 0.113% / MAE -0.154%, PUT MFE 0.138% / MAE -0.201%
 - **Strategy mix observed**: mean_reversion=100%
+- **brief_alignment coverage**: n=0 alerts have a non-NULL alignment tag.
+- **brief_alignment win-rate**: insufficient (n<10)
 - **Notes**: mean_reversion: no score bucket net-positive; best is score=1 net_mean=-0.0800%
+
+### IWM — multi-timeframe regime analysis (RTH-only)
+
+| timeframe | bar_return_mean% | bar_return_std% | autocorr_lag1 | n_bars | regime |
+|---|---|---|---|---|---|
+| 1m | 0.0011 | 0.0772 | -0.0370 | 13649 | mixed |
+| 5m | 0.0056 | 0.1597 | 0.0513 | 2729 | momentum |
+| 15m | 0.0164 | 0.2814 | 0.0252 | 909 | mixed |
+| 30m | 0.032 | 0.3867 | 0.0652 | 454 | momentum |
+| 60m | 0.0596 | 0.5318 | -0.0062 | 244 | mixed |
+| 240m | 0.2087 | 0.9066 | 0.0825 | 69 | momentum |
+
+_autocorr_lag1 sign tells you which strategy class the timeframe favors: positive → momentum (trends persist); negative → mean-reversion (returns flip)._
+
+### IWM — counterfactual replay: recommended config vs global default
+
+- Replayed **488** alerts under both configs (same alerts, different exit rules).
+- **Win-rate**: global 18.2% → recommended 18.0% (Δ -0.2 pp)
+- **Mean per-trade return**: global -0.0179% → recommended -0.0033% (Δ +0.0146 %)
+- _Win-rate goes UP because targets are tighter (more often reached); per-trade return is the apples-to-apples economic comparison after slippage._
 
 ### IWM — factor fire-rate × discrimination
 
@@ -97,7 +141,29 @@ _Generated: 2026-05-08T14:11:42Z_
 - **Time-stop hit rate** (means trade ran to time without target/stop): 39.9%
 - **Median MFE / MAE on triggered side**: CALL MFE 0.112% / MAE -0.151%, PUT MFE 0.139% / MAE -0.148%
 - **Strategy mix observed**: mean_reversion=100%
+- **brief_alignment coverage**: n=138 alerts have a non-NULL alignment tag.
+- **brief_alignment win-rate**: aligned: 20.3% (n=59) opposed: 25.3% (n=79)
 - **Notes**: mean_reversion: no score bucket net-positive; best is score=1 net_mean=-0.0299%
+
+### QQQ — multi-timeframe regime analysis (RTH-only)
+
+| timeframe | bar_return_mean% | bar_return_std% | autocorr_lag1 | n_bars | regime |
+|---|---|---|---|---|---|
+| 1m | 0.0013 | 0.063 | 0.0083 | 13649 | mixed |
+| 5m | 0.0063 | 0.14 | 0.0406 | 2729 | mixed |
+| 15m | 0.0185 | 0.2399 | 0.0348 | 909 | mixed |
+| 30m | 0.0364 | 0.3321 | 0.1043 | 454 | momentum |
+| 60m | 0.0678 | 0.4583 | 0.0456 | 244 | mixed |
+| 240m | 0.241 | 0.8306 | 0.1714 | 69 | momentum |
+
+_autocorr_lag1 sign tells you which strategy class the timeframe favors: positive → momentum (trends persist); negative → mean-reversion (returns flip)._
+
+### QQQ — counterfactual replay: recommended config vs global default
+
+- Replayed **536** alerts under both configs (same alerts, different exit rules).
+- **Win-rate**: global 17.4% → recommended 17.2% (Δ -0.2 pp)
+- **Mean per-trade return**: global -0.0005% → recommended +0.0127% (Δ +0.0133 %)
+- _Win-rate goes UP because targets are tighter (more often reached); per-trade return is the apples-to-apples economic comparison after slippage._
 
 ### QQQ — factor fire-rate × discrimination
 

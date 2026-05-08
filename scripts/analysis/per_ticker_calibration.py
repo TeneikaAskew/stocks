@@ -392,6 +392,56 @@ def classify_strategy(conditions: list[str]) -> str:
     return "ambiguous"
 
 
+# ── multi-timeframe statistics ───────────────────────────────────────────
+
+
+def multi_timeframe_stats(intraday: pd.DataFrame) -> pd.DataFrame:
+    """Resample 1-min bars to 5/15/30/60/240-min and compute return stats.
+
+    Returns one row per timeframe with:
+      bar_return_mean_pct  — mean per-bar log-style return
+      bar_return_std_pct   — bar-return standard deviation (volatility regime)
+      autocorr_lag1        — Pearson autocorrelation of bar returns at lag 1.
+                             > 0 = momentum (trends persist)
+                             < 0 = mean-reversion (returns flip sign)
+      n_bars               — sample size after RTH filter
+      regime               — 'momentum' if autocorr>0.05, 'mean_reversion' if <-0.05, else 'mixed'
+    """
+    if intraday.empty:
+        return pd.DataFrame()
+    df = intraday.copy()
+    df = df.set_index("ts").sort_index()
+    # Restrict to regular trading hours (09:30–16:00 ET) so resamples align
+    # with the live monitor's window. Intraday data is stored as ET-as-UTC
+    # naive, but `ts` here is tz-aware UTC — so RTH in UTC is 13:30–20:00.
+    rth_mask = (df.index.hour * 60 + df.index.minute >= 13 * 60 + 30) & (df.index.hour < 20)
+    df = df[rth_mask]
+    if df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for tf, freq in [("1m", "1min"), ("5m", "5min"), ("15m", "15min"),
+                     ("30m", "30min"), ("60m", "60min"), ("240m", "240min")]:
+        if tf == "1m":
+            r = df["close"]
+        else:
+            r = df["close"].resample(freq).last().dropna()
+        ret = r.pct_change().dropna()
+        if len(ret) < 5:
+            continue
+        ac = float(ret.autocorr(lag=1)) if len(ret) >= 10 else float("nan")
+        regime = "momentum" if ac > 0.05 else ("mean_reversion" if ac < -0.05 else "mixed")
+        rows.append({
+            "timeframe": tf,
+            "bar_return_mean_pct": round(float(ret.mean()) * 100, 4),
+            "bar_return_std_pct": round(float(ret.std()) * 100, 4),
+            "autocorr_lag1": round(ac, 4) if not pd.isna(ac) else None,
+            "n_bars": int(len(ret)),
+            "regime": regime,
+        })
+    return pd.DataFrame(rows)
+
+
 # ── core analysis ────────────────────────────────────────────────────────
 
 
@@ -633,6 +683,8 @@ def write_md_writeup(
     per_ticker: dict[str, dict],
     factor_tables: dict[str, pd.DataFrame],
     summaries: dict[str, dict],
+    timeframe_tables: dict[str, pd.DataFrame] | None = None,
+    counterfactuals: dict[str, dict] | None = None,
 ) -> None:
     """Render the per-ticker markdown writeup."""
     lines = []
@@ -679,8 +731,31 @@ def write_md_writeup(
             lines.append(f"- **Time-stop hit rate** (means trade ran to time without target/stop): {s.get('time_stop_pct', 0):.1f}%")
             lines.append(f"- **Median MFE / MAE on triggered side**: CALL MFE {s.get('call_median_mfe_pct', 0):.3f}% / MAE {s.get('call_median_mae_pct', 0):.3f}%, PUT MFE {s.get('put_median_mfe_pct', 0):.3f}% / MAE {s.get('put_median_mae_pct', 0):.3f}%")
             lines.append(f"- **Strategy mix observed**: {s.get('strategy_mix', 'n/a')}")
+            lines.append(f"- **brief_alignment coverage**: n={s.get('brief_alignment_n', 0)} alerts have a non-NULL alignment tag.")
+            lines.append(f"- **brief_alignment win-rate**: {s.get('brief_alignment_winrate', 'n/a')}")
         if recs.get("notes"):
             lines.append(f"- **Notes**: {recs['notes']}")
+
+        # Multi-timeframe table (Track E plan §2)
+        if timeframe_tables and t in timeframe_tables and not timeframe_tables[t].empty:
+            tf = timeframe_tables[t]
+            lines.append(f"\n### {t} — multi-timeframe regime analysis (RTH-only)\n")
+            lines.append("| timeframe | bar_return_mean% | bar_return_std% | autocorr_lag1 | n_bars | regime |")
+            lines.append("|---|---|---|---|---|---|")
+            for r in tf.itertuples():
+                ac = f"{r.autocorr_lag1:.4f}" if r.autocorr_lag1 is not None else "—"
+                lines.append(f"| {r.timeframe} | {r.bar_return_mean_pct} | {r.bar_return_std_pct} | {ac} | {r.n_bars} | {r.regime} |")
+            lines.append("")
+            lines.append("_autocorr_lag1 sign tells you which strategy class the timeframe favors: positive → momentum (trends persist); negative → mean-reversion (returns flip)._")
+
+        # Counterfactual replay (Track E plan §5)
+        if counterfactuals and t in counterfactuals and counterfactuals[t]:
+            cf = counterfactuals[t]
+            lines.append(f"\n### {t} — counterfactual replay: recommended config vs global default\n")
+            lines.append(f"- Replayed **{cf.get('n', 0)}** alerts under both configs (same alerts, different exit rules).")
+            lines.append(f"- **Win-rate**: global {cf.get('global_win_pct', 0):.1f}% → recommended {cf.get('recommended_win_pct', 0):.1f}% (Δ {cf.get('win_delta_pp', 0):+.1f} pp)")
+            lines.append(f"- **Mean per-trade return**: global {cf.get('global_mean_return_pct', 0):+.4f}% → recommended {cf.get('recommended_mean_return_pct', 0):+.4f}% (Δ {cf.get('return_delta_pct', 0):+.4f} %)")
+            lines.append("- _Win-rate goes UP because targets are tighter (more often reached); per-trade return is the apples-to-apples economic comparison after slippage._")
 
         # Factor discrimination
         ft = factor_tables.get(t)
@@ -739,7 +814,69 @@ def per_ticker_summary(alerts: pd.DataFrame, replay: pd.DataFrame) -> dict:
     enr["strategy_inferred"] = enr["conditions_met"].apply(classify_strategy)
     mix = enr["strategy_inferred"].value_counts(normalize=True).round(3).to_dict()
     out["strategy_mix"] = "  ".join(f"{k}={v*100:.0f}%" for k, v in mix.items())
+
+    # brief_alignment win-rate (only meaningful for the alerts that have it)
+    aligned_rows = enr[enr["brief_alignment"].notna()]
+    out["brief_alignment_n"] = int(len(aligned_rows))
+    if len(aligned_rows) >= 10:
+        align_win = aligned_rows.groupby("brief_alignment")["wins"].agg(["count", "mean"])
+        out["brief_alignment_winrate"] = " ".join(
+            f"{k}: {row['mean']*100:.1f}% (n={int(row['count'])})"
+            for k, row in align_win.iterrows()
+        )
+    else:
+        out["brief_alignment_winrate"] = "insufficient (n<10)"
     return out
+
+
+def counterfactual_replay(
+    alerts: pd.DataFrame,
+    intraday_by_ticker: dict[str, pd.DataFrame],
+    rec: dict,
+) -> dict:
+    """Replay alerts at the RECOMMENDED config and report delta vs global.
+
+    Returns dict with:
+      global_win_pct, recommended_win_pct, win_delta_pp
+      global_mean_return_pct, recommended_mean_return_pct, return_delta_pct
+    """
+    if alerts.empty:
+        return {}
+
+    base = replay_alerts(alerts, intraday_by_ticker)  # global defaults
+    rec_call_target = rec.get("call_target") or DEFAULT_CALL_TARGET
+    rec_put_target = rec.get("put_target") or DEFAULT_PUT_TARGET
+    rec_call_stop = rec.get("call_stop") or DEFAULT_CALL_STOP
+    rec_put_stop = rec.get("put_stop") or DEFAULT_PUT_STOP
+    rec_call_t = rec.get("call_time_stop") or DEFAULT_CALL_TIME_STOP
+    rec_put_t = rec.get("put_time_stop") or DEFAULT_PUT_TIME_STOP
+
+    new = replay_alerts(
+        alerts, intraday_by_ticker,
+        target_call=rec_call_target, target_put=rec_put_target,
+        stop_call=rec_call_stop, stop_put=rec_put_stop,
+        time_stop_call=rec_call_t, time_stop_put=rec_put_t,
+    )
+
+    def _stats(df: pd.DataFrame) -> dict:
+        ok = df[df["replay_exit_reason"] != "NO_DATA"]
+        if ok.empty:
+            return {"n": 0, "win_pct": 0.0, "mean_ret_pct": 0.0}
+        wins = (ok["replay_exit_reason"] == "TARGET_HIT").mean() * 100
+        ret = ok["replay_return_pct"].mean() * 100
+        return {"n": int(len(ok)), "win_pct": float(wins), "mean_ret_pct": float(ret)}
+
+    bs = _stats(base)
+    ns = _stats(new)
+    return {
+        "n": bs["n"],
+        "global_win_pct": round(bs["win_pct"], 1),
+        "recommended_win_pct": round(ns["win_pct"], 1),
+        "win_delta_pp": round(ns["win_pct"] - bs["win_pct"], 1),
+        "global_mean_return_pct": round(bs["mean_ret_pct"], 4),
+        "recommended_mean_return_pct": round(ns["mean_ret_pct"], 4),
+        "return_delta_pct": round(ns["mean_ret_pct"] - bs["mean_ret_pct"], 4),
+    }
 
 
 # ── main entry point ─────────────────────────────────────────────────────
@@ -805,6 +942,8 @@ def main():
     recs: dict[str, dict] = {}
     factor_tables: dict[str, pd.DataFrame] = {}
     summaries: dict[str, dict] = {}
+    timeframe_tables: dict[str, pd.DataFrame] = {}
+    counterfactuals: dict[str, dict] = {}
 
     for t in tickers:
         log.info("== %s ==", t)
@@ -821,18 +960,24 @@ def main():
         )
         log.info("  %s recs: %s", t, {k: v for k, v in recs[t].items() if v is not None})
 
-        # Replay & summary
+        # Replay, summary, multi-timeframe stats, and counterfactual replay
         if not alerts_t.empty and not intraday_t.empty:
             replay = replay_alerts(alerts_t, {t: intraday_t})
             factor_tables[t] = factor_discrimination(alerts_t, replay)
             summaries[t] = per_ticker_summary(alerts_t, replay)
+            timeframe_tables[t] = multi_timeframe_stats(intraday_t)
+            counterfactuals[t] = counterfactual_replay(alerts_t, {t: intraday_t}, recs[t])
+            log.info("  %s counterfactual: %s", t, counterfactuals[t])
 
     # ── write outputs ─────────────────────────────────────────────────────
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(json.dumps(recs, indent=2, default=str))
     log.info("wrote %s", args.out_json)
 
-    write_md_writeup(args.out_md, recs, factor_tables, summaries)
+    write_md_writeup(
+        args.out_md, recs, factor_tables, summaries,
+        timeframe_tables=timeframe_tables, counterfactuals=counterfactuals,
+    )
 
 
 if __name__ == "__main__":
