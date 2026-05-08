@@ -757,6 +757,76 @@ def _run_backfill() -> None:
         log.warning("Failures (%d): %s", len(failures), failures[:20])
 
 
+def _assert_fetch_date_fresh(fetch_date: str, today_et: date | None = None,
+                             max_stale_days: int = 5) -> None:
+    """Abort if `fetch_date` is more than `max_stale_days` calendar days
+    behind today (ET). Defends against the sticky-args latch documented
+    in docs/RUNBOOK_BACKFILL.md: a backfill done via
+    `gcloud run jobs update --args="--date=..."` (instead of the correct
+    `execute --args=...`) leaves the date latched on every subsequent
+    scheduled execution, silently producing 8+ days of bad rows.
+
+    A 5-day threshold catches the bug without false-positives on the
+    Monday after a long weekend (3 calendar days back) or a holiday
+    Tuesday (4 calendar days back).
+    """
+    if today_et is None:
+        from zoneinfo import ZoneInfo
+        today_et = datetime.now(ZoneInfo("America/New_York")).date()
+    fetch_d = datetime.strptime(fetch_date, '%Y-%m-%d').date()
+    stale_days = (today_et - fetch_d).days
+    if stale_days > max_stale_days:
+        log.error(
+            "Aborting: fetch_date=%s is %d calendar days behind today_ET=%s "
+            "(threshold: %d). This is almost always a sticky --args latch "
+            "from `gcloud run jobs update --args=...`. Run "
+            "`gcloud run jobs update fetch-market-data --args='' --region=us-east1` "
+            "to clear, then re-dispatch backfills via `execute --args=...`. "
+            "See docs/RUNBOOK_BACKFILL.md.",
+            fetch_date, stale_days, today_et.strftime('%Y-%m-%d'),
+            max_stale_days)
+        sys.exit(4)
+
+
+def _verify_post_fetch_rows(fetch_date: str, tickers: list[str],
+                            key_tickers: tuple[str, ...] = ('SPY', 'IWM', 'QQQ'),
+                            _query_fn=None) -> None:
+    """After the per-ticker loop, confirm that at least one of the key
+    tickers (SPY/IWM/QQQ) has a NOT NULL close in market_data_daily for
+    fetch_date. Skips on weekends (no market data exists). Holidays may
+    produce a single false-positive that the runbook acknowledges.
+
+    Catches the silent-failure mode where AV returns no data and the
+    per-ticker loop logs warnings but exits 0 — the bug behind the
+    2026-04-14 incident.
+    """
+    fetch_d = datetime.strptime(fetch_date, '%Y-%m-%d').date()
+    if fetch_d.weekday() >= 5:
+        return  # weekend; no data expected
+    if not set(key_tickers).intersection(t.upper() for t in tickers):
+        return  # key tickers weren't in this run's universe
+    if not is_cloud_sql_configured():
+        return  # local/dev run; nothing to verify
+    if _query_fn is None:
+        from gcp.database import query_to_dataframe as _query_fn  # type: ignore[no-redef]
+    sql = """
+        SELECT COUNT(*) AS n FROM market_data_daily
+        WHERE ticker IN :tk
+          AND date = :d
+          AND close IS NOT NULL
+    """
+    df = _query_fn(sql, {'tk': tuple(key_tickers), 'd': fetch_date})
+    n = int(df.iloc[0]['n']) if not df.empty else 0
+    if n == 0:
+        log.error(
+            "Post-fetch verification failed: 0 rows for %s in "
+            "market_data_daily on %s with NOT NULL close. AV may have "
+            "returned no data, or the writer silently failed. "
+            "See docs/RUNBOOK_BACKFILL.md.",
+            list(key_tickers), fetch_date)
+        sys.exit(5)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch daily market data to Cloud SQL + GCS')
     parser.add_argument('--tickers', default='ALL',
@@ -812,6 +882,7 @@ def main():
     from zoneinfo import ZoneInfo
     _ET = ZoneInfo("America/New_York")
     fetch_date = args.date or datetime.now(_ET).date().strftime('%Y-%m-%d')
+    _assert_fetch_date_fresh(fetch_date, today_et=datetime.now(_ET).date())
     bucket = os.environ.get('GCS_BUCKET', '')
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
@@ -869,6 +940,8 @@ def main():
     if errors:
         log.error("Failed tickers: %s", errors)
         sys.exit(1)
+
+    _verify_post_fetch_rows(fetch_date, tickers)
 
     log.info("Done.")
 
