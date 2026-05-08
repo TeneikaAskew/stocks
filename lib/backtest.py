@@ -442,6 +442,7 @@ class BacktestEngine:
         df: pd.DataFrame,
         use_strat: bool = False,
         close_col: str = 'Close',
+        ticker: Optional[str] = None,
     ) -> BacktestResult:
         """Run backtest over an indicator-enriched DataFrame.
 
@@ -454,9 +455,15 @@ class BacktestEngine:
         df : OHLCV DataFrame with Time index or column
         use_strat : whether to apply Strat filtering + bonus scoring
         close_col : name of the close price column
+        ticker : when provided, _check_exit_conditions reads
+            target/stop/time-stop from `lib.strategies.exit_config_overrides`
+            (Tier-A → ExitConfig defaults). When None, the existing
+            `self.exit.*` reads are used unchanged — so walk-forward
+            grid searches are unaffected.
         """
         # Reset filter counts
         self._filter_counts = {'ftfc_rejected': 0, 'orb_rejected': 0, 'signals_evaluated': 0}
+        self._current_ticker = ticker
 
         # Ensure indicators exist
         if self.ind.rsi_col not in df.columns:
@@ -726,13 +733,31 @@ class BacktestEngine:
         else:
             unrealized = (entry - close_price) / entry
 
+        # Per-ticker exit overrides (Tier-A) when ticker was passed to run().
+        # Falls back to ExitConfig defaults when no override row / NULL / stale.
+        ticker = getattr(self, '_current_ticker', None)
+        if ticker is not None:
+            from lib.strategies.exit_config_overrides import (
+                get_call_target, get_put_target,
+                get_call_stop, get_put_stop,
+                get_call_time_stop, get_put_time_stop,
+            )
+            target = (get_call_target(ticker) if trade.direction == 'CALL'
+                      else get_put_target(ticker))
+            stop = (get_call_stop(ticker) if trade.direction == 'CALL'
+                    else get_put_stop(ticker))
+            time_limit = (get_call_time_stop(ticker) if trade.direction == 'CALL'
+                          else get_put_time_stop(ticker))
+        else:
+            target = self.exit.call_target if trade.direction == 'CALL' else self.exit.put_target
+            stop = self.exit.call_stop if trade.direction == 'CALL' else self.exit.put_stop
+            time_limit = self.exit.call_time_stop if trade.direction == 'CALL' else self.exit.put_time_stop
+
         # Profit target
-        target = self.exit.call_target if trade.direction == 'CALL' else self.exit.put_target
         if unrealized >= target:
             return 'target', close_price
 
         # Stop loss
-        stop = self.exit.call_stop if trade.direction == 'CALL' else self.exit.put_stop
         if unrealized <= -stop:
             return 'stop_loss', close_price
 
@@ -741,8 +766,6 @@ class BacktestEngine:
             elapsed_minutes = (bar_time - trade.entry_time).total_seconds() / 60.0
         else:
             elapsed_minutes = 0
-
-        time_limit = self.exit.call_time_stop if trade.direction == 'CALL' else self.exit.put_time_stop
         if elapsed_minutes >= time_limit:
             return 'time_stop', close_price
 
