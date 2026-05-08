@@ -72,9 +72,7 @@ because `_persist_signal_alert` and `TradeLogger.log_trade` do
       `array`; `signal_alerts.strategy_agreement` 17 rows `object` /
       1,161 jsonb-null / 787 SQL-NULL; `trades.conditions_met` 1,965
       rows `array`. Zero `string` rows remain in any of the three columns
-- [ ] PR opened (citing G.P0.6, audit doc § 2 / § 3 / § 6 / § 8 in
-      track-D.md, with sample before/after rows from runs
-      25581463701 and 25581538478)
+- [x] PR opened as #308 — MERGED 2026-05-08
 
 ### PR 2 — G.P0.8 — wire `max_daily_trades` and `daily_loss_limit` increments (top-3 priority)
 
@@ -82,19 +80,23 @@ because `_persist_signal_alert` and `TradeLogger.log_trade` do
 but never incremented anywhere. IWM blew through the 5-fire/day cap by
 22× on 5/7. Both risk caps are dead code.
 
-- [ ] Add `self.daily_trades[ticker] += 1` in `gcp/signal_monitor.py:fire_alert`
-      (after the successful Discord post + persist, before return)
-- [ ] Add `self.daily_pnl[ticker] += return_pct` in `_persist_exit`
-      (after the successful UPDATE, before return; use the
-      `return_pct` already computed at line 873)
-- [ ] Counter reset is implicit per-process (SignalMonitor instance
-      lives one trading session); verify by reading `__init__` lines
-      86–87 — no change needed
-- [ ] Add `tests/test_signal_monitor_caps.py` — sim 6 calls to
-      `fire_alert` for one ticker; assert the 6th returns at line 437
-      without persisting; sim a chain of losses summing under
-      `daily_loss_limit`; assert subsequent fires short-circuit at 439
-- [ ] PR body: cite G.P0.8 + audit doc § 8.3 + § 8.7
+- [x] Added `self.daily_trades[ticker] += 1` in `gcp/signal_monitor.py:
+      fire_alert` after the persist call (line 639). Uses `.get(ticker, 0)`
+      defaulting in case a non-init'd ticker is fired (defensive)
+- [x] Added `self.daily_pnl[ticker] += return_pct` in `_check_exits`
+      (line 815) — the run-loop exit handler, not `_persist_exit` per
+      original plan note. Decoupled from DB-write success since the
+      trade exits in-memory regardless of persist outcome
+- [x] Counter reset confirmed implicit per-process (verified by reading
+      `__init__` lines 86–87) — `daily_trades`/`daily_pnl` get fresh
+      `{ticker: 0}` dicts on every SignalMonitor instantiation
+- [x] Added `tests/test_signal_monitor_caps.py` — 5 tests:
+      `fire_alert` increments by 1, `_check_exits` bumps positive on
+      CALL target, bumps negative on PUT loss, `evaluate_ticker`
+      short-circuits at `max_daily_trades`, `evaluate_ticker`
+      short-circuits at `daily_loss_limit`. All 96 signal_monitor tests
+      green
+- [ ] PR opened (citing G.P0.8 + audit doc § 8.3 + § 8.7)
 
 ### PR 3 — G.P0.7 — TZ-fix smoke test verification (trivial, could fold)
 
