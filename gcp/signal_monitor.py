@@ -638,6 +638,15 @@ class SignalMonitor:
         self._persist_signal_alert(ticker, sig, total_score, strength, size,
                                    strat_bonus, latest, target, time_stop)
 
+        # Track D / G.P0.8: increment the per-ticker fire counter so the
+        # `max_daily_trades` cap at evaluate_ticker line 437 is enforced.
+        # Initialised to 0 in __init__; resets implicitly per-process
+        # (the SignalMonitor instance lives one trading session). Pre-fix
+        # this counter was never bumped — IWM blew through the 5-fire/day
+        # cap by 22× on 5/7 because the cap check `daily_trades[ticker]
+        # >= max_daily_trades` was reading a frozen 0.
+        self.daily_trades[ticker] = self.daily_trades.get(ticker, 0) + 1
+
     def _persist_signal_alert(self, ticker, sig, total_score, strength, size,
                               strat_bonus, latest, target, time_stop):
         """Write signal alert row to Cloud SQL signal_alerts table."""
@@ -808,6 +817,17 @@ class SignalMonitor:
                 self._fire_exit_alert(pos, current_price, exit_reason,
                                       elapsed_min, current_rsi)
                 self._persist_exit(pos, current_price, exit_reason, now_utc)
+                # Track D / G.P0.8: bump the running P&L counter so the
+                # `daily_loss_limit` cap at evaluate_ticker line 439 is
+                # enforced. `_exit_return_pct` is a staticmethod with O(1)
+                # work; recomputing it here keeps the increment local and
+                # decoupled from `_persist_exit`'s DB-write success path
+                # (the trade exits in-memory regardless of persist outcome).
+                pnl = self._exit_return_pct(
+                    pos['direction'], pos['entry_price'], current_price)
+                self.daily_pnl[pos['ticker']] = (
+                    self.daily_pnl.get(pos['ticker'], 0.0) + pnl
+                )
                 positions.remove(pos)
 
     @staticmethod
