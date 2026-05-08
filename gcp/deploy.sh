@@ -981,6 +981,46 @@ deploy_compute_spx_greeks_backfill() {
 #
 # Cadence: quarterly (1st of Jan / Apr / Jul / Oct) — see deploy_schedulers().
 # Manual run any time: `gcloud run jobs execute calibrate-thresholds`.
+# ── Signal-monitor EOD resolver (Cloud Run Job) ─────────────────────────────
+# Track A G.P0.10. Reconciles signal_alerts rows that the live monitor
+# never closed (container restart, market close before any condition
+# fired). Replays exit logic over intraday bars using lib/exit_replay
+# so live + reconciler share one decision function.
+#
+# Capacity (back-of-envelope per CLAUDE.md §0):
+#   - 30 days × ~30 alerts/day = ~900 alerts
+#   - 1 + N + N round-trips ≈ 1800 SQL calls × 50 ms (psycopg2 + Cloud SQL
+#     Connector) = ~90 s wall-clock. 600 s task-timeout = 6× headroom.
+#   - Memory: 512 MiB (gen2 minimum); workload is bars+UPDATE, ~50 MiB peak.
+#   - max-retries 0: UPDATE is idempotent but retries don't help — if
+#     intraday data is missing for a window, the next day's run handles
+#     it once the data lands.
+#
+# Cadence: 21:30 UTC weekdays. UTC was chosen to always land at least
+# 30 min after the 16:00 ET close, regardless of DST (16:30 EST / 17:30
+# EDT — both safely post-close).
+# Manual run: `gcloud run jobs execute signal-monitor-eod-resolver --args="--lookback-days=60"`
+deploy_signal_monitor_eod_resolver() {
+    echo "Deploying signal-monitor-eod-resolver job..."
+    gcloud run jobs create signal-monitor-eod-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_monitor_eod_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-monitor-eod-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,gcp.signal_monitor_eod_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
 deploy_calibrate_thresholds() {
     echo "Deploying calibrate-thresholds job..."
     gcloud run jobs create calibrate-thresholds \
@@ -1358,6 +1398,12 @@ deploy_schedulers() {
     # always available: `gcloud run jobs execute calibrate-thresholds`.
     _schedule "calibrate-thresholds-quarterly" "0 2 1 1,4,7,10 *" "calibrate-thresholds"
 
+    # Track A G.P0.10 — EOD reconciliation of orphaned signal_alerts.
+    # 21:30 UTC = 16:30 EST / 17:30 EDT — always at least 30 min after
+    # the 16:00 ET close so the live monitor has finished writing.
+    # Idempotent UPDATE; re-running on a fully-reconciled window is a no-op.
+    _schedule "eod-reconcile-daily" "30 21 * * 1-5" "signal-monitor-eod-resolver"
+
     # Phase 0.5 — signal-quality report.
     # Hourly during market hours: --mode=rolling, incremental update of
     # signal_metrics as 60m/90m/120m/240m windows close out. Cron is
@@ -1507,6 +1553,7 @@ case "${1:-help}" in
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
+    eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
@@ -1524,6 +1571,7 @@ case "${1:-help}" in
         deploy_auto_refresh_top_n
         deploy_signal_quality_report
         deploy_signal_quality_alarm
+        deploy_signal_monitor_eod_resolver
         deploy_notifier
         deploy_schedulers
         backfill_watchlist

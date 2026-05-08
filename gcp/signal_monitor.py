@@ -39,6 +39,13 @@ from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
 from lib.strategies.brief_bias import alignment as _brief_alignment
 from lib.strategies.brief_bias import get_premarket_bias
+from lib.exit_replay import (
+    PERSIST_EXIT_SQL,
+    Position as _ExitPosition,
+    decide_exit as _decide_exit,
+    persist_exit_params as _persist_exit_params,
+    return_pct as _exit_return_pct_helper,
+)
 from lib.strategies.calibration import (
     get_call_rsi_range,
     get_put_rsi_range,
@@ -787,22 +794,22 @@ class SignalMonitor:
 
         for pos in positions[:]:
             elapsed_min = (now_utc - pos['alert_ts']).total_seconds() / 60.0
-            exit_reason = None
-
-            if pos['direction'] == 'CALL':
-                if current_price >= pos['target_price']:
-                    exit_reason = 'target_hit'
-                elif elapsed_min >= pos['time_stop_minutes']:
-                    exit_reason = 'time_stop'
-                elif current_rsi >= self.exit.call_rsi_exit:
-                    exit_reason = 'rsi_extreme'
-            else:  # PUT
-                if current_price <= pos['target_price']:
-                    exit_reason = 'target_hit'
-                elif elapsed_min >= pos['time_stop_minutes']:
-                    exit_reason = 'time_stop'
-                elif 0 < current_rsi <= self.exit.put_rsi_exit:
-                    exit_reason = 'rsi_extreme'
+            # Delegate to lib/exit_replay so the live monitor and the
+            # EOD reconciler share one decision function.
+            _ep_pos = _ExitPosition(
+                ticker=pos['ticker'], direction=pos['direction'],
+                alert_ts=pos['alert_ts'], entry_price=pos['entry_price'],
+                target_price=pos['target_price'],
+                time_stop_minutes=pos['time_stop_minutes'],
+            )
+            exit_reason = _decide_exit(
+                _ep_pos,
+                current_price=current_price,
+                current_rsi=current_rsi,
+                elapsed_minutes=elapsed_min,
+                call_rsi_exit=self.exit.call_rsi_exit,
+                put_rsi_exit=self.exit.put_rsi_exit,
+            )
 
             if exit_reason:
                 self._fire_exit_alert(pos, current_price, exit_reason,
@@ -812,9 +819,7 @@ class SignalMonitor:
 
     @staticmethod
     def _exit_return_pct(direction, entry_price, exit_price):
-        if direction == 'CALL':
-            return (exit_price - entry_price) / entry_price * 100.0
-        return (entry_price - exit_price) / entry_price * 100.0
+        return _exit_return_pct_helper(direction, entry_price, exit_price)
 
     def _fire_exit_alert(self, pos, exit_price, exit_reason, elapsed_min,
                          current_rsi):
@@ -871,7 +876,11 @@ class SignalMonitor:
             logger.warning("Exit alert Discord post failed: %s", e)
 
     def _persist_exit(self, pos, exit_price, exit_reason, exit_ts):
-        """Update the signal_alerts row with exit details."""
+        """Update the signal_alerts row with exit details.
+
+        Delegates to lib.exit_replay.PERSIST_EXIT_SQL so the live monitor
+        and the EOD reconciler emit byte-identical UPDATEs.
+        """
         try:
             from gcp.database import get_engine, is_cloud_sql_configured
         except ImportError:
@@ -879,30 +888,26 @@ class SignalMonitor:
         if not is_cloud_sql_configured():
             return
 
-        return_pct = self._exit_return_pct(
-            pos['direction'], pos['entry_price'], exit_price)
+        from lib.exit_replay import ExitEvent as _ExitEvent
+        _ep_pos = _ExitPosition(
+            ticker=pos['ticker'], direction=pos['direction'],
+            alert_ts=pos['alert_ts'], entry_price=pos['entry_price'],
+            target_price=pos['target_price'],
+            time_stop_minutes=pos['time_stop_minutes'],
+        )
+        event = _ExitEvent(
+            exit_ts=exit_ts,
+            exit_reason=exit_reason,
+            exit_price=float(exit_price),
+            exit_return_pct=self._exit_return_pct(
+                pos['direction'], pos['entry_price'], exit_price),
+        )
 
         from sqlalchemy import text
-        sql = text("""
-            UPDATE signal_alerts
-               SET exit_ts          = :exit_ts,
-                   exit_reason      = :reason,
-                   exit_price       = :price,
-                   exit_return_pct  = :ret,
-                   is_open          = FALSE
-             WHERE ticker   = :ticker
-               AND alert_ts = :alert_ts
-        """)
         try:
             with get_engine().begin() as conn:
-                conn.execute(sql, {
-                    'exit_ts':  exit_ts,
-                    'reason':   exit_reason,
-                    'price':    float(exit_price),
-                    'ret':      float(return_pct),
-                    'ticker':   pos['ticker'],
-                    'alert_ts': pos['alert_ts'],
-                })
+                conn.execute(text(PERSIST_EXIT_SQL),
+                             _persist_exit_params(_ep_pos, event))
         except Exception as e:
             logger.warning("Exit persist failed for %s %s: %s",
                            pos['ticker'], pos['alert_ts'], e)
