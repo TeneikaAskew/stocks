@@ -35,8 +35,8 @@ If any of the listed Track C/D P0s are still pending when I'm ready to ship, I'l
 
 Before any implementation work, file GitHub issues for the cross-track dependencies so the wait is visible. Each issue links to the corresponding `track-G.md` item ID and notes "blocks PR-X" so the dependency direction is unambiguous.
 
-- [ ] **Issue: G.P0.6** (Track C/D) — `signal_alerts.conditions_met` JSONB writer fix + backfill. Blocks: my walk-forward validation in PR-E1; momentum eligibility analysis in PR-E4 will run with the `(conditions_met #>> '{}')::jsonb` workaround until then.
-- [ ] **Issue: G.P0.11 instrumentation half** (Track D) — live "momentum considered vs fired" counter in `signal_monitor`. Blocks: full closure of G.P0.11. My analysis half ships independently in PR-E4.
+- [x] **Issue #311: G.P0.6** (Track C/D) — `signal_alerts.conditions_met` JSONB writer fix + backfill. Blocks: my walk-forward validation in PR-E3; momentum eligibility analysis in PR-E4 will run with the `(conditions_met #>> '{}')::jsonb` workaround until then.
+- [x] **Issue #312: G.P0.11 instrumentation half** (Track D) — live "momentum considered vs fired" counter in `signal_monitor`. Blocks: full closure of G.P0.11. My analysis half ships independently in PR-E4.
 
 These issues label `audit-followup,blocking-track-A-E,P0`.
 
@@ -244,7 +244,7 @@ After all Phase 2 PRs merge:
 
 ## Status snapshot (manually updated as PRs land)
 
-- **Phase 0** (cross-track dep issues): 0 / 2 filed
+- **Phase 0** (cross-track dep issues): 2 / 2 filed (#311, #312)
 - **Phase 1** (P0): 0 / 9 PRs landed
   - PR-A1 (unfreeze fetcher): not started
   - PR-A2 (fetcher fail-fast): not started
