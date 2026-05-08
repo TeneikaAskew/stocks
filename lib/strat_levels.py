@@ -984,25 +984,32 @@ def format_levels_for_brief(
     call_pre_banner = _side_banner('CALLS', regime_long, True) if ct is not None and regime_long != 'normal' else None
     put_pre_banner = _side_banner('PUTS', regime_short, True) if pt is not None and regime_short != 'normal' else None
 
-    # Suppress the trigger block on a side that's already gap-cleared
-    # under an `orb_only` regime. Pre-fix, when CALL trigger=278.13 was
-    # below spot=287.53 (IWM 2026-05-07 gap-up open), the playbook
-    # printed BOTH a banner ("pre-market cleared every level") AND a
-    # contradicting trigger line ("CALLS above 278.13") — the trigger
-    # was structurally unreachable as an entry but still rendered as
-    # if it were the plan. Track B audit (G.P1.7) flagged this as
-    # "side fully cleared but other side healthy" — the banner is the
-    # right output; the trigger block adds noise. Mirror logic for
-    # PUTS where trigger > spot means price is already below the put
-    # trigger.
-    cleared_call = (
-        ct is not None and regime_long == 'orb_only'
-        and ct['trigger_level'] < spot
-    )
-    cleared_put = (
-        pt is not None and regime_short == 'orb_only'
-        and pt['trigger_level'] > spot
-    )
+    # Suppress the trigger block on any side whose regime is `orb_only`.
+    # The regime classifier (`lib.agents.trade_planner.select_trigger_and_regime`)
+    # marks `orb_only` when *pre-market* extremes have cleared every
+    # structural level on that side — `cleared_above = max(ref, pre_high)`
+    # for longs, `cleared_below = min(ref, pre_low)` for shorts. By the
+    # time the brief renders at 8:30 AM ET, `level_map.current_price`
+    # is yesterday's close (NOT the pre-market spike); so a check like
+    # `trigger_level < current_price` would miss the audit's actual
+    # case (IWM 5/7: yesterday's close 277.14 < trigger 278.24, but
+    # pre-market spiked to ~287). The earlier draft of this fix made
+    # exactly that mistake — Codex review on PR #307 caught it.
+    #
+    # The right policy is to trust the regime classifier's decision
+    # without second-guessing: if it says `orb_only`, the structural
+    # setup on that side has been compromised by pre-market action,
+    # and the trigger / stop / target / room block is noise relative
+    # to the banner. The banner ("pre-market cleared every structural
+    # level on this side — wait for the 15-min ORB") is the
+    # actionable signal.
+    #
+    # This mirrors the existing convention at line 988-989: the
+    # `call_pre_banner` already renders purely from `regime_long`, no
+    # spot check. We extend the same trust to the trigger-block
+    # suppression.
+    cleared_call = ct is not None and regime_long == 'orb_only'
+    cleared_put = pt is not None and regime_short == 'orb_only'
 
     if ct:
         if call_pre_banner:
