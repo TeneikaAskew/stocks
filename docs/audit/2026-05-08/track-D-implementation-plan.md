@@ -48,23 +48,33 @@ unit. The PR number column updates as PRs open.
 ### PR 1 — G.P0.6 — JSONB writer for signal_alerts (top-3 priority)
 
 **Investigation**: `signal_alerts.conditions_met` and `strategy_agreement`
-land as JSONB-string-of-array because `_persist_signal_alert` does
+(plus `trades.conditions_met` — same bug class) land as JSONB-string-of-array
+because `_persist_signal_alert` and `TradeLogger.log_trade` do
 `json.dumps()` first instead of binding the Python list/dict natively.
 
-- [ ] Drop `json.dumps(...)` at `gcp/signal_monitor.py:673` for
+- [x] Drop `json.dumps(...)` at `gcp/signal_monitor.py:673` for
       `conditions_met` (let pg8000/SQLAlchemy adapt the list to JSONB
-      array)
-- [ ] Same fix at line 679 for `strategy_agreement` (object instead of
-      string-of-object)
-- [ ] Add `tests/test_signal_monitor_persistence.py` — sim a fire,
-      query the row, assert `jsonb_typeof(conditions_met)='array'` and
-      `jsonb_typeof(strategy_agreement)='object'` (or NULL)
-- [ ] One-shot SQL backfill via `db-query.yml` with `commit=true`:
-      `UPDATE signal_alerts SET conditions_met = (conditions_met #>> '{}')::jsonb WHERE jsonb_typeof(conditions_met)='string';`
-      and same for `strategy_agreement`
-- [ ] Verify backfill landed: `SELECT jsonb_typeof(conditions_met), COUNT(*) FROM signal_alerts GROUP BY 1` — only `array` and `null` should remain
-- [ ] PR body: cite G.P0.6, audit doc § 2 / § 3 in track-D.md, sample
-      before/after rows
+      array) — commit `69090c6`
+- [x] Same fix at line 679 for `strategy_agreement` (object instead of
+      string-of-object) — commit `69090c6`
+- [x] Same fix in `gcp/trade_logger.py:42-53` for the `trades` table
+      (added during PR 1 once the same bug was confirmed there) —
+      commit `69090c6`
+- [x] Updated existing `tests/test_signal_monitor_persist.py:156` and
+      `tests/test_signal_monitor_agreement.py:287` regression tests to
+      assert native list/dict (not str). All 91 signal_monitor tests
+      green
+- [x] One-shot SQL backfill via `db-query.yml` with `commit=true`
+      (run 25581538478): 1,965 `signal_alerts.conditions_met` rows +
+      17 `signal_alerts.strategy_agreement` rows + 1,965
+      `trades.conditions_met` rows converted
+- [x] Verified post-state: `signal_alerts.conditions_met` 1,965 rows
+      `array`; `signal_alerts.strategy_agreement` 17 rows `object` /
+      1,161 jsonb-null / 787 SQL-NULL; `trades.conditions_met` 1,965
+      rows `array`. Zero `string` rows remain in any of the three columns
+- [ ] PR opened (citing G.P0.6, audit doc § 2 / § 3 / § 6 / § 8 in
+      track-D.md, with sample before/after rows from runs
+      25581463701 and 25581538478)
 
 ### PR 2 — G.P0.8 — wire `max_daily_trades` and `daily_loss_limit` increments (top-3 priority)
 
