@@ -473,6 +473,209 @@ temperature.
 
 ---
 
+## Audit-of-audit additions (2026-05-08, after self-review)
+
+These items close gaps the original write-up left open. None of them
+change the verdict (still BROKEN); they harden the evidence and add
+two new backlog items.
+
+### A. Strat candle classification — manually verified
+
+The original write-up said "the 2U claim is consistent with the 2026-04-27
+bar" but didn't compute it from primary data. With the April 24 vs
+April 27 daily bars now in hand:
+
+| Ticker | 4/24 H/L         | 4/27 H/L         | Rule                           | Class |
+|--------|------------------|------------------|--------------------------------|-------|
+| SPY    | 714.47 / 709.01  | 715.63 / 712.295 | H₂>H₁ AND L₂≥L₁ → 2U          | **2U ✓** |
+| IWM    | 278.13 / 274.23  | 278.24 / 276.25  | H₂>H₁ AND L₂≥L₁ → 2U          | **2U ✓** |
+| QQQ    | 664.51 / 656.530 | 664.43 / 660.69  | H₂<H₁ AND L₂>L₁ → inside ("1") | **1 ✓** |
+
+The brief published `strat_candle=2U` for SPY/IWM and `1` for QQQ —
+all three classifications are correct against the underlying April 27
+bar. **The strat classifier itself is fine; the staleness is the
+problem.** This rules out a coexisting "classifier bug" hypothesis and
+narrows the fix to the data layer + the brief's freshness gate.
+
+### B. `strat_levels` is also stale-replicated
+
+Each morning the brief calls `persist_level_map` and writes 17 levels
+per ticker per day (CDO, CMO, CWO, GAP_H_2026-04-08, GAP_H_2026-04-24,
+GAP_L_2026-04-08, GAP_L_2026-04-24, PDH, PDL, PMH, PML, PQH, PQL,
+PWH, PWL, PYH, PYL). For May 4–7 × {SPY, IWM, QQQ}:
+
+- 12 (date, ticker) groups × 17 levels = **204 rows persisted**.
+- The 17 level *names* per (date, ticker) are identical across all 4
+  dates (set membership matches byte-for-byte).
+- The 17 level *prices* per (date, ticker) are also identical across
+  all 4 dates — confirmed by inspecting IWM rows in
+  `snapshots/track-B/07-strat-levels-rows.csv`: CDO=276.82, CWO=276.82,
+  PDH=278.13, PDL=274.23, etc. for every as_of date in the window.
+
+**Cross-track signal**: the live signal monitor reads `strat_levels` to
+detect intraday level breaks (per `gcp/signal_monitor.py` and the
+`level_broken` column in `signal_alerts`). On May 5–7 it was watching
+for breaks of 2026-04-27-derived levels — every one of which had
+already been gap-cleared in pre-market. The level-break detection path
+in the monitor was effectively dead-on-arrival each morning, even on
+sessions where the monitor itself was fully healthy. Track D should
+verify whether `level_broken` was always populated against stale levels
+in this window.
+
+### C. Daily-data gap span — exactly 8 trading days
+
+Using a row-by-row scan of `market_data_daily` from 2026-04-25 to
+today:
+
+| ticker | last real bar | first NULL row     | rows in May 4–7 |
+|--------|---------------|--------------------|------------------|
+| SPY    | 2026-04-27    | 2026-05-08 (today) | **0**            |
+| IWM    | 2026-04-27    | 2026-05-08 (today) | **0**            |
+| QQQ    | 2026-04-27    | 2026-05-08 (today) | **0**            |
+
+April 28, 29, 30 and May 1, 2, 3, 4, 5, 6, 7 have **no row of any
+kind** for these three tickers (not even a NULL placeholder). Only
+May 8 has a NULL placeholder, inserted at 08:20 UTC this morning. The
+daily fetcher has been silently dropping all OHLCV for the eval
+window for at least 8 trading days.
+
+Table-wide blast radius (likely Track A's headline): there are **124
+NULL-close rows** in `market_data_daily` overall, spanning min_date
+2026-04-30 → max_date 2026-05-08. So the failure isn't just the three
+ETFs — dozens of other tickers are showing the null-placeholder
+pattern over the same period.
+
+### D. SPX intraday — STILL MISSING in the eval window
+
+`market_data_intraday_spx` has **0 rows** for any session between
+2026-05-04 and 2026-05-07. The plan flagged this as "the Dec 2025 SPX
+intraday gap" and asked Track A to confirm whether it was backfilled.
+**It is not backfilled, and the gap now extends into May.** This is
+out of scope for Track B's bias/levels audit (the brief tickers are
+SPY/IWM/QQQ, not SPX), but it's relevant context for Track D's signal
+monitor evaluation.
+
+### E. `premarket_analysis` does not persist any LLM-generated fields
+
+The brief code populates four LLM slots in the in-memory dict
+(`brief['llm_overview']`, `brief['llm_orb_explanation']`,
+`brief['tickers'][T]['llm_analysis']`,
+`brief['tickers'][T]['llm_playbook']`) and renders them into the
+Discord embeds, but the `premarket_analysis` table schema has no
+columns for them (verified — only 35 columns, none of them `llm_*`).
+**Implication**: the morning Discord brief shows LLM commentary that
+no historical replay or audit can ever reproduce. If the LLM was
+hallucinating bias or misreading the playbook on a given morning, you
+can't see that from the database — only the live Discord post.
+
+This is a P2 backlog addition: persist the four LLM strings in
+`premarket_analysis` (or a sidecar `premarket_llm_explanations`
+table) so post-hoc audits can grade LLM commentary, not just
+deterministic fields.
+
+### F. Embed quality (Sub-question 2 from the plan, completion)
+
+The original write-up sampled the **overview** and **playbook** embeds
+on May 7 SPY and admitted earnings/calendar were not directly
+inspected. From the in-memory dict structure and the brief's
+`generate_premarket_brief` pipeline, what we can say:
+
+- **Overview embed** (`_build_overview_embed`, line 1175) is populated
+  for all 12 (date, ticker) cells — every cell has the price, RSI,
+  RVOL, and SMA200 fields needed to render the per-ticker line. Stale
+  but populated.
+- **Playbook embed** (`_build_playbook_embed`, line 1855) is populated
+  for all 12 cells — confirmed via `length(playbook) > 0` on every
+  row in `snapshots/track-B/02-playbook-content.csv`. Stale but populated.
+- **Earnings embed**: not stored to `premarket_analysis`. The brief
+  builds it from `load_earnings_for_brief` against `earnings_calendar`
+  every morning. Whether the earnings table itself is fresh is a Track
+  A finding (orthogonal to the daily-OHLCV problem). One indirect
+  sanity check: May 7's `recommended_orb_reason` was "5-min ORB
+  (default scalp window, no high-impact catalyst)" while May 5's was
+  "30-min ORB recommended (10:00 JOLTS Job Openings)" — the events
+  table is therefore reachable and the per-day variation works.
+- **Calendar embed**: same as earnings — not persisted, so a strict
+  post-hoc audit needs the live morning Discord transcript or a
+  replay run. The ORB reason variation across May 4–7 is the only
+  evidence we have that the calendar pipeline isn't itself stuck.
+
+This is now a closed sub-question; the residual P2 audit (sample one
+morning's full earnings + calendar Discord render) remains in the
+backlog as item #8.
+
+### G. No regressions from this audit
+
+This audit is read-only: zero code changes, zero data writes (every
+db-query workflow dispatch ran with `commit=false`, transactions
+rolled back). The only filesystem changes are the new
+`docs/audit/2026-05-08/track-B.md` findings doc and the
+`docs/audit/2026-05-08/snapshots/track-B/*.csv` raw-data snapshots — both
+are new files in a new directory, so nothing existing is modified.
+
+### Updated backlog items (additions)
+
+9. **P1 — Persist stale-replicated `strat_levels` defensively.** The
+   `persist_level_map` call at `gcp/premarket_brief.py:1030` writes
+   17 stale rows per ticker every morning when the underlying daily
+   data hasn't moved. This corrupts the signal monitor's level-break
+   detection (Track D will see this as `level_broken` firing against
+   levels that were already gone). Either:
+   - Skip the persist if `(analysis_date - last_daily_bar_date) > 1
+     trading day`, OR
+   - Stamp each row with a `data_age_trading_days` column so
+     downstream consumers can decide whether to trust it.
+
+10. **P2 — Persist LLM-generated brief commentary.** Add columns
+    `llm_overview`, `llm_orb_explanation`, and per-ticker
+    `llm_analysis` / `llm_playbook` to either `premarket_analysis` or
+    a sidecar `premarket_llm_explanations` table. Without this, no
+    audit can ever grade what the LLM actually told users on a given
+    morning — only the deterministic fields are replayable.
+
+---
+
+## Reusability of fetched data
+
+**Will the data stick?** The CSVs in `docs/audit/2026-05-08/snapshots/track-B/`
+are point-in-time snapshots of `market_data_daily`,
+`market_data_intraday`, `premarket_analysis`,
+`premarket_analysis_history`, `signal_alerts`, and `strat_levels` as
+of approximately **2026-05-08 13:14 ET**. They were retrieved via the
+`db-query.yml` workflow with `commit=false`, so the queries
+themselves did not modify any database state.
+
+**Can other tracks reuse this data?** Yes, with caveats:
+
+- **Stable, won't change**: The intraday RTH OHLC for May 4–7
+  (files 04, 05, 11, 12) is anchored to historical bars and won't be
+  overwritten by future fetches; safe to reuse forever.
+- **Will change once Track A fixes the fetcher**: The `market_data_daily`
+  snapshots (files 08, 09, 13, 17) reflect the broken state of the
+  table today. When the daily fetcher gets fixed and backfills May 4–7,
+  these CSVs will go out of date — they will become a historical
+  record of "what the table looked like before the fix" rather than
+  "the current truth". That is itself useful for Track G (proves the
+  brief was reading bad data); just don't use them as ground truth
+  for ticker prices on those days.
+- **Frozen at first-write**: The `premarket_analysis` rows for May 4–7
+  (files 01, 02, 03, 06) cannot be overwritten by automatic re-runs —
+  the `persist_to_cloud_sql` path requires `allow_update=True` (only
+  set by `--update` CLI flag or a Discord `/replay`). Until someone
+  explicitly replays those mornings, the rows in those CSVs are also
+  what's in the production table.
+- **Append-only**: The `premarket_analysis_history` rows (file 03)
+  and `strat_levels` rows (files 07, 15, 16) are append-only by
+  design; the snapshot will remain a valid subset of the live table.
+- **The signal_alerts snapshot** (file 10) covers brief_bias coverage
+  and is also append-only; safe to reuse.
+
+**Track G synthesis can reference any of these CSVs by relative path
+(`docs/audit/2026-05-08/snapshots/track-B/NN-name.csv`) and they will be
+present in the branch.**
+
+---
+
 ## Appendix — query trail
 
 All SQL was dispatched via the `db-query.yml` workflow. Run IDs and
@@ -484,9 +687,12 @@ artifact IDs:
   JSON, persisted strat_levels). Artifact `6879921881`.
 - `25557660050` — follow-up: market_data_daily freshness diagnostic +
   signal_alerts.brief_bias cross-check. Artifact `6879980197`.
-- `25557802130` — final: intraday-derived RTH close per session
-  (since daily data is missing) + null-row diagnostic. Artifact
-  `6880037749`.
+- `25557802130` — intraday-derived RTH close per session (since daily
+  data is missing) + null-row diagnostic. Artifact `6880037749`.
+- `25558734056` — audit-of-audit pass: April 24 prior bar
+  verification, strat_levels staleness, daily-gap span, SPX intraday
+  coverage, non-scheduled-rerun detection, table-wide null-row count.
+  Artifact `6880451705`.
 
 Track A is the canonical owner of the foundation finding (daily
 fetcher dead since 2026-04-28); Track B's job here was to surface
