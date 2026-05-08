@@ -284,11 +284,14 @@ def test_persist_writes_strategy_agreement_json_when_stacked():
     df = mock_upsert.call_args[0][0]
     assert "strategy_agreement" in df.columns
     payload = df.iloc[0]["strategy_agreement"]
-    assert isinstance(payload, str), \
-        "strategy_agreement must be JSON-serialized for the JSONB column"
-    parsed = json.loads(payload)
-    assert parsed["agree"] is True
-    assert parsed["composite_score"] == 5.0
+    # Track D audit § 6 / G.P0.6: pass the dict natively so SQLAlchemy +
+    # pg8000 bind it to a JSONB object. Pre-fix code did `json.dumps(...)`,
+    # which produced JSONB scalar strings (`"{...}"`) and broke `->>` /
+    # `@>` predicates downstream.
+    assert isinstance(payload, dict), \
+        f"strategy_agreement must be a dict (not str) so it binds as JSONB object; got {type(payload).__name__}"
+    assert payload["agree"] is True
+    assert payload["composite_score"] == 5.0
 
 
 # ── 6) Persist: strategy_agreement is None on solo fires ──────────────
