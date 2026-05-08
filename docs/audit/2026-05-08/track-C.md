@@ -222,12 +222,42 @@ level. Wait for the 15-min opening range to establish before entering."
 ```
 
 A +0.20 % gap should not clear every PDH/PWH/PMH/PQH/PYH on a normal
-session. This points back to the **stale-brief-prev-levels finding from §3**:
-the planner's `select_trigger_and_regime` is walking against levels it
-read out of `compute_strat_status`, which read out of `market_data_daily`
-trimmed to `as_of`. If `as_of` was a stale day, the levels the planner
-walked are "already cleared" by today's pre-market — yielding a spurious
-`orb_only` classification.
+session. The cause here is **not yet pinned down**, and is independent
+of the brief-staleness finding in §3 — the insight pipeline does NOT
+read `premarket_analysis`. `summarize_strat_status()` independently
+calls `compute_strat_status(ticker, as_of=as_of)` and rebuilds levels
+from `DataLoader.load_daily()` (`lib/agents/summarizers.py:217-219`,
+`241-265`); `summarize_market_context()` reads premarket fields directly
+from `market_data_daily` (`summarizers.py:68-93`). Both upstream reads
+target `market_data_daily`, which is fresh (latest = 2026-05-08, 2,504
+rows per ticker — verified in §1). The insight reports themselves show
+the strat state evolving day-to-day (IWM `last_candle` `1`→`2U`→`1`→`2U`
+across 5/4–5/7 with different `in_force_combo` values), confirming the
+agent IS receiving fresh strat input.
+
+So the question becomes: with fresh strat data, why does
+`select_trigger_and_regime` (`lib/agents/trade_planner.py:153-262`)
+classify 10/12 reports as `orb_only`? Three candidate causes worth
+investigating in a follow-up:
+
+* **`pre_high / pre_low` may be too aggressive.** The level-walk uses
+  `max(ref, ctx.pre_high or ref)` for longs; if pre-market routinely
+  pokes above PDH on a 0.2% gap, every PDH/PWH/PMH/PQH/PYH counts as
+  cleared. The `+0.20 %` rationale text in the QQQ 5/7 plan suggests
+  this is the dominant trigger.
+* **The level set may be naturally tight.** PWH/PMH/PQH/PYH for SPY/IWM/
+  QQQ in a long uptrend sit close to PDH, so a single overnight gap
+  clears most of them. This is a feature of the market, not a bug.
+* **`effective_pdh` mother-bar walk-back may regress trigger levels** —
+  if the prior bar was a strat `1` (inside bar), the planner walks back
+  to the outer mother bar's high, which can be far below current price
+  even on fresh data.
+
+The `orb_only` over-classification is therefore a P1 in §8 (insight-
+planner-side investigation), distinct from the §3 brief-staleness P0
+(which has a proven artifact in `premarket_analysis`). Earlier drafts
+of this doc conflated the two; that conflation has been removed (per
+PR #290 review).
 
 The numbers: **10 of 12 reports = `orb_only`** (including SPY 5/6 which is
 `direction=long, regime=orb_only` — collapsed entry zone where
@@ -628,16 +658,21 @@ history table would surface that.
 Priority follows the synthesis-track scheme: P0 = data correctness, P1 =
 quality regression, P2 = tuning, P3 = docs.
 
-### P0 — investigate stale prev-day levels in brief and insights bundle
-**Track A/B/C joint.** All four mornings produced identical
-`prev_day_high/prev_day_low/price` rows in `premarket_analysis` for each
-ticker. With `market_data_daily` actually fresh through 5/8, this points
-to a `compute_strat_status`-or-earlier upstream that's reading a fixed
-`as_of`. The downstream effect on insights is the spurious
-`regime=orb_only` classification on 10/12 reports — when the level set
-is stale, every fresh pre-market gap looks like it cleared every level.
-Owner: data-pipeline track. Surface area: `gcp/premarket_brief.py`,
-`lib.strat.compute_strat_status`, `lib.strat_levels.compute_previous_levels`.
+### P0 — stale prev-day levels in `premarket_analysis`
+**Track A/B finding, Track C cross-check.** All four mornings produced
+identical `prev_day_high/prev_day_low/price` rows in
+`premarket_analysis` for each ticker, despite `market_data_daily` being
+fresh through 5/8 with 2,504 rows per ticker. Whatever the brief job is
+reading on 5/5–5/7 is the same snapshot it read on 5/4. **This is a
+proven artifact of the brief table only — the insight pipeline does
+NOT read these rows** (it independently calls `compute_strat_status`
+against the fresh `market_data_daily`), so the insight orb_only rate is
+filed separately as a P1 in this same backlog. Owner: data-pipeline
+track. Surface area: `gcp/premarket_brief.py` (where the brief job
+resolves its `as_of` and writes the upsert),
+`lib.strat.compute_strat_status` if invoked from the brief, the
+`UNIQUE (analysis_date, ticker)` constraint behavior in
+`gcp/schema.sql:864`.
 
 ### P0 — `signal_alerts.conditions_met` stored as JSON-string-of-array
 Production rows in the May 4-7 window have `jsonb_typeof = 'string'`
@@ -684,13 +719,28 @@ so the apparent "0 / 78 SPY CALL hit rate" on 5/7 isn't comparable to
 the unresolved 5/4-5/6 days.
 
 ### P1 — orb_only over-classification for normal sessions
-`select_trigger_and_regime` returns `orb_only` when "every structural
-level in trade direction has been cleared." Out of 12 reports,
-9 hit this branch in a 4-day window. Even granting the stale-levels
-P0 above, the planner should fall back to a 15-min ORB plan with a
-*real* numerical entry zone (the ORB high) once the 9:45 ORB has
-formed, not a placeholder. Today the report is published at 8:45
-with `regime=orb_only` and never refreshed.
+`select_trigger_and_regime` (`lib/agents/trade_planner.py:153-262`)
+returns `orb_only` when "every structural level in the trade direction
+has been cleared." 10 of 12 reports hit this branch in a 4-day window.
+Cause is **not the brief-staleness P0 in §3** — the insight pipeline
+reads independently from `market_data_daily` (which is fresh) via
+`compute_strat_status` and `DataLoader.load_daily()`, and the insight
+reports show the strat state evolving day-to-day. Three candidate
+sub-causes to investigate (per §4):
+
+1. `pre_high / pre_low` clearing logic (`max(ref, ctx.pre_high or ref)`)
+   may be too aggressive — a 0.2 % gap shouldn't clear PWH/PMH/PQH/PYH
+   simultaneously.
+2. Multi-timeframe level set may be naturally tight on tickers in a
+   sustained uptrend (PWH/PMH/PQH ride close to PDH).
+3. `effective_pdh` mother-bar walk-back may regress the trigger to a
+   far-below level when the prior bar is a `1` (inside bar).
+
+Beyond root cause: even when `orb_only` is the correct classification,
+the planner publishes a placeholder at 8:45 AM and never refreshes once
+the 9:45 ORB has formed. Either the 8:45 report should be deferred /
+re-issued post-ORB, or the planner should publish a *real* ORB-aware
+plan with the ORB high/low filled in after the open.
 
 ### P1 — brief↔insights direction divergence
 Brief said PUT setup uniformly; insights said long uniformly. The
