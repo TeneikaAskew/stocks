@@ -1,13 +1,13 @@
 <mxfile host="65bd71144e">
     <diagram name="stocks-trading-architecture" id="oCLJrzCCmgXXmyoxXrvL">
-        <mxGraphModel dx="598" dy="1033" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1500" math="0" shadow="0">
+        <mxGraphModel dx="598" dy="1033" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1620" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
                 <mxCell id="title" value="Stocks Trading Platform — GCP Architecture (project: adept-mountain-474619-d4, region: us-east1)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;fontColor=#222222;" parent="1" vertex="1">
                     <mxGeometry x="40" y="20" width="2320" height="30" as="geometry"/>
                 </mxCell>
-                <mxCell id="subtitle" value="27 Cloud Run Jobs • 4 Cloud Run Services • 49 Cloud Scheduler crons • 27-table Cloud SQL • Discord-first delivery" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=2;fontColor=#666666;" parent="1" vertex="1">
+                <mxCell id="subtitle" value="30 Cloud Run Jobs • 4 Cloud Run Services • 50+ Cloud Scheduler crons • 27-table Cloud SQL • Discord-first delivery (verified 2026-05-08 against gcp/deploy.sh)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=2;fontColor=#666666;" parent="1" vertex="1">
                     <mxGeometry x="40" y="48" width="2320" height="20" as="geometry"/>
                 </mxCell>
                 <mxCell id="ext_group" value="① External APIs &amp; Delivery Surfaces" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
@@ -49,7 +49,7 @@
                 <mxCell id="ext_gas" value="Google Apps Script&#xa;(sheet automation)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" parent="1" vertex="1">
                     <mxGeometry x="2140" y="115" width="200" height="55" as="geometry"/>
                 </mxCell>
-                <mxCell id="sched_group" value="② Cloud Scheduler — 49 enabled cron jobs (verified 2026-05-02)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                <mxCell id="sched_group" value="② Cloud Scheduler — 50+ enabled cron jobs (deploy.sh verified 2026-05-08)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
                     <mxGeometry x="40" y="200" width="2320" height="80" as="geometry"/>
                 </mxCell>
                 <mxCell id="sched_icon" value="Cloud Scheduler" style="editableCssRules=.*;html=1;fontColor=#333333;fontSize=11;fontStyle=1;shape=image;verticalLabelPosition=middle;verticalAlign=middle;labelPosition=right;align=left;spacingLeft=20;part=1;points=[];imageAspect=0;image=data:image/svg+xml,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnY9Imh0dHBzOi8vdmVjdGEuaW8vbmFubyIgd2lkdGg9IjE5LjkyMTQ0MjAzMTg2MDM1IiBoZWlnaHQ9IjE5Ljc3ODMyMDMxMjUiIHZpZXdCb3g9Ii0wLjAwMDQ0MTU1NzE3NDc4MTMzNzQgMC4yNSAxOS45MjE0NDIwMzE4NjAzNSAxOS43NzgzMjAzMTI1Ij48c3R5bGUgdHlwZT0idGV4dC9jc3MiPi5zdDB7ZmlsbDojNDI4NWY0fS5zdDF7ZmlsbDojYWVjYmZhfS5zdDJ7ZmlsbC1ydWxlOmV2ZW5vZGR9LnN0M3tmaWxsOiM2NjlkZjZ9PC9zdHlsZT48cGF0aCBjbGFzcz0ic3QwIiBkPSJNNC40NjEgMTYuMjRhMyAzIDAgMSAxIDAtNiAzIDMgMCAxIDEgMCA2em0zLjYzLS40YTQuNDMgNC40MyAwIDAgMC01LjA0OS02LjcxNEE0LjQzIDQuNDMgMCAwIDAgLjAxMSAxMy4zMmE0LjkxIDQuOTEgMCAwIDAgMCAuNjcgMy40MyAzLjQzIDAgMCAwIC4wOS40NGwuMDYuMjFhNC41OSA0LjU5IDAgMCAwIC4zNC43OSA0LjI0IDQuMjQgMCAwIDAgLjc2IDFsLjE1LjE1LjMzLjI3YTQuMTYgNC4xNiAwIDAgMCAuNzMuNDQgNC40NCA0LjQ0IDAgMCAwIDQuNTQtLjI5bDIuOTMgMi45M2EuMzMuMzMgMCAwIDAgLjQ3IDBsLjY2LS42NWEuMzMuMzMgMCAwIDAgMC0uNDd6Ii8+PHBhdGggY2xhc3M9InN0MSIgZD0iTTkuODExIDE0LjU4YTUuNDEgNS40MSAwIDAgMCAuMi0xLjUxIDUuNTMgNS41MyAwIDAgMC01LjYxLTUuNDIgNS44MiA1LjgyIDAgMCAwLTEuOTIuMzVWMy44M2EuNjIuNjIgMCAwIDEgLjYyLS42MmgxNi4xOWEuNjMuNjMgMCAwIDEgLjYzLjYyVjE0YS42My42MyAwIDAgMS0uNjMuNjN6Ii8+PGcgY2xhc3M9InN0MiI+PHBhdGggY2xhc3M9InN0MyIgZD0iTTEzLjU5MSAzLjIxVjEuNzNoLTQuNDR2MS40OGgtMS40OVYuODdhLjYzLjYzIDAgMCAxIC42My0uNjJoNi4xNmEuNjIuNjIgMCAwIDEgLjYyLjYydjIuMzR6Ii8+PHBhdGggY2xhc3M9InN0MCIgZD0iTTE1LjA3MSAzLjIxaC0xLjQ4bDEuNDgtLjQ3em0tNS45MyAwaC0xLjQ5bDEuNDktLjU0eiIvPjwvZz48L3N2Zz4=;" parent="1" vertex="1">
@@ -61,7 +61,7 @@
                 <mxCell id="sched_label2" value="Pre-market (7-9am ET): economic-events, insider-transactions, earnings-calendar, premarket-refresh, premarket-brief, insight-pipeline, insight-discord-push" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#444444;" parent="1" vertex="1">
                     <mxGeometry x="220" y="240" width="1200" height="20" as="geometry"/>
                 </mxCell>
-                <mxCell id="sched_label3" value="Intraday (9:25-16:00): signal-monitor (60s loop), ORB-15m/30m, news-sentiment hourly, news-topics hourly, sec-filings 4×/day. Weekly: weekend-review, earnings-history, signal-quality-alarm." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#444444;" parent="1" vertex="1">
+                <mxCell id="sched_label3" value="Intraday (9:25-16:00): signal-monitor (60s loop), ORB-15m/30m, news-sentiment hourly, news-topics hourly, sec-filings 4×/day. Weekly: weekend-review, earnings-history, signal-quality-alarm. Quarterly: calibrate-thresholds. Other: historical-signals-watchlist (1am daily), av-intraday-nightly, premarket-brief-sunday, signal-quality-report-{hourly,nightly}." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#444444;" parent="1" vertex="1">
                     <mxGeometry x="220" y="258" width="1500" height="20" as="geometry"/>
                 </mxCell>
                 <mxCell id="fetch_group" value="③ Cloud Run Jobs — Fetchers (write to Cloud SQL)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
@@ -268,7 +268,7 @@
                 <mxCell id="bq_box" value="BigQuery — billing_export&#xa;auto-populated; unused by app&#xa;(future /cost analytics)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="2080" y="915" width="240" height="60" as="geometry"/>
                 </mxCell>
-                <mxCell id="gha_group" value="⑩ GitHub Actions — backups, audits, sandbox bridge" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                <mxCell id="gha_group" value="⑩ GitHub Actions — 14 active workflows: backups, audits, sandbox bridge, monthly doc regen" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
                     <mxGeometry x="40" y="1020" width="2320" height="100" as="geometry"/>
                 </mxCell>
                 <mxCell id="gha_dbq" value="db-query.yml&#xa;Cloud SQL bridge for sandboxed&#xa;Claude Code on the web sessions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
@@ -292,7 +292,7 @@
                 <mxCell id="gha_audit" value="Audit / type-check / test workflows&#xa;security-review, audit-review,&#xa;pre-deploy-check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="1560" y="1055" width="240" height="55" as="geometry"/>
                 </mxCell>
-                <mxCell id="gha_other" value="update_economic_events_calendar,&#xa;fetch-economic-events-calendar,&#xa;analyze-market-data" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="gha_other" value="refresh-architecture-docs.yml (monthly Gemini regen)&#xa;daily-insight-reports, validate-market-data,&#xa;backtest-pipeline, freshness-watchdog,&#xa;analyze-market-data, test-failure-handler" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="1820" y="1055" width="320" height="55" as="geometry"/>
                 </mxCell>
                 <mxCell id="legend" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;dashed=0;verticalAlign=top;fontStyle=1;fontSize=11;fontColor=#333333;" parent="1" vertex="1">
@@ -345,6 +345,21 @@
                 </mxCell>
                 <mxCell id="flow_e" value="💬 Discord Slash-Command Path&#xa;&#xa;1️⃣  Discord sends interaction (e.g. /replay TICKER, /backtest, /validate)&#xa;2️⃣  discord-interactions Cloud Run Service receives on port 8080&#xa;3️⃣  Service verifies via discord-public-key secret&#xa;4️⃣  Service invokes appropriate Cloud Run Job via Run API&#xa;     • /replay → backfill-ticker&#xa;     • /backtest → backtest (2 GiB)&#xa;     • /validate → validate-brief&#xa;5️⃣  Triggered Job posts results back to Discord via discord-webhook" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
                     <mxGeometry x="1900" y="1280" width="440" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="addon_group" value="⓫ Cloud Run Jobs added since last diagram refresh (Track F audit 2026-05-08) — verified against gcp/deploy.sh" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=1;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="1480" width="2320" height="120" as="geometry"/>
+                </mxCell>
+                <mxCell id="job_calibrate" value="calibrate-thresholds&#xa;(Compute) — quarterly cron&#xa;0 2 1 1,4,7,10 *&#xa;runs scripts.calibrate_thresholds → ticker_calibration table" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#4d7eb8;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="1515" width="360" height="75" as="geometry"/>
+                </mxCell>
+                <mxCell id="job_hsw" value="historical-signals-watchlist&#xa;(Compute) — daily 1am cron&#xa;0 1 * * 2-6&#xa;runs scripts.run_historical_signals → 90d signal-alerts backfill" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#4d7eb8;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="1515" width="380" height="75" as="geometry"/>
+                </mxCell>
+                <mxCell id="job_spx_greeks" value="compute-spx-greeks-backfill&#xa;(On-Demand) — manual one-shot, 12h timeout&#xa;runs scripts.maintenance.compute_spx_greeks --ticker SPX&#xa;not currently scheduled" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#10739e;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="840" y="1515" width="380" height="75" as="geometry"/>
+                </mxCell>
+                <mxCell id="addon_note" value="📝 ARCHITECTURE.md drift (this is the regenerator-managed doc):&#xa;• ARCHITECTURE.md still says &quot;28+ Cloud Scheduler jobs&quot; — actual is ~50&#xa;• ARCHITECTURE.md still lists 27 Cloud Run Jobs — actual is 30 (above 3 missing)&#xa;• Auto-refresh workflow (.github/workflows/refresh-architecture-docs.yml) is configured but has never produced a PR.&#xa;• Next monthly regen on 2026-06-01 should pick these up from gcp_inventory.json automatically.&#xa;• fetch-catalyst-calendar appears in this diagram (③) but has no deploy.sh entry — verify against live GCP." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1240" y="1515" width="1100" height="75" as="geometry"/>
                 </mxCell>
                 <mxCell id="e_ext_fetch" style="exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;jettySize=auto;orthogonalLoop=1;strokeColor=#82b366;strokeWidth=2;" parent="1" source="ext_group" target="fetch_group" edge="1">
                     <mxGeometry relative="1" as="geometry"/>
