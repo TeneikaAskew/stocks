@@ -180,6 +180,49 @@ def test_min_rows_floor_flips_ok_to_stale(monkeypatch):
     assert row.row_count_recent == 5
 
 
+def test_market_data_daily_check_filters_null_close():
+    """Track A G.P0.3: the freshness audit must reject NULL-close
+    placeholder rows that fetch-premarket-refresh writes — otherwise
+    MAX(date) returns 'today' and the audit reports OK while the actual
+    OHLCV write is stale. Config check guards this."""
+    from scripts.audit_data_freshness import CHECKS
+
+    md_check = next(c for c in CHECKS if c["name"] == "market_data_daily")
+    assert md_check.get("where") == "close IS NOT NULL", (
+        "market_data_daily must filter NULL-close rows so placeholder "
+        "writes from fetch-premarket-refresh don't mask a stale fetcher."
+    )
+
+
+def test_market_data_daily_query_injects_close_not_null(monkeypatch):
+    """End-to-end: dispatching `_query_freshness_one` for the
+    market_data_daily check sends `close IS NOT NULL` into both the
+    MAX(date) and COUNT(*) subqueries."""
+    from scripts import audit_data_freshness as mod
+    from scripts.audit_data_freshness import _query_freshness_one, CHECKS
+
+    captured = {}
+
+    def fake(sql, params=None):
+        captured["sql"] = sql
+        captured["params"] = params
+        return pd.DataFrame([
+            {"last_row_at": datetime(2026, 5, 8, 18, 0, 0), "row_count_recent": 0}
+        ])
+
+    monkeypatch.setattr(mod, "query_to_dataframe", fake)
+    md_check = next(c for c in CHECKS if c["name"] == "market_data_daily")
+    row = _query_freshness_one(md_check, date(2026, 5, 8), ticker="SPY")
+
+    assert "close IS NOT NULL" in captured["sql"], (
+        "Both the outer MAX query and the inline COUNT(*) subquery must "
+        "filter NULL closes so placeholder rows can't fool the watchdog."
+    )
+    # row_count_recent=0 with min_rows_per_day=1 → status flips to stale
+    assert row.status == "stale"
+    assert row.row_count_recent == 0
+
+
 def test_freshness_unknown_when_table_missing(monkeypatch):
     """Missing table → 'unknown' status (not 'stale'), so overall
     aggregation reports warn rather than failure."""
