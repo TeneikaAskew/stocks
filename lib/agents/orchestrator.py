@@ -324,11 +324,17 @@ async def run_insight_pipeline(
 
     analyst_reports: dict[str, AnalystOutput] = {}
     failed_sections: list[str] = list(bundle.get("failed_sections", []))
+    failed_reasons: dict[str, str] = dict(
+        bundle.get("failed_section_reasons", {})
+    )
     for section, result in zip(analyst_sections, raw_analyst_results):
         if isinstance(result, Exception):
             logger.warning("analyst %s failed: %s", section, result)
             if section not in failed_sections:
                 failed_sections.append(section)
+            failed_reasons[section] = (
+                f"analyst-llm: {type(result).__name__}: {result}"
+            )
             analyst_reports[section] = None  # type: ignore[assignment]
         else:
             analyst_reports[section] = result  # type: ignore[assignment]
@@ -574,6 +580,7 @@ async def run_insight_pipeline(
         similar_past_trades=similar,
         confidence_score=pm.confidence_score,
         failed_sections=failed_sections,
+        failed_section_reasons=failed_reasons,
         model_versions=snapshot.model_versions(),
         run_cost_usd=round(tracker.total_cost, 6),
         run_latency_ms=int((time.monotonic() - start) * 1000),
