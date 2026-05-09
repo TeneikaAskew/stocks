@@ -400,7 +400,10 @@ def test_pipeline_end_to_end_green(canned_bundle, seven_role_snapshot):
     assert isinstance(report, InsightReport)
     assert report.ticker == "SPY"
     assert report.direction == "long"
-    assert report.conviction == "medium"
+    # #349 deterministic conviction: canned bundle has 6 bullish analysts
+    # (≥4), FTFC 0.6 (≥0.5), confidence 0.72 (≥0.7), no warn/block →
+    # calibrates to 'high' regardless of what the LLM mock returned.
+    assert report.conviction == "high"
     assert report.run_cost_usd > 0
     assert report.run_latency_ms >= 0
     # Full topology = 6 analysts (market, strat, options, gamma,
@@ -1047,3 +1050,115 @@ def test_pipeline_degrades_when_embedding_fails(
     )
     # Report still produced; similar_past_trades is just empty
     assert isinstance(report, InsightReport)
+    assert report.similar_past_trades == []
+
+
+# ─── Audit follow-up #349 — deterministic conviction calibration ─────
+
+
+def test_calibrate_conviction_flat_is_low():
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="flat", confidence_score=0.9,
+        analyst_agreement_count=6, ftfc_score=1.0,
+        risk_severities=["info"],
+    ) == "low"
+
+
+def test_calibrate_conviction_block_is_low():
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.9,
+        analyst_agreement_count=6, ftfc_score=1.0,
+        risk_severities=["info", "block"],
+    ) == "low"
+
+
+def test_calibrate_conviction_high_path():
+    from lib.agents.orchestrator import _calibrate_conviction
+    # All four conditions cleared
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.75,
+        analyst_agreement_count=4, ftfc_score=0.5,
+        risk_severities=["info", "info", "info"],
+    ) == "high"
+
+
+def test_calibrate_conviction_high_blocked_by_warn():
+    from lib.agents.orchestrator import _calibrate_conviction
+    # One warn flag prevents high. confidence=0.65 lands in medium band.
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.65,
+        analyst_agreement_count=4, ftfc_score=0.5,
+        risk_severities=["info", "warn", "info"],
+    ) == "medium"
+
+
+def test_calibrate_conviction_high_confidence_with_warn_falls_to_low():
+    """Edge: confidence 0.75 is too high for medium band (0.4-0.7) but
+    a warn flag blocks the high path. Falls all the way to low — by
+    design conservative."""
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.75,
+        analyst_agreement_count=4, ftfc_score=0.5,
+        risk_severities=["info", "warn", "info"],
+    ) == "low"
+
+
+def test_calibrate_conviction_high_blocked_by_low_ftfc():
+    from lib.agents.orchestrator import _calibrate_conviction
+    # FTFC too weak → demoted; falls into medium since other conditions
+    # for medium hold (≥2 agreement, ≤1 warn, conf 0.4-0.7).
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.65,
+        analyst_agreement_count=4, ftfc_score=0.3,
+        risk_severities=["info"],
+    ) == "medium"
+
+
+def test_calibrate_conviction_medium_path():
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.55,
+        analyst_agreement_count=2, ftfc_score=0.3,
+        risk_severities=["warn"],
+    ) == "medium"
+
+
+def test_calibrate_conviction_low_when_few_analysts_agree():
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.55,
+        analyst_agreement_count=1, ftfc_score=0.3,
+        risk_severities=["info"],
+    ) == "low"
+
+
+def test_calibrate_conviction_low_when_confidence_too_high_for_medium():
+    """conf 0.8 doesn't fit medium's 0.4-0.7 band but doesn't clear
+    high either (only 2 analysts) → falls back to low."""
+    from lib.agents.orchestrator import _calibrate_conviction
+    assert _calibrate_conviction(
+        direction="long", confidence_score=0.8,
+        analyst_agreement_count=2, ftfc_score=0.3,
+        risk_severities=["info"],
+    ) == "low"
+
+
+def test_count_analyst_agreement_counts_matching_bias():
+    from lib.agents.orchestrator import _count_analyst_agreement
+    from types import SimpleNamespace
+
+    bullish = SimpleNamespace(bias="bullish")
+    bearish = SimpleNamespace(bias="bearish")
+    neutral = SimpleNamespace(bias="neutral")
+    reports = {
+        "market": bullish, "strat": bullish, "options": neutral,
+        "gamma": bullish, "catalyst": bearish, "sentiment": None,
+    }
+    assert _count_analyst_agreement(reports, "long") == 3
+    assert _count_analyst_agreement(reports, "short") == 1
+    assert _count_analyst_agreement(reports, "flat") == 1
+    # None analysts (failed) don't count
+    assert _count_analyst_agreement({"x": None, "y": None}, "long") == 0
