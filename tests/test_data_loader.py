@@ -508,3 +508,93 @@ class TestLoadDailyStaleness:
         # Even with on_stale='error', year-scoped query doesn't raise
         assert not out.empty
         assert not any('days old' in r.message for r in caplog.records)
+
+
+# ── value_col filter — placeholder rows must not look fresh ────────
+
+
+class TestStalenessIgnoresNullCloseRows:
+    """Track A G.P0.3 / G.P1.17 / codex review on PR #325:
+    fetch-premarket-refresh writes today's market_data_daily row with
+    pre_* fields and `close=NULL`. The staleness check must filter
+    those rows out before computing MAX(date), or it'll silently report
+    the table fresh-as-of-today while the latest USABLE OHLC bar is
+    days old."""
+
+    def test_check_staleness_filters_null_close_via_value_col(self, caplog):
+        # Today is 2026-05-08. Latest real OHLC row is 2026-04-27 (11 days old).
+        # Today's row exists but has NaN close (the placeholder pattern).
+        df = pd.DataFrame({
+            'Close': [100.0, 101.0, float('nan')],
+        }, index=pd.DatetimeIndex([
+            pd.Timestamp('2026-04-27'),  # last usable
+            pd.Timestamp('2026-04-26'),
+            pd.Timestamp('2026-05-08'),  # placeholder — will be filtered
+        ]))
+        with caplog.at_level(logging.WARNING, logger='lib.data_loader'):
+            _check_staleness(
+                df, 'SPY', max_age_days=2, on_stale='warn',
+                value_col='Close', today=date(2026, 5, 8),
+            )
+        # Should warn — last usable bar is 11 days old, NOT today.
+        assert any('11 days old' in r.message for r in caplog.records), (
+            "Without value_col filtering, MAX(date)=2026-05-08 (the "
+            "placeholder) and the check silently passes. With the "
+            "filter, MAX(date)=2026-04-27 (the last real bar)."
+        )
+
+    def test_check_staleness_passes_when_today_has_real_close(self):
+        """Sanity: when today's row has a real close, no warning fires."""
+        df = pd.DataFrame({
+            'Close': [100.0, 101.0],
+        }, index=pd.DatetimeIndex([
+            pd.Timestamp('2026-05-07'), pd.Timestamp('2026-05-08'),
+        ]))
+        # No exception on 'error', no warning logged
+        _check_staleness(
+            df, 'SPY', max_age_days=2, on_stale='error',
+            value_col='Close', today=date(2026, 5, 8),
+        )
+
+    def test_check_staleness_warns_when_every_row_is_placeholder(self, caplog):
+        df = pd.DataFrame({
+            'Close': [float('nan'), float('nan')],
+        }, index=pd.DatetimeIndex([
+            pd.Timestamp('2026-05-07'), pd.Timestamp('2026-05-08'),
+        ]))
+        with caplog.at_level(logging.WARNING, logger='lib.data_loader'):
+            _check_staleness(
+                df, 'SPY', max_age_days=2, on_stale='warn',
+                value_col='Close', today=date(2026, 5, 8),
+            )
+        assert any('no rows with non-null Close' in r.message
+                   for r in caplog.records)
+
+    def test_load_daily_warns_on_placeholder_today_row(self, loader, caplog):
+        """End-to-end: load_daily reads a parquet where today's row has
+        NaN Close + an older row has real Close. The staleness check
+        must use the older real row's date, not today's placeholder."""
+        ticker_dir = loader.data_dir / 'spy'
+        ticker_dir.mkdir(parents=True)
+        # Two-row dataset: real row from a year ago, placeholder for today
+        df = pd.DataFrame({
+            'Open': [100.0, float('nan')], 'High': [102.0, float('nan')],
+            'Low': [99.0, float('nan')],
+            'Close': [101.0, float('nan')],  # today's close is NaN
+            'Volume': [1_000_000, 0],
+        }, index=pd.DatetimeIndex([
+            pd.Timestamp('2025-01-01'),
+            pd.Timestamp(date.today()),  # today's placeholder
+        ]))
+        df.to_parquet(ticker_dir / 'spy_2025.parquet')
+
+        with caplog.at_level(logging.WARNING, logger='lib.data_loader'):
+            out = loader.load_daily('SPY', on_stale='warn')
+        assert not out.empty
+        # Must warn — last usable bar is 2025-01-01, far past 2-day threshold.
+        # Without value_col, MAX(date)=today, no warning (the bug).
+        assert any('SPY' in r.message and 'days old' in r.message
+                   for r in caplog.records), (
+            "load_daily must filter NaN-close placeholder rows before "
+            "checking staleness."
+        )
