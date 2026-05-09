@@ -1040,6 +1040,33 @@ deploy_calibrate_thresholds() {
 }
 
 
+# ── Blue-sky synth offset calibration (Cloud Run Job) ────────────────────────
+# Refreshes exit_config_overrides.blue_sky_atr_offset per ticker by
+# measuring (RTH high − pre_high)/ATR distribution on gap-up days over
+# the last 90 days. Used by lib/agents/trade_planner — see audit
+# G.P1.4 follow-up in docs/audit/2026-05-08/track-C-implementation-plan.md.
+#
+# Cadence: monthly (1st of each month at 02:30 UTC) — see deploy_schedulers().
+# Manual run any time: `gcloud run jobs execute calibrate-blue-sky-offset`.
+deploy_calibrate_blue_sky_offset() {
+    echo "Deploying calibrate-blue-sky-offset job..."
+    gcloud run jobs create calibrate-blue-sky-offset \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 --task-timeout 300 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.calibrate_blue_sky_offset" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update calibrate-blue-sky-offset \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,scripts.calibrate_blue_sky_offset" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
 # ── Failure notifier (Cloud Run Service) ─────────────────────────────────────
 # Receives Cloud Logging entries about failed Cloud Run Jobs via Pub/Sub push
 # and fans out to (1) Discord webhook and (2) GitHub issue create/update.
@@ -1403,6 +1430,16 @@ deploy_schedulers() {
     # always available: `gcloud run jobs execute calibrate-thresholds`.
     _schedule "calibrate-thresholds-quarterly" "0 2 1 1,4,7,10 *" "calibrate-thresholds"
 
+    # Audit 2026-05-08 G.P1.4 follow-up — per-ticker blue-sky synth
+    # offset calibration. Monthly cadence (1st of every month at 02:30
+    # UTC) because the input population (gap-up extension events) is
+    # sparse — even a 90-day window only yields 6-9 events per ticker
+    # on SPY/IWM/QQQ. Monthly refresh accumulates signal faster than
+    # quarterly without thrashing the value (the 0.05 ATR rounding
+    # grid in scripts/calibrate_blue_sky_offset.py provides stability).
+    # Manual override: `gcloud run jobs execute calibrate-blue-sky-offset`.
+    _schedule "calibrate-blue-sky-offset-monthly" "30 2 1 * *" "calibrate-blue-sky-offset"
+
     # Phase 0.5 — signal-quality report.
     # Hourly during market hours: --mode=rolling, incremental update of
     # signal_metrics as 60m/90m/120m/240m windows close out. Cron is
@@ -1553,6 +1590,7 @@ case "${1:-help}" in
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
+    calibrate-blue-sky) build_image && deploy_calibrate_blue_sky_offset ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
