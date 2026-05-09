@@ -98,7 +98,7 @@ def _latest_overrides(ticker: str) -> Optional[dict]:
         """
         SELECT calibration_date, call_target, put_target,
                call_stop, put_stop, call_time_stop, put_time_stop,
-               disabled_conditions, notes
+               disabled_conditions, blue_sky_atr_offset, notes
           FROM exit_config_overrides
          WHERE ticker = :ticker
          ORDER BY calibration_date DESC
@@ -180,12 +180,29 @@ def get_put_time_stop(ticker: str) -> int:
     return _defaults().put_time_stop
 
 
+def get_blue_sky_atr_offset(ticker: str) -> Optional[float]:
+    """Resolve the per-ticker blue-sky synthetic-trigger ATR offset.
+
+    Used by ``lib/agents/trade_planner.select_trigger_and_regime`` when
+    every historical level has been cleared by pre-market and a synthetic
+    trigger is projected past pre_high/pre_low. Returns ``None`` when no
+    per-ticker calibration exists — caller falls back to the global
+    default ``_BLUE_SKY_ATR_OFFSET``.
+
+    Audit 2026-05-08 G.P1.4 follow-up: SPY/IWM seeded at 0.15, QQQ at 0.20.
+    """
+    row = _latest_overrides(ticker)
+    if row and _is_usable_number(row.get("blue_sky_atr_offset")):
+        return float(row["blue_sky_atr_offset"])
+    return None
+
+
 def get_resolution_tier(ticker: str, knob: str) -> str:
     """Return 'A' or 'B' for audit-trail logging on each fired alert.
 
     `knob` is one of: 'call_target', 'put_target', 'call_stop',
-    'put_stop', 'call_time_stop', 'put_time_stop'. Mirrors the
-    convention in calibration.get_resolution_tier.
+    'put_stop', 'call_time_stop', 'put_time_stop', 'blue_sky_atr_offset'.
+    Mirrors the convention in calibration.get_resolution_tier.
     """
     row = _latest_overrides(ticker)
     if not row:

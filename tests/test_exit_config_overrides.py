@@ -59,6 +59,7 @@ def _row(**overrides) -> dict:
         "call_stop": 0.00075, "put_stop": 0.00075,
         "call_time_stop": 20, "put_time_stop": 25,
         "disabled_conditions": None,
+        "blue_sky_atr_offset": None,
         "notes": "test",
     }
     base.update(overrides)
@@ -114,6 +115,36 @@ def test_negative_time_stop_falls_back():
     with patch.object(eco, "_latest_overrides",
                       return_value=_row(put_time_stop=-5)):
         assert eco.get_put_time_stop("QQQ") == DEFAULTS.put_time_stop
+
+
+# ── Blue-sky ATR offset (audit G.P1.4 follow-up) ─────────────────────
+
+
+def test_get_blue_sky_atr_offset_returns_value_when_set():
+    with patch.object(eco, "_latest_overrides",
+                      return_value=_row(blue_sky_atr_offset=0.20)):
+        assert eco.get_blue_sky_atr_offset("QQQ") == 0.20
+
+
+def test_get_blue_sky_atr_offset_returns_none_when_no_row():
+    """Missing row → None, lets caller fall back to global default."""
+    with patch.object(eco, "_latest_overrides", return_value=None):
+        assert eco.get_blue_sky_atr_offset("UNK") is None
+
+
+def test_get_blue_sky_atr_offset_returns_none_on_null_column():
+    """Row exists but column is NULL → None (unseeded ticker case)."""
+    with patch.object(eco, "_latest_overrides",
+                      return_value=_row(blue_sky_atr_offset=None)):
+        assert eco.get_blue_sky_atr_offset("QQQ") is None
+
+
+def test_get_blue_sky_atr_offset_returns_none_on_nan():
+    """NaN comes through pandas for SQL NULL on DOUBLE PRECISION; treat
+    as unset for the same reason every other knob does."""
+    with patch.object(eco, "_latest_overrides",
+                      return_value=_row(blue_sky_atr_offset=float("nan"))):
+        assert eco.get_blue_sky_atr_offset("QQQ") is None
 
 
 # ── Stale row → Tier-B (handled inside _latest_overrides) ────────────

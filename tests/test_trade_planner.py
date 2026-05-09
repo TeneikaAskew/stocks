@@ -498,9 +498,10 @@ def test_select_trigger_blue_sky_synth_when_uptrend_at_ath():
         pyh=730.0, pyl=600.0,
     )
     regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "long")
-    # Synthetic trigger: cleared_above (max(733.93, 736.13)=736.13) + 0.5*10.02
+    # Synthetic trigger: cleared_above (max(733.93, 736.13)=736.13) + 0.20*10.02
+    # = 736.13 + 2.004 ≈ 738.13 (default offset is 0.20 — see _BLUE_SKY_ATR_OFFSET)
     assert regime == "normal"  # distance < 3 ATR
-    assert trigger == pytest.approx(741.14, abs=0.05)
+    assert trigger == pytest.approx(738.13, abs=0.05)
     assert distance is not None and distance < 3.0
     assert stop_anchor is not None
 
@@ -508,7 +509,7 @@ def test_select_trigger_blue_sky_synth_when_uptrend_at_ath():
 def test_select_trigger_blue_sky_short_mirror():
     """Symmetric case for a short trade in a downtrend at multi-year lows:
     every level above pre_low is "cleared" downward — synthesize trigger
-    0.5 ATR below cleared_below."""
+    0.20 ATR below cleared_below (default offset)."""
     ctx = _level_ctx(
         direction="short",
         close=100.0,
@@ -524,9 +525,9 @@ def test_select_trigger_blue_sky_short_mirror():
         pyh=120.0, pyl=98.6,
     )
     regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "short")
-    # Synthetic: cleared_below=min(99.0, 98.5)=98.5; trigger = 98.5 - 0.5*2 = 97.5
+    # Synthetic: cleared_below=min(99.0, 98.5)=98.5; trigger = 98.5 - 0.20*2 = 98.10
     assert regime == "normal"
-    assert trigger == pytest.approx(97.5, abs=0.05)
+    assert trigger == pytest.approx(98.10, abs=0.05)
     assert distance is not None and distance < 3.0
 
 
@@ -590,14 +591,42 @@ def test_blue_sky_synth_produces_actionable_persona_plans():
         assert p.regime == "normal"  # not orb_only any more
         assert p.position_size_pct > 0.0
         assert len(p.targets) >= 1
-        # Entry zone clusters around the synthetic trigger ≈ 741.14
-        assert p.entry_zone.low > 736.13  # past pre_high
+        # Entry zone clusters around the synthetic trigger ≈ 738.13
+        # (cleared_above 736.13 + 0.20 × ATR 10.02). Aggressive/neutral
+        # entry_lo = trigger; conservative bumps +0.10 ATR.
+        assert p.entry_zone.low >= 736.13  # at or past pre_high
         assert p.entry_zone.high < 760.0   # not unbounded
         # Rationale should flag the blue-sky context and recommend ORB
         # confirmation — synthetic trigger is structurally above all
         # historical resistance, so a 15-min ORB filter reduces risk.
         assert "Blue-sky" in p.rationale
         assert "ORB" in p.rationale
+
+
+def test_blue_sky_per_ticker_override_used_when_set():
+    """Per-ticker `blue_sky_atr_offset` from `exit_config_overrides` takes
+    precedence over the global default (audit G.P1.4 follow-up). QQQ is
+    seeded at 0.20 and SPY/IWM at 0.15, but the planner reads whatever
+    PlanContext carries — verify the override-vs-default branch."""
+    base = dict(
+        close=733.83, atr=10.02,
+        pre_vwap=733.93, pre_high=736.13, pre_low=729.22,
+        gap_pct=0.31,
+        effective_pdh=734.59, effective_pdl=727.82,
+        pwh=725.04, pwl=716.115,
+        pmh=722.12, pml=714.99,
+        pqh=720.0, pql=700.0,
+        pyh=730.0, pyl=600.0,
+    )
+    # Tier-A (per-ticker) override of 0.30 — should produce trigger
+    # 736.13 + 0.30*10.02 = 739.14
+    ctx_a = _level_ctx(blue_sky_atr_offset=0.30, **base)
+    _, trigger_a, *_ = select_trigger_and_regime(ctx_a, "long")
+    assert trigger_a == pytest.approx(739.14, abs=0.05)
+    # Tier-B (None) → falls back to global 0.20, trigger = 738.13
+    ctx_b = _level_ctx(blue_sky_atr_offset=None, **base)
+    _, trigger_b, *_ = select_trigger_and_regime(ctx_b, "long")
+    assert trigger_b == pytest.approx(738.13, abs=0.05)
 
 
 def test_blue_sky_rationale_absent_for_historical_trigger():

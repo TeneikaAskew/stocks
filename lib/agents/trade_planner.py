@@ -57,13 +57,19 @@ Regime = Literal["normal", "extended", "orb_only"]
 # "blue-sky" territory where R:R is already compressed.
 _EXTENDED_DISTANCE_ATR = 3.0
 
-# Offset (in ATRs) applied past pre_high (long) or pre_low (short) to
-# synthesize a "blue-sky" trigger when every multi-timeframe structural
-# level has been cleared by pre-market. 0.5 ATR is small enough that the
-# entry stays within reach during the first 30 min of RTH on a normal
-# session, large enough that a marginal pre-market wick doesn't trigger
-# the plan immediately. Audit 2026-05-08 G.P1.4.
-_BLUE_SKY_ATR_OFFSET = 0.5
+# Default offset (in ATRs) applied past pre_high (long) or pre_low (short)
+# to synthesize a "blue-sky" trigger when every multi-timeframe structural
+# level has been cleared by pre-market. Per-ticker overrides live in
+# `exit_config_overrides.blue_sky_atr_offset` (Tier-A); this constant is
+# the Tier-B fallback.
+#
+# Calibrated from db-query.yml run 25588221502 (12-month gap-up window,
+# n_extension_events=6-9 per ticker). The mean (RTH high − pre_high)/ATR
+# across SPY/IWM/QQQ on gap-up extension days was 0.14-0.18; 0.20 is the
+# rounded-up p75 so a single global value still over-reaches a hair on
+# typical names (better to miss a marginal entry than fire on noise).
+# Audit 2026-05-08 G.P1.4 follow-up.
+_BLUE_SKY_ATR_OFFSET = 0.20
 
 # Maximum overnight gap magnitude (in ATRs of yesterday's close) for
 # which blue-sky trigger synthesis is appropriate. Beyond this, the
@@ -125,6 +131,12 @@ class PlanContext:
     pre_low: Optional[float] = None
     pre_vwap: Optional[float] = None
     gap_pct: Optional[float] = None
+
+    # Per-ticker blue-sky synth offset (audit G.P1.4 follow-up). When
+    # populated from `exit_config_overrides.blue_sky_atr_offset`, replaces
+    # the global `_BLUE_SKY_ATR_OFFSET` for this run. None → falls back
+    # to the global default.
+    blue_sky_atr_offset: Optional[float] = None
 
     # ---- Derived helpers ----
     def reference_price(self) -> float:
@@ -310,19 +322,24 @@ def select_trigger_and_regime(
             and gap_atr is not None
             and gap_atr <= _BLUE_SKY_MAX_GAP_ATR
         ):
+            offset = (
+                ctx.blue_sky_atr_offset
+                if ctx.blue_sky_atr_offset is not None
+                else _BLUE_SKY_ATR_OFFSET
+            )
             if direction == "long":
-                synthetic_trigger = cleared_above + _BLUE_SKY_ATR_OFFSET * atr
+                synthetic_trigger = cleared_above + offset * atr
             else:
-                synthetic_trigger = cleared_below - _BLUE_SKY_ATR_OFFSET * atr
+                synthetic_trigger = cleared_below - offset * atr
             distance_atr = abs(synthetic_trigger - ref) / atr
             regime: Regime = (
                 "normal" if distance_atr < _EXTENDED_DISTANCE_ATR else "extended"
             )
             logger.info(
                 "trade_planner blue_sky direction=%s ref=%.4f atr=%.4f "
-                "cleared=%.4f gap_atr=%.3f synthetic_trigger=%.4f "
+                "cleared=%.4f gap_atr=%.3f offset=%.3f synthetic_trigger=%.4f "
                 "distance_atr=%.3f regime=%s same_side_levels=%s",
-                direction, ref, atr, cleared, gap_atr,
+                direction, ref, atr, cleared, gap_atr, offset,
                 synthetic_trigger, distance_atr, regime,
                 [round(float(lv), 4) for lv in same_side_levels if lv is not None],
             )
@@ -655,6 +672,21 @@ def context_from_bundle(
     strat = bundle.get("strat") or {}
     catalysts = bundle.get("catalysts") or {}
     backtest = bundle.get("backtest") or {}
+    ticker = bundle.get("ticker")
+
+    # Per-ticker blue-sky synth offset (audit G.P1.4 follow-up). The
+    # resolver caches via lru_cache and degrades to None when Cloud SQL
+    # is unreachable / table missing — None just falls back to
+    # `_BLUE_SKY_ATR_OFFSET` inside select_trigger_and_regime.
+    blue_sky_offset: Optional[float] = None
+    if ticker:
+        try:
+            from lib.strategies.exit_config_overrides import (
+                get_blue_sky_atr_offset,
+            )
+            blue_sky_offset = get_blue_sky_atr_offset(ticker)
+        except Exception:
+            blue_sky_offset = None
 
     catalyst_events = catalysts.get("events") or []
     high_impact_in_window = any(
@@ -714,6 +746,8 @@ def context_from_bundle(
         pre_low=pre_low,
         pre_vwap=pre_vwap,
         gap_pct=gap_pct,
+        # Per-ticker blue-sky synth offset (Tier-A → Tier-B fallback)
+        blue_sky_atr_offset=blue_sky_offset,
     )
 
 
