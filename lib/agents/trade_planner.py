@@ -172,7 +172,7 @@ class PlanContext:
 
 def select_trigger_and_regime(
     ctx: PlanContext, direction: Direction,
-) -> tuple[Regime, Optional[float], Optional[float], Optional[float]]:
+) -> tuple[Regime, Optional[float], Optional[float], Optional[float], bool]:
     """Pick the next unbroken structural level as the trigger; classify regime.
 
     Walks the multi-timeframe level hierarchy in the trade direction
@@ -199,13 +199,16 @@ def select_trigger_and_regime(
     pre_high/pre_low) so a pre-market spike that touched a level still
     counts as cleared — gap-up wicks above PDH push trigger to PWH.
 
-    Returns ``(regime, trigger, stop_anchor, distance_atr)``.
+    Returns ``(regime, trigger, stop_anchor, distance_atr, is_blue_sky)``.
     ``trigger`` and ``distance_atr`` are ``None`` when ``regime ==
     'orb_only'``. ``stop_anchor`` is the closest level on the OPPOSITE
     side of price (used by the conservative persona to tighten stops).
+    ``is_blue_sky`` is ``True`` when the trigger was synthesized past
+    pre_high/pre_low because every historical level was cleared (uptrend
+    at ATHs); ``False`` for historical-level triggers and orb_only.
     """
     if direction not in ("long", "short"):
-        return ("normal", None, None, None)
+        return ("normal", None, None, None, False)
 
     ref = ctx.reference_price()
     atr = ctx.safe_atr()
@@ -226,10 +229,10 @@ def select_trigger_and_regime(
     if not has_multi_tf:
         legacy_trigger = ctx.trigger_high if direction == "long" else ctx.trigger_low
         if legacy_trigger is None:
-            return ("orb_only", None, None, None)
+            return ("orb_only", None, None, None, False)
         distance = abs(float(legacy_trigger) - ref) / atr
         regime = "normal" if distance < _EXTENDED_DISTANCE_ATR else "extended"
-        return (regime, float(legacy_trigger), None, distance)
+        return (regime, float(legacy_trigger), None, distance, False)
 
     # For longs, "cleared above" means pre_high reached the level, even
     # if pre-market subsequently faded below it. For shorts, "cleared
@@ -323,7 +326,7 @@ def select_trigger_and_regime(
                 synthetic_trigger, distance_atr, regime,
                 [round(float(lv), 4) for lv in same_side_levels if lv is not None],
             )
-            return (regime, synthetic_trigger, stop_anchor, distance_atr)
+            return (regime, synthetic_trigger, stop_anchor, distance_atr, True)
         logger.info(
             "trade_planner orb_only direction=%s ref=%.4f atr=%.4f "
             "cleared=%s gap_atr=%s same_side_populated=%s",
@@ -332,12 +335,12 @@ def select_trigger_and_regime(
             f"{gap_atr:.3f}" if gap_atr is not None else None,
             any(lv is not None for lv in same_side_levels),
         )
-        return ("orb_only", None, stop_anchor, None)
+        return ("orb_only", None, stop_anchor, None, False)
 
     trigger = candidates[0]
     distance_atr = abs(trigger - ref) / atr
     regime: Regime = "normal" if distance_atr < _EXTENDED_DISTANCE_ATR else "extended"
-    return (regime, trigger, stop_anchor, distance_atr)
+    return (regime, trigger, stop_anchor, distance_atr, False)
 
 
 # ─── Recipe constants — central so they're easy to audit + tune ────────────
@@ -400,13 +403,13 @@ def compute_persona_plans(ctx: PlanContext) -> list[PersonaPlan]:
     """
     if ctx.direction == "flat":
         return []
-    regime, trigger, stop_anchor, distance_atr = select_trigger_and_regime(
+    regime, trigger, stop_anchor, distance_atr, is_blue_sky = select_trigger_and_regime(
         ctx, ctx.direction,
     )
     return [
-        _plan(ctx, "aggressive", regime, trigger, stop_anchor, distance_atr),
-        _plan(ctx, "neutral", regime, trigger, stop_anchor, distance_atr),
-        _plan(ctx, "conservative", regime, trigger, stop_anchor, distance_atr),
+        _plan(ctx, "aggressive", regime, trigger, stop_anchor, distance_atr, is_blue_sky),
+        _plan(ctx, "neutral", regime, trigger, stop_anchor, distance_atr, is_blue_sky),
+        _plan(ctx, "conservative", regime, trigger, stop_anchor, distance_atr, is_blue_sky),
     ]
 
 
@@ -416,6 +419,7 @@ def _plan(
     trigger: Optional[float] = None,
     stop_anchor: Optional[float] = None,
     distance_atr: Optional[float] = None,
+    is_blue_sky: bool = False,
 ) -> PersonaPlan:
     """Compute one persona's plan. Long and short are mirror images of
     each other — for short, we flip the sign on the offsets so the
@@ -516,7 +520,7 @@ def _plan(
     rationale = _build_rationale(persona, ctx, atr, midpoint, stop,
                                  risk_per_unit, size,
                                  regime=regime, distance_atr=distance_atr,
-                                 trigger=trigger)
+                                 trigger=trigger, is_blue_sky=is_blue_sky)
 
     return PersonaPlan(
         persona=persona,  # type: ignore[arg-type]
@@ -571,6 +575,7 @@ def _build_rationale(
     regime: Regime = "normal",
     distance_atr: Optional[float] = None,
     trigger: Optional[float] = None,
+    is_blue_sky: bool = False,
 ) -> str:
     """One-sentence explanation of the recipe — references the actual
     inputs so it changes when the inputs change.
@@ -578,6 +583,12 @@ def _build_rationale(
     On ``regime == 'extended'`` setups (next structural level >= 3 ATR
     away), prepends an ORB-confirmation note so the trader knows the
     breakout is in extended/blue-sky territory.
+
+    On blue-sky synthesized triggers (every historical level cleared,
+    trigger projected past pre_high — audit G.P1.4), prepends a
+    similar note. The trade is structurally above all historical
+    resistance, so even a within-3-ATR entry benefits from waiting
+    for RTH to confirm the move via a 15-min opening-range break.
     """
     if size == 0.0:
         if persona == "conservative":
@@ -598,6 +609,12 @@ def _build_rationale(
         extended_prefix = (
             f"Extended gap: trigger ${trigger:.2f} is {distance_atr:.1f}× ATR away — "
             f"recommend 15-min ORB confirmation before entry. "
+        )
+    elif is_blue_sky and trigger is not None:
+        extended_prefix = (
+            f"Blue-sky: every historical level below pre-market range, "
+            f"synthetic trigger ${trigger:.2f} projected past pre_high — "
+            f"15-min ORB confirmation reduces risk on this kind of play. "
         )
 
     stop_atr = abs(midpoint - stop) / atr

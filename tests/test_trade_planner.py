@@ -260,7 +260,7 @@ def test_select_trigger_normal_inside_day_uses_pdh():
         pre_vwap=165.0,    # below PDH
         pre_high=167.5, pre_low=164.0,
     )
-    regime, trigger, stop_anchor, distance = select_trigger_and_regime(ctx, "long")
+    regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "normal"
     assert trigger == pytest.approx(168.35, abs=0.01)  # PDH
     assert stop_anchor is not None
@@ -279,7 +279,7 @@ def test_select_trigger_walks_above_cleared_pdh():
         pqh=180.00,        # next unbroken above
         pyh=200.00,
     )
-    regime, trigger, _, distance = select_trigger_and_regime(ctx, "long")
+    regime, trigger, _, distance, _ = select_trigger_and_regime(ctx, "long")
     # Walk skips PDH/PWH (cleared) and PMH (also cleared — pre_high>166.69
     # means this level was touched), pre_high is in candidates above
     # cleared_above=max(169.28, 172.80)=172.80, picks min above 172.80
@@ -304,7 +304,7 @@ def test_select_trigger_orb_only_when_all_levels_cleared():
         pqh=266.96, pql=188.22,
         pyh=267.08, pyl=91.87,
     )
-    regime, trigger, stop_anchor, distance = select_trigger_and_regime(ctx, "long")
+    regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "orb_only"
     assert trigger is None
     assert distance is None
@@ -326,7 +326,7 @@ def test_select_trigger_extended_when_next_level_far_away():
         pqh=180.0, pql=160.0,                       # this is the next level
         pyh=200.0, pyl=120.0,
     )
-    regime, trigger, _, distance = select_trigger_and_regime(ctx, "long")
+    regime, trigger, _, distance, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "extended"
     assert trigger == pytest.approx(180.0, abs=0.01)
     assert distance is not None and distance >= 3.0
@@ -345,7 +345,7 @@ def test_select_trigger_short_mirror():
         pqh=190.0, pql=120.0,
         pyh=200.0, pyl=95.00,
     )
-    regime, trigger, stop_anchor, distance = select_trigger_and_regime(ctx, "short")
+    regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "short")
     # Cleared_below = min(159, 157) = 157. Levels strictly < 157:
     # PML=130, PQL=120, PYL=95. Closest = PML=130.
     assert regime in ("normal", "extended")
@@ -400,7 +400,7 @@ def test_normal_regime_falls_back_to_legacy_trigger_when_no_multi_tf():
         ftfc_score=1.0,
         # No multi-tf levels populated
     )
-    regime, trigger, _, _ = select_trigger_and_regime(ctx, "long")
+    regime, trigger, _, _, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "normal"
     assert trigger == pytest.approx(316.40, abs=0.01)
 
@@ -421,7 +421,7 @@ def test_inside_of_inside_uses_effective_pdh_mother_bar():
         pqh=220.0, pql=100.0,
         pyh=240.0, pyl=80.00,
     )
-    regime, trigger, _, _ = select_trigger_and_regime(ctx, "long")
+    regime, trigger, _, _, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "normal"
     # Closest level above pre_vwap=164 is effective_pdh=172
     assert trigger == pytest.approx(172.0, abs=0.01)
@@ -497,7 +497,7 @@ def test_select_trigger_blue_sky_synth_when_uptrend_at_ath():
         pqh=720.0, pql=700.0,
         pyh=730.0, pyl=600.0,
     )
-    regime, trigger, stop_anchor, distance = select_trigger_and_regime(ctx, "long")
+    regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "long")
     # Synthetic trigger: cleared_above (max(733.93, 736.13)=736.13) + 0.5*10.02
     assert regime == "normal"  # distance < 3 ATR
     assert trigger == pytest.approx(741.14, abs=0.05)
@@ -523,7 +523,7 @@ def test_select_trigger_blue_sky_short_mirror():
         pqh=110.0, pql=99.5,
         pyh=120.0, pyl=98.6,
     )
-    regime, trigger, stop_anchor, distance = select_trigger_and_regime(ctx, "short")
+    regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "short")
     # Synthetic: cleared_below=min(99.0, 98.5)=98.5; trigger = 98.5 - 0.5*2 = 97.5
     assert regime == "normal"
     assert trigger == pytest.approx(97.5, abs=0.05)
@@ -545,7 +545,7 @@ def test_select_trigger_orb_only_preserved_on_large_gap():
         pqh=266.96, pql=188.22,
         pyh=267.08, pyl=91.87,
     )
-    regime, trigger, _, distance = select_trigger_and_regime(ctx, "long")
+    regime, trigger, _, distance, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "orb_only"
     assert trigger is None
     assert distance is None
@@ -563,7 +563,7 @@ def test_select_trigger_orb_only_when_no_same_side_levels():
         pre_low=99.5,
         # Force has_multi_tf=True so we get into the candidate branch
     )
-    regime, trigger, _, distance = select_trigger_and_regime(ctx, "long")
+    regime, trigger, _, distance, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "orb_only"
     assert trigger is None
     assert distance is None
@@ -593,3 +593,23 @@ def test_blue_sky_synth_produces_actionable_persona_plans():
         # Entry zone clusters around the synthetic trigger ≈ 741.14
         assert p.entry_zone.low > 736.13  # past pre_high
         assert p.entry_zone.high < 760.0   # not unbounded
+        # Rationale should flag the blue-sky context and recommend ORB
+        # confirmation — synthetic trigger is structurally above all
+        # historical resistance, so a 15-min ORB filter reduces risk.
+        assert "Blue-sky" in p.rationale
+        assert "ORB" in p.rationale
+
+
+def test_blue_sky_rationale_absent_for_historical_trigger():
+    """Defensive: when the trigger comes from a real historical level
+    (not synthesized), the rationale should NOT include the blue-sky
+    note — that note is specific to the projected-past-pre_high case."""
+    ctx = _level_ctx(
+        # PWH at 168.35 still above pre_high (172.80 fixture has PWH
+        # cleared; lower pre_high so PMH/PWH stay in candidate set).
+        pre_vwap=165.0, pre_high=167.5, pre_low=164.0,
+    )
+    plans = compute_persona_plans(ctx)
+    for p in plans:
+        if p.regime == "normal":
+            assert "Blue-sky" not in p.rationale
