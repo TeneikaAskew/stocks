@@ -80,7 +80,7 @@ addressed it.
 | G.P0.1 — unfreeze `fetch-market-data` daily fetcher | A | ✅ via PR #321 | Daily bars now landing 2026-05-07 onward |
 | G.P0.6 — `signal_alerts.conditions_met` JSONB writer fix + backfill | D | ✅ via PR #308 | Per-factor walk-forward script reads native JSONB array |
 | G.P0.10 — EOD reconciliation Cloud Run Job | D / A | ✅ shipped | `signal_monitor_eod_resolver.py` running nightly; `exit_return_pct` populated for 713 of 1,753 alerts in 2026-04-01..05-09 (40.7% — open positions won't have outcome until close) |
-| G.P0.11 — momentum strategy zero-fires investigation | D | ✅ in progress; momentum starts firing | Walk-forward framework will produce verdicts after ≥ 2 weeks of momentum-fire data |
+| G.P0.11 — momentum strategy zero-fires investigation | D | ⚠️ diagnosis shipped, **production fix pending** — issue **#369** | PR #320 added live counters, PR #330 confirmed orchestration excludes momentum (2,237/1,800/2,258 SPY/IWM/QQQ would-fire-@5 bars vs 0 production fires). `gcp/signal_monitor.py:413` still gates `MOMENTUM.evaluate()` behind a mean-reversion fire (only called inside `_evaluate_strategies_for_bar`, which only runs when mr fires). Track D follow-up #369 owns the orchestration fix. Walk-forward verdicts on momentum factors stay INSUFFICIENT_DATA until #369 lands. |
 | G.P1.5 — brief `signal_status` ↔ `ftfc_direction` contradiction | B | ✅ via PR #306 | The divergence UI in PR #353 renders correctly |
 | G.P1.10 — `brief_bias` populated only on 5/7 | D (via B) | ✅ via PR #310 + Track D fix; landed ~2026-05-07 | Live-DB audit 2026-05-09: 100% coverage on 5/7 + 5/8 |
 
@@ -135,19 +135,31 @@ Three patterns from this audit are now codified in `CLAUDE.md`:
 
 ## What's not closed
 
-Nothing remaining for Track C. The audit's 5 P0 / 4 P1 / 4 P2 / 1 P3
-Track-C-tagged items are all addressed (landed, deferred-with-note, or
-scheduled-recurring). Cross-track blockers that Track C was waiting on
-have all resolved.
+Nothing remaining for Track C *itself*. The audit's 5 P0 / 4 P1 / 4 P2
+/ 1 P3 Track-C-tagged items are all addressed (landed, deferred-with-note,
+or scheduled-recurring). Of the 6 cross-track blockers Track C was
+waiting on, **5 have resolved** and **1 (G.P0.11) is partially open**:
+the diagnosis halves shipped (PR #320 + #330), but the production
+orchestration fix is still pending in **issue #369** (Track D). That
+isn't a Track C deliverable — it's tracked + scheduled, not buried.
 
-The only remaining *future-work* on the Track C surface is data-gated:
-- Per-factor KEEP/DEMOTE/DROP verdicts require ≥ 2 weeks of
-  post-Phase-0.7.x momentum data. First actionable walk-forward report
-  is the 2026-05-23 Saturday cron run (or earlier if momentum fires
-  more frequently than expected).
+The remaining *future-work* on the Track C surface is data-gated and,
+for momentum, **upstream-blocked**:
+
+- **Per-factor KEEP/DEMOTE/DROP verdicts on momentum confirmers** are
+  blocked on **issue #369** (Track D — ship the momentum orchestration
+  fix). PR #330 confirmed momentum is structurally excluded in
+  production (`gcp/signal_monitor.py:413` only invokes `MOMENTUM.evaluate()`
+  inside the mr-fired branch). Until #369 lands, the Saturday
+  walk-forward cron will keep emitting `INSUFFICIENT_DATA` for every
+  momentum factor — that's a real signal, not a bug.
+- Per-factor verdicts on **mean-reversion** factors and the
+  `MIN_CONDITIONS=3` calibration require ≥ 2 weeks of post-Phase-0.7.x
+  data. First actionable mean-reversion walk-forward report is the
+  2026-05-23 Saturday cron run.
 - 2-consecutive-weeks-at-100% criterion for closing the G.P1.10
   verify side — first checkpoint is 2026-05-17 (second Sunday cron).
   If the run on 5/17 is also 100%, G.P1.10 verify side closes for good.
 
-Both will surface as GH Actions runs (and any regression as auto-issues),
-not manual asks.
+All three will surface as GH Actions runs (and any regression or
+unblock-progress as auto-issues / artifact diffs), not manual asks.
