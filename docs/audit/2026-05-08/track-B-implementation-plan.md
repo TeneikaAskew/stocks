@@ -477,6 +477,9 @@ appended once each lands.
 - [x] Step 4.2: W7 LLM commentary — PR [#337](https://github.com/TeneikaAskew/stocks/pull/337) **merged** (b7b5ed5 on main); rebased post-W6; Codex P2 review (cross-PR schema dependency) acknowledged in same PR
 - [x] Step 5 gate cleared: Track A G.P0.1 #295 closed
 - [x] Step 6.1: W8 embed quality replay — PR [#340](https://github.com/TeneikaAskew/stocks/pull/340) **merged** (eff8d4d on main); Codex P2 (earnings JOIN dependency) addressed in same PR (3980014)
+- [x] **W9 follow-up — regime-classifier ValueError fix** — PR [#345](https://github.com/TeneikaAskew/stocks/pull/345) **merged** (ba6c265 on main); caught during 2026-05-09 production replay validation; one-line `regime_long, *_ = ...` future-proof unpack
+- [x] **W10 follow-up — replay mode in signal-monitor job** — PR [#350](https://github.com/TeneikaAskew/stocks/pull/350) **merged** (bb86d3d on main); `--mode=replay` flag + `REPLAY_*` env-var triggers fold the `scripts/replay_signal_monitor.py` harness into the existing `signal-monitor` Cloud Run Job (no separate job needed); 3 regression tests
+- [x] **W11 follow-up — `data_as_of` 16:00 ET anchor** — PR [#361](https://github.com/TeneikaAskew/stocks/pull/361) **merged** (a533ac4 on main); auto-closed [#360](https://github.com/TeneikaAskew/stocks/issues/360); pandas DatetimeIndex UTC midnight was rendering as "20:00 EDT prior day" — anchor to `bar_date 16:00 ET` (market close) for unambiguous display in any timezone; 3 regression tests
 - [x] Step 7: closed meta tracking issue [#314](https://github.com/TeneikaAskew/stocks/issues/314); Track B audit doc fully resolved
 
 ### Round 1 outcome (2026-05-08)
@@ -507,6 +510,29 @@ shipped via same path).
 | W6 stale-warn writer | #336 | ✅ merged | 2d3974b |
 | W7 LLM persistence | #337 | ✅ merged | b7b5ed5 |
 | W8 embed audit | #340 | ✅ merged | eff8d4d |
+| **W9 regime unpack fix** | **#345** | **✅ merged** | **ba6c265** |
+| **W10 replay mode in monitor** | **#350** | **✅ merged** | **bb86d3d** |
+| **W11 data_as_of 16:00 ET anchor** | **#361** | **✅ merged** | **a533ac4** |
+
+### Production validation (2026-05-09 final)
+
+Image `sha256:43c6ccf5...` deployed to all jobs with W11 included.
+Re-ran end-to-end:
+
+  1. **Brief × 3 tickers × 2 dates** — all 6 rows show
+     `data_as_of_et = <bar_date> 16:00:00`, `regime_warning=False`,
+     `data_freshness_status=fresh`, LLM commentary populated.
+  2. **Brief inputs vs source-of-truth bars** — 18/18 OHLC matches
+     (brief.price = bar.close, brief.PDH = bar.high, brief.PDL =
+     bar.low for SPY/IWM/QQQ × 5/7+5/8).
+  3. **Insights replay** — 5/7 SPY direction=long regime=normal
+     (vs original 5/7 morning's stale `regime=orb_only` citing
+     714.47); fresh data flowing through brief→insights handoff.
+  4. **Signal-monitor replay** (via `signal-monitor` job's new
+     in-job `--mode=replay`) — 5/7 SPY: 1201 bars, 405 fires
+     (217 CALL / 188 PUT, 1 stacked agreement). 5/8 SPY: 1201
+     bars, 360 fires (79 CALL / 281 PUT, 1 stacked agreement).
+     Hermetic — no Discord webhooks, no signal_alerts rows.
 
 Codex review interactions in Round 2 (all addressed in same PR):
 
