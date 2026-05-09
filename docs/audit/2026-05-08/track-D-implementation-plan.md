@@ -275,24 +275,42 @@ rebuilt 17:49 UTC on 5/7, so the earliest verification is ~5/15.
 These are individually small; per "batched fixes" guidance, ship them
 together once the P0/P1 PRs land.
 
-- [ ] **G.P2.5** Gate Discord webhook on `strength != 'weak'`; persist
-      all alerts regardless. Add `discord_minimum_strength` to
-      `MonitorConfig` so the gate is configurable
-- [ ] **G.P2.6** Add per-day quartile-vs-hit-rate Spearman ρ check to
-      `gcp/signal_quality_alarm.py`; alert when `|ρ| < 0.1` for 5
-      consecutive sessions
-- [ ] **G.P2.8** Add `tests/test_catalyst_proximity.py` smoke test —
-      seed an event 30 min ahead, call `get_catalyst_context`, assert
-      non-`quiet`
-- [ ] **G.P2.9** Update the rationale comment at `gcp/schema.sql:744-760`
-      — schema's "~21% historically" claim → current empirical 1.4–3.2%
-- [ ] **G.P3.4** Persist momentum's `conditions_met` array inside the
-      `strategy_agreement` payload (extend the schema-doc shape; writer
-      change in `lib/strategies/agreement.py:detect_agreement`)
-- [ ] **G.P3.5** `ALTER TABLE signal_alerts ALTER COLUMN is_open SET DEFAULT FALSE`
-      + one-shot UPDATE setting NULL → FALSE on resolved rows (not
-      open rows — those should already be true post-fix)
-- [ ] PR body: cite each G.Px.y item closed; one batched commit
+- [x] **G.P2.5** Gate Discord webhook on `strength` ≥
+      `discord_minimum_strength` (default `'medium'`, suppresses
+      `'weak'`); always persist regardless. Added
+      `discord_minimum_strength: str = 'medium'` to `MonitorConfig`
+- [x] **G.P2.6** Added `compute_score_quality_correlation()` +
+      `format_quality_correlation_embed()` helpers to
+      `gcp/signal_quality_alarm.py`. Pulls trailing-window
+      `signal_alerts.total_score ⨝ signal_metrics.<tf_col>`, computes
+      Spearman ρ between score-quartile and per-quartile hit rate.
+      Alarm fires when `|ρ| < 0.10` (with min sample size 50). Wired
+      alongside the existing clean-rate regression check
+- [x] **G.P2.8** ALREADY COVERED — the existing
+      `test_get_catalyst_context_imminent_fomc_picks_intraday_session`
+      at `tests/test_catalyst_proximity.py:246` seeds an event 15 min
+      ahead and asserts `bucket='imminent'` (non-quiet); the boundary
+      case (30 min) is covered in
+      `test_classify_proximity_bucket_table` at line 91 (0/15/30 → all
+      `imminent`). No new test needed
+- [x] **G.P2.9** Updated `gcp/schema.sql:744-760` AND
+      `gcp/signal_monitor.py:_evaluate_strategies_for_bar` docstring —
+      both referenced the stale "~21%" claim. Replaced with current
+      empirical "17/782 = 2.2% (per-ticker 1.4-3.2%; QQQ highest)" plus
+      historical context noting the pre-Phase-0.7.x estimate
+- [x] **G.P3.4** Extended `lib/strategies/agreement.py:detect_agreement`
+      payload with a `conditions_met` field — list-of-lists matching
+      `strategies` order. Updated the schema-doc shape in
+      `gcp/schema.sql:744-760` to reflect the new field. Existing
+      consumers (`fire_alert`, `_persist_signal_alert`, TradeLogger)
+      continue to read the dict as-is via JSONB binding from PR 1
+- [x] **G.P3.5** Added `ALTER TABLE signal_alerts ALTER COLUMN
+      is_open SET DEFAULT FALSE` to `gcp/schema.sql`. The persist path
+      still writes `is_open=TRUE` explicitly on insert; this DEFAULT
+      catches any future ALTER-added rows whose persist path forgets
+      the column. Note: NULL→FALSE backfill via db-query.yml is a
+      post-merge action item (not part of the schema PR)
+- [ ] PR opened (citing each G.Px.y item closed)
 
 ## Existing functions / utilities I'll reuse
 

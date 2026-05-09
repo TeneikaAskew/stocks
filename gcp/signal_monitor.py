@@ -366,8 +366,13 @@ class SignalMonitor:
             the composite score for embed sort + JSONB persistence.
 
         See `docs/plans/SIGNAL_QUALITY_TEST_PLAN.md` Phase 1.6 for the
-        rationale: ~21% of overlapping fires AGREE on direction (high-
-        conviction stacked signals); ~79% DISAGREE (informative noise).
+        original rationale that estimated ~21% of overlapping fires
+        AGREE on direction. Track D audit § 6 (2026-05-08) found the
+        actual rate over the May 4-7 window was 17/782 = 2.2% (range
+        1.4-3.2% per ticker, QQQ highest), far below the historical
+        estimate. The 21% figure was pre-Phase-0.7.x — momentum's gate
+        tightened over time, dropping its fire rate without a
+        corresponding update to the schema-doc claim. See G.P2.9.
         """
         # Resolve per-ticker RSI ranges (Tier A → Tier B fallback).
         # Both strategies use the same resolved ranges so agreement
@@ -652,11 +657,25 @@ class SignalMonitor:
         print(json.dumps(message['embeds'][0], indent=2))
         print(f"{'='*50}\n")
 
-        if self.webhook_url:
+        # Track D / G.P2.5: gate Discord post on configured minimum
+        # strength so the channel doesn't drown in weak alerts. Persist
+        # always — analytics need every fire regardless of Discord gate.
+        # Strength rank: weak < medium < strong < perfect.
+        _STRENGTH_RANK = {'weak': 0, 'medium': 1, 'strong': 2, 'perfect': 3}
+        post_strength = _STRENGTH_RANK.get((strength or '').lower(), 0)
+        min_strength = _STRENGTH_RANK.get(
+            (self.monitor_cfg.discord_minimum_strength or 'weak').lower(), 0
+        )
+        if self.webhook_url and post_strength >= min_strength:
             try:
                 requests.post(self.webhook_url, json=message, timeout=self.monitor_cfg.discord_timeout)
             except Exception as e:
                 print(f"  Discord send failed: {e}")
+        elif self.webhook_url:
+            logger.info(
+                "Discord post suppressed for %s: strength=%s below minimum=%s",
+                ticker, strength, self.monitor_cfg.discord_minimum_strength,
+            )
 
         # Persist to Cloud SQL
         self._persist_signal_alert(ticker, sig, total_score, strength, size,

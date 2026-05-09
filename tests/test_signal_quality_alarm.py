@@ -195,8 +195,13 @@ def test_parse_args_accepts_custom_threshold_and_window():
 
 # ── 5) main() exit-code contract ───────────────────────────────────────
 
-def _mock_db(trailing_rows, prior_rows):
-    """Build a context manager that mocks the DB-touching helpers."""
+def _mock_db(trailing_rows, prior_rows, quality_rows=None):
+    """Build a context manager that mocks the DB-touching helpers.
+
+    quality_rows: optional list passed to fetch_score_quality_rows
+    (G.P2.6 quartile-correlation alarm). Defaults to empty so the
+    correlation check returns insufficient-data and doesn't fire.
+    """
     from contextlib import ExitStack
     stack = ExitStack()
 
@@ -207,6 +212,8 @@ def _mock_db(trailing_rows, prior_rows):
                                    return_value=object()))
         stack.enter_context(patch("gcp.signal_quality_alarm.fetch_window_rows",
                                    side_effect=[trailing_rows, prior_rows]))
+        stack.enter_context(patch("gcp.signal_quality_alarm.fetch_score_quality_rows",
+                                   return_value=quality_rows or []))
         stack.enter_context(patch("gcp.signal_quality_alarm.post_to_discord"))
         return stack
     return _enter()
