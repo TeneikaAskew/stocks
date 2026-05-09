@@ -553,13 +553,20 @@ class SignalMonitor:
         price = latest.get('Close', latest.get('Last', 0))
         agreement = getattr(self, '_latest_agreement', None)
 
+        # Per-ticker exit overrides (Tier-A). Falls back to ExitConfig
+        # defaults when exit_config_overrides has no row / NULL / stale.
+        from lib.strategies.exit_config_overrides import (
+            get_call_target, get_put_target,
+            get_call_time_stop, get_put_time_stop,
+        )
+
         if direction == 'CALL':
-            target = price * (1 + self.exit.call_target)
-            time_stop = self.exit.call_time_stop
+            target = price * (1 + get_call_target(ticker))
+            time_stop = get_call_time_stop(ticker)
             color = 0x00ff00
         else:
-            target = price * (1 - self.exit.put_target)
-            time_stop = self.exit.put_time_stop
+            target = price * (1 - get_put_target(ticker))
+            time_stop = get_put_time_stop(ticker)
             color = 0xff0000
 
         max_score = self.risk.max_score
