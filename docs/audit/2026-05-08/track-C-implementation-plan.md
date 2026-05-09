@@ -302,13 +302,13 @@ fixable" note, or a follow-up issue tracking it.
 - [x] Skim Track A/B/D's own track docs — confirmed all five blockers unshipped at audit-close moment
 - [x] **2026-05-09 close-out update** — close #295/#296/#297; comment update on #298/#299 with current status
 
-### Round 1 (no blockers)
-- [x] **PR-A** — Batched mechanical fixes (G.P3.1, G.P2.14, G.P3.2, G.P3.3) → `claude/track-c-r1-mechanical-fixes` → **[PR #305](https://github.com/TeneikaAskew/stocks/pull/305) MERGED 2026-05-09**. Filed [#313](https://github.com/TeneikaAskew/stocks/issues/313) for the `run_kind='scheduled'` incidental finding discovered during G.P3.3 verification.
-- [x] **PR-B** — orb_only investigation + recurring calibration + per-column NULL-merge resolver fix (G.P1.4) → `claude/track-c-r1-orb-only` → **[PR #334](https://github.com/TeneikaAskew/stocks/pull/334) MERGED 2026-05-09**. Production-verified: post-merge `regime=orb_only` is gone (5/8 batch all `regime=normal`). Brief renderer follow-up (#345) caught the 5-tuple unpack break and fixed in same window.
-- [x] **PR-C** — Thesis-vs-targets decoupling (G.P1.9) → `claude/track-c-r1-thesis-targets` → **[PR #341](https://github.com/TeneikaAskew/stocks/pull/341) open**, rebased on main 2026-05-09, **MERGEABLE**, 120 tests pass.
-- [x] **PR-D** — graceful `failed_sections` + `failed_section_reasons` observability (G.P2.13) → `claude/track-c-r1-failed-sections` → **[PR #343](https://github.com/TeneikaAskew/stocks/pull/343) open**, rebased on main 2026-05-09, **MERGEABLE**, 116 tests pass.
-- [x] **PR-E** — Reflection memory auto-embed wiring (G.P2.12) → `claude/track-c-r1-reflection-memory` → **[PR #344](https://github.com/TeneikaAskew/stocks/pull/344) open**, rebased on main 2026-05-09, **MERGEABLE**, 129 tests pass.
-- [x] **PR-F** — Observability docs for model_routing + db-query (G.P2.4, G.P2.24) → `claude/track-c-r1-observability` → **[PR #346](https://github.com/TeneikaAskew/stocks/pull/346) open**, rebased on main 2026-05-09, **MERGEABLE**, 26 tests pass (docs-only).
+### Round 1 (no blockers) — ✅ ALL MERGED 2026-05-09
+- [x] **PR-A** — Batched mechanical fixes (G.P3.1, G.P2.14, G.P3.2, G.P3.3) → **[#305 MERGED](https://github.com/TeneikaAskew/stocks/pull/305)**. Filed [#313](https://github.com/TeneikaAskew/stocks/issues/313) (run_kind mislabel) and [#349](https://github.com/TeneikaAskew/stocks/issues/349) (G.P3.1 conviction prompt fix didn't take — all reports still 'medium'; needs deterministic post-process).
+- [x] **PR-B** — orb_only fix + recurring calibration + per-column NULL-merge resolver (G.P1.4) → **[#334 MERGED](https://github.com/TeneikaAskew/stocks/pull/334)**. Production-verified: 5/8 batch all `regime=normal`. Brief follow-up [#345](https://github.com/TeneikaAskew/stocks/pull/345) shipped same window.
+- [x] **PR-C** — Thesis-vs-targets decoupling (G.P1.9) → **[#341 MERGED](https://github.com/TeneikaAskew/stocks/pull/341)**. Validator caught 12 orphan numerals across 8/21 reports during validation.
+- [x] **PR-D** — graceful `failed_sections` + `failed_section_reasons` observability (G.P2.13) → **[#343 MERGED](https://github.com/TeneikaAskew/stocks/pull/343)**. Backtest walk-back is defensive (Track A's #323 already plugged the upstream placeholder leak); sentiment-empty fix targets exactly the IWM 5/7+5/8 audit failures.
+- [x] **PR-E** — Reflection memory auto-embed wiring (G.P2.12) → **[#344 MERGED](https://github.com/TeneikaAskew/stocks/pull/344)**. Query-text synthesis works; `journal_entries` is the user-authored manual log (not a separate bug — design intent). Reflection memory becomes useful as soon as the trader uses the JournalPage.
+- [x] **PR-F** — Observability docs for model_routing + db-query (G.P2.4, G.P2.24) → **[#346 MERGED](https://github.com/TeneikaAskew/stocks/pull/346)**. Docs-only.
 
 ### Round 2 (gated)
 - [ ] **PR-G** — Per-factor walk-forward audit (G.P2.1+2+3) — code blockers cleared (G.P0.6 #296 + G.P0.11 #297 closed); **now data-gated** — needs ≥2 weeks of post-fix data, earliest start 2026-05-22
@@ -324,18 +324,27 @@ fixable" note, or a follow-up issue tracking it.
 
 | PR | Audit IDs | State | Notes |
 |---|---|---|---|
-| [#305](https://github.com/TeneikaAskew/stocks/pull/305) PR-A | G.P3.1, G.P2.14, G.P3.2, G.P3.3 | ✅ MERGED | + filed [#313](https://github.com/TeneikaAskew/stocks/issues/313) |
+| [#305](https://github.com/TeneikaAskew/stocks/pull/305) PR-A | G.P3.1, G.P2.14, G.P3.2, G.P3.3 | ✅ MERGED | G.P3.1 didn't take — see [#349](https://github.com/TeneikaAskew/stocks/issues/349) |
 | [#334](https://github.com/TeneikaAskew/stocks/pull/334) PR-B | G.P1.4 + per-ticker calibration + recurring monthly job + resolver fix | ✅ MERGED | Brief unpack follow-up [#345](https://github.com/TeneikaAskew/stocks/pull/345) |
-| [#341](https://github.com/TeneikaAskew/stocks/pull/341) PR-C | G.P1.9 | open / MERGEABLE | rebased 2026-05-09 |
-| [#343](https://github.com/TeneikaAskew/stocks/pull/343) PR-D | G.P2.13 | open / MERGEABLE | rebased 2026-05-09 |
-| [#344](https://github.com/TeneikaAskew/stocks/pull/344) PR-E | G.P2.12 | open / MERGEABLE | rebased 2026-05-09 |
-| [#346](https://github.com/TeneikaAskew/stocks/pull/346) PR-F | G.P2.4, G.P2.24 | open / MERGEABLE | rebased 2026-05-09 (docs-only) |
+| [#341](https://github.com/TeneikaAskew/stocks/pull/341) PR-C | G.P1.9 | ✅ MERGED | Validator caught 12/21 orphan numerals during validation |
+| [#343](https://github.com/TeneikaAskew/stocks/pull/343) PR-D | G.P2.13 | ✅ MERGED | Sentiment fix targets IWM 5/7+5/8 exactly; backtest walk-back is defensive |
+| [#344](https://github.com/TeneikaAskew/stocks/pull/344) PR-E | G.P2.12 | ✅ MERGED | Wiring works; journal is user-driven (design intent) |
+| [#346](https://github.com/TeneikaAskew/stocks/pull/346) PR-F | G.P2.4, G.P2.24 | ✅ MERGED | Docs only |
 | (Round 2) PR-G | G.P2.1, G.P2.2, G.P2.3 | data-gated | resumes ≥ 2026-05-22 (≥2 weeks of post-fix data) |
 | (Round 2) PR-H | G.P1.8 | unblocked | #298 closed; can ship anytime |
 | (Round 2) PR-I | G.P1.10 verify | data-gated | resumes after a few days of post-fix data |
 
-**Open follow-ups outside Round 1/2 scope:**
-- [#313](https://github.com/TeneikaAskew/stocks/issues/313) — `insight_reports_history.run_kind` always `manual_replay`/`backfill`, never `scheduled` (cron env-var mismatch).
+**Open follow-ups uncovered by validation:**
+- [#349](https://github.com/TeneikaAskew/stocks/issues/349) — **P1**: G.P3.1 conviction always 'medium' (PR-A's prompt fix didn't take). Recommend deterministic post-process from `confidence_score` + analyst-agreement count.
+- [#313](https://github.com/TeneikaAskew/stocks/issues/313) — **P2**: `insight_reports_history.run_kind` mislabel (cron env-var mismatch).
+- **P2** (no issue yet): `key_levels` missing real levels mentioned in thesis (gamma flip, King strikes). PR-C validator surfaces these as orphans; root cause is incomplete `_derive_key_levels` in orchestrator.py.
+
+**Round 1 deploy checklist** (operator runs once after R1 merges):
+- `./deploy.sh apply-schema` — adds `failed_section_reasons` field, `per_role_cost` JSONB column, `blue_sky_atr_offset` column, etc.
+- `./deploy.sh build` — rebuild image with all R1 code
+- `./deploy.sh insight-pipeline` — redeploy job with new image
+- `./deploy.sh calibrate-blue-sky` — create the new monthly calibration job
+- `./deploy.sh schedulers` — register the monthly calibration cron
 
 ---
 
