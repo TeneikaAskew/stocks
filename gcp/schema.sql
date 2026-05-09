@@ -1171,6 +1171,59 @@ ALTER TABLE premarket_analysis
 
 
 -- ============================================================================
+-- Track B audit (2026-05-08): data freshness + LLM commentary persistence
+-- on `premarket_analysis`. W5 schema for the implementation plan in
+-- docs/audit/2026-05-08/track-B-implementation-plan.md. The companion
+-- columns on `premarket_analysis_history` are added inside that table's
+-- CREATE TABLE definition further down (so fresh-DB applies see them at
+-- CREATE time) AND in a deferred ALTER block immediately after the
+-- CREATE (so existing-DB applies pick them up).
+--
+-- Column meanings:
+--
+--   data_as_of (timestamptz)
+--     Per-ticker timestamp of the LAST OHLCV bar the brief used to
+--     compute that row's bias / levels / RSI. Read by the W6 writer
+--     from `df.iloc[-1].name` after the null-close filter at
+--     gcp/premarket_brief.py:724. Lets a single SELECT answer
+--     "which morning's brief was based on stale data?" — pre-W6 this
+--     required a 4-table join.
+--
+--   data_freshness_status (varchar(20))
+--     Stamp written by the W6 staleness detector. Values:
+--       'fresh'             — last bar was 1 trading day before
+--                             analysis_date (or Friday→Monday).
+--       'STALE_DAILY_DATA'  — gap > 1 trading day with no Monday
+--                             exemption. The W6 writer sets per-ticker
+--                             status='STALE_DAILY_DATA' on data['status']
+--                             so persist_to_cloud_sql skips the canonical
+--                             premarket_analysis row and only writes the
+--                             history row (audit trail). Track B audit
+--                             G.P0.4.
+--       NULL                — pre-W6 rows from before the writer landed.
+--
+--   llm_overview / llm_orb_explanation (text, brief-level)
+--   llm_analysis / llm_playbook (text, per-ticker)
+--     Gemini-generated commentary that the brief renders into Discord
+--     today and discards. W7 wires the writer to persist these for
+--     audit-trail replay (the four strings are non-deterministic across
+--     LLM calls, but the original morning's text is locked once
+--     persisted). Track G G.P2.11 / Track B audit B.11; user-confirmed
+--     decision was "persist for audit trail" rather than skip.
+--
+-- All columns are NULL-able; pre-migration rows stay NULL until the
+-- W6 / W7 writers land. Idempotent; re-runs are no-ops.
+-- ============================================================================
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS data_as_of            TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS data_freshness_status VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS llm_overview          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_orb_explanation   TEXT,
+    ADD COLUMN IF NOT EXISTS llm_analysis          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT;
+
+
+-- ============================================================================
 -- Live migration: rename premarket_analysis.strat_daily -> strat_candle.
 -- The methodology doc renames every "candle classification" surface to
 -- a single column name. Idempotent.
@@ -1246,6 +1299,21 @@ CREATE TABLE IF NOT EXISTS premarket_analysis_history (
     recommended_orb_reason  TEXT,
     playbook                TEXT,
 
+    -- Track B audit (2026-05-08): data freshness + LLM commentary
+    -- persistence. See the comment block above the
+    -- `ALTER TABLE premarket_analysis ADD COLUMN data_as_of ...`
+    -- migration earlier in this file for the column-by-column
+    -- meaning. Adding them inline here ensures fresh-DB applies pick
+    -- them up at CREATE time; the deferred ALTER block immediately
+    -- after this CREATE catches existing DBs where the table already
+    -- exists.
+    data_as_of              TIMESTAMPTZ,
+    data_freshness_status   VARCHAR(20),
+    llm_overview            TEXT,
+    llm_orb_explanation     TEXT,
+    llm_analysis            TEXT,
+    llm_playbook            TEXT,
+
     -- Audit metadata
     written_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     run_kind          VARCHAR(20)  NOT NULL,
@@ -1268,6 +1336,24 @@ CREATE INDEX IF NOT EXISTS idx_pmah_date_ticker_written
     ON premarket_analysis_history (analysis_date, ticker, written_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pmah_run_kind
     ON premarket_analysis_history (run_kind, written_at DESC);
+
+
+-- Deferred companion of the `ALTER TABLE premarket_analysis` migration
+-- earlier in this file. This block has to live AFTER the CREATE TABLE
+-- above because Postgres rejects ALTER on a not-yet-existing table —
+-- on a fresh DB, the CREATE creates the table with the columns inline
+-- and this ALTER no-ops; on an existing DB where the CREATE TABLE IF
+-- NOT EXISTS sees the table and skips creation, the ALTER picks up
+-- the new columns. Idempotent in both cases. Codex review on PR #335
+-- caught the original placement (above the CREATE) and the move-here
+-- fix is the resolution.
+ALTER TABLE premarket_analysis_history
+    ADD COLUMN IF NOT EXISTS data_as_of            TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS data_freshness_status VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS llm_overview          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_orb_explanation   TEXT,
+    ADD COLUMN IF NOT EXISTS llm_analysis          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT;
 
 
 CREATE TABLE IF NOT EXISTS insight_reports_history (
