@@ -198,24 +198,39 @@ momentum has fired 0 times in 50 days. Image lag explains 5/7
 specifically; the older pattern doesn't have an explanation. Track G
 recommends instrumentation, not policy changes, as the first move.
 
-- [ ] In `_evaluate_strategies_for_bar` (line 345 area), add two
-      counter dicts: `self.momentum_evaluated_count[ticker]` and
-      `self.momentum_fired_count[ticker]`
-- [ ] Increment evaluated unconditionally; increment fired only when
-      `mom_signal is not None`
-- [ ] At end of `run_loop`, log a per-ticker summary line:
-      `logger.info("ticker=%s momentum_evaluated=%d momentum_fired=%d", ...)`
-- [ ] (Optional, scope-permitting) Persist the daily counts to a new
-      `signal_strategy_metrics` table for analysis. If kept simple in
-      this PR, defer the table to a follow-up
-- [ ] **Sync-point**: after 5 trading days post-deploy, query the
-      counters; comment the result on the cross-track sync issue
-      filed at start; tag Tracks C and E for input before any gate
-      change ships
-- [ ] **No policy change in this PR** — this PR is instrumentation
-      only. Gate changes (lower MIN_CONDITIONS_MOMENTUM, drop a
-      confirmer) require Track C + E sign-off
-- [ ] PR body: cite G.P0.11 + audit doc § 6
+- [x] Added `self.momentum_evaluated_count` and
+      `self.momentum_fired_count` dicts to `__init__`, initialised to
+      `{ticker: 0}` for each watchlist ticker
+- [x] In `_evaluate_strategies_for_bar` (right after MOMENTUM.evaluate
+      call): increment `evaluated` unconditionally on every call,
+      increment `fired` only when `mom_signal is not None`. Note: with
+      the existing mr-short-circuit at line 381, "evaluated" =
+      "bars where mr fired AND momentum was checked", which is the
+      semantics the cross-track sync wants to count
+- [x] At end of `run_loop` (when market closes, before `break`): log
+      per-ticker summary `session_summary ticker=%s momentum_evaluated=
+      %d momentum_fired=%d daily_trades=%d daily_pnl=%.4f` so Cloud
+      Logging captures the rollup
+- [x] (Deferred) Persistent `signal_strategy_metrics` table — kept
+      this PR simple; counts will land in Cloud Logging only. If the
+      cross-track sync at #304 wants persisted counts, that's a
+      follow-up
+- [x] Added `tests/test_signal_monitor_momentum_instrumentation.py` —
+      5 tests:
+      - counters init to 0 per ticker
+      - both bump on momentum-fires-CALL
+      - only evaluated bumps when momentum returns None
+      - neither bumps when mr doesn't fire (locks in short-circuit
+        contract; preserves diagnostic semantics)
+      - counters accumulate across 3 back-to-back calls (3 evals,
+        2 fires when middle returns None)
+- [ ] **Sync-point** (post-merge): after 5 trading days post-deploy,
+      query the counters; comment the result on #304; tag Tracks C
+      and E for input before any gate change ships
+- [x] **No policy change in this PR** — instrumentation only. Gate
+      changes (lower MIN_CONDITIONS_MOMENTUM, drop a confirmer)
+      require Track C + E sign-off per #304
+- [ ] PR opened (citing G.P0.11 + audit doc § 6 + #304 sync)
 
 ### PR 7 — G.P1.1 — `level_broken` always-NULL investigation (AWAITING TRACK A)
 
