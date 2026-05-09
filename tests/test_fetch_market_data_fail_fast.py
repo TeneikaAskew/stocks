@@ -111,6 +111,31 @@ class TestVerifyPostFetchRows:
             '2026-05-07', ['AAPL', 'MSFT'],
             _query_fn=_should_not_be_called)
 
+    def test_uses_array_predicate_not_in_clause(self, monkeypatch):
+        """SQLAlchemy text() doesn't auto-expand a tuple bind to an
+        IN (...) list under pg8000 — Postgres rejects `IN $1` and the
+        query silently returns 0 rows, forcing exit 5 on every weekday
+        run. Use `= ANY(:tickers)` with a list parameter instead.
+        Regression test for codex review on PR #322."""
+        captured = {}
+
+        def _capture(sql, params):
+            captured['sql'] = sql
+            captured['params'] = params
+            return pd.DataFrame([{'n': 3}])
+
+        monkeypatch.setattr(
+            'gcp.fetchers.fetch_market_data.is_cloud_sql_configured',
+            lambda: True)
+        _verify_post_fetch_rows(
+            '2026-05-07', ['SPY', 'IWM', 'QQQ'],
+            _query_fn=_capture)
+        assert '= ANY(:tickers)' in captured['sql'], (
+            "Use ANY-array predicate; bare `IN :tk` doesn't bind under pg8000."
+        )
+        assert isinstance(captured['params']['tickers'], list)
+        assert 'tk' not in captured['params']
+
     def test_local_dev_skips_check_when_sql_unconfigured(self, monkeypatch):
         def _should_not_be_called(sql, params):
             raise AssertionError("query_fn should not run without SQL configured")
