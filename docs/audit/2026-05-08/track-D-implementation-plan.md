@@ -51,15 +51,23 @@ Issues #301 and #302 are **AWAITING** flags; #303 and #304 are **SYNC POINTS**.
 > | 2 | G.P0.8 | ✅ MERGED #315 | risk-cap increments (+ 1 Codex P1 fix) |
 > | 3 | G.P0.7 | ✅ verified | TZ-fix smoke verification (no PR; production wall-clock confirmed) |
 > | 4 | G.P0.9 | ✅ MERGED #318 | plaintext keys → secretKeyRef (+ 1 Codex P1 fix) |
-> | 5 | G.P0.10 | ✅ MERGED #319 | EOD reconciliation Job (+ 2 Codex P1 fixes) |
+> | 5 | G.P0.10 | ⚠️ MERGED #319 — **deploy gap #354** | EOD reconciliation Job (code shipped; not deployed to GCP — 26-43 alerts/day stuck `is_open=TRUE`) |
 > | 6 | G.P0.11 | ✅ MERGED #320 | momentum instrumentation (+ 1 Codex P1 fix) |
-> | 7 | G.P1.1 | 🚧 AWAITING #301 | `level_broken` investigation (Track A blocker) |
-> | 8 | G.P1.3 | 🚧 AWAITING #302 | momentum image-rebuild verification (~5/15) |
+> | 7 | G.P1.1 | ✅ MERGED #339 | `level_broken` log-and-reraise + counters (replay: 0 → 6 RTH events on 5/7+5/8) |
+> | 8 | G.P1.3 | 🚧 AWAITING #302 | momentum image-rebuild verification (re-checked 2026-05-09; data window still empty) |
 > | 9 | G.P2/P3 batch | ✅ MERGED #328 | 6 P2/P3 items (+ 1 Codex P1 + 2 P2 fixes) |
 >
 > **Codex review tally**: 7 P1 + 2 P2 issues caught and addressed in-PR
 > with regression tests that fail against the pre-fix code. Roll-up
 > tracking issue: #316 (closed 2026-05-09).
+>
+> **Validation findings (2026-05-09)** posted in **#356**: a hermetic
+> harness exercises every code-change PR's surface; production-state
+> queries via `db-query.yml` confirm BEFORE/AFTER for those with DB
+> footprint. One new bug surfaced — **#354** — the EOD resolver from
+> PR #319 was never deployed to GCP (job + scheduler entry missing
+> from the project despite living in `gcp/deploy.sh:560-585` and
+> `:1316-1317`).
 
 The user's structuring preference: one PR per investigation, fixes
 batched within. Each PR is a self-contained "fix N for investigation X"
