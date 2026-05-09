@@ -6,6 +6,37 @@ import type {
   RunStatus,
 } from '@/types/insights';
 
+// Brief direction surface — the premarket-brief's view of the same
+// ticker, fetched alongside the insight report so the UI can flag
+// when the two house views diverge. Audit 2026-05-08 G.P1.8.
+export interface BriefDirection {
+  ticker: string;
+  bias: 'bullish' | 'bearish' | 'neutral';
+  signal_status: string | null;
+  ftfc_direction: 'bullish' | 'bearish' | 'mixed' | null;
+}
+
+export function useBriefDirection(ticker: string) {
+  return useQuery<BriefDirection | null>({
+    queryKey: ['brief-direction', ticker],
+    queryFn: async () => {
+      const r = await fetch(`/api/dashboard/brief/${ticker}`);
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`brief ${r.status}`);
+      const json = await r.json();
+      return {
+        ticker,
+        bias: json.bias ?? 'neutral',
+        signal_status: json.premarket?.signal_status ?? null,
+        ftfc_direction:
+          json.premarket?.ftfc_direction ?? json.daily?.ftfc_direction ?? null,
+      };
+    },
+    enabled: !!ticker,
+    staleTime: 60_000,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // GET latest report for ticker. 404 means the pipeline has never run for
 // this ticker — the UI shows a "Generate Report" CTA in that case.

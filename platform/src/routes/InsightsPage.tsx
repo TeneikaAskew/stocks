@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Loader2, RefreshCw, History as HistoryIcon, FileText, MessageCircle, Send, ListChecks } from 'lucide-react';
 import { useTickerStore } from '@/stores/tickerStore';
 import {
+  useBriefDirection,
   useInsightHistory,
   useInsightReport,
   useInsightReportById,
@@ -9,6 +10,7 @@ import {
   useRunStatus,
 } from '@/hooks/useInsights';
 import {
+  BriefVsInsightsCard,
   CatalystsCard,
   DebateCard,
   DegradationBanner,
@@ -42,6 +44,9 @@ export default function InsightsPage() {
   const reportQuery = useInsightReport(activeTicker);
   const historyQuery = useInsightHistory(activeTicker, 20);
   const historicalQuery = useInsightReportById(viewingHistoricalId);
+  // G.P1.8 — fetch brief alongside the insight report so the divergence
+  // card can compare the two house views.
+  const briefQuery = useBriefDirection(activeTicker);
   const refreshMut = useRefreshInsight();
   const runStatus = useRunStatus(currentRunId, activeTicker);
 
@@ -326,6 +331,11 @@ function ReportView({
         asOf={envelope.as_of}
         costUsd={envelope.cost_usd}
         latencyMs={envelope.latency_ms}
+      />
+      <BriefVsInsightsCard
+        ticker={activeTicker}
+        brief={briefQuery.data ?? null}
+        insightDirection={report.direction}
       />
       <div className="grid gap-4 md:grid-cols-2">
         <TradePlanCard report={report} />
