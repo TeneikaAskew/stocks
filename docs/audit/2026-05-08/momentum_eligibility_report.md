@@ -1,9 +1,10 @@
 # Momentum Strategy — Fire-Eligibility Analysis
 
-**Date generated**: 2026-05-08  
-**Lookback**: 50 trading days  
+**Date generated**: 2026-05-09  
+**Lookback**: 50 calendar days (≈ 35 trading days)  
 **Strategy**: `lib/strategies/momentum.py` (7 conditions per direction)  
 **Live MIN_CONDITIONS**: 5 (current production gate)  
+**Live MIN_CORE_CONDITIONS gate**: 2 (would-fire counts apply this)  
 
 ## Background
 
@@ -40,14 +41,14 @@ Audit 2026-05-08 found 0 momentum fires across SPY/IWM/QQQ in 50 days. This repo
 | 6 | 296 | 0.9% |
 | 7 | 8 | 0.0% |
 
-**Would-fire count at each MIN_CONDITIONS threshold**:
+**Would-fire count at each MIN_CONDITIONS threshold** (after MIN_CORE_CONDITIONS=2 gate, which mirrors the live `MomentumStrategy.evaluate()`):
 
-| Threshold | Bars that would fire | % | vs production fire rate |
-|---:|---:|---:|---|
-| ≥ 3 | 14,105 | 42.1% | |
-| ≥ 4 | 5,795 | 17.3% | |
-| ≥ 5 | 1,800 | 5.4% |  ← live |
-| ≥ 6 | 304 | 0.9% | |
+| Threshold | With core gate | % | Without core gate (diagnostic) | Δ confirmer-only |
+|---:|---:|---:|---:|---:|
+| ≥ 3 | 12,249 | 36.5% | 14,105 | 1,856 |
+| ≥ 4 | 5,558 | 16.6% | 5,795 | 237 |
+| ≥ 5 | 1,800 | 5.4% | 1,800 | 0 |  ← live
+| ≥ 6 | 304 | 0.9% | 304 | 0 |
 
 ### PUT
 
@@ -76,14 +77,14 @@ Audit 2026-05-08 found 0 momentum fires across SPY/IWM/QQQ in 50 days. This repo
 | 6 | 292 | 0.9% |
 | 7 | 5 | 0.0% |
 
-**Would-fire count at each MIN_CONDITIONS threshold**:
+**Would-fire count at each MIN_CONDITIONS threshold** (after MIN_CORE_CONDITIONS=2 gate, which mirrors the live `MomentumStrategy.evaluate()`):
 
-| Threshold | Bars that would fire | % | vs production fire rate |
-|---:|---:|---:|---|
-| ≥ 3 | 12,829 | 38.2% | |
-| ≥ 4 | 5,288 | 15.8% | |
-| ≥ 5 | 1,607 | 4.8% |  ← live |
-| ≥ 6 | 297 | 0.9% | |
+| Threshold | With core gate | % | Without core gate (diagnostic) | Δ confirmer-only |
+|---:|---:|---:|---:|---:|
+| ≥ 3 | 10,689 | 31.9% | 12,829 | 2,140 |
+| ≥ 4 | 4,992 | 14.9% | 5,288 | 296 |
+| ≥ 5 | 1,607 | 4.8% | 1,607 | 0 |  ← live
+| ≥ 6 | 297 | 0.9% | 297 | 0 |
 
 ## QQQ
 
@@ -116,14 +117,14 @@ Audit 2026-05-08 found 0 momentum fires across SPY/IWM/QQQ in 50 days. This repo
 | 6 | 385 | 1.1% |
 | 7 | 14 | 0.0% |
 
-**Would-fire count at each MIN_CONDITIONS threshold**:
+**Would-fire count at each MIN_CONDITIONS threshold** (after MIN_CORE_CONDITIONS=2 gate, which mirrors the live `MomentumStrategy.evaluate()`):
 
-| Threshold | Bars that would fire | % | vs production fire rate |
-|---:|---:|---:|---|
-| ≥ 3 | 15,091 | 42.5% | |
-| ≥ 4 | 6,487 | 18.3% | |
-| ≥ 5 | 2,258 | 6.4% |  ← live |
-| ≥ 6 | 399 | 1.1% | |
+| Threshold | With core gate | % | Without core gate (diagnostic) | Δ confirmer-only |
+|---:|---:|---:|---:|---:|
+| ≥ 3 | 13,329 | 37.5% | 15,091 | 1,762 |
+| ≥ 4 | 6,289 | 17.7% | 6,487 | 198 |
+| ≥ 5 | 2,258 | 6.4% | 2,258 | 0 |  ← live
+| ≥ 6 | 399 | 1.1% | 399 | 0 |
 
 ### PUT
 
@@ -152,14 +153,14 @@ Audit 2026-05-08 found 0 momentum fires across SPY/IWM/QQQ in 50 days. This repo
 | 6 | 308 | 0.9% |
 | 7 | 6 | 0.0% |
 
-**Would-fire count at each MIN_CONDITIONS threshold**:
+**Would-fire count at each MIN_CONDITIONS threshold** (after MIN_CORE_CONDITIONS=2 gate, which mirrors the live `MomentumStrategy.evaluate()`):
 
-| Threshold | Bars that would fire | % | vs production fire rate |
-|---:|---:|---:|---|
-| ≥ 3 | 12,756 | 35.9% | |
-| ≥ 4 | 5,336 | 15.0% | |
-| ≥ 5 | 1,655 | 4.7% |  ← live |
-| ≥ 6 | 314 | 0.9% | |
+| Threshold | With core gate | % | Without core gate (diagnostic) | Δ confirmer-only |
+|---:|---:|---:|---:|---:|
+| ≥ 3 | 10,536 | 29.7% | 12,756 | 2,220 |
+| ≥ 4 | 5,056 | 14.2% | 5,336 | 280 |
+| ≥ 5 | 1,655 | 4.7% | 1,655 | 0 |  ← live
+| ≥ 6 | 314 | 0.9% | 314 | 0 |
 
 ## SPY
 
@@ -192,14 +193,14 @@ Audit 2026-05-08 found 0 momentum fires across SPY/IWM/QQQ in 50 days. This repo
 | 6 | 365 | 1.0% |
 | 7 | 19 | 0.1% |
 
-**Would-fire count at each MIN_CONDITIONS threshold**:
+**Would-fire count at each MIN_CONDITIONS threshold** (after MIN_CORE_CONDITIONS=2 gate, which mirrors the live `MomentumStrategy.evaluate()`):
 
-| Threshold | Bars that would fire | % | vs production fire rate |
-|---:|---:|---:|---|
-| ≥ 3 | 15,677 | 44.1% | |
-| ≥ 4 | 6,740 | 19.0% | |
-| ≥ 5 | 2,237 | 6.3% |  ← live |
-| ≥ 6 | 384 | 1.1% | |
+| Threshold | With core gate | % | Without core gate (diagnostic) | Δ confirmer-only |
+|---:|---:|---:|---:|---:|
+| ≥ 3 | 14,030 | 39.5% | 15,677 | 1,647 |
+| ≥ 4 | 6,533 | 18.4% | 6,740 | 207 |
+| ≥ 5 | 2,237 | 6.3% | 2,237 | 0 |  ← live
+| ≥ 6 | 384 | 1.1% | 384 | 0 |
 
 ### PUT
 
@@ -228,14 +229,14 @@ Audit 2026-05-08 found 0 momentum fires across SPY/IWM/QQQ in 50 days. This repo
 | 6 | 278 | 0.8% |
 | 7 | 3 | 0.0% |
 
-**Would-fire count at each MIN_CONDITIONS threshold**:
+**Would-fire count at each MIN_CONDITIONS threshold** (after MIN_CORE_CONDITIONS=2 gate, which mirrors the live `MomentumStrategy.evaluate()`):
 
-| Threshold | Bars that would fire | % | vs production fire rate |
-|---:|---:|---:|---|
-| ≥ 3 | 12,815 | 36.0% | |
-| ≥ 4 | 5,326 | 15.0% | |
-| ≥ 5 | 1,643 | 4.6% |  ← live |
-| ≥ 6 | 281 | 0.8% | |
+| Threshold | With core gate | % | Without core gate (diagnostic) | Δ confirmer-only |
+|---:|---:|---:|---:|---:|
+| ≥ 3 | 10,334 | 29.1% | 12,815 | 2,481 |
+| ≥ 4 | 5,001 | 14.1% | 5,326 | 325 |
+| ≥ 5 | 1,643 | 4.6% | 1,643 | 0 |  ← live
+| ≥ 6 | 281 | 0.8% | 281 | 0 |
 
 ## Interpretation guide
 
