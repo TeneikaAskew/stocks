@@ -687,6 +687,13 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
         for fld in [
             'poll_interval', 'rolling_window_bars', 'min_bars_for_indicators',
             'min_bars_for_signals', 'pre_market_sleep', 'discord_timeout',
+            # Track D / G.P2.5 (Codex P2 review on PR #328): expose
+            # discord_minimum_strength so operators can override the
+            # default 'medium' gate from alert_config.json without a
+            # code change. Pre-fix the field existed in the dataclass
+            # but the loader didn't copy it through, so production was
+            # stuck at 'medium' regardless of config.
+            'discord_minimum_strength',
         ]:
             if fld in mon_data:
                 setattr(app.monitor, fld, mon_data[fld])

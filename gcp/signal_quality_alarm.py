@@ -260,9 +260,20 @@ def compute_score_quality_correlation(rows: list[dict]) -> Optional[float]:
         return None
     qs = np.array([p[0] for p in pairs])
     rates = np.array([p[1] for p in pairs])
+    # Track D / G.P2.6 (Codex P1 review on PR #328): when `rates` is
+    # constant across quartiles — the exact "score no longer
+    # discriminates" case this alarm exists to catch — spearmanr
+    # returns NaN. Convert that to 0.0 (zero correlation) so main()'s
+    # `|ρ| < threshold` test fires the alarm instead of treating it
+    # as insufficient-data and going silent.
+    if np.all(rates == rates[0]):
+        return 0.0
     rho, _ = spearmanr(qs, rates)
     if np.isnan(rho):
-        return None
+        # Defensive: scipy can still return NaN if `qs` is constant,
+        # though our quartile assignment makes that impossible. Treat
+        # as zero discrimination for safety.
+        return 0.0
     return float(rho)
 
 
@@ -403,7 +414,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             }),
         )
         return 1
-    if quality_alarm:
+    # Track D / G.P2.6 (Codex P2 review on PR #328): mirror the
+    # regression check's `not args.dry_run` gate so dry-run smoke
+    # invocations don't fail only on the new quality-alarm path.
+    if quality_alarm and not args.dry_run:
         return 1
     return 0
 

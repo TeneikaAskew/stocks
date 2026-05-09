@@ -130,20 +130,26 @@ def test_quality_correlation_high_for_perfect_discrimination():
 
 
 def test_quality_correlation_zero_when_no_discrimination():
-    """When hit rate is constant across quartiles, ρ should be near 0."""
+    """When hit rate is constant across quartiles, ρ MUST be 0.0
+    (NOT None) so main()'s |ρ| < threshold check fires the alarm.
+
+    Codex P1 review on PR #328 (#3211975578): pre-fix, scipy's
+    spearmanr returned NaN for constant rates, the helper converted
+    that to None, and main() formatted it as insufficient-data. The
+    exact 'score no longer discriminates' case the alarm exists to
+    catch was silently suppressed."""
     pytest.importorskip("scipy.stats")
     from gcp.signal_quality_alarm import compute_score_quality_correlation
 
-    # 4 quartiles, each 25 rows, each 50% hit — flat discrimination
+    # 4 quartiles, each 25 rows, each 50% hit — perfectly flat
     rows = []
     for q in (1.0, 2.0, 3.0, 4.0):
         rows += [{"score": q, "hit": 1 if i < 12 else 0} for i in range(25)]
 
     rho = compute_score_quality_correlation(rows)
-    # spearmanr can return NaN for perfectly tied ranks; the helper
-    # converts that to None.
-    assert rho is None or abs(rho) < 0.5, (
-        f"flat discrimination must give |ρ| ≪ 1; got {rho}"
+    assert rho == 0.0, (
+        f"flat-rates case MUST return 0.0 (not None) so the alarm "
+        f"fires; got {rho}. Codex P1 regression — see #3211975578"
     )
 
 
@@ -179,3 +185,72 @@ def test_quality_correlation_embed_green_when_healthy():
     from gcp.signal_quality_alarm import format_quality_correlation_embed
     payload = format_quality_correlation_embed(0.7, n_rows=200, tf_col="cls_60m")
     assert payload["embeds"][0]["color"] == 0x36a64f, "green = healthy"
+
+
+# ── 3) G.P2.5 (Codex P2): discord_minimum_strength loaded from JSON ──
+
+def test_discord_minimum_strength_loaded_from_alert_config():
+    """Codex P2 review on PR #328 (#3211975579): MonitorConfig defines
+    `discord_minimum_strength` but the JSON loader's allowlist must
+    include it, otherwise production overrides via alert_config.json
+    are silently ignored and the gate stays at 'medium'."""
+    import json
+    import tempfile
+    from pathlib import Path
+    from lib.config import load_config
+
+    cfg_data = {
+        "monitor": {
+            "discord_minimum_strength": "weak",
+        }
+    }
+    with tempfile.NamedTemporaryFile(
+        mode='w', suffix='.json', delete=False, encoding='utf-8',
+    ) as f:
+        json.dump(cfg_data, f)
+        tmp_path = f.name
+    try:
+        cfg = load_config(config_path=tmp_path)
+    finally:
+        Path(tmp_path).unlink()
+    assert cfg.monitor.discord_minimum_strength == "weak", (
+        "load_config must propagate `discord_minimum_strength` from JSON "
+        "into MonitorConfig; otherwise the configurable Discord gate is "
+        "non-configurable in practice"
+    )
+
+
+# ── 4) G.P2.6 (Codex P2): dry-run respected for quality alarm exit ──
+
+def test_main_dry_run_skips_nonzero_exit_on_quality_alarm():
+    """Codex P2 review on PR #328 (#3211975581): when the new
+    correlation check trips under --dry-run, main() must still exit 0
+    (matches the regression-check's dry-run gating). Pre-fix it
+    returned 1 unconditionally, breaking dry-run smoke invocations."""
+    pytest.importorskip("scipy.stats")
+    from contextlib import ExitStack
+    from gcp.signal_quality_alarm import main
+
+    # Build flat-rate rows so the correlation alarm trips (ρ=0.0)
+    flat_rows = []
+    for q in (1.0, 2.0, 3.0, 4.0):
+        flat_rows += [{"score": q, "hit": 1 if i < 12 else 0} for i in range(25)]
+    # Trailing/prior rows don't matter — make them stable so the
+    # regression check stays green
+    stable = [{"cls_60m": "CLEAN_HIT"}] * 60 + [{"cls_60m": "NOISE"}] * 140
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("gcp.signal_quality_alarm.get_engine",
+                                  return_value=object()))
+        stack.enter_context(patch("gcp.database.get_engine",
+                                   return_value=object()))
+        stack.enter_context(patch("gcp.signal_quality_alarm.fetch_window_rows",
+                                   side_effect=[stable, stable]))
+        stack.enter_context(patch("gcp.signal_quality_alarm.fetch_score_quality_rows",
+                                   return_value=flat_rows))
+        stack.enter_context(patch("gcp.signal_quality_alarm.post_to_discord"))
+        rc = main(["--dry-run"])
+    assert rc == 0, (
+        "dry-run MUST return 0 even when quality_alarm trips; mirrors "
+        "the regression check's dry-run behaviour"
+    )
