@@ -240,8 +240,11 @@ def test_main_dry_run_skips_nonzero_exit_on_quality_alarm():
     stable = [{"cls_60m": "CLEAN_HIT"}] * 60 + [{"cls_60m": "NOISE"}] * 140
 
     with ExitStack() as stack:
+        # `get_engine` is imported inside main() (lazy import), so it
+        # isn't a module-level attribute of gcp.signal_quality_alarm.
+        # Mirror the existing _mock_db pattern with create=True.
         stack.enter_context(patch("gcp.signal_quality_alarm.get_engine",
-                                  return_value=object()))
+                                  create=True, return_value=object()))
         stack.enter_context(patch("gcp.database.get_engine",
                                    return_value=object()))
         stack.enter_context(patch("gcp.signal_quality_alarm.fetch_window_rows",
