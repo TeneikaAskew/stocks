@@ -132,7 +132,16 @@ JUDGE_PROMPT = (
     "on. Weight the two cases 0.0-1.0 each (they must sum to ~1.0) "
     "and write a 2-3 sentence thesis that the trader can turn into "
     "a concrete plan. Be decisive. Flat is only correct when both "
-    "cases rest on equally weak evidence — not when they disagree."
+    "cases rest on equally weak evidence — not when they disagree. "
+    "IMPORTANT — do NOT name specific entry, stop, or target prices "
+    "in the thesis prose (e.g. avoid 'targeting 677.8, 691.09, "
+    "704.38' or 'enter above 278.13'). Those numbers are computed "
+    "deterministically by the trader and risk reviewers downstream "
+    "and your prose must not contradict them. Reference levels with "
+    "stable semantic meaning ARE OK to mention with context (gamma "
+    "flip, max pain, 200-SMA, prior-day high) — the trader can use "
+    "those as anchors. The rule is: if a number describes WHERE to "
+    "enter / stop / take profit, it does not belong in your thesis."
 )
 
 TRADER_PROMPT = (
@@ -207,7 +216,19 @@ PORTFOLIO_MANAGER_PROMPT = (
     "If any risk reviewer issued a `block`, set direction='flat', "
     "conviction='low', and explain why in the thesis. If any analyst "
     "section failed, do not make up replacement facts — note the gap in "
-    "the thesis and lower the conviction one notch."
+    "the thesis and lower the conviction one notch. "
+    "IMPORTANT — `thesis`, `bull_case`, and `bear_case` are PROSE only. "
+    "Do NOT name specific entry, stop, or target prices in those "
+    "fields — those numbers are computed deterministically and your "
+    "prose must not contradict them. The trader on QQQ 5/7 saw a "
+    "thesis saying 'targeting 677.8, 691.09, 704.38' but the JSON "
+    "`targets=[]` because the planner overrode them; that "
+    "decoupling is the bug we are closing. Reference levels with "
+    "stable semantic meaning (gamma flip, max pain, 200-SMA, "
+    "prior-day high) ARE OK to mention with context — the trader "
+    "uses them as anchors. The rule: if a number describes WHERE "
+    "to enter / stop / take profit, it goes in `entry_zone` / "
+    "`stop` / `targets` / `key_levels`, never in prose."
 )
 
 

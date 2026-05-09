@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import date as date_type, datetime, timezone
 from typing import Any, Callable, Optional, Type
@@ -579,12 +580,131 @@ async def run_insight_pipeline(
         run_latency_ms=int((time.monotonic() - start) * 1000),
         per_role_cost={k: round(v, 6) for k, v in tracker.per_role_cost.items()},
     )
+
+    # Audit 2026-05-08 G.P1.9 safety-net: warn (don't block) if the LLM
+    # named price levels in `thesis` that don't appear in the structured
+    # fields. The prompt already forbids this, but LLM compliance varies;
+    # the warning surfaces non-compliance so we can measure how often it
+    # happens after deploy.
+    _validate_thesis_consistency(
+        report.thesis,
+        ticker=report.ticker,
+        entry_zone=report.entry_zone,
+        stop=report.stop,
+        targets=report.targets,
+        key_levels=report.key_levels,
+        invalidation=report.invalidation,
+    )
     return report
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+# Match standalone numerals with at least one decimal place (so we don't
+# false-positive on "200 SMA" or "RSI 70" which are reference numbers,
+# not prices), AND dollar-prefixed prices ("$278.13"). Captures the
+# numeric portion only so we can compare against structured fields.
+#
+# Examples that match:
+#   "above 278.13"       → 278.13
+#   "$691.09"            → 691.09
+#   "targeting 704.38"   → 704.38
+#
+# Examples that don't:
+#   "200 SMA"            (no decimal)
+#   "RSI 70"             (no decimal)
+#   "+0.20%"             (percentage)
+_PRICE_PATTERN = re.compile(r"\$?(\d{2,5}\.\d{1,2})\b")
+
+
+def _validate_thesis_consistency(
+    thesis: str,
+    *,
+    ticker: str,
+    entry_zone,
+    stop: float,
+    targets: list[float],
+    key_levels: dict,
+    invalidation: str,
+) -> list[float]:
+    """Scan `thesis` for price-like numerals and warn on any that don't
+    match a structured field value within tolerance.
+
+    Audit 2026-05-08 G.P1.9: LLM thesis text named target levels in
+    prose that didn't appear in JSON `targets[]` (e.g. QQQ 5/7 thesis
+    said 'targeting 677.8, 691.09 and 704.38' but `targets=[]`
+    because the deterministic planner overrode them). PR-C closes
+    that decoupling on the prompt side; this validator is the
+    safety-net that catches LLM non-compliance after the fact.
+
+    Returns the list of orphan numbers found (mainly for testing —
+    the function logs a warning for each but never raises, so the
+    pipeline keeps shipping reports).
+
+    Tolerance: 0.5 % absolute distance. Allows for LLM-introduced
+    rounding ("around 278.13" matching key_level 278.135) without
+    accepting genuinely different numbers (677.8 vs 738.13 is 8 %
+    apart — clearly orphan).
+    """
+    if not thesis:
+        return []
+
+    matched_numbers: list[float] = []
+    for m in _PRICE_PATTERN.finditer(thesis):
+        try:
+            matched_numbers.append(float(m.group(1)))
+        except (TypeError, ValueError):
+            continue
+    if not matched_numbers:
+        return []
+
+    structured: list[float] = []
+    if entry_zone is not None:
+        structured.extend([float(entry_zone.low), float(entry_zone.high)])
+    if stop is not None:
+        try:
+            structured.append(float(stop))
+        except (TypeError, ValueError):
+            pass
+    if targets:
+        structured.extend(float(t) for t in targets if t is not None)
+    if key_levels:
+        structured.extend(
+            float(v) for v in key_levels.values()
+            if isinstance(v, (int, float))
+        )
+    # Also pull any numerals from the invalidation prose — those are
+    # legitimately referenced in the thesis (e.g. "thesis kills below
+    # 712.29" matches invalidation "Price closes below 712.29").
+    if invalidation:
+        for m in _PRICE_PATTERN.finditer(invalidation):
+            try:
+                structured.append(float(m.group(1)))
+            except (TypeError, ValueError):
+                continue
+
+    orphans: list[float] = []
+    for num in matched_numbers:
+        # Within 0.5 % of any structured value → matched
+        matched = any(
+            abs(num - s) / max(abs(s), 1.0) <= 0.005
+            for s in structured
+        )
+        if not matched:
+            orphans.append(num)
+
+    if orphans:
+        logger.warning(
+            "thesis_validator ticker=%s orphan_count=%d orphans=%s "
+            "structured=%s thesis=%r",
+            ticker, len(orphans), orphans,
+            sorted(set(round(s, 4) for s in structured))[:10],
+            thesis[:240],
+        )
+    return orphans
 
 
 def _analyst_section_key(section: str) -> str:

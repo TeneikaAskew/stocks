@@ -788,3 +788,131 @@ def test_pipeline_filters_supporting_signals_by_direction(
     # PM mock returns long; the only stubbed alert is direction=CALL.
     assert report.direction == "long"
     assert all(s.direction == "CALL" for s in report.supporting_signals)
+
+
+# ─── Audit 2026-05-08 G.P1.9 — thesis-vs-targets consistency validator ───
+
+
+def test_validate_thesis_flags_orphan_target_levels():
+    """The QQQ 5/7 reproduction: thesis names targets 677.8/691.09/704.38
+    but `targets=[]`. Validator should return all three as orphans."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    thesis = (
+        "The bull case outweighs the bear case, supported by the "
+        "prevailing uptrend and positive gamma regime. A long position "
+        "is warranted, targeting 677.8, 691.09 and 704.38, while being "
+        "mindful of the 618.15 gamma flip level."
+    )
+    orphans = _validate_thesis_consistency(
+        thesis,
+        ticker="QQQ",
+        entry_zone=EntryZone(low=500.0, high=501.5),
+        stop=497.5,
+        targets=[],  # planner overrode to empty
+        key_levels={"gamma_flip": 618.15},  # only gamma flip is structured
+        invalidation="Close below 651.22",  # 651.22 NOT in thesis
+    )
+    # 677.8, 691.09, 704.38 should all be flagged. 618.15 should match
+    # the structured key_level. 651.22 from invalidation isn't in thesis
+    # so doesn't count as orphan.
+    assert 677.8 in orphans
+    assert 691.09 in orphans
+    assert 704.38 in orphans
+    assert 618.15 not in orphans  # structured match
+
+
+def test_validate_thesis_clean_when_levels_match_structured():
+    """Happy path — thesis numbers all map to structured fields."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    thesis = (
+        "Strong setup. Enter on a break above 100.50 with stop at "
+        "98.00 and first target at 102.00. Gamma flip at 99.50 "
+        "anchors the support."
+    )
+    orphans = _validate_thesis_consistency(
+        thesis,
+        ticker="X",
+        entry_zone=EntryZone(low=100.50, high=100.75),
+        stop=98.00,
+        targets=[102.00, 104.00],
+        key_levels={"gamma_flip": 99.50},
+        invalidation="Below 98.00",
+    )
+    assert orphans == []
+
+
+def test_validate_thesis_tolerates_minor_rounding():
+    """Audit-realistic: thesis says 'around 278.13' and the key_level
+    is 278.135 (LLM rounded). 0.5% tolerance should match."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    thesis = "Trigger above 278.13 unlocks PWH continuation."
+    orphans = _validate_thesis_consistency(
+        thesis,
+        ticker="IWM",
+        entry_zone=EntryZone(low=270.0, high=271.0),
+        stop=265.0,
+        targets=[280.0],
+        key_levels={"PWH": 278.135},
+        invalidation="Below 265",
+    )
+    assert orphans == []
+
+
+def test_validate_thesis_skips_non_price_numerics():
+    """Numbers like '200 SMA' or 'RSI 70' aren't prices — they have no
+    decimal so the regex doesn't match. Validator should not flag them."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    thesis = (
+        "Setup is bullish above the 200 SMA with RSI 70 holding strong "
+        "and ATR(14) at expanded levels."
+    )
+    orphans = _validate_thesis_consistency(
+        thesis,
+        ticker="X",
+        entry_zone=EntryZone(low=100.0, high=101.0),
+        stop=98.0,
+        targets=[102.0],
+        key_levels={},
+        invalidation="X",
+    )
+    # 200 (no decimal), 70 (no decimal), 14 (no decimal) — none match the regex
+    assert orphans == []
+
+
+def test_validate_thesis_handles_dollar_prefix():
+    """Thesis with '$278.13' format should be parsed the same way."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    thesis = "Enter above $278.13 targeting $300.00."
+    orphans = _validate_thesis_consistency(
+        thesis,
+        ticker="IWM",
+        entry_zone=EntryZone(low=278.13, high=278.50),
+        stop=275.0,
+        targets=[280.0],  # 300.00 NOT in targets
+        key_levels={},
+        invalidation="Below 275",
+    )
+    assert 300.00 in orphans
+    assert 278.13 not in orphans  # entry_zone match
+
+
+def test_validate_thesis_empty_returns_empty():
+    """No thesis → no orphans. Defensive."""
+    from lib.agents.orchestrator import _validate_thesis_consistency
+    from lib.agents.schema import EntryZone
+
+    assert _validate_thesis_consistency(
+        "", ticker="X",
+        entry_zone=EntryZone(low=1.0, high=2.0),
+        stop=0.5, targets=[3.0], key_levels={}, invalidation="x",
+    ) == []
