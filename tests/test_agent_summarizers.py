@@ -265,6 +265,35 @@ def test_backtest_metrics_unavailable_empty(patch_query):
     assert out["available"] is False
 
 
+def test_backtest_metrics_walks_back_past_placeholder_today(patch_query):
+    """Audit 2026-05-08 G.P2.13: when the morning insight cron fires,
+    the daily fetcher may have written a pre-RTH-close placeholder row
+    for today with NaN volume. Old behavior: backtest fails with
+    'today's row has missing indicator features'. New behavior: walk
+    back to the most recent COMPLETE bar so we use yesterday's pattern
+    rather than failing the section."""
+    df = _synth_daily_bars()
+    # Replace the last row with a placeholder (NaN close + NaN volume).
+    # This is what the morning fetcher sometimes writes before RTH closes.
+    df.iloc[-1, df.columns.get_loc("close")] = None
+    df.iloc[-1, df.columns.get_loc("volume")] = None
+    patch_query("market_data_daily", df)
+    out = summarizers.summarize_backtest_metrics("SPY", cross_ticker=False)
+    assert out["available"] is True, out.get("reason")
+    assert out["pattern_is_proxy"] is True  # walked back to yesterday
+    # The pattern date is now D-1 (the last complete bar)
+    assert out["pattern_today"]["date"] != str(df.iloc[-1]["date"])
+
+
+def test_backtest_metrics_no_proxy_when_today_complete(patch_query):
+    """Defensive: when the latest row is complete, pattern_today comes
+    from it and pattern_is_proxy is False."""
+    patch_query("market_data_daily", _synth_daily_bars())
+    out = summarizers.summarize_backtest_metrics("SPY", cross_ticker=False)
+    assert out["available"] is True
+    assert out["pattern_is_proxy"] is False
+
+
 # ---------------------------------------------------------------------------
 # summarize_catalysts
 # ---------------------------------------------------------------------------
@@ -373,6 +402,15 @@ def test_build_context_bundle_catches_exceptions(monkeypatch):
         "market", "strat", "options", "gamma", "signals", "backtest", "catalysts"
     }
     assert bundle["market"]["available"] is False
+    # Audit 2026-05-08 G.P2.13: per-section failure reasons must
+    # be captured in the bundle so the orchestrator can persist them
+    # on the report (no scraping Cloud Logs).
+    assert "failed_section_reasons" in bundle
+    reasons = bundle["failed_section_reasons"]
+    assert "market" in reasons
+    assert "DB down" in reasons["market"]
+    # Exception-caught reasons get the `exception:` prefix
+    assert reasons["market"].startswith("exception: RuntimeError")
 
 
 # ---------------------------------------------------------------------------
@@ -468,13 +506,20 @@ def test_news_sentiment_classifies_bullish_bearish_neutral(patch_query):
     assert res["article_count"] == 7
 
 
-def test_news_sentiment_unavailable_when_no_rows(patch_query):
-    """Empty DataFrame → unavailable + reason; downstream tier knows
-    to skip the sentiment analyst rather than feed it junk."""
+def test_news_sentiment_returns_empty_payload_when_no_rows(patch_query):
+    """Audit 2026-05-08 G.P2.13: empty news → available + zero-counts
+    payload (NOT unavailable). IWM had only 3 articles in 30 days during
+    May 2026 — failing the whole section every day for sparse-coverage
+    tickers degrades downstream debate. Better to surface 'no recent
+    news' to the analyst tier."""
     patch_query("FROM news_sentiment", pd.DataFrame())
     res = summarizers.summarize_news_sentiment("SPY")
-    assert res["available"] is False
-    assert "no news_sentiment" in res["reason"]
+    assert res["available"] is True
+    assert res["article_count"] == 0
+    assert res["bullish_count"] == 0
+    assert res["bearish_count"] == 0
+    assert res["headlines"] == []
+    assert "sparse-coverage" in res["note"]
 
 
 def test_news_sentiment_returns_top5_by_relevance(patch_query):
