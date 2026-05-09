@@ -809,13 +809,20 @@ def _verify_post_fetch_rows(fetch_date: str, tickers: list[str],
         return  # local/dev run; nothing to verify
     if _query_fn is None:
         from gcp.database import query_to_dataframe as _query_fn  # type: ignore[no-redef]
+    # `ticker = ANY(:tickers)` not `ticker IN :tk`. SQLAlchemy `text()`
+    # doesn't auto-expand a tuple bind param to an `IN (...)` list when
+    # the underlying driver is pg8000 — Postgres rejects `IN $1` and
+    # query_to_dataframe swallows the error to an empty DataFrame, which
+    # would force exit 5 on every weekday. The repo's calibrate /
+    # reconciler scripts use the same `= ANY(:tickers)` pattern with a
+    # native Python list.
     sql = """
         SELECT COUNT(*) AS n FROM market_data_daily
-        WHERE ticker IN :tk
+        WHERE ticker = ANY(:tickers)
           AND date = :d
           AND close IS NOT NULL
     """
-    df = _query_fn(sql, {'tk': tuple(key_tickers), 'd': fetch_date})
+    df = _query_fn(sql, {'tickers': list(key_tickers), 'd': fetch_date})
     n = int(df.iloc[0]['n']) if not df.empty else 0
     if n == 0:
         log.error(
