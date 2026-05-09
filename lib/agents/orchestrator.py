@@ -51,7 +51,7 @@ import logging
 import re
 import time
 from datetime import date as date_type, datetime, timezone
-from typing import Any, Callable, Optional, Type
+from typing import Any, Callable, Literal, Optional, Type
 
 from pydantic import BaseModel
 
@@ -525,6 +525,38 @@ async def run_insight_pipeline(
     blocked = any(f.severity == "block" for f in all_flags)
     direction = "flat" if blocked else pm.direction
 
+    # Deterministic conviction calibration (#349). Replaces the LLM's
+    # `pm.conviction` with a math-from-inputs computation. Audit
+    # 2026-05-08 G.P3.1's prompt-only fix didn't take — 21/21 reports
+    # still showed 'medium' post-PR-A. The data needed to compute
+    # conviction is already deterministic at this point in the
+    # pipeline (analyst agreement count, FTFC, risk flags,
+    # confidence_score) so there's no analytical reason to keep
+    # asking the LLM to do this 4-input threshold check.
+    analyst_agreement = _count_analyst_agreement(
+        analyst_reports, direction
+    )
+    ftfc_score = float((bundle.get("strat") or {}).get("ftfc_score") or 0.0)
+    risk_severities = [f.severity for f in all_flags]
+    conviction = _calibrate_conviction(
+        direction=direction,
+        confidence_score=float(pm.confidence_score),
+        analyst_agreement_count=analyst_agreement,
+        ftfc_score=ftfc_score,
+        risk_severities=risk_severities,
+    )
+    if conviction != pm.conviction:
+        logger.info(
+            "conviction_calibrated ticker=%s direction=%s llm=%s "
+            "deterministic=%s analyst_agreement=%d ftfc=%.2f "
+            "warns=%d blocks=%d confidence=%.2f",
+            ticker, direction, pm.conviction, conviction,
+            analyst_agreement, ftfc_score,
+            sum(1 for s in risk_severities if s == "warn"),
+            sum(1 for s in risk_severities if s == "block"),
+            float(pm.confidence_score),
+        )
+
     # Filter supporting_signals by trade direction so the report doesn't
     # cite contradictory alerts (e.g. PUT signals under a long thesis).
     # Audit 2026-05-08 G.P2.14: QQQ 5/7 long report cited 5 PUT signals.
@@ -540,7 +572,7 @@ async def run_insight_pipeline(
     # reproducible across runs.
     from .trade_planner import compute_persona_plans, context_from_bundle
     try:
-        plan_ctx = context_from_bundle(bundle, direction, pm.conviction)
+        plan_ctx = context_from_bundle(bundle, direction, conviction)
         persona_plans = compute_persona_plans(plan_ctx)
     except Exception as exc:
         logger.warning("deterministic plan compute failed: %s", exc)
@@ -586,7 +618,7 @@ async def run_insight_pipeline(
         ticker=ticker.upper(),
         as_of=datetime.now(timezone.utc) if as_of is None else _as_datetime(as_of),
         direction=direction,
-        conviction=pm.conviction,
+        conviction=conviction,  # deterministic calibration (#349)
         thesis=pm.thesis,
         regime=regime,
         entry_zone=headline_entry_zone,
@@ -773,6 +805,88 @@ def _build_embedding_query_text(ticker: str, bundle: dict) -> str:
     elif above is False:
         parts.append("below 200-SMA")
     return " ".join(parts)
+
+
+def _count_analyst_agreement(
+    analyst_reports: dict, direction: str,
+) -> int:
+    """Count how many of the 6 analyst sections produced a `bias` that
+    matches the report `direction`. Used by `_calibrate_conviction`.
+
+    Mapping: long → bullish, short → bearish, flat → neutral. None or
+    failed analysts (value is None in the dict) don't count.
+    """
+    target_bias = {
+        "long": "bullish",
+        "short": "bearish",
+        "flat": "neutral",
+    }.get(direction)
+    if target_bias is None:
+        return 0
+    n = 0
+    for analyst in analyst_reports.values():
+        if analyst is None:
+            continue
+        if getattr(analyst, "bias", None) == target_bias:
+            n += 1
+    return n
+
+
+def _calibrate_conviction(
+    *,
+    direction: str,
+    confidence_score: float,
+    analyst_agreement_count: int,
+    ftfc_score: float,
+    risk_severities: list[str],
+) -> Literal["low", "medium", "high"]:
+    """Deterministic conviction calibration. Replaces the LLM's
+    pm.conviction with a math-from-inputs threshold check.
+
+    Audit 2026-05-08 G.P3.1 + #349: prompt-only intervention failed
+    (21/21 reports stuck on 'medium' post-PR-A). Conviction is a
+    4-input threshold check; the LLM adds no judgment value here, so
+    derive it deterministically.
+
+    Decision tree:
+      * direction == 'flat'                          → 'low'
+      * any 'block' in risk_severities               → 'low'
+      * ≥4 of 6 analyst sections agree              ┐
+        AND |FTFC| ≥ 0.5                            │
+        AND zero 'warn' flags                       ├ → 'high'
+        AND confidence_score ≥ 0.7                  ┘
+      * 2-3 of 6 analyst sections agree             ┐
+        AND ≤1 'warn' flag                          ├ → 'medium'
+        AND 0.4 ≤ confidence_score ≤ 0.7            ┘
+      * everything else                              → 'low'
+    """
+    if direction == "flat":
+        return "low"
+    if any(s == "block" for s in risk_severities):
+        return "low"
+    warn_count = sum(1 for s in risk_severities if s == "warn")
+    # FTFC is signed (-1.0 bearish to +1.0 bullish). For high conviction,
+    # the sign must MATCH the trade direction — `abs(ftfc_score) >= 0.5`
+    # would let a contradicting FTFC count as agreement (e.g. long with
+    # ftfc_score=-0.8). Codex review on PR #351 caught this.
+    ftfc_aligned = (
+        (direction == "long" and ftfc_score >= 0.5)
+        or (direction == "short" and ftfc_score <= -0.5)
+    )
+    if (
+        analyst_agreement_count >= 4
+        and ftfc_aligned
+        and warn_count == 0
+        and confidence_score >= 0.7
+    ):
+        return "high"
+    if (
+        analyst_agreement_count >= 2
+        and warn_count <= 1
+        and 0.4 <= confidence_score <= 0.7
+    ):
+        return "medium"
+    return "low"
 
 
 def _analyst_section_key(section: str) -> str:
