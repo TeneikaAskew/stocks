@@ -55,7 +55,9 @@ logger = logging.getLogger("historical-report")
 def _upsert_report(report: InsightReport) -> str:
     """Store the report. Returns the row id. Copy of the helper in
     platform.api.routers.insights so this script has no FastAPI
-    dependency."""
+    dependency. Keep `per_role_cost` in lockstep with that copy and
+    `gcp/insight_pipeline_job.py:_upsert_report` so dashboards reading
+    the column see the same data regardless of which writer ran."""
     conn = connect()
     row_id = str(uuid4())
     try:
@@ -63,12 +65,14 @@ def _upsert_report(report: InsightReport) -> str:
         cur.execute(
             """
             INSERT INTO insight_reports
-                (id, ticker, as_of, report, model_versions, cost_usd, latency_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+                (id, ticker, as_of, report, model_versions, cost_usd,
+                 per_role_cost, latency_ms)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
             ON CONFLICT (ticker, as_of) DO UPDATE
             SET report = EXCLUDED.report,
                 model_versions = EXCLUDED.model_versions,
                 cost_usd = EXCLUDED.cost_usd,
+                per_role_cost = EXCLUDED.per_role_cost,
                 latency_ms = EXCLUDED.latency_ms
             RETURNING id::text
             """,
@@ -79,6 +83,7 @@ def _upsert_report(report: InsightReport) -> str:
                 report.model_dump_json(),
                 json.dumps(report.model_versions),
                 report.run_cost_usd,
+                json.dumps(report.per_role_cost),
                 report.run_latency_ms,
             ),
         )
