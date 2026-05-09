@@ -465,29 +465,45 @@ Then trigger today's brief and confirm it shows healthy.
 This section is updated as implementation progresses. PR links are
 appended once each lands.
 
-- [x] Step 0: file cross-track blocker issues — issue [#300](https://github.com/TeneikaAskew/stocks/issues/300) (Track A G.P0.1) + comment on [#281](https://github.com/TeneikaAskew/stocks/issues/281#issuecomment-4410095931) (apply-schema-migrations)
+- [x] Step 0: file cross-track blocker issues — closed [#300](https://github.com/TeneikaAskew/stocks/issues/300) as duplicate of [#295](https://github.com/TeneikaAskew/stocks/issues/295) (Track A G.P0.1) + comment on [#281](https://github.com/TeneikaAskew/stocks/issues/281#issuecomment-4410095931) (apply-schema-migrations). Meta tracking issue [#314](https://github.com/TeneikaAskew/stocks/issues/314) filed.
 - [x] Step 1: commit this plan to branch (commit 4da7441)
-- [x] Step 2.1: W1 G.P1.5 PR — [#306](https://github.com/TeneikaAskew/stocks/pull/306) (mergeable: clean)
-- [x] Step 2.2: W2 G.P1.7 PR — [#307](https://github.com/TeneikaAskew/stocks/pull/307) (mergeable: clean; addressed Codex review on first commit, fix landed in 439288a)
-- [x] Step 2.3: W3 G.P1.6 investigation PR — [#309](https://github.com/TeneikaAskew/stocks/pull/309) (orthogonality docstring + 4 regression tests; closed as not-a-bug)
-- [x] Step 2.4: W4 G.P1.10 investigation PR — [#310](https://github.com/TeneikaAskew/stocks/pull/310) (deploy-timing artifact; commit 2adb5fe landed 5/7 08:52 ET; no production change)
+- [x] Step 2.1: W1 G.P1.5 — PR [#306](https://github.com/TeneikaAskew/stocks/pull/306) **merged** (3ce818d on main); auto-closed [#298](https://github.com/TeneikaAskew/stocks/issues/298)
+- [x] Step 2.2: W2 G.P1.7 — PR [#307](https://github.com/TeneikaAskew/stocks/pull/307) **merged** (6af89c6 on main); Codex review addressed in same PR (439288a)
+- [x] Step 2.3: W3 G.P1.6 investigation — PR [#309](https://github.com/TeneikaAskew/stocks/pull/309) **merged** (42f6821 on main); orthogonality docstring + 4 regression tests; closed as not-a-bug
+- [x] Step 2.4: W4 G.P1.10 investigation — PR [#310](https://github.com/TeneikaAskew/stocks/pull/310) **merged** (01e6373 on main); auto-closed [#299](https://github.com/TeneikaAskew/stocks/issues/299); deploy-timing artifact, no production change
 - [ ] **⏸ WAIT** Step 3 gate: [#281](https://github.com/TeneikaAskew/stocks/issues/281) apply-schema-migrations resolution. 48 h fallback (~2026-05-10 21:46 ET): apply schema via `db-query.yml` with `commit=true` if #281 still unfixed.
 - [ ] Step 3.1: W5 schema PR (gated on Step 3 gate)
 - [ ] Step 4.1: W6 stale-warn + data_as_of PR (gated on Step 3.1)
 - [ ] Step 4.2: W7 LLM commentary PR (gated on Step 3.1)
-- [ ] **⏸ WAIT** Step 5 gate: Track A G.P0.1 ([#300](https://github.com/TeneikaAskew/stocks/issues/300)) — needed for end-to-end verification of W6's "healthy data" rendering path
+- [ ] **⏸ WAIT** Step 5 gate: Track A G.P0.1 ([#295](https://github.com/TeneikaAskew/stocks/issues/295)) — needed for end-to-end verification of W6's "healthy data" rendering path
 - [ ] Step 6.1: W8 embed quality replay PR (gated on Step 5)
 - [ ] Step 7: close audit followup issues; mark Track B doc resolved
 
 ### Round 1 outcome (2026-05-08)
 
-All four unblocked items landed as PRs in priority order. Two PRs are
-fixes (W1 + W2), two are investigations (W3 + W4). One Codex review
-on W2 caught a logical hole in the spot-check; addressed in the same
-PR with a redesigned regime-only suppression and an explicit
+**All four unblocked items merged to main.** Two PRs are fixes (W1
++ W2), two are investigations (W3 + W4). One Codex review on W2
+caught a logical hole in the spot-check; addressed in the same PR
+with a redesigned regime-only suppression and an explicit
 wick-and-fade regression test.
 
-Round 2 (W5 → W6 → W7 → W8) resumes once either:
+| W# | PR | Merge SHA | Auto-closed |
+|---|---|---|---|
+| W1 | #306 | 3ce818d | #298 |
+| W2 | #307 | 6af89c6 | (no tracking issue) |
+| W3 | #309 | 42f6821 | (closed as not-a-bug; no tracking issue) |
+| W4 | #310 | 01e6373 | #299 |
+
+CI on every PR ran the full `pytest tests/ -x -q` suite (no
+exclusions); all green on every push. Downstream contracts
+verified: W1's gate preserves the `signal_status` string format
+that `lib/strategies/brief_bias.py:get_premarket_bias` parses, and
+in fact obsoletes the parser's `CONFLICTED` branch (now unreachable).
+
+### Round 2 trigger conditions
+
+Resumes (W5 → W6 → W7 → W8) once either:
 - #281 apply-schema-migrations is fixed by Track A, OR
-- 48 h pass and we apply the schema migration via the `db-query.yml`
-  workflow as a one-shot fallback (per plan §"Apply path" of W5).
+- 48 h pass (~2026-05-10 21:46 ET) and we apply the schema
+  migration via the `db-query.yml` workflow as a one-shot fallback
+  (per plan §"Apply path" of W5).
