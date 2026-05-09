@@ -289,28 +289,38 @@ fixable" note, or a follow-up issue tracking it.
 
 ## Plan execution checklist (mark off as items complete)
 
+> **Status update 2026-05-09:** Track C closeout complete. All Round 1
+> and Round 2 PRs landed. Recurring work scheduled (cron, not manual).
+> Final summary in [`track-C-status.md`](./track-C-status.md).
+
 ### Pre-flight (before R1)
-- [ ] **Copy this plan** from `/root/.claude/plans/...` to `docs/audit/2026-05-08/track-C-implementation-plan.md`, commit, push to feature branch
-- [ ] **File cross-track issues** for the 5 dependencies above — verify no existing issue first (`mcp__github__list_issues`); link to track-G.md §3
-- [ ] Skim Track A/B/D's own track docs (`track-A.md`, `track-B.md`, `track-D.md`) once before starting in case they already started any of my cross-track items
+- [x] **Copy this plan** from `/root/.claude/plans/...` to `docs/audit/2026-05-08/track-C-implementation-plan.md`, commit, push to feature branch
+- [x] **File cross-track issues** for the 5 dependencies above — verify no existing issue first; link to track-G.md §3
+- [x] Skim Track A/B/D's own track docs (`track-A.md`, `track-B.md`, `track-D.md`) once before starting in case they already started any of my cross-track items
 
 ### Round 1 (no blockers)
-- [ ] **PR-A** — Batched mechanical fixes (G.P3.1, G.P2.14, G.P3.2, G.P3.3) → `claude/track-c-r1-mechanical-fixes`
-- [ ] **PR-B** — orb_only investigation (G.P1.4) → `claude/track-c-r1-orb-only`
-- [ ] **PR-C** — Thesis-vs-targets decoupling (G.P1.9) → `claude/track-c-r1-thesis-targets`
-- [ ] **PR-D** — failed_sections root cause (G.P2.13) → `claude/track-c-r1-failed-sections`
-- [ ] **PR-E** — Reflection memory wiring (G.P2.12) → `claude/track-c-r1-reflection-memory`
-- [ ] **PR-F** — Observability touch-ups (G.P2.4, G.P2.24) → `claude/track-c-r1-observability`
+- [x] **PR-A** — Batched mechanical fixes (G.P3.1 conviction, G.P2.14 direction filter, G.P3.2 per-role cost, G.P3.3 history-table verify) → **PR #305** (per-role cost + conviction calibration + direction filter); G.P3.1 follow-up in **PR #351** when prompt-only fix didn't take; G.P3.2 reinforcement in **PR #338** (`_upsert_report` persist)
+- [x] **PR-B** — orb_only investigation (G.P1.4) → **PR #307** (suppress cleared-side trigger when regime is `orb_only`) + **PR #334** (blue-sky synth trigger when uptrend at ATHs); follow-up tuple-unpack fix in **PR #345**
+- [x] **PR-C** — Thesis-vs-targets decoupling (G.P1.9) → **PR #341**
+- [x] **PR-D** — failed_sections root cause (G.P2.13) → **PR #343** (graceful failed_sections + diagnostic reasons)
+- [x] **PR-E** — Reflection memory wiring (G.P2.12) → **PR #344** (auto-embed bundle, populates `query_embedding`)
+- [x] **PR-F** — Observability touch-ups (G.P2.4 model_routing dormancy, G.P2.24 db-query queue) → **PR #346**
 
-### Round 2 (gated)
-- [ ] **PR-G** — Per-factor walk-forward audit (G.P2.1+2+3) — *resume when G.P0.6 + G.P0.11 + 2 weeks data*
-- [ ] **PR-H** — Brief↔insights divergence UI (G.P1.8) — *resume when G.P1.5 merges*
-- [ ] **PR-I** — `brief_bias` verification (G.P1.10) — *resume when G.P0.1 + Track D's G.P1.10 merge*
+### Round 2 (gated when planned, all unblocked + landed)
+- [x] **PR-G** — Per-factor walk-forward audit framework (G.P2.1+2+3) → **PR #355**; SQL schema gap fix in **PR #363** (live-DB validation surfaced `LEFT JOIN trades t ON t.alert_id` referenced a non-existent column); now scheduled weekly via **PR #366**
+- [x] **PR-H** — Brief↔insights divergence UI (G.P1.8) → **PR #353** (`BriefVsInsightsCard` on `InsightsPage`)
+- [x] **PR-I** — `brief_bias` verification (G.P1.10 verify side) → **PR #357**; live-DB audit on 2026-05-09 confirmed 100% coverage on 2026-05-07 + 2026-05-08, zero post-fix-land NULL holes; now scheduled weekly via **PR #366**
+
+### Round 2 — bonus PRs (gaps surfaced during R2 work)
+- [x] **PR-J** — Deterministic conviction calibration when prompt-only fix from PR #305 didn't move the distribution off `medium` → **PR #351** (closes #349)
+- [x] **PR-K** — Cron payload inject `INSIGHT_TRIGGERED_BY=cloud-scheduler:<name>` (gap surfaced during validation: `run_kind` always logged as `manual_replay`/`backfill`, never `scheduled`) → **PR #352** (closes #313)
+- [x] **PR-L** — `_derive_key_levels` gamma extension (closes #359 — gap in key-level surfacing for gamma walls/flips) → **PR #362**
 
 ### Closeout
-- [ ] Update `docs/audit/2026-05-08/track-C-implementation-plan.md` (this plan, post-copy) with each PR# next to its checkbox
-- [ ] Open a final review PR rolling all R1+R2 work into a single `track-C-status.md` summary
-- [ ] Cross-link every closed item back into `track-G.md` (or open a follow-up doc PR if track-G should be amended)
+- [x] Update `docs/audit/2026-05-08/track-C-implementation-plan.md` (this plan, post-copy) with each PR# next to its checkbox — *this commit*
+- [x] Open a final review PR rolling all R1+R2 work into a single `track-C-status.md` summary — *this commit*
+- [x] Cross-link every closed item back into `track-G.md` — *handled via `track-C-status.md` §"Backlog → PR map"; `track-G.md` itself is left as the original audit snapshot for historical reference*
+- [x] Schedule recurring G.P1.10 verification + G.P2.1+2+3 walk-forward analysis as cron, not manual asks — **PR #366** (verify-brief-bias.yml every Sunday + per-factor-walkforward.yml every Saturday)
 
 ---
 
