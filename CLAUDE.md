@@ -152,6 +152,92 @@ For major changes:
    - Security-related modifications
    - Performance optimizations affecting core functionality
 
+### 3.5. Never Wait for the Next Session — Always Backtest
+
+**This rule was added on 2026-05-09 after I repeatedly punted
+verification to "next session" or "wait one trading day" instead of
+replaying historical data immediately.**
+
+The premarket-brief / AI-insights / signal-monitor / EOD-resolver
+pipeline is **fully replayable** against any historical date. Every
+verification I postpone to "the next live run" can be done NOW
+against an arbitrary day with the existing job-override env vars and
+the historical 1-min bars in `market_data_intraday`.
+
+#### The replay recipe (apply to ANY "wait for next session" question)
+
+Pick a historical date `D`. Treat `D` as if it were today:
+
+```bash
+# 1. Premarket brief AS-OF D — uses only data through D-1
+gcloud run jobs execute premarket-brief \
+  --update-env-vars="BRIEF_AS_OF=2026-05-08" --async
+
+# 2. AI insights AS-OF D — uses only data through D-1
+gcloud run jobs execute insight-pipeline \
+  --update-env-vars="^|^INSIGHT_AS_OF=2026-05-08|INSIGHT_TICKERS=SPY,IWM,QQQ" \
+  --args="--update" --async
+
+# 3. Signal monitor — replay the day's intraday bars one-by-one
+#    (use the existing intraday CSVs OR pull market_data_intraday).
+#    Read the new structured logs to see counters / failures.
+gcloud logging read 'resource.type=cloud_run_job
+  AND labels."run.googleapis.com/execution_name"="<exec_id>"' \
+  --project=adept-mountain-474619-d4 --limit=100
+
+# 4. EOD reconciler — process the day's signal_alerts post-close
+gcloud run jobs execute signal-monitor-eod-resolver \
+  --args="--lookback-days=N" --wait
+
+# 5. Verify via SQL — db-query.yml workflow:
+gh workflow run db-query.yml \
+  -f sql="SELECT ... FROM signal_alerts WHERE alert_date='2026-05-08' ..."
+```
+
+#### Forbidden phrases (rewrite the answer)
+
+If you find yourself typing any of these about a verification step,
+**stop and replay instead**:
+
+- "waiting for the next session"
+- "needs next-session confirmation"
+- "1-week clock starts now"
+- "verification window opens YYYY-MM-DD"
+- "will be visible in next live run"
+- "pending live data"
+
+Every one of these is a request you should fulfill RIGHT NOW by
+replaying historical data. The only legitimate "wait" is when:
+
+- The historical data physically doesn't exist yet (e.g. waiting for
+  the 5/12 daily bar to land if today is 5/9). In that case, replay
+  against the most recent available date and explicitly note the
+  data window.
+- The replay would re-run a billable workload that already ran in
+  production and the user hasn't approved the spend.
+
+#### Open question on each issue you'd otherwise close-and-wait
+
+Before filing "verification pending", ask:
+
+1. Can I dispatch the same Cloud Run Job with `*_AS_OF=D-1` to
+   reproduce the failure mode on yesterday's data?
+2. Can I read `market_data_intraday` for date D and replay the
+   strategy against it without touching the live monitor?
+3. Can I dispatch a SQL via `db-query.yml` that would already show
+   me the answer from the existing schema?
+
+If any answer is yes, do that first. Only file "waiting" if all
+three are no.
+
+#### Operator escape hatches (when the replay can't be safely re-run)
+
+If the replay would side-effect on a shared system (e.g. write to
+the `insight_reports` canonical row), use the existing `--update`
+flag, dry-run flag, or output-to-stdout flag for that job. Never
+skip the replay because of a side-effect concern when there's a
+flag designed to sandbox the run.
+
 ### 4. Testing Strategy Pattern
 Follow this rigorous testing approach:
 
