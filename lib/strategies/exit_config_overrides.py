@@ -35,6 +35,25 @@ log = logging.getLogger(__name__)
 
 _STALE_DAYS = 180
 
+# Columns whose latest non-NULL value should be merged across recent
+# rows (rather than only reading from the absolute-latest row). This
+# is the architectural defense against the "new job inserts a fresh
+# row with NULLs in the columns IT didn't touch, silently clobbering
+# values an earlier job calibrated" bug — when blue-sky-offset job
+# refreshes monthly and PR-E7 (target/stop refresher) runs quarterly
+# on different dates, neither should be able to NULL out the other's
+# work just by writing a newer row.
+#
+# `notes` and `calibration_date` come from the absolute-latest row
+# (audit-trail semantics — they describe THE most recent action, not
+# accumulated state). Everything else uses latest-non-NULL-per-column.
+_TIER_A_VALUE_COLUMNS = (
+    "call_target", "put_target",
+    "call_stop", "put_stop",
+    "call_time_stop", "put_time_stop",
+    "disabled_conditions", "blue_sky_atr_offset",
+)
+
 
 def _is_usable_number(v) -> bool:
     """True iff `v` is a non-None, non-NaN finite number.
@@ -67,21 +86,32 @@ def _is_usable_int(v) -> bool:
 
 @lru_cache(maxsize=64)
 def _latest_overrides(ticker: str) -> Optional[dict]:
-    """Fetch the most recent exit_config_overrides row for `ticker`.
+    """Resolve per-column latest non-NULL Tier-A overrides for `ticker`.
+
+    Fetches all `exit_config_overrides` rows for the ticker within the
+    `_STALE_DAYS` window, then merges per-column: each column gets the
+    value from the most recent row where that column is non-NULL (and
+    non-NaN, since pandas materializes SQL NULL as NaN for DOUBLE
+    PRECISION columns).
+
+    This defends against multiple calibration jobs running on different
+    cadences — e.g. blue-sky-offset (monthly) and the future PR-E7
+    target/stop refresher (quarterly) — where each job inserts a row
+    populating only its own columns. Without per-column merging, the
+    newer row's NULLs would silently mask the older row's calibrated
+    values for unrelated columns.
+
+    `notes` and `calibration_date` describe the most recent action, so
+    they always come from the absolute-latest row.
 
     Returns None when:
       * Cloud SQL is not configured
-      * The exit_config_overrides table doesn't exist yet (e.g. PR-E1
-        migration hasn't been applied — defends deploy ordering)
-      * Engine creation fails (no GCP creds, e.g. unit-test environment
-        that mocks `is_cloud_sql_configured` without setting up creds)
-      * No row exists for the ticker
-      * The latest row is older than _STALE_DAYS
+      * `exit_config_overrides` table doesn't exist (deploy-order defense)
+      * Engine creation fails (no GCP creds, unit-test env)
+      * No rows exist for the ticker within the staleness window
 
-    Any failure path falls back to Tier-B (`ExitConfig` defaults), so
-    a missing table or transient DB error degrades gracefully instead
-    of crashing every fire_alert. Cached per-process via lru_cache;
-    force a refresh with `_latest_overrides.cache_clear()`.
+    Cached per-process via lru_cache; force a refresh with
+    `_latest_overrides.cache_clear()`.
     """
     try:
         from gcp.database import get_engine, is_cloud_sql_configured
@@ -102,7 +132,6 @@ def _latest_overrides(ticker: str) -> Optional[dict]:
           FROM exit_config_overrides
          WHERE ticker = :ticker
          ORDER BY calibration_date DESC
-         LIMIT 1
         """
     )
     try:
@@ -120,15 +149,46 @@ def _latest_overrides(ticker: str) -> Optional[dict]:
         log.info("exit_config_overrides: no row for %s — Tier-B fallback", ticker)
         return None
 
-    row = df.iloc[0].to_dict()
-    age_days = (date.today() - row["calibration_date"]).days
-    if age_days > _STALE_DAYS:
+    # Filter out stale rows. With multiple calibration jobs writing on
+    # different cadences, even a fresh row can sit alongside older ones;
+    # we want only rows updated within the last _STALE_DAYS to count.
+    today = date.today()
+    df["_age_days"] = df["calibration_date"].apply(
+        lambda d: (today - d).days
+    )
+    df = df[df["_age_days"] <= _STALE_DAYS]
+    if df.empty:
+        latest_age = (today - df.iloc[0]["calibration_date"]).days if len(df) else None
         log.warning(
-            "exit_config_overrides: stale for %s (%dd old) — Tier-B fallback",
-            ticker, age_days,
+            "exit_config_overrides: all rows stale for %s (latest %s) — Tier-B fallback",
+            ticker, f"{latest_age}d" if latest_age is not None else "n/a",
         )
         return None
-    return row
+
+    # `notes` and `calibration_date` describe the latest action.
+    latest_row = df.iloc[0]
+    merged: dict = {
+        "calibration_date": latest_row["calibration_date"],
+        "notes": latest_row.get("notes"),
+    }
+    # Per-column latest non-NULL across the staleness window. Rows are
+    # already DESC by calibration_date so the first non-NaN we see is
+    # the most recent calibrated value.
+    for col in _TIER_A_VALUE_COLUMNS:
+        if col not in df.columns:
+            merged[col] = None
+            continue
+        series = df[col]
+        # `disabled_conditions` is JSONB — pandas materializes as object
+        # and pd.notna on a list raises ValueError. Guard with isinstance.
+        if col == "disabled_conditions":
+            non_null = [v for v in series if v is not None and v is not pd.NA]
+            merged[col] = non_null[0] if non_null else None
+        else:
+            non_null = series.dropna()
+            merged[col] = non_null.iloc[0] if not non_null.empty else None
+
+    return merged
 
 
 # Single instance of the Tier-B defaults (cheap; ExitConfig is a small
