@@ -53,7 +53,11 @@ def test_call_fires_on_oversold_dip():
 
 
 def test_put_fires_on_overbought_pop():
-    """Consec_Up + RSI in (50,75) + above VWAP + StochRSI overbought = 4 conds → PUT."""
+    """Track A G.P0.12 (audit 2026-05-08): max PUT score is 3 after
+    `above_vwap` dropped from MR PUT scoring. Audit measured the factor
+    as -16.1pp (QQQ) / -11.7pp (IWM) / -9.9pp (SPY) ANTI-correlated
+    with PUT success. This test was 4-condition pre-audit.
+    """
     row = _bar(
         Consecutive_Up=3,
         RSI14=65.0,
@@ -65,7 +69,9 @@ def test_put_fires_on_overbought_pop():
     assert sig.direction == "PUT"
     assert "consecutive_up" in sig.conditions_met
     assert "rsi_overbought_zone" in sig.conditions_met
-    assert "above_vwap" in sig.conditions_met
+    # above_vwap REMOVED — Track A G.P0.12. Tests that asserted it
+    # in the conditions list pre-audit are intentionally inverted now.
+    assert "above_vwap" not in sig.conditions_met
     assert "stoch_rsi_overbought" in sig.conditions_met
 
 
