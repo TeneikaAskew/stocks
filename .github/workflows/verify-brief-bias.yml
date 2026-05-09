@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       since:
-        description: "Alert-date cutoff (YYYY-MM-DD); default 2026-05-12 (first weekday after fix-land)"
+        description: "Alert-date cutoff (YYYY-MM-DD); default 2026-05-07 (first day brief_bias was populated)"
         required: false
         default: ''
 
@@ -86,10 +86,16 @@ jobs:
             fi
           done
 
-          # Default cutoff is 2026-05-12 (first weekday post-fix-land per
-          # docs/audit/2026-05-08/track-C-implementation-plan.md). Manual
-          # workflow_dispatch can override.
-          SINCE_ARG="${SINCE:-2026-05-12}"
+          # Default cutoff is 2026-05-07 — the actual first day brief_bias
+          # was populated, per the live-DB audit on 2026-05-09 that closed
+          # PR #357 (100% coverage on 05-07 and 05-08; 0% prior). Earlier
+          # docs hard-coded 2026-05-12 expecting a later fix-land; that
+          # turned out to be wrong by ~5 days, and a 2026-05-12 cutoff
+          # would have made the first scheduled run on 2026-05-10 open a
+          # false-alarm issue (window starts in the future → exit 2).
+          # Codex review on PR #366 caught this. Manual workflow_dispatch
+          # can still override.
+          SINCE_ARG="${SINCE:-2026-05-07}"
 
           mkdir -p /tmp/verify-brief-bias
           set +e
