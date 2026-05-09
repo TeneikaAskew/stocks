@@ -158,3 +158,44 @@ def test_is_usable_int():
     assert not eco._is_usable_int(float('nan'))
     assert not eco._is_usable_int(0)
     assert not eco._is_usable_int(-5)
+
+
+# ── Resilience: table-missing / DB-error → Tier-B (PR #327 codex review) ──
+
+
+class TestLatestOverridesFallsBackOnDbError:
+    """If the exit_config_overrides table doesn't exist (PR-E1
+    migration not yet applied) or get_engine raises (no GCP creds in
+    unit-test env), `_latest_overrides` must return None instead of
+    crashing — every resolver call falls back to Tier-B and live
+    alerts keep firing with the existing ExitConfig defaults."""
+
+    def test_undefined_table_returns_none(self, monkeypatch):
+        eco._latest_overrides.cache_clear()
+        monkeypatch.setattr('gcp.database.is_cloud_sql_configured',
+                            lambda: True)
+        # pd.read_sql raises (e.g. UndefinedTable when PR-E1 migration not yet applied)
+        import pandas as pd
+
+        def _boom(*a, **kw):
+            raise RuntimeError(
+                'UndefinedTable: relation "exit_config_overrides" does not exist'
+            )
+
+        monkeypatch.setattr(pd, 'read_sql', _boom)
+        # Mock get_engine so it doesn't fail first on creds
+        monkeypatch.setattr('gcp.database.get_engine', lambda: object())
+        assert eco._latest_overrides('QQQ') is None
+        assert eco.get_call_target('QQQ') == DEFAULTS.call_target
+
+    def test_get_engine_credential_error_returns_none(self, monkeypatch):
+        eco._latest_overrides.cache_clear()
+        monkeypatch.setattr('gcp.database.is_cloud_sql_configured',
+                            lambda: True)
+
+        def _no_creds():
+            raise Exception('DefaultCredentialsError: no ADC configured')
+
+        monkeypatch.setattr('gcp.database.get_engine', _no_creds)
+        assert eco._latest_overrides('SPY') is None
+        assert eco.get_put_target('SPY') == DEFAULTS.put_target
