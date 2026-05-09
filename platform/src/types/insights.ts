@@ -80,6 +80,9 @@ export interface InsightReport {
   similar_past_trades: JournalRef[];
   confidence_score: number;
   failed_sections: string[];
+  // Per-section diagnostic reason — only populated for entries in
+  // `failed_sections`. Audit 2026-05-08 G.P2.13.
+  failed_section_reasons?: Record<string, string>;
   model_versions: Record<string, string>;
   run_cost_usd: number;
   run_latency_ms: number;

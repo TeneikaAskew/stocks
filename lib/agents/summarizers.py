@@ -679,10 +679,27 @@ def summarize_backtest_metrics(
         df[f"fwd_{n}d"] = (df["close"].shift(-n) - df["close"]) / df["close"] * 100
 
     # 4. Today's pattern.
-    today = df.iloc[-1]
-    if any(pd.isna(today[c]) for c in
-           ["gap_pct", "vol_ratio", "rsi_14", "close_vs_sma200_pct"]):
-        return _unavailable("today's row has missing indicator features")
+    #
+    # When the morning insight cron fires (8:45 AM ET = 12:45 UTC) the
+    # daily fetcher may have written a pre-RTH-close placeholder for
+    # the current trading day with NaN volume/RSI/etc. — see the
+    # premarket-placeholder pattern that PR #323 (G.P0.3) addressed
+    # for audit_data_freshness. If the literal-latest row has missing
+    # indicators, walk back to the most recent COMPLETE bar so we use
+    # yesterday's-close pattern as "today" rather than failing the
+    # whole section. Audit 2026-05-08 G.P2.13 — backtest was failing
+    # 9/24 reports (37.5 %) on Mon/Wed/Fri runs vs 0 on Tue/Thu, the
+    # exact pattern a placeholder-row hypothesis predicts.
+    needed_cols = ["gap_pct", "vol_ratio", "rsi_14", "close_vs_sma200_pct"]
+    completeness = df[needed_cols].notna().all(axis=1)
+    complete_rows = df.loc[completeness]
+    if complete_rows.empty:
+        return _unavailable(
+            f"no complete daily bars for {ticker} — every row has at "
+            f"least one missing indicator feature"
+        )
+    today = complete_rows.iloc[-1]
+    pattern_is_proxy = today["date"] != df.iloc[-1]["date"]
 
     pattern = {
         "date": str(today["date"]),
@@ -751,6 +768,7 @@ def summarize_backtest_metrics(
         return {
             "available": True,
             "pattern_today": pattern,
+            "pattern_is_proxy": pattern_is_proxy,
             "analog_count": int(len(matched)),
             "tolerance_bands_used": band_used or bands[-1],
             "cross_ticker_used": cross_used,
@@ -810,6 +828,7 @@ def summarize_backtest_metrics(
     return {
         "available": True,
         "pattern_today": pattern,
+        "pattern_is_proxy": pattern_is_proxy,
         "analog_count": int(len(matched)),
         "tolerance_bands_used": band_used,
         "cross_ticker_used": cross_used,
@@ -1141,7 +1160,26 @@ def summarize_news_sentiment(
         }
     df = _query(sql, params)
     if df.empty:
-        return _unavailable(f"no news_sentiment rows for {ticker} in last {lookback_hours}h")
+        # Audit 2026-05-08 G.P2.13: empty news is the COMMON case for
+        # less-traded tickers (IWM had only 3 articles across 30 days
+        # in May 2026). Don't fail the whole section — return an
+        # available-but-empty payload so the analyst can write
+        # "no recent news for $TICKER" rather than the orchestrator
+        # marking the section failed and degrading downstream debate.
+        return {
+            "available": True,
+            "lookback_hours": lookback_hours,
+            "article_count": 0,
+            "bullish_count": 0,
+            "bearish_count": 0,
+            "neutral_count": 0,
+            "avg_sentiment_score": 0.0,
+            "headlines": [],
+            "note": (
+                f"no news_sentiment rows for {ticker} in last "
+                f"{lookback_hours}h — sparse-coverage ticker"
+            ),
+        }
 
     scores = df["sentiment_score"].dropna().astype(float)
     relevances = df["relevance_score"].dropna().astype(float)
@@ -1250,15 +1288,24 @@ def build_context_bundle(
         "sentiment": lambda: summarize_news_sentiment(ticker, as_of),
     }
     failed: list[str] = []
+    failed_reasons: dict[str, str] = {}
     for name, fn in sections.items():
         try:
             result = fn()
             bundle[name] = result
             if not result.get("available"):
                 failed.append(name)
+                # Audit 2026-05-08 G.P2.13: surface the section's own
+                # `reason` so the orchestrator can persist it on the
+                # report rather than burying it in Cloud Logs only.
+                reason = result.get("reason")
+                if isinstance(reason, str) and reason:
+                    failed_reasons[name] = reason
         except Exception as e:
             logger.exception("summarizer %s failed", name)
             bundle[name] = {"available": False, "reason": f"exception: {e}"}
             failed.append(name)
+            failed_reasons[name] = f"exception: {type(e).__name__}: {e}"
     bundle["failed_sections"] = failed
+    bundle["failed_section_reasons"] = failed_reasons
     return bundle
