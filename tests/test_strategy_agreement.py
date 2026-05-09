@@ -65,6 +65,16 @@ def test_agreement_call_call_returns_payload():
     assert payload["strategies"] == ["mean_reversion", "momentum"]   # alphabetical
     assert payload["directions"] == ["CALL", "CALL"]
     assert payload["base_scores"] == [3.0, 4.0]
+    # Track D / G.P3.4: per-leg conditions_met arrays in same order as
+    # `strategies` (alphabetical) so post-mortems can answer 'which
+    # conditions did momentum hit when stacked'.
+    assert payload["conditions_met"] == [
+        ["consecutive_periods", "rsi_zone", "above_vwap"],
+        ["consecutive_periods", "rsi_zone", "above_vwap"],
+    ], (
+        "conditions_met must be a per-leg list-of-lists matching the "
+        "`strategies` order; new in G.P3.4 for stacked-fire post-mortems"
+    )
     assert payload["composite_score"] == 4.0 + AGREEMENT_BONUS
 
 

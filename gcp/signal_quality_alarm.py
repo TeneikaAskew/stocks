@@ -181,6 +181,121 @@ def fetch_window_rows(engine, start: datetime, end: datetime,
     return [{tf_col: r[0]} for r in rows]
 
 
+def fetch_score_quality_rows(engine, start: datetime, end: datetime,
+                             tf_col: str) -> list[dict]:
+    """Track D / G.P2.6: Return rows joining signal_alerts.total_score
+    with signal_metrics.<tf_col>, for use in score-quality correlation.
+
+    Each row: {'score': float, 'hit': 0 or 1}. INSUFFICIENT_DATA / NULL
+    cls rows are excluded so the correlation is computed only on
+    classified outcomes.
+    """
+    from sqlalchemy import text
+    sql = text(f"""
+        SELECT sa.total_score AS score,
+               CASE WHEN sm.{tf_col} = 'CLEAN_HIT' THEN 1 ELSE 0 END AS hit
+          FROM signal_alerts sa
+          JOIN signal_metrics sm
+            ON sm.ticker = sa.ticker
+           AND sm.entry_time = sa.alert_ts
+         WHERE sa.alert_ts >= :start
+           AND sa.alert_ts <  :end
+           AND sm.status = 'final'
+           AND sm.{tf_col} IS NOT NULL
+           AND sm.{tf_col} <> 'INSUFFICIENT_DATA'
+    """)
+    with engine.connect() as conn:
+        rows = conn.execute(sql, {"start": start, "end": end}).fetchall()
+    return [{"score": float(r[0]), "hit": int(r[1])} for r in rows]
+
+
+# Track D / G.P2.6: signal-quality correlation alarm ──────────────────
+# Hypothesis: higher signal score should correlate with higher hit-rate.
+# If the score's discriminative power decays (Spearman ρ between score
+# quartile and hit rate drops below this threshold), the scoring system
+# is no longer predictive — fire an alarm so the audit team investigates.
+QUALITY_CORRELATION_THRESHOLD: float = 0.10
+QUALITY_CORRELATION_MIN_SAMPLE: int = 50  # rows; below this, ρ is too noisy
+
+
+def compute_score_quality_correlation(rows: list[dict]) -> Optional[float]:
+    """Spearman ρ between score-quartile rank and per-quartile hit rate.
+
+    rows: [{'score': float, 'hit': 0|1}, ...]
+    Returns ρ in [-1, 1], or None when insufficient data.
+
+    Bins scores into Q1..Q4 by quartile cutoffs, computes per-quartile
+    hit rate, then ranks the 4 (quartile_index, hit_rate) pairs and
+    correlates. Q4 (highest scores) should have the highest hit rate
+    for a healthy scoring system.
+    """
+    if len(rows) < QUALITY_CORRELATION_MIN_SAMPLE:
+        return None
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    scores = np.array([r["score"] for r in rows], dtype=float)
+    hits = np.array([r["hit"] for r in rows], dtype=float)
+    # Use quantile cuts on the score distribution; assign each row to
+    # its quartile (1..4). qcut handles ties via 'first' so equal-score
+    # ties don't blow up.
+    quartile_edges = np.quantile(scores, [0.25, 0.5, 0.75])
+    # Bucket index 1..4. digitize with right=False puts boundary into
+    # the higher bucket, matching pandas.qcut convention.
+    quartile_idx = np.digitize(scores, quartile_edges, right=False) + 1
+    # Per-quartile hit rate. Skip empty quartiles (rare with tied scores
+    # collapsing into one bucket).
+    pairs = []
+    for q in range(1, 5):
+        mask = quartile_idx == q
+        if mask.sum() == 0:
+            continue
+        pairs.append((q, float(hits[mask].mean())))
+    if len(pairs) < 3:
+        return None  # Need ≥3 quartiles populated for a meaningful correlation
+    try:
+        from scipy.stats import spearmanr
+    except ImportError:
+        return None
+    qs = np.array([p[0] for p in pairs])
+    rates = np.array([p[1] for p in pairs])
+    rho, _ = spearmanr(qs, rates)
+    if np.isnan(rho):
+        return None
+    return float(rho)
+
+
+def format_quality_correlation_embed(
+    rho: Optional[float], n_rows: int, tf_col: str,
+    threshold: float = QUALITY_CORRELATION_THRESHOLD,
+) -> dict:
+    """Build a Discord embed for the quartile-correlation status."""
+    if rho is None:
+        title = f"⏸️ Score-quality correlation — {tf_col} (insufficient data)"
+        desc = (
+            f"Need ≥ {QUALITY_CORRELATION_MIN_SAMPLE} classified rows in window; "
+            f"got {n_rows}. Alarm suppressed."
+        )
+        color = 0x808080
+    elif abs(rho) < threshold:
+        title = f"⚠️ Score discrimination weak — {tf_col} ρ={rho:+.3f}"
+        desc = (
+            f"Spearman ρ between score quartile and hit rate is {rho:+.3f}, "
+            f"|ρ| < {threshold:.2f} — the scoring system is no longer predictive. "
+            f"({n_rows} classified rows in window.)"
+        )
+        color = 0xff0000
+    else:
+        title = f"✅ Score discrimination healthy — {tf_col} ρ={rho:+.3f}"
+        desc = (
+            f"Spearman ρ between score quartile and hit rate is {rho:+.3f}. "
+            f"({n_rows} classified rows in window.)"
+        )
+        color = 0x36a64f
+    return {"embeds": [{"title": title, "description": desc, "color": color}]}
+
+
 # ── CLI ───────────────────────────────────────────────────────────────
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -239,6 +354,39 @@ def main(argv: Optional[list[str]] = None) -> int:
                   or os.environ.get("DISCORD_WEBHOOK_URL") or ""
         post_to_discord(webhook, payload)
 
+    # Track D / G.P2.6: parallel score-quality correlation check.
+    # Independent of the regression check — a system can have stable
+    # clean-rate but losing score discrimination (every score-quartile
+    # has the same hit rate ≈ score is no longer informative).
+    quality_rows = fetch_score_quality_rows(
+        engine, start_trailing, end_trailing, args.tf
+    )
+    rho = compute_score_quality_correlation(quality_rows)
+    quality_payload = format_quality_correlation_embed(
+        rho, len(quality_rows), args.tf,
+    )
+    logger.info(
+        "signal_quality_correlation tf=%s n=%d rho=%s",
+        args.tf, len(quality_rows),
+        f"{rho:+.3f}" if rho is not None else "insufficient",
+    )
+    quality_alarm = (
+        rho is not None and abs(rho) < QUALITY_CORRELATION_THRESHOLD
+    )
+    if not args.dry_run:
+        post_to_discord(webhook, quality_payload)
+
+    if quality_alarm and not args.dry_run:
+        logger.error(
+            "signal_quality_correlation_low: %s",
+            json.dumps({
+                "tf":         args.tf,
+                "rho":        rho,
+                "threshold":  QUALITY_CORRELATION_THRESHOLD,
+                "n_rows":     len(quality_rows),
+            }),
+        )
+
     if result.is_regression and not args.dry_run:
         # Emit a structured ERROR log so the failure-notifier sink
         # picks it up and creates a GitHub issue (existing pipeline).
@@ -254,6 +402,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "prior_n":       result.prior.n_total,
             }),
         )
+        return 1
+    if quality_alarm:
         return 1
     return 0
 

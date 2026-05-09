@@ -170,6 +170,14 @@ class MonitorConfig:
     min_bars_for_signals: int = 30
     pre_market_sleep: int = 30       # seconds to sleep before market open
     discord_timeout: int = 10        # HTTP timeout for Discord webhooks
+    # Track D / G.P2.5: gate Discord post on signal strength so weak
+    # signals don't drown the channel. Allowed values mirror
+    # get_signal_strength_label output: 'weak', 'medium', 'strong',
+    # 'perfect'. Default 'medium' filters out weak; set to 'weak' to
+    # restore pre-G.P2.5 behaviour (post everything). Persistence is
+    # always done regardless of this gate so analytics still capture
+    # weak signals.
+    discord_minimum_strength: str = 'medium'
 
 
 # ---------------------------------------------------------------------------
