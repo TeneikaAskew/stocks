@@ -490,6 +490,30 @@ async def run_insight_pipeline(
     for r in risk_outputs:
         all_flags.extend(r.flags)
 
+    # Reflection memory (audit G.P2.12): build a query embedding from
+    # the bundle and retrieve the 5 nearest historical journal entries.
+    # If the caller injected an embedding (tests / replay), use that
+    # directly. Otherwise generate one inline from a compact summary
+    # of today's setup. Any failure (Vertex creds missing, network
+    # blip, table missing) degrades to no similar-trade context — the
+    # rest of the report still ships.
+    if query_embedding is None:
+        try:
+            from .embeddings import embed_text
+            query_text = _build_embedding_query_text(ticker, bundle)
+            query_embedding = await embed_text(query_text)
+            logger.info(
+                "reflection_memory ticker=%s query_text=%r embedded=true",
+                ticker, query_text,
+            )
+        except Exception as e:
+            logger.warning(
+                "reflection_memory: embedding failed for %s (%s: %s) — "
+                "skipping similar-trade lookup",
+                ticker, type(e).__name__, e,
+            )
+            query_embedding = None
+
     similar: list[JournalRef] = []
     if query_embedding:
         try:
@@ -712,6 +736,43 @@ def _validate_thesis_consistency(
             thesis[:240],
         )
     return orphans
+def _build_embedding_query_text(ticker: str, bundle: dict) -> str:
+    """Compose a short natural-language description of today's setup
+    for reflection-memory retrieval.
+
+    Captures the same fields that semantically determine "is this trade
+    similar to a past one": ticker, strat candle/combo, FTFC direction,
+    market regime, gap %, vol tag, position vs 200-SMA. Cosine
+    similarity over text-embedding-005 vectors clusters days with
+    similar setups together — so a today=2U+bullish-FTFC+gap+0.3% on
+    SPY retrieves prior journal entries with similar bar profiles.
+
+    Audit 2026-05-08 G.P2.12: this is the production input that turns
+    the dormant reflection-memory infrastructure on.
+    """
+    strat = bundle.get("strat") or {}
+    market = bundle.get("market") or {}
+    parts: list[str] = [ticker.upper()]
+    if strat.get("last_candle"):
+        parts.append(f"strat candle {strat['last_candle']}")
+    if strat.get("in_force_combo"):
+        parts.append(f"combo {strat['in_force_combo']}")
+    if strat.get("ftfc_direction"):
+        parts.append(f"FTFC {strat['ftfc_direction']}")
+    if market.get("regime"):
+        parts.append(f"regime {market['regime']}")
+    premarket = market.get("premarket") or {}
+    gap_pct = premarket.get("gap_pct")
+    if isinstance(gap_pct, (int, float)):
+        parts.append(f"gap {gap_pct:+.2f}%")
+    if market.get("vol_tag"):
+        parts.append(f"vol {market['vol_tag']}")
+    above = market.get("above_sma_200")
+    if above is True:
+        parts.append("above 200-SMA")
+    elif above is False:
+        parts.append("below 200-SMA")
+    return " ".join(parts)
 
 
 def _analyst_section_key(section: str) -> str:
