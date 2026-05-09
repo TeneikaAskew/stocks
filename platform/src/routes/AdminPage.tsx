@@ -123,6 +123,15 @@ function TokenGate({ onAuthed }: { onAuthed: (token: string) => void }) {
 
 // ---------------------------------------------------------------------------
 // Routing panel
+//
+// Audit 2026-05-08 G.P2.4 dormancy note: this dashboard is intentionally
+// kept available even though all 7 roles seed at the same provider/model
+// (vertex:gemini-2.0-flash) on a fresh install. The UI lets an operator
+// A/B a single role without code changes — e.g. swap `judge` to
+// gemini-2.5-pro for one week and compare verdict quality on
+// insight_reports.report->'thesis' before deciding whether to
+// permanently diversify. Until per-role evidence justifies it, this
+// stays a single-model deployment by design (not a bug).
 // ---------------------------------------------------------------------------
 
 function RoutingPanel({ onLogout, showLogout = true }: { onLogout: () => void; showLogout?: boolean }) {

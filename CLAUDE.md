@@ -347,8 +347,37 @@ without needing `issue_number=` each time.
 - **Issue comment**: 60 KB hard truncation (GitHub's limit is 65 KB);
   truncated comments link to the artifact.
 - **Concurrency**: all dispatches serialize through one queue (group
-  `db-query`). A read dispatched while a write is in flight waits ~30–60 s
-  for the queue.
+  `db-query`) with `cancel-in-progress: false` — verified in
+  `.github/workflows/db-query.yml`. A read dispatched while a write
+  is in flight waits ~30–60 s for the queue.
+
+#### Known limitation: rapid-burst dispatches
+
+Audit 2026-05-08 G.P2.24 flagged that during multi-track audits,
+dispatches fired within the same ~5 s window can show as cancelled in
+the GitHub Actions UI even though `cancel-in-progress: false` is set.
+This is GitHub-side queue scheduling behaviour — the workflow YAML is
+correct; the cancellations are GitHub deciding multiple
+queue-position-zero dispatches with the same group key collide on
+intake.
+
+Mitigation:
+
+- For human-paced ad-hoc queries: just wait 30 s between dispatches
+  (the typical run takes 30–90 s anyway, so back-to-back dispatches
+  are rarely needed).
+- For programmatic batch use: combine N statements into ONE dispatch
+  via the `sql` input multi-statement syntax (`-f sql='SELECT 1;
+  SELECT 2; ...'`) or commit a `.sql` file and pass `sql_file=`. Each
+  dispatch is one workflow run; one run can execute many statements.
+- For the audit-style scenario where N tracks each need to query
+  Cloud SQL: stagger by track owner and rely on the queue rather
+  than firing all at once.
+
+The cancellation never causes data loss (every statement runs in its
+own transaction, default rollback) — it just means a dispatched run
+may not produce results when GitHub silently cancels it on intake.
+Re-dispatch when that happens.
 
 #### What not to do
 
