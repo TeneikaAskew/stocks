@@ -1096,24 +1096,92 @@ def main():
     )
     import argparse
     parser = argparse.ArgumentParser(description='Real-time signal monitor')
-    parser.add_argument('--mode', choices=['loop', 'orb-snapshot'], default='loop',
-                        help='loop = run during market hours; orb-snapshot = one-shot ORB capture')
+    parser.add_argument('--mode', choices=['loop', 'orb-snapshot', 'replay'],
+                        default='loop',
+                        help='loop = run during market hours; '
+                             'orb-snapshot = one-shot ORB capture; '
+                             'replay = hermetic 1-min-bar replay against '
+                             'historical data (mocks Discord + DB writes; '
+                             'dispatches to scripts.replay_signal_monitor)')
     parser.add_argument('--window', choices=['5m', '15m', '30m'], default='15m',
                         help='ORB window for orb-snapshot mode')
+    # Replay-mode flags. Mirror scripts/replay_signal_monitor.py so a
+    # user familiar with one knows the other. Env-var defaults
+    # (REPLAY_TICKER / REPLAY_TICKERS / REPLAY_DATE / REPLAY_START /
+    # REPLAY_END) let `gcloud run jobs execute signal-monitor
+    # --update-env-vars=...` override at execute time without rebuilding
+    # the job spec — the cleanest deploy pattern for one-off historical
+    # replays since gcloud run jobs execute supports --update-env-vars
+    # but not --args injection.
+    parser.add_argument('--ticker', default=os.environ.get('REPLAY_TICKER'),
+                        help='[replay] Single ticker (alias for --tickers TICKER)')
+    parser.add_argument('--tickers', default=os.environ.get('REPLAY_TICKERS'),
+                        help='[replay] Comma-separated tickers')
+    parser.add_argument('--date', default=os.environ.get('REPLAY_DATE'),
+                        help='[replay] Single date YYYY-MM-DD '
+                             '(alias for --start = --end)')
+    parser.add_argument('--start', default=os.environ.get('REPLAY_START'),
+                        help='[replay] UTC start date YYYY-MM-DD')
+    parser.add_argument('--end', default=os.environ.get('REPLAY_END'),
+                        help='[replay] UTC end date YYYY-MM-DD (exclusive)')
+    parser.add_argument('--limit', type=int, default=None,
+                        help='[replay] Max bars per ticker (debug/dev)')
+    parser.add_argument('--json', action='store_true',
+                        help='[replay] Print fires as a JSON array')
     args = parser.parse_args()
+
+    # Implicit replay activation: setting REPLAY_DATE or REPLAY_TICKER
+    # at execute time is sufficient — no need to also pass
+    # --mode=replay. Keeps the override surface minimal.
+    if args.mode == 'loop' and (
+        os.environ.get('REPLAY_DATE')
+        or os.environ.get('REPLAY_TICKER')
+        or os.environ.get('REPLAY_TICKERS')
+    ):
+        logger.info(
+            "REPLAY_* env var detected — switching to --mode=replay")
+        args.mode = 'replay'
 
     # Fail-fast on missing config so Cloud Run surfaces the error instead of
     # looping silently (see docs/incidents/2026-04-14-market-data-daily-gap.md).
     from gcp.database import is_cloud_sql_configured
-    if not os.environ.get('ALPHA_VANTAGE_API_KEY'):
+    if not os.environ.get('ALPHA_VANTAGE_API_KEY') and args.mode != 'replay':
+        # Replay reads from market_data_intraday (Cloud SQL only); does
+        # not fetch fresh bars from AV.
         logger.error("ALPHA_VANTAGE_API_KEY is not set — aborting.")
         sys.exit(2)
-    if not is_cloud_sql_configured() and args.mode == 'loop':
+    if not is_cloud_sql_configured() and args.mode in ('loop', 'replay'):
         logger.error("Cloud SQL env vars missing — aborting.")
         sys.exit(3)
 
     if args.mode == 'orb-snapshot':
         sys.exit(run_orb_snapshot(args.window))
+
+    if args.mode == 'replay':
+        # Dispatch to the canonical hermetic replay harness in
+        # scripts/replay_signal_monitor.py. That script's main() takes
+        # an argv list (or None for sys.argv); we build it from our
+        # parsed args so the env-var override path produces the same
+        # behaviour as a direct CLI invocation.
+        from scripts.replay_signal_monitor import (
+            main as _replay_main,
+        )
+        replay_argv: list[str] = []
+        if args.ticker:
+            replay_argv += ['--ticker', args.ticker]
+        if args.tickers:
+            replay_argv += ['--tickers', args.tickers]
+        if args.date:
+            replay_argv += ['--date', args.date]
+        if args.start:
+            replay_argv += ['--start', args.start]
+        if args.end:
+            replay_argv += ['--end', args.end]
+        if args.limit is not None:
+            replay_argv += ['--limit', str(args.limit)]
+        if args.json:
+            replay_argv += ['--json']
+        sys.exit(_replay_main(replay_argv))
 
     monitor = SignalMonitor()
     monitor.run_loop()

@@ -1017,6 +1017,31 @@ deploy_compute_spx_greeks_backfill() {
         --quiet
 }
 
+# NOTE: Replay mode for the signal monitor is now built into the
+# existing signal-monitor Cloud Run Job — no separate replay-signal-monitor
+# job is needed. The job's main() in gcp/signal_monitor.py supports a
+# --mode=replay flag that dispatches to scripts/replay_signal_monitor.py
+# (the canonical hermetic harness). Replay activates automatically when
+# REPLAY_DATE or REPLAY_TICKER env vars are set at execute time:
+#
+#   gcloud run jobs execute signal-monitor --region us-east1 \
+#     --update-env-vars=REPLAY_DATE=2026-05-07,REPLAY_TICKER=SPY --wait
+#
+# The replay path mocks Discord webhook + DB writes (hermetic), so it's
+# safe to run on the production job spec. Output is JSON-formatted alert
+# fires in Cloud Logging textPayload. No rows written to signal_alerts;
+# no Discord webhooks fired.
+#
+# Use cases:
+#   1. Validate a fresh signal-monitor deploy against held-out data
+#      BEFORE waiting for market open (Phase 0.5 spec item #8 —
+#      live-vs-offline parity test).
+#   2. Hermetic regression check after refactors that touch the
+#      signal-fire path (e.g. the 2026-05-09 Track B end-to-end
+#      validation).
+#   3. What-if: tune assign_timeframe thresholds and replay to see how
+#      the timeframe distribution shifts.
+
 
 # ── Phase 0.6 — quarterly per-ticker threshold calibration ───────────────────
 # Replaces the universal-across-tickers THRESHOLDS dict with per-ticker
@@ -1600,6 +1625,12 @@ case "${1:-help}" in
         echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
         echo "  spx-greeks Deploy one-shot SPX Greeks backfill job (12h timeout)"
         echo "             python -m scripts.maintenance.compute_spx_greeks --ticker SPX"
+        echo ""
+        echo "  Note: replay mode for the signal-monitor is built into the"
+        echo "  existing signal-monitor job (gcp/signal_monitor.py main"
+        echo "  --mode=replay). Override at execute time:"
+        echo "    gcloud run jobs execute signal-monitor --wait \\"
+        echo "      --update-env-vars=REPLAY_DATE=YYYY-MM-DD,REPLAY_TICKER=SPY"
         echo "  setup-notifier-secrets  One-time: store GitHub PAT + repo in Secret Manager"
         echo "  notifier   Deploy failure-notifier Cloud Run service + log sink"
         echo "  discord    Deploy discord-interactions Cloud Run service (slash commands)"
