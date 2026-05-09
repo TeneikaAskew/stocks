@@ -98,18 +98,25 @@ def _mom_put_signal() -> Signal:
     )
 
 
-# ── 1) mr returns None → helper short-circuits, momentum NOT evaluated ─
+# ── 1) mr returns None + momentum returns None → no fire (post-#369) ─
 
-def test_helper_no_mr_signal_returns_none_pair_and_skips_momentum():
+def test_helper_no_mr_no_momentum_returns_none_pair():
+    """Post-#369 momentum is ALWAYS evaluated (counter is the denominator
+    for fired/evaluated). When neither strategy fires, the helper still
+    returns (None, None) — same outward contract as pre-#369, just
+    without the mr-fires short-circuit that previously skipped the
+    momentum call. Renamed from
+    `test_helper_no_mr_signal_returns_none_pair_and_skips_momentum`
+    because the 'skips_momentum' assertion is now intentionally
+    inverted (#369 fix)."""
     monitor = _make_monitor()
     bar = _no_signal_bar()
-    with patch("gcp.signal_monitor.MOMENTUM.evaluate") as mock_mom:
+    with patch("gcp.signal_monitor.MOMENTUM.evaluate", return_value=None) as mock_mom:
         sig, agreement = monitor._evaluate_strategies_for_bar(bar, 720.0, "SPY")
     assert sig is None
     assert agreement is None
-    # Momentum should NOT be evaluated when mean-reversion didn't fire —
-    # saves the cycles on the dominant no-signal path.
-    mock_mom.assert_not_called()
+    # Momentum IS evaluated every bar post-#369 (it's the new contract).
+    mock_mom.assert_called_once()
 
 
 # ── 2) Solo mr (momentum returns None) → no agreement ─────────────────

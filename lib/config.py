@@ -317,6 +317,14 @@ class SignalConfig:
     ema_proximity_threshold: float = 0.1
     stoch_rsi_oversold: float = 30.0
     stoch_rsi_overbought: float = 70.0
+    # G.P0.11 follow-up (#369): allow MOMENTUM.evaluate() to fire
+    # stand-alone (i.e. on bars where mean-reversion did NOT fire).
+    # Default False ships the orchestration code with no behaviour
+    # change; flipping to True in alert_config.json after policy review
+    # opens the stand-alone path. The momentum_eligibility_report
+    # estimates ~150-200 additional fires/day across SPY/IWM/QQQ at
+    # MIN_CONDITIONS_MOMENTUM=5 + core gate.
+    enable_standalone_momentum: bool = False
     premarket_signal_threshold: int = 3   # min score = "setup"
     premarket_building_threshold: int = 2  # min score = "building"
 
@@ -609,6 +617,9 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
     if sig_data:
         app.signal.min_conditions = sig_data.get('min_conditions', app.signal.min_conditions)
         app.signal.consecutive_periods = sig_data.get('consecutive_periods', app.signal.consecutive_periods)
+        app.signal.enable_standalone_momentum = sig_data.get(
+            'enable_standalone_momentum', app.signal.enable_standalone_momentum,
+        )
         if 'call_rsi_range' in sig_data:
             app.signal.call_rsi_range = tuple(sig_data['call_rsi_range'])
         if 'put_rsi_range' in sig_data:
