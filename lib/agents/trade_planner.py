@@ -35,10 +35,13 @@ it did. No magic constants without a comment.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Literal, Optional
 
 from .schema import EntryZone, PersonaPlan
+
+logger = logging.getLogger(__name__)
 
 
 Direction = Literal["long", "short", "flat"]
@@ -53,6 +56,23 @@ Regime = Literal["normal", "extended", "orb_only"]
 # the next level <2 ATR away; anything past 3 ATR is in "extended" /
 # "blue-sky" territory where R:R is already compressed.
 _EXTENDED_DISTANCE_ATR = 3.0
+
+# Offset (in ATRs) applied past pre_high (long) or pre_low (short) to
+# synthesize a "blue-sky" trigger when every multi-timeframe structural
+# level has been cleared by pre-market. 0.5 ATR is small enough that the
+# entry stays within reach during the first 30 min of RTH on a normal
+# session, large enough that a marginal pre-market wick doesn't trigger
+# the plan immediately. Audit 2026-05-08 G.P1.4.
+_BLUE_SKY_ATR_OFFSET = 0.5
+
+# Maximum overnight gap magnitude (in ATRs of yesterday's close) for
+# which blue-sky trigger synthesis is appropriate. Beyond this, the
+# move was too large to project a reliable trigger from pre-market —
+# fall back to orb_only and recommend waiting for the 15-min opening
+# range. AMD 4/24 +12% gap (≈3.8 ATR) sits comfortably above this
+# threshold; SPY/IWM/QQQ uptrend days in the 2026-05-08 audit window
+# (≈0.4-0.5 ATR) sit comfortably below.
+_BLUE_SKY_MAX_GAP_ATR = 1.5
 
 
 @dataclass
@@ -161,14 +181,19 @@ def select_trigger_and_regime(
 
     * ``normal``    — the next level is within ``_EXTENDED_DISTANCE_ATR``
                       of the reference price. Standard trigger-based plan.
-    * ``extended``  — a structural level exists but it's far away
+                      Trigger may be a historical structural level OR
+                      a blue-sky synthetic level when every historical
+                      level has been cleared by pre-market (audit
+                      G.P1.4 — common state for symbols at all-time
+                      highs).
+    * ``extended``  — the trigger (historical or synthetic) is far away
                       (>= ``_EXTENDED_DISTANCE_ATR``). The plan still
                       uses that trigger but the rationale recommends
                       15-min ORB confirmation before entering.
-    * ``orb_only``  — no unbroken structural level exists in the trade
-                      direction (price has already cleared every PDH/
-                      PWH/PMH/PQH/PYH for longs). No trigger emitted;
-                      the brief tells the trader to wait for the ORB.
+    * ``orb_only``  — multi-timeframe levels were never populated for
+                      this ticker (sparse history, options-only ticker,
+                      legacy fixture). No trigger emitted; the brief
+                      tells the trader to wait for the ORB.
 
     The "level cleared" logic uses the larger of (reference_price,
     pre_high/pre_low) so a pre-market spike that touched a level still
@@ -250,10 +275,63 @@ def select_trigger_and_regime(
         stop_anchor = above_ref[0] if above_ref else None
 
     if not candidates:
-        # No structural level left — every PDH/PWH/PMH/PQH/PYH (or the
-        # short equivalents) has been cleared. This happens on extreme
-        # gap days (AMD 4/24 +12% gap is the canonical case). Tell the
-        # caller to wait for the ORB to establish a new range.
+        # No structural level survived the cleared-by-pre_high check.
+        # Three sub-cases distinguish a sustained uptrend (synthesize)
+        # from a true gap-and-go (wait for ORB) from degenerate input
+        # (no levels at all):
+        #
+        # * Sub-case A — gap is small (≤ _BLUE_SKY_MAX_GAP_ATR ATR
+        #   from yesterday's close) AND at least one same-side level
+        #   was populated. This is the natural state of a symbol
+        #   making new highs every day. Audit 2026-05-08 G.P1.4 found
+        #   10/12 SPY/IWM/QQQ reports collapsed to orb_only this way
+        #   (all three at ATHs, every PDH/PWH/PMH/PQH/PYH naturally
+        #   below pre_high, gap_atr ≈ 0.4-0.5). Project a blue-sky
+        #   synthetic trigger at `cleared_above + _BLUE_SKY_ATR_OFFSET
+        #   × ATR` so the trader gets an actionable entry rather than
+        #   a "wait for ORB" placeholder.
+        #
+        # * Sub-case B — gap is large (> _BLUE_SKY_MAX_GAP_ATR ATR)
+        #   OR the synthesized distance is itself > _EXTENDED_DISTANCE_ATR.
+        #   Genuine gap-and-go (AMD 4/24 +12% ≈ 3.8 ATR is the canonical
+        #   case). Stay orb_only — the move happened overnight; the RTH
+        #   tape needs its own range to establish a trigger.
+        #
+        # * Sub-case C — no same-side levels populated at all (sparse
+        #   history, options-only ticker, fixture path). Stay orb_only.
+        same_side_levels = long_levels if direction == "long" else short_levels
+        cleared = cleared_above if direction == "long" else cleared_below
+        gap_atr = abs(cleared - ctx.close) / atr if cleared is not None else None
+        if (
+            any(lv is not None for lv in same_side_levels)
+            and gap_atr is not None
+            and gap_atr <= _BLUE_SKY_MAX_GAP_ATR
+        ):
+            if direction == "long":
+                synthetic_trigger = cleared_above + _BLUE_SKY_ATR_OFFSET * atr
+            else:
+                synthetic_trigger = cleared_below - _BLUE_SKY_ATR_OFFSET * atr
+            distance_atr = abs(synthetic_trigger - ref) / atr
+            regime: Regime = (
+                "normal" if distance_atr < _EXTENDED_DISTANCE_ATR else "extended"
+            )
+            logger.info(
+                "trade_planner blue_sky direction=%s ref=%.4f atr=%.4f "
+                "cleared=%.4f gap_atr=%.3f synthetic_trigger=%.4f "
+                "distance_atr=%.3f regime=%s same_side_levels=%s",
+                direction, ref, atr, cleared, gap_atr,
+                synthetic_trigger, distance_atr, regime,
+                [round(float(lv), 4) for lv in same_side_levels if lv is not None],
+            )
+            return (regime, synthetic_trigger, stop_anchor, distance_atr)
+        logger.info(
+            "trade_planner orb_only direction=%s ref=%.4f atr=%.4f "
+            "cleared=%s gap_atr=%s same_side_populated=%s",
+            direction, ref, atr,
+            f"{cleared:.4f}" if cleared is not None else None,
+            f"{gap_atr:.3f}" if gap_atr is not None else None,
+            any(lv is not None for lv in same_side_levels),
+        )
         return ("orb_only", None, stop_anchor, None)
 
     trigger = candidates[0]
