@@ -753,9 +753,24 @@ ALTER TABLE signal_alerts
 --     "strategies":      ["momentum", "mean_reversion"],
 --     "directions":      ["CALL", "CALL"],
 --     "base_scores":     [4.0, 3.0],
+--     "conditions_met":  [
+--       ["rsi_thrust_3", "rvol_recent_20", "atr_expansion"],
+--       ["consecutive_down", "rsi_oversold_zone", "below_vwap"]
+--     ],
 --     "composite_score": 5.0
 --   }
 -- NULL when only one strategy fired (the common case).
+-- Per-leg conditions_met added Track D / G.P3.4 so post-mortems can
+-- answer "which conditions did momentum hit when stacked with mean-
+-- reversion" without joining back to per-strategy tables. Order of
+-- inner arrays matches `strategies`.
+--
+-- Empirical rate (Track D audit 2026-05-08, § 6 / G.P2.9):
+-- 17 stacked alerts of 782 fires = 2.2% (per-ticker 1.4-3.2%; QQQ
+-- highest). The pre-Phase-0.7.x estimate of ~21% in
+-- docs/plans/SIGNAL_QUALITY_TEST_PLAN.md is stale — momentum's gate
+-- tightened over subsequent phases, lowering fires without a
+-- corresponding schema-doc update.
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS strategy_agreement JSONB;
 
@@ -1578,6 +1593,68 @@ CREATE INDEX IF NOT EXISTS idx_ticker_calibration_recent
 
 
 -- ─────────────────────────────────────────────────────────
+-- EXIT_CONFIG_OVERRIDES: per-ticker target/stop/time overrides
+-- (Track A G.P0.14 — 2026-05-08 audit recommendation)
+--
+-- The audit's MFE/MAE-based per-ticker calibration found that the
+-- universal `lib/config.py:ExitConfig` defaults (target=0.003 / stop=
+-- 0.0015) are 1.5–2× too wide for SPY/IWM/QQQ. With the recommended
+-- per-ticker targets, QQQ's mean per-trade return flips from −0.0005%
+-- to +0.0127% (counterfactual replay over 50 days of cached intraday).
+--
+-- Read pattern: latest snapshot per ticker, like ticker_calibration.
+-- See lib/strategies/exit_config_overrides.py for the read-side helpers.
+-- Write pattern: PR-E1 seeds initial values; PR-E7 (quarterly job)
+-- writes refreshed values via INSERT ... ON CONFLICT DO UPDATE.
+-- ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS exit_config_overrides (
+    ticker             VARCHAR(10)  NOT NULL,
+    calibration_date   DATE         NOT NULL,
+
+    -- Per-ticker exit thresholds. NULL means "use the lib/config.py
+    -- ExitConfig default for this knob" — the resolver in
+    -- exit_config_overrides.py treats NULL as Tier-A miss and falls
+    -- back to Tier-B.
+    call_target        DOUBLE PRECISION,   -- e.g. 0.00301 = +30 bps
+    put_target         DOUBLE PRECISION,
+    call_stop          DOUBLE PRECISION,
+    put_stop           DOUBLE PRECISION,
+    call_time_stop     INTEGER,            -- minutes
+    put_time_stop      INTEGER,
+
+    -- PR-E3: per-ticker dropped strategy conditions (e.g.
+    -- ['stoch_rsi_overbought', 'rsi_overbought_zone'] for IWM/QQQ MR PUT).
+    -- NULL = use the strategy's full condition list.
+    disabled_conditions JSONB,
+
+    notes              TEXT,
+    inserted_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (ticker, calibration_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_exit_config_overrides_recent
+    ON exit_config_overrides (ticker, calibration_date DESC);
+
+-- Initial seed from docs/audit/2026-05-08/recommended_per_ticker_config.json.
+-- Idempotent: re-applying schema.sql leaves later quarterly snapshots
+-- untouched (PRIMARY KEY conflict → DO NOTHING).
+INSERT INTO exit_config_overrides (
+    ticker, calibration_date,
+    call_target, put_target, call_stop, put_stop,
+    call_time_stop, put_time_stop, notes
+) VALUES
+    ('SPY', '2026-05-08', 0.00184, 0.00202, 0.00075, 0.00075, 25, 25,
+     'Audit 2026-05-08 (90-day MFE/MAE p70/p25, n=555). MR-only universe; momentum did not fire.'),
+    ('IWM', '2026-05-08', 0.00281, 0.00249, 0.00077, 0.00100, 20, 25,
+     'Audit 2026-05-08 (90-day MFE/MAE p70/p25, n=493). MR-only universe; momentum did not fire.'),
+    ('QQQ', '2026-05-08', 0.00301, 0.00238, 0.00075, 0.00075, 20, 25,
+     'Audit 2026-05-08 (90-day MFE/MAE p70/p25, n=544). Counterfactual: mean per-trade return −0.0005% → +0.0127%.')
+ON CONFLICT (ticker, calibration_date) DO NOTHING;
+
+
+-- ─────────────────────────────────────────────────────────
 -- HISTORICAL_SIGNALS: parallel-strategy support (Phase 0.7)
 -- ─────────────────────────────────────────────────────────
 -- The historical_signals table is now populated by TWO different signal
@@ -1812,11 +1889,21 @@ ALTER TABLE historical_signals
 --
 -- exit_reason values:
 --   target_hit   — price reached call_target / put_target before time stop
+--                  (set by gcp/signal_monitor.py:_persist_exit during the
+--                   live in-process exit-watcher loop)
 --   time_stop    — call_time_stop / put_time_stop minutes elapsed
+--                  (set by gcp/signal_monitor.py:_persist_exit)
 --   rsi_extreme  — RSI crossed call_rsi_exit (>=80) / put_rsi_exit (<=20)
---   eod_close    — market close hit while position still open
---                  (only set if exit-watcher adds end-of-day reconciliation
---                   in a follow-up; today the loop just terminates)
+--                  (set by gcp/signal_monitor.py:_persist_exit)
+--   eod_close    — position still open at session close (16:00 ET); the
+--                  in-process watcher only resolves while the SignalMonitor
+--                  process is alive, so anything still open at close gets
+--                  swept by the daily Cloud Run Job
+--                  gcp/signal_monitor_eod_resolver.py at 16:30 ET / 20:30
+--                  UTC (cron: 30 16 * * 1-5 America/New_York). Per Track D
+--                  audit § 2 / G.P0.10 — implements the schema-anticipated
+--                  fallback that previously left ~1,209 alerts with
+--                  exit_ts NULL.
 
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS exit_ts          TIMESTAMPTZ,
@@ -1824,6 +1911,16 @@ ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS exit_price       DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS exit_return_pct  DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS is_open          BOOLEAN;
+
+-- Track D / G.P3.5: default is_open to FALSE for any future ALTER-added
+-- row so schema migrations don't silently leave NULL is_open values that
+-- force every downstream filter to write `WHERE is_open IS TRUE OR
+-- is_open IS NULL`. The persist path in gcp/signal_monitor.py:_persist_signal_alert
+-- still writes `is_open=TRUE` explicitly on insert; this DEFAULT only
+-- fills in for rows whose persist path forgets the column or for old
+-- rows backfilled by ad-hoc UPDATEs.
+ALTER TABLE signal_alerts
+    ALTER COLUMN is_open SET DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_open
     ON signal_alerts (ticker, alert_ts) WHERE is_open IS TRUE;

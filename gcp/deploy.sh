@@ -281,34 +281,63 @@ setup_insight_tasks_queue() {
         --quiet 2>/dev/null || echo "  insight-pipeline-queue: already exists"
 }
 
-# DB password is intentionally NOT included here — it's passed via the
-# Cloud Run --set-secrets flag (see DB_SECRET_FLAG below) so the value
-# never traverses bash CLI args. Inlining a Unix-style password
-# (e.g. starting with `/`) into --set-env-vars triggered MSYS path
-# conversion on Windows Git Bash deploys, mangling it to a Windows
-# path and breaking Cloud SQL auth on every Job deployed 2026-04-30.
-# --set-secrets sidesteps the entire shell-quoting/conversion mess.
-DB_SECRET_FLAG="--set-secrets=DB_PASS=db-trading-pass:latest"
+# Sensitive values are passed via Cloud Run --set-secrets so they never
+# traverse bash CLI args and aren't visible to anyone with `roles/run.viewer`
+# via `gcloud run jobs describe`. Each mapping is `ENV_NAME=secret-id:version`.
+#
+# Originally only DB_PASS was secret-bound — the variable name reflects that
+# narrower history. Track D audit § 8.12 / G.P0.9 expanded the set to cover
+# the four additional API keys that were previously baked as literal env
+# values via _env_string. See:
+#   docs/audit/2026-05-08/track-D.md § 8.12
+#   docs/audit/2026-05-08/track-G.md G.P0.9
+#
+# Mechanism: --set-secrets resolves Secret Manager versions at container
+# start time, sidestepping the shell-quoting/MSYS-path-conversion mess that
+# bit DB_PASS on 2026-04-30. AV is mapped to two env names (AV_API_KEY +
+# ALPHA_VANTAGE_API_KEY) because callers are split across the legacy and
+# canonical names; both resolve to the same Secret Manager secret.
+#
+# Required vs optional secrets:
+#   * DB_PASS, av-api-key, discord-webhook are created by
+#     setup_cloud_sql.sh — assumed present; deploy fails fast if missing.
+#   * fred-api-key, benzinga-api-key are optional add-ons — deploys
+#     gracefully skip them when not provisioned, preserving the
+#     pre-PR-318 behaviour from `_env_string`'s `[ -n "$key" ] && ...`
+#     conditional. Codex P1 review on PR #318 caught the regression
+#     where requiring all 5 broke fresh deploys missing the optionals.
+_build_secret_flag() {
+    local pairs="DB_PASS=db-trading-pass:latest"
+    pairs="${pairs},AV_API_KEY=av-api-key:latest"
+    pairs="${pairs},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+    pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook:latest"
+    if gcloud secrets describe fred-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        pairs="${pairs},FRED_API_KEY=fred-api-key:latest"
+    else
+        echo "  (skipping FRED_API_KEY — secret 'fred-api-key' not in project)" >&2
+    fi
+    if gcloud secrets describe benzinga-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        pairs="${pairs},BENZINGA_API_KEY=benzinga-api-key:latest"
+    else
+        echo "  (skipping BENZINGA_API_KEY — secret 'benzinga-api-key' not in project)" >&2
+    fi
+    echo "--set-secrets=${pairs}"
+}
+DB_SECRET_FLAG="$(_build_secret_flag)"
 
 # ── Shared env vars injected into every Cloud Run job ─────────────────────────
+# Only non-secret values land here. The 4 API keys + DB_PASS go through
+# DB_SECRET_FLAG above. CLOUD_SQL_CONNECTION_NAME and DB_USER are stored
+# in Secret Manager for centralized rotation but aren't sensitive (the
+# connection name is project-region-instance, the username is the role
+# label "trading-app"); leaving them in env-vars keeps deploy-script
+# simplicity without leaking real credentials.
 _env_string() {
     local env
     env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
     env="${env},DB_USER=$(_secret db-trading-user)"
     env="${env},DB_NAME=trading"
     env="${env},GCS_BUCKET=${PROJECT_ID}-trading-data"
-    local av_key
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    [ -n "$av_key" ] && env="${env},AV_API_KEY=${av_key},ALPHA_VANTAGE_API_KEY=${av_key}"
-    local fred_key
-    fred_key="$(_secret fred-api-key 2>/dev/null || true)"
-    [ -n "$fred_key" ] && env="${env},FRED_API_KEY=${fred_key}"
-    local webhook
-    webhook="$(_secret discord-webhook 2>/dev/null || true)"
-    [ -n "$webhook" ] && env="${env},DISCORD_WEBHOOK_URL=${webhook}"
-    local benzinga_key
-    benzinga_key="$(_secret benzinga-api-key 2>/dev/null || true)"
-    [ -n "$benzinga_key" ] && env="${env},BENZINGA_API_KEY=${benzinga_key}"
     echo "$env"
 }
 
@@ -513,6 +542,40 @@ deploy_monitor() {
         --quiet
 }
 
+# ── Signal-monitor EOD resolver (Cloud Run Job — runs after close) ──────────
+# Per Track D audit § 2 / G.P0.10: closes positions still open at 16:00 ET
+# (the in-process exit-watcher in signal-monitor only resolves while the
+# Job is alive; anything still-open at close lands here). Replays the same
+# exit logic against historical intraday bars and records target_hit /
+# time_stop / rsi_extreme / eod_close.
+#
+# Capacity calc (CLAUDE.md §0):
+#   Volume:    ~1,209 alerts × 250KB intraday window ≈ 300 MB peak
+#   Velocity:  1 SQL query per (ticker, day) — backfill ~10 (ticker, day)
+#              pairs ≈ 10 round-trips × 1.5s pg8000 = 15s + per-row math
+#   Wall:      ~5 min for one-shot backfill, ~30s daily steady-state
+#   timeout:   3600s = 1hr (≥ 4× wall-clock headroom)
+#   memory:    1Gi (peak 300 MB × 2 safety factor + Python overhead)
+#   retries:   0 (idempotent via is_open=FALSE; transient retries don't help)
+deploy_signal_monitor_eod_resolver() {
+    echo "Deploying signal-monitor-eod-resolver job..."
+    gcloud run jobs create signal-monitor-eod-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_monitor_eod_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-monitor-eod-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.signal_monitor_eod_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Weekend review (Cloud Run Job) ───────────────────────────────────────────
 deploy_weekend() {
     echo "Deploying weekend review job..."
@@ -561,10 +624,8 @@ deploy_fetch_market_data() {
 
 deploy_fetch_alphavantage() {
     echo "Deploying fetch-alphavantage-intraday job..."
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,ALPHA_VANTAGE_API_KEY=${av_key}}"
-
+    # ALPHA_VANTAGE_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per
+    # G.P0.9; no per-deploy resolution needed.
     gcloud run jobs create fetch-alphavantage-intraday \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 2Gi --cpu 1 --max-retries 1 \
@@ -572,13 +633,13 @@ deploy_fetch_alphavantage() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-alphavantage-intraday \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 }
 
@@ -588,23 +649,20 @@ deploy_fetch_alphavantage() {
 # at ~00:30 UTC after FRED's nightly publication.
 deploy_fetch_fred_rates() {
     echo "Deploying fetch-fred-rates job..."
-    local fred_key fred_env
-    fred_key="$(_secret fred-api-key 2>/dev/null || true)"
-    fred_env="$(_env_string)${fred_key:+,FRED_API_KEY=${fred_key}}"
-
+    # FRED_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-fred-rates \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 --task-timeout 600 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_fred_rates" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${fred_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-fred-rates \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_fred_rates" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${fred_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 }
 
@@ -616,24 +674,21 @@ deploy_fetch_economic_events() {
     # The previous `--source fred` form silently dropped FF — every
     # event ended up TBD because FRED's API doesn't expose times.
     echo "Deploying fetch-economic-events job..."
-    local fred_key fred_env
-    fred_key="$(gcloud secrets versions access latest --secret=fred-api-key 2>/dev/null || true)"
-    fred_env="$(_env_string)${fred_key:+,FRED_API_KEY=${fred_key}}"
-
+    # FRED_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-economic-events \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${fred_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-economic-events \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_economic_events,--source,all" \
         --args="" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${fred_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 }
 
@@ -727,10 +782,7 @@ deploy_evaluate_ew_strikes() {
 # comma delimiter would split SPY,IWM,QQQ into three separate vars.
 deploy_fetch_insider_transactions() {
     echo "Deploying fetch-insider-transactions job..."
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
-
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-insider-transactions \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
@@ -738,36 +790,33 @@ deploy_fetch_insider_transactions() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-insider-transactions \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_insider_transactions" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 }
 
 deploy_fetch_top_movers() {
     echo "Deploying fetch-top-movers job..."
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
-
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-top-movers \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-top-movers \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_top_movers" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 }
 
@@ -802,10 +851,7 @@ deploy_fetch_earnings_history() {
     echo "Deploying fetch-earnings-history job..."
     # 1800s timeout: pulls ~100-300 tickers (anyone reporting in next 90d).
     # AV rate limit at 150 RPM means ~2-3 minutes of API time at peak.
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
-
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
@@ -813,14 +859,14 @@ deploy_fetch_earnings_history() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 }
 
@@ -851,10 +897,7 @@ deploy_compute_earnings_reactions() {
 
 deploy_fetch_news_sentiment() {
     echo "Deploying fetch-news-sentiment (ticker mode) job..."
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
-
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     # Tickers come from alert_config.json `watchlist` at runtime via
     # gcp/fetchers/_watchlist.load_watchlist(). No hardcoded NEWS_TICKERS
     # env var — change the watchlist by editing alert_config.json + redeploy
@@ -866,24 +909,21 @@ deploy_fetch_news_sentiment() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --remove-env-vars "NEWS_TICKERS" \
         --quiet
 }
 
 deploy_fetch_news_sentiment_topics() {
     echo "Deploying fetch-news-sentiment-topics (topic mode) job..."
-    local av_key av_env
-    av_key="$(_secret av-api-key 2>/dev/null || true)"
-    av_env="$(_env_string)${av_key:+,AV_API_KEY=${av_key}}"
-
+    # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     # NEWS_TOPICS env var (set below) is the source of truth; --args=""
     # defensively strips any leftover CLI args from prior manual edits.
     gcloud run jobs create fetch-news-sentiment-topics \
@@ -892,14 +932,14 @@ deploy_fetch_news_sentiment_topics() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment-topics \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${av_env}" \
+        --set-env-vars "$(_env_string)" \
         --quiet
 
     # 5 catalyst-rich topics — AV's hard cap per call.
@@ -1270,6 +1310,11 @@ deploy_schedulers() {
     _schedule_brief "premarket-brief-sunday"   "0 9 * * 0"      "premarket-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
+    # Signal monitor EOD resolver — 4:30 PM ET weekdays (30 min after close
+    # so any late-arriving intraday bars are queryable). Sweeps any alerts
+    # still is_open=TRUE or with exit_ts NULL and resolves them via the
+    # gcp.signal_monitor_eod_resolver replay path. Per Track D G.P0.10.
+    _schedule "signal-monitor-eod-resolver-daily" "30 16 * * 1-5"  "signal-monitor-eod-resolver"
     # ORB scheduled snapshots — 9:45 ET (15-min ORB) and 10:00 ET (30-min ORB).
     # Uses the same signal-monitor job image with --mode=orb-snapshot.
     _schedule_with_args "orb-15m-alert"  "45 9 * * 1-5"  "signal-monitor" \
@@ -1498,6 +1543,7 @@ case "${1:-help}" in
     build)       build_image ;;
     premarket)   build_image && deploy_premarket ;;
     monitor)     build_image && deploy_monitor ;;
+    eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
     insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;
@@ -1515,6 +1561,7 @@ case "${1:-help}" in
         build_image
         deploy_premarket
         deploy_monitor
+        deploy_signal_monitor_eod_resolver
         deploy_weekend
         deploy_fetchers
         setup_insight_tasks_queue

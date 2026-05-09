@@ -58,11 +58,20 @@ def detect_agreement(
     # alphabetically). Stable order matters for JSONB dedup queries and
     # snapshot-style tests.
     fired_sorted = sorted(fired, key=lambda s: s.strategy)
+    # Track D / G.P3.4: include each leg's conditions_met list so post-
+    # mortems can answer "which conditions did momentum hit when stacked
+    # with mean-reversion" without joining back to the per-strategy
+    # tables. Pre-fix the payload only carried `strategies`/`directions`/
+    # `base_scores`/`composite_score`, dropping every per-leg condition
+    # array. The Python list binds natively to a JSONB array of arrays
+    # via the SignalMonitor._persist_signal_alert path (see
+    # gcp/database.upsert_dataframe).
     return {
         "agree":           True,
         "strategies":      [s.strategy for s in fired_sorted],
         "directions":      [s.direction for s in fired_sorted],
         "base_scores":     [float(s.base_score) for s in fired_sorted],
+        "conditions_met":  [list(s.conditions_met) for s in fired_sorted],
         "composite_score": composite_score(fired_sorted),
     }
 

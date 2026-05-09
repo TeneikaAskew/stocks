@@ -59,6 +59,12 @@ CHECKS: list[dict] = [
         "expected_lag_hours": 30,
         "per_ticker": True,
         "tickers": ("IWM", "SPY", "QQQ", "SPX"),
+        # Filter out the NULL-close placeholder rows the
+        # `fetch-premarket-refresh` job writes during pre-market hours.
+        # Without this, MAX(date) returns today even when the actual OHLCV
+        # write hasn't happened yet, masking a stale fetcher (the exact
+        # failure mode the 2026-05-08 audit caught — Track A G.P0.3).
+        "where": "close IS NOT NULL",
         "min_rows_per_day": 1,
         "gap_scan_days": 5,
     },
