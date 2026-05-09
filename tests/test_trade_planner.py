@@ -260,7 +260,7 @@ def test_select_trigger_normal_inside_day_uses_pdh():
         pre_vwap=165.0,    # below PDH
         pre_high=167.5, pre_low=164.0,
     )
-    regime, trigger, stop_anchor, distance = select_trigger_and_regime(ctx, "long")
+    regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "normal"
     assert trigger == pytest.approx(168.35, abs=0.01)  # PDH
     assert stop_anchor is not None
@@ -279,7 +279,7 @@ def test_select_trigger_walks_above_cleared_pdh():
         pqh=180.00,        # next unbroken above
         pyh=200.00,
     )
-    regime, trigger, _, distance = select_trigger_and_regime(ctx, "long")
+    regime, trigger, _, distance, _ = select_trigger_and_regime(ctx, "long")
     # Walk skips PDH/PWH (cleared) and PMH (also cleared — pre_high>166.69
     # means this level was touched), pre_high is in candidates above
     # cleared_above=max(169.28, 172.80)=172.80, picks min above 172.80
@@ -304,7 +304,7 @@ def test_select_trigger_orb_only_when_all_levels_cleared():
         pqh=266.96, pql=188.22,
         pyh=267.08, pyl=91.87,
     )
-    regime, trigger, stop_anchor, distance = select_trigger_and_regime(ctx, "long")
+    regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "orb_only"
     assert trigger is None
     assert distance is None
@@ -326,7 +326,7 @@ def test_select_trigger_extended_when_next_level_far_away():
         pqh=180.0, pql=160.0,                       # this is the next level
         pyh=200.0, pyl=120.0,
     )
-    regime, trigger, _, distance = select_trigger_and_regime(ctx, "long")
+    regime, trigger, _, distance, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "extended"
     assert trigger == pytest.approx(180.0, abs=0.01)
     assert distance is not None and distance >= 3.0
@@ -345,7 +345,7 @@ def test_select_trigger_short_mirror():
         pqh=190.0, pql=120.0,
         pyh=200.0, pyl=95.00,
     )
-    regime, trigger, stop_anchor, distance = select_trigger_and_regime(ctx, "short")
+    regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "short")
     # Cleared_below = min(159, 157) = 157. Levels strictly < 157:
     # PML=130, PQL=120, PYL=95. Closest = PML=130.
     assert regime in ("normal", "extended")
@@ -400,7 +400,7 @@ def test_normal_regime_falls_back_to_legacy_trigger_when_no_multi_tf():
         ftfc_score=1.0,
         # No multi-tf levels populated
     )
-    regime, trigger, _, _ = select_trigger_and_regime(ctx, "long")
+    regime, trigger, _, _, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "normal"
     assert trigger == pytest.approx(316.40, abs=0.01)
 
@@ -421,7 +421,7 @@ def test_inside_of_inside_uses_effective_pdh_mother_bar():
         pqh=220.0, pql=100.0,
         pyh=240.0, pyl=80.00,
     )
-    regime, trigger, _, _ = select_trigger_and_regime(ctx, "long")
+    regime, trigger, _, _, _ = select_trigger_and_regime(ctx, "long")
     assert regime == "normal"
     # Closest level above pre_vwap=164 is effective_pdh=172
     assert trigger == pytest.approx(172.0, abs=0.01)
@@ -474,3 +474,224 @@ def test_context_from_bundle_pulls_level_map_and_premarket():
     assert ctx.pre_high == 352.99
     assert ctx.pre_vwap == 345.39
     assert ctx.gap_pct == 11.79
+
+
+# ─── Audit 2026-05-08 G.P1.4 — orb_only over-classification fix ─────────────
+
+
+def test_select_trigger_blue_sky_synth_when_uptrend_at_ath():
+    """SPY 2026-05-07 reproduction: every PDH/PWH/PMH/PQH/PYH below pre_high,
+    but the gap is small (≈0.4 ATR). Should synthesize a blue-sky trigger
+    rather than collapsing to orb_only. Audit G.P1.4."""
+    ctx = _level_ctx(
+        # SPY 5/7 actuals from market_data_daily
+        close=733.83,            # 5/6 close
+        atr=10.02,
+        pre_vwap=733.93,
+        pre_high=736.13, pre_low=729.22,
+        gap_pct=0.31,
+        # All historical levels below pre_high (uptrend at ATHs)
+        effective_pdh=734.59, effective_pdl=727.82,  # 5/6 high/low — cleared by 736.13
+        pwh=725.04, pwl=716.115,
+        pmh=722.12, pml=714.99,
+        pqh=720.0, pql=700.0,
+        pyh=730.0, pyl=600.0,
+    )
+    regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "long")
+    # Synthetic trigger: cleared_above (max(733.93, 736.13)=736.13) + 0.20*10.02
+    # = 736.13 + 2.004 ≈ 738.13 (default offset is 0.20 — see _BLUE_SKY_ATR_OFFSET)
+    assert regime == "normal"  # distance < 3 ATR
+    assert trigger == pytest.approx(738.13, abs=0.05)
+    assert distance is not None and distance < 3.0
+    assert stop_anchor is not None
+
+
+def test_select_trigger_blue_sky_short_mirror():
+    """Symmetric case for a short trade in a downtrend at multi-year lows:
+    every level above pre_low is "cleared" downward — synthesize trigger
+    0.20 ATR below cleared_below (default offset)."""
+    ctx = _level_ctx(
+        direction="short",
+        close=100.0,
+        atr=2.0,
+        pre_vwap=99.0,
+        pre_high=99.5, pre_low=98.5,   # gap_atr = (98.5 - 100)/2 = 0.75 ATR
+        gap_pct=-1.5,
+        # All historical levels above pre_low (downtrend at lows)
+        effective_pdh=101.0, effective_pdl=99.5,
+        pwh=102.0, pwl=99.5,
+        pmh=104.0, pml=99.0,
+        pqh=110.0, pql=99.5,
+        pyh=120.0, pyl=98.6,
+    )
+    regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "short")
+    # Synthetic: cleared_below=min(99.0, 98.5)=98.5; trigger = 98.5 - 0.20*2 = 98.10
+    assert regime == "normal"
+    assert trigger == pytest.approx(98.10, abs=0.05)
+    assert distance is not None and distance < 3.0
+
+
+def test_select_trigger_orb_only_preserved_on_large_gap():
+    """AMD 4/24 +12 % gap (≈3.8 ATR) is too large for blue-sky synthesis.
+    Confirms `_BLUE_SKY_MAX_GAP_ATR=1.5` keeps the gap-and-go case in
+    orb_only — the move happened overnight, RTH needs its own range."""
+    ctx = _level_ctx(
+        close=305.33, atr=12.50,
+        pre_vwap=345.39, pre_high=352.99, pre_low=334.54,
+        gap_pct=11.79,
+        # AMD 4/24 fixture: gap_atr = (352.99 - 305.33)/12.50 ≈ 3.81 ATR
+        effective_pdh=310.22, effective_pdl=299.76,
+        pwh=281.05, pwl=242.03,
+        pmh=221.33, pml=188.22,
+        pqh=266.96, pql=188.22,
+        pyh=267.08, pyl=91.87,
+    )
+    regime, trigger, _, distance, _ = select_trigger_and_regime(ctx, "long")
+    assert regime == "orb_only"
+    assert trigger is None
+    assert distance is None
+
+
+def test_select_trigger_orb_only_when_no_same_side_levels():
+    """Degenerate: no same-side multi-tf levels populated — stay orb_only.
+    Belt-and-suspenders for sparse-history tickers."""
+    ctx = PlanContext(
+        direction="long", conviction="medium",
+        close=100.0, atr=2.0,
+        trigger_high=None, trigger_low=None,
+        # Only short-side and pre_low populated; no long-side levels at all
+        pwl=98.0, pml=95.0, pql=90.0, pyl=80.0, effective_pdl=99.0,
+        pre_low=99.5,
+        # Force has_multi_tf=True so we get into the candidate branch
+    )
+    regime, trigger, _, distance, _ = select_trigger_and_regime(ctx, "long")
+    assert regime == "orb_only"
+    assert trigger is None
+    assert distance is None
+
+
+def test_select_trigger_orb_only_when_only_pre_high_populated():
+    """Codex review on PR #334 caught that `same_side_levels` (which
+    INCLUDES pre_high/pre_low) was the gate for blue-sky synthesis.
+    A premarket-only bundle that populated only `pre_high` (no PDH/
+    PWH/PMH/PQH/PYH) would have synthesized a trigger and produced
+    nonzero-size persona plans, even though the documented sparse-
+    history case should fall through to orb_only.
+
+    This test reproduces that case: pre_high present, NO structural
+    same-side levels. Expected: orb_only, no synthesis."""
+    ctx = PlanContext(
+        direction="long", conviction="medium",
+        close=100.0, atr=2.0,
+        trigger_high=None, trigger_low=None,
+        # NO long-side structural levels (PDH/PWH/PMH/PQH/PYH all None)
+        # but pre_high IS populated — premarket-only bundle pattern.
+        pre_high=101.5,
+        # Short-side present so has_multi_tf=True and we enter candidate branch
+        pwl=98.0, effective_pdl=99.0, pre_low=99.5,
+    )
+    regime, trigger, _, distance, is_blue_sky = select_trigger_and_regime(
+        ctx, "long")
+    assert regime == "orb_only", (
+        "pre_high alone must NOT enable blue-sky synthesis; the "
+        "structural-level gate (PDH/PWH/PMH/PQH/PYH) must be present "
+        "for synthesis to fire."
+    )
+    assert trigger is None
+    assert distance is None
+    assert is_blue_sky is False
+
+
+def test_select_trigger_orb_only_when_only_pre_low_populated_short():
+    """Mirror of the above for short direction: pre_low alone must not
+    enable blue-sky synthesis."""
+    ctx = PlanContext(
+        direction="short", conviction="medium",
+        close=100.0, atr=2.0,
+        trigger_high=None, trigger_low=None,
+        # NO short-side structural levels (PDL/PWL/PML/PQL/PYL all None)
+        # but pre_low IS populated.
+        pre_low=98.5,
+        # Long-side present so has_multi_tf=True
+        pwh=102.0, effective_pdh=101.0, pre_high=100.5,
+    )
+    regime, trigger, _, distance, is_blue_sky = select_trigger_and_regime(
+        ctx, "short")
+    assert regime == "orb_only"
+    assert trigger is None
+    assert distance is None
+    assert is_blue_sky is False
+
+
+def test_blue_sky_synth_produces_actionable_persona_plans():
+    """End-to-end: when blue-sky synth fires, persona plans get real
+    sizing + targets (not the zero-size orb_only placeholder). Audit
+    G.P1.4 — this is the user-facing improvement."""
+    # Same SPY 5/7 fixture as test_select_trigger_blue_sky_synth_when_uptrend_at_ath
+    ctx = _level_ctx(
+        close=733.83, atr=10.02,
+        pre_vwap=733.93, pre_high=736.13, pre_low=729.22,
+        gap_pct=0.31,
+        effective_pdh=734.59, effective_pdl=727.82,
+        pwh=725.04, pwl=716.115,
+        pmh=722.12, pml=714.99,
+        pqh=720.0, pql=700.0,
+        pyh=730.0, pyl=600.0,
+    )
+    plans = compute_persona_plans(ctx)
+    assert len(plans) == 3
+    for p in plans:
+        assert p.regime == "normal"  # not orb_only any more
+        assert p.position_size_pct > 0.0
+        assert len(p.targets) >= 1
+        # Entry zone clusters around the synthetic trigger ≈ 738.13
+        # (cleared_above 736.13 + 0.20 × ATR 10.02). Aggressive/neutral
+        # entry_lo = trigger; conservative bumps +0.10 ATR.
+        assert p.entry_zone.low >= 736.13  # at or past pre_high
+        assert p.entry_zone.high < 760.0   # not unbounded
+        # Rationale should flag the blue-sky context and recommend ORB
+        # confirmation — synthetic trigger is structurally above all
+        # historical resistance, so a 15-min ORB filter reduces risk.
+        assert "Blue-sky" in p.rationale
+        assert "ORB" in p.rationale
+
+
+def test_blue_sky_per_ticker_override_used_when_set():
+    """Per-ticker `blue_sky_atr_offset` from `exit_config_overrides` takes
+    precedence over the global default (audit G.P1.4 follow-up). QQQ is
+    seeded at 0.20 and SPY/IWM at 0.15, but the planner reads whatever
+    PlanContext carries — verify the override-vs-default branch."""
+    base = dict(
+        close=733.83, atr=10.02,
+        pre_vwap=733.93, pre_high=736.13, pre_low=729.22,
+        gap_pct=0.31,
+        effective_pdh=734.59, effective_pdl=727.82,
+        pwh=725.04, pwl=716.115,
+        pmh=722.12, pml=714.99,
+        pqh=720.0, pql=700.0,
+        pyh=730.0, pyl=600.0,
+    )
+    # Tier-A (per-ticker) override of 0.30 — should produce trigger
+    # 736.13 + 0.30*10.02 = 739.14
+    ctx_a = _level_ctx(blue_sky_atr_offset=0.30, **base)
+    _, trigger_a, *_ = select_trigger_and_regime(ctx_a, "long")
+    assert trigger_a == pytest.approx(739.14, abs=0.05)
+    # Tier-B (None) → falls back to global 0.20, trigger = 738.13
+    ctx_b = _level_ctx(blue_sky_atr_offset=None, **base)
+    _, trigger_b, *_ = select_trigger_and_regime(ctx_b, "long")
+    assert trigger_b == pytest.approx(738.13, abs=0.05)
+
+
+def test_blue_sky_rationale_absent_for_historical_trigger():
+    """Defensive: when the trigger comes from a real historical level
+    (not synthesized), the rationale should NOT include the blue-sky
+    note — that note is specific to the projected-past-pre_high case."""
+    ctx = _level_ctx(
+        # PWH at 168.35 still above pre_high (172.80 fixture has PWH
+        # cleared; lower pre_high so PMH/PWH stay in candidate set).
+        pre_vwap=165.0, pre_high=167.5, pre_low=164.0,
+    )
+    plans = compute_persona_plans(ctx)
+    for p in plans:
+        if p.regime == "normal":
+            assert "Blue-sky" not in p.rationale
