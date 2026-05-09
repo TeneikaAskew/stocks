@@ -984,25 +984,53 @@ def format_levels_for_brief(
     call_pre_banner = _side_banner('CALLS', regime_long, True) if ct is not None and regime_long != 'normal' else None
     put_pre_banner = _side_banner('PUTS', regime_short, True) if pt is not None and regime_short != 'normal' else None
 
+    # Suppress the trigger block on any side whose regime is `orb_only`.
+    # The regime classifier (`lib.agents.trade_planner.select_trigger_and_regime`)
+    # marks `orb_only` when *pre-market* extremes have cleared every
+    # structural level on that side — `cleared_above = max(ref, pre_high)`
+    # for longs, `cleared_below = min(ref, pre_low)` for shorts. By the
+    # time the brief renders at 8:30 AM ET, `level_map.current_price`
+    # is yesterday's close (NOT the pre-market spike); so a check like
+    # `trigger_level < current_price` would miss the audit's actual
+    # case (IWM 5/7: yesterday's close 277.14 < trigger 278.24, but
+    # pre-market spiked to ~287). The earlier draft of this fix made
+    # exactly that mistake — Codex review on PR #307 caught it.
+    #
+    # The right policy is to trust the regime classifier's decision
+    # without second-guessing: if it says `orb_only`, the structural
+    # setup on that side has been compromised by pre-market action,
+    # and the trigger / stop / target / room block is noise relative
+    # to the banner. The banner ("pre-market cleared every structural
+    # level on this side — wait for the 15-min ORB") is the
+    # actionable signal.
+    #
+    # This mirrors the existing convention at line 988-989: the
+    # `call_pre_banner` already renders purely from `regime_long`, no
+    # spot check. We extend the same trust to the trigger-block
+    # suppression.
+    cleared_call = ct is not None and regime_long == 'orb_only'
+    cleared_put = pt is not None and regime_short == 'orb_only'
+
     if ct:
         if call_pre_banner:
             lines.append(call_pre_banner)
-        line = f"  CALLS above {ct['trigger_level']:.2f} ({ct['trigger_name']})"
-        if bias == 'bearish':
-            line += ' -- only if bias denied'
-        lines.append(line)
-        if ct.get('stop'):
-            lines.append(f"    Stop: {ct['stop']:.2f} ({ct['stop_name']})")
-        targets = ct.get('targets', [])
-        for i, t in enumerate(targets, 1):
-            lines.append(f"    T{i}: {t['price']:.2f} ({t['name']})")
-        # Label the room number by what's actually below it. The line
-        # printed here measures "current price -> trigger" (which
-        # `room_to_run_up` returns), not "trigger -> T1". Calling it
-        # "Room to T1" was a stale carryover from when triggers and T1
-        # were the same level.
-        if targets and level_map.room_to_run_up:
-            lines.append(f"    Room to trigger: {level_map.room_to_run_up:.2f}%")
+        if not cleared_call:
+            line = f"  CALLS above {ct['trigger_level']:.2f} ({ct['trigger_name']})"
+            if bias == 'bearish':
+                line += ' -- only if bias denied'
+            lines.append(line)
+            if ct.get('stop'):
+                lines.append(f"    Stop: {ct['stop']:.2f} ({ct['stop_name']})")
+            targets = ct.get('targets', [])
+            for i, t in enumerate(targets, 1):
+                lines.append(f"    T{i}: {t['price']:.2f} ({t['name']})")
+            # Label the room number by what's actually below it. The line
+            # printed here measures "current price -> trigger" (which
+            # `room_to_run_up` returns), not "trigger -> T1". Calling it
+            # "Room to T1" was a stale carryover from when triggers and T1
+            # were the same level.
+            if targets and level_map.room_to_run_up:
+                lines.append(f"    Room to trigger: {level_map.room_to_run_up:.2f}%")
     elif no_call_banner:
         lines.append(no_call_banner)
 
@@ -1012,17 +1040,18 @@ def format_levels_for_brief(
     if pt:
         if put_pre_banner:
             lines.append(put_pre_banner)
-        line = f"  PUTS below {pt['trigger_level']:.2f} ({pt['trigger_name']})"
-        if bias == 'bullish':
-            line += ' -- only if bias denied'
-        lines.append(line)
-        if pt.get('stop'):
-            lines.append(f"    Stop: {pt['stop']:.2f} ({pt['stop_name']})")
-        targets = pt.get('targets', [])
-        for i, t in enumerate(targets, 1):
-            lines.append(f"    T{i}: {t['price']:.2f} ({t['name']})")
-        if targets and level_map.room_to_run_down:
-            lines.append(f"    Room to trigger: {level_map.room_to_run_down:.2f}%")
+        if not cleared_put:
+            line = f"  PUTS below {pt['trigger_level']:.2f} ({pt['trigger_name']})"
+            if bias == 'bullish':
+                line += ' -- only if bias denied'
+            lines.append(line)
+            if pt.get('stop'):
+                lines.append(f"    Stop: {pt['stop']:.2f} ({pt['stop_name']})")
+            targets = pt.get('targets', [])
+            for i, t in enumerate(targets, 1):
+                lines.append(f"    T{i}: {t['price']:.2f} ({t['name']})")
+            if targets and level_map.room_to_run_down:
+                lines.append(f"    Room to trigger: {level_map.room_to_run_down:.2f}%")
     elif no_put_banner:
         lines.append(no_put_banner)
 

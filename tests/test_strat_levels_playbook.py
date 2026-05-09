@@ -21,6 +21,7 @@ import pytest
 from lib.strat_levels import (
     MAX_TRIGGER_DISTANCE_ATR,
     MAX_TRIGGER_DISTANCE_PCT,
+    LevelMap,
     build_level_map,
     format_levels_for_brief,
 )
@@ -403,3 +404,157 @@ class TestTriggerRoomConsistency:
                 f"room_to_run_down={lm.room_to_run_down} but "
                 f"trigger distance={expected_down:.4f}% — sets disagree"
             )
+
+
+# ───── G.P1.7: cleared-side trigger suppression under orb_only ────────
+
+
+class TestClearedSideTriggerSuppress:
+    """Track B audit (G.P1.7) found that on gap-up days like IWM
+    2026-05-07 (pre-market spike to ~287, CALL trigger=278.13), the
+    playbook printed both an `orb_only` warning banner AND the
+    now-meaningless trigger block "CALLS above 278.13 (PDH) ... Room
+    to trigger: 0.36%". The trigger was structurally unreachable as
+    an entry — pre-market had already cleared it. Suppressing the
+    trigger block keeps the banner (the actionable signal) and drops
+    the contradicting block.
+
+    The suppression key is `regime_long == 'orb_only'` (or
+    `regime_short` for PUTS) — NOT a check against `current_price`.
+    The regime classifier already determined the structural setup is
+    compromised by pre-market action using `pre_high`/`pre_low`; the
+    formatter trusts that decision rather than re-deriving it from
+    spot. (At brief render time, `current_price` is yesterday's close,
+    not the pre-market spike — so a spot-based check would miss the
+    audit's actual case. Codex review on PR #307 caught the v1 spot
+    check.)
+    """
+
+    def _bare_lm(self, current_price=287.53, calls_trigger=None,
+                 puts_trigger=None):
+        """Construct a minimal LevelMap for formatter testing without
+        DB dependency. Targets are intentionally empty since the test
+        only inspects the trigger-line presence/absence."""
+        return LevelMap(
+            ticker='IWM', as_of='2026-05-07T08:30:00',
+            current_price=current_price,
+            levels=[],
+            calls_trigger=calls_trigger,
+            puts_trigger=puts_trigger,
+            room_to_run_up=None, room_to_run_down=None,
+        )
+
+    def test_call_orb_only_suppresses_block_with_post_gap_spot(self):
+        """Persistent gap-up case (current_price > trigger): the
+        regime classifier saw pre_high > PDH and tagged orb_only.
+        Suppression must fire and produce banner-only output."""
+        lm = self._bare_lm(
+            calls_trigger={
+                'trigger_level': 278.13, 'trigger_name': 'PDH',
+                'stop': 276.82, 'stop_name': 'CWO',
+                'targets': [{'price': 278.13, 'name': 'PWH'}],
+            },
+        )
+        text = format_levels_for_brief(
+            lm, 'bullish',
+            regime_long='orb_only', regime_short='normal',
+        )
+        assert 'pre-market cleared' in text.lower(), (
+            "expected the orb_only warning banner to render"
+        )
+        assert 'CALLS above 278.13' not in text, (
+            "trigger block must be suppressed under orb_only"
+        )
+        assert 'Room to trigger' not in text
+
+    def test_call_orb_only_suppresses_block_with_pre_gap_spot(self):
+        """Wick-and-fade case (current_price < trigger): pre-market
+        wicked above PDH, then faded back. By brief render time spot
+        sits below the trigger, but `regime_long='orb_only'` because
+        pre_high cleared. Suppression must STILL fire — the regime
+        classifier's decision is the single source of truth, not the
+        relationship between trigger and spot.
+
+        This is the Codex-review case from PR #307. The earlier draft
+        used `trigger_level < spot` and would render both banner AND
+        trigger here, contradicting the banner."""
+        lm = self._bare_lm(
+            current_price=277.14,  # yesterday's close, below the trigger
+            calls_trigger={
+                'trigger_level': 278.13, 'trigger_name': 'PDH',
+                'stop': 276.82, 'stop_name': 'CWO',
+                'targets': [{'price': 278.13, 'name': 'PWH'}],
+            },
+        )
+        text = format_levels_for_brief(
+            lm, 'bullish',
+            regime_long='orb_only', regime_short='normal',
+        )
+        assert 'pre-market cleared' in text.lower()
+        assert 'CALLS above 278.13' not in text, (
+            "wick-and-fade orb_only must still suppress the trigger block"
+        )
+
+    def test_call_normal_regime_renders_trigger_block(self):
+        """When the regime is `normal`, the trigger block always
+        renders — no suppression. This proves the suppression is
+        keyed on the regime, not on any incidental property of the
+        trigger or spot."""
+        lm = self._bare_lm(
+            calls_trigger={
+                'trigger_level': 278.13, 'trigger_name': 'PDH',
+                'stop': 276.82, 'stop_name': 'CWO',
+                'targets': [],
+            },
+        )
+        text = format_levels_for_brief(
+            lm, 'bullish',
+            regime_long='normal', regime_short='normal',
+        )
+        assert 'CALLS above 278.13' in text
+
+    def test_put_orb_only_suppresses_block(self):
+        """Mirror of the CALL test for the PUT side. When
+        regime_short='orb_only', the PUT trigger block is suppressed
+        regardless of trigger/spot relationship."""
+        lm = self._bare_lm(
+            current_price=275.0,
+            puts_trigger={
+                'trigger_level': 278.13, 'trigger_name': 'PDL',
+                'stop': 280.0, 'stop_name': 'PWH',
+                'targets': [{'price': 270.0, 'name': 'PWL'}],
+            },
+        )
+        text = format_levels_for_brief(
+            lm, 'bearish',
+            regime_long='normal', regime_short='orb_only',
+        )
+        assert 'pre-market cleared' in text.lower()
+        assert 'PUTS below 278.13' not in text
+
+    def test_one_side_cleared_other_side_renders_normally(self):
+        """CALL side is `orb_only` (suppressed); PUT side is `normal`
+        (renders). Confirms the per-side independence — fixing one
+        side doesn't accidentally collapse the other into the
+        suppress path."""
+        lm = self._bare_lm(
+            current_price=287.53,
+            calls_trigger={
+                'trigger_level': 278.13, 'trigger_name': 'PDH',
+                'stop': 276.82, 'stop_name': 'CWO',
+                'targets': [],
+            },
+            puts_trigger={
+                'trigger_level': 285.0, 'trigger_name': 'PWL',
+                'stop': 290.0, 'stop_name': 'PDH',
+                'targets': [{'price': 280.0, 'name': 'PDL'}],
+            },
+        )
+        text = format_levels_for_brief(
+            lm, 'bullish',
+            regime_long='orb_only', regime_short='normal',
+        )
+        # CALL side suppressed
+        assert 'CALLS above 278.13' not in text
+        # PUT side renders
+        assert 'PUTS below 285.00' in text
