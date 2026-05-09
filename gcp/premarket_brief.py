@@ -954,6 +954,18 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         if d.get('status') == 'NO DATA':
             print(f"[brief:{ticker}] skip (NO DATA)", file=sys.stderr, flush=True)
             continue
+        # Track B audit (Codex P1 review on PR #336): the playbook
+        # block dereferences d['price'] / d.get('atr14') etc., which
+        # are not populated on STALE_DAILY_DATA rows. Pre-fix the
+        # try/except below caught the resulting KeyError as a
+        # PLAYBOOK_FAILED, which clobbered the intended stale notes
+        # and canonical-skip behavior. Skip stale rows here so the
+        # status set upstream survives all the way through to
+        # persist_to_cloud_sql.
+        if d.get('status') == 'STALE_DAILY_DATA':
+            print(f"[brief:{ticker}] skip (STALE_DAILY_DATA)",
+                  file=sys.stderr, flush=True)
+            continue
         try:
             df = loader.load_daily(ticker, on_stale='warn')
             print(f"[brief:{ticker}] load_daily → {len(df)} rows", file=sys.stderr, flush=True)
@@ -1295,7 +1307,20 @@ def _resolve_data_freshness(
     gap = (analysis_date - last_bar_date).days
     if gap <= 1:
         return False, gap, 'fresh'
-    weekend_exempt = analysis_date.weekday() == 0 and gap == 3
+    # Weekend bridges where Friday's bar IS the most recent close
+    # the market has produced:
+    #   * Monday brief reading Friday → weekday=0, gap=3.
+    #   * Sunday weekly brief reading Friday → weekday=6, gap=2.
+    #     Codex P2 review on PR #336 caught the original exemption
+    #     only handling the Monday case; the Sunday weekly brief flow
+    #     at premarket_brief.py:893 is the legitimate
+    #     Sunday-with-Friday-data path that needs the same exemption.
+    # Saturday briefs are unsupported in production scheduling.
+    weekday = analysis_date.weekday()
+    weekend_exempt = (
+        (weekday == 0 and gap == 3)     # Monday → Friday
+        or (weekday == 6 and gap == 2)  # Sunday weekly brief → Friday
+    )
     if weekend_exempt:
         return False, gap, 'fresh'
     return True, gap, 'STALE_DAILY_DATA'
@@ -1389,6 +1414,21 @@ def _build_overview_embed(brief: dict) -> dict:
     for ticker, d in brief.get('tickers', {}).items():
         if d.get('status') == 'NO DATA':
             lines.append(f'**{ticker}** — No data')
+            continue
+        # STALE_DAILY_DATA rows have no price/rsi/change_pct
+        # populated (the per-ticker analysis was skipped upstream).
+        # Render a degraded line that still names the ticker but
+        # flags staleness explicitly, mirroring the NO DATA pattern.
+        # The brief-level `data_freshness_summary` line below carries
+        # the full session-gap descriptor for context. Codex P1
+        # review on PR #336 caught the missing skip path that
+        # would have caused KeyError on d['price'] downstream.
+        if d.get('status') == 'STALE_DAILY_DATA':
+            gap = d.get('freshness_gap_days', '?')
+            suffix = 's' if gap != 1 else ''
+            lines.append(
+                f'**{ticker}** — STALE (data {gap} session{suffix} old) ⚠'
+            )
             continue
 
         chg = _fmt_pct(d.get('change_pct'))
@@ -1485,6 +1525,20 @@ def _build_ticker_fields(brief: dict) -> list:
     for ticker, d in brief.get('tickers', {}).items():
         if d.get('status') == 'NO DATA':
             fields.append({'name': f'{ticker}', 'value': 'No data', 'inline': False})
+            continue
+        # Track B audit (Codex P1 review on PR #336): STALE_DAILY_DATA
+        # rows have no level/indicator data populated upstream — the
+        # per-ticker analysis was skipped. Mirror the NO DATA pattern
+        # with a single degraded field rather than risking KeyError on
+        # d['prev_day_high'] / d['rsi'] / etc. downstream.
+        if d.get('status') == 'STALE_DAILY_DATA':
+            gap = d.get('freshness_gap_days', '?')
+            suffix = 's' if gap != 1 else ''
+            fields.append({
+                'name': f'{ticker}',
+                'value': f'STALE — data {gap} session{suffix} old',
+                'inline': False,
+            })
             continue
 
         # Field 1: Key Levels (split paired values onto their own lines)

@@ -679,6 +679,23 @@ class TestResolveDataFreshness:
         assert gap == 3
         assert status == 'fresh'
 
+    def test_sunday_weekly_brief_friday_data_is_fresh(self):
+        """Codex P2 review on PR #336: the Sunday weekly brief flow
+        (premarket_brief.py is_sunday branch reading Friday's daily
+        bar) has gap=2, weekday=Sun=6. The market hasn't produced a
+        newer bar over the weekend, so this must be fresh — the v1
+        weekend exemption only covered Monday and would have
+        suppressed every Sunday-brief ticker."""
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 5, 1),    # Friday
+            analysis_date=date(2026, 5, 3),    # Sunday
+        )
+        assert is_stale is False
+        assert gap == 2
+        assert status == 'fresh'
+
     def test_thursday_to_monday_is_stale(self):
         """Thursday → Monday brief (gap=4) is stale — the weekend
         exemption only covers Friday → Monday. Bias toward
@@ -1339,6 +1356,67 @@ class TestPersistPlaybookFailedHandling:
         # row_exists called for SPX only — IWM was filtered upstream
         seen = {c[1]['ticker'] for c in captured['row_exists_calls']}
         assert seen == {'SPX'}
+
+
+class TestStaleEmbedRenders:
+    """Codex P1 review on PR #336 caught that the per-ticker render
+    paths (`_build_overview_embed`, `_build_ticker_fields`) did not
+    skip STALE_DAILY_DATA rows, which would have caused KeyError on
+    `d['price']` / `d['rsi']` / `d['prev_day_high']` etc. since the
+    per-ticker analysis is skipped upstream.
+
+    Both builders now emit a degraded line that names the ticker
+    and the staleness gap, mirroring the existing NO DATA path.
+    """
+
+    def _stale_brief(self, gap_days: int = 10):
+        return {
+            'date': 'Thu May 07, 2026',
+            'analysis_date': date(2026, 5, 7),
+            'tickers': {
+                'SPY': {
+                    'status': 'STALE_DAILY_DATA',
+                    'data_freshness_status': 'STALE_DAILY_DATA',
+                    'freshness_gap_days': gap_days,
+                },
+            },
+        }
+
+    def test_overview_embed_renders_stale_degraded_line(self):
+        """Stale ticker still appears in the description, but with a
+        clear staleness banner instead of crashing on missing fields."""
+        from gcp.premarket_brief import _build_overview_embed
+        embed = _build_overview_embed(self._stale_brief(gap_days=10))
+        assert 'SPY' in embed['description']
+        assert 'STALE' in embed['description']
+        assert '10 sessions old' in embed['description']
+        assert '⚠' in embed['description']
+
+    def test_overview_embed_does_not_crash_on_missing_per_ticker_fields(self):
+        """Defensive: pre-fix this raised KeyError on d['price']."""
+        from gcp.premarket_brief import _build_overview_embed
+        # Should not raise.
+        embed = _build_overview_embed(self._stale_brief(gap_days=3))
+        assert isinstance(embed, dict)
+        assert 'description' in embed
+
+    def test_ticker_fields_renders_stale_degraded_field(self):
+        from gcp.premarket_brief import _build_ticker_fields
+        fields = _build_ticker_fields(self._stale_brief(gap_days=10))
+        # One field per ticker; SPY's value carries the staleness
+        spy_field = next(f for f in fields if f['name'] == 'SPY')
+        assert 'STALE' in spy_field['value']
+        assert '10 sessions old' in spy_field['value']
+
+    def test_singular_session_when_gap_one_treated_as_one_session(self):
+        """Edge case: gap==1 wouldn't be flagged stale by the helper,
+        but if a downstream caller forces status='STALE_DAILY_DATA'
+        with gap=1, the rendered string should say '1 session old'
+        (singular) not '1 sessions old'."""
+        from gcp.premarket_brief import _build_overview_embed
+        embed = _build_overview_embed(self._stale_brief(gap_days=1))
+        assert '1 session old' in embed['description']
+        assert '1 sessions old' not in embed['description']
 
 
 class TestPersistStaleDataHandling:
