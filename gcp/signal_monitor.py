@@ -376,6 +376,7 @@ class SignalMonitor:
             consecutive_periods=self.signal_cfg.consecutive_periods,
             call_rsi_range=call_rng,
             put_rsi_range=put_rng,
+            ticker=ticker,  # G.P0.13 per-ticker disabled-condition filter
         )
         if sig is None:
             return None, None

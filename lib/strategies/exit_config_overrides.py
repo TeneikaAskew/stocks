@@ -180,6 +180,39 @@ def get_put_time_stop(ticker: str) -> int:
     return _defaults().put_time_stop
 
 
+def get_disabled_conditions(ticker: str) -> list[str]:
+    """Return the list of strategy condition names that should be DROPPED
+    from MR PUT scoring for `ticker`. Empty list when no override or
+    NULL — the strategy's full condition set scores normally.
+
+    Used by `lib/strategies/mean_reversion.py:_apply_disabled_conditions`
+    to gate per-ticker drops without changing the inline scoring math.
+
+    The audit (Track A G.P0.13) recommends:
+      - IWM: ['stoch_rsi_overbought', 'rsi_overbought_zone']
+      - QQQ: ['stoch_rsi_overbought', 'rsi_overbought_zone']
+      - SPY: [] (the factor mix was acceptable)
+
+    Stored as JSONB in `exit_config_overrides.disabled_conditions`.
+    """
+    row = _latest_overrides(ticker)
+    if not row:
+        return []
+    val = row.get("disabled_conditions")
+    if val is None:
+        return []
+    # JSONB can come back as list or str depending on driver — coerce.
+    if isinstance(val, str):
+        import json
+        try:
+            val = json.loads(val)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(val, list):
+        return []
+    return [str(c) for c in val if isinstance(c, str)]
+
+
 def get_resolution_tier(ticker: str, knob: str) -> str:
     """Return 'A' or 'B' for audit-trail logging on each fired alert.
 

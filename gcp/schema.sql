@@ -1578,6 +1578,33 @@ CREATE INDEX IF NOT EXISTS idx_ticker_calibration_recent
 
 
 -- ─────────────────────────────────────────────────────────
+-- exit_config_overrides.disabled_conditions seed (PR-E3 / G.P0.13)
+-- ─────────────────────────────────────────────────────────
+-- Track A G.P0.13: drop `stoch_rsi_overbought` and `rsi_overbought_zone`
+-- from MR PUT scoring for IWM and QQQ. Audit (2026-05-08) found those
+-- conditions ANTI-correlated with PUT success on IWM/QQQ. SPY's PUT
+-- factor mix was acceptable so it gets no per-ticker drops.
+--
+-- DO block guards against running before PR-E1's exit_config_overrides
+-- table exists — the UPDATE then no-ops silently rather than failing
+-- the whole apply_schema run.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+         WHERE table_name = 'exit_config_overrides'
+    ) THEN
+        UPDATE exit_config_overrides
+           SET disabled_conditions = '["stoch_rsi_overbought", "rsi_overbought_zone"]'::jsonb
+         WHERE ticker IN ('IWM', 'QQQ')
+           AND calibration_date = '2026-05-08'
+           AND (disabled_conditions IS NULL
+                OR disabled_conditions = '[]'::jsonb);
+    END IF;
+END $$;
+
+
+-- ─────────────────────────────────────────────────────────
 -- HISTORICAL_SIGNALS: parallel-strategy support (Phase 0.7)
 -- ─────────────────────────────────────────────────────────
 -- The historical_signals table is now populated by TWO different signal
