@@ -236,13 +236,16 @@ def _pull_alerts(start: date, end: date) -> pd.DataFrame:
         log.error("Cloud SQL env not set — aborting.")
         sys.exit(2)
 
+    # `signal_alerts` has no `strategy_name` column on the current
+    # schema — strategy is derived from `conditions_met` content
+    # downstream in `_infer_strategy`. Codex review on PR #355 caught
+    # the SELECT abort.
     sql = text("""
         SELECT
             a.id::text          AS id,
             a.ticker            AS ticker,
             a.alert_ts          AS alert_ts,
             a.direction         AS direction,
-            a.strategy_name     AS strategy_name,
             a.conditions_met    AS conditions_met,
             t.return_pct        AS outcome_return_pct
         FROM signal_alerts a
@@ -252,9 +255,45 @@ def _pull_alerts(start: date, end: date) -> pd.DataFrame:
         WHERE a.alert_ts::date BETWEEN :start AND :end
         ORDER BY a.alert_ts ASC
     """)
-    return pd.read_sql(
+    df = pd.read_sql(
         sql, get_engine(), params={"start": str(start), "end": str(end)}
     )
+    df["strategy_name"] = df["conditions_met"].apply(_infer_strategy)
+    return df
+
+
+# Conditions exclusive to MOMENTUM (defined in lib/strategies/momentum.py).
+# Anything containing ANY of these is momentum; otherwise mean_reversion.
+_MOMENTUM_ONLY_FACTORS = frozenset({
+    "rsi_bullish_recovery", "rsi_bearish_recovery",
+    "above_ema9", "below_ema9",
+    "rvol_above_recent", "atr_expansion", "rsi_thrust",
+})
+
+
+def _infer_strategy(conditions_met) -> str:
+    """Derive strategy name from `conditions_met` content.
+
+    The two strategies have disjoint factor namespaces (per
+    `lib/strategies/momentum.py` vs `lib/signals.py:check_*_conditions`).
+    Any momentum-exclusive factor in the list → 'momentum'; otherwise
+    'mean_reversion'. Empty / NULL / malformed → 'mean_reversion'
+    (the more conservative default — no momentum-only factor present).
+    """
+    if conditions_met is None:
+        return "mean_reversion"
+    cond = conditions_met
+    if isinstance(cond, str):
+        try:
+            cond = json.loads(cond)
+        except (TypeError, ValueError):
+            return "mean_reversion"
+    if not isinstance(cond, list):
+        return "mean_reversion"
+    for factor in cond:
+        if str(factor) in _MOMENTUM_ONLY_FACTORS:
+            return "momentum"
+    return "mean_reversion"
 
 
 # ── Reporter ──────────────────────────────────────────────────────────

@@ -231,3 +231,47 @@ def test_classify_factor_insufficient_data():
         discrimination=0.08,
         walkforward_sd=None,
     ) == "INSUFFICIENT_DATA"
+
+
+# ─── _infer_strategy (PR #355 codex review fix) ─────────────────────
+
+
+def test_infer_strategy_momentum_when_momentum_only_factor_present():
+    """signal_alerts has no strategy_name column; the SQL query was
+    failing with UndefinedColumn until we derived strategy from
+    conditions_met content. Codex review on PR #355."""
+    from scripts.analysis.per_factor_walkforward import _infer_strategy
+
+    # rsi_bullish_recovery is momentum-exclusive
+    assert _infer_strategy(
+        ["consecutive_down", "rsi_bullish_recovery", "above_ema9"]
+    ) == "momentum"
+    # above_ema9 alone is momentum-exclusive
+    assert _infer_strategy(["above_ema9"]) == "momentum"
+
+
+def test_infer_strategy_mean_reversion_when_no_momentum_factor():
+    from scripts.analysis.per_factor_walkforward import _infer_strategy
+
+    # MR-exclusive: above_vwap, stoch_rsi_overbought, level_break_pdl
+    assert _infer_strategy(
+        ["consecutive_up", "rsi_overbought_zone", "above_vwap",
+         "stoch_rsi_overbought"]
+    ) == "mean_reversion"
+
+
+def test_infer_strategy_handles_jsonb_string_form():
+    """conditions_met may come back as a JSON-encoded string for
+    legacy pre-#308 rows."""
+    from scripts.analysis.per_factor_walkforward import _infer_strategy
+
+    assert _infer_strategy('["above_ema9"]') == "momentum"
+    assert _infer_strategy('["consecutive_up","above_vwap"]') == "mean_reversion"
+
+
+def test_infer_strategy_handles_none_and_empty():
+    from scripts.analysis.per_factor_walkforward import _infer_strategy
+
+    assert _infer_strategy(None) == "mean_reversion"
+    assert _infer_strategy([]) == "mean_reversion"
+    assert _infer_strategy("not-json") == "mean_reversion"
