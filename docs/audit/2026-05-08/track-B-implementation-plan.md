@@ -474,10 +474,10 @@ appended once each lands.
 - [x] Step 3 gate cleared: [#295](https://github.com/TeneikaAskew/stocks/issues/295) (Track A G.P0.1) closed at 2026-05-09 00:59 UTC; #281 schema-apply job stale (verified successful executions on 2026-05-07 12:59 + 13:08, plus Track E shipped #326 schema via same path on 2026-05-08).
 - [x] Step 3.1: W5 schema — PR [#335](https://github.com/TeneikaAskew/stocks/pull/335) **merged** (dfa3ed7 on main); Codex P2 review (premarket_analysis_history ALTER ordering) addressed in same PR (84f19be)
 - [x] Step 4.1: W6 stale-warn + data_as_of — PR [#336](https://github.com/TeneikaAskew/stocks/pull/336) **merged** (2d3974b on main); two Codex reviews addressed in same PR (95856d2): downstream embed-skip + Sunday weekend exemption
-- [ ] Step 4.2: W7 LLM commentary — PR [#337](https://github.com/TeneikaAskew/stocks/pull/337) — open, rebased on post-W6 main (e1e11d8); awaiting CI
+- [x] Step 4.2: W7 LLM commentary — PR [#337](https://github.com/TeneikaAskew/stocks/pull/337) **merged** (b7b5ed5 on main); rebased post-W6; Codex P2 review (cross-PR schema dependency) acknowledged in same PR
 - [x] Step 5 gate cleared: Track A G.P0.1 #295 closed
-- [ ] Step 6.1: W8 embed quality replay — PR [#340](https://github.com/TeneikaAskew/stocks/pull/340) — open, Codex P2 (earnings JOIN dependency) addressed (3980014); awaiting CI
-- [ ] Step 7: close meta tracking issue [#314](https://github.com/TeneikaAskew/stocks/issues/314); mark Track B audit doc fully resolved (after #337 + #340 merge)
+- [x] Step 6.1: W8 embed quality replay — PR [#340](https://github.com/TeneikaAskew/stocks/pull/340) **merged** (eff8d4d on main); Codex P2 (earnings JOIN dependency) addressed in same PR (3980014)
+- [x] Step 7: closed meta tracking issue [#314](https://github.com/TeneikaAskew/stocks/issues/314); Track B audit doc fully resolved
 
 ### Round 1 outcome (2026-05-08)
 
@@ -494,7 +494,7 @@ wick-and-fade regression test.
 | W3 | #309 | 42f6821 | (closed as not-a-bug; no tracking issue) |
 | W4 | #310 | 01e6373 | #299 |
 
-### Round 2 outcome (2026-05-09 — partial)
+### Round 2 outcome (2026-05-09 — complete)
 
 Both blockers cleared: Track A G.P0.1 (#295) merged the daily
 fetcher unfreeze + freshness watchdog + on_stale guard; #281's
@@ -505,8 +505,8 @@ shipped via same path).
 |---|---|---|---|
 | W5 schema | #335 | ✅ merged | dfa3ed7 |
 | W6 stale-warn writer | #336 | ✅ merged | 2d3974b |
-| W7 LLM persistence | #337 | open, rebased post-W6 (e1e11d8) | (awaiting CI) |
-| W8 embed audit | #340 | open, Codex addressed (3980014) | (awaiting CI) |
+| W7 LLM persistence | #337 | ✅ merged | b7b5ed5 |
+| W8 embed audit | #340 | ✅ merged | eff8d4d |
 
 Codex review interactions in Round 2 (all addressed in same PR):
 
