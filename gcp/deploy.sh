@@ -1281,16 +1281,35 @@ _schedule_brief() {
 _schedule_insight() {
     local NAME=$1 CRON=$2 JOB=$3
     local BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"INSIGHT_TRIGGERED_BY","value":"cloud-scheduler:'"${NAME}"'"}]}]}}'
-    gcloud scheduler jobs create http "${NAME}" \
-        --location "${REGION}" \
-        --schedule "${CRON}" \
-        --time-zone "America/New_York" \
-        --uri "$(_job_uri "${JOB}")" \
-        --http-method POST \
-        --headers "Content-Type=application/json" \
-        --message-body "${BODY}" \
-        --oauth-service-account-email "${SA_EMAIL}" \
-        --quiet 2>/dev/null || echo "  ${NAME}: already exists"
+    # Idempotent: update if exists, create otherwise. Codex review on PR
+    # #352 caught that create-only swallows ALREADY_EXISTS, so a re-deploy
+    # against an existing scheduler keeps the OLD body and the new
+    # INSIGHT_TRIGGERED_BY override never reaches production.
+    if gcloud scheduler jobs describe "${NAME}" --location "${REGION}" --quiet 2>/dev/null >/dev/null; then
+        gcloud scheduler jobs update http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "$(_job_uri "${JOB}")" \
+            --http-method POST \
+            --update-headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet \
+        && echo "  ${NAME}: updated"
+    else
+        gcloud scheduler jobs create http "${NAME}" \
+            --location "${REGION}" \
+            --schedule "${CRON}" \
+            --time-zone "America/New_York" \
+            --uri "$(_job_uri "${JOB}")" \
+            --http-method POST \
+            --headers "Content-Type=application/json" \
+            --message-body "${BODY}" \
+            --oauth-service-account-email "${SA_EMAIL}" \
+            --quiet \
+        && echo "  ${NAME}: created"
+    fi
 }
 
 # Variant of _schedule that overrides the container command-line args via the
