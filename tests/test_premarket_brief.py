@@ -525,6 +525,99 @@ class TestStochRegimeTag:
         assert _stoch_regime_tag(50, None) == ''
 
 
+class TestResolveSignalStatus:
+    """`signal_status` is gated by `ftfc_direction`.
+
+    The regression preserves the 2026-05-08 audit fix (track-B G.P1.5):
+    bullish FTFC must not surface a "PUT setup" status, and bearish
+    FTFC must not surface "CALL setup". Mixed FTFC picks the higher
+    score's side; ties resolve to CALL.
+
+    `signal_threshold=3` and `building_threshold=2` mirror the
+    production defaults at `lib/config.py:312-313`.
+    """
+
+    def test_bullish_ftfc_gates_to_call_even_when_put_score_higher(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        # Pre-fix this row would have published "PUT setup (4/5)";
+        # post-fix it publishes "CALL building (2/5)" (because
+        # bullish FTFC means we surface only the call_score side).
+        assert _resolve_signal_status(
+            call_score=2, put_score=4,
+            ftfc_direction='bullish',
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL building (2/5)'
+
+    def test_bearish_ftfc_gates_to_put_even_when_call_score_higher(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        assert _resolve_signal_status(
+            call_score=4, put_score=2,
+            ftfc_direction='bearish',
+            signal_threshold=3, building_threshold=2,
+        ) == 'PUT building (2/5)'
+
+    def test_mixed_ftfc_picks_higher_score_side(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        assert _resolve_signal_status(
+            call_score=4, put_score=2,
+            ftfc_direction='mixed',
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL setup (4/5)'
+        assert _resolve_signal_status(
+            call_score=1, put_score=4,
+            ftfc_direction='mixed',
+            signal_threshold=3, building_threshold=2,
+        ) == 'PUT setup (4/5)'
+
+    def test_mixed_ftfc_ties_resolve_to_call(self):
+        """Tie at 3-3 under mixed FTFC publishes CALL (deterministic
+        choice keeps downstream consumers from oscillating)."""
+        from gcp.premarket_brief import _resolve_signal_status
+        assert _resolve_signal_status(
+            call_score=3, put_score=3,
+            ftfc_direction='mixed',
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL setup (3/5)'
+
+    def test_below_building_threshold_returns_no_signal(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        assert _resolve_signal_status(
+            call_score=1, put_score=1,
+            ftfc_direction='bullish',
+            signal_threshold=3, building_threshold=2,
+        ) == 'No signal'
+
+    def test_setup_threshold_picks_setup_label_over_building(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        assert _resolve_signal_status(
+            call_score=4, put_score=0,
+            ftfc_direction='bullish',
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL setup (4/5)'
+
+    def test_none_ftfc_treated_as_mixed(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        # None / unknown FTFC string defensively falls back to mixed
+        # (higher-score wins); prevents a NoneError or AttributeError
+        # if upstream ever sends a missing direction.
+        assert _resolve_signal_status(
+            call_score=4, put_score=2,
+            ftfc_direction=None,
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL setup (4/5)'
+
+    def test_capitalized_bullish_still_gates_correctly(self):
+        from gcp.premarket_brief import _resolve_signal_status
+        # FTFC dir comes from `compute_strat_status` and could be
+        # 'Bullish' / 'BULLISH' / 'bullish'. Lowercase + substring
+        # match is robust to all of those.
+        assert _resolve_signal_status(
+            call_score=4, put_score=0,
+            ftfc_direction='Bullish',
+            signal_threshold=3, building_threshold=2,
+        ) == 'CALL setup (4/5)'
+
+
 class TestFmtCombo:
     """Snake-case storage form → title-case render form."""
 

@@ -795,17 +795,13 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         # ── Signal conditions ───────────────────────────────────────────
         call_score, _ = check_call_conditions(latest)
         put_score, _ = check_put_conditions(latest)
-
-        if call_score >= signal_threshold:
-            signal_status = f'CALL setup ({call_score}/5)'
-        elif put_score >= signal_threshold:
-            signal_status = f'PUT setup ({put_score}/5)'
-        elif call_score >= building_threshold:
-            signal_status = f'CALL building ({call_score}/5)'
-        elif put_score >= building_threshold:
-            signal_status = f'PUT building ({put_score}/5)'
-        else:
-            signal_status = 'No signal'
+        signal_status = _resolve_signal_status(
+            call_score=call_score,
+            put_score=put_score,
+            ftfc_direction=ftfc_dir,
+            signal_threshold=signal_threshold,
+            building_threshold=building_threshold,
+        )
 
         consec_up = int(latest.get('Consecutive_Up', 0))
         consec_down = int(latest.get('Consecutive_Down', 0))
@@ -1134,6 +1130,60 @@ def _fmt_timeframe(tf: str) -> str:
     if tf.lower() == '1mo':
         return '1M'
     return tf.upper()
+
+
+def _resolve_signal_status(
+    call_score: int,
+    put_score: int,
+    ftfc_direction: str,
+    signal_threshold: int,
+    building_threshold: int,
+) -> str:
+    """Resolve the brief's `signal_status` string under the FTFC gate.
+
+    The brief publishes one signal_status per (ticker, date). Pre-gate
+    behaviour scored CALL and PUT independently and surfaced whichever
+    crossed the threshold first — which on a bullish-FTFC row could
+    produce "PUT setup (4/5)", contradicting the bullish bias. That
+    contradiction is what set `signal_alerts.brief_alignment=CONFLICTED`
+    on 4 of 6 (ticker, direction) buckets in the 2026-05-08 audit
+    window (track-B / G.P1.5).
+
+    The fix gates the published side by `ftfc_direction`:
+
+      * `bullish` → CALL only (use call_score)
+      * `bearish` → PUT only (use put_score)
+      * anything else (mixed / None / unknown) → pick the higher score;
+        ties go to CALL (a tie under mixed-FTFC carries no directional
+        edge, but the brief has to pick one — CALL keeps the bias
+        explicit rather than rendering "PUT" against a non-bearish
+        bias).
+
+    The trade-off is that we lose "fade the bias" plays — a 4/5 PUT
+    score under a bullish FTFC will surface as 'No signal' (or as the
+    weaker CALL score's status) instead of "PUT setup". Track G's
+    cross-track recommendation (4.2) explicitly cautioned against
+    treating fade-the-bias as a usable plan from the audit data, and
+    the user-confirmed decision was to gate at source rather than
+    keep the contradiction with a sidecar field. See
+    `docs/audit/2026-05-08/track-B-implementation-plan.md` W1.
+    """
+    direction = (ftfc_direction or 'mixed').lower()
+    if 'bull' in direction:
+        score, side = call_score, 'CALL'
+    elif 'bear' in direction:
+        score, side = put_score, 'PUT'
+    else:
+        if call_score >= put_score:
+            score, side = call_score, 'CALL'
+        else:
+            score, side = put_score, 'PUT'
+
+    if score >= signal_threshold:
+        return f'{side} setup ({score}/5)'
+    if score >= building_threshold:
+        return f'{side} building ({score}/5)'
+    return 'No signal'
 
 
 def _stoch_regime_tag(stoch_k, stoch_d) -> str:
