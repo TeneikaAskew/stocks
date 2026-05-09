@@ -471,13 +471,13 @@ appended once each lands.
 - [x] Step 2.2: W2 G.P1.7 — PR [#307](https://github.com/TeneikaAskew/stocks/pull/307) **merged** (6af89c6 on main); Codex review addressed in same PR (439288a)
 - [x] Step 2.3: W3 G.P1.6 investigation — PR [#309](https://github.com/TeneikaAskew/stocks/pull/309) **merged** (42f6821 on main); orthogonality docstring + 4 regression tests; closed as not-a-bug
 - [x] Step 2.4: W4 G.P1.10 investigation — PR [#310](https://github.com/TeneikaAskew/stocks/pull/310) **merged** (01e6373 on main); auto-closed [#299](https://github.com/TeneikaAskew/stocks/issues/299); deploy-timing artifact, no production change
-- [ ] **⏸ WAIT** Step 3 gate: [#281](https://github.com/TeneikaAskew/stocks/issues/281) apply-schema-migrations resolution. 48 h fallback (~2026-05-10 21:46 ET): apply schema via `db-query.yml` with `commit=true` if #281 still unfixed.
-- [ ] Step 3.1: W5 schema PR (gated on Step 3 gate)
-- [ ] Step 4.1: W6 stale-warn + data_as_of PR (gated on Step 3.1)
-- [ ] Step 4.2: W7 LLM commentary PR (gated on Step 3.1)
-- [ ] **⏸ WAIT** Step 5 gate: Track A G.P0.1 ([#295](https://github.com/TeneikaAskew/stocks/issues/295)) — needed for end-to-end verification of W6's "healthy data" rendering path
-- [ ] Step 6.1: W8 embed quality replay PR (gated on Step 5)
-- [ ] Step 7: close audit followup issues; mark Track B doc resolved
+- [x] Step 3 gate cleared: [#295](https://github.com/TeneikaAskew/stocks/issues/295) (Track A G.P0.1) closed at 2026-05-09 00:59 UTC; #281 schema-apply job stale (verified successful executions on 2026-05-07 12:59 + 13:08, plus Track E shipped #326 schema via same path on 2026-05-08).
+- [x] Step 3.1: W5 schema — PR [#335](https://github.com/TeneikaAskew/stocks/pull/335) **merged** (dfa3ed7 on main); Codex P2 review (premarket_analysis_history ALTER ordering) addressed in same PR (84f19be)
+- [x] Step 4.1: W6 stale-warn + data_as_of — PR [#336](https://github.com/TeneikaAskew/stocks/pull/336) **merged** (2d3974b on main); two Codex reviews addressed in same PR (95856d2): downstream embed-skip + Sunday weekend exemption
+- [ ] Step 4.2: W7 LLM commentary — PR [#337](https://github.com/TeneikaAskew/stocks/pull/337) — open, rebased on post-W6 main (e1e11d8); awaiting CI
+- [x] Step 5 gate cleared: Track A G.P0.1 #295 closed
+- [ ] Step 6.1: W8 embed quality replay — PR [#340](https://github.com/TeneikaAskew/stocks/pull/340) — open, Codex P2 (earnings JOIN dependency) addressed (3980014); awaiting CI
+- [ ] Step 7: close meta tracking issue [#314](https://github.com/TeneikaAskew/stocks/issues/314); mark Track B audit doc fully resolved (after #337 + #340 merge)
 
 ### Round 1 outcome (2026-05-08)
 
@@ -493,6 +493,42 @@ wick-and-fade regression test.
 | W2 | #307 | 6af89c6 | (no tracking issue) |
 | W3 | #309 | 42f6821 | (closed as not-a-bug; no tracking issue) |
 | W4 | #310 | 01e6373 | #299 |
+
+### Round 2 outcome (2026-05-09 — partial)
+
+Both blockers cleared: Track A G.P0.1 (#295) merged the daily
+fetcher unfreeze + freshness watchdog + on_stale guard; #281's
+apply-schema-migrations job verified working (Track E's #326
+shipped via same path).
+
+| W# | PR | Status | Merge SHA |
+|---|---|---|---|
+| W5 schema | #335 | ✅ merged | dfa3ed7 |
+| W6 stale-warn writer | #336 | ✅ merged | 2d3974b |
+| W7 LLM persistence | #337 | open, rebased post-W6 (e1e11d8) | (awaiting CI) |
+| W8 embed audit | #340 | open, Codex addressed (3980014) | (awaiting CI) |
+
+Codex review interactions in Round 2 (all addressed in same PR):
+
+- **#335**: ALTER TABLE ordering — `premarket_analysis_history`
+  ALTER would have run before its CREATE on a fresh DB. Fix moves
+  the columns inline in the CREATE definition + a deferred ALTER
+  block immediately after CREATE.
+- **#336 P1**: downstream loops needed STALE_DAILY_DATA skip paths
+  (playbook block, overview embed, ticker fields) — fix adds
+  explicit `continue` + degraded "STALE (data N sessions old)"
+  lines.
+- **#336 P2**: Sunday weekly brief Friday-data exemption — fix
+  extends weekend bridge to cover `weekday=6 AND gap=2`.
+- **#337 P2**: cross-PR schema dependency on #335 — declined; the
+  merge order is documented and tested, mirroring the existing
+  PR-#129/#101 convention.
+- **#340 P2**: earnings embed gap-reaction line depends on
+  `market_data_daily` via LEFT JOIN — fix updates the audit doc
+  with the asymmetric dependency and per-sub-section status table.
+
+CI on every Round 2 PR ran the full `pytest tests/ -x -q` suite;
+all green on every push.
 
 CI on every PR ran the full `pytest tests/ -x -q` suite (no
 exclusions); all green on every push. Downstream contracts
