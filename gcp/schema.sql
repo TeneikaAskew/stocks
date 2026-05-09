@@ -1730,11 +1730,23 @@ CREATE TABLE IF NOT EXISTS exit_config_overrides (
     -- NULL = use the strategy's full condition list.
     disabled_conditions JSONB,
 
+    -- Audit 2026-05-08 G.P1.4 follow-up: per-ticker blue-sky synth offset
+    -- in ATR units, used by lib/agents/trade_planner.select_trigger_and_regime
+    -- when every historical level is cleared by pre-market. Calibrated
+    -- from the per-ticker median/mean (RTH high − pre_high)/ATR
+    -- distribution on gap-up days. NULL → falls back to the global
+    -- default `_BLUE_SKY_ATR_OFFSET` in trade_planner.py.
+    blue_sky_atr_offset DOUBLE PRECISION,
+
     notes              TEXT,
     inserted_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
     PRIMARY KEY (ticker, calibration_date)
 );
+
+-- Migration for existing instances. Idempotent.
+ALTER TABLE exit_config_overrides
+    ADD COLUMN IF NOT EXISTS blue_sky_atr_offset DOUBLE PRECISION;
 
 CREATE INDEX IF NOT EXISTS idx_exit_config_overrides_recent
     ON exit_config_overrides (ticker, calibration_date DESC);
@@ -1754,6 +1766,29 @@ INSERT INTO exit_config_overrides (
     ('QQQ', '2026-05-08', 0.00301, 0.00238, 0.00075, 0.00075, 20, 25,
      'Audit 2026-05-08 (90-day MFE/MAE p70/p25, n=544). Counterfactual: mean per-trade return −0.0005% → +0.0127%.')
 ON CONFLICT (ticker, calibration_date) DO NOTHING;
+
+-- Audit 2026-05-08 G.P1.4 follow-up: blue-sky synth offset seed.
+-- Derived from db-query.yml run 25588221502 — 12-month window of
+-- gap-up days where pre_high IS NOT NULL, computing per-ticker median
+-- and mean of (RTH high − pre_high)/ATR. n_extension_events were
+-- 7-9 per ticker so values rounded to 0.05 grid for stability:
+--
+--   Ticker | mean ext | median ext | p75 ext | seeded
+--   SPY    | 0.137    | 0.098      | 0.197   | 0.15
+--   IWM    | 0.142    | 0.072      | 0.211   | 0.15
+--   QQQ    | 0.178    | 0.180      | 0.227   | 0.20
+--
+-- Conservative rule: use the mean for SPY/IWM (similar distributions)
+-- and bump QQQ slightly higher because its median > mean indicates a
+-- right-skewed extension distribution (more big follow-throughs).
+UPDATE exit_config_overrides
+   SET blue_sky_atr_offset = 0.15
+ WHERE ticker IN ('SPY', 'IWM') AND calibration_date = '2026-05-08'
+   AND blue_sky_atr_offset IS NULL;
+UPDATE exit_config_overrides
+   SET blue_sky_atr_offset = 0.20
+ WHERE ticker = 'QQQ' AND calibration_date = '2026-05-08'
+   AND blue_sky_atr_offset IS NULL;
 
 
 -- ─────────────────────────────────────────────────────────
