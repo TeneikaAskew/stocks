@@ -1,0 +1,202 @@
+name: Per-factor walk-forward audit
+
+# Weekly G.P2.1+2.2+2.3 analysis — runs
+# `scripts/analysis/per_factor_walkforward.py` against Cloud SQL,
+# computes per-factor fire rate / discrimination / walk-forward sd over
+# the trailing 30 days, uploads the markdown report as an artifact, and
+# posts a phone-friendly summary comment on the audit tracking issue
+# (variable PR_FACTOR_AUDIT_TRACKING_ISSUE) when configured.
+#
+# Track C audit 2026-05-08 plan §"Round 2 / PR-G". The actual analysis
+# is data-gated — meaningful results require ≥ 2 weeks of post-Phase
+# 0.7.x momentum data. The first scheduled run that produces an
+# actionable report is ~2026-05-23 (first Saturday after 2 weeks of
+# post-G.P0.11 fixes).
+#
+# Until then, the report's per-factor verdicts will read
+# INSUFFICIENT_DATA — that's expected and not a failure.
+
+on:
+  schedule:
+    # Saturday 13:00 UTC (09:00 ET / 08:00 EST) — runs after the
+    # weekend-review Cloud Run Job's 09:00 ET firing on Saturday so the
+    # signal_alerts table reflects Friday's full close + EOD resolver.
+    - cron: '0 13 * * 6'
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Window start (YYYY-MM-DD); default = today - 30 days"
+        required: false
+        default: ''
+      end:
+        description: "Window end (YYYY-MM-DD); default = today"
+        required: false
+        default: ''
+      folds:
+        description: "Walk-forward folds (default 4)"
+        required: false
+        default: '4'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  walk-forward-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-walkforward-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-walkforward-
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install 'cloud-sql-python-connector[pg8000]'
+
+      - name: Write GCP service account key
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          if [ -z "$GCP_SA_KEY" ]; then
+            echo "::error::GCP_SA_KEY secret is not set"
+            exit 1
+          fi
+          echo "$GCP_SA_KEY" > "$RUNNER_TEMP/gcp-key.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-key.json" >> "$GITHUB_ENV"
+
+      - name: Run per-factor walk-forward audit
+        env:
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          START: ${{ github.event.inputs.start }}
+          END: ${{ github.event.inputs.end }}
+          FOLDS: ${{ github.event.inputs.folds }}
+        run: |
+          for var in CLOUD_SQL_CONNECTION_NAME DB_USER DB_PASS DB_NAME; do
+            if [ -z "${!var}" ]; then
+              echo "::error::$var secret is not set"
+              exit 1
+            fi
+          done
+
+          # Default window: trailing 30 days. Manual dispatch can override.
+          if [ -z "$START" ]; then
+            START=$(date -u -d '30 days ago' +%Y-%m-%d)
+          fi
+          if [ -z "$END" ]; then
+            END=$(date -u +%Y-%m-%d)
+          fi
+          FOLDS_ARG="${FOLDS:-4}"
+
+          mkdir -p /tmp/walkforward
+          OUT=/tmp/walkforward/report-${START}-${END}.md
+
+          # The script exits 3 when no alerts in window or empty
+          # conditions_met — that's a "no data yet" scenario which we
+          # surface as an artifact comment, not a workflow failure.
+          set +e
+          python -m scripts.analysis.per_factor_walkforward \
+            --start "$START" \
+            --end "$END" \
+            --folds "$FOLDS_ARG" \
+            --output "$OUT"
+          AUDIT_EXIT=$?
+          set -e
+
+          if [ "$AUDIT_EXIT" -eq 3 ]; then
+            echo "## Per-factor walk-forward audit (insufficient data)" \
+              > "$OUT"
+            echo "" >> "$OUT"
+            echo "Window: $START → $END (folds: $FOLDS_ARG)" >> "$OUT"
+            echo "" >> "$OUT"
+            echo "No alerts in window — this is expected until ≥ 2 weeks " \
+              "of post-Phase-0.7.x momentum data accumulate." >> "$OUT"
+          elif [ "$AUDIT_EXIT" -ne 0 ]; then
+            echo "::error::per_factor_walkforward exited $AUDIT_EXIT"
+            exit "$AUDIT_EXIT"
+          fi
+
+          echo "## Per-factor walk-forward audit ($START → $END)" \
+            >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat "$OUT" >> $GITHUB_STEP_SUMMARY
+          echo "REPORT_PATH=$OUT" >> "$GITHUB_ENV"
+          echo "WINDOW_START=$START" >> "$GITHUB_ENV"
+          echo "WINDOW_END=$END" >> "$GITHUB_ENV"
+
+      - name: Upload walk-forward report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: per-factor-walkforward-${{ github.run_id }}
+          path: /tmp/walkforward/
+          if-no-files-found: ignore
+
+      - name: Comment summary on tracking issue
+        if: vars.PR_FACTOR_AUDIT_TRACKING_ISSUE != '' && env.REPORT_PATH != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ vars.PR_FACTOR_AUDIT_TRACKING_ISSUE }}
+        run: |
+          # GitHub issue comment limit is 65 KB; truncate to 60 KB.
+          BODY_FILE=/tmp/walkforward/comment.md
+          {
+            echo "## 🔁 Weekly walk-forward audit — ${WINDOW_START} → ${WINDOW_END}"
+            echo ""
+            echo "[Workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo ""
+            head -c 60000 "$REPORT_PATH"
+          } > "$BODY_FILE"
+          curl -sS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            -d "$(jq -Rs '{body: .}' < "$BODY_FILE")"
+
+  handle-failure:
+    needs: walk-forward-audit
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Per-factor walk-forward audit"
+      failure_title: "❌ Per-factor walk-forward audit failed"
+      issue_labels: "workflow-failure,walkforward,audit-2026-05-08,automated"
+      workflow_file: "per-factor-walkforward.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false
