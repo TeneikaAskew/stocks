@@ -943,6 +943,19 @@ CREATE INDEX IF NOT EXISTS idx_journal_entries_embedding
 -- Per-role provider/model routing for the agent pipeline.
 -- Drives the /admin model-routing dashboard. Defaults to Vertex
 -- Gemini for every role on fresh install (no new secrets required).
+--
+-- DORMANCY NOTE (audit 2026-05-08 G.P2.4): all 7 roles seed at the
+-- same provider/model. The infrastructure (table + UI + per-role
+-- /admin/routes API) supports per-role swap (e.g. analyst on cheap
+-- Gemini Flash, judge on Claude Opus for harder reasoning) but no
+-- production diversification has been justified yet — there's no
+-- evidence the marginal cost-vs-quality trade-off is worth the
+-- per-role engineering. The dashboard intentionally stays present
+-- so an operator can A/B a single role (e.g. judge on Gemini 2.5
+-- Pro for one week) without code changes; results would inform a
+-- follow-up calibration if any role's per-call cost or output
+-- quality justifies it. Until that data exists, treat this as a
+-- single-model deployment by design.
 CREATE TABLE IF NOT EXISTS model_routing (
     role          VARCHAR(32)  PRIMARY KEY,
     provider      VARCHAR(32)  NOT NULL,   -- 'vertex' | 'anthropic' | 'openai'
