@@ -690,7 +690,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     }
 
     for ticker in tickers:
-        df = loader.load_daily(ticker)
+        df = loader.load_daily(ticker, on_stale='warn')
         if df.empty or len(df) < 2:
             brief['tickers'][ticker] = {'status': 'NO DATA'}
             continue
@@ -894,7 +894,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             print(f"[brief:{ticker}] skip (NO DATA)", file=sys.stderr, flush=True)
             continue
         try:
-            df = loader.load_daily(ticker)
+            df = loader.load_daily(ticker, on_stale='warn')
             print(f"[brief:{ticker}] load_daily → {len(df)} rows", file=sys.stderr, flush=True)
             if df.empty:
                 continue
