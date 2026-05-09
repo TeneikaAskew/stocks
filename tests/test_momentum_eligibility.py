@@ -110,6 +110,13 @@ class TestEvaluateBars:
         assert out['call']['score_dist'][7] == 1
 
 
+def _empty_dir():
+    return {'condition_fire_count': Counter(),
+            'score_dist': Counter(),
+            'would_fire_at': {3: 0, 4: 0, 5: 0, 6: 0},
+            'would_fire_at_no_core_gate': {3: 0, 4: 0, 5: 0, 6: 0}}
+
+
 class TestFormatReport:
     def test_renders_per_ticker_section(self):
         per_ticker = {
@@ -118,12 +125,14 @@ class TestFormatReport:
                 'call': {
                     'condition_fire_count': Counter({'above_vwap': 800, 'consecutive_up': 100}),
                     'score_dist': Counter({0: 600, 1: 200, 2: 100, 3: 50, 4: 30, 5: 15, 6: 4, 7: 1}),
-                    'would_fire_at': {3: 100, 4: 50, 5: 20, 6: 5},
+                    'would_fire_at': {3: 80, 4: 45, 5: 20, 6: 5},
+                    'would_fire_at_no_core_gate': {3: 100, 4: 50, 5: 20, 6: 5},
                 },
                 'put': {
                     'condition_fire_count': Counter({'below_vwap': 200}),
                     'score_dist': Counter({0: 800, 1: 100, 2: 50, 3: 30, 4: 15, 5: 4, 6: 1, 7: 0}),
-                    'would_fire_at': {3: 50, 4: 20, 5: 5, 6: 1},
+                    'would_fire_at': {3: 40, 4: 18, 5: 5, 6: 1},
+                    'would_fire_at_no_core_gate': {3: 50, 4: 20, 5: 5, 6: 1},
                 },
             }
         }
@@ -132,35 +141,61 @@ class TestFormatReport:
         assert "## SPY" in md
         assert "1,000" in md  # n_bars formatted
         assert "above_vwap" in md
-        assert "Would-fire count" in md
+        assert "MIN_CONDITIONS threshold" in md
+        # Both columns surface
+        assert "With core gate" in md
+        assert "Without core gate" in md
         # Live threshold marker present
         assert "← live" in md
+        # Calendar-vs-trading-days clarification
+        assert "calendar days" in md
 
     def test_renders_no_data_section_when_n_bars_zero(self):
         per_ticker = {
-            'IWM': {
-                'n_bars': 0,
-                'call': {'condition_fire_count': Counter(),
-                         'score_dist': Counter(),
-                         'would_fire_at': {3: 0, 4: 0, 5: 0, 6: 0}},
-                'put':  {'condition_fire_count': Counter(),
-                         'score_dist': Counter(),
-                         'would_fire_at': {3: 0, 4: 0, 5: 0, 6: 0}},
-            }
+            'IWM': {'n_bars': 0, 'call': _empty_dir(), 'put': _empty_dir()},
         }
         md = format_report(per_ticker, days=50)
         assert "_No bars available for IWM._" in md
 
     def test_includes_track_d_pairing_callout(self):
         per_ticker = {
-            'SPY': {'n_bars': 0,
-                    'call': {'condition_fire_count': Counter(),
-                             'score_dist': Counter(),
-                             'would_fire_at': {3: 0, 4: 0, 5: 0, 6: 0}},
-                    'put':  {'condition_fire_count': Counter(),
-                             'score_dist': Counter(),
-                             'would_fire_at': {3: 0, 4: 0, 5: 0, 6: 0}}},
+            'SPY': {'n_bars': 0, 'call': _empty_dir(), 'put': _empty_dir()},
         }
         md = format_report(per_ticker, days=50)
         assert "issue #312" in md
         assert "Track D" in md
+
+
+class TestCoreConditionGate:
+    """PR #330 codex review: confirmer-only bars (rvol + atr +
+    rsi_thrust = 3 conditions but 0 core) must NOT count as
+    would-fire — production's MomentumStrategy.evaluate() requires
+    MIN_CORE_CONDITIONS=2 core conditions before firing at any score."""
+
+    def test_confirmer_only_score_3_excluded_from_would_fire(self):
+        # Row with the 3 confirmers true and ALL 4 core conditions false.
+        # core conditions: consecutive_up, rsi_bullish_recovery,
+        # above_vwap, above_ema9.
+        row = {
+            'Consecutive_Up': 0, 'Consecutive_Down': 0,
+            'RSI14': 60.0,                # outside CALL_RSI_RANGE → no rsi_bullish_recovery
+            'Close': 95.0, 'VWAP': 100.0, # close < VWAP → no above_vwap
+            'EMA9': 100.0,                # close < EMA9 → no above_ema9
+            # Three confirmers all on:
+            'RVol_Recent_20': 1.5, 'ATR_Expansion': 1.3, 'RSI_Thrust_3': 6.0,
+        }
+        df = pd.DataFrame([row])
+        out = evaluate_bars(df)
+        assert out['n_bars'] == 1
+        # Score is 3 (the 3 confirmers), but 0 core → must NOT fire under prod gate
+        assert out['call']['score_dist'][3] == 1
+        assert out['call']['would_fire_at'][3] == 0
+        # Diagnostic counter (no core gate) DOES count it
+        assert out['call']['would_fire_at_no_core_gate'][3] == 1
+
+    def test_full_alignment_passes_core_gate(self):
+        df = pd.DataFrame([_bullish_momentum_row()])
+        out = evaluate_bars(df)
+        # All 7 conditions met → 4 core → passes gate at every threshold
+        assert out['call']['would_fire_at'][5] == 1
+        assert out['call']['would_fire_at_no_core_gate'][5] == 1
