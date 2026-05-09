@@ -96,38 +96,69 @@ def open_alerts_sql() -> str:
 
 
 def intraday_bars_sql() -> str:
-    """1-min bars from alert_ts through market close (20:00 UTC = 16:00
-    ET) of the alert's date."""
+    """Return 1-min bars from alert_ts through market close (16:00 ET)
+    on the alert's date.
+
+    Two timezone subtleties:
+
+    1. `market_data_intraday.ts` is stored as **naive ET** — the AV
+       writer in `gcp/fetchers/fetch_market_data.py` strips the tz tag
+       and stores the AV-returned ET timestamp as-is (the "ET-as-UTC"
+       convention the frontend RTH filter relies on). Comparing it
+       against a UTC `alert_ts` is wrong: a 10:00 ET alert stored as
+       14:00 UTC would skip every bar before 14:00 (which is 14:00 ET,
+       4 hours after market close).
+
+    2. The schema only carries OHLCV columns (no rsi_14). RSI is
+       computed downstream from the close series via
+       `lib.indicators.calculate_rsi` after the bars load.
+
+    Both `:alert_ts_et` and `:alert_close_et` MUST be naive ET; the
+    callers convert before binding.
+    """
     return """
-        SELECT ts, close, rsi_14
+        SELECT ts, close
           FROM market_data_intraday
          WHERE ticker = :ticker
            AND interval = '1min'
-           AND ts >= :alert_ts
-           AND ts <= :alert_close_ts
+           AND ts >= :alert_ts_et
+           AND ts <= :alert_close_et
          ORDER BY ts
     """
 
 
-def _alert_close_ts(alert_date) -> datetime:
-    """Market close (16:00 ET) for the alert's date, returned as a naive
-    UTC timestamp matching the rest of the system. ET 16:00 = 20:00 UTC
-    during EST and 20:00 UTC during EDT — wait, that's wrong.
-
-    EDT (Mar–Nov): 16:00 ET = 20:00 UTC.
-    EST (Nov–Mar): 16:00 ET = 21:00 UTC.
-
-    Use zoneinfo to get the exact UTC instant rather than a naive
-    arithmetic shift.
-    """
+def _alert_ts_to_et_naive(alert_ts) -> datetime:
+    """Convert a `signal_alerts.alert_ts` (TIMESTAMPTZ stored as UTC,
+    or already-naive UTC) to naive ET to match the
+    `market_data_intraday.ts` storage convention."""
     from zoneinfo import ZoneInfo
-    et_close = datetime.combine(alert_date, datetime.min.time()).replace(
-        hour=16, minute=0, tzinfo=ZoneInfo("America/New_York"))
-    return et_close.astimezone(timezone.utc).replace(tzinfo=None)
+    if hasattr(alert_ts, 'tzinfo') and alert_ts.tzinfo is not None:
+        # tz-aware → ET
+        return alert_ts.astimezone(ZoneInfo("America/New_York")).replace(tzinfo=None)
+    # Assume naive UTC, attach UTC, convert to ET
+    return alert_ts.replace(tzinfo=timezone.utc).astimezone(
+        ZoneInfo("America/New_York")).replace(tzinfo=None)
+
+
+def _alert_close_ts(alert_date) -> datetime:
+    """Market close (16:00 ET) for the alert's date, returned as a
+    NAIVE ET timestamp to match `market_data_intraday.ts` storage.
+
+    Earlier versions of this function returned naive UTC, which
+    DESYNCHRONIZES against the intraday writer's ET-as-UTC convention
+    and silently dropped 4–5 hours of bars per alert. Fixed in PR #324
+    after codex review caught the off-by-tz bug."""
+    return datetime.combine(alert_date, datetime.min.time()).replace(
+        hour=16, minute=0)
 
 
 def _row_to_position(row: dict) -> Position:
-    """Translate a signal_alerts row into a Position for replay."""
+    """Translate a signal_alerts row into a Position for replay.
+
+    `Position.alert_ts` carries naive UTC (matches the rest of the
+    system's lib.exit_replay convention). The intraday-bar query uses
+    `_alert_ts_to_et_naive` for the ET-bound parameter so the SQL
+    range-filter aligns with the intraday writer's storage."""
     alert_ts = row['alert_ts']
     if hasattr(alert_ts, 'tzinfo') and alert_ts.tzinfo is not None:
         alert_ts = alert_ts.astimezone(timezone.utc).replace(tzinfo=None)
@@ -175,24 +206,42 @@ def main(argv: Optional[list[str]] = None) -> int:
     from sqlalchemy import text
     update_sql = text(PERSIST_EXIT_SQL)
 
+    from lib.indicators import calculate_rsi
+    from zoneinfo import ZoneInfo
+    _UTC = ZoneInfo("UTC")
+    _ET = ZoneInfo("America/New_York")
+
     for row in open_df.to_dict('records'):
         pos = _row_to_position(row)
-        close_ts = _alert_close_ts(row['alert_date'])
+        # Convert UTC alert_ts → naive ET for the SQL range filter
+        # (market_data_intraday.ts is naive ET — see intraday_bars_sql doc).
+        alert_ts_et = _alert_ts_to_et_naive(row['alert_ts'])
+        close_ts_et = _alert_close_ts(row['alert_date'])
         bars = query_to_dataframe(intraday_bars_sql(), {
             'ticker': pos.ticker,
-            'alert_ts': pos.alert_ts,
-            'alert_close_ts': close_ts,
+            'alert_ts_et': alert_ts_et,
+            'alert_close_et': close_ts_et,
         })
 
         if bars is None or bars.empty:
             resolved['no_bars'] += 1
-            logger.warning("No intraday bars for %s after %s through %s; skipping.",
-                           pos.ticker, pos.alert_ts, close_ts)
+            logger.warning("No intraday bars for %s after %s ET through %s ET; skipping.",
+                           pos.ticker, alert_ts_et, close_ts_et)
             continue
 
-        # Normalize ts to naive UTC — query_to_dataframe may return tz-aware
-        if hasattr(bars['ts'].iloc[0], 'tzinfo') and bars['ts'].iloc[0].tzinfo is not None:
-            bars = bars.assign(ts=pd.to_datetime(bars['ts'], utc=True).dt.tz_localize(None))
+        # Bars come back with naive ET timestamps. Compute RSI on the
+        # close series (the schema doesn't carry an rsi_14 column —
+        # see intraday_bars_sql doc) and re-anchor ts to naive UTC so
+        # simulate_exit's elapsed-minute math against pos.alert_ts
+        # (naive UTC) lines up.
+        bars = bars.copy()
+        bars['rsi_14'] = calculate_rsi(bars['close'], period=14)
+        bars['ts'] = (
+            pd.to_datetime(bars['ts'])
+              .dt.tz_localize(_ET, ambiguous='infer', nonexistent='shift_forward')
+              .dt.tz_convert(_UTC)
+              .dt.tz_localize(None)
+        )
 
         event = simulate_exit(
             pos, bars,
