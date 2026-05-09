@@ -1272,6 +1272,27 @@ _schedule_brief() {
         --quiet 2>/dev/null || echo "  ${NAME}: already exists"
 }
 
+# Variant of _schedule that injects INSIGHT_TRIGGERED_BY=cloud-scheduler:<name>
+# as a containerOverride env var on the insight-pipeline ":run" body. Mirrors
+# _schedule_brief — without it, _resolve_update_mode_and_kind in
+# gcp/insight_pipeline_job.py classifies every cron run as 'manual_replay' in
+# insight_reports_history (issue #313 — audit 2026-05-09 found run_kind never
+# saw 'scheduled' for 23 days).
+_schedule_insight() {
+    local NAME=$1 CRON=$2 JOB=$3
+    local BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"INSIGHT_TRIGGERED_BY","value":"cloud-scheduler:'"${NAME}"'"}]}]}}'
+    gcloud scheduler jobs create http "${NAME}" \
+        --location "${REGION}" \
+        --schedule "${CRON}" \
+        --time-zone "America/New_York" \
+        --uri "$(_job_uri "${JOB}")" \
+        --http-method POST \
+        --headers "Content-Type=application/json" \
+        --message-body "${BODY}" \
+        --oauth-service-account-email "${SA_EMAIL}" \
+        --quiet 2>/dev/null || echo "  ${NAME}: already exists"
+}
+
 # Variant of _schedule that overrides the container command-line args via the
 # Cloud Run Jobs ":run" body. Used to point a single signal-monitor job image
 # at orb-snapshot or other one-shot modes.
@@ -1497,7 +1518,13 @@ deploy_schedulers() {
 
     # AI Insights daily report — 8:45 AM ET weekdays, after premarket-brief
     # (which seeds the strat + daily indicators the pipeline consumes).
-    _schedule "insight-pipeline-daily"   "45 8 * * 1-5"  "insight-pipeline"
+    # Use _schedule_insight (not _schedule) so INSIGHT_TRIGGERED_BY=
+    # cloud-scheduler:insight-pipeline-daily is injected on every run.
+    # Without that env var the job's _resolve_update_mode_and_kind
+    # classifies the run as 'manual_replay' rather than 'scheduled' —
+    # validated against insight_reports_history 2026-04-15..05-08 where
+    # 0/470 rows had run_kind='scheduled' (issue #313).
+    _schedule_insight "insight-pipeline-daily"   "45 8 * * 1-5"  "insight-pipeline"
 
     # AI Insights Discord push — 9:15 AM ET weekdays. Reads today's rows
     # from insight_reports and POSTs a multi-embed digest to Discord.
