@@ -1171,6 +1171,67 @@ ALTER TABLE premarket_analysis
 
 
 -- ============================================================================
+-- Track B audit (2026-05-08): data freshness + LLM commentary persistence.
+-- W5 schema for the implementation plan in
+-- docs/audit/2026-05-08/track-B-implementation-plan.md.
+--
+-- Six new columns mirrored on both `premarket_analysis` and
+-- `premarket_analysis_history`:
+--
+--   data_as_of (timestamptz)
+--     Per-ticker timestamp of the LAST OHLCV bar the brief used to
+--     compute that row's bias / levels / RSI. Read by the W6 writer
+--     from `df.iloc[-1].name` after the null-close filter at
+--     gcp/premarket_brief.py:724. Lets a single SELECT answer
+--     "which morning's brief was based on stale data?" — pre-W6 this
+--     required a 4-table join.
+--
+--   data_freshness_status (varchar(20))
+--     Stamp written by the W6 staleness detector. Values:
+--       'fresh'             — last bar was 1 trading day before
+--                             analysis_date (or Friday→Monday).
+--       'STALE_DAILY_DATA'  — gap > 1 trading day with no Monday
+--                             exemption. The W6 writer sets per-ticker
+--                             status='STALE_DAILY_DATA' on data['status']
+--                             so persist_to_cloud_sql skips the canonical
+--                             premarket_analysis row and only writes the
+--                             history row (audit trail). Track B audit
+--                             G.P0.4.
+--       NULL                — pre-W6 rows from before the writer landed.
+--
+--   llm_overview / llm_orb_explanation (text, brief-level)
+--   llm_analysis / llm_playbook (text, per-ticker)
+--     Gemini-generated commentary that the brief renders into Discord
+--     today and discards. W7 wires the writer to persist these for
+--     audit-trail replay (the four strings are non-deterministic across
+--     LLM calls, but the original morning's text is locked once
+--     persisted). Track G G.P2.11 / Track B audit B.11; user-confirmed
+--     decision was "persist for audit trail" rather than skip.
+--
+-- All columns are NULL-able; pre-migration rows stay NULL until the
+-- W6 / W7 writers land. Apply path: standard `apply-schema-migrations`
+-- Cloud Run Job (or `db-query.yml` workflow with commit=true as the
+-- documented one-shot fallback per the plan's "Apply path" section).
+-- Idempotent; re-runs are no-ops.
+-- ============================================================================
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS data_as_of            TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS data_freshness_status VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS llm_overview          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_orb_explanation   TEXT,
+    ADD COLUMN IF NOT EXISTS llm_analysis          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT;
+
+ALTER TABLE premarket_analysis_history
+    ADD COLUMN IF NOT EXISTS data_as_of            TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS data_freshness_status VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS llm_overview          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_orb_explanation   TEXT,
+    ADD COLUMN IF NOT EXISTS llm_analysis          TEXT,
+    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT;
+
+
+-- ============================================================================
 -- Live migration: rename premarket_analysis.strat_daily -> strat_candle.
 -- The methodology doc renames every "candle classification" surface to
 -- a single column name. Idempotent.
