@@ -570,6 +570,59 @@ def test_select_trigger_orb_only_when_no_same_side_levels():
     assert distance is None
 
 
+def test_select_trigger_orb_only_when_only_pre_high_populated():
+    """Codex review on PR #334 caught that `same_side_levels` (which
+    INCLUDES pre_high/pre_low) was the gate for blue-sky synthesis.
+    A premarket-only bundle that populated only `pre_high` (no PDH/
+    PWH/PMH/PQH/PYH) would have synthesized a trigger and produced
+    nonzero-size persona plans, even though the documented sparse-
+    history case should fall through to orb_only.
+
+    This test reproduces that case: pre_high present, NO structural
+    same-side levels. Expected: orb_only, no synthesis."""
+    ctx = PlanContext(
+        direction="long", conviction="medium",
+        close=100.0, atr=2.0,
+        trigger_high=None, trigger_low=None,
+        # NO long-side structural levels (PDH/PWH/PMH/PQH/PYH all None)
+        # but pre_high IS populated — premarket-only bundle pattern.
+        pre_high=101.5,
+        # Short-side present so has_multi_tf=True and we enter candidate branch
+        pwl=98.0, effective_pdl=99.0, pre_low=99.5,
+    )
+    regime, trigger, _, distance, is_blue_sky = select_trigger_and_regime(
+        ctx, "long")
+    assert regime == "orb_only", (
+        "pre_high alone must NOT enable blue-sky synthesis; the "
+        "structural-level gate (PDH/PWH/PMH/PQH/PYH) must be present "
+        "for synthesis to fire."
+    )
+    assert trigger is None
+    assert distance is None
+    assert is_blue_sky is False
+
+
+def test_select_trigger_orb_only_when_only_pre_low_populated_short():
+    """Mirror of the above for short direction: pre_low alone must not
+    enable blue-sky synthesis."""
+    ctx = PlanContext(
+        direction="short", conviction="medium",
+        close=100.0, atr=2.0,
+        trigger_high=None, trigger_low=None,
+        # NO short-side structural levels (PDL/PWL/PML/PQL/PYL all None)
+        # but pre_low IS populated.
+        pre_low=98.5,
+        # Long-side present so has_multi_tf=True
+        pwh=102.0, effective_pdh=101.0, pre_high=100.5,
+    )
+    regime, trigger, _, distance, is_blue_sky = select_trigger_and_regime(
+        ctx, "short")
+    assert regime == "orb_only"
+    assert trigger is None
+    assert distance is None
+    assert is_blue_sky is False
+
+
 def test_blue_sky_synth_produces_actionable_persona_plans():
     """End-to-end: when blue-sky synth fires, persona plans get real
     sizing + targets (not the zero-size orb_only placeholder). Audit

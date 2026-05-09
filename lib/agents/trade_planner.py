@@ -263,6 +263,13 @@ def select_trigger_and_regime(
     eff_pdl = ctx.effective_pdl if ctx.effective_pdl is not None else ctx.trigger_low
     long_levels = (eff_pdh, ctx.pwh, ctx.pmh, ctx.pqh, ctx.pyh, ctx.pre_high)
     short_levels = (eff_pdl, ctx.pwl, ctx.pml, ctx.pql, ctx.pyl, ctx.pre_low)
+    # `structural_*` excludes pre_high/pre_low so blue-sky synthesis
+    # requires a real multi-timeframe history level (PDH/PWH/PMH/PQH/PYH).
+    # A premarket-only bundle that populated only pre_high/pre_low must
+    # fall through to orb_only — the documented sparse-history case
+    # (Codex review on PR #334 caught the regression).
+    structural_long = (eff_pdh, ctx.pwh, ctx.pmh, ctx.pqh, ctx.pyh)
+    structural_short = (eff_pdl, ctx.pwl, ctx.pml, ctx.pql, ctx.pyl)
 
     if direction == "long":
         # Levels strictly ABOVE the cleared mark (price hasn't broken them yet)
@@ -315,10 +322,16 @@ def select_trigger_and_regime(
         # * Sub-case C — no same-side levels populated at all (sparse
         #   history, options-only ticker, fixture path). Stay orb_only.
         same_side_levels = long_levels if direction == "long" else short_levels
+        same_side_structural = (
+            structural_long if direction == "long" else structural_short
+        )
         cleared = cleared_above if direction == "long" else cleared_below
         gap_atr = abs(cleared - ctx.close) / atr if cleared is not None else None
         if (
-            any(lv is not None for lv in same_side_levels)
+            # At least one STRUCTURAL level present — pre_high/pre_low alone
+            # is not enough. A premarket-only bundle (sparse history) lands
+            # in sub-case C (orb_only), not sub-case A (synthesize).
+            any(lv is not None for lv in same_side_structural)
             and gap_atr is not None
             and gap_atr <= _BLUE_SKY_MAX_GAP_ATR
         ):
@@ -338,19 +351,23 @@ def select_trigger_and_regime(
             logger.info(
                 "trade_planner blue_sky direction=%s ref=%.4f atr=%.4f "
                 "cleared=%.4f gap_atr=%.3f offset=%.3f synthetic_trigger=%.4f "
-                "distance_atr=%.3f regime=%s same_side_levels=%s",
+                "distance_atr=%.3f regime=%s structural_levels=%s",
                 direction, ref, atr, cleared, gap_atr, offset,
                 synthetic_trigger, distance_atr, regime,
-                [round(float(lv), 4) for lv in same_side_levels if lv is not None],
+                [round(float(lv), 4) for lv in same_side_structural if lv is not None],
             )
             return (regime, synthetic_trigger, stop_anchor, distance_atr, True)
         logger.info(
             "trade_planner orb_only direction=%s ref=%.4f atr=%.4f "
-            "cleared=%s gap_atr=%s same_side_populated=%s",
+            "cleared=%s gap_atr=%s structural_populated=%s pre_only=%s",
             direction, ref, atr,
             f"{cleared:.4f}" if cleared is not None else None,
             f"{gap_atr:.3f}" if gap_atr is not None else None,
-            any(lv is not None for lv in same_side_levels),
+            any(lv is not None for lv in same_side_structural),
+            # True iff only pre_high/pre_low populated, no PDH/PWH/PMH/PQH/PYH
+            # (the sub-case C codex review caught).
+            any(lv is not None for lv in same_side_levels)
+            and not any(lv is not None for lv in same_side_structural),
         )
         return ("orb_only", None, stop_anchor, None, False)
 
