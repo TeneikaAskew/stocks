@@ -753,9 +753,24 @@ ALTER TABLE signal_alerts
 --     "strategies":      ["momentum", "mean_reversion"],
 --     "directions":      ["CALL", "CALL"],
 --     "base_scores":     [4.0, 3.0],
+--     "conditions_met":  [
+--       ["rsi_thrust_3", "rvol_recent_20", "atr_expansion"],
+--       ["consecutive_down", "rsi_oversold_zone", "below_vwap"]
+--     ],
 --     "composite_score": 5.0
 --   }
 -- NULL when only one strategy fired (the common case).
+-- Per-leg conditions_met added Track D / G.P3.4 so post-mortems can
+-- answer "which conditions did momentum hit when stacked with mean-
+-- reversion" without joining back to per-strategy tables. Order of
+-- inner arrays matches `strategies`.
+--
+-- Empirical rate (Track D audit 2026-05-08, § 6 / G.P2.9):
+-- 17 stacked alerts of 782 fires = 2.2% (per-ticker 1.4-3.2%; QQQ
+-- highest). The pre-Phase-0.7.x estimate of ~21% in
+-- docs/plans/SIGNAL_QUALITY_TEST_PLAN.md is stale — momentum's gate
+-- tightened over subsequent phases, lowering fires without a
+-- corresponding schema-doc update.
 ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS strategy_agreement JSONB;
 
@@ -1834,6 +1849,16 @@ ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS exit_price       DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS exit_return_pct  DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS is_open          BOOLEAN;
+
+-- Track D / G.P3.5: default is_open to FALSE for any future ALTER-added
+-- row so schema migrations don't silently leave NULL is_open values that
+-- force every downstream filter to write `WHERE is_open IS TRUE OR
+-- is_open IS NULL`. The persist path in gcp/signal_monitor.py:_persist_signal_alert
+-- still writes `is_open=TRUE` explicitly on insert; this DEFAULT only
+-- fills in for rows whose persist path forgets the column or for old
+-- rows backfilled by ad-hoc UPDATEs.
+ALTER TABLE signal_alerts
+    ALTER COLUMN is_open SET DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_open
     ON signal_alerts (ticker, alert_ts) WHERE is_open IS TRUE;
