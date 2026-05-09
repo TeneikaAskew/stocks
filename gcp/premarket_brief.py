@@ -757,6 +757,29 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         last_bar_date_obj = (
             last_bar_ts.date() if hasattr(last_bar_ts, 'date') else None
         )
+        # Anchor `data_as_of` to 16:00 ET (US/Eastern market close) on
+        # the bar's date, regardless of whether `latest.name` came in as
+        # a tz-naive UTC midnight, a tz-aware UTC timestamp, or a plain
+        # date object. The W6 v1 writer used `latest.name` directly,
+        # which renders pandas DatetimeIndex's UTC midnight as
+        # "20:00 EDT the prior day" in ET — confusing for validation
+        # ("why am I seeing 8 PM market-close data?"). Anchoring to
+        # the bar's market close makes the persisted timestamp
+        # unambiguous in both UTC (e.g. 20:00 UTC for an EDT bar) and
+        # ET (16:00 EDT) — readers see the bar's date AND the
+        # market-close hour, exactly the semantic meaning of "this
+        # daily bar's data".
+        if last_bar_date_obj is not None:
+            data_as_of_anchored = (
+                pd.Timestamp(last_bar_date_obj)
+                .tz_localize('America/New_York')
+                .replace(hour=16, minute=0, second=0)
+            )
+        else:
+            # Defensive fallback for synthetic data without a parseable
+            # index — keep the original timestamp shape so persistence
+            # doesn't error.
+            data_as_of_anchored = last_bar_ts
         is_stale, gap_days, freshness_status = _resolve_data_freshness(
             last_bar_date_obj, analysis_date,
         )
@@ -769,7 +792,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             brief['tickers'][ticker] = {
                 'status': 'STALE_DAILY_DATA',
-                'data_as_of': last_bar_ts,
+                'data_as_of': data_as_of_anchored,
                 'data_freshness_status': freshness_status,
                 'freshness_gap_days': gap_days,
             }
@@ -881,7 +904,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'ftfc_labels': {k: v for k, v in ftfc_labels.items()},
             # Track B audit G.P0.5 — record which OHLCV bar the
             # analysis used so freshness audits don't need joins.
-            'data_as_of': last_bar_ts,
+            # `data_as_of_anchored` is normalized to 16:00 ET on the
+            # bar's date (W11) so any reader sees an unambiguous
+            # market-close-time anchor instead of pandas's default
+            # UTC-midnight rendering ("20:00 EDT prior day").
+            'data_as_of': data_as_of_anchored,
             'data_freshness_status': freshness_status,
             'freshness_gap_days': gap_days,
         }
