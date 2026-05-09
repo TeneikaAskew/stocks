@@ -618,6 +618,139 @@ class TestResolveSignalStatus:
         ) == 'CALL setup (4/5)'
 
 
+class TestResolveDataFreshness:
+    """Track B audit G.P0.4 — staleness detector for the brief.
+
+    The audit's repro: brief on 2026-05-04 → 05-07 read the same
+    2026-04-27 daily bar each morning because the daily fetcher had
+    been frozen since 4-28. The null-close filter at line 724
+    silently fell back to last-good-bar. This regression class locks
+    the new helper's contract — including the weekend exemption that
+    keeps Monday briefs reading Friday from being false-flagged.
+    """
+
+    def test_one_day_gap_is_fresh(self):
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 5, 6),
+            analysis_date=date(2026, 5, 7),
+        )
+        assert is_stale is False
+        assert gap == 1
+        assert status == 'fresh'
+
+    def test_zero_day_gap_is_fresh(self):
+        """Edge case — analysis_date == last_bar_date (a same-day
+        replay)."""
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 5, 7),
+            analysis_date=date(2026, 5, 7),
+        )
+        assert is_stale is False
+        assert gap == 0
+        assert status == 'fresh'
+
+    def test_six_day_gap_flags_stale(self):
+        """The audit's own repro window: 2026-05-07 brief reading
+        2026-04-27 last bar = 10 days. Should fire."""
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 4, 27),
+            analysis_date=date(2026, 5, 7),
+        )
+        assert is_stale is True
+        assert gap == 10
+        assert status == 'STALE_DAILY_DATA'
+
+    def test_friday_to_monday_weekend_exemption(self):
+        """Monday brief reading Friday (gap=3, weekday=Mon=0) is
+        FRESH, not stale — that's the normal weekend bridge."""
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 5, 1),    # Friday
+            analysis_date=date(2026, 5, 4),    # Monday
+        )
+        assert is_stale is False
+        assert gap == 3
+        assert status == 'fresh'
+
+    def test_thursday_to_monday_is_stale(self):
+        """Thursday → Monday brief (gap=4) is stale — the weekend
+        exemption only covers Friday → Monday. Bias toward
+        false-positives on holiday weeks per the docstring."""
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=date(2026, 4, 30),    # Thursday
+            analysis_date=date(2026, 5, 4),     # Monday
+        )
+        assert is_stale is True
+        assert gap == 4
+        assert status == 'STALE_DAILY_DATA'
+
+    def test_none_last_bar_returns_unknown(self):
+        from gcp.premarket_brief import _resolve_data_freshness
+        from datetime import date
+        is_stale, gap, status = _resolve_data_freshness(
+            last_bar_date=None,
+            analysis_date=date(2026, 5, 7),
+        )
+        assert is_stale is False
+        assert gap == -1
+        assert status == 'unknown'
+
+
+class TestFormatDataFreshnessSummary:
+    """The "Based on data from X to Y" line rendered in the overview
+    embed (Track B audit G.P0.5)."""
+
+    def test_healthy_single_bar_window(self):
+        from gcp.premarket_brief import _format_data_freshness_summary
+        from datetime import date
+        line = _format_data_freshness_summary(
+            earliest_as_of=date(2026, 5, 6),
+            latest_as_of=date(2026, 5, 6),
+            analysis_date=date(2026, 5, 7),
+            any_stale=False,
+        )
+        assert line == 'Based on data from 2026-05-06 → 2026-05-06 (1 trading day)'
+
+    def test_stale_includes_warning_emoji_and_session_count(self):
+        """Audit repro: trader looking at the 2026-05-07 brief should
+        see at-a-glance that the analysis was based on 6-session-stale
+        data. The line must include both 'stale by N session(s)' and
+        the warning emoji."""
+        from gcp.premarket_brief import _format_data_freshness_summary
+        from datetime import date
+        line = _format_data_freshness_summary(
+            earliest_as_of=date(2026, 4, 27),
+            latest_as_of=date(2026, 4, 27),
+            analysis_date=date(2026, 5, 7),
+            any_stale=True,
+        )
+        assert 'Based on data from 2026-04-27 → 2026-04-27' in line
+        assert 'stale by 10 sessions' in line
+        assert '⚠' in line
+
+    def test_none_input_returns_none(self):
+        """No tickers had usable data — embed builder should skip the
+        line entirely. None signal lets the caller's
+        `if freshness_summary:` guard handle it."""
+        from gcp.premarket_brief import _format_data_freshness_summary
+        from datetime import date
+        assert _format_data_freshness_summary(
+            earliest_as_of=None,
+            latest_as_of=None,
+            analysis_date=date(2026, 5, 7),
+            any_stale=False,
+        ) is None
+
+
 class TestFmtCombo:
     """Snake-case storage form → title-case render form."""
 
@@ -1206,6 +1339,135 @@ class TestPersistPlaybookFailedHandling:
         # row_exists called for SPX only — IWM was filtered upstream
         seen = {c[1]['ticker'] for c in captured['row_exists_calls']}
         assert seen == {'SPX'}
+
+
+class TestPersistStaleDataHandling:
+    """Track B audit G.P0.4 — STALE_DAILY_DATA tickers must follow the
+    same write contract as PLAYBOOK_FAILED: history yes, canonical no.
+
+    The audit's failure mode was the brief silently re-publishing a
+    week-old row into the canonical premarket_analysis table four
+    mornings in a row. This regression class locks in the fix:
+    `data['status']='STALE_DAILY_DATA'` is the trigger by which the
+    persist layer suppresses the canonical write while still
+    producing an audit-trail row in history with a populated `notes`
+    column.
+    """
+
+    def _install_persist_mocks(self, monkeypatch):
+        from gcp import database
+
+        captured = {
+            'history_rows': [],
+            'upsert_rows': [],
+        }
+
+        def fake_bulk_insert(df, table):
+            captured['history_rows'].append((table, df.to_dict('records')))
+            return len(df)
+
+        def fake_upsert(df, table, keys):
+            captured['upsert_rows'].append((table, df.to_dict('records')))
+            return len(df)
+
+        def fake_row_exists(table, where):
+            return False
+
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'bulk_insert_dataframe', fake_bulk_insert)
+        monkeypatch.setattr(database, 'upsert_dataframe', fake_upsert)
+        monkeypatch.setattr(database, 'row_exists', fake_row_exists)
+        return captured
+
+    def _brief_with_tickers(self, tickers):
+        return {
+            'analysis_date': date(2026, 5, 7),
+            'tickers': tickers,
+        }
+
+    def test_stale_writes_history_only_skips_canonical(self, monkeypatch):
+        """The audit's repro: SPY's daily data is 10 sessions old, IWM
+        is healthy. SPY history row gets a notes string explaining the
+        skip; only IWM goes to the canonical table."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = self._brief_with_tickers({
+            'SPY': {'status': 'STALE_DAILY_DATA',
+                    'data_as_of': pd.Timestamp('2026-04-27'),
+                    'data_freshness_status': 'STALE_DAILY_DATA',
+                    'freshness_gap_days': 10},
+            'IWM': {'status': None, 'price': 220.0,
+                    'data_as_of': pd.Timestamp('2026-05-06'),
+                    'data_freshness_status': 'fresh'},
+        })
+        n = persist_to_cloud_sql(brief, allow_update=True,
+                                 run_kind='manual_update', triggered_by='test')
+
+        history = captured['history_rows'][0][1]
+        history_by_ticker = {r['ticker']: r for r in history}
+        # Both rows in history
+        assert set(history_by_ticker.keys()) == {'SPY', 'IWM'}
+        # SPY history row carries an explanatory notes string
+        assert isinstance(history_by_ticker['SPY']['notes'], str)
+        assert 'STALE_DAILY_DATA' in history_by_ticker['SPY']['notes']
+        assert 'gap=10' in history_by_ticker['SPY']['notes']
+        # IWM history row has no notes (healthy path).
+        # pandas DataFrame round-trip converts Python None → NaN in
+        # mixed-dtype object columns when other rows carry strings,
+        # so test the absence with pd.isna rather than `is None`.
+        assert pd.isna(history_by_ticker['IWM']['notes'])
+
+        # Only IWM in canonical
+        assert n == 1
+        upsert = captured['upsert_rows'][0][1]
+        assert {r['ticker'] for r in upsert} == {'IWM'}
+
+    def test_data_as_of_columns_propagate_to_history_rows(self, monkeypatch):
+        """The new freshness telemetry columns must reach the history
+        rows even on healthy tickers — that's the post-fix observability
+        that lets a single SELECT identify stuck-fetcher days."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        ts = pd.Timestamp('2026-05-06')
+        brief = self._brief_with_tickers({
+            'IWM': {'status': None, 'price': 220.0,
+                    'data_as_of': ts, 'data_freshness_status': 'fresh'},
+        })
+        persist_to_cloud_sql(brief, allow_update=True,
+                             run_kind='manual_update', triggered_by='test')
+
+        row = captured['history_rows'][0][1][0]
+        assert row['data_as_of'] == ts
+        assert row['data_freshness_status'] == 'fresh'
+
+    def test_all_stale_canonical_write_short_circuits(self, monkeypatch):
+        """Audit's worst-case: all tickers stale on the same morning.
+        canonical write must short-circuit to 0 (no empty-DataFrame
+        crash) and history still records all rows with notes."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = self._brief_with_tickers({
+            'SPY': {'status': 'STALE_DAILY_DATA',
+                    'data_as_of': pd.Timestamp('2026-04-27'),
+                    'data_freshness_status': 'STALE_DAILY_DATA',
+                    'freshness_gap_days': 10},
+            'IWM': {'status': 'STALE_DAILY_DATA',
+                    'data_as_of': pd.Timestamp('2026-04-27'),
+                    'data_freshness_status': 'STALE_DAILY_DATA',
+                    'freshness_gap_days': 10},
+        })
+        n = persist_to_cloud_sql(brief, allow_update=True,
+                                 run_kind='manual_update', triggered_by='test')
+        assert n == 0
+        history = captured['history_rows'][0][1]
+        assert {r['ticker'] for r in history} == {'SPY', 'IWM'}
+        for row in history:
+            assert row['notes'] is not None
+            assert 'STALE_DAILY_DATA' in row['notes']
+        assert captured['upsert_rows'] == []
 
 
 # ──────────────────────────────────────────────────────────────────────

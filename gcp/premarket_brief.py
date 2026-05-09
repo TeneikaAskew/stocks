@@ -740,6 +740,41 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
 
         latest = df.iloc[-1]       # yesterday (most recent trading day)
         prior = df.iloc[-2]        # day before yesterday
+
+        # ── Data freshness gate (Track B audit G.P0.4 / G.P0.5) ─────
+        # Resolve the timestamp of the last good bar and decide if
+        # the brief is operating on stale data. On a stuck-fetcher
+        # day (the audit's repro), `latest.name` is yesterday's
+        # closed-week-ago date and we MUST surface that — silently
+        # republishing 4-27 data as 5-7 is exactly what the audit
+        # caught. When stale, mark status='STALE_DAILY_DATA' and
+        # short-circuit the per-ticker compute so we don't pretend
+        # the analysis is current. The history row still records
+        # the metadata + a notes string for the audit trail; only
+        # the canonical premarket_analysis row is suppressed (mirrors
+        # the existing PLAYBOOK_FAILED contract).
+        last_bar_ts = latest.name
+        last_bar_date_obj = (
+            last_bar_ts.date() if hasattr(last_bar_ts, 'date') else None
+        )
+        is_stale, gap_days, freshness_status = _resolve_data_freshness(
+            last_bar_date_obj, analysis_date,
+        )
+        if is_stale:
+            logger.warning(
+                "[brief:%s] STALE_DAILY_DATA — last bar %s, analysis_date %s, "
+                "gap=%d session(s); skipping per-ticker analysis to avoid "
+                "republishing stale signals. See Track B audit G.P0.4.",
+                ticker, last_bar_date_obj, analysis_date, gap_days,
+            )
+            brief['tickers'][ticker] = {
+                'status': 'STALE_DAILY_DATA',
+                'data_as_of': last_bar_ts,
+                'data_freshness_status': freshness_status,
+                'freshness_gap_days': gap_days,
+            }
+            continue
+
         rsi = latest.get(cfg.indicator.rsi_col, 50)
 
         # ── Previous day context ────────────────────────────────────────
@@ -844,7 +879,37 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'ftfc_score': float(ftfc_score),
             'ftfc_direction': ftfc_dir,
             'ftfc_labels': {k: v for k, v in ftfc_labels.items()},
+            # Track B audit G.P0.5 — record which OHLCV bar the
+            # analysis used so freshness audits don't need joins.
+            'data_as_of': last_bar_ts,
+            'data_freshness_status': freshness_status,
+            'freshness_gap_days': gap_days,
         }
+
+    # ── Brief-level data freshness summary (Track B G.P0.5) ─────────
+    # Aggregate across the per-ticker data_as_of stamps so the
+    # overview embed can render a single "Based on data from X to Y"
+    # line. When tickers diverge (rare but possible if one fetcher
+    # was up-to-date and another wasn't) we show the spread; when
+    # they converge it collapses to a single date.
+    as_of_values = [
+        d.get('data_as_of')
+        for d in brief.get('tickers', {}).values()
+        if d.get('data_as_of') is not None
+    ]
+    any_stale = any(
+        d.get('data_freshness_status') == 'STALE_DAILY_DATA'
+        for d in brief.get('tickers', {}).values()
+    )
+    if as_of_values:
+        brief['data_freshness_summary'] = _format_data_freshness_summary(
+            earliest_as_of=min(as_of_values),
+            latest_as_of=max(as_of_values),
+            analysis_date=analysis_date,
+            any_stale=any_stale,
+        )
+    else:
+        brief['data_freshness_summary'] = None
 
     # Earnings: weekday → today's; Sunday → upcoming week's. Cap aligned
     # with the daily fetch job so the brief surfaces the same names that
@@ -1186,6 +1251,102 @@ def _resolve_signal_status(
     return 'No signal'
 
 
+def _resolve_data_freshness(
+    last_bar_date: Optional[date], analysis_date: date,
+) -> tuple[bool, int, str]:
+    """Decide whether the brief is operating on stale daily data.
+
+    Track B audit (G.P0.4) found that on 2026-05-04 → 05-07 the brief
+    happily republished the 2026-04-27 daily bar four mornings in a
+    row because the daily fetcher had been frozen since 4-28. The
+    null-close filter at premarket_brief.py:724 swallows the warning
+    by silently falling back to `df.iloc[-1]` of the last good bar.
+    The audit's headline recommendation is "fail loud" — detect the
+    staleness and make it visible instead of letting the brief look
+    healthy on a stuck-thermostat input.
+
+    Returns a 3-tuple (is_stale, gap_days, status). Definitions:
+
+      * ``gap_days``     — calendar-day gap between ``last_bar_date``
+                           and ``analysis_date``. None-input maps to
+                           sentinel ``-1`` (status='unknown').
+      * ``is_stale``     — True if the gap > 1 calendar day AND the
+                           weekend-exemption doesn't apply. The
+                           weekend exemption: a Monday brief that
+                           reads Friday's bar (gap=3) is fresh, NOT
+                           stale. Implemented as
+                           ``analysis_date.weekday() == 0 and gap == 3``.
+                           Tuesday-after-holiday-Monday with gap=4
+                           still flags as stale; that's a deliberate
+                           bias toward false-positives on holiday
+                           weeks (overflagging is recoverable; under-
+                           flagging is the audit's failure mode).
+      * ``status``       — string written to
+                           ``premarket_analysis.data_freshness_status``:
+                             'fresh' | 'STALE_DAILY_DATA' | 'unknown'.
+
+    Pure function for unit-testability — does not touch globals or
+    DataFrames. The caller (``generate_premarket_brief``) handles
+    resolving ``last_bar_date`` from ``df.iloc[-1].name`` and
+    propagating the verdict into the per-ticker dict.
+    """
+    if last_bar_date is None:
+        return False, -1, 'unknown'
+    gap = (analysis_date - last_bar_date).days
+    if gap <= 1:
+        return False, gap, 'fresh'
+    weekend_exempt = analysis_date.weekday() == 0 and gap == 3
+    if weekend_exempt:
+        return False, gap, 'fresh'
+    return True, gap, 'STALE_DAILY_DATA'
+
+
+def _format_data_freshness_summary(
+    earliest_as_of: Optional[datetime],
+    latest_as_of: Optional[datetime],
+    analysis_date: date,
+    any_stale: bool,
+) -> Optional[str]:
+    """Render the brief-level "Based on data from X to Y" line.
+
+    Track B audit (G.P0.5): the 8:30 AM Discord brief is the first
+    thing a phone-only trader sees in the morning, and it has no
+    indication of which underlying data window produced the bias /
+    levels / RSI. This helper produces a one-liner the overview
+    embed appends, so freshness becomes visible at-a-glance instead
+    of requiring a SQL query to discover.
+
+    Examples:
+
+      "Based on data from 2026-05-07 → 2026-05-07 (1 trading day)"
+        → healthy day, single-bar window. The X==Y form is the
+        common case (yesterday's close).
+
+      "Based on data from 2026-04-27 → 2026-04-27 (1 trading day, "
+      "stale by 6 sessions) ⚠"
+        → stuck-fetcher day. Adds a gap-in-sessions descriptor and
+        a warning emoji so the staleness is unmistakable.
+
+    Returns None if both inputs are None (no tickers had usable
+    data; the embed builder skips the line entirely). Single-bar
+    windows are rendered as ``X → X (1 trading day)``.
+    """
+    if earliest_as_of is None or latest_as_of is None:
+        return None
+    earliest_d = earliest_as_of.date() if hasattr(earliest_as_of, 'date') else earliest_as_of
+    latest_d = latest_as_of.date() if hasattr(latest_as_of, 'date') else latest_as_of
+    span_days = (latest_d - earliest_d).days + 1
+    span_label = '1 trading day' if span_days == 1 else f'{span_days} trading days'
+    line = f'Based on data from {earliest_d} → {latest_d} ({span_label}'
+    if any_stale:
+        gap = (analysis_date - latest_d).days
+        line += f', stale by {gap} session{"s" if gap != 1 else ""}'
+    line += ')'
+    if any_stale:
+        line += ' ⚠'
+    return line
+
+
 def _stoch_regime_tag(stoch_k, stoch_d) -> str:
     """Translate the larger of K and D into the standard 0-100 regime tag.
 
@@ -1251,10 +1412,25 @@ def _build_overview_embed(brief: dict) -> dict:
     for ticker, d in brief.get('tickers', {}).items():
         if d.get('status') == 'NO DATA':
             continue
+        # STALE_DAILY_DATA tickers have no ftfc_direction populated;
+        # skip them rather than crashing on the missing key.
+        if d.get('ftfc_direction') is None:
+            continue
         ftfc_parts.append(f'{ticker}: {d["ftfc_direction"]} ({d["ftfc_score"]:+.1f})')
     if ftfc_parts:
         lines.append('')
         lines.append('**FTFC:** ' + ' | '.join(ftfc_parts))
+
+    # \ud83d\udcca Data freshness summary (Track B audit G.P0.5). Single
+    # description-suffix line so phone-only readers see the
+    # underlying-data window at-a-glance. On a stale day this carries
+    # the warning emoji + "stale by N sessions" text \u2014 making the
+    # bug the audit caught visible the moment the brief lands in
+    # Discord, instead of requiring a database query to discover.
+    freshness_summary = brief.get('data_freshness_summary')
+    if freshness_summary:
+        lines.append('')
+        lines.append('\U0001F4CA ' + freshness_summary)
 
     # \ud83e\udde0 LLM "Today's setup" explanation (PR \u03b2 fills brief['llm_overview'];
     # PR \u03b1 reserves the slot). Renders as a description-suffix paragraph
@@ -1264,12 +1440,18 @@ def _build_overview_embed(brief: dict) -> dict:
         lines.append('')
         lines.append('\U0001F9E0 **Today\'s setup:** ' + str(overview_text))
 
-    # Determine overall color
+    # Determine overall color. Exclude both NO DATA and STALE_DAILY_DATA
+    # statuses from the denominator — neither has a populated ftfc_direction
+    # so they'd skew the bull/bear ratio toward "neutral".
+    _excluded_statuses = {'NO DATA', 'STALE_DAILY_DATA'}
     bullish_count = sum(
         1 for d in brief.get('tickers', {}).values()
         if d.get('ftfc_direction') == 'bullish'
     )
-    total = sum(1 for d in brief.get('tickers', {}).values() if d.get('status') != 'NO DATA')
+    total = sum(
+        1 for d in brief.get('tickers', {}).values()
+        if d.get('status') not in _excluded_statuses
+    )
     if bullish_count > total / 2:
         color = 0x2ecc71  # green
     elif bullish_count < total / 2:
@@ -2091,11 +2273,22 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
     # partial row with NULL playbook would silently corrupt the morning
     # snapshot on a fresh-day failure.
     playbook_failed = set()
+    # Same contract for STALE_DAILY_DATA tickers (Track B audit
+    # G.P0.4): the stale-warn path skipped the per-ticker analysis,
+    # so the row has no signal_status / strat_candle / playbook. We
+    # still want a history row for the audit trail (with a populated
+    # `notes` column explaining why), but the canonical row would
+    # contain NULL signals across the board — exactly the audit's
+    # "republish stale data as fresh" failure mode. Skip canonical;
+    # keep history.
+    stale_data = set()
     for ticker, data in brief.get('tickers', {}).items():
         if data.get('status') == 'NO DATA':
             continue
         if data.get('status') == 'PLAYBOOK_FAILED':
             playbook_failed.add(ticker)
+        if data.get('status') == 'STALE_DAILY_DATA':
+            stale_data.add(ticker)
         rows.append({
             'analysis_date': analysis_date,
             'ticker': ticker,
@@ -2136,14 +2329,38 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'above_sma200': data.get('above_sma200'),
             'stoch_rsi_k': data.get('stoch_k'),
             'stoch_rsi_d': data.get('stoch_d'),
+            # Track B audit G.P0.4 + G.P0.5 — freshness telemetry
+            'data_as_of': data.get('data_as_of'),
+            'data_freshness_status': data.get('data_freshness_status'),
         })
 
     if not rows:
         return 0
 
     # Step 1 — always insert into history (append-only).
+    # When a ticker is stale, populate the `notes` column with a
+    # human-readable explanation so a SELECT on history rows can
+    # immediately distinguish "the brief ran healthy" from "the
+    # brief detected staleness and skipped". Pre-W6 rows have NULL
+    # notes; future stale rows will carry the gap-in-sessions
+    # descriptor.
+    def _row_notes(row):
+        ticker = row['ticker']
+        if ticker in stale_data:
+            data = brief['tickers'][ticker]
+            gap = data.get('freshness_gap_days')
+            return (
+                f"STALE_DAILY_DATA: data_as_of={data.get('data_as_of')}; "
+                f"gap={gap} session(s); analysis skipped to avoid "
+                f"republishing stale signals (Track B audit G.P0.4)."
+            )
+        if ticker in playbook_failed:
+            return f"PLAYBOOK_FAILED: {brief['tickers'][ticker].get('playbook_error')}"
+        return None
+
     history_rows = [
-        {**row, 'run_kind': run_kind, 'triggered_by': triggered_by}
+        {**row, 'run_kind': run_kind, 'triggered_by': triggered_by,
+         'notes': _row_notes(row)}
         for row in rows
     ]
     history_df = pd.DataFrame(history_rows)
@@ -2153,14 +2370,23 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
 
     # Step 2 — write to current table. Per-ticker conditional UPSERT
     # protects the canonical morning row when allow_update=False.
-    # Drop PLAYBOOK_FAILED tickers before either write path; those rows
-    # have no playbook + level data and would corrupt the canonical row.
-    canonical_rows = [r for r in rows if r['ticker'] not in playbook_failed]
+    # Drop PLAYBOOK_FAILED and STALE_DAILY_DATA tickers before either
+    # write path; both kinds of rows have NULL signal data and would
+    # corrupt the canonical row by overwriting it with stale or
+    # empty values.
+    skip_canonical = playbook_failed | stale_data
+    canonical_rows = [r for r in rows if r['ticker'] not in skip_canonical]
     if playbook_failed:
         logger.warning(
             "Skipped premarket_analysis write for %d PLAYBOOK_FAILED "
             "ticker(s); history rows are still recorded. Failed: %s",
             len(playbook_failed), ', '.join(sorted(playbook_failed)))
+    if stale_data:
+        logger.warning(
+            "Skipped premarket_analysis write for %d STALE_DAILY_DATA "
+            "ticker(s); history rows are still recorded with notes. "
+            "Stale: %s",
+            len(stale_data), ', '.join(sorted(stale_data)))
     if not canonical_rows:
         return 0
     if allow_update:
