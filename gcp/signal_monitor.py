@@ -409,29 +409,61 @@ class SignalMonitor:
                     self.orb_levels[ticker][f'{label}_low']
                 ) / 2
 
+    @staticmethod
+    def _momentum_signal_to_dict(sig: 'Signal', strat_bonus: int = 0) -> dict:
+        """Convert a momentum `Signal` dataclass to the mr-style dict
+        every downstream consumer (`fire_alert`, `_persist_signal_alert`,
+        `TradeLogger.log_trade`) reads.
+
+        This is the cross-cutting compatibility surface that lets the
+        stand-alone-momentum path reuse all existing fire/persist
+        infrastructure without per-strategy mapping at every call site.
+        Per #369: post-hoc `_infer_strategy(conditions_met)` in
+        `scripts/analysis/per_factor_walkforward.py` distinguishes mr
+        vs momentum from the conditions_met namespace (disjoint per
+        `lib/strategies/momentum.py` vs `lib/signals.py`), so no extra
+        column on `signal_alerts` is needed to mark which strategy
+        fired.
+        """
+        return {
+            'direction':      sig.direction,
+            'base_score':     sig.base_score,
+            'strat_bonus':    strat_bonus,
+            'total_score':    sig.weighted_score,
+            'conditions_met': list(sig.conditions_met),
+        }
+
     def _evaluate_strategies_for_bar(self, latest, last_price: float, ticker: str):
         """Run mean-reversion + momentum on the same bar; detect agreement.
 
         Returns a (sig_dict, agreement_payload) tuple:
-          * `sig_dict` — the existing mean-reversion dict from
-            `evaluate_signal`, or `None` when mean-reversion didn't
-            fire. Existing fire/persist code paths consume this
-            unchanged, so the fire criteria are not expanded by this
-            change. (When mean-reversion doesn't fire, agreement can't
-            apply; we short-circuit to avoid running momentum.)
-          * `agreement_payload` — `None` when fewer than two strategies
-            fired or they disagree on direction; otherwise the dict
-            from `lib.strategies.agreement.detect_agreement` carrying
-            the composite score for embed sort + JSONB persistence.
+          * `sig_dict` — mr dict when mean-reversion fires; the
+            momentum-adapter dict when mr misses but momentum fires
+            AND `signal_cfg.enable_standalone_momentum=True` (#369);
+            otherwise `None`. The dict shape is identical in either
+            case so downstream consumers (fire_alert, persist,
+            TradeLogger) work uniformly.
+          * `agreement_payload` — `None` when only one strategy fired
+            OR they disagreed on direction; otherwise the dict from
+            `lib.strategies.agreement.detect_agreement`. Stand-alone
+            momentum fires never carry an agreement payload (no mr
+            to agree with).
+
+        Counter semantics (G.P0.11 / #369):
+          `momentum_evaluated_count` is bumped on EVERY bar reaching
+          this function — not just bars where mr fired. Pre-#369 the
+          counter sat inside the mr-fires branch, which made the
+          fired/evaluated ratio meaningless because the denominator
+          was tiny and biased. Now `evaluated` = "every bar
+          evaluate_ticker reached the strategy block"; `fired` =
+          "every bar momentum's internal gate passed regardless of
+          mr". This is a strict superset of pre-#369 semantics — no
+          information loss, much more useful denominator.
 
         See `docs/plans/SIGNAL_QUALITY_TEST_PLAN.md` Phase 1.6 for the
-        original rationale that estimated ~21% of overlapping fires
-        AGREE on direction. Track D audit § 6 (2026-05-08) found the
-        actual rate over the May 4-7 window was 17/782 = 2.2% (range
-        1.4-3.2% per ticker, QQQ highest), far below the historical
-        estimate. The 21% figure was pre-Phase-0.7.x — momentum's gate
-        tightened over time, dropping its fire rate without a
-        corresponding update to the schema-doc claim. See G.P2.9.
+        agreement rationale; Track D audit § 6 (2026-05-08) for the
+        17/782 stacked rate observed in the May 4-7 window; #369 for
+        the always-evaluate orchestration fix.
         """
         # Resolve per-ticker RSI ranges (Tier A → Tier B fallback).
         # Both strategies use the same resolved ranges so agreement
@@ -442,6 +474,24 @@ class SignalMonitor:
         call_tier = get_resolution_tier(ticker, "CALL")
         put_tier = get_resolution_tier(ticker, "PUT")
 
+        # 1) Always evaluate momentum first so the counters reflect
+        # every bar — not just bars where mr fired. This is the #369
+        # fix: pre-fix the momentum eval was inside the mr-fires
+        # branch, so `momentum_evaluated_count` was structurally
+        # biased to the mr-fires intersection AND momentum could
+        # never fire stand-alone (line 381 short-circuit).
+        mom_signal = MOMENTUM.evaluate(
+            latest, call_rsi_range=call_rng, put_rsi_range=put_rng,
+        )
+        self.momentum_evaluated_count[ticker] = (
+            self.momentum_evaluated_count.get(ticker, 0) + 1
+        )
+        if mom_signal is not None:
+            self.momentum_fired_count[ticker] = (
+                self.momentum_fired_count.get(ticker, 0) + 1
+            )
+
+        # 2) Evaluate mean-reversion.
         sig = evaluate_signal(
             latest,
             min_conditions=self.signal_cfg.min_conditions,
@@ -450,51 +500,68 @@ class SignalMonitor:
             put_rsi_range=put_rng,
             ticker=ticker,
         )
-        if sig is None:
-            return None, None
 
-        logger.info(
-            "%s fire: %s base_score=%.1f call_range=%s tier=%s put_range=%s tier=%s",
-            ticker, sig["direction"], sig["base_score"],
-            call_rng, call_tier, put_rng, put_tier,
-        )
-
-        # Build a Signal facade from the mr dict so detect_agreement
-        # can compare it against MomentumStrategy's Signal output. We
-        # don't replace the existing mr eval call because the dict
-        # shape is what every downstream consumer (fire_alert,
-        # _persist_signal_alert, TradeLogger) reads — replacing it
-        # would balloon this PR into a cross-cutting refactor.
-        mr_signal = Signal(
-            strategy="mean_reversion",
-            direction=sig["direction"],
-            timestamp=pd.Timestamp(latest.get("Time") or datetime.now()),
-            entry_price=float(last_price),
-            base_score=float(sig["base_score"]),
-            weighted_score=float(sig["base_score"]),
-            conditions_met=list(sig["conditions_met"]),
-        )
-        mom_signal = MOMENTUM.evaluate(
-            latest, call_rsi_range=call_rng, put_rsi_range=put_rng,
-        )
-        # Track D / G.P0.11: count every momentum evaluation (the call
-        # above) and every successful fire. Combined with mr's short-
-        # circuit at line 381, `evaluated` here equals "bars where
-        # mr fired AND momentum was checked"; `fired` is the subset
-        # where momentum's own gating passed. fired/evaluated ratio
-        # directly answers the cross-track question on #304: 0/N → the
-        # gate is unreachable; M/N → the gate works and the live
-        # path is exercised, so the 50-day-zero-fires pattern was
-        # image-lag + sampling.
-        self.momentum_evaluated_count[ticker] = (
-            self.momentum_evaluated_count.get(ticker, 0) + 1
-        )
-        if mom_signal is not None:
-            self.momentum_fired_count[ticker] = (
-                self.momentum_fired_count.get(ticker, 0) + 1
+        # 3) Three-way return:
+        if sig is not None:
+            logger.info(
+                "%s mr fire: %s base_score=%.1f call_range=%s tier=%s put_range=%s tier=%s",
+                ticker, sig["direction"], sig["base_score"],
+                call_rng, call_tier, put_rng, put_tier,
             )
-        agreement = detect_agreement(mom_signal, mr_signal)
-        return sig, agreement
+            # Build a Signal facade from the mr dict so detect_agreement
+            # can compare it against MomentumStrategy's Signal output.
+            # mr_dict (not the Signal) flows downstream because every
+            # consumer reads dict-shaped sig.
+            mr_signal = Signal(
+                strategy="mean_reversion",
+                direction=sig["direction"],
+                timestamp=pd.Timestamp(latest.get("Time") or datetime.now()),
+                entry_price=float(last_price),
+                base_score=float(sig["base_score"]),
+                weighted_score=float(sig["base_score"]),
+                conditions_met=list(sig["conditions_met"]),
+            )
+            agreement = detect_agreement(mom_signal, mr_signal) if mom_signal else None
+            return sig, agreement
+
+        if mom_signal is not None and self.signal_cfg.enable_standalone_momentum:
+            # Honor `disabled_directions` for the stand-alone path
+            # too — pre-Codex-P2 (PR #371) the kill switch lived only
+            # inside `lib.signals.evaluate_signal`, so a momentum-only
+            # PUT on a `["PUT"]`-disabled ticker (e.g. QQQ) would have
+            # bypassed the same protection mr respects. Resolver
+            # exception is non-fatal: log and degrade to "no kill
+            # switch known" rather than blocking a fire on a transient
+            # DB error (mirrors the resolver-failure handling inside
+            # evaluate_signal at lib/signals.py:207-210).
+            try:
+                from lib.strategies.exit_config_overrides import (
+                    get_disabled_directions,
+                )
+                if mom_signal.direction.upper() in get_disabled_directions(ticker):
+                    logger.info(
+                        "%s standalone momentum %s suppressed: direction in disabled_directions",
+                        ticker, mom_signal.direction,
+                    )
+                    return None, None
+            except Exception:
+                logger.exception(
+                    "get_disabled_directions(%s) raised; allowing momentum fire "
+                    "(degrade-open mirrors evaluate_signal's resolver-failure handling)",
+                    ticker,
+                )
+
+            logger.info(
+                "%s standalone momentum fire: %s base_score=%.1f core=%d call_range=%s tier=%s put_range=%s tier=%s",
+                ticker, mom_signal.direction, mom_signal.base_score,
+                mom_signal.core_count, call_rng, call_tier, put_rng, put_tier,
+            )
+            return self._momentum_signal_to_dict(mom_signal), None
+
+        # Neither fires (or momentum fired but flag is off → no fire,
+        # but the counter already recorded the eligibility so the
+        # cross-track sync questions are answerable from the log).
+        return None, None
 
     def evaluate_ticker(self, ticker: str):
         """Evaluate signals for a single ticker."""

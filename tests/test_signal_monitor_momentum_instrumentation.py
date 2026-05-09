@@ -124,31 +124,36 @@ def test_only_evaluated_bumps_when_momentum_returns_none():
     )
 
 
-# ── 4) Neither counter bumps when mean_reversion doesn't fire ───────
+# ── 4) Counter bumps on every bar (#369 — pre-fix this only happened
+#       when mr fired, biasing the fired/evaluated denominator)
 
-def test_counters_untouched_when_mr_does_not_fire():
-    """When mean_reversion's `evaluate_signal` returns None, the method
-    short-circuits before MOMENTUM.evaluate; neither counter should
-    bump (locks in the current architecture's behaviour — this is the
-    semantics that gives 'evaluated' its diagnostic meaning)."""
+def test_counters_bump_every_bar_post_369():
+    """Post-#369 the counter is moved BEFORE the mr-fires branch, so
+    every bar reaching `_evaluate_strategies_for_bar` increments
+    `momentum_evaluated_count`. The fired/evaluated ratio now has a
+    meaningful denominator (every bar where momentum was checkable),
+    not the pre-#369 mr-fires intersection.
+
+    This was the intentional scope change in #369 — the previous
+    semantics structurally biased the counter and made it answer the
+    wrong question (Tracks C/D/E couldn't tell whether momentum was
+    reachable or just unhitting).
+    """
     monitor = _make_monitor()
     ticker = monitor.tickers[0]
     starting_eval = monitor.momentum_evaluated_count[ticker]
     starting_fired = monitor.momentum_fired_count[ticker]
 
     with patch("gcp.signal_monitor.evaluate_signal", return_value=None), \
-         patch("gcp.signal_monitor.MOMENTUM.evaluate") as mock_mom:
+         patch("gcp.signal_monitor.MOMENTUM.evaluate", return_value=None) as mock_mom:
         monitor._evaluate_strategies_for_bar(_bar(), 720.0, ticker)
 
-    assert monitor.momentum_evaluated_count[ticker] == starting_eval, (
-        "evaluated must NOT bump when mr didn't fire — momentum.evaluate "
-        "was never called, so counting it would lie about reachability"
+    assert mock_mom.called, (
+        "MOMENTUM.evaluate must run on every bar post-#369 — the "
+        "pre-fix short-circuit at line 381 is intentionally removed"
     )
+    assert monitor.momentum_evaluated_count[ticker] == starting_eval + 1
     assert monitor.momentum_fired_count[ticker] == starting_fired
-    assert not mock_mom.called, (
-        "MOMENTUM.evaluate must not be called when mr fails — verifies "
-        "the short-circuit at evaluate_strategies_for_bar line 381 is intact"
-    )
 
 
 # ── 4b) Codex P1 on #320: main() must configure INFO logging ────────

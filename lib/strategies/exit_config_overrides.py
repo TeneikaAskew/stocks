@@ -181,6 +181,37 @@ def get_put_time_stop(ticker: str) -> int:
     return _defaults().put_time_stop
 
 
+def get_disabled_directions(ticker: str) -> set[str]:
+    """Return the set of upper-cased disabled directions for `ticker`.
+
+    Reads `exit_config_overrides.disabled_directions` (JSONB list, e.g.
+    `["PUT"]` or `["CALL", "PUT"]`) and normalises to a set of
+    upper-case strings. Empty set on miss / NULL / parse failure —
+    safe default lets the caller fire normally.
+
+    Mirrors the resolution logic inlined inside
+    `lib.signals.evaluate_signal` so any new fire path (#369
+    stand-alone momentum) honors the same kill switch as
+    mean-reversion. Without this, a `["PUT"]`-disabled side could be
+    silently bypassed by the momentum-only path. Per Codex P2 review
+    on PR #371.
+    """
+    row = _latest_overrides(ticker)
+    if not row:
+        return set()
+    dd = row.get("disabled_directions") or []
+    if isinstance(dd, str):
+        try:
+            import json as _json
+            dd = _json.loads(dd)
+        except Exception:
+            return set()
+    try:
+        return {str(d).upper() for d in dd}
+    except Exception:
+        return set()
+
+
 def get_blue_sky_atr_offset(ticker: str) -> Optional[float]:
     """Resolve the per-ticker blue-sky synthetic-trigger ATR offset.
 
