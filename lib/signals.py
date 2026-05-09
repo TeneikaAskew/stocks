@@ -173,11 +173,20 @@ def evaluate_signal(
     # MeanReversionStrategy path; this is the live-path wiring that
     # PR #329 missed (caught during 2026-05-09 validation when 5/8
     # alerts still showed above_vwap on 95/98 IWM PUTs).
+    #
+    # `disabled_directions` parsing was deduplicated into
+    # `lib.strategies.exit_config_overrides.get_disabled_directions`
+    # (extracted in PR #371 for the standalone-momentum path); this
+    # function delegates to it so all fire paths (mr live + mr
+    # backtest + standalone momentum) share one parser. The
+    # `disabled_conditions` strip stays inline because it has to mutate
+    # the local `call_conds` / `put_conds` lists + scores.
     disabled_directions: set[str] = set()
     if ticker:
         try:
             from lib.strategies.exit_config_overrides import (
                 _latest_overrides,
+                get_disabled_directions,
             )
             ov = _latest_overrides(ticker.upper())
             if ov:
@@ -196,14 +205,7 @@ def evaluate_signal(
                     put_conds = [c for c in put_conds if c not in disabled_set]
                     call_score -= (pre_call - len(call_conds))
                     put_score -= (pre_put - len(put_conds))
-                dd = ov.get("disabled_directions") or []
-                if isinstance(dd, str):
-                    import json as _json
-                    try:
-                        dd = _json.loads(dd)
-                    except Exception:
-                        dd = []
-                disabled_directions = {str(d).upper() for d in dd}
+            disabled_directions = get_disabled_directions(ticker.upper())
         except Exception:
             # Resolver failure → degrade silently to Tier-B (legacy
             # behaviour); the resolver itself logs the cause.
