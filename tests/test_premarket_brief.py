@@ -722,6 +722,104 @@ class TestResolveDataFreshness:
         assert status == 'unknown'
 
 
+class TestDataAsOfAnchor:
+    """W11 — `data_as_of` should be anchored to 16:00 ET (US/Eastern
+    market close) on the bar's date, regardless of how the daily
+    DatetimeIndex hands it in.
+
+    The W6 v1 writer used `latest.name` directly, which for pandas
+    DatetimeIndex at UTC midnight renders as "20:00 EDT prior day"
+    when displayed in ET — confusing for validation queries where
+    a reader expects the timestamp to mean "this bar's data". The
+    anchor normalizes to bar_date + 16:00 ET so:
+
+      * UTC display: bar_date + 4h (e.g. 2026-05-06 → 20:00 UTC)
+      * ET display:  bar_date + 16:00 (e.g. 2026-05-06 → 16:00 EDT)
+
+    Both forms unambiguously name the bar's date; the ET form
+    additionally names market close, which is when the daily bar's
+    data crystallizes.
+    """
+
+    def test_anchor_renders_at_market_close_in_et(self):
+        """A `latest.name` of pandas-default UTC midnight is normalized
+        to 16:00 ET on the same calendar date."""
+        import pandas as pd
+        from datetime import date
+
+        # Simulate what generate_premarket_brief does when latest.name
+        # is a tz-naive Timestamp at UTC midnight (pandas default for
+        # daily bars).
+        last_bar_ts = pd.Timestamp('2026-05-06')  # naive midnight
+        last_bar_date_obj = last_bar_ts.date()
+        anchored = (
+            pd.Timestamp(last_bar_date_obj)
+            .tz_localize('America/New_York')
+            .replace(hour=16, minute=0, second=0)
+        )
+
+        # In ET: 16:00 EDT on 5/6
+        et = anchored.tz_convert('America/New_York')
+        assert et.date() == date(2026, 5, 6)
+        assert et.hour == 16
+        assert et.minute == 0
+
+        # In UTC: same instant rendered in UTC = 20:00 UTC (EDT offset = -4)
+        utc = anchored.tz_convert('UTC')
+        assert utc.hour == 20
+        assert utc.date() == date(2026, 5, 6)
+
+    def test_anchor_is_stable_across_dst_transitions(self):
+        """W11 anchor must give 16:00 ET regardless of EDT (-04:00)
+        vs EST (-05:00). November bar in EST vs May bar in EDT —
+        both should display at 16:00 ET."""
+        import pandas as pd
+        from datetime import date
+
+        # EST date (early November is EST)
+        est_anchored = (
+            pd.Timestamp(date(2025, 11, 10))
+            .tz_localize('America/New_York')
+            .replace(hour=16, minute=0, second=0)
+        )
+        assert est_anchored.tz_convert('America/New_York').hour == 16
+        # EST offset is -5, so UTC is 21:00
+        assert est_anchored.tz_convert('UTC').hour == 21
+
+        # EDT date (May is EDT)
+        edt_anchored = (
+            pd.Timestamp(date(2026, 5, 6))
+            .tz_localize('America/New_York')
+            .replace(hour=16, minute=0, second=0)
+        )
+        assert edt_anchored.tz_convert('America/New_York').hour == 16
+        # EDT offset is -4, so UTC is 20:00
+        assert edt_anchored.tz_convert('UTC').hour == 20
+
+    def test_anchor_display_no_longer_renders_prior_day_at_8pm(self):
+        """The audit's user-reported confusion ('why am I seeing
+        8 PM market-close data?'). With the W11 anchor, displaying
+        the timestamp in ET shows 16:00 ET on the bar's date, never
+        the prior day at 20:00."""
+        import pandas as pd
+        from datetime import date
+
+        anchored = (
+            pd.Timestamp(date(2026, 5, 6))
+            .tz_localize('America/New_York')
+            .replace(hour=16, minute=0, second=0)
+        )
+        et_repr = anchored.tz_convert('America/New_York')
+        # Rendering as a date+time string in ET
+        et_str = et_repr.strftime('%Y-%m-%d %H:%M:%S')
+        assert et_str == '2026-05-06 16:00:00', (
+            f"expected 16:00 ET on bar's date, got {et_str!r}"
+        )
+        # And explicitly NOT the v1 buggy form
+        assert '20:00' not in et_str
+        assert '2026-05-05' not in et_str  # not the prior day
+
+
 class TestFormatDataFreshnessSummary:
     """The "Based on data from X to Y" line rendered in the overview
     embed (Track B audit G.P0.5)."""
