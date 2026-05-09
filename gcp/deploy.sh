@@ -1017,6 +1017,52 @@ deploy_compute_spx_greeks_backfill() {
         --quiet
 }
 
+# Replay 1-min bars through the live SignalMonitor against historical data
+# without firing real Discord alerts or persisting to signal_alerts. The
+# script `scripts/replay_signal_monitor.py` mocks the Discord webhook and DB
+# writes, so this job is hermetic and safe to run anytime.
+#
+# Use cases:
+#   1. Validate a fresh signal-monitor deploy against held-out data BEFORE
+#      waiting for market open (Phase 0.5 spec item #8 — live-vs-offline
+#      parity test).
+#   2. Hermetic regression check after refactors that touch the signal-fire
+#      path (e.g. the 2026-05-09 Track B end-to-end validation).
+#   3. What-if: tune assign_timeframe thresholds and replay to see how the
+#      timeframe distribution shifts.
+#
+# Override REPLAY_DATE / REPLAY_TICKER (or REPLAY_TICKERS for multi-ticker)
+# at execute time:
+#   gcloud run jobs execute replay-signal-monitor --region us-east1 \
+#     --update-env-vars=REPLAY_DATE=2026-05-07,REPLAY_TICKER=SPY --wait
+#
+# Output is JSON-formatted alert fires in Cloud Logging (textPayload). No
+# rows written to signal_alerts; no Discord webhooks fired.
+deploy_replay_signal_monitor() {
+    echo "Deploying replay-signal-monitor job..."
+    # Default to today minus 1 trading day for SPY; runtime overrides via
+    # --update-env-vars at execute time. The wrapper script
+    # `scripts.replay_signal_monitor` reads REPLAY_DATE / REPLAY_TICKER /
+    # REPLAY_TICKERS env vars and translates them into --date / --ticker /
+    # --tickers CLI flags.
+    gcloud run jobs create replay-signal-monitor \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 0 --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "bash,-c" \
+        --args 'python -m scripts.replay_signal_monitor --ticker="${REPLAY_TICKER:-SPY}" --date="${REPLAY_DATE:-$(date -u -d yesterday +%F)}" --json' \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update replay-signal-monitor \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "bash,-c" \
+        --args 'python -m scripts.replay_signal_monitor --ticker="${REPLAY_TICKER:-SPY}" --date="${REPLAY_DATE:-$(date -u -d yesterday +%F)}" --json' \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 
 # ── Phase 0.6 — quarterly per-ticker threshold calibration ───────────────────
 # Replaces the universal-across-tickers THRESHOLDS dict with per-ticker
@@ -1556,6 +1602,7 @@ case "${1:-help}" in
     apply-schema) build_image && deploy_apply_schema_migrations ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
+    replay-signal-monitor) build_image && deploy_replay_signal_monitor ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
@@ -1600,6 +1647,11 @@ case "${1:-help}" in
         echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
         echo "  spx-greeks Deploy one-shot SPX Greeks backfill job (12h timeout)"
         echo "             python -m scripts.maintenance.compute_spx_greeks --ticker SPX"
+        echo "  replay-signal-monitor  Deploy hermetic 1-min-bar replay job"
+        echo "             scripts/replay_signal_monitor.py mocks Discord + DB writes;"
+        echo "             override REPLAY_DATE / REPLAY_TICKER at execute time:"
+        echo "               gcloud run jobs execute replay-signal-monitor --wait \\"
+        echo "                 --update-env-vars=REPLAY_DATE=YYYY-MM-DD,REPLAY_TICKER=SPY"
         echo "  setup-notifier-secrets  One-time: store GitHub PAT + repo in Secret Manager"
         echo "  notifier   Deploy failure-notifier Cloud Run service + log sink"
         echo "  discord    Deploy discord-interactions Cloud Run service (slash commands)"
