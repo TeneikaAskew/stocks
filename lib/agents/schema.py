@@ -241,6 +241,16 @@ class InsightReport(BaseModel):
         default_factory=list,
         description="Analyst section names that failed and were degraded",
     )
+    failed_section_reasons: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Per-section failure reason (only populated for entries in "
+            "failed_sections). Captured from the summarizer's "
+            "`reason` field or the exception message — gives operators "
+            "diagnostic visibility without scraping Cloud Logs. Audit "
+            "2026-05-08 G.P2.13."
+        ),
+    )
     model_versions: dict[str, str] = Field(
         default_factory=dict,
         description="Per-role provider:model snapshot for reproducibility",
