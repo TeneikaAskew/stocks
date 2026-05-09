@@ -85,6 +85,14 @@ class SignalMonitor:
         self.windows: dict = {t: pd.DataFrame() for t in self.tickers}
         self.daily_trades: dict = {t: 0 for t in self.tickers}
         self.daily_pnl: dict = {t: 0.0 for t in self.tickers}
+        # Track D / G.P0.11 instrumentation: two counters per ticker so we
+        # can answer the cross-track question (Tracks C/D/E all surfaced
+        # zero momentum fires in 50 days): is momentum gated unreachably,
+        # or is the path simply not being entered? Logged in the per-loop
+        # summary at end of run_loop. No policy change — instrumentation
+        # only. Cross-track sync issue: #304.
+        self.momentum_evaluated_count: dict = {t: 0 for t in self.tickers}
+        self.momentum_fired_count: dict = {t: 0 for t in self.tickers}
         # Open positions awaiting exit. Each tick the exit-watcher walks
         # this list and fires TARGET HIT / TIME STOP / RSI EXIT alerts +
         # writes the exit details back to signal_alerts. Lifetime is the
@@ -404,6 +412,22 @@ class SignalMonitor:
         mom_signal = MOMENTUM.evaluate(
             latest, call_rsi_range=call_rng, put_rsi_range=put_rng,
         )
+        # Track D / G.P0.11: count every momentum evaluation (the call
+        # above) and every successful fire. Combined with mr's short-
+        # circuit at line 381, `evaluated` here equals "bars where
+        # mr fired AND momentum was checked"; `fired` is the subset
+        # where momentum's own gating passed. fired/evaluated ratio
+        # directly answers the cross-track question on #304: 0/N → the
+        # gate is unreachable; M/N → the gate works and the live
+        # path is exercised, so the 50-day-zero-fires pattern was
+        # image-lag + sampling.
+        self.momentum_evaluated_count[ticker] = (
+            self.momentum_evaluated_count.get(ticker, 0) + 1
+        )
+        if mom_signal is not None:
+            self.momentum_fired_count[ticker] = (
+                self.momentum_fired_count.get(ticker, 0) + 1
+            )
         agreement = detect_agreement(mom_signal, mr_signal)
         return sig, agreement
 
@@ -957,6 +981,20 @@ class SignalMonitor:
                 now = datetime.now(_ET)
                 if now.time() > self.market_cfg.market_close_time:
                     print("Market closed. Shutting down.")
+                    # Track D / G.P0.11: log per-ticker momentum
+                    # instrumentation summary so the cross-track sync
+                    # (issue #304) can read the diagnostic counts from
+                    # Cloud Logging without a separate persistence layer.
+                    for t in tickers:
+                        logger.info(
+                            "session_summary ticker=%s momentum_evaluated=%d "
+                            "momentum_fired=%d daily_trades=%d daily_pnl=%.4f",
+                            t,
+                            self.momentum_evaluated_count.get(t, 0),
+                            self.momentum_fired_count.get(t, 0),
+                            self.daily_trades.get(t, 0),
+                            self.daily_pnl.get(t, 0.0),
+                        )
                     break
                 print(f"Waiting for market open ({now.strftime('%H:%M:%S %Z')})...")
                 time_module.sleep(self.monitor_cfg.pre_market_sleep)
@@ -1018,6 +1056,18 @@ def run_orb_snapshot(window: str) -> int:
 
 
 def main():
+    # Configure root logger BEFORE any logger.info call lands. Pre-fix
+    # the deployed `python -m gcp.signal_monitor` had no basicConfig, so
+    # Python's default WARNING level suppressed every INFO log including
+    # the new session_summary lines (Codex P1 review on PR #320). All
+    # existing logger.info calls in this module (watchlist source at
+    # line 141, mr fire at line 383, exit alerts, persist results, etc.)
+    # were also silently dropped from Cloud Logging — fixing this
+    # surfaces them as a positive externality.
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s %(name)s: %(message)s',
+    )
     import argparse
     parser = argparse.ArgumentParser(description='Real-time signal monitor')
     parser.add_argument('--mode', choices=['loop', 'orb-snapshot'], default='loop',
