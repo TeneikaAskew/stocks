@@ -29,16 +29,34 @@ actually contain.
 
 ## Method
 
-Track B's brief feeds two embeds from independent source tables —
-neither of which depends on `market_data_daily` (the table that was
-frozen during the audit window):
+Track B's brief feeds two embeds from source tables with an
+**asymmetric dependency** on `market_data_daily` (the frozen table
+during the audit window):
 
-| Embed | Source table | Loader function |
+| Embed sub-section | Source | `market_data_daily` dependency |
 |---|---|---|
-| Earnings | `earnings_calendar` | `gcp/premarket_brief.py:121` `load_earnings_for_brief` |
-| Calendar (econ events) | `economic_events` | `gcp/premarket_brief.py:526` `load_economic_events` |
+| Earnings — calendar list (ticker, time, expected_move, strategy) | `earnings_calendar` | none |
+| Earnings — gap-reaction line (`gap_pct`, `pre_high/low/vwap`) | `earnings_calendar` LEFT JOIN `market_data_daily` (`gcp/premarket_brief.py:183`, also line 465 for AMC reactions) | **YES** |
+| Calendar (econ events) | `economic_events` | none |
 
-Because both tables are populated by separate fetchers
+**Correction (Codex P2 review on PR #340)**: a v1 draft of this doc
+framed "earnings independent of `market_data_daily`" — that was
+wrong on the gap-reaction half. The earnings embed's gap-reaction
+sub-section pulls premarket columns (`gap_pct`, `pre_high`,
+`pre_low`, `pre_vwap`) via the LEFT JOIN, so during the audit
+window those JOIN'd columns returned NULL for tickers without a
+fresh `market_data_daily` row, and the gap-reaction line in the
+Discord embed rendered blank or stale. **The calendar list portion
+of earnings remains genuinely independent**; the econ-events embed
+is fully independent. The bug shape during the audit was therefore:
+
+- Calendar list (top-25 names, options-having flag, expected_move):
+  ✅ correct.
+- Earnings gap-reaction line: ❌ degraded — JOIN'd premarket fields
+  came back NULL because `market_data_daily` was frozen.
+- Econ events: ✅ correct.
+
+Both source-only tables are populated by separate fetchers
 (`fetch-earnings-calendar`, `fetch-economic-events`) that the audit
 showed running cleanly on the eval window, the embed-quality test
 reduces to: *do the tables hold the data the brief's loaders would
@@ -78,7 +96,7 @@ The other days in the audit window only had medium-importance events
 to the 5-min default ORB on those days. Source-data → render path
 verified end-to-end.
 
-### Earnings calendar volumes are healthy
+### Earnings calendar list is healthy; gap-reaction line was degraded
 
 Per-day row counts on `earnings_calendar` for the audit window:
 
@@ -89,14 +107,35 @@ Per-day row counts on `earnings_calendar` for the audit window:
 | 2026-05-06 | 2,081 | 1,174 | 321 | 377 |
 | 2026-05-07 | 2,473 | 1,418 | 351 | 412 |
 
-The earnings fetcher was producing fresh data throughout the audit
-window. The brief's `load_earnings_for_brief` cap is 25 by default
-(`BRIEF_MAX_EARNINGS=25`), so the 1,000+ rows/day in the table give
-the loader rich enough material to surface the top 25 by tradeability
-score. Spot-check of May 5 earnings (the JOLTS day) confirmed
-high-volume names with options: AMD, ANET, AEP, ALAB, AGCO etc., all
-with `has_options=True` and populated `expected_move` fields — the
-shape `_build_earnings_embed` expects.
+The earnings fetcher was producing fresh `earnings_calendar` data
+throughout the audit window. The brief's `load_earnings_for_brief`
+cap is 25 by default (`BRIEF_MAX_EARNINGS=25`), so the 1,000+
+rows/day give the loader rich enough material for the top 25 by
+tradeability score. Spot-check of May 5 (the JOLTS day) confirmed
+high-volume names with options: AMD, ANET, AEP, ALAB, AGCO etc.,
+all with `has_options=True` and populated `expected_move` fields.
+
+**However**: per the Method note above, the earnings embed's
+**gap-reaction line** (rendered from JOIN'd `gap_pct` / `pre_high`
+/ `pre_low` / `pre_vwap`) WAS degraded during the audit window
+because `market_data_daily` was frozen on 2026-04-27 and the LEFT
+JOIN at `gcp/premarket_brief.py:183` returned NULLs for any
+post-4-27 earnings date. So a trader looking at the May 5 brief
+would have seen the AMD/ANET/AEP names correctly listed with
+expected_move and strategy — but the per-ticker "gapped +1.2% on
+beat" annotation that the embed normally renders from the JOIN'd
+fields would have been blank. The audit-window data on the
+canonical `premarket_analysis` rows can confirm this: any
+`load_yesterday_amc_reactions` row from 5/4-5/7 with a populated
+ticker but NULL gap_pct is the smoking gun. **This is a Track A
+G.P0.1 dependency cleanup item, not a separate bug** — the
+earnings loader code is correct; it just couldn't get fresh JOIN'd
+fields out of a frozen table.
+
+Post-Track-A-fix: the JOIN should now return fresh values, and the
+gap-reaction line should render correctly. Verification deferred
+to the next morning brief that has earnings reporters with prior-day
+AMC results in `earnings_calendar`.
 
 ### Bias / levels / RSI embeds — Track A's fix is now live
 
@@ -120,15 +159,30 @@ data instead of the stuck 4/27 row.
 
 ## Verdict
 
-**Earnings + economic-events embeds were correctly populated
-throughout the audit window.** The audit's headline failure was
-isolated to the bias / levels / RSI half (which depends on
-`market_data_daily`); the events half (earnings + calendar) is
-fed by independent fetchers that ran cleanly the whole time.
+**Calendar list + economic-events embeds were correctly populated
+throughout the audit window.** The earnings embed's gap-reaction
+line (premarket fields via LEFT JOIN to `market_data_daily`) was
+**degraded** because the JOIN'd table was frozen — but this is the
+same Track A G.P0.1 root cause that drove the bias / levels / RSI
+failure, not an independent earnings-pipeline bug. Now that Track
+A's fix shipped (PR #321), future briefs should render the
+gap-reaction line correctly.
 
-This closes Track G **G.P2.10** as `events-side: VERIFIED` and
-defers the **bias-side end-to-end replay** until Track B's W6 + W7
-land. At that point the canonical replay procedure becomes:
+Status of each embed sub-section across the audit window:
+
+| Sub-section | Audit-window status | Post-Track-A-fix status |
+|---|---|---|
+| Calendar list (top 25 names) | ✅ correct | ✅ correct |
+| Earnings gap-reaction line | ❌ degraded (NULL JOIN) | ✅ should render fresh values; verify on next brief with prior-AMC reporters |
+| Economic events list | ✅ correct | ✅ correct |
+| ORB-window selection (calendar-driven) | ✅ correct (verified on 5/5 JOLTS day) | ✅ correct |
+
+This closes Track G **G.P2.10** with the corrected scope:
+**calendar-list + econ-events: VERIFIED** ; **gap-reaction:
+unblocked, awaiting next brief with prior-AMC reporters for
+end-to-end confirmation**. Defers the **bias-side end-to-end
+replay** until Track B's W6 + W7 land. At that point the canonical
+replay procedure becomes:
 
 ```bash
 # Pick a recent healthy day post-W6 deploy
