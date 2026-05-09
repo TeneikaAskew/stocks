@@ -2,7 +2,8 @@
 
 The full main() loop hits Cloud SQL, so we test:
   - The pure helpers (`open_alerts_sql`, `intraday_bars_sql`,
-    `_alert_close_ts`, `_row_to_position`) which are I/O-free.
+    `_alert_close_ts`, `_alert_ts_to_et_naive`, `_row_to_position`)
+    which are I/O-free.
   - End-to-end main() with `query_to_dataframe` mocked so the SQL
     contracts are exercised but no real DB is needed.
 """
@@ -10,12 +11,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
 
 from gcp.signal_monitor_eod_resolver import (
     _alert_close_ts,
+    _alert_ts_to_et_naive,
     _row_to_position,
     intraday_bars_sql,
     main,
@@ -37,23 +40,54 @@ def test_open_alerts_sql_filters_by_cutoff_and_open_state():
 def test_intraday_bars_sql_bounds_to_alert_date_close():
     sql = intraday_bars_sql().lower()
     assert "interval = '1min'" in sql
-    assert ':alert_ts' in sql
-    assert ':alert_close_ts' in sql
+    # Track A G.P0.10 — codex review on PR #324 caught two bugs:
+    # 1. SELECT must NOT include rsi_14 (column doesn't exist on
+    #    market_data_intraday — it's OHLCV-only). RSI is computed on
+    #    the fly downstream.
+    # 2. Range bounds use ET-naive (matching the writer convention),
+    #    not UTC. Param names must reflect that to avoid drift.
+    assert 'rsi_14' not in sql
+    assert ':alert_ts_et' in sql
+    assert ':alert_close_et' in sql
     assert 'order by ts' in sql
 
 
-def test_alert_close_ts_returns_naive_utc():
-    """Mar–Nov: 16:00 ET = 20:00 UTC (EDT)."""
-    out = _alert_close_ts(date(2026, 5, 8))
-    assert out.tzinfo is None
-    # 16:00 ET on May 8 (EDT) → 20:00 UTC
-    assert out == datetime(2026, 5, 8, 20, 0, 0)
+def test_alert_close_ts_returns_naive_et():
+    """Both EDT and EST collapse to the same naive ET timestamp because
+    market_data_intraday.ts is stored as naive ET (the AV writer's
+    "ET-as-UTC" convention)."""
+    edt_close = _alert_close_ts(date(2026, 5, 8))   # EDT month
+    est_close = _alert_close_ts(date(2026, 1, 15))  # EST month
+    assert edt_close.tzinfo is None
+    assert est_close.tzinfo is None
+    assert edt_close == datetime(2026, 5, 8, 16, 0, 0)
+    assert est_close == datetime(2026, 1, 15, 16, 0, 0)
 
 
-def test_alert_close_ts_winter_returns_correct_utc():
-    """Nov–Mar: 16:00 ET = 21:00 UTC (EST)."""
-    out = _alert_close_ts(date(2026, 1, 15))
-    assert out == datetime(2026, 1, 15, 21, 0, 0)
+class TestAlertTsToEtNaive:
+    """The intraday writer stores ts as naive ET; signal_alerts.alert_ts
+    is TIMESTAMPTZ stored as UTC. Without conversion, a 10:00 ET alert
+    at 14:00 UTC would skip every bar before 14:00 (= 14:00 ET, 4
+    hours after market close on a 9:30-16:00 session)."""
+
+    def test_tz_aware_utc_converts_to_et(self):
+        # 14:00 UTC on 2026-05-08 (EDT) = 10:00 ET
+        utc = datetime(2026, 5, 8, 14, 0, 0, tzinfo=timezone.utc)
+        out = _alert_ts_to_et_naive(utc)
+        assert out.tzinfo is None
+        assert out == datetime(2026, 5, 8, 10, 0, 0)
+
+    def test_tz_aware_winter_converts_to_et(self):
+        # 14:00 UTC on 2026-01-15 (EST) = 09:00 ET
+        utc = datetime(2026, 1, 15, 14, 0, 0, tzinfo=timezone.utc)
+        out = _alert_ts_to_et_naive(utc)
+        assert out == datetime(2026, 1, 15, 9, 0, 0)
+
+    def test_naive_ts_is_treated_as_utc(self):
+        # Naive 14:00 (assumed UTC) → 10:00 ET (EDT)
+        naive = datetime(2026, 5, 8, 14, 0, 0)
+        out = _alert_ts_to_et_naive(naive)
+        assert out == datetime(2026, 5, 8, 10, 0, 0)
 
 
 def test_row_to_position_strips_tz():
@@ -101,29 +135,34 @@ def test_main_returns_zero_when_no_open_alerts(mock_cfg):
 
 @patch('gcp.database.is_cloud_sql_configured', return_value=True)
 def test_main_persists_resolved_exits(mock_cfg):
-    """End-to-end: one open alert + intraday bars → UPDATE called once."""
+    """End-to-end: one open alert + intraday bars → UPDATE called once.
+
+    The alert_ts is 14:00 UTC = 10:00 ET (EDT). Intraday bars are
+    stored as naive ET (10:00 ET shows as 10:00 in the ts column).
+    The resolver converts alert_ts to ET for the SQL filter, then
+    re-anchors the returned bars back to UTC for elapsed-min math
+    against pos.alert_ts (naive UTC)."""
     open_alert = pd.DataFrame([{
         'id': 1, 'ticker': 'SPY', 'direction': 'CALL',
-        'alert_ts': datetime(2026, 5, 8, 14, 0, 0),
+        'alert_ts': datetime(2026, 5, 8, 14, 0, 0),  # 14:00 UTC = 10:00 ET
         'alert_date': date(2026, 5, 8),
         'price_at_signal': 500.0, 'target_price': 503.0,
         'time_stop_minutes': 20,
     }])
-    # Bars include a target-hit at minute 5
+    # Bars are naive ET (writer convention). Target hit at 10:05 ET = 14:05 UTC.
     bars = pd.DataFrame([
-        {'ts': datetime(2026, 5, 8, 14, 1, 0), 'close': 501.0, 'rsi_14': 60},
-        {'ts': datetime(2026, 5, 8, 14, 5, 0), 'close': 503.5, 'rsi_14': 65},  # target hit
+        {'ts': datetime(2026, 5, 8, 10, 1, 0), 'close': 501.0},
+        {'ts': datetime(2026, 5, 8, 10, 5, 0), 'close': 503.5},  # target hit
     ])
 
     eng, conn = _fake_engine()
-    call_count = {'n': 0}
+    captured = {'queries': []}
 
     def fake_query(sql, params=None):
-        call_count['n'] += 1
-        # First call returns open alerts; subsequent calls return bars.
+        captured['queries'].append((sql, params))
         if 'signal_alerts' in sql.lower():
             return open_alert
-        return bars
+        return bars.copy()
 
     with patch('gcp.database.query_to_dataframe', side_effect=fake_query):
         with patch('gcp.database.get_engine', return_value=eng):
@@ -138,6 +177,12 @@ def test_main_persists_resolved_exits(mock_cfg):
     assert params['exit_reason'] == 'target_hit'
     assert params['exit_price'] == 503.5
     assert params['alert_ts'] == datetime(2026, 5, 8, 14, 0, 0)
+    # Intraday-bar query bound naive ET, not UTC. Track A G.P0.10 fix
+    # for codex review on PR #324.
+    intra_q = next(p for s, p in captured['queries']
+                   if 'market_data_intraday' in s.lower())
+    assert intra_q['alert_ts_et'] == datetime(2026, 5, 8, 10, 0, 0)
+    assert intra_q['alert_close_et'] == datetime(2026, 5, 8, 16, 0, 0)
 
 
 @patch('gcp.database.is_cloud_sql_configured', return_value=True)
@@ -149,8 +194,9 @@ def test_main_dry_run_does_not_persist(mock_cfg):
         'price_at_signal': 500.0, 'target_price': 503.0,
         'time_stop_minutes': 20,
     }])
+    # Bars in naive ET (10:05 = 5 minutes after the 10:00 ET alert)
     bars = pd.DataFrame([
-        {'ts': datetime(2026, 5, 8, 14, 5, 0), 'close': 503.5, 'rsi_14': 65},
+        {'ts': datetime(2026, 5, 8, 10, 5, 0), 'close': 503.5},
     ])
     eng, conn = _fake_engine()
 
