@@ -1056,8 +1056,20 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                         gap_pct=float(gap_pct_v) if pd.notna(gap_pct_v) else None,
                     )
 
-                regime_long, _, _, _ = select_trigger_and_regime(_ctx('long'), 'long')
-                regime_short, _, _, _ = select_trigger_and_regime(_ctx('short'), 'short')
+                # `select_trigger_and_regime` returns a 5-tuple as of
+                # the synthetic-trigger refactor in
+                # `lib/agents/trade_planner.py` —
+                # `(regime, trigger, stop_anchor, distance_atr, is_synthetic)`.
+                # The brief only consumes the regime here; the rest
+                # use `*_` so future renames or extensions to the
+                # planner's return shape don't ripple back. Pre-fix
+                # this unpacked 4 elements, which produced the
+                # `regime classifier failed: ValueError: too many
+                # values to unpack (expected 4)` warning observed
+                # surfacing via the `regime_compute_error` defensive
+                # path during the 2026-05-09 brief replays.
+                regime_long, *_ = select_trigger_and_regime(_ctx('long'), 'long')
+                regime_short, *_ = select_trigger_and_regime(_ctx('short'), 'short')
                 # Bias direction = primary regime for legacy callers.
                 regime = regime_short if 'bear' in ftfc_dir else regime_long
                 d['regime'] = regime
