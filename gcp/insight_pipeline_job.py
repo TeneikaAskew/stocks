@@ -260,8 +260,8 @@ def _insert_report_history(report: InsightReport, insight_run_id: str,
             """
             INSERT INTO insight_reports_history
                 (insight_run_id, ticker, as_of, report, model_versions,
-                 cost_usd, latency_ms, run_kind, triggered_by)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s)
+                 cost_usd, per_role_cost, latency_ms, run_kind, triggered_by)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
             """,
             (
                 insight_run_id,
@@ -270,6 +270,7 @@ def _insert_report_history(report: InsightReport, insight_run_id: str,
                 report.model_dump_json(),
                 json.dumps(report.model_versions),
                 report.run_cost_usd,
+                json.dumps(report.per_role_cost),
                 report.run_latency_ms,
                 run_kind,
                 triggered_by,
@@ -299,12 +300,14 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
             cur.execute(
                 """
                 INSERT INTO insight_reports
-                    (id, ticker, as_of, report, model_versions, cost_usd, latency_ms)
-                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+                    (id, ticker, as_of, report, model_versions, cost_usd,
+                     per_role_cost, latency_ms)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
                 ON CONFLICT (ticker, as_of) DO UPDATE
                 SET report = EXCLUDED.report,
                     model_versions = EXCLUDED.model_versions,
                     cost_usd = EXCLUDED.cost_usd,
+                    per_role_cost = EXCLUDED.per_role_cost,
                     latency_ms = EXCLUDED.latency_ms
                 RETURNING id::text
                 """,
@@ -312,7 +315,9 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                     row_id, report.ticker, report.as_of,
                     report.model_dump_json(),
                     json.dumps(report.model_versions),
-                    report.run_cost_usd, report.run_latency_ms,
+                    report.run_cost_usd,
+                    json.dumps(report.per_role_cost),
+                    report.run_latency_ms,
                 ),
             )
             returned = cur.fetchone()
@@ -326,8 +331,9 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
         cur.execute(
             """
             INSERT INTO insight_reports
-                (id, ticker, as_of, report, model_versions, cost_usd, latency_ms)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+                (id, ticker, as_of, report, model_versions, cost_usd,
+                 per_role_cost, latency_ms)
+            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s::jsonb, %s)
             ON CONFLICT (ticker, as_of) DO NOTHING
             RETURNING id::text
             """,
@@ -335,7 +341,9 @@ def _upsert_report(report: InsightReport, allow_update: bool = False) -> Optiona
                 row_id, report.ticker, report.as_of,
                 report.model_dump_json(),
                 json.dumps(report.model_versions),
-                report.run_cost_usd, report.run_latency_ms,
+                report.run_cost_usd,
+                json.dumps(report.per_role_cost),
+                report.run_latency_ms,
             ),
         )
         returned = cur.fetchone()

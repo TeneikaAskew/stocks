@@ -605,6 +605,64 @@ def test_build_signal_refs_skips_malformed_rows():
     assert out[0].direction == "CALL"
 
 
+def test_build_signal_refs_filters_by_long_direction():
+    """Audit 2026-05-08 G.P2.14: a long report should only cite CALL alerts."""
+    from lib.agents.orchestrator import _build_signal_refs
+
+    section = {
+        "available": True,
+        "recent": [
+            {"alert_ts": "2026-05-07 14:00", "direction": "CALL",
+             "strength": "strong", "score": 4.0},
+            {"alert_ts": "2026-05-07 13:00", "direction": "PUT",
+             "strength": "moderate", "score": 3.0},
+            {"alert_ts": "2026-05-07 12:00", "direction": "PUT",
+             "strength": "strong", "score": 4.5},
+            {"alert_ts": "2026-05-07 11:00", "direction": "CALL",
+             "strength": "weak", "score": 2.0},
+        ],
+    }
+    out = _build_signal_refs(section, direction="long")
+    assert len(out) == 2
+    assert all(r.direction == "CALL" for r in out)
+
+
+def test_build_signal_refs_filters_by_short_direction():
+    from lib.agents.orchestrator import _build_signal_refs
+
+    section = {
+        "available": True,
+        "recent": [
+            {"alert_ts": "2026-05-07 14:00", "direction": "CALL",
+             "strength": "strong", "score": 4.0},
+            {"alert_ts": "2026-05-07 13:00", "direction": "PUT",
+             "strength": "moderate", "score": 3.0},
+        ],
+    }
+    out = _build_signal_refs(section, direction="short")
+    assert len(out) == 1
+    assert out[0].direction == "PUT"
+
+
+def test_build_signal_refs_flat_or_none_keeps_all_directions():
+    """Flat trades retain the unfiltered alert stream so the report still
+    shows what the market did. Same for direction=None (callers that
+    haven't migrated)."""
+    from lib.agents.orchestrator import _build_signal_refs
+
+    section = {
+        "available": True,
+        "recent": [
+            {"alert_ts": "2026-05-07 14:00", "direction": "CALL",
+             "strength": "strong", "score": 4.0},
+            {"alert_ts": "2026-05-07 13:00", "direction": "PUT",
+             "strength": "moderate", "score": 3.0},
+        ],
+    }
+    assert len(_build_signal_refs(section, direction="flat")) == 2
+    assert len(_build_signal_refs(section)) == 2
+
+
 def test_pipeline_isolates_multiple_partial_failures(
     canned_bundle, seven_role_snapshot
 ):
@@ -681,3 +739,52 @@ def test_pipeline_model_versions_snapshot_is_frozen(canned_bundle):
     )
     for role in ALL_ROLES:
         assert report.model_versions[role] == "vertex:gemini-2.0-flash"
+
+
+def test_pipeline_records_per_role_cost(canned_bundle, seven_role_snapshot):
+    """Audit 2026-05-08 G.P3.2: per_role_cost should split spend by role,
+    with analyst and risk subdivided (e.g. 'analyst:market', 'risk:neutral').
+    Sum across the dict must equal run_cost_usd within rounding."""
+    mock = _MockLLM()
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    # All 6 analyst sections + 3 risk personas + 5 single-role nodes (bull,
+    # bear, judge, trader, portfolio_manager) = 14 distinct keys in the
+    # happy path.
+    expected_analyst_keys = {
+        "analyst:market", "analyst:strat", "analyst:options",
+        "analyst:gamma", "analyst:catalyst", "analyst:sentiment",
+    }
+    expected_risk_keys = {
+        "risk:aggressive", "risk:conservative", "risk:neutral",
+    }
+    expected_single = {"bull", "bear", "judge", "trader", "portfolio_manager"}
+    expected = expected_analyst_keys | expected_risk_keys | expected_single
+    assert set(report.per_role_cost.keys()) == expected
+    assert all(v > 0 for v in report.per_role_cost.values())
+    assert abs(sum(report.per_role_cost.values()) - report.run_cost_usd) < 1e-4
+
+
+def test_pipeline_filters_supporting_signals_by_direction(
+    canned_bundle, seven_role_snapshot
+):
+    """Audit 2026-05-08 G.P2.14: supporting_signals must not contradict
+    the report direction. The canned signal_alerts fixture returns a
+    single CALL row, so a long report keeps it and a short/flat report
+    on the same data would drop it (covered by unit-level tests above)."""
+    mock = _MockLLM()
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    # PM mock returns long; the only stubbed alert is direction=CALL.
+    assert report.direction == "long"
+    assert all(s.direction == "CALL" for s in report.supporting_signals)

@@ -247,6 +247,15 @@ class InsightReport(BaseModel):
     )
     run_cost_usd: float = 0.0
     run_latency_ms: int = 0
+    per_role_cost: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "USD cost per role (analyst tiers split by section: "
+            "'analyst:market', 'analyst:strat', ...; risk tier split by "
+            "persona: 'risk:aggressive', etc.). Sum equals run_cost_usd "
+            "within rounding."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

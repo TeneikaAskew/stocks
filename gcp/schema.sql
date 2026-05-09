@@ -977,11 +977,21 @@ CREATE TABLE IF NOT EXISTS insight_reports (
     report          JSONB        NOT NULL,
     model_versions  JSONB        NOT NULL,
     cost_usd        NUMERIC(10,4),
+    -- Per-role USD cost breakdown (e.g. {"analyst:market": 0.0021,
+    -- "judge": 0.0008, ...}). Sum of values equals cost_usd within
+    -- rounding. Lets dashboards answer "which role is most expensive?"
+    -- without re-running the pipeline. Audit 2026-05-08 G.P3.2.
+    per_role_cost   JSONB,
     latency_ms      INTEGER,
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
     CONSTRAINT uq_insight_reports_ticker_asof UNIQUE (ticker, as_of)
 );
+
+-- Migration for existing instances. apply_schema.py is idempotent so
+-- this no-ops on fresh installs after the table CREATE above.
+ALTER TABLE insight_reports
+    ADD COLUMN IF NOT EXISTS per_role_cost JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_insight_reports_ticker_asof
     ON insight_reports (ticker, as_of DESC);
@@ -1271,6 +1281,8 @@ CREATE TABLE IF NOT EXISTS insight_reports_history (
     report            JSONB        NOT NULL,
     model_versions    JSONB,
     cost_usd          NUMERIC(10,4),
+    -- Per-role USD cost breakdown (mirror of insight_reports.per_role_cost).
+    per_role_cost     JSONB,
     latency_ms        INTEGER,
 
     -- Audit metadata
@@ -1287,6 +1299,10 @@ CREATE INDEX IF NOT EXISTS idx_irh_ticker_as_of_written
     ON insight_reports_history (ticker, as_of, written_at DESC);
 CREATE INDEX IF NOT EXISTS idx_irh_run_kind
     ON insight_reports_history (run_kind, written_at DESC);
+
+-- Migration for existing instances. Idempotent.
+ALTER TABLE insight_reports_history
+    ADD COLUMN IF NOT EXISTS per_role_cost JSONB;
 
 
 -- Migration: extend insight_runs.trigger CHECK to allow 'cache_hit' so
