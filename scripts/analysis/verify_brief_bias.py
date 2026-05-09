@@ -195,6 +195,19 @@ def main():
         Path(args.output).write_text(report)
         log.info("Wrote %s", args.output)
 
+    # Exit codes (per the operator docs at top of file):
+    #   0 = PASS — every bucket has brief_bias populated
+    #   1 = FAIL — coverage hole on at least one bucket
+    #   2 = env / DB issue — no rows pulled at all
+    # Without the explicit "no rows" check, a bad cutoff or missing
+    # signal_monitor would silently exit 0 (0 buckets-with-null) and
+    # automation would treat it as PASS. Codex review on PR #357.
+    if coverage["n_buckets"] == 0:
+        log.error(
+            "verify_brief_bias: no alerts in window — likely env/DB "
+            "issue, exiting 2 instead of 0."
+        )
+        sys.exit(2)
     sys.exit(0 if coverage["n_buckets_with_null"] == 0 else 1)
 
 
