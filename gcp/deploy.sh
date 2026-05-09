@@ -849,13 +849,17 @@ deploy_fetch_sec_filings() {
 
 deploy_fetch_earnings_history() {
     echo "Deploying fetch-earnings-history job..."
-    # 1800s timeout: pulls ~100-300 tickers (anyone reporting in next 90d).
-    # AV rate limit at 150 RPM means ~2-3 minutes of API time at peak.
+    # 7200s timeout: 45 tickers × ~50s/ticker (AV API + DB upsert, full-mode
+    # tickers can pull 1k+ bars) ≈ 2250s wall-clock — 1800s was 0.8× the
+    # estimate (issue #269 — task hit the 1800s cap at ticker [37/45] on
+    # 2026-05-04). 7200 = 3.2× the wall-clock per CLAUDE.md §0 rule 5
+    # ("≥ 4× the wall-clock estimate"; this is close but free since
+    # Cloud Run charges runtime not cap).
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
     gcloud run jobs create fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
-        --task-timeout 1800 \
+        --task-timeout 7200 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
         ${DB_SECRET_FLAG} \
@@ -863,7 +867,7 @@ deploy_fetch_earnings_history() {
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
-        --task-timeout 1800 \
+        --task-timeout 7200 \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
