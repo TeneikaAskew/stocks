@@ -144,9 +144,33 @@ class StratClassifier:
         Returns a DataFrame aligned to the input index with columns:
         - strat_candle: candle classification ('1', '2U', '2D', '3', 'X')
         - strat_combo: combo label per §2 of methodology doc, or 'none'
-        - strat_setup: True if an inside bar follows a directional bar
+        - strat_setup: **inside-bar-pending** flag — True if and only
+          if the latest bar is '1' (inside) AND the prior bar is
+          directional ('2U' / '2D' / '3'). Read as "the next bar's
+          break of the inside high or low triggers an entry."
         - trigger_high / trigger_low: breakout levels
         - consecutive_1s: rolling count of recent inside bars
+
+        ## strat_setup vs strat_combo are orthogonal
+
+        Common confusion (Track B audit B.5 / G.P1.6 flagged this as
+        "internally inconsistent" before the orthogonality was
+        documented): a `322_bull_continuation` row can — and routinely
+        does — have `strat_setup=False`. That's correct.
+
+        - `strat_combo` is the multi-bar pattern label (e.g. 322 fires
+          when prev2='3', prev1='2U', and the latest bar is also '2U').
+        - `strat_setup` only flips True when the latest bar is itself
+          a '1' (inside bar) following a directional bar — i.e. when
+          the trader should be watching the next bar's high/low to
+          break in either direction.
+
+        For continuation combos like 322 / 22 / clean_2u, the latest
+        bar is by definition directional (a '2U' or '2D'), so
+        `strat_setup` MUST be False; the entry already happened on
+        that bar via the directional break, not on a pending inside
+        bar. Tests in `tests/test_strat.py::TestSetupVsComboOrthogonality`
+        lock this behaviour in.
 
         Priority order on collision (§3 of doc): higher-listed wins. Lower
         priorities only fill bars still tagged 'none'.
@@ -244,6 +268,12 @@ class StratClassifier:
         result.loc[mask_clean_2d & none(), 'strat_combo'] = 'clean_2d_bear'
 
         # ── Setup / consecutive inside bars ────────────────────────────────
+        # `strat_setup` is the inside-bar-pending flag, NOT a "any combo
+        # is in force" flag. See class docstring for the orthogonality
+        # contract. A 322 / 22 continuation row will publish strat_combo
+        # populated AND strat_setup=False — that's the documented
+        # behaviour, not a bug. Track B audit B.5 / G.P1.6 closed this
+        # as not-a-bug after walking the truth table.
         result['strat_setup'] = (labels == '1') & (prev1.isin(['2U', '2D', '3']))
         result['consecutive_1s'] = (labels == '1').astype(int).rolling(window=2, min_periods=1).sum()
 
