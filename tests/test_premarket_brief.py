@@ -1548,6 +1548,151 @@ class TestPersistStaleDataHandling:
         assert captured['upsert_rows'] == []
 
 
+class TestPersistLLMCommentary:
+    """Track B audit G.P2.11 — persist Gemini-generated brief
+    commentary for audit trail.
+
+    Pre-W7, the four LLM commentary slots
+    (`brief['llm_overview']`, `brief['llm_orb_explanation']`,
+    `brief['tickers'][T]['llm_analysis']`,
+    `brief['tickers'][T]['llm_playbook']`) were rendered live to
+    Discord and discarded. No post-hoc audit could grade what users
+    actually saw on a given morning because nothing in
+    premarket_analysis captured the LLM text.
+
+    Post-W7, those four strings flow through `persist_to_cloud_sql`
+    into both the canonical `premarket_analysis` row and the
+    append-only `premarket_analysis_history` row. They are
+    non-deterministic — a replay generates different Gemini text —
+    but the original morning's text is preserved for back-audit.
+
+    User-confirmed scope decision (during the implementation-plan
+    clarification round): "persist for audit trail" rather than skip.
+    """
+
+    def _install_persist_mocks(self, monkeypatch):
+        from gcp import database
+
+        captured = {
+            'history_rows': [],
+            'upsert_rows': [],
+        }
+
+        def fake_bulk_insert(df, table):
+            captured['history_rows'].append((table, df.to_dict('records')))
+            return len(df)
+
+        def fake_upsert(df, table, keys):
+            captured['upsert_rows'].append((table, df.to_dict('records')))
+            return len(df)
+
+        def fake_row_exists(table, where):
+            return False
+
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'bulk_insert_dataframe', fake_bulk_insert)
+        monkeypatch.setattr(database, 'upsert_dataframe', fake_upsert)
+        monkeypatch.setattr(database, 'row_exists', fake_row_exists)
+        return captured
+
+    def test_brief_level_and_per_ticker_llm_fields_propagate_to_history(
+        self, monkeypatch,
+    ):
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = {
+            'analysis_date': date(2026, 5, 8),
+            'llm_overview': 'Bullish bias across all three ETFs.',
+            'llm_orb_explanation': 'Default 5-min ORB; no high-impact catalyst.',
+            'tickers': {
+                'IWM': {
+                    'status': None, 'price': 220.0,
+                    'llm_analysis': 'IWM tagged 2U with bullish FTFC.',
+                    'llm_playbook': 'CALLS above PDH; stop at CWO.',
+                },
+                'SPY': {
+                    'status': None, 'price': 720.0,
+                    'llm_analysis': 'SPY in a tight inside bar.',
+                    'llm_playbook': 'Wait for inside-bar break.',
+                },
+            },
+        }
+        persist_to_cloud_sql(brief, allow_update=True,
+                             run_kind='manual_update', triggered_by='test')
+
+        history = captured['history_rows'][0][1]
+        by_ticker = {r['ticker']: r for r in history}
+
+        # Brief-level fields are duplicated to every ticker's row
+        # (the persist layer doesn't have a brief-level table; we
+        # mirror onto each row so a single SELECT carries everything
+        # without joins).
+        for row in by_ticker.values():
+            assert row['llm_overview'] == 'Bullish bias across all three ETFs.'
+            assert row['llm_orb_explanation'] == \
+                'Default 5-min ORB; no high-impact catalyst.'
+
+        # Per-ticker fields are distinct
+        assert by_ticker['IWM']['llm_analysis'] == \
+            'IWM tagged 2U with bullish FTFC.'
+        assert by_ticker['SPY']['llm_analysis'] == \
+            'SPY in a tight inside bar.'
+        assert by_ticker['IWM']['llm_playbook'] == \
+            'CALLS above PDH; stop at CWO.'
+        assert by_ticker['SPY']['llm_playbook'] == \
+            'Wait for inside-bar break.'
+
+    def test_missing_llm_fields_persist_as_null(self, monkeypatch):
+        """When the LLM step is disabled (BRIEF_LLM_DISABLE=1) or
+        fails, the four slots are absent from the brief dict.
+        Persist should land NULL in each, not crash on KeyError."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = {
+            'analysis_date': date(2026, 5, 8),
+            # No llm_overview / llm_orb_explanation
+            'tickers': {
+                'IWM': {'status': None, 'price': 220.0},
+                # No llm_analysis / llm_playbook
+            },
+        }
+        persist_to_cloud_sql(brief, allow_update=True,
+                             run_kind='manual_update', triggered_by='test')
+
+        # The persisted row keys should still exist (not KeyError);
+        # values are None, which pandas serializes as NaN in mixed
+        # DataFrames.
+        row = captured['history_rows'][0][1][0]
+        for col in ('llm_overview', 'llm_orb_explanation',
+                    'llm_analysis', 'llm_playbook'):
+            assert col in row, f"missing column {col} in persisted row"
+            assert pd.isna(row[col]) or row[col] is None
+
+    def test_canonical_upsert_carries_llm_fields(self, monkeypatch):
+        """The canonical premarket_analysis row also gets the LLM
+        fields — not just history. Future SELECT against the canonical
+        table for "today's commentary" must work without joining to
+        history."""
+        from gcp.premarket_brief import persist_to_cloud_sql
+
+        captured = self._install_persist_mocks(monkeypatch)
+        brief = {
+            'analysis_date': date(2026, 5, 8),
+            'llm_overview': 'Test overview',
+            'tickers': {
+                'IWM': {'status': None, 'price': 220.0,
+                        'llm_analysis': 'Test per-ticker'},
+            },
+        }
+        persist_to_cloud_sql(brief, allow_update=True,
+                             run_kind='manual_update', triggered_by='test')
+        upsert_row = captured['upsert_rows'][0][1][0]
+        assert upsert_row['llm_overview'] == 'Test overview'
+        assert upsert_row['llm_analysis'] == 'Test per-ticker'
+
+
 # ──────────────────────────────────────────────────────────────────────
 # market_data_daily JOIN — gap_pct propagation
 # ──────────────────────────────────────────────────────────────────────

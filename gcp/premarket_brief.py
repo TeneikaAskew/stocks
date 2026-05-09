@@ -2386,6 +2386,22 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             # Track B audit G.P0.4 + G.P0.5 — freshness telemetry
             'data_as_of': data.get('data_as_of'),
             'data_freshness_status': data.get('data_freshness_status'),
+            # Track B audit G.P2.11 — persist LLM-generated brief
+            # commentary for audit trail. The four strings are
+            # non-deterministic Gemini-Flash outputs (gcp/brief_explanations.py)
+            # rendered live to Discord; pre-W7 they were discarded
+            # post-render so no audit could grade what users actually
+            # saw on a given morning. Persisting them locks the
+            # original morning's text — replays will produce different
+            # text but the original is preserved for back-audit.
+            #
+            # `llm_overview` and `llm_orb_explanation` are top-level on
+            # `brief` (one-per-morning); `llm_analysis` and
+            # `llm_playbook` are per-ticker on `data`.
+            'llm_overview': brief.get('llm_overview'),
+            'llm_orb_explanation': brief.get('llm_orb_explanation'),
+            'llm_analysis': data.get('llm_analysis'),
+            'llm_playbook': data.get('llm_playbook'),
         })
 
     if not rows:
