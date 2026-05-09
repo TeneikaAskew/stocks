@@ -902,7 +902,8 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
     The PM agent frequently leaves ``key_levels`` empty. Rather than adding
     a new SQL query, synthesize the levels from data the bundle already
     carries: prior day high/low (strat section), 200 SMA and 20 EMA
-    (market section), and max-pain proxy (options section).
+    (market section), max-pain proxy (options section), and gamma flip /
+    king / gate strikes (gamma section — issue #359).
     """
     levels: dict[str, float] = {}
 
@@ -929,6 +930,51 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
         mp = options.get("max_pain_strike_proxy")
         if isinstance(mp, (int, float)):
             levels["Max Pain"] = float(mp)
+
+    # Gamma section — issue #359. The LLM thesis frequently mentions
+    # "the gamma flip at $X" or "King strike at $Y"; without surfacing
+    # those numbers in `key_levels`, PR-C's thesis_validator flagged
+    # them as orphans (8/21 reports during 2026-05-09 validation).
+    # Pull the flip price + the closest King strike + the closest Gates
+    # above and below spot, when the gamma section ran successfully.
+    gamma = bundle.get("gamma", {}) or {}
+    if gamma.get("available"):
+        flip = gamma.get("flip")
+        if isinstance(flip, (int, float)):
+            levels["Gamma Flip"] = float(flip)
+        kings = gamma.get("kings") or []
+        if kings:
+            king0 = kings[0] if isinstance(kings[0], dict) else None
+            king_strike = (
+                king0.get("strike") if king0 else None
+            )
+            if isinstance(king_strike, (int, float)):
+                levels["Gamma King"] = float(king_strike)
+        # For the gates, surface the closest one above and below spot.
+        # The dealer-positioning analyst typically calls these out in
+        # prose; populating the structured field closes the loop.
+        spot = gamma.get("spot")
+        gates = gamma.get("gates") or []
+        if isinstance(spot, (int, float)) and gates:
+            above_strikes = sorted(
+                float(g["strike"]) for g in gates
+                if isinstance(g, dict)
+                and isinstance(g.get("strike"), (int, float))
+                and g["strike"] > spot
+            )
+            below_strikes = sorted(
+                (
+                    float(g["strike"]) for g in gates
+                    if isinstance(g, dict)
+                    and isinstance(g.get("strike"), (int, float))
+                    and g["strike"] < spot
+                ),
+                reverse=True,
+            )
+            if above_strikes:
+                levels["Gamma Gate Above"] = above_strikes[0]
+            if below_strikes:
+                levels["Gamma Gate Below"] = below_strikes[0]
 
     return levels
 

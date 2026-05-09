@@ -524,6 +524,89 @@ def test_derive_key_levels_empty_bundle_returns_empty_dict():
     assert _derive_key_levels({}) == {}
 
 
+# ─── #359 — surface gamma flip / king / gate strikes in key_levels ────
+
+
+def test_derive_key_levels_includes_gamma_flip_and_kings():
+    """IWM 5/7 reproduction: validator flagged 275.24 (gamma flip) and
+    270.0 (King strike) as orphans because key_levels didn't include
+    them. After this fix both appear."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat":   {"available": True, "trigger_high": 278.13, "trigger_low": 274.23},
+        "market":  {"available": True, "sma_200": 244.9,  "ema_20": 258.34},
+        "options": {"available": True, "max_pain_strike_proxy": 240.0},
+        "gamma":   {
+            "available": True,
+            "spot": 277.0,
+            "flip": 275.24,
+            "kings": [{"strike": 270.0, "gex": 1234},
+                      {"strike": 285.0, "gex": 980}],
+            "gates": [{"strike": 273.0}, {"strike": 280.0}, {"strike": 290.0}],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels["Gamma Flip"] == 275.24
+    # Top King is the FIRST entry (already sorted by abs GEX); 270.0 here.
+    assert levels["Gamma King"] == 270.0
+    # Closest gate above spot (277) is 280; closest below is 273.
+    assert levels["Gamma Gate Above"] == 280.0
+    assert levels["Gamma Gate Below"] == 273.0
+
+
+def test_derive_key_levels_handles_partial_gamma():
+    """Gamma section available but sparse — only flip populated, no
+    kings/gates. Surface what we have, skip the rest cleanly."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            "spot": 100.0,
+            "flip": 99.5,
+            "kings": [],
+            "gates": [],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels == {"Gamma Flip": 99.5}
+
+
+def test_derive_key_levels_skips_gamma_when_unavailable():
+    """`gamma.available=False` (e.g. options chain query failed) → no
+    gamma levels in the dict; nothing else should change."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "market": {"available": True, "sma_200": 480.0, "ema_20": 500.0},
+        "gamma":  {"available": False, "reason": "no etf_options_snapshots for SPY"},
+    }
+    levels = _derive_key_levels(bundle)
+    assert "Gamma Flip" not in levels
+    assert "Gamma King" not in levels
+    assert levels == {"SMA 200": 480.0, "EMA 20": 500.0}
+
+
+def test_derive_key_levels_handles_only_gates_above_spot():
+    """All gates above spot → only Gate Above is populated, Gate Below
+    is omitted (rather than emitting a wrong/None value)."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            "spot": 100.0,
+            "flip": 100.5,
+            "kings": [{"strike": 105.0, "gex": 100}],
+            "gates": [{"strike": 102.0}, {"strike": 104.0}],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels["Gamma Gate Above"] == 102.0
+    assert "Gamma Gate Below" not in levels
+
+
 def test_build_strat_snapshot_default_when_unavailable():
     from lib.agents.orchestrator import _build_strat_snapshot
 
