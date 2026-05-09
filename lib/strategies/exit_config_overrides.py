@@ -98,7 +98,8 @@ def _latest_overrides(ticker: str) -> Optional[dict]:
         """
         SELECT calibration_date, call_target, put_target,
                call_stop, put_stop, call_time_stop, put_time_stop,
-               disabled_conditions, blue_sky_atr_offset, notes
+               disabled_conditions, disabled_directions,
+               blue_sky_atr_offset, notes
           FROM exit_config_overrides
          WHERE ticker = :ticker
          ORDER BY calibration_date DESC
