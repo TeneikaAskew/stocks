@@ -310,10 +310,12 @@ fixable" note, or a follow-up issue tracking it.
 - [x] **PR-E** — Reflection memory auto-embed wiring (G.P2.12) → **[#344 MERGED](https://github.com/TeneikaAskew/stocks/pull/344)**. Query-text synthesis works; `journal_entries` is the user-authored manual log (not a separate bug — design intent). Reflection memory becomes useful as soon as the trader uses the JournalPage.
 - [x] **PR-F** — Observability docs for model_routing + db-query (G.P2.4, G.P2.24) → **[#346 MERGED](https://github.com/TeneikaAskew/stocks/pull/346)**. Docs-only.
 
-### Round 2 (gated)
-- [ ] **PR-G** — Per-factor walk-forward audit (G.P2.1+2+3) — code blockers cleared (G.P0.6 #296 + G.P0.11 #297 closed); **now data-gated** — needs ≥2 weeks of post-fix data, earliest start 2026-05-22
-- [ ] **PR-H** — Brief↔insights divergence UI (G.P1.8) — *still genuinely blocked on #298 (G.P1.5)*
-- [ ] **PR-I** — `brief_bias` verification (G.P1.10) — code blockers cleared (G.P0.1 #295 closed; TZ-bug fix in PR #279); **now data-gated** — needs a few days of post-fix data
+### Round 2 (all 5 PRs shipped 2026-05-09)
+- [x] **PR-G** — Per-factor walk-forward analysis framework + tests (G.P2.1+2+3) → **[#355](https://github.com/TeneikaAskew/stocks/pull/355) open**. Operator runs the analysis after ≥ 2 weeks post-fix data accumulate (earliest 2026-05-22).
+- [x] **PR-H** — Brief↔insights divergence card on InsightsPage (G.P1.8) → **[#353](https://github.com/TeneikaAskew/stocks/pull/353) open**.
+- [x] **PR-I** — `brief_bias` verification SQL + Python helper (G.P1.10) → **[#357](https://github.com/TeneikaAskew/stocks/pull/357) open**. Operator runs the verification helper weekly until coverage stays at 100% for 2 consecutive weeks.
+- [x] **PR-J** — Deterministic conviction calibration (closes [#349](https://github.com/TeneikaAskew/stocks/issues/349)) → **[#351](https://github.com/TeneikaAskew/stocks/pull/351) open**.
+- [x] **PR-K** — `INSIGHT_TRIGGERED_BY` scheduler payload + backfill (closes [#313](https://github.com/TeneikaAskew/stocks/issues/313)) → **[#352](https://github.com/TeneikaAskew/stocks/pull/352) open**.
 
 ### Closeout
 - [x] Update this plan with each PR# next to its checkbox as work lands — done through 2026-05-09
@@ -330,13 +332,15 @@ fixable" note, or a follow-up issue tracking it.
 | [#343](https://github.com/TeneikaAskew/stocks/pull/343) PR-D | G.P2.13 | ✅ MERGED | Sentiment fix targets IWM 5/7+5/8 exactly; backtest walk-back is defensive |
 | [#344](https://github.com/TeneikaAskew/stocks/pull/344) PR-E | G.P2.12 | ✅ MERGED | Wiring works; journal is user-driven (design intent) |
 | [#346](https://github.com/TeneikaAskew/stocks/pull/346) PR-F | G.P2.4, G.P2.24 | ✅ MERGED | Docs only |
-| (Round 2) PR-G | G.P2.1, G.P2.2, G.P2.3 | data-gated | resumes ≥ 2026-05-22 (≥2 weeks of post-fix data) |
-| (Round 2) PR-H | G.P1.8 | unblocked | #298 closed; can ship anytime |
-| (Round 2) PR-I | G.P1.10 verify | data-gated | resumes after a few days of post-fix data |
+| [#355](https://github.com/TeneikaAskew/stocks/pull/355) PR-G | G.P2.1, G.P2.2, G.P2.3 | open / framework | analysis script + 16 tests; operator runs ≥ 2026-05-22 |
+| [#353](https://github.com/TeneikaAskew/stocks/pull/353) PR-H | G.P1.8 | open | divergence card on InsightsPage |
+| [#357](https://github.com/TeneikaAskew/stocks/pull/357) PR-I | G.P1.10 verify | open / helper | SQL + Python verifier; operator runs weekly post-deploy |
+| [#351](https://github.com/TeneikaAskew/stocks/pull/351) PR-J | follow-up #349 | open | deterministic conviction calibration |
+| [#352](https://github.com/TeneikaAskew/stocks/pull/352) PR-K | follow-up #313 | open | INSIGHT_TRIGGERED_BY scheduler payload + backfill |
 
 **Open follow-ups uncovered by validation:**
-- [#349](https://github.com/TeneikaAskew/stocks/issues/349) — **P1**: G.P3.1 conviction always 'medium' (PR-A's prompt fix didn't take). Recommend deterministic post-process from `confidence_score` + analyst-agreement count.
-- [#313](https://github.com/TeneikaAskew/stocks/issues/313) — **P2**: `insight_reports_history.run_kind` mislabel (cron env-var mismatch).
+- ~~[#349](https://github.com/TeneikaAskew/stocks/issues/349)~~ — **P1**: G.P3.1 conviction → addressed by **PR-J #351** (deterministic post-process)
+- ~~[#313](https://github.com/TeneikaAskew/stocks/issues/313)~~ — **P2**: `run_kind` mislabel → addressed by **PR-K #352**
 - **P2** (no issue yet): `key_levels` missing real levels mentioned in thesis (gamma flip, King strikes). PR-C validator surfaces these as orphans; root cause is incomplete `_derive_key_levels` in orchestrator.py.
 
 **Round 1 deploy checklist** (operator runs once after R1 merges):
