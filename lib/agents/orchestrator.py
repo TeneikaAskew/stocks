@@ -96,17 +96,25 @@ class _Tracker:
     def __init__(self) -> None:
         self.total_cost: float = 0.0
         self.calls: int = 0
+        # Per-role accumulator. Keys are role identifiers — analyst and
+        # risk subdivide further (e.g. "analyst:market", "risk:neutral")
+        # so dashboards can attribute spend to specific personas. Audit
+        # 2026-05-08 G.P3.2.
+        self.per_role_cost: dict[str, float] = {}
 
-    def add(self, usage: Usage) -> None:
+    def add(self, usage: Usage, *, role_key: str) -> None:
         self.calls += 1
         try:
-            self.total_cost += usage.cost_usd()
+            cost = usage.cost_usd()
         except KeyError:
             logger.warning(
                 "no price table entry for %s:%s — cost not tracked",
                 usage.provider,
                 usage.model,
             )
+            return
+        self.total_cost += cost
+        self.per_role_cost[role_key] = self.per_role_cost.get(role_key, 0.0) + cost
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +145,8 @@ async def _run_node(
         temperature=temperature,
         max_output_tokens=max_output_tokens,
     )
-    tracker.add(result.usage)
+    role_key = f"{role}:{sub}" if sub else role
+    tracker.add(result.usage, role_key=role_key)
     return result.parsed
 
 
@@ -459,7 +468,6 @@ async def run_insight_pipeline(
     strat_section = bundle.get("strat", {})
     strat_status = _build_strat_snapshot(strat_section)
     catalysts = _build_catalysts(bundle.get("catalysts", {}))
-    signals_refs = _build_signal_refs(bundle.get("signals", {}))
 
     # Deterministic fallback for key_levels — the PM agent often returns
     # an empty dict, leaving the report section blank. Back-fill from the
@@ -485,6 +493,13 @@ async def run_insight_pipeline(
     # Respect any explicit block from the risk debate
     blocked = any(f.severity == "block" for f in all_flags)
     direction = "flat" if blocked else pm.direction
+
+    # Filter supporting_signals by trade direction so the report doesn't
+    # cite contradictory alerts (e.g. PUT signals under a long thesis).
+    # Audit 2026-05-08 G.P2.14: QQQ 5/7 long report cited 5 PUT signals.
+    signals_refs = _build_signal_refs(
+        bundle.get("signals", {}), direction=direction
+    )
 
     # ── Deterministic persona plans ────────────────────────────────
     # Compute entry/stop/targets/sizing from the same bundle the LLMs
@@ -562,6 +577,7 @@ async def run_insight_pipeline(
         model_versions=snapshot.model_versions(),
         run_cost_usd=round(tracker.total_cost, 6),
         run_latency_ms=int((time.monotonic() - start) * 1000),
+        per_role_cost={k: round(v, 6) for k, v in tracker.per_role_cost.items()},
     )
     return report
 
@@ -656,16 +672,34 @@ def _build_catalysts(section: dict) -> list[Catalyst]:
     return out
 
 
-def _build_signal_refs(section: dict) -> list[SignalRef]:
+_DIRECTION_TO_OPTION: dict[str, str] = {"long": "CALL", "short": "PUT"}
+
+
+def _build_signal_refs(
+    section: dict,
+    *,
+    direction: Optional[str] = None,
+) -> list[SignalRef]:
+    """Convert the signals summarizer section to SignalRef rows.
+
+    When ``direction`` is ``"long"`` or ``"short"``, only signals
+    matching the corresponding option side (CALL / PUT respectively)
+    are surfaced. ``"flat"`` and ``None`` keep the full set so flat
+    reports still contextualize against the prior alert stream.
+    """
     if not section or not section.get("available"):
         return []
+    keep = _DIRECTION_TO_OPTION.get(direction or "")
     out: list[SignalRef] = []
     for r in section.get("recent", []) or []:
         try:
+            row_direction = r["direction"]
+            if keep is not None and row_direction != keep:
+                continue
             out.append(
                 SignalRef(
                     alert_ts=str(r["alert_ts"]),
-                    direction=r["direction"],
+                    direction=row_direction,
                     strength=r.get("strength") or "unknown",
                     score=float(r.get("score") or 0.0),
                 )

@@ -196,9 +196,18 @@ PORTFOLIO_MANAGER_PROMPT = (
     "  - bull_case and bear_case: distilled 1-2 sentence versions of "
     "    the researchers' arguments, "
     "  - confidence_score 0.0-1.0. "
-    "If any risk reviewer issued a `block`, set direction='flat' and "
-    "explain why in the thesis. If any analyst section failed, do not "
-    "make up replacement facts — note the gap in the thesis."
+    "Conviction calibration — pick honestly, do not default to medium: "
+    "  - high: ≥4 of 6 analyst sections agree with the trader direction, "
+    "    FTFC aligns, no risk_reviewer issued warn or block, "
+    "    confidence_score ≥ 0.7. "
+    "  - medium: 2-3 of 6 analyst sections agree, FTFC mixed or aligned, "
+    "    at most one warn flag, confidence_score 0.4-0.7. "
+    "  - low: ≤1 analyst section agrees, FTFC contradicts trader, any "
+    "    warn or block flag, confidence_score < 0.4, OR direction='flat'. "
+    "If any risk reviewer issued a `block`, set direction='flat', "
+    "conviction='low', and explain why in the thesis. If any analyst "
+    "section failed, do not make up replacement facts — note the gap in "
+    "the thesis and lower the conviction one notch."
 )
 
 
