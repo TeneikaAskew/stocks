@@ -238,20 +238,20 @@ def _pull_alerts(start: date, end: date) -> pd.DataFrame:
 
     # `signal_alerts` has no `strategy_name` column on the current
     # schema — strategy is derived from `conditions_met` content
-    # downstream in `_infer_strategy`. Codex review on PR #355 caught
-    # the SELECT abort.
+    # downstream in `_infer_strategy`. The outcome (return_pct) lives
+    # on `signal_alerts.exit_return_pct` directly (filled in by the
+    # exit-watcher / EOD resolver). The `trades` table has no
+    # `alert_id` foreign key, so the prior `LEFT JOIN trades t ON
+    # t.alert_id = a.id` was a schema fiction that aborted the query.
     sql = text("""
         SELECT
-            a.id::text          AS id,
-            a.ticker            AS ticker,
-            a.alert_ts          AS alert_ts,
-            a.direction         AS direction,
-            a.conditions_met    AS conditions_met,
-            t.return_pct        AS outcome_return_pct
+            a.id::text         AS id,
+            a.ticker           AS ticker,
+            a.alert_ts         AS alert_ts,
+            a.direction        AS direction,
+            a.conditions_met   AS conditions_met,
+            a.exit_return_pct  AS outcome_return_pct
         FROM signal_alerts a
-        LEFT JOIN trades t
-               ON t.alert_id = a.id
-              AND t.return_pct IS NOT NULL
         WHERE a.alert_ts::date BETWEEN :start AND :end
         ORDER BY a.alert_ts ASC
     """)
