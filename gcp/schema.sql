@@ -1761,6 +1761,15 @@ CREATE TABLE IF NOT EXISTS exit_config_overrides (
 ALTER TABLE exit_config_overrides
     ADD COLUMN IF NOT EXISTS blue_sky_atr_offset DOUBLE PRECISION;
 
+-- Audit 2026-05-08 G.P1.19: per-ticker direction kill switch.
+-- `disabled_directions` JSONB column carries a list like ["PUT"] or
+-- ["CALL"] for tickers where one side should not fire at all (until
+-- the condition set is rebuilt — temporary disable, not a permanent
+-- ban). Read at lib/signals.py:evaluate_signal; alerts return None
+-- for the disabled side regardless of score.
+ALTER TABLE exit_config_overrides
+    ADD COLUMN IF NOT EXISTS disabled_directions JSONB;
+
 CREATE INDEX IF NOT EXISTS idx_exit_config_overrides_recent
     ON exit_config_overrides (ticker, calibration_date DESC);
 
@@ -1802,6 +1811,14 @@ UPDATE exit_config_overrides
    SET blue_sky_atr_offset = 0.20
  WHERE ticker = 'QQQ' AND calibration_date = '2026-05-08'
    AND blue_sky_atr_offset IS NULL;
+
+-- Audit 2026-05-08 G.P1.19: disable QQQ MR PUT entirely until the
+-- condition set is rebuilt. Current QQQ MR PUT win-rate is 11.1%, the
+-- worst of any (ticker, direction) pair in the system. Track G priority.
+UPDATE exit_config_overrides
+   SET disabled_directions = '["PUT"]'::jsonb
+ WHERE ticker = 'QQQ' AND calibration_date = '2026-05-08'
+   AND disabled_directions IS NULL;
 
 
 -- ─────────────────────────────────────────────────────────
