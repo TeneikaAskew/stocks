@@ -72,6 +72,7 @@ def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
 def _check_staleness(df: pd.DataFrame, ticker: str, *,
                      max_age_days: int, on_stale: str,
                      date_col: Optional[str] = None,
+                     value_col: Optional[str] = None,
                      today: Optional[date] = None) -> None:
     """Compare the most recent row's date against today; warn or raise
     if the gap exceeds `max_age_days`.
@@ -85,6 +86,15 @@ def _check_staleness(df: pd.DataFrame, ticker: str, *,
     DataFrame's index (assumed to be a DatetimeIndex). Empty df is a
     no-op (an empty result is a different failure mode than a stale
     result; the caller decides how to handle empty).
+
+    `value_col`: when provided, filter out rows where this column is
+    NaN BEFORE computing the max date. This is what makes the staleness
+    check honest in the presence of `fetch-premarket-refresh`'s
+    pre-market placeholder rows (today's row has `pre_*` fields but
+    `close` is NaN) — without the filter, MAX(date) returns today even
+    when the latest USABLE OHLC bar is days old. Track A G.P0.3's
+    freshness watchdog applies the same `close IS NOT NULL` filter at
+    the SQL layer; this check applies it at the DataFrame layer.
     """
     if on_stale == 'silent':
         return
@@ -92,6 +102,21 @@ def _check_staleness(df: pd.DataFrame, ticker: str, *,
         return
     if today is None:
         today = date.today()
+
+    # Filter out placeholder rows where the value column is NaN. The
+    # check should reflect the most recent USABLE bar, not the most
+    # recent row of any kind.
+    if value_col is not None and value_col in df.columns:
+        df = df[df[value_col].notna()]
+        if df.empty:
+            # Every row is a placeholder. Treat as stale at infinity
+            # under 'error', as a "no usable rows" warning under 'warn'.
+            msg = (f"data_loader: {ticker} has no rows with non-null "
+                   f"{value_col} — every row is a placeholder.")
+            if on_stale == 'error':
+                raise RuntimeError(msg)
+            log.warning(msg)
+            return
 
     if date_col is not None and date_col in df.columns:
         last = df[date_col].max()
@@ -227,8 +252,13 @@ class DataLoader:
                         df = self._strip_timezone(df)
                         df_out = self._filter_dates(df, start_date, end_date)
 
+        # value_col='Close' filters out NULL-close placeholder rows
+        # (e.g. fetch-premarket-refresh writes today's row with pre_*
+        # fields but no close). Without this, the staleness check
+        # silently passes when the latest USABLE bar is days old.
         _check_staleness(df_out, ticker,
-                         max_age_days=max_age_days, on_stale=on_stale)
+                         max_age_days=max_age_days, on_stale=on_stale,
+                         value_col='Close')
         return df_out
 
     def _load_intraday_from_sql(
@@ -312,8 +342,12 @@ class DataLoader:
 
         # Skip staleness when caller asked for a specific year (historical query).
         if year is None:
+            # value_col='Close' filters out NULL-close placeholders
+            # (Track A G.P0.3 / G.P1.17 — fetch-premarket-refresh
+            # writes pre_* fields with no close on today's row).
             _check_staleness(df_out, ticker,
-                             max_age_days=max_age_days, on_stale=on_stale)
+                             max_age_days=max_age_days, on_stale=on_stale,
+                             value_col='Close')
         return df_out
 
     def _load_daily_from_sql(
