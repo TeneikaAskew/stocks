@@ -303,12 +303,12 @@ fixable" note, or a follow-up issue tracking it.
 - [x] **2026-05-09 close-out update** — close #295/#296/#297; comment update on #298/#299 with current status
 
 ### Round 1 (no blockers)
-- [x] **PR-A** — Batched mechanical fixes (G.P3.1, G.P2.14, G.P3.2, G.P3.3) → `claude/track-c-r1-mechanical-fixes` → **[PR #305](https://github.com/TeneikaAskew/stocks/pull/305) open**, MERGEABLE. Filed [#313](https://github.com/TeneikaAskew/stocks/issues/313) for the `run_kind='scheduled'` incidental finding discovered during G.P3.3 verification.
-- [ ] **PR-B** — orb_only investigation (G.P1.4) → `claude/track-c-r1-orb-only`
-- [ ] **PR-C** — Thesis-vs-targets decoupling (G.P1.9) → `claude/track-c-r1-thesis-targets`
-- [ ] **PR-D** — failed_sections root cause (G.P2.13) → `claude/track-c-r1-failed-sections`
-- [ ] **PR-E** — Reflection memory wiring (G.P2.12) → `claude/track-c-r1-reflection-memory`
-- [ ] **PR-F** — Observability touch-ups (G.P2.4, G.P2.24) → `claude/track-c-r1-observability`
+- [x] **PR-A** — Batched mechanical fixes (G.P3.1, G.P2.14, G.P3.2, G.P3.3) → `claude/track-c-r1-mechanical-fixes` → **[PR #305](https://github.com/TeneikaAskew/stocks/pull/305) MERGED 2026-05-09**. Filed [#313](https://github.com/TeneikaAskew/stocks/issues/313) for the `run_kind='scheduled'` incidental finding discovered during G.P3.3 verification.
+- [x] **PR-B** — orb_only investigation + recurring calibration + per-column NULL-merge resolver fix (G.P1.4) → `claude/track-c-r1-orb-only` → **[PR #334](https://github.com/TeneikaAskew/stocks/pull/334) MERGED 2026-05-09**. Production-verified: post-merge `regime=orb_only` is gone (5/8 batch all `regime=normal`). Brief renderer follow-up (#345) caught the 5-tuple unpack break and fixed in same window.
+- [x] **PR-C** — Thesis-vs-targets decoupling (G.P1.9) → `claude/track-c-r1-thesis-targets` → **[PR #341](https://github.com/TeneikaAskew/stocks/pull/341) open**, rebased on main 2026-05-09, **MERGEABLE**, 120 tests pass.
+- [x] **PR-D** — graceful `failed_sections` + `failed_section_reasons` observability (G.P2.13) → `claude/track-c-r1-failed-sections` → **[PR #343](https://github.com/TeneikaAskew/stocks/pull/343) open**, rebased on main 2026-05-09, **MERGEABLE**, 116 tests pass.
+- [x] **PR-E** — Reflection memory auto-embed wiring (G.P2.12) → `claude/track-c-r1-reflection-memory` → **[PR #344](https://github.com/TeneikaAskew/stocks/pull/344) open**, rebased on main 2026-05-09, **MERGEABLE**, 129 tests pass.
+- [x] **PR-F** — Observability docs for model_routing + db-query (G.P2.4, G.P2.24) → `claude/track-c-r1-observability` → **[PR #346](https://github.com/TeneikaAskew/stocks/pull/346) open**, rebased on main 2026-05-09, **MERGEABLE**, 26 tests pass (docs-only).
 
 ### Round 2 (gated)
 - [ ] **PR-G** — Per-factor walk-forward audit (G.P2.1+2+3) — code blockers cleared (G.P0.6 #296 + G.P0.11 #297 closed); **now data-gated** — needs ≥2 weeks of post-fix data, earliest start 2026-05-22
@@ -316,9 +316,26 @@ fixable" note, or a follow-up issue tracking it.
 - [ ] **PR-I** — `brief_bias` verification (G.P1.10) — code blockers cleared (G.P0.1 #295 closed; TZ-bug fix in PR #279); **now data-gated** — needs a few days of post-fix data
 
 ### Closeout
-- [ ] Update this plan with each PR# next to its checkbox as work lands
-- [ ] Open a final review PR rolling all R1+R2 work into a single `track-C-status.md` summary
+- [x] Update this plan with each PR# next to its checkbox as work lands — done through 2026-05-09
+- [ ] Open a final review PR rolling all R1+R2 work into a single `track-C-status.md` summary (after the remaining 4 R1 PRs merge + Round 2 ships)
 - [ ] Cross-link every closed item back into `track-G.md` (or open a follow-up doc PR if track-G should be amended)
+
+### Status snapshot (2026-05-09 EOD)
+
+| PR | Audit IDs | State | Notes |
+|---|---|---|---|
+| [#305](https://github.com/TeneikaAskew/stocks/pull/305) PR-A | G.P3.1, G.P2.14, G.P3.2, G.P3.3 | ✅ MERGED | + filed [#313](https://github.com/TeneikaAskew/stocks/issues/313) |
+| [#334](https://github.com/TeneikaAskew/stocks/pull/334) PR-B | G.P1.4 + per-ticker calibration + recurring monthly job + resolver fix | ✅ MERGED | Brief unpack follow-up [#345](https://github.com/TeneikaAskew/stocks/pull/345) |
+| [#341](https://github.com/TeneikaAskew/stocks/pull/341) PR-C | G.P1.9 | open / MERGEABLE | rebased 2026-05-09 |
+| [#343](https://github.com/TeneikaAskew/stocks/pull/343) PR-D | G.P2.13 | open / MERGEABLE | rebased 2026-05-09 |
+| [#344](https://github.com/TeneikaAskew/stocks/pull/344) PR-E | G.P2.12 | open / MERGEABLE | rebased 2026-05-09 |
+| [#346](https://github.com/TeneikaAskew/stocks/pull/346) PR-F | G.P2.4, G.P2.24 | open / MERGEABLE | rebased 2026-05-09 (docs-only) |
+| (Round 2) PR-G | G.P2.1, G.P2.2, G.P2.3 | data-gated | resumes ≥ 2026-05-22 (≥2 weeks of post-fix data) |
+| (Round 2) PR-H | G.P1.8 | unblocked | #298 closed; can ship anytime |
+| (Round 2) PR-I | G.P1.10 verify | data-gated | resumes after a few days of post-fix data |
+
+**Open follow-ups outside Round 1/2 scope:**
+- [#313](https://github.com/TeneikaAskew/stocks/issues/313) — `insight_reports_history.run_kind` always `manual_replay`/`backfill`, never `scheduled` (cron env-var mismatch).
 
 ---
 
