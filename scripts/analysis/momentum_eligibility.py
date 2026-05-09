@@ -47,6 +47,7 @@ from lib.indicators import add_all_indicators  # noqa: E402
 from lib.strategies import momentum as mom  # noqa: E402
 from lib.strategies.config import (  # noqa: E402
     CALL_RSI_RANGE, PUT_RSI_RANGE, MIN_CONDITIONS_MOMENTUM,
+    MIN_CORE_CONDITIONS, CORE_CALL_CONDITIONS, CORE_PUT_CONDITIONS,
 )
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,15 @@ def evaluate_bars(
 ) -> dict:
     """Score every bar against momentum CALL + PUT conditions.
 
+    `would_fire_at[t]` counts bars where (a) `score >= t` AND (b) at
+    least `MIN_CORE_CONDITIONS` (default 2) of the score's contributing
+    conditions are CORE conditions (consecutive_*, rsi_*_recovery,
+    above/below_vwap, above/below_ema9). This mirrors the live gate in
+    `MomentumStrategy.evaluate()` — without it, threshold 3/4 bars
+    composed only of confirmer factors (rvol/atr/rsi_thrust) would
+    inflate the would-fire count beyond what production would actually
+    surface. Codex review on PR #330 caught this.
+
     Returns:
       {
         'n_bars': int,
@@ -71,6 +81,7 @@ def evaluate_bars(
             'condition_fire_count': {cond: count, ...},
             'score_dist': {0: n0, 1: n1, ..., 7: n7},
             'would_fire_at': {3: n3, 4: n4, 5: n5, 6: n6},
+            'would_fire_at_no_core_gate': {...},  # diagnostic
         },
         'put': {...},
       }
@@ -81,11 +92,13 @@ def evaluate_bars(
             'condition_fire_count': Counter(),
             'score_dist': Counter(),
             'would_fire_at': {t: 0 for t in thresholds},
+            'would_fire_at_no_core_gate': {t: 0 for t in thresholds},
         },
         'put': {
             'condition_fire_count': Counter(),
             'score_dist': Counter(),
             'would_fire_at': {t: 0 for t in thresholds},
+            'would_fire_at_no_core_gate': {t: 0 for t in thresholds},
         },
     }
 
@@ -100,20 +113,26 @@ def evaluate_bars(
 
         call_score, call_conds = mom._check_call_conditions(row, call_rsi_range)
         put_score, put_conds = mom._check_put_conditions(row, put_rsi_range)
+        call_core = sum(1 for c in call_conds if c in CORE_CALL_CONDITIONS)
+        put_core = sum(1 for c in put_conds if c in CORE_PUT_CONDITIONS)
 
         for c in call_conds:
             out['call']['condition_fire_count'][c] += 1
         out['call']['score_dist'][call_score] += 1
         for t in thresholds:
             if call_score >= t:
-                out['call']['would_fire_at'][t] += 1
+                out['call']['would_fire_at_no_core_gate'][t] += 1
+                if call_core >= MIN_CORE_CONDITIONS:
+                    out['call']['would_fire_at'][t] += 1
 
         for c in put_conds:
             out['put']['condition_fire_count'][c] += 1
         out['put']['score_dist'][put_score] += 1
         for t in thresholds:
             if put_score >= t:
-                out['put']['would_fire_at'][t] += 1
+                out['put']['would_fire_at_no_core_gate'][t] += 1
+                if put_core >= MIN_CORE_CONDITIONS:
+                    out['put']['would_fire_at'][t] += 1
 
     return out
 
@@ -124,9 +143,12 @@ def format_report(per_ticker: dict, days: int) -> str:
     lines.append("# Momentum Strategy — Fire-Eligibility Analysis")
     lines.append("")
     lines.append(f"**Date generated**: {date.today().isoformat()}  ")
-    lines.append(f"**Lookback**: {days} trading days  ")
+    # Codex review on PR #330 caught that --days was documented as
+    # trading days but used as calendar days. Now stated explicitly.
+    lines.append(f"**Lookback**: {days} calendar days (≈ {int(days * 5/7)} trading days)  ")
     lines.append(f"**Strategy**: `lib/strategies/momentum.py` (7 conditions per direction)  ")
     lines.append(f"**Live MIN_CONDITIONS**: {MIN_CONDITIONS_MOMENTUM} (current production gate)  ")
+    lines.append(f"**Live MIN_CORE_CONDITIONS gate**: {MIN_CORE_CONDITIONS} (would-fire counts apply this)  ")
     lines.append("")
     lines.append("## Background")
     lines.append("")
@@ -173,15 +195,22 @@ def format_report(per_ticker: dict, days: int) -> str:
                 lines.append(f"| {s} | {score_dist[s]:,} | {pct:.1f}% |")
             lines.append("")
 
-            lines.append("**Would-fire count at each MIN_CONDITIONS threshold**:")
+            no_gate = result[direction]['would_fire_at_no_core_gate']
+            lines.append("**Would-fire count at each MIN_CONDITIONS threshold** "
+                         f"(after MIN_CORE_CONDITIONS={MIN_CORE_CONDITIONS} gate, "
+                         "which mirrors the live `MomentumStrategy.evaluate()`):")
             lines.append("")
-            lines.append("| Threshold | Bars that would fire | % | vs production fire rate |")
-            lines.append("|---:|---:|---:|---|")
+            lines.append("| Threshold | With core gate | % | Without core gate (diagnostic) | Δ confirmer-only |")
+            lines.append("|---:|---:|---:|---:|---:|")
             for t in sorted(would_fire.keys()):
-                count = would_fire[t]
-                pct = 100.0 * count / n
+                gated = would_fire[t]
+                ungated = no_gate[t]
+                gated_pct = 100.0 * gated / n
                 marker = "  ← live" if t == MIN_CONDITIONS_MOMENTUM else ""
-                lines.append(f"| ≥ {t} | {count:,} | {pct:.1f}% |{marker} |")
+                lines.append(
+                    f"| ≥ {t} | {gated:,} | {gated_pct:.1f}% | {ungated:,} | "
+                    f"{ungated - gated:,} |{marker}"
+                )
             lines.append("")
 
     lines.append("## Interpretation guide")
@@ -216,8 +245,13 @@ def main(argv: List[str] | None = None) -> int:
                         format="%(asctime)s %(levelname)s %(name)s :: %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tickers', nargs='+', default=['SPY', 'IWM', 'QQQ'])
-    parser.add_argument('--days', type=int, default=50,
-                        help='Lookback days for intraday history')
+    # `--days` is calendar days, not trading days. Codex review on
+    # PR #330 caught the naming confusion. `--calendar-days` is the
+    # canonical alias; `--days` kept as backward-compat shim.
+    parser.add_argument('--calendar-days', '--days', dest='days', type=int,
+                        default=50,
+                        help='Lookback in calendar days (≈ days × 5/7 trading sessions). '
+                             '50 calendar days ≈ 35 trading days.')
     parser.add_argument('--output', default='docs/audit/2026-05-08/momentum_eligibility_report.md',
                         help='Path to write the markdown report')
     parser.add_argument('--data-dir', default='data',
