@@ -125,6 +125,7 @@ def evaluate_signal(
     strat_bonus: int = 0,
     signal_config: SignalConfig = None,
     indicator_config: IndicatorConfig = None,
+    ticker: Optional[str] = None,
 ) -> Optional[dict]:
     """Evaluate both CALL and PUT conditions for a single bar.
 
@@ -133,6 +134,23 @@ def evaluate_signal(
 
     If `signal_config` is provided its values override the individual
     parameters for EMA proximity and StochRSI thresholds.
+
+    `ticker` (Track A G.P0.12 + G.P0.13 + G.P1.19): when provided,
+    consults `lib.strategies.exit_config_overrides` for two per-ticker
+    overrides:
+      * `disabled_conditions` — strips matching factor names from the
+        scoring set BEFORE comparing against `min_conditions`. Used
+        globally to remove `above_vwap` from MR PUT (anti-signal,
+        −16.1pp QQQ / −11.7pp IWM / −9.9pp SPY) and per-ticker to
+        remove `stoch_rsi_overbought` + `rsi_overbought_zone` from
+        IWM/QQQ MR PUT.
+      * `disabled_directions` — full-direction kill switch. Set
+        `["PUT"]` for QQQ until the MR PUT condition set is rebuilt
+        (G.P1.19 — current QQQ MR PUT win-rate is 11.1%, the worst
+        of any (ticker, direction) pair in the system).
+
+    With `ticker=None` (legacy callers / backtests), behaviour is
+    unchanged.
     """
     sig_cfg = signal_config
     ema_prox = sig_cfg.ema_proximity_threshold if sig_cfg else 0.1
@@ -150,9 +168,52 @@ def evaluate_signal(
         indicator_config=indicator_config,
     )
 
+    # Per-ticker overrides — strip disabled conditions and gate
+    # disabled directions. PR #329 added these to the offline
+    # MeanReversionStrategy path; this is the live-path wiring that
+    # PR #329 missed (caught during 2026-05-09 validation when 5/8
+    # alerts still showed above_vwap on 95/98 IWM PUTs).
+    disabled_directions: set[str] = set()
+    if ticker:
+        try:
+            from lib.strategies.exit_config_overrides import (
+                _latest_overrides,
+            )
+            ov = _latest_overrides(ticker.upper())
+            if ov:
+                dc = ov.get("disabled_conditions") or []
+                if isinstance(dc, str):
+                    import json as _json
+                    try:
+                        dc = _json.loads(dc)
+                    except Exception:
+                        dc = []
+                if dc:
+                    disabled_set = set(dc)
+                    pre_call = len(call_conds)
+                    pre_put = len(put_conds)
+                    call_conds = [c for c in call_conds if c not in disabled_set]
+                    put_conds = [c for c in put_conds if c not in disabled_set]
+                    call_score -= (pre_call - len(call_conds))
+                    put_score -= (pre_put - len(put_conds))
+                dd = ov.get("disabled_directions") or []
+                if isinstance(dd, str):
+                    import json as _json
+                    try:
+                        dd = _json.loads(dd)
+                    except Exception:
+                        dd = []
+                disabled_directions = {str(d).upper() for d in dd}
+        except Exception:
+            # Resolver failure → degrade silently to Tier-B (legacy
+            # behaviour); the resolver itself logs the cause.
+            pass
+
     signal = None
 
-    if call_score >= min_conditions and call_score >= put_score:
+    if (call_score >= min_conditions
+            and call_score >= put_score
+            and "CALL" not in disabled_directions):
         total_score = call_score + strat_bonus
         signal = {
             'direction': 'CALL',
@@ -161,7 +222,8 @@ def evaluate_signal(
             'total_score': total_score,
             'conditions_met': call_conds,
         }
-    elif put_score >= min_conditions:
+    elif (put_score >= min_conditions
+            and "PUT" not in disabled_directions):
         total_score = put_score + strat_bonus
         signal = {
             'direction': 'PUT',
