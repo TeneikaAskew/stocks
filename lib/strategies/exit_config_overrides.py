@@ -71,13 +71,22 @@ def _latest_overrides(ticker: str) -> Optional[dict]:
 
     Returns None when:
       * Cloud SQL is not configured
+      * The exit_config_overrides table doesn't exist yet (e.g. PR-E1
+        migration hasn't been applied — defends deploy ordering)
+      * Engine creation fails (no GCP creds, e.g. unit-test environment
+        that mocks `is_cloud_sql_configured` without setting up creds)
       * No row exists for the ticker
       * The latest row is older than _STALE_DAYS
 
-    Cached per-process via lru_cache. Force a refresh with
-    `_latest_overrides.cache_clear()`.
+    Any failure path falls back to Tier-B (`ExitConfig` defaults), so
+    a missing table or transient DB error degrades gracefully instead
+    of crashing every fire_alert. Cached per-process via lru_cache;
+    force a refresh with `_latest_overrides.cache_clear()`.
     """
-    from gcp.database import get_engine, is_cloud_sql_configured
+    try:
+        from gcp.database import get_engine, is_cloud_sql_configured
+    except ImportError:
+        return None
 
     if not is_cloud_sql_configured():
         return None
@@ -96,7 +105,17 @@ def _latest_overrides(ticker: str) -> Optional[dict]:
          LIMIT 1
         """
     )
-    df = pd.read_sql(sql, get_engine(), params={"ticker": ticker.upper()})
+    try:
+        df = pd.read_sql(sql, get_engine(), params={"ticker": ticker.upper()})
+    except Exception as e:
+        # Table missing (UndefinedTable), no creds, network blip, etc.
+        # All resolve to Tier-B; log once per process per ticker so the
+        # operator notices but the live monitor keeps firing.
+        log.warning(
+            "exit_config_overrides: query failed for %s (%s) — Tier-B fallback",
+            ticker, type(e).__name__,
+        )
+        return None
     if df.empty:
         log.info("exit_config_overrides: no row for %s — Tier-B fallback", ticker)
         return None
