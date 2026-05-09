@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from scripts.analysis.per_factor_walkforward import (
+    _infer_strategy_name,
     base_win_rate,
     classify_factor,
     explode_conditions,
@@ -20,6 +21,32 @@ from scripts.analysis.per_factor_walkforward import (
     walk_forward_fire_rates,
     win_rate_on_fire,
 )
+
+
+# ── Strategy inference (signal_alerts has no strategy_name col) ──────
+
+
+def test_infer_strategy_name_momentum():
+    assert _infer_strategy_name(["consecutive_up", "above_ema9"]) == "momentum"
+    assert _infer_strategy_name(["rvol_above_recent", "atr_expansion"]) == "momentum"
+
+
+def test_infer_strategy_name_mean_reversion():
+    assert _infer_strategy_name(
+        ["rsi_oversold_zone", "bollinger_lower"]
+    ) == "mean_reversion"
+
+
+def test_infer_strategy_name_mixed_when_both_signal_classes():
+    assert _infer_strategy_name(
+        ["consecutive_up", "rsi_oversold_zone"]
+    ) == "mixed"
+
+
+def test_infer_strategy_name_unknown_for_empty_or_uncategorized():
+    assert _infer_strategy_name([]) == "unknown"
+    assert _infer_strategy_name(["someething_uncategorized"]) == "unknown"
+    assert _infer_strategy_name(None) == "unknown"  # type: ignore[arg-type]
 
 
 def _alerts_df(rows: list[dict]) -> pd.DataFrame:

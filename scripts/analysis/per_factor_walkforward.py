@@ -224,10 +224,52 @@ def classify_factor(
 # ── DB-backed pull (skipped under unit tests via monkeypatch) ──────────
 
 
+_MOMENTUM_FACTOR_TAGS = frozenset({
+    # Core momentum conditions per lib/strategies/momentum.py
+    "consecutive_up", "consecutive_down",
+    "rsi_call_recovery", "rsi_put_recovery",
+    "above_vwap", "below_vwap", "above_ema9", "below_ema9",
+    # Phase 0.7.x confirmers
+    "rvol_above_recent", "atr_expansion", "rsi_thrust",
+})
+
+_MEAN_REVERSION_FACTOR_TAGS = frozenset({
+    # Mean-reversion conditions per lib/strategies/mean_reversion.py
+    "rsi_oversold_zone", "rsi_overbought_zone",
+    "stoch_rsi_oversold", "stoch_rsi_overbought",
+    "bollinger_lower", "bollinger_upper",
+    "level_break_pdh", "level_break_pdl",
+})
+
+
+def _infer_strategy_name(conditions: list) -> str:
+    """signal_alerts has no `strategy_name` column. Derive it from
+    `conditions_met` factor names — momentum and mean-reversion have
+    disjoint condition lists per the strategy modules. Audit
+    2026-05-09 schema check (db-query.yml run 25599341277).
+    """
+    if not isinstance(conditions, list):
+        return "unknown"
+    has_mom = any(str(c) in _MOMENTUM_FACTOR_TAGS for c in conditions)
+    has_mr = any(str(c) in _MEAN_REVERSION_FACTOR_TAGS for c in conditions)
+    if has_mom and not has_mr:
+        return "momentum"
+    if has_mr and not has_mom:
+        return "mean_reversion"
+    if has_mom and has_mr:
+        return "mixed"
+    return "unknown"
+
+
 def _pull_alerts(start: date, end: date) -> pd.DataFrame:
-    """Pull signal_alerts rows in [start, end] joined to trade outcomes
-    when a closed trade exists. Returns the columns explode_conditions
-    expects.
+    """Pull signal_alerts rows in [start, end] from Cloud SQL.
+
+    `signal_alerts` schema (verified 2026-05-09):
+      * `conditions_met` is JSONB — explode_conditions handles native
+        list and JSON-string forms
+      * `exit_return_pct` is the outcome (no `trades` table join)
+      * No `strategy_name` column — derived from `conditions_met` via
+        `_infer_strategy_name`
     """
     from gcp.database import get_engine, is_cloud_sql_configured  # noqa: WPS433
     from sqlalchemy import text
@@ -242,19 +284,19 @@ def _pull_alerts(start: date, end: date) -> pd.DataFrame:
             a.ticker            AS ticker,
             a.alert_ts          AS alert_ts,
             a.direction         AS direction,
-            a.strategy_name     AS strategy_name,
             a.conditions_met    AS conditions_met,
-            t.return_pct        AS outcome_return_pct
-        FROM signal_alerts a
-        LEFT JOIN trades t
-               ON t.alert_id = a.id
-              AND t.return_pct IS NOT NULL
-        WHERE a.alert_ts::date BETWEEN :start AND :end
-        ORDER BY a.alert_ts ASC
+            a.exit_return_pct   AS outcome_return_pct
+          FROM signal_alerts a
+         WHERE a.alert_ts::date BETWEEN :start AND :end
+         ORDER BY a.alert_ts ASC
     """)
-    return pd.read_sql(
+    df = pd.read_sql(
         sql, get_engine(), params={"start": str(start), "end": str(end)}
     )
+    # Derive strategy_name from conditions_met factor membership.
+    if not df.empty:
+        df["strategy_name"] = df["conditions_met"].apply(_infer_strategy_name)
+    return df
 
 
 # ── Reporter ──────────────────────────────────────────────────────────
