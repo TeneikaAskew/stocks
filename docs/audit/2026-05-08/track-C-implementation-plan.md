@@ -73,17 +73,24 @@ Per the user's direction, file issues for each cross-track blocker so
 the wait is explicit and trackable. Expected open at the time of plan
 write (verify with `mcp__github__list_issues` before filing duplicates):
 
-| Issue # | Cross-track item | Blocks Track C item(s) | Owning track | Pre-flight status (2026-05-08 skim) |
-|---|---|---|---|---|
-| [#295](https://github.com/TeneikaAskew/stocks/issues/295) | **G.P0.1** unfreeze `fetch-market-data` daily fetcher (`--date=2026-04-27` in Cloud Run Job spec) | G.P1.10 verification | A | Identified, **not started**. 5-min config fix |
-| [#296](https://github.com/TeneikaAskew/stocks/issues/296) | **G.P0.6** `signal_alerts.conditions_met` JSONB writer fix + backfill | G.P2.1, G.P2.2, G.P2.3 | D | Identified, **not started**. Schema/insertion fix in `_persist_signal_alert` |
-| [#297](https://github.com/TeneikaAskew/stocks/issues/297) | **G.P0.11** momentum zero-fires investigation (instrument "considered vs fired" counter) | G.P2.1, G.P2.2, G.P2.3 | D | **Partially mitigated, unverified**: PR #280 raised `MIN_CONDITIONS_MOMENTUM=5` landed 2026-05-07 12:31 ET; image rebuilt 13:49 ET. Track G's specific ask (instrumentation) is **not started**. May 8+ data needs verification |
-| [#298](https://github.com/TeneikaAskew/stocks/issues/298) | **G.P1.5** brief `signal_status` ↔ `ftfc_direction` contradiction | G.P1.8 | B | Identified, **not started** |
-| [#299](https://github.com/TeneikaAskew/stocks/issues/299) | **G.P1.10** `brief_bias` populated only on 5/7 | G.P1.10 (Track C verify) | D (via B) | **Cause identified by Track D**: TZ bug fixed May 7; needs deploy + verification. Track B side: `premarket_analysis` lacks `data_as_of` column (separate P1) |
+| Issue # | Cross-track item | Blocks Track C item(s) | Owning track | Pre-flight status (2026-05-08 skim) | Post-2026-05-09 status |
+|---|---|---|---|---|---|
+| ~~[#295](https://github.com/TeneikaAskew/stocks/issues/295)~~ | **G.P0.1** unfreeze `fetch-market-data` daily fetcher | G.P1.10 verification | A | Identified, not started | ✅ **CLOSED** — shipped via [PR #321](https://github.com/TeneikaAskew/stocks/pull/321) + ops |
+| ~~[#296](https://github.com/TeneikaAskew/stocks/issues/296)~~ | **G.P0.6** `signal_alerts.conditions_met` JSONB writer fix + backfill | G.P2.1, G.P2.2, G.P2.3 | D | Identified, not started | ✅ **CLOSED** — shipped via [PR #308](https://github.com/TeneikaAskew/stocks/pull/308) (landed 2026-05-08, before issue filed) |
+| ~~[#297](https://github.com/TeneikaAskew/stocks/issues/297)~~ | **G.P0.11** momentum zero-fires investigation | G.P2.1, G.P2.2, G.P2.3 | D | Partially mitigated, unverified | ✅ **CLOSED** — instrumentation in [PR #320](https://github.com/TeneikaAskew/stocks/pull/320), analysis in [PR #330](https://github.com/TeneikaAskew/stocks/pull/330). PR-G still gates on ≥2 weeks of post-fix data (earliest start: 2026-05-22) |
+| [#298](https://github.com/TeneikaAskew/stocks/issues/298) | **G.P1.5** brief `signal_status` ↔ `ftfc_direction` contradiction | G.P1.8 | B | Identified, not started | ⏳ **STILL OPEN** — P1 backlog hasn't been touched per close-out doc |
+| [#299](https://github.com/TeneikaAskew/stocks/issues/299) | **G.P1.10** `brief_bias` populated only on 5/7 | G.P1.10 (Track C verify) | D (via B) | Cause identified by Track D | ⏳ **STILL OPEN** — TZ-bug fix already shipped via [PR #279](https://github.com/TeneikaAskew/stocks/pull/279); needs post-fix data verification (PR-I) |
 
 **Pre-flight skim (2026-05-08, post-issue-filing):** all five blockers
-confirmed unshipped on `main`. Track C's plan ordering holds — Round 1
-work is genuinely independent, Round 2 work genuinely waits.
+were unshipped on `main` at audit close.
+
+**Post-2026-05-09 update:** Track A+E P0 close-out (see
+[`p0-status-2026-05-09.md`](p0-status-2026-05-09.md)) plus Track D's
+9-PR sprint shipped 12 of 14 audited P0s. **Three of Track C's five
+blockers (#295, #296, #297) are now resolved.** Round 2 PR-G and PR-I
+are now data-gated rather than code-gated — both can proceed once a
+trading week or two of post-fix data accumulates. PR-H (UI for
+brief↔insights divergence) remains genuinely blocked on #298.
 
 ---
 
@@ -290,12 +297,13 @@ fixable" note, or a follow-up issue tracking it.
 ## Plan execution checklist (mark off as items complete)
 
 ### Pre-flight (before R1)
-- [ ] **Copy this plan** from `/root/.claude/plans/...` to `docs/audit/2026-05-08/track-C-implementation-plan.md`, commit, push to feature branch
-- [ ] **File cross-track issues** for the 5 dependencies above — verify no existing issue first (`mcp__github__list_issues`); link to track-G.md §3
-- [ ] Skim Track A/B/D's own track docs (`track-A.md`, `track-B.md`, `track-D.md`) once before starting in case they already started any of my cross-track items
+- [x] **Copy this plan** to `docs/audit/2026-05-08/track-C-implementation-plan.md`, commit, push (commit `7ee008e`)
+- [x] **File cross-track issues** — #295, #296, #297, #298, #299 (commit `2856526` links them in)
+- [x] Skim Track A/B/D's own track docs — confirmed all five blockers unshipped at audit-close moment
+- [x] **2026-05-09 close-out update** — close #295/#296/#297; comment update on #298/#299 with current status
 
 ### Round 1 (no blockers)
-- [ ] **PR-A** — Batched mechanical fixes (G.P3.1, G.P2.14, G.P3.2, G.P3.3) → `claude/track-c-r1-mechanical-fixes`
+- [x] **PR-A** — Batched mechanical fixes (G.P3.1, G.P2.14, G.P3.2, G.P3.3) → `claude/track-c-r1-mechanical-fixes` → **[PR #305](https://github.com/TeneikaAskew/stocks/pull/305) open**, MERGEABLE. Filed [#313](https://github.com/TeneikaAskew/stocks/issues/313) for the `run_kind='scheduled'` incidental finding discovered during G.P3.3 verification.
 - [ ] **PR-B** — orb_only investigation (G.P1.4) → `claude/track-c-r1-orb-only`
 - [ ] **PR-C** — Thesis-vs-targets decoupling (G.P1.9) → `claude/track-c-r1-thesis-targets`
 - [ ] **PR-D** — failed_sections root cause (G.P2.13) → `claude/track-c-r1-failed-sections`
@@ -303,12 +311,12 @@ fixable" note, or a follow-up issue tracking it.
 - [ ] **PR-F** — Observability touch-ups (G.P2.4, G.P2.24) → `claude/track-c-r1-observability`
 
 ### Round 2 (gated)
-- [ ] **PR-G** — Per-factor walk-forward audit (G.P2.1+2+3) — *resume when G.P0.6 + G.P0.11 + 2 weeks data*
-- [ ] **PR-H** — Brief↔insights divergence UI (G.P1.8) — *resume when G.P1.5 merges*
-- [ ] **PR-I** — `brief_bias` verification (G.P1.10) — *resume when G.P0.1 + Track D's G.P1.10 merge*
+- [ ] **PR-G** — Per-factor walk-forward audit (G.P2.1+2+3) — code blockers cleared (G.P0.6 #296 + G.P0.11 #297 closed); **now data-gated** — needs ≥2 weeks of post-fix data, earliest start 2026-05-22
+- [ ] **PR-H** — Brief↔insights divergence UI (G.P1.8) — *still genuinely blocked on #298 (G.P1.5)*
+- [ ] **PR-I** — `brief_bias` verification (G.P1.10) — code blockers cleared (G.P0.1 #295 closed; TZ-bug fix in PR #279); **now data-gated** — needs a few days of post-fix data
 
 ### Closeout
-- [ ] Update `docs/audit/2026-05-08/track-C-implementation-plan.md` (this plan, post-copy) with each PR# next to its checkbox
+- [ ] Update this plan with each PR# next to its checkbox as work lands
 - [ ] Open a final review PR rolling all R1+R2 work into a single `track-C-status.md` summary
 - [ ] Cross-link every closed item back into `track-G.md` (or open a follow-up doc PR if track-G should be amended)
 
