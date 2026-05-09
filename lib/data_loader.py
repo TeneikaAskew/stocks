@@ -61,11 +61,28 @@ def _cloud_sql_active() -> bool:
 
 
 def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
-    """Run a SELECT against Cloud SQL; returns empty DataFrame on any error."""
+    """Run a SELECT against Cloud SQL; returns empty DataFrame on any error.
+
+    Track D / G.P1.1: log the full traceback before swallowing the
+    exception so production silent failures (e.g. Cloud SQL Connector
+    auth, transient connection issue, schema mismatch) surface in
+    Cloud Logging. Pre-fix the bare `except Exception: return empty`
+    silently returned no data, causing downstream callers like
+    `SignalMonitor.refresh_level_map` to see `df.empty` and set
+    `level_maps[ticker] = None`, which made `check_level_breaks`
+    return [] on every bar — `signal_alerts.level_broken` was 0%
+    populated for the entire 2026-05-04 → 2026-05-08 window despite
+    fresh strat_levels data being available.
+    """
     try:
         from gcp.database import query_to_dataframe
         return query_to_dataframe(sql, params)
     except Exception:
+        log.exception(
+            "_query_cloud_sql: query failed; returning empty DataFrame "
+            "(callers must treat empty as a signal that the underlying "
+            "DB query errored, not as a legitimate zero-row result)"
+        )
         return pd.DataFrame()
 
 

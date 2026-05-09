@@ -93,6 +93,25 @@ class SignalMonitor:
         # only. Cross-track sync issue: #304.
         self.momentum_evaluated_count: dict = {t: 0 for t in self.tickers}
         self.momentum_fired_count: dict = {t: 0 for t in self.tickers}
+        # Track D / G.P1.1 instrumentation: three counters per ticker so we
+        # can answer "why is signal_alerts.level_broken 100% NULL?". The
+        # 2026-05-09 verification (issue #301) confirmed the bug is
+        # independent of the data freeze — fresh strat_levels were
+        # available on 2026-05-08 but level_broken stayed 0% populated
+        # across 396 alerts. The counters split refresh_level_map's
+        # outcomes into the three observable failure modes:
+        #   * success → level_map built (the only path where
+        #     check_level_breaks can return non-empty results)
+        #   * empty_df → loader.load_daily(ticker) returned empty
+        #     (likely _query_cloud_sql swallowed an exception)
+        #   * exception → calculate_historical_levels or
+        #     build_level_map raised; previously caught silently.
+        # Logged in session_summary so Cloud Logging shows the
+        # distribution per ticker per session, no separate persistence
+        # layer needed.
+        self.level_refresh_success_count: dict = {t: 0 for t in self.tickers}
+        self.level_refresh_empty_df_count: dict = {t: 0 for t in self.tickers}
+        self.level_refresh_exception_count: dict = {t: 0 for t in self.tickers}
         # Open positions awaiting exit. Each tick the exit-watcher walks
         # this list and fires TARGET HIT / TIME STOP / RSI EXIT alerts +
         # writes the exit details back to signal_alerts. Lifetime is the
@@ -284,6 +303,24 @@ class SignalMonitor:
             loader = DataLoader(data_dir=self.market_cfg.data_dir)
             df = loader.load_daily(ticker, on_stale='warn')
             if df.empty:
+                # Track D / G.P1.1: previously this path was silent —
+                # df.empty meant either a real zero-row condition or a
+                # swallowed _query_cloud_sql exception, and we couldn't
+                # tell which. Now log explicitly so Cloud Logging shows
+                # the empty-df failure mode and bumps a counter that
+                # session_summary surfaces. _query_cloud_sql itself logs
+                # the underlying exception via logger.exception (see
+                # lib/data_loader.py).
+                self.level_refresh_empty_df_count[ticker] = (
+                    self.level_refresh_empty_df_count.get(ticker, 0) + 1
+                )
+                logger.warning(
+                    "refresh_level_map(%s): loader.load_daily returned empty df; "
+                    "level_map will be None and check_level_breaks will return [] "
+                    "for this poll cycle. See lib/data_loader._query_cloud_sql "
+                    "logs for the underlying cause if this persists.",
+                    ticker,
+                )
                 self.level_maps[ticker] = None
                 return
             close_col = 'Close' if 'Close' in df.columns else 'Last'
@@ -300,8 +337,30 @@ class SignalMonitor:
             self.level_maps[ticker] = build_level_map(
                 ticker=ticker, daily_df=df, current_price=current_price,
             )
-        except Exception as e:
-            logger.warning("refresh_level_map(%s) failed: %s", ticker, e)
+            self.level_refresh_success_count[ticker] = (
+                self.level_refresh_success_count.get(ticker, 0) + 1
+            )
+        except Exception:
+            # Track D / G.P1.1: replace logger.warning("...%s", e) with
+            # logger.exception so the full traceback reaches Cloud
+            # Logging. The pre-fix one-liner only printed str(e), which
+            # made it impossible to tell calculate_historical_levels vs
+            # build_level_map vs an inner DataLoader path failure apart
+            # in production. Verification dispatch on 2026-05-09
+            # confirmed signal_alerts.level_broken was 0% populated
+            # across 1,178 alerts in the post-thaw window despite fresh
+            # strat_levels — so this exception path was firing silently
+            # for every refresh attempt. Counter splits success vs
+            # empty_df vs exception so session_summary shows which
+            # failure mode dominates.
+            self.level_refresh_exception_count[ticker] = (
+                self.level_refresh_exception_count.get(ticker, 0) + 1
+            )
+            logger.exception(
+                "refresh_level_map(%s) raised; level_map cleared to None "
+                "and check_level_breaks will return [] for this cycle",
+                ticker,
+            )
             self.level_maps[ticker] = None
 
     def check_level_breaks(
@@ -1014,12 +1073,17 @@ class SignalMonitor:
                     for t in tickers:
                         logger.info(
                             "session_summary ticker=%s momentum_evaluated=%d "
-                            "momentum_fired=%d daily_trades=%d daily_pnl=%.4f",
+                            "momentum_fired=%d daily_trades=%d daily_pnl=%.4f "
+                            "level_refresh_success=%d level_refresh_empty_df=%d "
+                            "level_refresh_exception=%d",
                             t,
                             self.momentum_evaluated_count.get(t, 0),
                             self.momentum_fired_count.get(t, 0),
                             self.daily_trades.get(t, 0),
                             self.daily_pnl.get(t, 0.0),
+                            self.level_refresh_success_count.get(t, 0),
+                            self.level_refresh_empty_df_count.get(t, 0),
+                            self.level_refresh_exception_count.get(t, 0),
                         )
                     break
                 print(f"Waiting for market open ({now.strftime('%H:%M:%S %Z')})...")
