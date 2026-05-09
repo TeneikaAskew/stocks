@@ -23,9 +23,16 @@ execution inherits the args until you clear them.
 If you ever need to clear sticky args from a previous mistake:
 
 ```bash
-gcloud run jobs update <job-name> --clear-args \
+gcloud run jobs update <job-name> --args="" \
   --region=us-east1 --project=adept-mountain-474619-d4
 ```
+
+> **Why `--args=""` and not `--clear-args`:** Cloud Run Jobs' `gcloud run
+> jobs update` does NOT expose a `--clear-args` flag (verified
+> 2026-05-08 against gcloud 566.0.0). The supported clear flags are
+> `--clear-env-vars`, `--clear-secrets`, `--clear-volumes`, and others
+> — but for container args, you reset by passing the empty list via
+> `--args=""`. The job's container then runs with no extra CLI args.
 
 ---
 
@@ -106,18 +113,18 @@ checked by the freshness watchdog).
 If you discover that a prior `gcloud run jobs update --args="..."` left
 the job with sticky args:
 
-1. **Run `--clear-args` immediately.** Do not wait for the next scheduled
-   execution.
+1. **Clear the args immediately** with `--args=""`. Do not wait for the
+   next scheduled execution.
 
    ```bash
-   gcloud run jobs update fetch-market-data --clear-args \
+   gcloud run jobs update fetch-market-data --args="" \
      --region=us-east1 --project=adept-mountain-474619-d4
    ```
 
 2. **Identify the affected window.** Read the job's execution history
    (`gcloud run jobs executions list --job=...`) and find the first
    execution that ran with the bad args. Every scheduled run from that
-   point until `--clear-args` ran is suspect.
+   point until the args were cleared is suspect.
 
 3. **Backfill the affected window** using the recipe above (the
    transient `execute --args` form).
