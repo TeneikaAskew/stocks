@@ -367,6 +367,16 @@ def canned_bundle(monkeypatch):
     import lib.strat as _lib_strat
     monkeypatch.setattr(_lib_strat, "compute_strat_status", fake_compute_strat_status)
 
+    # Audit 2026-05-08 G.P2.12: orchestrator now auto-embeds the bundle
+    # for reflection-memory retrieval. Stub the Vertex call with a
+    # zero-vector so tests don't hit real Vertex (~0.4s per call ×
+    # 26 tests = 10s of unnecessary network I/O).
+    async def fake_embed(text):
+        return [0.0] * 768
+
+    import lib.agents.embeddings as _emb
+    monkeypatch.setattr(_emb, "embed_text", fake_embed)
+
 
 @pytest.fixture
 def seven_role_snapshot() -> RouteSnapshot:
@@ -788,3 +798,127 @@ def test_pipeline_filters_supporting_signals_by_direction(
     # PM mock returns long; the only stubbed alert is direction=CALL.
     assert report.direction == "long"
     assert all(s.direction == "CALL" for s in report.supporting_signals)
+
+
+# ─── Audit 2026-05-08 G.P2.12 — reflection memory wiring ─────────────
+
+
+def test_build_embedding_query_text_includes_key_setup_fields():
+    """The auto-embed query text should capture ticker + strat candle +
+    combo + FTFC + regime + gap + vol tag + 200-SMA position. Same
+    fields that semantically determine 'is this trade similar'."""
+    from lib.agents.orchestrator import _build_embedding_query_text
+
+    bundle = {
+        "ticker": "spy",  # lowercased input → uppercased output
+        "strat": {
+            "available": True,
+            "last_candle": "2U",
+            "in_force_combo": "212_bull_reversal",
+            "ftfc_direction": "bullish",
+        },
+        "market": {
+            "available": True,
+            "regime": "trending_up",
+            "vol_tag": "normal",
+            "above_sma_200": True,
+            "premarket": {"gap_pct": 0.31},
+        },
+    }
+    text = _build_embedding_query_text("spy", bundle)
+    assert "SPY" in text
+    assert "2U" in text
+    assert "212_bull_reversal" in text
+    assert "bullish" in text
+    assert "trending_up" in text
+    assert "+0.31%" in text
+    assert "normal" in text
+    assert "above 200-SMA" in text
+
+
+def test_build_embedding_query_text_handles_missing_fields():
+    """Defensive: if strat or market sections are unavailable, the text
+    is just the ticker — embedding still works, retrieval just has
+    less signal to work with."""
+    from lib.agents.orchestrator import _build_embedding_query_text
+
+    bundle = {"ticker": "X", "strat": {"available": False}, "market": {}}
+    assert _build_embedding_query_text("X", bundle) == "X"
+
+
+def test_pipeline_auto_embeds_when_query_embedding_omitted(
+    canned_bundle, seven_role_snapshot, monkeypatch
+):
+    """Audit G.P2.12: the orchestrator should call `embed_text` on the
+    bundle summary when the caller doesn't pre-supply an embedding.
+    Replaces the dormant query_embedding=None hardcoded path."""
+    embed_calls: list[str] = []
+
+    async def spy_embed(text):
+        embed_calls.append(text)
+        return [0.1] * 768
+
+    import lib.agents.embeddings as _emb
+    monkeypatch.setattr(_emb, "embed_text", spy_embed)
+
+    mock = _MockLLM()
+    asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    assert len(embed_calls) == 1
+    assert "SPY" in embed_calls[0]
+
+
+def test_pipeline_uses_explicit_embedding_when_caller_supplies(
+    canned_bundle, seven_role_snapshot, monkeypatch
+):
+    """Caller-injected embedding (replay / tests) bypasses the auto-embed
+    Vertex call so deterministic offline replay stays deterministic."""
+    embed_calls: list[str] = []
+
+    async def boom_embed(text):
+        embed_calls.append(text)
+        raise RuntimeError("auto-embed should not have been called")
+
+    import lib.agents.embeddings as _emb
+    monkeypatch.setattr(_emb, "embed_text", boom_embed)
+
+    mock = _MockLLM()
+    asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+            query_embedding=[0.2] * 768,
+        )
+    )
+    assert embed_calls == []  # auto-embed was skipped
+
+
+def test_pipeline_degrades_when_embedding_fails(
+    canned_bundle, seven_role_snapshot, monkeypatch
+):
+    """Vertex creds missing / network blip → embed raises → reflection
+    memory is skipped, but the rest of the report still ships. Audit
+    G.P2.12: graceful degradation of opt-in features."""
+    async def boom_embed(text):
+        raise RuntimeError("Vertex unreachable")
+
+    import lib.agents.embeddings as _emb
+    monkeypatch.setattr(_emb, "embed_text", boom_embed)
+
+    mock = _MockLLM()
+    report = asyncio.run(
+        orchestrator.run_insight_pipeline(
+            "SPY",
+            snapshot=seven_role_snapshot,
+            llm_factory=_mock_factory_ctor(mock),
+        )
+    )
+    # Report still produced; similar_past_trades is just empty
+    assert isinstance(report, InsightReport)
+    assert report.similar_past_trades == []
