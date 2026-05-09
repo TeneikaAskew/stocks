@@ -525,6 +525,32 @@ class SignalMonitor:
             return sig, agreement
 
         if mom_signal is not None and self.signal_cfg.enable_standalone_momentum:
+            # Honor `disabled_directions` for the stand-alone path
+            # too — pre-Codex-P2 (PR #371) the kill switch lived only
+            # inside `lib.signals.evaluate_signal`, so a momentum-only
+            # PUT on a `["PUT"]`-disabled ticker (e.g. QQQ) would have
+            # bypassed the same protection mr respects. Resolver
+            # exception is non-fatal: log and degrade to "no kill
+            # switch known" rather than blocking a fire on a transient
+            # DB error (mirrors the resolver-failure handling inside
+            # evaluate_signal at lib/signals.py:207-210).
+            try:
+                from lib.strategies.exit_config_overrides import (
+                    get_disabled_directions,
+                )
+                if mom_signal.direction.upper() in get_disabled_directions(ticker):
+                    logger.info(
+                        "%s standalone momentum %s suppressed: direction in disabled_directions",
+                        ticker, mom_signal.direction,
+                    )
+                    return None, None
+            except Exception:
+                logger.exception(
+                    "get_disabled_directions(%s) raised; allowing momentum fire "
+                    "(degrade-open mirrors evaluate_signal's resolver-failure handling)",
+                    ticker,
+                )
+
             logger.info(
                 "%s standalone momentum fire: %s base_score=%.1f core=%d call_range=%s tier=%s put_range=%s tier=%s",
                 ticker, mom_signal.direction, mom_signal.base_score,

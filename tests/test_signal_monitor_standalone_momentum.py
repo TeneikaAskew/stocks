@@ -220,3 +220,88 @@ def test_flag_default_is_false():
     from lib.config import SignalConfig
     cfg = SignalConfig()
     assert cfg.enable_standalone_momentum is False
+
+
+# ── 8) disabled_directions kill switch (Codex P2 on PR #371) ──────────
+
+
+def test_standalone_momentum_honors_disabled_directions():
+    """Per-ticker `disabled_directions` (e.g. QQQ ["PUT"]) is enforced
+    inside `lib.signals.evaluate_signal` for mr; it MUST also be
+    enforced on the stand-alone-momentum path so a momentum-only PUT
+    on a PUT-disabled ticker doesn't bypass the kill switch.
+
+    Codex P2 review on PR #371 caught this as a real bypass surface
+    once `enable_standalone_momentum=True` ships in production."""
+    monitor = _make_monitor()
+    monitor.signal_cfg.enable_standalone_momentum = True
+    ticker = monitor.tickers[0]
+    from lib.strategies.base import Signal
+
+    mom_put = Signal(
+        strategy="momentum", direction="PUT",
+        timestamp=pd.Timestamp.now(), entry_price=720.0,
+        base_score=5.0, weighted_score=5.5,
+        conditions_met=["below_vwap", "below_ema9", "rsi_thrust",
+                        "rvol_above_recent", "atr_expansion"],
+        core_count=2,
+    )
+    with patch("gcp.signal_monitor.evaluate_signal", return_value=None), \
+         patch("gcp.signal_monitor.MOMENTUM") as mom_mock, \
+         patch("lib.strategies.exit_config_overrides.get_disabled_directions",
+               return_value={"PUT"}):
+        mom_mock.evaluate.return_value = mom_put
+        sig, agreement = monitor._evaluate_strategies_for_bar(_bar(), 720.0, ticker)
+
+    assert sig is None, (
+        "PUT-disabled ticker must NOT fire stand-alone momentum PUT — "
+        "the disabled_directions kill switch is per-ticker side-level"
+    )
+    assert agreement is None
+    # opposite-direction (CALL) should still fire
+    mom_call = Signal(
+        strategy="momentum", direction="CALL",
+        timestamp=pd.Timestamp.now(), entry_price=720.0,
+        base_score=5.0, weighted_score=5.5,
+        conditions_met=["above_vwap", "above_ema9", "rsi_thrust",
+                        "rvol_above_recent", "atr_expansion"],
+        core_count=2,
+    )
+    with patch("gcp.signal_monitor.evaluate_signal", return_value=None), \
+         patch("gcp.signal_monitor.MOMENTUM") as mom_mock, \
+         patch("lib.strategies.exit_config_overrides.get_disabled_directions",
+               return_value={"PUT"}):
+        mom_mock.evaluate.return_value = mom_call
+        sig, _ = monitor._evaluate_strategies_for_bar(_bar(), 720.0, ticker)
+    assert sig is not None and sig["direction"] == "CALL", (
+        "PUT-disabled ticker must STILL fire stand-alone momentum CALL"
+    )
+
+
+def test_get_disabled_directions_helper():
+    """The helper extracted in lib/strategies/exit_config_overrides
+    handles JSONB list, JSONB string, NULL, missing-row, parse errors."""
+    from lib.strategies import exit_config_overrides as eco
+
+    with patch.object(eco, "_latest_overrides", return_value={
+        "disabled_directions": ["PUT"]}):
+        assert eco.get_disabled_directions("QQQ") == {"PUT"}
+
+    with patch.object(eco, "_latest_overrides", return_value={
+        "disabled_directions": '["call", "put"]'}):
+        assert eco.get_disabled_directions("ANY") == {"CALL", "PUT"}
+
+    with patch.object(eco, "_latest_overrides", return_value={
+        "disabled_directions": None}):
+        assert eco.get_disabled_directions("ANY") == set()
+
+    with patch.object(eco, "_latest_overrides", return_value={}):
+        assert eco.get_disabled_directions("ANY") == set()
+
+    with patch.object(eco, "_latest_overrides", return_value=None):
+        assert eco.get_disabled_directions("ANY") == set()
+
+    # malformed JSON string → empty (degrade-open)
+    with patch.object(eco, "_latest_overrides", return_value={
+        "disabled_directions": "not-json{"}):
+        assert eco.get_disabled_directions("ANY") == set()
