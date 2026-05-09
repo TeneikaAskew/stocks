@@ -41,11 +41,31 @@ Issues #301 and #302 are **AWAITING** flags; #303 and #304 are **SYNC POINTS**.
 
 ## PR sequence — one per investigation, batched fixes
 
+> **Status as of 2026-05-09: 7 of 9 PRs shipped.** Remaining 2 are blocked
+> on external events (Track A G.P0.1 fetcher unfreeze for PR 7;
+> ~1 week of post-image-rebuild data ≥ 2026-05-15 for PR 8).
+>
+> | PR | Track G | Status | Commit |
+> |---|---|---|---|
+> | 1 | G.P0.6 | ✅ MERGED #308 | JSONB writer + production backfill |
+> | 2 | G.P0.8 | ✅ MERGED #315 | risk-cap increments (+ 1 Codex P1 fix) |
+> | 3 | G.P0.7 | ✅ verified | TZ-fix smoke verification (no PR; production wall-clock confirmed) |
+> | 4 | G.P0.9 | ✅ MERGED #318 | plaintext keys → secretKeyRef (+ 1 Codex P1 fix) |
+> | 5 | G.P0.10 | ✅ MERGED #319 | EOD reconciliation Job (+ 2 Codex P1 fixes) |
+> | 6 | G.P0.11 | ✅ MERGED #320 | momentum instrumentation (+ 1 Codex P1 fix) |
+> | 7 | G.P1.1 | 🚧 AWAITING #301 | `level_broken` investigation (Track A blocker) |
+> | 8 | G.P1.3 | 🚧 AWAITING #302 | momentum image-rebuild verification (~5/15) |
+> | 9 | G.P2/P3 batch | ✅ MERGED #328 | 6 P2/P3 items (+ 1 Codex P1 + 2 P2 fixes) |
+>
+> **Codex review tally**: 7 P1 + 2 P2 issues caught and addressed in-PR
+> with regression tests that fail against the pre-fix code. Roll-up
+> tracking issue: #316 (closed 2026-05-09).
+
 The user's structuring preference: one PR per investigation, fixes
 batched within. Each PR is a self-contained "fix N for investigation X"
 unit. The PR number column updates as PRs open.
 
-### PR 1 — G.P0.6 — JSONB writer for signal_alerts (top-3 priority)
+### PR 1 — G.P0.6 — JSONB writer for signal_alerts (top-3 priority) — ✅ MERGED #308
 
 **Investigation**: `signal_alerts.conditions_met` and `strategy_agreement`
 (plus `trades.conditions_met` — same bug class) land as JSONB-string-of-array
@@ -74,7 +94,7 @@ because `_persist_signal_alert` and `TradeLogger.log_trade` do
       rows `array`. Zero `string` rows remain in any of the three columns
 - [x] PR opened as #308 — MERGED 2026-05-08
 
-### PR 2 — G.P0.8 — wire `max_daily_trades` and `daily_loss_limit` increments (top-3 priority)
+### PR 2 — G.P0.8 — wire `max_daily_trades` and `daily_loss_limit` increments (top-3 priority) — ✅ MERGED #315
 
 **Investigation**: counters initialized at lines 86–87 and read at 437/439
 but never incremented anywhere. IWM blew through the 5-fire/day cap by
@@ -98,7 +118,7 @@ but never incremented anywhere. IWM blew through the 5-fire/day cap by
       green
 - [ ] PR opened (citing G.P0.8 + audit doc § 8.3 + § 8.7)
 
-### PR 3 — G.P0.7 — TZ-fix smoke test verification (trivial, could fold)
+### PR 3 — G.P0.7 — TZ-fix smoke test verification (trivial, could fold) — ✅ verified (no PR)
 
 **Investigation**: PR #279 shipped the TZ fix on 5/7. Track G says
 "verify the existing test still passes" — code agent already confirmed
@@ -113,7 +133,7 @@ but never incremented anywhere. IWM blew through the 5-fire/day cap by
       Track G synthesis issue (no PR), unless a missing edge case
       shows up
 
-### PR 4 — G.P0.9 — plaintext API keys → secretKeyRef
+### PR 4 — G.P0.9 — plaintext API keys → secretKeyRef — ✅ MERGED #318
 
 **Investigation**: `AV_API_KEY`, `DISCORD_WEBHOOK_URL`,
 `BENZINGA_API_KEY`, `FRED_API_KEY` baked as literal env values in
@@ -148,7 +168,7 @@ with `roles/run.viewer` can read the keys via `gcloud run jobs describe`.
       signal-monitor` → env vars empty for the 4 keys, secrets list
       populated
 
-### PR 5 — G.P0.10 — EOD reconciliation Cloud Run Job (top-5 priority)
+### PR 5 — G.P0.10 — EOD reconciliation Cloud Run Job (top-5 priority) — ✅ MERGED #319
 
 **Investigation**: 26 of 360 May 7 resolved alerts stuck `is_open=true`;
 ~1,209 historical alerts have `exit_ts IS NULL` because TZ bug or
@@ -191,7 +211,7 @@ implementation exists.
       drops to ≈0 rows via `db-query.yml` dispatch
 - [ ] PR opened (citing G.P0.10 + audit doc § 2 / § 4 + #303 sync)
 
-### PR 6 — G.P0.11 — momentum instrumentation (cross-track sync point)
+### PR 6 — G.P0.11 — momentum instrumentation (cross-track sync point) — ✅ MERGED #320
 
 **Investigation**: Tracks C, D, and E independently surfaced that
 momentum has fired 0 times in 50 days. Image lag explains 5/7
@@ -270,7 +290,7 @@ rebuilt 17:49 UTC on 5/7, so the earliest verification is ~5/15.
 - [ ] No PR likely needed unless investigation surfaces a new bug;
       otherwise close-with-comment
 
-### PR 9 — P2/P3 cleanup (batched)
+### PR 9 — P2/P3 cleanup (batched) — ✅ MERGED #328
 
 These are individually small; per "batched fixes" guidance, ship them
 together once the P0/P1 PRs land.
