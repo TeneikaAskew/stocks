@@ -1146,6 +1146,50 @@ def test_calibrate_conviction_low_when_confidence_too_high_for_medium():
     ) == "low"
 
 
+# ─── PR #351 codex review — FTFC sign must match direction ────────────
+
+
+def test_calibrate_conviction_long_with_negative_ftfc_does_not_hit_high():
+    """Codex review on PR #351: `abs(ftfc_score) >= 0.5` would let a
+    contradicting FTFC count as agreement. A long trade with FTFC=-0.8
+    means the multi-tf bias is screaming bearish — that must NOT be
+    high conviction."""
+    from lib.agents.orchestrator import _calibrate_conviction
+    result = _calibrate_conviction(
+        direction="long", confidence_score=0.75,
+        analyst_agreement_count=4, ftfc_score=-0.8,
+        risk_severities=["info", "info", "info"],
+    )
+    # Without sign-aware fix: would return 'high' (the bug).
+    # Post-fix: ftfc_aligned=False → falls to medium / low.
+    assert result != "high", (
+        "Negative ftfc_score must not satisfy the long-direction "
+        "high-conviction gate; sign must match direction."
+    )
+
+
+def test_calibrate_conviction_short_with_positive_ftfc_does_not_hit_high():
+    from lib.agents.orchestrator import _calibrate_conviction
+    result = _calibrate_conviction(
+        direction="short", confidence_score=0.75,
+        analyst_agreement_count=4, ftfc_score=0.8,
+        risk_severities=["info", "info", "info"],
+    )
+    assert result != "high"
+
+
+def test_calibrate_conviction_short_with_aligned_negative_ftfc_hits_high():
+    """The legitimate short path: direction=short with ftfc=-0.5 IS
+    aligned (both bearish) and clears the high gate."""
+    from lib.agents.orchestrator import _calibrate_conviction
+    result = _calibrate_conviction(
+        direction="short", confidence_score=0.75,
+        analyst_agreement_count=4, ftfc_score=-0.5,
+        risk_severities=["info", "info", "info"],
+    )
+    assert result == "high"
+
+
 def test_count_analyst_agreement_counts_matching_bias():
     from lib.agents.orchestrator import _count_analyst_agreement
     from types import SimpleNamespace

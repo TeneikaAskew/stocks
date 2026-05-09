@@ -865,9 +865,17 @@ def _calibrate_conviction(
     if any(s == "block" for s in risk_severities):
         return "low"
     warn_count = sum(1 for s in risk_severities if s == "warn")
+    # FTFC is signed (-1.0 bearish to +1.0 bullish). For high conviction,
+    # the sign must MATCH the trade direction — `abs(ftfc_score) >= 0.5`
+    # would let a contradicting FTFC count as agreement (e.g. long with
+    # ftfc_score=-0.8). Codex review on PR #351 caught this.
+    ftfc_aligned = (
+        (direction == "long" and ftfc_score >= 0.5)
+        or (direction == "short" and ftfc_score <= -0.5)
+    )
     if (
         analyst_agreement_count >= 4
-        and abs(ftfc_score) >= 0.5
+        and ftfc_aligned
         and warn_count == 0
         and confidence_score >= 0.7
     ):
