@@ -1030,6 +1030,125 @@ deploy_fetchers() {
     deploy_fetch_news_sentiment_topics
 }
 
+# ── Backup / disaster-recovery jobs ───────────────────────────────────────────
+# Weekly Cloud SQL → GCS logical backup. Replaces the GCS parquet backup
+# pattern (which only covered 2 of ~30 tables) with a full pg_dump that
+# captures every table on every run.
+#
+# Runs as a Cloud Run Job invoked by Cloud Scheduler weekly (Sunday 04:00 UTC,
+# wired in deploy_schedulers). Calls the Cloud SQL Admin API to trigger an
+# offload-mode SQL export — Cloud SQL itself writes the gzipped dump to GCS,
+# the calling SA only triggers + polls the operation. Combined with PITR
+# (enabled via `gcloud sql instances patch trading-db --enable-point-in-time-recovery`)
+# this gives ~daily snapshots + 7-day point-in-time recovery + weekly
+# cross-machinery dump in a different storage tier.
+#
+# Output path: gs://${PROJECT_ID}-trading-data/sql-dumps/trading-YYYYMMDD-HHMMSS.sql.gz
+#
+# IAM prerequisites — one-time, run via:
+#   ./gcp/deploy.sh setup-pg-dump-iam
+# 1. trading-runner SA needs roles/cloudsql.editor on the project (to invoke
+#    the export API).
+# 2. The Cloud SQL service identity
+#    (service-${PROJECT_NUMBER}@gcp-sa-cloud-sql.iam.gserviceaccount.com)
+#    needs roles/storage.objectAdmin on the destination bucket — Cloud SQL
+#    itself writes the file, NOT the calling SA.
+deploy_weekly_pg_dump() {
+    echo "Deploying cloud-sql-weekly-export job..."
+
+    local non_secret_env
+    non_secret_env="GCP_PROJECT=${PROJECT_ID}"
+    non_secret_env="${non_secret_env},CLOUD_SQL_INSTANCE=trading-db"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},SQL_DUMP_BUCKET=${PROJECT_ID}-trading-data"
+    non_secret_env="${non_secret_env},SQL_DUMP_PREFIX=sql-dumps"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 3600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.sql_export_to_gcs"
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create cloud-sql-weekly-export "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update cloud-sql-weekly-export "${common_flags[@]}"
+}
+
+# One-time IAM setup for the weekly pg_dump path. Idempotent — re-running
+# will report "already exists" but won't break.
+setup_pg_dump_iam() {
+    echo "=== Configuring IAM for cloud-sql-weekly-export ==="
+
+    # Resolve the project number to construct the Cloud SQL service identity.
+    local project_number
+    project_number="$(gcloud projects describe "${PROJECT_ID}" \
+        --format='value(projectNumber)')"
+    local cloud_sql_sa="service-${project_number}@gcp-sa-cloud-sql.iam.gserviceaccount.com"
+    local bucket="${PROJECT_ID}-trading-data"
+
+    echo
+    echo "1) Granting roles/cloudsql.editor to trading-runner SA on project..."
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role=roles/cloudsql.editor \
+        --condition=None \
+        --quiet 2>&1 | tail -3
+
+    echo
+    echo "2) Granting roles/storage.objectAdmin to Cloud SQL service identity"
+    echo "   (${cloud_sql_sa}) on bucket gs://${bucket}/..."
+    # The Cloud SQL service identity needs to be created first for IAM bindings
+    # to stick. gcloud beta services identity create handles that idempotently.
+    gcloud beta services identity create \
+        --service=sqladmin.googleapis.com \
+        --project="${PROJECT_ID}" 2>&1 | tail -3 || true
+
+    gcloud storage buckets add-iam-policy-binding "gs://${bucket}" \
+        --member="serviceAccount:${cloud_sql_sa}" \
+        --role=roles/storage.objectAdmin \
+        --quiet 2>&1 | tail -3
+
+    echo
+    echo "3) Updating GCS lifecycle rules (sql-dumps/ → 30d, raw/ → 730d)"
+    # gcloud storage buckets update --lifecycle-file REPLACES the whole
+    # bucket lifecycle config, so we must include every rule we want to
+    # keep. The raw/ → 730d rule was originally set in setup_cloud_sql.sh
+    # for parquet retention; mirroring it here preserves that policy
+    # alongside the new sql-dumps/ → 30d rule. If gcp/setup_cloud_sql.sh
+    # ever changes its rule definition, update this block to match.
+    cat >/tmp/sql_dumps_lifecycle.json <<EOF
+{
+  "rule": [
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "age": 30,
+        "matchesPrefix": ["sql-dumps/"]
+      }
+    },
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "age": 730,
+        "matchesPrefix": ["raw/"]
+      }
+    }
+  ]
+}
+EOF
+    gcloud storage buckets update "gs://${bucket}" \
+        --lifecycle-file=/tmp/sql_dumps_lifecycle.json \
+        --quiet 2>&1 | tail -3
+    rm -f /tmp/sql_dumps_lifecycle.json
+
+    echo
+    echo "✓ IAM + lifecycle configured. Test with:"
+    echo "  gcloud run jobs execute cloud-sql-weekly-export --region ${REGION} --wait"
+}
+
 # ── One-shot maintenance jobs ─────────────────────────────────────────────────
 # Apply gcp/schema.sql — adds new tables / columns / indexes. Safe to re-run;
 # every statement is IF NOT EXISTS / OR REPLACE. Run via:
@@ -1452,6 +1571,13 @@ deploy_schedulers() {
         "--mode=orb-snapshot" "--window=30m"
     # Weekend review — Saturday 9 AM ET
     _schedule "weekend-review-weekly"    "0 9 * * 6"      "weekend-review"
+    # Cloud SQL → GCS backup — Sunday 04:00 UTC (≈ 23:00 ET Saturday).
+    # Off-hours so the optional offload export doesn't compete with any
+    # weekend backfill jobs. Output: gs://${PROJECT_ID}-trading-data/
+    # sql-dumps/trading-YYYYMMDD-HHMMSS.sql.gz. Lifecycle rule (set in
+    # setup_pg_dump_iam) deletes dumps older than 30 days, leaving the
+    # last ~4 weekly snapshots.
+    _schedule "cloud-sql-weekly-export-sunday" "0 4 * * 0" "cloud-sql-weekly-export"
     # Market data — 11 PM ET weekdays. Was 5 PM ET originally but moved
     # 6 hours later because AV's TIME_SERIES_INTRADAY publishes the
     # closing-day's 1-min bars with a several-hour lag. The 5 PM cron
@@ -1697,6 +1823,8 @@ case "${1:-help}" in
     schedulers)  deploy_schedulers ;;
     backfill)    shift; backfill_watchlist "$@" ;;
     apply-schema) build_image && deploy_apply_schema_migrations ;;
+    pg-dump)      build_image && deploy_weekly_pg_dump ;;
+    setup-pg-dump-iam) setup_pg_dump_iam ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
@@ -1718,6 +1846,7 @@ case "${1:-help}" in
         deploy_auto_refresh_top_n
         deploy_signal_quality_report
         deploy_signal_quality_alarm
+        deploy_weekly_pg_dump
         deploy_notifier
         deploy_schedulers
         backfill_watchlist
@@ -1740,6 +1869,13 @@ case "${1:-help}" in
         echo "             after \`fetchers\` and \`all\`."
         echo "  apply-schema Deploy one-shot job that re-applies gcp/schema.sql"
         echo "             (idempotent — every statement is IF NOT EXISTS / OR REPLACE)"
+        echo "  pg-dump    Deploy cloud-sql-weekly-export Cloud Run Job (full Postgres"
+        echo "             dump → gs://\${PROJECT_ID}-trading-data/sql-dumps/). Wired"
+        echo "             to Sunday 04:00 UTC scheduler in deploy_schedulers."
+        echo "  setup-pg-dump-iam  One-time IAM grants for pg-dump: trading-runner gets"
+        echo "             cloudsql.editor, Cloud SQL service identity gets storage"
+        echo "             objectAdmin on the dump bucket, lifecycle rule sets 30d"
+        echo "             retention on the sql-dumps/ prefix."
         echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
         echo "  spx-greeks Deploy one-shot SPX Greeks backfill job (12h timeout)"
         echo "             python -m scripts.maintenance.compute_spx_greeks --ticker SPX"
