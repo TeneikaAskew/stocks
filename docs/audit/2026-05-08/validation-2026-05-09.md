@@ -90,7 +90,20 @@ All 3 tickers seeded with audit-recommended values from
 
 Validated by 14 unit tests covering Tier-A hit, Tier-B fallback for
 NaN/None/inf/zero/negative, lru_cache behavior, and table-missing /
-no-creds resilience. Production live since 2026-05-09 02:09 UTC.
+no-creds resilience. ~~Production live since 2026-05-09 02:09 UTC.~~
+
+> **⚠ AMENDMENT (2026-05-09 ~22:00 UTC, post-incident)** — The
+> resolver code shipped at 02:09 UTC, but PR #358 (which merged
+> simultaneously) added a `disabled_directions` column to the
+> SELECT in `_latest_overrides()` while the corresponding schema
+> migration never auto-ran. Production was missing the column until
+> manual `apply-schema-migrations` was triggered at ~21:00 UTC,
+> meaning the resolver's SELECT errored for ~19 hours and silently
+> degraded all per-ticker overrides to Tier-B `ExitConfig` defaults
+> for the 2026-05-09 RTH session. **The per-ticker calibration this
+> validation claimed was live was actually inert during that window.**
+> Postmortem: [`docs/incidents/2026-05-09-schema-migration-not-auto-applied.md`](../../incidents/2026-05-09-schema-migration-not-auto-applied.md).
+> Auto-trigger workflow added in PR-INC-1 prevents recurrence.
 
 **PR #329 — Drop anti-signal MR PUT conditions**
 
@@ -101,6 +114,14 @@ PUT-side `above_vwap` / `stoch_rsi_overbought` / `rsi_overbought_zone`
 condition counts — will be visible in next-session alerts.
 Behavior locked by 12 new unit tests (`test_mean_reversion_put_conditions.py`)
 plus the orthogonality regression in `test_strategy_mean_reversion.py`.
+
+> **⚠ AMENDMENT (2026-05-09 ~22:00 UTC, post-incident)** — The IWM/QQQ-specific
+> drops (G.P0.13 — `stoch_rsi_overbought`, `rsi_overbought_zone`)
+> were never seeded into `exit_config_overrides.disabled_conditions`
+> in `gcp/schema.sql`. PR #329 added the live-read code via PR #358
+> but no UPDATE seeded the per-ticker values. PR-INC-1 adds the seed.
+> The GLOBAL `above_vwap` drop (code-level change in
+> `lib/strategies/mean_reversion.py`) did ship correctly.
 
 **PR #330 — Momentum eligibility analysis**
 

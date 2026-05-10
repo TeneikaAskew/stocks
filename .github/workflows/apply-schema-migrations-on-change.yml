@@ -1,0 +1,87 @@
+name: Apply Schema Migrations on Change
+
+# Triggers the apply-schema-migrations Cloud Run Job whenever a push to
+# main modifies gcp/schema.sql. Without this, schema changes shipped via
+# PR would silently NOT migrate to production until someone manually
+# triggered the job — which is exactly what happened on 2026-05-09 when
+# PR #358 added a `disabled_directions` column that wasn't applied to
+# Cloud SQL for ~19 hours after merge, causing the live signal-monitor's
+# _latest_overrides() SELECT to fail and silently degrade to Tier-B
+# defaults. See docs/incidents/2026-05-09-schema-migration-not-auto-applied.md
+# for the postmortem.
+#
+# This workflow runs the same `gcloud run jobs execute apply-schema-migrations
+# --wait` call that the manual recovery used, attaching the standard
+# failure handler so a migration regression surfaces as an auto-filed
+# GitHub issue.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'gcp/schema.sql'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  apply-migrations:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: adept-mountain-474619-d4
+
+      - name: Execute apply-schema-migrations Cloud Run Job
+        run: |
+          set -euo pipefail
+          # --wait blocks until the job finishes so a migration failure
+          # surfaces as a workflow failure (which fires handle-failure
+          # below), instead of returning success the moment the
+          # execution is created.
+          gcloud run jobs execute apply-schema-migrations \
+            --region=us-east1 \
+            --wait
+
+  handle-failure:
+    needs: apply-migrations
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Apply Schema Migrations on Change"
+      failure_title: "❌ apply-schema-migrations failed after gcp/schema.sql change"
+      issue_labels: "workflow-failure,schema-migration,automated"
+      workflow_file: "apply-schema-migrations-on-change.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: true
