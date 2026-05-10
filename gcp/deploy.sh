@@ -620,23 +620,25 @@ deploy_av_options_backfill() {
     secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
     secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
 
-    gcloud run jobs create fetch-av-options-backfill \
-        --image "${IMAGE}" --region "${REGION}" \
-        --memory 2Gi --cpu 1 --max-retries 0 \
-        --task-timeout 43200 \
-        --service-account "${SA_EMAIL}" \
-        --command "python,-m,gcp.fetchers.fetch_av_historical_options" \
-        --args "--tickers,SPY IWM QQQ SPX,--start-date,2016-01-04" \
-        ${secrets_flag} \
-        --set-env-vars "${non_secret_env}" \
-        --quiet 2>/dev/null || \
-    gcloud run jobs update fetch-av-options-backfill \
-        --image "${IMAGE}" --region "${REGION}" \
-        --command "python,-m,gcp.fetchers.fetch_av_historical_options" \
-        --args "--tickers,SPY IWM QQQ SPX,--start-date,2016-01-04" \
-        ${secrets_flag} \
-        --set-env-vars "${non_secret_env}" \
+    # Both branches pass the full set of runtime flags so an existing
+    # out-of-band job converges to the captured spec on every deploy.
+    # gcloud run jobs update leaves omitted flags untouched, so without
+    # mirroring memory/cpu/retries/timeout/SA on the update branch a
+    # hand-tweaked job would never reconverge from `deploy.sh fetchers`.
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 2Gi --cpu 1 --max-retries 0
+        --task-timeout 43200
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_historical_options"
+        --args "--tickers,SPY IWM QQQ SPX,--start-date,2016-01-04"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
         --quiet
+    )
+
+    gcloud run jobs create fetch-av-options-backfill "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update fetch-av-options-backfill "${common_flags[@]}"
 }
 
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
