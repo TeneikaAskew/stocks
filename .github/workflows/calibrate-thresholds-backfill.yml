@@ -107,6 +107,14 @@ jobs:
           LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
+          # `pipefail` is REQUIRED — without it, the pipe to `tee` below
+          # masks any non-zero exit from the calibration script, leaving
+          # the workflow green even when calibration fails (invalid
+          # --as-of, missing data sys.exit(3), DB write error). Codex
+          # caught this on PR #384's first commit; the test plan
+          # requires handle-failure to fire on real failures.
+          set -eo pipefail
+
           for var in CLOUD_SQL_CONNECTION_NAME DB_USER DB_PASS DB_NAME; do
             if [ -z "${!var}" ]; then
               echo "::error::$var secret is not set"
