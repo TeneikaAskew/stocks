@@ -309,3 +309,72 @@ def test_weekday_range_single_day():
 
     out = _weekday_range(date(2026, 4, 22), date(2026, 4, 22))  # Wed
     assert out == ["2026-04-22"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# _resolve_start_from_latest — self-resuming start date
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_resolve_start_from_latest_returns_max_plus_one(monkeypatch):
+    """SQL holds 2026-04-13 as the latest snapshot → start = 2026-04-14."""
+    from gcp.fetchers import fetch_av_historical_options as mod
+
+    monkeypatch.setattr(
+        "gcp.database.query_to_dataframe",
+        lambda *a, **k: pd.DataFrame([{"d": pd.Timestamp("2026-04-13")}]),
+    )
+    out = mod._resolve_start_from_latest(["SPY", "IWM"])
+    assert out == date(2026, 4, 14)
+
+
+def test_resolve_start_from_latest_empty_sql_falls_back_to_today(monkeypatch):
+    """No rows for the requested tickers → start = today (caller can
+    pass an explicit --start-date for a wide initial backfill)."""
+    from gcp.fetchers import fetch_av_historical_options as mod
+
+    monkeypatch.setattr(
+        "gcp.database.query_to_dataframe",
+        lambda *a, **k: pd.DataFrame([{"d": None}]),
+    )
+    out = mod._resolve_start_from_latest(["NEW_TICKER"])
+    assert out == date.today()
+
+
+def test_resolve_start_from_latest_empty_dataframe(monkeypatch):
+    """query returns empty df (no rows at all) → today fallback."""
+    from gcp.fetchers import fetch_av_historical_options as mod
+
+    monkeypatch.setattr(
+        "gcp.database.query_to_dataframe",
+        lambda *a, **k: pd.DataFrame(columns=["d"]),
+    )
+    out = mod._resolve_start_from_latest(["SPY"])
+    assert out == date.today()
+
+
+def test_resolve_start_from_latest_no_tickers():
+    """Empty ticker list → today fallback (no SQL query attempted)."""
+    from gcp.fetchers import fetch_av_historical_options as mod
+
+    out = mod._resolve_start_from_latest([])
+    assert out == date.today()
+
+
+def test_resolve_start_from_latest_passes_tickers_into_sql(monkeypatch):
+    """Verifies the SQL call gets the expected ticker bind params."""
+    from gcp.fetchers import fetch_av_historical_options as mod
+
+    captured = {}
+
+    def fake_query(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return pd.DataFrame([{"d": pd.Timestamp("2026-04-13")}])
+
+    monkeypatch.setattr("gcp.database.query_to_dataframe", fake_query)
+    mod._resolve_start_from_latest(["SPY", "IWM", "QQQ"])
+
+    assert "MAX(snapshot_date)" in captured["sql"]
+    assert "data_source = 'alphavantage'" in captured["sql"]
+    assert captured["params"] == {"t0": "SPY", "t1": "IWM", "t2": "QQQ"}
