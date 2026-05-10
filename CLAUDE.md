@@ -230,6 +230,44 @@ Follow this rigorous testing approach:
   (FastAPI router, AI agents, CLI scripts) import from the same `lib/`
   modules so behaviour can't drift.
 
+### Sandbox network constraints (Claude Code on the web)
+
+The Claude Code on the web sandbox enforces a strict outbound egress policy:
+**only TCP port 443 is allowed.** Anything else — 5432 (Postgres), 3307
+(Cloud SQL Auth Proxy backend), 22 (SSH), arbitrary TCP — silently times out
+at the sandbox firewall. This is by design and **cannot be bypassed by
+changing the destination's inbound ACLs, authorized networks, or VPC
+peering** — the binding constraint is on the sandbox side, not the
+destination's. If a connection times out, the answer is almost never "fix the
+firewall" — it's "find the 443-based escape hatch for this operation."
+
+| Operation | Mechanism | Port | Works in sandbox? |
+|---|---|---|---|
+| `gcloud …` (Asset, IAM, Run, SQL admin, Build, Scheduler, Logging) | REST API | 443 | ✅ |
+| `gh …` (GitHub: PRs, issues, runs, workflows, secrets, releases) | REST + GraphQL API | 443 | ✅ |
+| `gcloud secrets versions access` | Secret Manager API | 443 | ✅ |
+| `gcloud run jobs execute` / `deploy` (job itself runs in GCP, not the sandbox) | Cloud Run control-plane API | 443 | ✅ |
+| `gcloud builds submit` (build runs in Cloud Build, not the sandbox) | Cloud Build API | 443 | ✅ |
+| `git push` / `git fetch` over HTTPS remotes | git-over-HTTPS | 443 | ✅ |
+| `curl` / `WebFetch` to any HTTPS endpoint (incl. signed GCS URLs) | HTTPS | 443 | ✅ |
+| **Direct** psycopg2 / pg8000 / SQLAlchemy → Cloud SQL | TCP | 5432 | ❌ |
+| **Direct** Cloud SQL Auth Proxy → Cloud SQL backend | TCP | 3307 | ❌ |
+| **Direct** `psql` → Cloud SQL | TCP | 5432 | ❌ |
+| SSH to Cloud Run / Compute / IAP tunnel | TCP | 22 (or 22-over-IAP) | ❌ |
+| Anything binding raw TCP outbound on a non-443 port | TCP | * | ❌ |
+
+The two patterns documented below — `db-query.yml` for DB access, and the
+PAT-via-Secret-Manager pattern for GitHub API — exist specifically to route
+work over 443 for operations that would otherwise need a blocked port. The
+GH Actions runner has unrestricted egress, so dispatching a workflow is the
+canonical way to "run something on a real network" from inside the sandbox.
+
+If a tool's job appears to *run in GCP* but you're calling it from the
+sandbox (e.g. `gcloud run jobs execute`, `gcloud builds submit`,
+`gcloud sql import`), the local CLI is just hitting the 443 control-plane
+API — the actual work happens in GCP and has full network access. That's
+why these work even though direct SQL on 5432 doesn't.
+
 ### Database access
 
 > **See also: [`docs/CLAUDE_CODE_ON_WEB.md`](docs/CLAUDE_CODE_ON_WEB.md)** — the
