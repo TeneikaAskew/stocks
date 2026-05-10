@@ -80,7 +80,7 @@ addressed it.
 | G.P0.1 — unfreeze `fetch-market-data` daily fetcher | A | ✅ via PR #321 | Daily bars now landing 2026-05-07 onward |
 | G.P0.6 — `signal_alerts.conditions_met` JSONB writer fix + backfill | D | ✅ via PR #308 | Per-factor walk-forward script reads native JSONB array |
 | G.P0.10 — EOD reconciliation Cloud Run Job | D / A | ✅ shipped | `signal_monitor_eod_resolver.py` running nightly; `exit_return_pct` populated for 713 of 1,753 alerts in 2026-04-01..05-09 (40.7% — open positions won't have outcome until close) |
-| G.P0.11 — momentum strategy zero-fires investigation | D | ⚠️ diagnosis shipped, **production fix pending** — issue **#369** | PR #320 added live counters, PR #330 confirmed orchestration excludes momentum (2,237/1,800/2,258 SPY/IWM/QQQ would-fire-@5 bars vs 0 production fires). `gcp/signal_monitor.py:413` still gates `MOMENTUM.evaluate()` behind a mean-reversion fire (only called inside `_evaluate_strategies_for_bar`, which only runs when mr fires). Track D follow-up #369 owns the orchestration fix. Walk-forward verdicts on momentum factors stay INSUFFICIENT_DATA until #369 lands. |
+| G.P0.11 — momentum strategy zero-fires investigation | D | ✅ all three halves shipped — diagnosis #320 + analysis #330 + orchestration #371 | PR #320 added live counters; PR #330 confirmed orchestration was excluding momentum (2,237/1,800/2,258 SPY/IWM/QQQ would-fire-@5 bars vs 0 production fires). **PR #371** (`fix(signal-monitor): always evaluate momentum + stand-alone fire path`) shipped the orchestration fix: `MOMENTUM.evaluate()` now runs on every bar (not just mr-fires bars), and a new `signal_cfg.enable_standalone_momentum` flag (default `False`) gates whether momentum-only fires get persisted. Walk-forward verdicts on momentum factors will accumulate after a Phase E policy review flips the flag — currently no behavior change because the flag defaults off, but the orchestration block is structurally resolved. |
 | G.P1.5 — brief `signal_status` ↔ `ftfc_direction` contradiction | B | ✅ via PR #306 | The divergence UI in PR #353 renders correctly |
 | G.P1.10 — `brief_bias` populated only on 5/7 | D (via B) | ✅ via PR #310 + Track D fix; landed ~2026-05-07 | Live-DB audit 2026-05-09: 100% coverage on 5/7 + 5/8 |
 
@@ -137,22 +137,22 @@ Three patterns from this audit are now codified in `CLAUDE.md`:
 
 Nothing remaining for Track C *itself*. The audit's 5 P0 / 4 P1 / 4 P2
 / 1 P3 Track-C-tagged items are all addressed (landed, deferred-with-note,
-or scheduled-recurring). Of the 6 cross-track blockers Track C was
-waiting on, **5 have resolved** and **1 (G.P0.11) is partially open**:
-the diagnosis halves shipped (PR #320 + #330), but the production
-orchestration fix is still pending in **issue #369** (Track D). That
-isn't a Track C deliverable — it's tracked + scheduled, not buried.
+or scheduled-recurring). All 6 cross-track blockers Track C was
+waiting on **have resolved**, including G.P0.11: the diagnosis halves
+shipped (PR #320 + #330) and the production orchestration fix shipped
+in **PR #371** (closes issue #369).
 
-The remaining *future-work* on the Track C surface is data-gated and,
-for momentum, **upstream-blocked**:
+The remaining *future-work* on the Track C surface is **data-gated**:
 
-- **Per-factor KEEP/DEMOTE/DROP verdicts on momentum confirmers** are
-  blocked on **issue #369** (Track D — ship the momentum orchestration
-  fix). PR #330 confirmed momentum is structurally excluded in
-  production (`gcp/signal_monitor.py:413` only invokes `MOMENTUM.evaluate()`
-  inside the mr-fired branch). Until #369 lands, the Saturday
-  walk-forward cron will keep emitting `INSUFFICIENT_DATA` for every
-  momentum factor — that's a real signal, not a bug.
+- **Per-factor KEEP/DEMOTE/DROP verdicts on momentum confirmers**
+  unblock once stand-alone-momentum data accumulates. PR #371 made
+  `MOMENTUM.evaluate()` run on every bar and added a
+  `signal_cfg.enable_standalone_momentum` flag (default `False`). A
+  Phase E policy review will decide whether to flip the flag; once
+  flipped, the Saturday walk-forward cron will start producing real
+  momentum verdicts within ~1-2 sessions. While the flag stays off the
+  cron will still emit `INSUFFICIENT_DATA` for momentum factors —
+  expected, not a bug.
 - Per-factor verdicts on **mean-reversion** factors and the
   `MIN_CONDITIONS=3` calibration require ≥ 2 weeks of post-Phase-0.7.x
   data. First actionable mean-reversion walk-forward report is the
