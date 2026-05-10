@@ -252,3 +252,60 @@ def test_high_vol_ticker_has_higher_thresholds_than_low_vol_ticker():
 def test_calibrate_ticker_returns_empty_for_empty_bars():
     cal = calibrate_ticker("EMPTY", pd.DataFrame(columns=["ts","open","high","low","close","volume"]), 60)
     assert cal == {}, "empty bars should produce empty calibration dict (skip, not crash)"
+
+
+# ── --as-of flag (added 2026-05-10 for #250 backfill) ─────────────────────
+
+def test_calibrate_ticker_with_as_of_overrides_calibration_date():
+    """When `as_of=date(2026, 4, 1)` is passed, the output row's
+    calibration_date is the passed date, not date.today()."""
+    from datetime import date as _date
+    bars = synthetic_bars(n=2000)
+    target = _date(2026, 4, 1)
+    cal = calibrate_ticker("TEST", bars, lookback_days=60, as_of=target)
+    assert cal["calibration_date"] == target
+
+
+def test_calibrate_ticker_without_as_of_uses_today():
+    """Default (no as_of) is today — preserves existing live cadence."""
+    from datetime import date as _date
+    bars = synthetic_bars(n=2000)
+    cal = calibrate_ticker("TEST", bars, lookback_days=60)
+    assert cal["calibration_date"] == _date.today()
+
+
+def test_parse_as_of_accepts_valid_iso_date():
+    from datetime import date as _date
+    from scripts.calibrate_thresholds import _parse_as_of
+    assert _parse_as_of("2025-10-01") == _date(2025, 10, 1)
+
+
+def test_parse_as_of_returns_none_when_unset():
+    from scripts.calibrate_thresholds import _parse_as_of
+    assert _parse_as_of(None) is None
+    assert _parse_as_of("") is None
+
+
+def test_parse_as_of_rejects_invalid_string():
+    from scripts.calibrate_thresholds import _parse_as_of
+    with pytest.raises(SystemExit, match="not a valid YYYY-MM-DD"):
+        _parse_as_of("not-a-date")
+
+
+def test_parse_as_of_rejects_future_date():
+    """Future dates would calibrate against bars that don't exist —
+    the script must refuse so the backfill can't accidentally
+    write a row with calibration_date > today."""
+    from datetime import date as _date, timedelta as _td
+    from scripts.calibrate_thresholds import _parse_as_of
+    future = (_date.today() + _td(days=7)).isoformat()
+    with pytest.raises(SystemExit, match="in the future"):
+        _parse_as_of(future)
+
+
+def test_parse_as_of_accepts_today_boundary():
+    """Today is allowed (cadence parity with no-flag run)."""
+    from datetime import date as _date
+    from scripts.calibrate_thresholds import _parse_as_of
+    today_str = _date.today().isoformat()
+    assert _parse_as_of(today_str) == _date.today()
