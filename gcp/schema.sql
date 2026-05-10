@@ -2156,3 +2156,19 @@ ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS brief_bias        VARCHAR(16),
     ADD COLUMN IF NOT EXISTS brief_alignment   VARCHAR(16),
     ADD COLUMN IF NOT EXISTS brief_setup_count INTEGER;
+
+-- Phase 1 prereq (issue #404, PR feat/replay-persist-mode):
+-- replay-mode signal-monitor writes here too with these tag columns so
+-- replay rows are identifiable + queryable but don't pollute live data
+-- analysis. Live rows: run_kind='live' (default) AND replay_id IS NULL.
+-- Replay rows: run_kind='replay' AND replay_id=<UUID-per-execution>.
+-- This unlocks Phase 1 acceptance testing (need full per-fire detail
+-- which Cloud Run logs truncate at ~85 records).
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS run_kind   VARCHAR(16) NOT NULL DEFAULT 'live',
+    ADD COLUMN IF NOT EXISTS replay_id  UUID;
+
+CREATE INDEX IF NOT EXISTS idx_signal_alerts_run_kind
+    ON signal_alerts(run_kind) WHERE run_kind != 'live';
+CREATE INDEX IF NOT EXISTS idx_signal_alerts_replay_id
+    ON signal_alerts(replay_id) WHERE replay_id IS NOT NULL;
