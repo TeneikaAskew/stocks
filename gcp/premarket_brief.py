@@ -363,7 +363,17 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     # rows often have NULL options_volume because the field is UW-derived;
     # those long-tail names rarely have meaningful options markets anyway.
     # NULL → 0 → filtered.
-    earnings = [e for e in earnings if (e.get('options_volume') or 0) > 0]
+    #
+    # Weekly mode (Sunday) skips this filter (#396): UW (unusual_whales)
+    # only enriches options_volume for the immediate forward window — for
+    # next-week earnings dates that come from yahoo/AV/EW, options_volume
+    # is NULL until UW catches up Mon morning. On Sunday the brief's job
+    # is informational ("here's what's coming") not tradeability ranking,
+    # so dropping every row because UW hasn't refreshed produces an
+    # empty list (the user sees "no earnings this week" despite ~5000
+    # rows in the table for the next 5 weekdays).
+    if mode == 'daily':
+        earnings = [e for e in earnings if (e.get('options_volume') or 0) > 0]
 
     # Confirmed-only filter: keep tier 1-3 only (multi-source confirmed +
     # strategy picks). Tier 4-6 are single-source / AV-only / EW-alone —
