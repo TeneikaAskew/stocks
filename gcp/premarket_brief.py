@@ -2740,6 +2740,18 @@ def main(argv: Optional[list[str]] = None):
              "Equivalent env vars: BRIEF_POST_EXISTING_TICKER, "
              "BRIEF_POST_EXISTING_DATE.",
     )
+    parser.add_argument(
+        '--no-discord', action='store_true',
+        help="Skip the Discord webhook POST at the end of the run. "
+             "Brief still persists to premarket_analysis + "
+             "premarket_analysis_history. Used by backfills and "
+             "historical replays to avoid spamming the Discord channel "
+             "with re-posted content. Equivalent env var: "
+             "BRIEF_NO_DISCORD=true. Default: post to Discord (live "
+             "behavior unchanged). Implied when BRIEF_AS_OF is set "
+             "(replay) — historical replays would post stale content "
+             "to a real-time Discord channel.",
+    )
     args = parser.parse_args(argv)
 
     if args.post_existing:
@@ -2759,7 +2771,21 @@ def main(argv: Optional[list[str]] = None):
         or ('cli' if sys.stdin.isatty() else 'cloud-run-job')
     )
 
-    webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
+    # Resolve Discord-suppression policy. Three sources, in priority order:
+    #   1. --no-discord CLI flag
+    #   2. BRIEF_NO_DISCORD=true env var
+    #   3. BRIEF_AS_OF set (historical replay — never want to re-post
+    #      stale content to a real-time channel)
+    # When ANY of these is true, webhook_url is cleared so the "if
+    # webhook_url" guard below skips the Discord push. The persistence
+    # path (persist_to_cloud_sql) is unaffected — premarket_analysis +
+    # premarket_analysis_history rows are always written regardless.
+    no_discord = (
+        args.no_discord
+        or os.environ.get('BRIEF_NO_DISCORD', '').lower() == 'true'
+        or bool(os.environ.get('BRIEF_AS_OF'))
+    )
+    webhook_url = '' if no_discord else os.environ.get('DISCORD_WEBHOOK_URL')
 
     cfg = load_config()
     data_dir = os.environ.get('DATA_DIR', cfg.market.data_dir)
