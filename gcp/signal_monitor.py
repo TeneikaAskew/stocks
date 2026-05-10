@@ -14,6 +14,7 @@ import time as time_module
 import requests
 from pathlib import Path
 from datetime import datetime, time, timedelta
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 # Cloud Run runs in UTC. All market-hours comparisons must be in ET so the
@@ -161,6 +162,21 @@ class SignalMonitor:
         # so we can later analyse whether brief-aligned signals win more
         # often than brief-opposed ones, without changing fire behavior.
         self._brief_bias_cache: dict = {}
+
+        # Replay clock override. When the replay harness feeds bars from
+        # a historical date, downstream calls that key off "now" — the
+        # premarket-brief lookup (_resolve_brief_bias) and the catalyst
+        # proximity lookup (get_catalyst_context) — must use the BAR's
+        # timestamp, not wall-clock-now. Without this, replay reads
+        # today's brief (which doesn't exist for a 2026-05-06 replay run
+        # on 2026-05-10) so ftfc_score defaults to 0.0 and the PR #379
+        # FTFC fix is architecturally inert during replay.
+        #
+        # `replay_clock_ts` is a pandas Timestamp (the bar's Time). When
+        # None, `_now()` falls back to wall-clock-now (live behaviour).
+        # The harness in scripts/replay_signal_monitor.py sets this
+        # per-bar.
+        self.replay_clock_ts: Optional[pd.Timestamp] = None
 
     def _resolve_watchlist(self) -> list[str]:
         """Return the active live-signal-monitor watchlist.
@@ -701,8 +717,11 @@ class SignalMonitor:
         # showed 8-10pp lower clean rate); 'next_day' gets 1.10x
         # amplification (3pp higher clean rate).
         try:
+            # Use the bar's clock during replay so proximity is keyed
+            # to bar-time, not wall-clock. Live runs are unaffected
+            # (`_now()` falls through to `datetime.now()`).
             self._latest_proximity = get_catalyst_context(
-                ticker, pd.Timestamp(datetime.now())
+                ticker, pd.Timestamp(self._now())
             )
         except Exception as e:
             from lib.strategies.catalyst_proximity import EMPTY_CONTEXT
@@ -1023,12 +1042,42 @@ class SignalMonitor:
             'size': float(size),
         })
 
+    def _now(self, tz: Optional[ZoneInfo] = None) -> datetime:
+        """Return current time, respecting the replay clock override.
+
+        When ``replay_clock_ts`` is set by the replay harness, returns
+        that timestamp converted to the requested timezone. Otherwise
+        falls back to wall-clock ``datetime.now(tz)`` (live behaviour).
+
+        Used by call sites whose semantics depend on "as-of bar time"
+        rather than wall-clock — e.g. ``_resolve_brief_bias`` (which
+        looks up the day's premarket_analysis row for FTFC + bias) and
+        ``get_catalyst_context`` (which buckets catalysts by proximity
+        to the bar's timestamp, not the current time).
+
+        Live signal-monitor runs always have ``replay_clock_ts=None``
+        so this method is a no-op overhead — one None-check.
+        """
+        if self.replay_clock_ts is not None:
+            ts = self.replay_clock_ts
+            # Normalize to datetime in the requested tz.
+            if hasattr(ts, 'to_pydatetime'):
+                ts = ts.to_pydatetime()
+            if tz is None:
+                return ts.replace(tzinfo=None) if ts.tzinfo is not None else ts
+            # If ts has no tz, assume UTC (matches market_data_intraday's
+            # storage convention) before converting.
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+            return ts.astimezone(tz)
+        return datetime.now(tz)
+
     def _resolve_brief_bias(self, ticker: str) -> dict:
         """Lookup-and-cache the premarket-brief bias for this ticker today."""
         if ticker in self._brief_bias_cache:
             return self._brief_bias_cache[ticker]
         try:
-            today_et = datetime.now(_ET).date()
+            today_et = self._now(_ET).date()
             bias = get_premarket_bias(ticker, today_et)
         except Exception as e:
             logger.debug("brief bias lookup failed for %s: %s", ticker, e)
