@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cloud Run Job: Fetch AlphaVantage 1-min historical intraday → Cloud SQL + GCS.
+Cloud Run Job: Fetch AlphaVantage 1-min historical intraday → Cloud SQL.
 
 Replaces the GitHub Actions workflow fetch-alphavantage-intraday-monthly.yml.
 Scheduled on the 1st of each month by Cloud Scheduler.
@@ -24,8 +24,12 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from gcp.database import bulk_insert_dataframe, execute_sql, is_cloud_sql_configured, upsert_dataframe
-from gcp.gcs_utils import upload_dataframe_as_parquet, parquet_exists_in_gcs
+from gcp.database import (
+    bulk_insert_dataframe,
+    execute_sql,
+    is_cloud_sql_configured,
+    upsert_dataframe,
+)
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -124,10 +128,27 @@ def process_symbol(
     start_date: str,
     end_date: str,
     api_keys: list,
-    bucket: str,
     force: bool,
 ):
-    """Fetch all months for a symbol and write to Cloud SQL + GCS."""
+    """Fetch all months for a symbol and write to Cloud SQL.
+
+    Re-fetches every month in the range unconditionally. The previous
+    parquet_exists_in_gcs sentinel had completion semantics — a parquet
+    only existed after the monthly fetch finished — so it was safe to
+    skip on. The SQL table doesn't carry the same signal: fetch_market_data
+    inserts daily 1-min bars into the same (ticker, year, month) bucket,
+    so an "any row exists" check would mark a month as covered after one
+    daily insert and silently drop the rest of the monthly backfill.
+
+    Re-fetching is cheap enough to make the simpler approach worthwhile:
+    default range is current_month-1 → today (~2 months), 3 tickers, AV
+    premium 150 RPM ≈ 3 sec per night. Backfill of 5 years × 3 tickers ≈
+    180 calls ≈ 1.2 min. Idempotent via ON CONFLICT DO UPDATE on
+    (ticker, interval, ts).
+
+    --force is retained as a no-op for back-compat with existing callers
+    and Cloud Scheduler args; behavior is now equivalent in both modes.
+    """
     months = get_trading_months(start_date, end_date)
     log.info("  %s: %d months (%s → %s)", symbol, len(months), start_date, end_date)
 
@@ -138,12 +159,6 @@ def process_symbol(
 
     for year, month in months:
         month_str = f"{year}-{month:02d}"
-        gcs_path = f"raw/{symbol.lower()}/intraday/{symbol.lower()}_av_1min_{year}{month:02d}.parquet"
-
-        # Skip if already in GCS and not forcing
-        if not force and bucket and parquet_exists_in_gcs(bucket, gcs_path):
-            log.info("    %s: already in GCS, skipping", month_str)
-            continue
 
         # Rate limiting
         elapsed = time.time() - last_call_time
@@ -179,16 +194,11 @@ def process_symbol(
             )
             inserted_total += len(df)
 
-        # Backup to GCS
-        if bucket:
-            upload_dataframe_as_parquet(df, bucket, gcs_path)
-            log.info("    ✓ backed up to GCS")
-
     log.info("  %s complete: %d rows inserted", symbol, inserted_total)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL + GCS')
+    parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
                         help='Symbol to fetch or ALL (SPY IWM QQQ)')
     parser.add_argument('--start-date', default=None,
@@ -206,7 +216,6 @@ def main():
     first_of_prev_month = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
     start_date = args.start_date or first_of_prev_month.strftime('%Y-%m-%d')
     end_date = args.end_date or today.strftime('%Y-%m-%d')
-    bucket = os.environ.get('GCS_BUCKET', '')
 
     api_keys = get_api_keys()
     if not api_keys:
@@ -220,12 +229,11 @@ def main():
     log.info("  Date range: %s → %s", start_date, end_date)
     log.info("  API keys  : %d available", len(api_keys))
     log.info("  SQL       : %s", 'yes' if is_cloud_sql_configured() else 'NO')
-    log.info("  GCS       : %s", bucket or 'disabled')
 
     errors = []
     for symbol in symbols:
         try:
-            process_symbol(symbol, start_date, end_date, api_keys, bucket, args.force)
+            process_symbol(symbol, start_date, end_date, api_keys, args.force)
         except Exception as e:
             log.error("  ✗ %s failed: %s", symbol, e)
             errors.append(symbol)

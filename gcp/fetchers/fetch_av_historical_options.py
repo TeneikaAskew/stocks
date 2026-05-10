@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Cloud Run Job: Fetch daily AV HISTORICAL_OPTIONS and write to GCS + Cloud SQL.
+Cloud Run Job: Fetch daily AV HISTORICAL_OPTIONS and write to Cloud SQL.
 
-Replaces the GitHub Actions workflow fetch-alphavantage-options-daily.yml
-for the Cloud SQL write path.  The GitHub Actions workflow continues to write
-local parquets to GCS; this job writes the same data to Cloud SQL with
-data_source='alphavantage' so consumers can query it directly.
+Replaces the GitHub Actions workflow fetch-alphavantage-options-daily.yml.
+Writes data to Cloud SQL with data_source='alphavantage' so consumers can
+query it directly. GCS parquet backups were retired in favour of Cloud SQL
+PITR (granular recovery within 7 days) + a weekly pg_dump → GCS for long-
+term archival of all tables, not just this one.
 
 Scheduled by Cloud Scheduler after market close (e.g., 10 PM ET weekdays).
 
@@ -26,7 +27,6 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
-from gcp.gcs_utils import upload_dataframe_as_parquet
 from lib.config import AlphaVantageConfig
 
 from lib.logging_config import setup_logging
@@ -119,9 +119,9 @@ def _normalize_av_response(df: pd.DataFrame, ticker: str, fetch_date: str) -> pd
     return out
 
 
-def process_ticker(ticker: str, fetch_date: str, bucket: str, api_key: str,
+def process_ticker(ticker: str, fetch_date: str, api_key: str,
                     skip_existing: bool = False):
-    """Fetch AV options for one ticker/date → Cloud SQL + GCS."""
+    """Fetch AV options for one ticker/date → Cloud SQL."""
     if skip_existing and is_cloud_sql_configured():
         from gcp.database import query_to_dataframe
         hit = query_to_dataframe(
@@ -155,13 +155,6 @@ def process_ticker(ticker: str, fetch_date: str, bucket: str, api_key: str,
         upsert_dataframe(df, 'etf_options_snapshots', conflict_cols)
         log.info("    ✓ upserted to Cloud SQL")
 
-    if bucket:
-        upload_dataframe_as_parquet(
-            df, bucket,
-            f"raw/{ticker.lower()}/options/"
-            f"{ticker.lower()}_av_options_{fetch_date.replace('-', '')}.parquet",
-        )
-
 
 def _weekday_range(start: date, end: date) -> list[str]:
     """Return YYYY-MM-DD strings for all weekdays in [start, end] inclusive."""
@@ -178,7 +171,7 @@ def main():
     import time
 
     parser = argparse.ArgumentParser(
-        description='Fetch daily AV HISTORICAL_OPTIONS to Cloud SQL + GCS')
+        description='Fetch daily AV HISTORICAL_OPTIONS to Cloud SQL')
     parser.add_argument('--tickers', default='ALL',
                         help='Space-separated tickers or ALL')
     parser.add_argument('--date', default=None,
@@ -209,7 +202,6 @@ def main():
     # Auto-enable --skip-existing in range/backfill mode.
     skip_existing = args.skip_existing or is_range_mode
 
-    bucket = os.environ.get('GCS_BUCKET', '')
     api_key = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
 
@@ -226,7 +218,6 @@ def main():
     log.info("  Dates   : %d date(s)", len(fetch_dates))
     log.info("  Tickers : %s", tickers)
     log.info("  SQL     : %s", 'yes' if is_cloud_sql_configured() else 'NO')
-    log.info("  GCS     : %s", bucket or 'disabled')
     log.info("  AV key  : %s", 'set' if api_key else 'MISSING')
 
     if not api_key:
@@ -241,7 +232,7 @@ def main():
                 time.sleep(_av_cfg.delay_between_calls)
             total_calls += 1
             try:
-                process_ticker(ticker, fetch_date, bucket, api_key,
+                process_ticker(ticker, fetch_date, api_key,
                                skip_existing=skip_existing)
             except Exception as e:
                 log.error("  ✗ %s %s failed: %s", ticker, fetch_date, e)
