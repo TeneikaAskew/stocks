@@ -28,7 +28,6 @@ from gcp.database import (
     bulk_insert_dataframe,
     execute_sql,
     is_cloud_sql_configured,
-    query_to_dataframe,
     upsert_dataframe,
 )
 
@@ -124,25 +123,6 @@ def fetch_month(symbol: str, year: int, month: int, api_key: str) -> Optional[pd
         return None
 
 
-def _existing_months_in_sql(symbol: str) -> set[tuple[int, int]]:
-    """Return the set of (year, month) pairs already present in
-    market_data_intraday for this ticker. Replaces the prior
-    parquet_exists_in_gcs check after GCS parquet backups were
-    retired in favour of Cloud SQL PITR + weekly pg_dump."""
-    if not is_cloud_sql_configured():
-        return set()
-    df = query_to_dataframe(
-        "SELECT DISTINCT EXTRACT(YEAR FROM ts)::int AS y, "
-        "EXTRACT(MONTH FROM ts)::int AS m "
-        "FROM market_data_intraday "
-        "WHERE ticker = :ticker AND interval = '1min'",
-        {'ticker': symbol},
-    )
-    if df.empty:
-        return set()
-    return {(int(r.y), int(r.m)) for _, r in df.iterrows()}
-
-
 def process_symbol(
     symbol: str,
     start_date: str,
@@ -150,13 +130,27 @@ def process_symbol(
     api_keys: list,
     force: bool,
 ):
-    """Fetch all months for a symbol and write to Cloud SQL."""
+    """Fetch all months for a symbol and write to Cloud SQL.
+
+    Re-fetches every month in the range unconditionally. The previous
+    parquet_exists_in_gcs sentinel had completion semantics — a parquet
+    only existed after the monthly fetch finished — so it was safe to
+    skip on. The SQL table doesn't carry the same signal: fetch_market_data
+    inserts daily 1-min bars into the same (ticker, year, month) bucket,
+    so an "any row exists" check would mark a month as covered after one
+    daily insert and silently drop the rest of the monthly backfill.
+
+    Re-fetching is cheap enough to make the simpler approach worthwhile:
+    default range is current_month-1 → today (~2 months), 3 tickers, AV
+    premium 150 RPM ≈ 3 sec per night. Backfill of 5 years × 3 tickers ≈
+    180 calls ≈ 1.2 min. Idempotent via ON CONFLICT DO UPDATE on
+    (ticker, interval, ts).
+
+    --force is retained as a no-op for back-compat with existing callers
+    and Cloud Scheduler args; behavior is now equivalent in both modes.
+    """
     months = get_trading_months(start_date, end_date)
     log.info("  %s: %d months (%s → %s)", symbol, len(months), start_date, end_date)
-
-    existing = set() if force else _existing_months_in_sql(symbol)
-    if existing:
-        log.info("  %s: %d months already in Cloud SQL — will skip", symbol, len(existing))
 
     key_idx = 0
     call_count = 0
@@ -165,10 +159,6 @@ def process_symbol(
 
     for year, month in months:
         month_str = f"{year}-{month:02d}"
-
-        if (year, month) in existing:
-            log.info("    %s: already in Cloud SQL, skipping", month_str)
-            continue
 
         # Rate limiting
         elapsed = time.time() - last_call_time
