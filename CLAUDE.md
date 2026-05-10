@@ -383,6 +383,104 @@ Follow this rigorous testing approach:
   (FastAPI router, AI agents, CLI scripts) import from the same `lib/`
   modules so behaviour can't drift.
 
+### Sandbox network constraints (Claude Code on the web)
+
+The Claude Code on the web sandbox enforces a strict outbound egress policy:
+**only TCP port 443 is allowed.** Anything else — 5432 (Postgres), 3307
+(Cloud SQL Auth Proxy backend), 22 (SSH), arbitrary TCP — silently times out
+at the sandbox firewall. This is by design and **cannot be bypassed by
+changing the destination's inbound ACLs, authorized networks, or VPC
+peering** — the binding constraint is on the sandbox side, not the
+destination's. If a connection times out, the answer is almost never "fix the
+firewall" — it's "find the 443-based escape hatch for this operation."
+
+| Operation | Mechanism | Port | Works in sandbox? |
+|---|---|---|---|
+| `gcloud …` (Asset, IAM, Run, SQL admin, Build, Scheduler, Logging) | REST API | 443 | ✅ |
+| `gh …` (GitHub: PRs, issues, runs, workflows, secrets, releases) | REST + GraphQL API | 443 | ✅ |
+| `gcloud secrets versions access` | Secret Manager API | 443 | ✅ |
+| `gcloud run jobs execute` / `deploy` (job itself runs in GCP, not the sandbox) | Cloud Run control-plane API | 443 | ✅ |
+| `gcloud builds submit` (build runs in Cloud Build, not the sandbox) | Cloud Build API | 443 | ✅ |
+| `git push` / `git fetch` over HTTPS remotes | git-over-HTTPS | 443 | ✅ |
+| `curl` / `WebFetch` to any HTTPS endpoint (incl. signed GCS URLs) | HTTPS | 443 | ✅ |
+| **Direct** psycopg2 / pg8000 / SQLAlchemy → Cloud SQL | TCP | 5432 | ❌ |
+| **Direct** Cloud SQL Auth Proxy → Cloud SQL backend | TCP | 3307 | ❌ |
+| **Direct** `psql` → Cloud SQL | TCP | 5432 | ❌ |
+| SSH to Cloud Run / Compute / IAP tunnel | TCP | 22 (or 22-over-IAP) | ❌ |
+| Anything binding raw TCP outbound on a non-443 port | TCP | * | ❌ |
+
+The two patterns documented below — `db-query.yml` for DB access, and the
+PAT-via-Secret-Manager pattern for GitHub API — exist specifically to route
+work over 443 for operations that would otherwise need a blocked port. The
+GH Actions runner has unrestricted egress, so dispatching a workflow is the
+canonical way to "run something on a real network" from inside the sandbox.
+
+If a tool's job appears to *run in GCP* but you're calling it from the
+sandbox (e.g. `gcloud run jobs execute`, `gcloud builds submit`,
+`gcloud sql import`), the local CLI is just hitting the 443 control-plane
+API — the actual work happens in GCP and has full network access. That's
+why these work even though direct SQL on 5432 doesn't.
+
+#### Concrete command patterns (copy-paste reference)
+
+**Working — these all go over 443 from the sandbox:**
+
+```bash
+# ── Secrets ────────────────────────────────────────────────────────────
+gcloud secrets versions access latest \
+  --secret=<name> --project=adept-mountain-474619-d4
+
+# ── Inspect GCP state ──────────────────────────────────────────────────
+gcloud run jobs describe <job> --region=us-east1
+gcloud run jobs list --region=us-east1
+gcloud scheduler jobs list --location=us-east1
+gcloud projects get-iam-policy adept-mountain-474619-d4 \
+  --flatten=bindings --filter="bindings.members:serviceAccount:<email>" \
+  --format="value(bindings.role)"
+
+# ── Mutate GCP state (control-plane is 443; the work runs in GCP) ──────
+gcloud run jobs execute <job> --region=us-east1 --wait
+gcloud builds submit --tag us-east1-docker.pkg.dev/<project>/<repo>/<image>
+gcloud projects add-iam-policy-binding <project> \
+  --member="serviceAccount:<email>" --role="<role>" --condition=None
+
+# ── Read Cloud Run / GCP logs ──────────────────────────────────────────
+gcloud beta run jobs executions logs read <execution-id> --region=us-east1
+gcloud logging read 'resource.type="cloud_run_job"' --limit=50 --format=json
+
+# ── GitHub (all `gh` subcommands work) ─────────────────────────────────
+gh pr view <num> --repo TeneikaAskew/stocks --json state,mergedAt
+gh pr merge <num> --repo TeneikaAskew/stocks --admin --squash
+gh workflow run <workflow.yml> --repo TeneikaAskew/stocks -f key=value
+gh run list --repo TeneikaAskew/stocks --workflow=<wf.yml> --limit=5 \
+  --json databaseId,status,conclusion,createdAt
+gh run view <id> --repo TeneikaAskew/stocks --log-failed
+gh run download <id> --repo TeneikaAskew/stocks --name <artifact-name> -D /tmp/x
+gh secret set <NAME> --body "<value>" --repo TeneikaAskew/stocks
+
+# ── Git over HTTPS (push/fetch/pull all work) ──────────────────────────
+git fetch origin <branch>
+git push -u origin <branch>
+```
+
+**Blocked — these will hang for 30-60 s and then time out. Don't debug the
+firewall; use the documented escape hatch:**
+
+| If you tried | You'll get | Use instead |
+|---|---|---|
+| `psql -h <cloud-sql-ip>` | timeout on 5432 | `gh workflow run db-query.yml -f sql='...'` (see [Database access](#database-access) below) |
+| `psycopg2.connect(host=...)` / `pg8000.connect(...)` / `SQLAlchemy create_engine(...)` against Cloud SQL | timeout on 5432 | same — dispatch `db-query.yml`, then `gh run download` the artifact |
+| `cloud-sql-proxy` / `cloud_sql_proxy <conn>` | timeout on 3307 | same — dispatch `db-query.yml` |
+| `ssh user@<cloud-run-host>` | timeout on 22 | n/a — Cloud Run has no SSH. Use `gcloud beta run jobs executions logs read` (443) for inspection |
+| `gcloud compute ssh <vm>` | timeout on 22 (over IAP) | for shells, switch to a desktop session; for inspection, use `gcloud compute instances describe` (443) |
+| Direct `redis-cli`, `mongosh`, etc. against any GCP-hosted DB | timeout on whatever the DB port is | route the work into a Cloud Run Job (controlled via 443) or a workflow runner |
+
+The mental rule: **if the connection target is in GCP and the port isn't 443,
+you need a 443-based intermediary.** The two intermediaries this repo has
+already wired up are `db-query.yml` (for ad-hoc SQL) and Cloud Run Jobs (for
+anything else that needs production network access — they're triggered from
+443 but execute with full GCP networking).
+
 ### Database access
 
 > **See also: [`docs/CLAUDE_CODE_ON_WEB.md`](docs/CLAUDE_CODE_ON_WEB.md)** — the
