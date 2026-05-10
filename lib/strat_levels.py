@@ -1101,7 +1101,7 @@ def persist_level_map(
     conn,
     *,
     source_data_as_of=None,
-    max_age_days: int = 2,
+    max_age_days: int = 4,
     today=None,
 ) -> int:
     """Persist a LevelMap into the strat_levels table.
@@ -1120,12 +1120,14 @@ def persist_level_map(
               column is NULL (back-compat for callers that haven't
               been updated; freshness check below short-circuits).
         max_age_days: refuse to write when today_UTC - source_data_as_of
-              exceeds this many calendar days. Default 2 covers a
-              normal weekend (Fri close → Mon morning brief = ~3
-              calendar days but only 1 business day; the brief on
-              Monday legitimately reads Friday's bar so 2 days is the
-              cutoff). Stricter callers can pass max_age_days=1 to
-              fail-fast on weekday freezes.
+              exceeds this many calendar days. Default 4 covers normal
+              weekends + long-weekends (Mon brief reads Fri close ≈
+              3.5 days; Tue-after-Memorial-Day reads Thu close ≈ 4.5
+              days, just at the boundary). The original bug we're
+              defending against (the 5/6 production freeze) was 9
+              days stale — well past 4. Stricter callers (intraday
+              re-runs, weekday backfills) can pass max_age_days=1
+              or 2 to fail-fast on shorter freezes.
         today: datetime override for the freshness check (testability).
                Defaults to datetime.now() in UTC.
 
