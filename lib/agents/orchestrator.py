@@ -942,14 +942,35 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
         flip = gamma.get("flip")
         if isinstance(flip, (int, float)):
             levels["Gamma Flip"] = float(flip)
+        # Kings — `summary.kings` preserves classify_levels()/strike order,
+        # not nearest-to-spot order, so `kings[0]` could surface the
+        # lowest king while the gamma analyst is prompted to call out the
+        # king above OR below spot. To prevent the validator from
+        # orphaning a king reference, surface the closest king above spot
+        # AND the closest king below spot when both exist (per Codex P2
+        # review on PR #362). Keys are namespaced (above/below) so
+        # downstream consumers can render both.
+        spot_for_kings = gamma.get("spot")
         kings = gamma.get("kings") or []
-        if kings:
-            king0 = kings[0] if isinstance(kings[0], dict) else None
-            king_strike = (
-                king0.get("strike") if king0 else None
-            )
-            if isinstance(king_strike, (int, float)):
-                levels["Gamma King"] = float(king_strike)
+        king_strikes: list[float] = []
+        for k in kings:
+            if not isinstance(k, dict):
+                continue
+            ks = k.get("strike")
+            if isinstance(ks, (int, float)):
+                king_strikes.append(float(ks))
+        if king_strikes and isinstance(spot_for_kings, (int, float)):
+            spot_f = float(spot_for_kings)
+            below = [s for s in king_strikes if s < spot_f]
+            above = [s for s in king_strikes if s > spot_f]
+            if below:
+                levels["Gamma King Below"] = max(below)
+            if above:
+                levels["Gamma King Above"] = min(above)
+        elif king_strikes:
+            # No spot to compare — keep legacy first-king behaviour so
+            # callers aren't broken on bundles missing `gamma.spot`.
+            levels["Gamma King"] = king_strikes[0]
         # For the gates, surface the closest one above and below spot.
         # The dealer-positioning analyst typically calls these out in
         # prose; populating the structured field closes the loop.

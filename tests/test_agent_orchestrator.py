@@ -528,9 +528,11 @@ def test_derive_key_levels_empty_bundle_returns_empty_dict():
 
 
 def test_derive_key_levels_includes_gamma_flip_and_kings():
-    """IWM 5/7 reproduction: validator flagged 275.24 (gamma flip) and
-    270.0 (King strike) as orphans because key_levels didn't include
-    them. After this fix both appear."""
+    """IWM 5/7 reproduction with kings on both sides of spot: validator
+    flagged 275.24 (gamma flip), 270.0 AND 285.0 (King strikes) as
+    orphans because key_levels only included the first king. After the
+    fix (Codex P2 review on PR #362) both above-spot and below-spot
+    kings are surfaced as separate keys."""
     from lib.agents.orchestrator import _derive_key_levels
 
     bundle = {
@@ -548,8 +550,9 @@ def test_derive_key_levels_includes_gamma_flip_and_kings():
     }
     levels = _derive_key_levels(bundle)
     assert levels["Gamma Flip"] == 275.24
-    # Top King is the FIRST entry (already sorted by abs GEX); 270.0 here.
-    assert levels["Gamma King"] == 270.0
+    # Both kings surface — the validator no longer orphans either.
+    assert levels["Gamma King Below"] == 270.0
+    assert levels["Gamma King Above"] == 285.0
     # Closest gate above spot (277) is 280; closest below is 273.
     assert levels["Gamma Gate Above"] == 280.0
     assert levels["Gamma Gate Below"] == 273.0
@@ -584,13 +587,15 @@ def test_derive_key_levels_skips_gamma_when_unavailable():
     }
     levels = _derive_key_levels(bundle)
     assert "Gamma Flip" not in levels
-    assert "Gamma King" not in levels
+    assert "Gamma King Below" not in levels
+    assert "Gamma King Above" not in levels
     assert levels == {"SMA 200": 480.0, "EMA 20": 500.0}
 
 
 def test_derive_key_levels_handles_only_gates_above_spot():
     """All gates above spot → only Gate Above is populated, Gate Below
-    is omitted (rather than emitting a wrong/None value)."""
+    is omitted (rather than emitting a wrong/None value). Single king
+    above spot → only Gamma King Above is populated."""
     from lib.agents.orchestrator import _derive_key_levels
 
     bundle = {
@@ -605,6 +610,52 @@ def test_derive_key_levels_handles_only_gates_above_spot():
     levels = _derive_key_levels(bundle)
     assert levels["Gamma Gate Above"] == 102.0
     assert "Gamma Gate Below" not in levels
+    assert levels["Gamma King Above"] == 105.0
+    assert "Gamma King Below" not in levels
+
+
+def test_derive_key_levels_kings_uses_nearest_when_multiple_per_side():
+    """When multiple kings exist above OR below spot, surface the
+    NEAREST one on each side (not the first or the farthest).
+    Codex P2 review on PR #362."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            "spot": 277.0,
+            "kings": [
+                {"strike": 250.0, "gex": 100},   # below, far
+                {"strike": 290.0, "gex": 200},   # above, far
+                {"strike": 270.0, "gex": 1234},  # below, near
+                {"strike": 285.0, "gex": 980},   # above, near
+            ],
+            "gates": [],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels["Gamma King Below"] == 270.0  # nearest below spot
+    assert levels["Gamma King Above"] == 285.0  # nearest above spot
+
+
+def test_derive_key_levels_kings_legacy_fallback_no_spot():
+    """Bundle missing `gamma.spot` falls back to legacy first-king
+    behaviour rather than emitting nothing — old callers that don't
+    populate `spot` still get a king."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            # spot intentionally absent
+            "kings": [{"strike": 100.0, "gex": 500}, {"strike": 110.0, "gex": 300}],
+            "gates": [],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels.get("Gamma King") == 100.0  # legacy first-king
+    assert "Gamma King Above" not in levels
+    assert "Gamma King Below" not in levels
 
 
 def test_build_strat_snapshot_default_when_unavailable():
