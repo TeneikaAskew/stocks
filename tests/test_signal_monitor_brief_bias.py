@@ -59,6 +59,69 @@ def test_classify_put_setup_with_mixed_ftfc_resolves_to_put():
     assert bias['setup_count'] == 3
 
 
+# ── ftfc_score propagation (added 2026-05-10 to fix the live-monitor
+#    hardcode at gcp/signal_monitor.py:637 that silently disabled the
+#    Strat.get_strat_bonus FTFC alignment branch) ─────────────────────
+
+def test_classify_propagates_positive_ftfc_score():
+    """Bullish FTFC alignment from premarket_analysis flows through to
+    the bias dict so signal_monitor can pass it to get_strat_bonus."""
+    bias = classify({'signal_status': 'CALL setup (4/5)',
+                     'ftfc_direction': 'bullish',
+                     'ftfc_score': 0.82})
+    assert bias['ftfc_score'] == 0.82
+    assert bias['ftfc_direction'] == 'bullish'
+
+
+def test_classify_propagates_negative_ftfc_score():
+    bias = classify({'signal_status': 'PUT setup (3/5)',
+                     'ftfc_direction': 'bearish',
+                     'ftfc_score': -0.7})
+    assert bias['ftfc_score'] == -0.7
+
+
+def test_classify_ftfc_score_none_when_missing():
+    """No `ftfc_score` key in row (e.g. older brief rows) → None,
+    not 0.0 — signal_monitor distinguishes 'unknown' from 'neutral'."""
+    bias = classify({'signal_status': 'No signal'})
+    assert bias['ftfc_score'] is None
+
+
+def test_classify_ftfc_score_clamped_to_unit_range():
+    """Defensive clamp on out-of-range writes."""
+    high = classify({'signal_status': 'CALL setup (3/5)',
+                     'ftfc_direction': 'bullish', 'ftfc_score': 1.5})
+    low = classify({'signal_status': 'PUT setup (3/5)',
+                    'ftfc_direction': 'bearish', 'ftfc_score': -2.0})
+    assert high['ftfc_score'] == 1.0
+    assert low['ftfc_score'] == -1.0
+
+
+def test_classify_ftfc_score_garbage_returns_none():
+    bias = classify({'signal_status': 'CALL setup (4/5)',
+                     'ftfc_direction': 'bullish',
+                     'ftfc_score': 'not_a_number'})
+    assert bias['ftfc_score'] is None
+
+
+def test_classify_ftfc_score_nan_returns_none():
+    """pandas may emit NaN for SQL NULL — must not propagate NaN."""
+    bias = classify({'signal_status': 'CALL setup (4/5)',
+                     'ftfc_direction': 'bullish',
+                     'ftfc_score': float('nan')})
+    assert bias['ftfc_score'] is None
+
+
+def test_classify_conflicted_carries_ftfc_score():
+    """CONFLICTED bias still surfaces the score so the monitor can
+    decide whether to apply the strat-bonus penalty."""
+    bias = classify({'signal_status': 'PUT setup (4/5)',
+                     'ftfc_direction': 'bullish',
+                     'ftfc_score': 0.65})
+    assert bias['bias'] == 'CONFLICTED'
+    assert bias['ftfc_score'] == 0.65
+
+
 def test_classify_no_signal_is_neutral():
     bias = classify({'signal_status': 'No signal', 'ftfc_direction': 'mixed'})
     assert bias['bias'] == 'NEUTRAL'

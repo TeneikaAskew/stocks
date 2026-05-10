@@ -631,10 +631,23 @@ class SignalMonitor:
             elif orb_5m_low and latest['Close'] < orb_5m_low:
                 orb_trend = -1
 
+            # FTFC alignment is computed in the morning brief and persisted to
+            # `premarket_analysis.ftfc_score`. The brief-bias resolver (cached
+            # per-ticker per-session) reads it; this call is free after the
+            # first hit. Pre-2026-05-10 this argument was hardcoded to 0.0,
+            # which silently disabled the FTFC alignment branch in
+            # `Strat.get_strat_bonus` — counter-FTFC fires (e.g. 5/6/2026 PUTs
+            # on a bullish-FTFC day) escaped the −ftfc_bonus penalty they
+            # were supposed to receive.
+            brief_bias = self._resolve_brief_bias(ticker)
+            ftfc_score = brief_bias.get('ftfc_score')
+            if ftfc_score is None:
+                ftfc_score = 0.0  # treat missing brief / NULL ftfc as neutral
+
             strat_bonus = self.strat.get_strat_bonus(
                 signal_direction=sig['direction'],
                 combo=combo,
-                ftfc_score=0.0,
+                ftfc_score=ftfc_score,
                 orb_trend=orb_trend,
             )
 
@@ -955,7 +968,7 @@ class SignalMonitor:
             logger.debug("brief bias lookup failed for %s: %s", ticker, e)
             bias = {'bias': 'UNAVAILABLE', 'alignment': None,
                     'setup_count': 0, 'ftfc_direction': None,
-                    'reason': 'lookup_failed'}
+                    'ftfc_score': None, 'reason': 'lookup_failed'}
         self._brief_bias_cache[ticker] = bias
         return bias
 
