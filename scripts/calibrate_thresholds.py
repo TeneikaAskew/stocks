@@ -431,7 +431,6 @@ def main():
             continue
         # #250 drift guard — compare against rolling 4-row history.
         drift_flagged, refuse, drift_msgs = check_drift(ticker, cal, eng)
-        cal["drift_flagged"] = drift_flagged
         for m in drift_msgs:
             log.info(m)
         if refuse and not args.force:
@@ -441,17 +440,31 @@ def main():
             )
             refused.append((ticker, drift_msgs))
             continue
-        if refuse and args.force:
+        # #250 / Codex P2 on #397: --force is the manual-override path. When
+        # the operator passes --force, they're attesting that the drift is
+        # legitimate (e.g. real regime change vs broken calibration window),
+        # so the written row gets drift_flagged=FALSE — otherwise the
+        # resolver would still fall back to Tier-B and the manual override
+        # would be a no-op for production. The drift evidence is preserved
+        # in the run log (drift_msgs above) for audit trail.
+        if drift_flagged and args.force:
             log.warning(
-                "  ⚠ %s: drift exceeded 3σ but --force passed; writing "
-                "drift_flagged=TRUE row anyway", ticker
+                "  ⚠ %s: --force overrides drift detection (was %s) — "
+                "writing drift_flagged=FALSE; operator has accepted the "
+                "new calibration. Drift evidence preserved in log above.",
+                ticker, "REFUSE (>3σ)" if refuse else "FLAG (>2σ)"
             )
+            cal["drift_flagged"] = False
         elif drift_flagged:
+            cal["drift_flagged"] = True
             log.warning(
                 "  ⚠ %s: drift_flagged=TRUE (>2σ on at least one column); "
-                "live resolver will fall back to Tier-B until next "
-                "calibration confirms the new regime", ticker
+                "live resolver will fall back to Tier-B until either the "
+                "next calibration confirms the new regime, or the operator "
+                "re-runs with --force to manually accept it", ticker
             )
+        else:
+            cal["drift_flagged"] = False
         rows.append(cal)
         log.info("  ✓ atr_60m=%s%%  rvol[%s, %s]  rsi_med=%s  drift=%s",
                  cal.get("atr_60m_median"),
