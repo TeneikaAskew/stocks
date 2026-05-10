@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cloud Run Job: Fetch daily market data and write to Cloud SQL + GCS.
+Cloud Run Job: Fetch daily market data and write to Cloud SQL.
 
 Replaces the GitHub Actions workflow fetch-market-data.yml.
 Scheduled by Cloud Scheduler at 5 PM ET (22:00 UTC) weekdays.
@@ -25,7 +25,6 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
-from gcp.gcs_utils import upload_dataframe_as_parquet
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -433,8 +432,8 @@ def write_intraday_to_sql(ticker: str, df: pd.DataFrame, fetch_date: str):
     log.info("    ✓ intraday: %d rows for %s", len(out), ticker)
 
 
-def process_ticker(ticker: str, fetch_date: str, bucket: str, av_api_key: str):
-    """Full pipeline for one ticker: fetch → enrich → write SQL + GCS."""
+def process_ticker(ticker: str, fetch_date: str, av_api_key: str):
+    """Full pipeline for one ticker: fetch → enrich → write to Cloud SQL."""
     log.info("  Processing %s for %s...", ticker, fetch_date)
 
     # 1. Fetch 1-min bars from AlphaVantage TIME_SERIES_INTRADAY
@@ -465,14 +464,6 @@ def process_ticker(ticker: str, fetch_date: str, bucket: str, av_api_key: str):
 
         # 5. Compute multi-day indicators from the full daily series in Cloud SQL
         compute_and_upsert_daily_indicators(ticker, fetch_date)
-
-    # 6. Back up minute bars to GCS
-    if bucket:
-        upload_dataframe_as_parquet(
-            minute_df,
-            bucket,
-            f"raw/{ticker.lower()}/minute/{ticker.lower()}_minute_{fetch_date.replace('-', '')}.parquet",
-        )
 
 
 def _earnings_tickers_in_window(
@@ -835,7 +826,7 @@ def _verify_post_fetch_rows(fetch_date: str, tickers: list[str],
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Fetch daily market data to Cloud SQL + GCS')
+    parser = argparse.ArgumentParser(description='Fetch daily market data to Cloud SQL')
     parser.add_argument('--tickers', default='ALL',
                         help='Space-separated tickers or ALL')
     parser.add_argument('--date', default=None,
@@ -890,7 +881,6 @@ def main():
     _ET = ZoneInfo("America/New_York")
     fetch_date = args.date or datetime.now(_ET).date().strftime('%Y-%m-%d')
     _assert_fetch_date_fresh(fetch_date, today_et=datetime.now(_ET).date())
-    bucket = os.environ.get('GCS_BUCKET', '')
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
     tickers = TICKERS if args.tickers == 'ALL' else args.tickers.upper().split()
 
@@ -933,13 +923,12 @@ def main():
     log.info("  Earnings win  : %s",
              f"±{args.earnings_window_days}d" if args.earnings_window_days else "off")
     log.info("  SQL           : %s", 'yes' if is_cloud_sql_configured() else 'NO (env vars missing)')
-    log.info("  GCS           : %s", bucket or 'disabled')
     log.info("  AV key        : %s", 'yes' if av_api_key else 'NO (required for all data sources)')
 
     errors = []
     for ticker in tickers:
         try:
-            process_ticker(ticker, fetch_date, bucket, av_api_key)
+            process_ticker(ticker, fetch_date, av_api_key)
         except Exception as e:
             log.error("  ✗ %s failed: %s", ticker, e)
             errors.append(ticker)
