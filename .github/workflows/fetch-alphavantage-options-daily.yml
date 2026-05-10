@@ -4,10 +4,12 @@ name: Fetch Daily Alpha Vantage Options Data
 # table, data_source='alphavantage') and to GCS (raw parquet copies).
 #
 # Required repository secrets:
-#   ALPHA_VANTAGE_API_KEY        AlphaVantage API key (premium plan, 150 RPM)
-#   GCP_SA_KEY                   JSON of a service account with roles:
-#                                 - Cloud SQL Client
-#                                 - Storage Object Admin (GCS bucket)
+#   ALPHA_VANTAGE_API_KEY              AlphaVantage API key (premium plan, 150 RPM)
+#   CLAUDE_CODE_WEB_GCP_SA_KEY         JSON of a service account with roles:
+#                                       - Cloud SQL Client
+#                                       - Storage Object Admin (GCS bucket)
+#                                      (2026-05-10: consolidated from the
+#                                      historical GCP_SA_KEY split)
 #   CLOUD_SQL_CONNECTION_NAME    e.g. project:region:instance
 #   DB_USER                      PostgreSQL user
 #   DB_PASS                      PostgreSQL password
@@ -78,10 +80,11 @@ jobs:
 
       - name: Write GCP service account key
         env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          # 2026-05-10: consolidated on CLAUDE_CODE_WEB_GCP_SA_KEY.
+          GCP_SA_KEY: ${{ secrets.CLAUDE_CODE_WEB_GCP_SA_KEY }}
         run: |
           if [ -z "$GCP_SA_KEY" ]; then
-            echo "::error::GCP_SA_KEY secret is not set. Configure it in repo settings."
+            echo "::error::CLAUDE_CODE_WEB_GCP_SA_KEY secret is not set. Configure it in repo settings."
             exit 1
           fi
           echo "$GCP_SA_KEY" > "$RUNNER_TEMP/gcp-key.json"
