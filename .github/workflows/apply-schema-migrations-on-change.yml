@@ -44,7 +44,13 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          # 2026-05-10: consolidated onto CLAUDE_CODE_WEB_GCP_SA_KEY (the
+          # only working SA key in this repo). The historical "data-pipeline
+          # vs web-sandbox" key separation in CLAUDE.md was paranoia-tier
+          # for a single-owner / single-project setup; both surfaces share
+          # blast radius and the web SA already has roles/editor at the
+          # project level.
+          credentials_json: ${{ secrets.CLAUDE_CODE_WEB_GCP_SA_KEY }}
 
       - name: Set up gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
