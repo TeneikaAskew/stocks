@@ -238,6 +238,73 @@ flag, dry-run flag, or output-to-stdout flag for that job. Never
 skip the replay because of a side-effect concern when there's a
 flag designed to sandbox the run.
 
+### 3.6. Use Production Replay Paths — No Throwaway Harnesses
+
+**Added 2026-05-10 after the 5/6 counterfactual replay incident.**
+I built `/tmp/may6_replay.py` and `_v2.py` to simulate signal_monitor
+against cached intraday CSVs. Both had bugs production never had —
+V1 mis-set the RTH window against a UTC index (selecting pre-market
+hours instead of RTH); V2 omitted the `Time` column, silently
+disabling VWAP and reporting "0 above_vwap fires" while production
+had been correctly firing 46+ above_vwap PUTs the whole time. I
+spent compute + user attention debugging harness bugs and almost
+shipped a code change ("drop above_vwap globally") based on the
+lying numbers. The lesson: throwaway harnesses introduce parity
+bugs that don't exist in production.
+
+#### Rule
+
+ALL replays — counterfactuals, what-ifs, audit verifications,
+calibration backtests, "what would 5/6 look like with the new seed"
+questions — MUST run through one of these production-grade paths.
+
+| Workload | Replay mechanism | Source |
+|---|---|---|
+| **Signal-monitor** (1-min RTH bar fires) | `gcloud run jobs execute signal-monitor --update-env-vars="REPLAY_DATE=YYYY-MM-DD,REPLAY_TICKERS=SPY,IWM,QQQ" --wait`, OR hermetic local: `python -m scripts.replay_signal_monitor --date YYYY-MM-DD --tickers SPY,IWM,QQQ`. Runs the EXACT production code path: `update_window` → `calculate_indicators` → `evaluate_ticker` → `_evaluate_strategies_for_bar` → `fire_alert`. DB upsert + Discord webhook are mocked, so it's hermetic. | `gcp/signal_monitor.py` (PR #350), `scripts/replay_signal_monitor.py` |
+| **Premarket brief** | `BRIEF_AS_OF=YYYY-MM-DD` env var | `gcp/premarket_brief.py:617` |
+| **Insight pipeline** | `INSIGHT_AS_OF=YYYY-MM-DD` env var + `parse_as_of()` helper | `gcp/insight_pipeline_job.py:108` |
+| **Backtest** | `lib/backtest.py:BacktestEngine` for offline strategy replay; `lib/walk_forward.py` for rolling-window validation | shared backend |
+| **Daily fetcher backfill** | `python -m gcp.fetchers.fetch_market_data --date YYYY-MM-DD` | `gcp/fetchers/fetch_market_data.py:12` |
+
+#### Forbidden
+
+- New throwaway scripts in `/tmp/` or `scripts/one_off/` that hand-roll
+  bar iteration, indicator calculation, or signal scoring against
+  cached CSVs.
+- Mocking `_latest_overrides` or any production resolver in a script
+  that won't ship — instead seed/unseed `exit_config_overrides` via
+  `db-query.yml commit=true`, run the production replay, then revert.
+- Using `add_all_indicators` directly in a replay script — let
+  `signal_monitor.calculate_indicators` (lib/strategies + production
+  glue) do it. The production indicator contract is more than just
+  `add_all_indicators` (e.g. signal_monitor sets `Time` from the
+  index before VWAP runs; cached CSVs don't carry `Time`).
+
+#### Coverage gaps (as of 2026-05-10)
+
+If your audit needs as-of replay against one of these and the flag
+isn't shipped yet, add the as-of flag to the production job in a
+small PR BEFORE running the audit. Don't write a throwaway harness
+"just for this one investigation."
+
+- `gcp/signal_monitor_eod_resolver.py` — only `--lookback-days N`
+  from "now"; no `--date` or `EOD_AS_OF`.
+- `gcp/fetchers/fetch_alphavantage_intraday.py` — only fetches "today
+  minus 1"; no `--date` flag.
+- Earnings / calendar / options fetchers — verify before relying on
+  them for historical replay.
+
+#### When throwaway is allowed
+
+Only for one-shot read-only inspection that doesn't touch the
+strategy / indicator / signal pipeline:
+- "How many rows in `signal_alerts` for ticker X on date Y" — use
+  `db-query.yml`.
+- "What's the schema of `exit_config_overrides`" — use `db-query.yml`.
+
+Anything that simulates a fire decision goes through the production
+replay paths.
+
 ### 4. Testing Strategy Pattern
 Follow this rigorous testing approach:
 
