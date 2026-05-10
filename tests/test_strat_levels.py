@@ -116,6 +116,143 @@ class TestComputePreviousLevels:
     def test_empty_df(self):
         assert compute_previous_levels(pd.DataFrame()) == {}
 
+    def test_returns_close_levels(self):
+        """Close levels (PDC/PWC/PMC/PQC/PYC) ship alongside H/L so
+        traders charting against PDC have a source of truth.
+
+        Uses 520 biz days (~2 years) so the legacy path's "need ≥2
+        groupings to compute previous period" requirement is satisfied
+        even for the year timeframe (PYC).
+        """
+        df = _daily_df(520)
+        levels = compute_previous_levels(df)
+        for k in ('PDC', 'PWC', 'PMC', 'PQC', 'PYC'):
+            assert k in levels, f"missing {k}"
+            assert levels[k].level_type == 'close'
+
+    def test_pdc_price_matches_prev_day_close(self):
+        df = _daily_df(30)
+        levels = compute_previous_levels(df)
+        # Legacy path: prev day = iloc[-2]
+        expected = float(df['Close'].iloc[-2])
+        assert levels['PDC'].price == expected
+
+
+class TestComputePreviousLevelsAnalysisDate:
+    """Tests for the analysis_date path that fixed 2026-05-06 QQQ.
+
+    Without analysis_date, the brief filters today's bar out and the
+    function's iloc[-2] picked day-before-yesterday — PDH wrote 5/4's
+    high when it should have been 5/5's. The chart's PDH=$682.77
+    (5/5 high) but strat_levels persisted PDH=$676.73 (5/4 high), and
+    the trade_planner derived a synthetic blue-sky entry of $695.52
+    that price never touched."""
+
+    def test_pdh_picks_period_before_analysis_date(self):
+        """When analysis_date is given, PDH is the high of the day
+        BEFORE analysis_date — not the second-to-last row of df."""
+        from datetime import date
+        df = _daily_df(30)
+        # Pretend analysis_date is the day AFTER df's last bar (the
+        # brief's typical state: today excluded by < analysis_date).
+        last_bar = pd.to_datetime(df['Date'].iloc[-1]).date()
+        # df contains business days; nudge analysis_date one biz day
+        # forward — the last bar IS the previous day from
+        # analysis_date's perspective.
+        analysis_date = (pd.Timestamp(last_bar) + pd.tseries.offsets.BDay(1)).date()
+        levels = compute_previous_levels(df, analysis_date=analysis_date)
+        assert levels['PDH'].price == float(df['High'].iloc[-1])
+        assert levels['PDC'].price == float(df['Close'].iloc[-1])
+        assert levels['PDL'].price == float(df['Low'].iloc[-1])
+
+    def test_week_period_picks_week_before_analysis_week(self):
+        """Critical fidelity test: when df contains bars from the
+        SAME week as analysis_date (e.g. Mon+Tue, with analysis_date
+        on Wed), PWH must reflect the PREVIOUS week — not df's last
+        bar's week (which is the same as analysis_date's week)."""
+        from datetime import date
+        # Build a small df spanning two weeks: prev week 5/29-6/2,
+        # analysis week 6/5-6/9 with bars on 6/5 and 6/6.
+        dates = pd.to_datetime([
+            '2025-05-29', '2025-05-30',  # prev week (W22)
+            '2025-06-02', '2025-06-03',  # actually still W22
+            '2025-06-05', '2025-06-06',  # current week (W23)
+        ])
+        df = pd.DataFrame({
+            'Date': dates,
+            'Open':  [100., 101., 102., 103., 104., 105.],
+            'High':  [110., 111., 112., 113., 114., 115.],
+            'Low':   [ 90.,  91.,  92.,  93.,  94.,  95.],
+            'Close': [105., 106., 107., 108., 109., 110.],
+        })
+        # Analysis date: Wed 6/9 (W24). Last bar 6/6 is in W23.
+        analysis_date = date(2025, 6, 9)
+        levels = compute_previous_levels(df, analysis_date=analysis_date)
+        # Previous week to W24 is W23 → high = max(114, 115) = 115.
+        assert levels['PWH'].price == 115.0
+
+    def test_week_period_skips_in_progress_week(self):
+        """When analysis_date is in same week as df's last bars (the
+        bug scenario), PWH must come from the PRIOR week — not from
+        the in-progress week containing analysis_date."""
+        from datetime import date
+        # Build df where last bars are in same week as analysis_date.
+        # 5/4 (Mon) and 5/5 (Tue) are W19 along with 5/6 (Wed).
+        dates = pd.to_datetime([
+            '2026-04-27', '2026-04-28', '2026-04-29',  # W18
+            '2026-04-30', '2026-05-01',  # W18
+            '2026-05-04', '2026-05-05',  # W19 — same week as analysis_date
+        ])
+        df = pd.DataFrame({
+            'Date': dates,
+            'Open':  [100.] * 7,
+            'High':  [200., 201., 202., 203., 204., 800., 801.],
+            'Low':   [ 90.] * 7,
+            'Close': [150.] * 7,
+        })
+        analysis_date = date(2026, 5, 6)  # Wed of W19
+        levels = compute_previous_levels(df, analysis_date=analysis_date)
+        # PWH must NOT be 800/801 (those are in W19 with analysis_date).
+        # Must be max of W18 highs = 204.
+        assert levels['PWH'].price == 204.0
+
+    def test_month_period_skips_in_progress_month(self):
+        from datetime import date
+        dates = pd.to_datetime([
+            '2026-04-15', '2026-04-30',  # April
+            '2026-05-01', '2026-05-05',  # May (in-progress)
+        ])
+        df = pd.DataFrame({
+            'Date': dates,
+            'Open':  [100.] * 4,
+            'High':  [200., 250., 800., 900.],
+            'Low':   [ 90.] * 4,
+            'Close': [150., 160., 170., 180.],
+        })
+        analysis_date = date(2026, 5, 6)
+        levels = compute_previous_levels(df, analysis_date=analysis_date)
+        assert levels['PMH'].price == 250.0
+        assert levels['PMC'].price == 160.0  # April's last close
+
+    def test_year_period_skips_in_progress_year(self):
+        from datetime import date
+        dates = pd.to_datetime([
+            '2025-12-30', '2025-12-31',  # 2025
+            '2026-01-02', '2026-05-05',  # 2026 (in-progress)
+        ])
+        df = pd.DataFrame({
+            'Date': dates,
+            'Open':  [100.] * 4,
+            'High':  [200., 250., 800., 900.],
+            'Low':   [ 90.] * 4,
+            'Close': [150., 160., 170., 180.],
+        })
+        analysis_date = date(2026, 5, 6)
+        levels = compute_previous_levels(df, analysis_date=analysis_date)
+        assert levels['PYH'].price == 250.0
+        assert levels['PYL'].price == 90.0
+        assert levels['PYC'].price == 160.0
+
 
 # ─── compute_current_levels ───────────────────────────────────────────────
 
