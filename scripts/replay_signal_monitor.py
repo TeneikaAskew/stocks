@@ -134,14 +134,22 @@ def replay_ticker(
 
     # Rolling-window replay: feed bars one at a time so the monitor
     # operates on the same shape it sees in production (1-bar deltas).
+    # Setting `replay_clock_ts` before each call routes the monitor's
+    # _now() to bar-time so brief-bias and catalyst-proximity lookups
+    # use the bar's date, not wall-clock-today (the bug that made the
+    # PR #379 FTFC fix architecturally inert during replay).
     for i in range(len(bars)):
         single_bar = bars.iloc[i:i + 1].copy()
+        if 'Time' in single_bar.columns:
+            monitor.replay_clock_ts = pd.Timestamp(single_bar['Time'].iloc[0])
         monitor.update_window(ticker, single_bar)
         try:
             monitor.evaluate_ticker(ticker)
         except Exception as e:
             logger.warning("replay: ticker=%s bar=%d evaluate_ticker raised: %s",
                            ticker, i, e)
+    # Clear the clock at the end so a subsequent live run isn't sticky.
+    monitor.replay_clock_ts = None
 
     fires_after = len(captured_fires)
     return (len(bars), fires_after - fires_before)
