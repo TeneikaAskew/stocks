@@ -90,14 +90,20 @@ CHECKS: list[dict] = [
         "min_rows_per_day": 100,    # chain is typically 1k+, 100 is a conservative floor
         "gap_scan_days": 5,
     },
-    {
-        "name": "earnings_options_snapshots",
-        "ts_column": "snapshot_date",
-        "ts_is_date": True,
-        "expected_lag_hours": 24,   # Cloud Run runs 6x/day during market hours
-        "per_ticker": False,
-        "ticker_column": "symbol",  # this table uses `symbol`, not `ticker`
-    },
+    # Skipped 2026-05-10: earnings_options_snapshots is an orphan table.
+    # No live writer; only `gcp/migrate_to_gcp.py` (the one-time historical
+    # migration) ever populated it. No production read path consumes it —
+    # briefs, insights, ranker, summarizers, and catalyst-proximity all
+    # read `earnings_calendar` instead. Re-enable this entry once a live
+    # writer ships (currently no plan).
+    # {
+    #     "name": "earnings_options_snapshots",
+    #     "ts_column": "snapshot_date",
+    #     "ts_is_date": True,
+    #     "expected_lag_hours": 24,
+    #     "per_ticker": False,
+    #     "ticker_column": "symbol",
+    # },
     {
         "name": "earnings_calendar",
         "ts_column": "fetched_at",
