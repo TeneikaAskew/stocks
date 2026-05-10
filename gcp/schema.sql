@@ -1115,8 +1115,28 @@ CREATE TABLE IF NOT EXISTS strat_levels (
     strat_class    VARCHAR(16),
     is_current     BOOLEAN     DEFAULT FALSE,
     period_label   VARCHAR(40),
+    -- 2026-05-10 source-data freshness tag. The latest
+    -- `market_data_daily.date` used to compute this level. Lets readers
+    -- (signal_monitor, brief, downstream analytics) verify the levels
+    -- aren't built off stale fetcher data BEFORE acting on them.
+    -- Pre-fix the 5/6 brief silently wrote levels computed from
+    -- 4/27-latched data into rows stamped as_of=5/6 — every
+    -- consumer trusted them. The persist_level_map writer also
+    -- now refuses to write when (today - source_data_as_of) >
+    -- max_age_days (default 2), so staleness fails fast at write
+    -- time instead of polluting downstream consumers.
+    source_data_as_of TIMESTAMPTZ,
     inserted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (ticker, as_of, level_name)
+);
+
+-- 2026-05-10 — additive migration for the source_data_as_of column on
+-- existing deploys (the CREATE TABLE clause above is a no-op when the
+-- table exists). Without this ALTER the schema-apply script would
+-- skip the column and the new persist_level_map writer would error
+-- with "column does not exist".
+ALTER TABLE strat_levels
+    ADD COLUMN IF NOT EXISTS source_data_as_of TIMESTAMPTZ;
 );
 
 -- Migration: widen strat_class for existing instances. Idempotent.

@@ -1134,15 +1134,46 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             # Persist level map to Cloud SQL so the realtime signal_monitor
             # (which doesn't itself recompute) can query it for level-break
             # detection during market hours.
+            #
+            # 2026-05-10 freshness guard: pass `source_data_as_of` (the
+            # latest market_data_daily date used to compute this level
+            # map) so persist_level_map can refuse to write when the
+            # underlying data is stale. Pre-fix the 5/6 brief silently
+            # wrote 4/27-stale levels into rows stamped as_of=5/6;
+            # every downstream reader trusted them. The data layer's
+            # #322/#323/#325 guards catch the upstream freeze, but this
+            # is defense-in-depth at the level-write boundary.
             try:
                 from gcp.database import get_engine
-                from lib.strat_levels import persist_level_map
+                from lib.strat_levels import persist_level_map, StaleSourceDataError
                 engine = get_engine()
+                # df was just used to build level_map immediately above
+                # (lines ~1015-1034); its index max is the latest
+                # market_data_daily.date that fed the level computation.
+                _src_age = None
+                try:
+                    if isinstance(df.index, pd.DatetimeIndex) and len(df.index):
+                        _src_age = df.index.max()
+                except Exception:
+                    _src_age = None
                 with engine.connect() as conn:
-                    n = persist_level_map(level_map, conn.connection)
+                    n = persist_level_map(
+                        level_map, conn.connection,
+                        source_data_as_of=_src_age,
+                    )
                     conn.connection.commit()
-                print(f"[brief:{ticker}] persisted {n} strat_levels rows",
+                print(f"[brief:{ticker}] persisted {n} strat_levels rows "
+                      f"(source_data_as_of={_src_age})",
                       file=sys.stderr, flush=True)
+            except StaleSourceDataError as exc:
+                # Stale-source refusal is loud + surfaceable, not a generic
+                # failure. Don't traceback (the message is the message).
+                # Mark the ticker for the audit trail so the row lands in
+                # premarket_analysis_history with the failure cause.
+                print(f"[brief:{ticker}] strat_levels persist REFUSED (stale source): {exc}",
+                      file=sys.stderr, flush=True)
+                d['status'] = 'STALE_DAILY_DATA'
+                d['playbook_error'] = f"strat_levels persist refused: {exc}"
             except Exception as exc:
                 import traceback
                 print(f"[brief:{ticker}] strat_levels persist FAILED: {type(exc).__name__}: {exc}",

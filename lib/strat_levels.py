@@ -1077,17 +1077,64 @@ def format_levels_for_brief(
 # ---------------------------------------------------------------------------
 
 
-def persist_level_map(level_map: 'LevelMap', conn) -> int:
+class StaleSourceDataError(RuntimeError):
+    """Raised when persist_level_map's source_data_as_of is too old.
+
+    Defense-in-depth against the failure mode that bit production on
+    2026-05-06: the daily fetcher was latched at 2026-04-27 from 4/28
+    onward, so the brief at 8:30 ET on 5/6 read 4/27-stale data, built
+    levels with `period_label='2026-04-24'`, and silently wrote them
+    into `strat_levels` rows stamped `as_of=2026-05-06`. Every
+    downstream consumer (signal_monitor, insight pipeline, dashboard)
+    then trusted the levels.
+
+    The data layer fixes (#322 fail-fast on stale --date, #323
+    NULL-close filter, #325 on_stale guard on DataLoader) catch the
+    upstream cause. This guard is the SECOND layer: even if a fresh
+    bug or edge case lets stale data through, persist_level_map
+    refuses to write rather than poison the level cache.
+    """
+
+
+def persist_level_map(
+    level_map: 'LevelMap',
+    conn,
+    *,
+    source_data_as_of=None,
+    max_age_days: int = 2,
+    today=None,
+) -> int:
     """Persist a LevelMap into the strat_levels table.
 
     Inserts one row per StratLevel in level_map.levels. Re-runs of the
     same (ticker, as_of, level_name) update the price, strat_class,
-    is_current, and period_label fields.
+    is_current, period_label, and source_data_as_of fields.
 
     Args:
         level_map: LevelMap returned by build_level_map()
         conn: an open psycopg2 / pg8000 connection. Caller manages
               the surrounding transaction (commit / rollback).
+        source_data_as_of: timestamp of the latest `market_data_daily`
+              row used to compute this level map. Stored on every row
+              so readers can verify freshness in-band. When None, the
+              column is NULL (back-compat for callers that haven't
+              been updated; freshness check below short-circuits).
+        max_age_days: refuse to write when today_UTC - source_data_as_of
+              exceeds this many calendar days. Default 2 covers a
+              normal weekend (Fri close → Mon morning brief = ~3
+              calendar days but only 1 business day; the brief on
+              Monday legitimately reads Friday's bar so 2 days is the
+              cutoff). Stricter callers can pass max_age_days=1 to
+              fail-fast on weekday freezes.
+        today: datetime override for the freshness check (testability).
+               Defaults to datetime.now() in UTC.
+
+    Raises:
+        StaleSourceDataError: when source_data_as_of is more than
+            max_age_days behind `today`. The caller's transaction
+            should roll back. Pre-fix this path was silent — the
+            row was written with stale prices and a fresh as_of
+            timestamp, polluting every downstream reader.
 
     Returns:
         Number of rows attempted (== len(level_map.levels)).
@@ -1095,22 +1142,58 @@ def persist_level_map(level_map: 'LevelMap', conn) -> int:
     if not level_map.levels:
         return 0
 
+    # Freshness check (skipped only when source_data_as_of is None for
+    # back-compat with callers that haven't been wired through yet —
+    # those callers should be migrated; the None path is a transitional
+    # convenience, not a long-term position).
+    if source_data_as_of is not None:
+        from datetime import datetime, timezone
+        # Normalize to naive UTC so tz-aware vs naive comparisons don't
+        # raise. The caller may pass a date, datetime (naive or aware),
+        # or pandas Timestamp — coerce all to a UTC pd.Timestamp.
+        ts = pd.Timestamp(source_data_as_of)
+        if ts.tz is None:
+            ts = ts.tz_localize('UTC')
+        else:
+            ts = ts.tz_convert('UTC')
+
+        ref = today if today is not None else datetime.now(timezone.utc)
+        ref_ts = pd.Timestamp(ref)
+        if ref_ts.tz is None:
+            ref_ts = ref_ts.tz_localize('UTC')
+        else:
+            ref_ts = ref_ts.tz_convert('UTC')
+
+        age_days = (ref_ts - ts).total_seconds() / 86400.0
+        if age_days > max_age_days:
+            raise StaleSourceDataError(
+                f"persist_level_map({level_map.ticker}): refusing to write — "
+                f"source_data_as_of={ts.isoformat()} is {age_days:.1f} "
+                f"days behind {ref_ts.isoformat()} (threshold: "
+                f"{max_age_days} days). The level map was built off stale "
+                f"`market_data_daily` data; writing it would propagate "
+                f"the staleness to every downstream reader. Investigate "
+                f"the daily fetcher (likely a sticky --date latch per "
+                f"docs/RUNBOOK_BACKFILL.md) before retrying."
+            )
+
     sql = (
         "INSERT INTO strat_levels "
         "(ticker, as_of, level_name, price, timeframe, level_type, "
-        " strat_class, is_current, period_label) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+        " strat_class, is_current, period_label, source_data_as_of) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
         "ON CONFLICT (ticker, as_of, level_name) DO UPDATE SET "
         "  price = EXCLUDED.price, "
         "  strat_class = EXCLUDED.strat_class, "
         "  is_current = EXCLUDED.is_current, "
-        "  period_label = EXCLUDED.period_label"
+        "  period_label = EXCLUDED.period_label, "
+        "  source_data_as_of = EXCLUDED.source_data_as_of"
     )
     rows = [
         (
             level_map.ticker, level_map.as_of, lev.name, lev.price,
             lev.timeframe, lev.level_type, lev.strat_class,
-            bool(lev.is_current), lev.period_label,
+            bool(lev.is_current), lev.period_label, source_data_as_of,
         )
         for lev in level_map.levels
     ]
