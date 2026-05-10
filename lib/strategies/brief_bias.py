@@ -52,6 +52,13 @@ def get_premarket_bias(ticker: str, target_date: _date) -> dict:
             'alignment':      None,  # filled in by signal monitor when comparing to live signal direction
             'setup_count':    int (0-5),
             'ftfc_direction': 'bullish' | 'bearish' | 'mixed' | None,
+            'ftfc_score':     float (-1.0 to +1.0) or None,  # raw FTFC alignment from
+                                                              # premarket_analysis.ftfc_score —
+                                                              # signal_monitor passes this to
+                                                              # `Strat.get_strat_bonus(ftfc_score=)`
+                                                              # so counter-FTFC fires get the
+                                                              # configured −ftfc_bonus penalty
+                                                              # (was hardcoded to 0.0 pre-2026-05-10)
             'reason':         human-readable label
         }
 
@@ -95,6 +102,7 @@ def classify(row: dict) -> dict:
     """Pure classifier — separate from DB read so unit tests can drive it."""
     status = (row.get('signal_status') or '').strip()
     ftfc_dir = (row.get('ftfc_direction') or '').lower() or None
+    ftfc_score = _coerce_ftfc_score(row.get('ftfc_score'))
 
     # Parse setup direction + count.
     if 'CALL setup' in status:
@@ -104,25 +112,56 @@ def classify(row: dict) -> dict:
     elif 'building' in status.lower():
         # Partial setup — not actionable, don't claim a bias.
         return _bias('NEUTRAL', 'building', setup_count=_extract_setup_count(status),
-                     ftfc_direction=ftfc_dir)
+                     ftfc_direction=ftfc_dir, ftfc_score=ftfc_score)
     elif 'No signal' in status or not status:
-        return _bias('NEUTRAL', 'no_setup', ftfc_direction=ftfc_dir)
+        return _bias('NEUTRAL', 'no_setup', ftfc_direction=ftfc_dir,
+                     ftfc_score=ftfc_score)
     else:
         # Unknown status string — be safe.
-        return _bias('NEUTRAL', f'unknown_status:{status[:30]}', ftfc_direction=ftfc_dir)
+        return _bias('NEUTRAL', f'unknown_status:{status[:30]}',
+                     ftfc_direction=ftfc_dir, ftfc_score=ftfc_score)
 
     # Cross-check setup direction against FTFC direction. If they
     # disagree, the brief is internally inconsistent — flag CONFLICTED
     # so the monitor knows not to penalize live signals in either dir.
     if ftfc_dir == 'bullish' and setup_dir == 'PUT':
         return _bias('CONFLICTED', 'setup_put_vs_ftfc_bullish',
-                     setup_count=setup_count, ftfc_direction=ftfc_dir)
+                     setup_count=setup_count, ftfc_direction=ftfc_dir,
+                     ftfc_score=ftfc_score)
     if ftfc_dir == 'bearish' and setup_dir == 'CALL':
         return _bias('CONFLICTED', 'setup_call_vs_ftfc_bearish',
-                     setup_count=setup_count, ftfc_direction=ftfc_dir)
+                     setup_count=setup_count, ftfc_direction=ftfc_dir,
+                     ftfc_score=ftfc_score)
 
     return _bias(setup_dir, 'aligned',
-                 setup_count=setup_count, ftfc_direction=ftfc_dir)
+                 setup_count=setup_count, ftfc_direction=ftfc_dir,
+                 ftfc_score=ftfc_score)
+
+
+def _coerce_ftfc_score(raw) -> Optional[float]:
+    """Parse `premarket_analysis.ftfc_score` from a SQL row.
+
+    SQL stores it as REAL/numeric; pandas returns float, NaN, or None.
+    Normalise to a clean float in [-1, +1] or None on missing/garbage.
+    Out-of-range values (shouldn't happen but defensively clamped here)
+    are clamped — `Strat.get_strat_bonus` compares against
+    `ftfc_threshold` (default 0.6) so a clipped 1.0 is still safe.
+    """
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    # NaN check — float('nan') != float('nan') is true
+    if v != v:
+        return None
+    # Clamp defensively. brief writes scores in [-1,+1].
+    if v > 1.0:
+        return 1.0
+    if v < -1.0:
+        return -1.0
+    return v
 
 
 def alignment(live_direction: str, bias: dict) -> Optional[str]:
@@ -136,12 +175,14 @@ def alignment(live_direction: str, bias: dict) -> Optional[str]:
 
 def _bias(bias_value: str, reason: str,
           setup_count: int = 0,
-          ftfc_direction: Optional[str] = None) -> dict:
+          ftfc_direction: Optional[str] = None,
+          ftfc_score: Optional[float] = None) -> dict:
     return {
         'bias':           bias_value,
         'alignment':      None,   # filled by caller when comparing to live signal
         'setup_count':    setup_count,
         'ftfc_direction': ftfc_direction,
+        'ftfc_score':     ftfc_score,
         'reason':         reason,
     }
 
