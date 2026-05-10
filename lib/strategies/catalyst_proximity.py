@@ -193,8 +193,8 @@ def _nearest_economic(ts_et: datetime, window_h: int = 24) -> tuple:
     sql = """
         SELECT event_date, event_time, event_name, importance
           FROM economic_events
-         WHERE event_date BETWEEN (:ts::timestamp - INTERVAL '1 day')::date
-                              AND (:ts::timestamp + INTERVAL '1 day')::date
+         WHERE event_date BETWEEN (CAST(:ts AS timestamp) - INTERVAL '1 day')::date
+                              AND (CAST(:ts AS timestamp) + INTERVAL '1 day')::date
          ORDER BY event_date, event_time
     """
     df = _query_or_empty(sql, {"ts": ts_et})
@@ -234,8 +234,8 @@ def _nearest_earnings(ticker: str, ts_et: datetime) -> tuple:
         SELECT earnings_date, earnings_time
           FROM earnings_calendar
          WHERE ticker = :ticker
-           AND earnings_date BETWEEN (:ts::timestamp - INTERVAL '1 day')::date
-                                AND (:ts::timestamp + INTERVAL '1 day')::date
+           AND earnings_date BETWEEN (CAST(:ts AS timestamp) - INTERVAL '1 day')::date
+                                AND (CAST(:ts AS timestamp) + INTERVAL '1 day')::date
          ORDER BY earnings_date
          LIMIT 5
     """
@@ -277,8 +277,8 @@ def _nearest_8k(ticker: str, ts_et: datetime) -> tuple:
           FROM sec_filings
          WHERE ticker = :ticker
            AND form = '8-K'
-           AND filing_date BETWEEN (:ts::timestamp - INTERVAL '6 days')::date
-                              AND (:ts::timestamp)::date
+           AND filing_date BETWEEN (CAST(:ts AS timestamp) - INTERVAL '6 days')::date
+                              AND (CAST(:ts AS timestamp))::date
          ORDER BY filing_date DESC
          LIMIT 5
     """
