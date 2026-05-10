@@ -582,6 +582,63 @@ deploy_fetch_alphavantage() {
         --quiet
 }
 
+# AV HISTORICAL_OPTIONS audit-and-fill job (etf_options_snapshots writer).
+# Replaces the disabled .github/workflows/fetch-alphavantage-options-daily.yml.
+#
+# Spec design:
+# - --start-date 2016-01-04 is our chosen uniform floor; --end-date is omitted
+#   so the fetcher defaults to today (date.today() in main()), making the job
+#   self-extending without spec edits as time advances.
+# - Range mode auto-enables --skip-existing in the fetcher, so re-runs only
+#   fetch (ticker, date) pairs missing from etf_options_snapshots — cheap
+#   incremental cost after the first full backfill.
+# - Secrets (DB_PASS, AV_API_KEY) are mounted via --set-secrets rather than
+#   inlined through _env_string. Inlined keys land as plaintext in the Job
+#   spec where anyone with run.viewer can read them via gcloud run jobs
+#   describe; secret refs require secretmanager.secretAccessor at runtime.
+#   This is the pattern the other deploy_fetch_* functions should migrate to.
+# - max-retries 0 because Cloud Run can't distinguish transient from
+#   permanent failures, and the job is idempotent (ON CONFLICT DO UPDATE)
+#   so a re-dispatch after failure converges without duplicate emails.
+# - 12h task-timeout sized for the worst case of an empty-SQL initial run
+#   (~10 years × 4 tickers ≈ 10K AV calls @ 150 RPM ≈ 70 min). Steady-state
+#   incremental runs finish in under a minute.
+#
+# No Cloud Scheduler binding wired here — see deploy_schedulers() for that
+# decision. Without one, the job runs only when manually invoked.
+deploy_av_options_backfill() {
+    echo "Deploying fetch-av-options-backfill job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    gcloud run jobs create fetch-av-options-backfill \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 0 \
+        --task-timeout 43200 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_av_historical_options" \
+        --args "--tickers,SPY IWM QQQ SPX,--start-date,2016-01-04" \
+        ${secrets_flag} \
+        --set-env-vars "${non_secret_env}" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-av-options-backfill \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_av_historical_options" \
+        --args "--tickers,SPY IWM QQQ SPX,--start-date,2016-01-04" \
+        ${secrets_flag} \
+        --set-env-vars "${non_secret_env}" \
+        --quiet
+}
+
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
 # Backfill mode pulls full history from 2015 (~3000 daily rows, <60s).
 # Default mode is the 14-day incremental window — wire to a daily scheduler
@@ -912,6 +969,7 @@ deploy_fetch_news_sentiment_topics() {
 deploy_fetchers() {
     deploy_fetch_market_data
     deploy_fetch_alphavantage
+    deploy_av_options_backfill
     deploy_fetch_fred_rates
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
@@ -1288,9 +1346,21 @@ deploy_schedulers() {
     _schedule "fetch-market-data-daily"  "0 23 * * 1-5"   "fetch-market-data"
 
     # ETF options intraday (9x/day) was REMOVED — see commit message.
-    # Daily EOD snapshots come from fetch-av-options-backfill (with real Greeks)
-    # and the Options UI queries AV live for "current chain" via the existing
-    # OptionsFlowPage fallback. See docs/DATA_PIPELINE.md.
+    # Daily EOD snapshots are produced by the fetch-av-options-backfill job
+    # (deploy_av_options_backfill) but it has NO scheduler binding here —
+    # currently runs only when manually invoked via:
+    #   gcloud run jobs execute fetch-av-options-backfill --region us-east1
+    # The disabled .github/workflows/fetch-alphavantage-options-daily.yml
+    # used to fire this daily; after migration to a Cloud Run Job the
+    # equivalent _schedule entry was never added. Coverage gaps since the
+    # GH workflow was disabled are real (e.g. last EOD snapshot lagged by
+    # weeks before this comment was written). The Options UI queries AV
+    # live for "current chain" via OptionsFlowPage fallback — that's the
+    # workaround that hides the staleness from the UI side. To restore
+    # nightly refresh, add:
+    #   _schedule "av-options-daily" "0 1 * * 2-6" "fetch-av-options-backfill"
+    # (01:00 UTC Tue–Sat covers Mon–Fri EOD after AV publishes ~midnight UTC.)
+    # See docs/DATA_PIPELINE.md.
 
     # AlphaVantage monthly intraday — 1st of each month 9 PM ET
     _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
