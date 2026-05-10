@@ -1137,7 +1137,6 @@ CREATE TABLE IF NOT EXISTS strat_levels (
 -- with "column does not exist".
 ALTER TABLE strat_levels
     ADD COLUMN IF NOT EXISTS source_data_as_of TIMESTAMPTZ;
-);
 
 -- Migration: widen strat_class for existing instances. Idempotent.
 DO $$
