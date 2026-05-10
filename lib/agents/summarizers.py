@@ -73,8 +73,26 @@ def summarize_market_context(
     Reads market_data_daily for the row at or before `as_of` (default:
     latest). Computes a regime tag (trending up/down/ranging) and a
     20-day realized vol tag (low/normal/elevated).
+
+    Replay semantics (when ``as_of`` is set):
+      Daily / indicator columns come from the latest row STRICTLY
+      BEFORE ``as_of`` — i.e. yesterday's completed bar — because on a
+      live 8:45 AM ET run today's row exists with NULL close (the
+      11 PM ET fetcher hasn't run yet). Reading today's row in a
+      replay leaks the post-RTH close into the trade_planner's
+      ``cleared_above`` calculation and forces blue-sky synthesis on
+      otherwise-normal days. The 5/6 QQQ replay surfaced this:
+      AS-OF=5/6 was reading 5/6's RTH close (~$693), comparing PDH
+      ($682.77) below it, and synthesizing a $695 entry that the
+      live 8:45 AM run on 5/6 would never have produced.
+
+      Pre-market columns (pre_high, pre_low, pre_vwap, pre_volume,
+      gap_pct, pre_range_atr) DO come from today's row (= as_of),
+      because the 8:30 AM ET fetcher populates those fields before
+      the insight pipeline runs at 8:45 AM. Yesterday's pre_high
+      would be a day-old reading.
     """
-    sql = (
+    daily_sql = (
         "SELECT date, open, high, low, close, volume, "
         "       sma_200, ema_20, ema_50, rsi_14, macd, macd_signal, "
         "       macd_histogram, bb_upper, bb_lower, bb_pct, atr_14, "
@@ -82,17 +100,38 @@ def summarize_market_context(
         "       pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr "
         "FROM market_data_daily "
         "WHERE ticker = :ticker "
-        + ("AND date <= :as_of " if as_of else "")
+        + ("AND date < :as_of " if as_of else "")
         + "ORDER BY date DESC LIMIT 1"
     )
     params: dict[str, Any] = {"ticker": ticker.upper()}
     if as_of:
         params["as_of"] = str(as_of)
-    df = _query(sql, params)
+    df = _query(daily_sql, params)
     if df.empty:
         return _unavailable(f"no market_data_daily row for {ticker}")
 
     row = df.iloc[0]
+
+    # On replay, overlay today's pre_* columns (today's row exists at
+    # 8:45 AM ET via the premarket fetcher, with daily OHLC still NULL).
+    if as_of:
+        pm_df = _query(
+            "SELECT pre_high, pre_low, pre_vwap, pre_volume, gap_pct, "
+            "       pre_range_atr "
+            "FROM market_data_daily "
+            "WHERE ticker = :ticker AND date = :as_of LIMIT 1",
+            {"ticker": ticker.upper(), "as_of": str(as_of)},
+        )
+        if not pm_df.empty:
+            pm_row = pm_df.iloc[0]
+            row = row.copy()
+            for col in (
+                "pre_high", "pre_low", "pre_vwap", "pre_volume",
+                "gap_pct", "pre_range_atr",
+            ):
+                if col in pm_row.index:
+                    row[col] = pm_row[col]
+
     close = _scalar(row, "close", digits=2)
     ema_20 = _scalar(row, "ema_20", digits=2)
     sma_200 = _scalar(row, "sma_200", digits=2)

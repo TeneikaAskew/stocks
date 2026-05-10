@@ -1040,7 +1040,36 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             level_map = build_level_map(
                 ticker=ticker, daily_df=df, current_price=d['price'],
                 atr=atr_for_filter,
+                analysis_date=analysis_date,
             )
+            # 2026-05-10 — append intraday premarket levels (PMK_H / PMK_L)
+            # so they get persisted alongside the structural ones. Pre-fix
+            # the trade_planner had to synthesize a trigger above pre_high
+            # via ATR projection (5/6 QQQ: $695.52 = pre_high+0.20×ATR),
+            # which on tight days like 5/6 was never reached during RTH.
+            # With PMK_H persisted, the planner can use pre_high directly
+            # as a candidate trigger AND signal_monitor sees PMK_H/L as
+            # triggerable crossings live during the session.
+            try:
+                from lib.strat_levels import compute_premarket_levels
+                latest_for_pmk = df.iloc[-1] if len(df) else None
+                _pmk_h = float(latest_for_pmk.get('pre_high')) if (
+                    latest_for_pmk is not None
+                    and pd.notna(latest_for_pmk.get('pre_high'))
+                ) else None
+                _pmk_l = float(latest_for_pmk.get('pre_low')) if (
+                    latest_for_pmk is not None
+                    and pd.notna(latest_for_pmk.get('pre_low'))
+                ) else None
+                pmk_levels = compute_premarket_levels(_pmk_h, _pmk_l)
+                if pmk_levels:
+                    level_map.levels.extend(pmk_levels.values())
+                    print(f"[brief:{ticker}] appended {len(pmk_levels)} PMK levels "
+                          f"(PMK_H={_pmk_h}, PMK_L={_pmk_l})",
+                          file=sys.stderr, flush=True)
+            except Exception as exc:
+                print(f"[brief:{ticker}] PMK levels skipped: {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
             print(f"[brief:{ticker}] build_level_map → {len(level_map.levels)} levels"
                   f" (calls_trigger={'yes' if level_map.calls_trigger else 'NO (filtered)'}, "
                   f"puts_trigger={'yes' if level_map.puts_trigger else 'NO (filtered)'})",
