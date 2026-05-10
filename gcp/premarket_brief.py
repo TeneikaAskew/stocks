@@ -1156,14 +1156,32 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                         _src_age = df.index.max()
                 except Exception:
                     _src_age = None
+                # AS-OF-aware freshness check: when this is a historical
+                # replay (BRIEF_AS_OF set), the freshness comparison
+                # should be "was the data fresh AS OF that date" — not
+                # "is the data fresh as of right now (days/weeks
+                # later)." Without this override, every historical
+                # replay refuses to write because the source is now N
+                # weeks behind today. analysis_date is set upstream
+                # from BRIEF_AS_OF or now()-in-ET; use it as the
+                # reference clock so replays are faithful to "what
+                # would the brief have said on that day."
+                _today_ref = None
+                try:
+                    _today_ref = pd.Timestamp(analysis_date)
+                    if _today_ref.tz is None:
+                        _today_ref = _today_ref.tz_localize('UTC')
+                except Exception:
+                    _today_ref = None
                 with engine.connect() as conn:
                     n = persist_level_map(
                         level_map, conn.connection,
                         source_data_as_of=_src_age,
+                        today=_today_ref,
                     )
                     conn.connection.commit()
                 print(f"[brief:{ticker}] persisted {n} strat_levels rows "
-                      f"(source_data_as_of={_src_age})",
+                      f"(source_data_as_of={_src_age}, today_ref={_today_ref})",
                       file=sys.stderr, flush=True)
             except StaleSourceDataError as exc:
                 # Stale-source refusal is loud + surfaceable, not a generic

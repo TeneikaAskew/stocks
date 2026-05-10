@@ -1096,12 +1096,48 @@ class StaleSourceDataError(RuntimeError):
     """
 
 
+def _trading_days_between(source_ts: pd.Timestamp, ref_ts: pd.Timestamp) -> int:
+    """Count NYSE trading days from source_ts (exclusive) to ref_ts (inclusive).
+
+    Returns 0 when source >= ref. Honors NYSE market holidays via
+    `pandas_market_calendars.get_calendar('NYSE')`. Examples:
+      Fri 5/8 close → Mon 5/11 brief = 1 trading day (Mon)
+      Thu 5/22 close → Tue 5/27 (post-Memorial-Day) brief = 2 (Fri + Tue,
+        skipping Memorial-Day Mon)
+      4/27 close → 5/6 (the original 5/6 freeze) = 6 trading days
+
+    The freshness guard uses business-days because that's the semantic
+    intent: "no more than N trading sessions behind." Calendar days
+    have to use a +3-day weekend buffer (max_age_days=4 to allow for
+    Mon-after-Fri = 3 calendar days), which is implicit.
+    """
+    if source_ts >= ref_ts:
+        return 0
+    try:
+        import pandas_market_calendars as mcal
+    except ImportError:
+        # Fallback: caller environment doesn't have the calendar lib.
+        # Approximate with calendar-days / 1.4 (rough business-day ratio).
+        # Defensive — production has the dep per requirements-gcp.txt.
+        return max(0, int((ref_ts - source_ts).total_seconds() / 86400.0 / 1.4))
+    nyse = mcal.get_calendar('NYSE')
+    # `valid_days` returns DatetimeIndex of trading days in [start, end].
+    # Use source_ts.normalize() + 1 day as start so source itself is excluded.
+    start_date = (source_ts.normalize() + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+    end_date = ref_ts.normalize().strftime('%Y-%m-%d')
+    try:
+        days = nyse.valid_days(start_date=start_date, end_date=end_date)
+    except Exception:
+        return 0
+    return len(days)
+
+
 def persist_level_map(
     level_map: 'LevelMap',
     conn,
     *,
     source_data_as_of=None,
-    max_age_days: int = 4,
+    max_age_business_days: int = 2,
     today=None,
 ) -> int:
     """Persist a LevelMap into the strat_levels table.
@@ -1119,24 +1155,31 @@ def persist_level_map(
               so readers can verify freshness in-band. When None, the
               column is NULL (back-compat for callers that haven't
               been updated; freshness check below short-circuits).
-        max_age_days: refuse to write when today_UTC - source_data_as_of
-              exceeds this many calendar days. Default 4 covers normal
-              weekends + long-weekends (Mon brief reads Fri close ≈
-              3.5 days; Tue-after-Memorial-Day reads Thu close ≈ 4.5
-              days, just at the boundary). The original bug we're
-              defending against (the 5/6 production freeze) was 9
-              days stale — well past 4. Stricter callers (intraday
-              re-runs, weekday backfills) can pass max_age_days=1
-              or 2 to fail-fast on shorter freezes.
+        max_age_business_days: refuse to write when more than this many
+              NYSE trading days have elapsed since source_data_as_of.
+              Default 2 = "Friday close → Monday OK (1 day); Thursday
+              close → Tuesday-after-Memorial-Day OK (2 days)." The
+              original 5/6 freeze was 6 trading days stale — well past
+              2. Stricter callers (intraday re-runs, weekday backfills)
+              can pass `=0` or `=1` to fail-fast on same-day or
+              one-day-old data.
+
+              Note: business-day semantics are clearer than the
+              calendar-day approach used by sibling guards #323
+              (audit watchdog) and #325 (DataLoader on_stale). A
+              future PR should convert all three to business-days
+              for consistency. See docs/audit/2026-05-08/ for the
+              freshness-guard family rationale.
         today: datetime override for the freshness check (testability).
                Defaults to datetime.now() in UTC.
 
     Raises:
         StaleSourceDataError: when source_data_as_of is more than
-            max_age_days behind `today`. The caller's transaction
-            should roll back. Pre-fix this path was silent — the
-            row was written with stale prices and a fresh as_of
-            timestamp, polluting every downstream reader.
+            max_age_business_days NYSE trading days behind `today`.
+            The caller's transaction should roll back. Pre-fix this
+            path was silent — the row was written with stale prices
+            and a fresh as_of timestamp, polluting every downstream
+            reader.
 
     Returns:
         Number of rows attempted (== len(level_map.levels)).
@@ -1150,9 +1193,9 @@ def persist_level_map(
     # convenience, not a long-term position).
     if source_data_as_of is not None:
         from datetime import datetime, timezone
-        # Normalize to naive UTC so tz-aware vs naive comparisons don't
-        # raise. The caller may pass a date, datetime (naive or aware),
-        # or pandas Timestamp — coerce all to a UTC pd.Timestamp.
+        # Normalize to UTC so tz-aware vs naive comparisons don't raise.
+        # The caller may pass a date, datetime (naive or aware), or
+        # pandas Timestamp — coerce all to a UTC pd.Timestamp.
         ts = pd.Timestamp(source_data_as_of)
         if ts.tz is None:
             ts = ts.tz_localize('UTC')
@@ -1166,17 +1209,18 @@ def persist_level_map(
         else:
             ref_ts = ref_ts.tz_convert('UTC')
 
-        age_days = (ref_ts - ts).total_seconds() / 86400.0
-        if age_days > max_age_days:
+        # Business-day staleness via NYSE trading calendar.
+        biz_days = _trading_days_between(ts, ref_ts)
+        if biz_days > max_age_business_days:
             raise StaleSourceDataError(
                 f"persist_level_map({level_map.ticker}): refusing to write — "
-                f"source_data_as_of={ts.isoformat()} is {age_days:.1f} "
-                f"days behind {ref_ts.isoformat()} (threshold: "
-                f"{max_age_days} days). The level map was built off stale "
-                f"`market_data_daily` data; writing it would propagate "
-                f"the staleness to every downstream reader. Investigate "
-                f"the daily fetcher (likely a sticky --date latch per "
-                f"docs/RUNBOOK_BACKFILL.md) before retrying."
+                f"source_data_as_of={ts.isoformat()} is {biz_days} NYSE "
+                f"trading days behind {ref_ts.isoformat()} (threshold: "
+                f"{max_age_business_days} trading days). The level map "
+                f"was built off stale `market_data_daily` data; writing "
+                f"it would propagate the staleness to every downstream "
+                f"reader. Investigate the daily fetcher (likely a sticky "
+                f"--date latch per docs/RUNBOOK_BACKFILL.md) before retrying."
             )
 
     sql = (
