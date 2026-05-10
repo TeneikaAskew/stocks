@@ -1812,13 +1812,28 @@ UPDATE exit_config_overrides
  WHERE ticker = 'QQQ' AND calibration_date = '2026-05-08'
    AND blue_sky_atr_offset IS NULL;
 
--- Audit 2026-05-08 G.P1.19: disable QQQ MR PUT entirely until the
--- condition set is rebuilt. Current QQQ MR PUT win-rate is 11.1%, the
--- worst of any (ticker, direction) pair in the system. Track G priority.
+-- Audit 2026-05-08 G.P0.13: drop stoch_rsi_overbought + rsi_overbought_zone
+-- from MR PUT scoring on IWM and QQQ specifically. Track E measured these
+-- factors anti-correlated with PUT success on those tickers but not SPY,
+-- so the drop is per-ticker not global. Live read by lib/signals.py:
+-- evaluate_signal via lib/strategies/exit_config_overrides at fire time.
+-- PR #329 added the column + live-read code; the IWM/QQQ-specific seed
+-- values were never landed. Backfilling now (incident 2026-05-09 caught
+-- this drift while investigating disabled_directions).
 UPDATE exit_config_overrides
-   SET disabled_directions = '["PUT"]'::jsonb
- WHERE ticker = 'QQQ' AND calibration_date = '2026-05-08'
-   AND disabled_directions IS NULL;
+   SET disabled_conditions = '["stoch_rsi_overbought", "rsi_overbought_zone"]'::jsonb
+ WHERE ticker IN ('IWM', 'QQQ') AND calibration_date = '2026-05-08'
+   AND disabled_conditions IS NULL;
+
+-- NOTE: The QQQ disabled_directions=["PUT"] seed that previously lived
+-- here was REMOVED in incident-2026-05-09. A static direction kill switch
+-- is too blunt — it suppresses every PUT regardless of daily bias. The
+-- 11.1% MR PUT win-rate that justified G.P1.19 was measured pre-PR-#329
+-- (before above_vwap was dropped from MR PUT scoring). Future
+-- suppression should go through condition-level surgery (the
+-- disabled_conditions block above) or a daily-bias-aware mechanism, NOT
+-- a static gate. The disabled_directions COLUMN remains in case that
+-- mechanism wants it later, but no rows seed it as of this commit.
 
 
 -- ─────────────────────────────────────────────────────────
