@@ -902,7 +902,8 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
     The PM agent frequently leaves ``key_levels`` empty. Rather than adding
     a new SQL query, synthesize the levels from data the bundle already
     carries: prior day high/low (strat section), 200 SMA and 20 EMA
-    (market section), and max-pain proxy (options section).
+    (market section), max-pain proxy (options section), and gamma flip /
+    king / gate strikes (gamma section — issue #359).
     """
     levels: dict[str, float] = {}
 
@@ -929,6 +930,72 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
         mp = options.get("max_pain_strike_proxy")
         if isinstance(mp, (int, float)):
             levels["Max Pain"] = float(mp)
+
+    # Gamma section — issue #359. The LLM thesis frequently mentions
+    # "the gamma flip at $X" or "King strike at $Y"; without surfacing
+    # those numbers in `key_levels`, PR-C's thesis_validator flagged
+    # them as orphans (8/21 reports during 2026-05-09 validation).
+    # Pull the flip price + the closest King strike + the closest Gates
+    # above and below spot, when the gamma section ran successfully.
+    gamma = bundle.get("gamma", {}) or {}
+    if gamma.get("available"):
+        flip = gamma.get("flip")
+        if isinstance(flip, (int, float)):
+            levels["Gamma Flip"] = float(flip)
+        # Kings — `summary.kings` preserves classify_levels()/strike order,
+        # not nearest-to-spot order, so `kings[0]` could surface the
+        # lowest king while the gamma analyst is prompted to call out the
+        # king above OR below spot. To prevent the validator from
+        # orphaning a king reference, surface the closest king above spot
+        # AND the closest king below spot when both exist (per Codex P2
+        # review on PR #362). Keys are namespaced (above/below) so
+        # downstream consumers can render both.
+        spot_for_kings = gamma.get("spot")
+        kings = gamma.get("kings") or []
+        king_strikes: list[float] = []
+        for k in kings:
+            if not isinstance(k, dict):
+                continue
+            ks = k.get("strike")
+            if isinstance(ks, (int, float)):
+                king_strikes.append(float(ks))
+        if king_strikes and isinstance(spot_for_kings, (int, float)):
+            spot_f = float(spot_for_kings)
+            below = [s for s in king_strikes if s < spot_f]
+            above = [s for s in king_strikes if s > spot_f]
+            if below:
+                levels["Gamma King Below"] = max(below)
+            if above:
+                levels["Gamma King Above"] = min(above)
+        elif king_strikes:
+            # No spot to compare — keep legacy first-king behaviour so
+            # callers aren't broken on bundles missing `gamma.spot`.
+            levels["Gamma King"] = king_strikes[0]
+        # For the gates, surface the closest one above and below spot.
+        # The dealer-positioning analyst typically calls these out in
+        # prose; populating the structured field closes the loop.
+        spot = gamma.get("spot")
+        gates = gamma.get("gates") or []
+        if isinstance(spot, (int, float)) and gates:
+            above_strikes = sorted(
+                float(g["strike"]) for g in gates
+                if isinstance(g, dict)
+                and isinstance(g.get("strike"), (int, float))
+                and g["strike"] > spot
+            )
+            below_strikes = sorted(
+                (
+                    float(g["strike"]) for g in gates
+                    if isinstance(g, dict)
+                    and isinstance(g.get("strike"), (int, float))
+                    and g["strike"] < spot
+                ),
+                reverse=True,
+            )
+            if above_strikes:
+                levels["Gamma Gate Above"] = above_strikes[0]
+            if below_strikes:
+                levels["Gamma Gate Below"] = below_strikes[0]
 
     return levels
 
