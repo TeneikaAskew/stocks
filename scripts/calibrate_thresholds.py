@@ -124,8 +124,20 @@ def compute_rvol(volume: pd.Series, period: int = 20) -> pd.Series:
 
 # ── Per-ticker calibration ─────────────────────────────────────────────
 
-def calibrate_ticker(ticker: str, bars_1min: pd.DataFrame, lookback_days: int) -> dict:
-    """Compute calibration for a single ticker."""
+def calibrate_ticker(
+    ticker: str,
+    bars_1min: pd.DataFrame,
+    lookback_days: int,
+    *,
+    as_of: Optional[date] = None,
+) -> dict:
+    """Compute calibration for a single ticker.
+
+    `as_of` overrides the `calibration_date` written to the output row.
+    Used by the #250 backfill so historical-window calibrations are
+    timestamped at the quarter boundary they represent, not at the
+    moment the backfill happens to run.
+    """
     if bars_1min.empty:
         log.warning("  %s: no bars; skipping", ticker)
         return {}
@@ -136,7 +148,7 @@ def calibrate_ticker(ticker: str, bars_1min: pd.DataFrame, lookback_days: int) -
 
     out = {
         "ticker": ticker,
-        "calibration_date": date.today(),
+        "calibration_date": as_of or date.today(),
         "lookback_days": lookback_days,
         "n_bars_used": len(bars_1min),
         "earliest_bar_date": bars_1min["ts"].min().date(),
@@ -195,25 +207,58 @@ def calibrate_ticker(ticker: str, bars_1min: pd.DataFrame, lookback_days: int) -
 
 # ── Main ───────────────────────────────────────────────────────────────
 
-def fetch_bars(ticker: str, lookback_days: int, eng) -> pd.DataFrame:
+def fetch_bars(
+    ticker: str,
+    lookback_days: int,
+    eng,
+    *,
+    as_of: Optional[date] = None,
+) -> pd.DataFrame:
     """Pull 1-min bars for `ticker` from market_data_intraday for the
-    most recent `lookback_days` calendar days.
+    `lookback_days` calendar-day window ending on `as_of` (defaults to today).
+
+    `as_of` lets the calibrator be replayed against any historical date —
+    used by the #250 backfill to populate `ticker_calibration` rows for
+    prior quarters (Q4-2025, Q1-2026, Q2-2026) so the drift guard has
+    a 4-quarter rolling window without waiting until 2027-01.
 
     Uses the partitioned-table primary key (ticker, interval, ts) so the
     query hits the per-ticker partition directly.
     """
-    cutoff = date.today() - timedelta(days=lookback_days)
+    end = as_of or date.today()
+    cutoff = end - timedelta(days=lookback_days)
     sql = text("""
         SELECT ts, open, high, low, close, volume
           FROM market_data_intraday
          WHERE ticker = :ticker
            AND interval = '1min'
            AND ts >= :cutoff
+           AND ts <  :end_excl
          ORDER BY ts
     """)
-    df = pd.read_sql(sql, eng, params={"ticker": ticker, "cutoff": cutoff})
+    df = pd.read_sql(
+        sql, eng,
+        params={"ticker": ticker,
+                "cutoff": cutoff,
+                "end_excl": end + timedelta(days=1)},
+    )
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     return df
+
+
+def _parse_as_of(raw: Optional[str]) -> Optional[date]:
+    """Parse `--as-of YYYY-MM-DD` into a date. Refuses future dates so the
+    backfill can't accidentally calibrate against bars that don't exist yet.
+    """
+    if not raw:
+        return None
+    try:
+        d = date.fromisoformat(raw)
+    except ValueError:
+        raise SystemExit(f"--as-of {raw!r} is not a valid YYYY-MM-DD date")
+    if d > date.today():
+        raise SystemExit(f"--as-of {raw!r} is in the future")
+    return d
 
 
 def main():
@@ -225,7 +270,15 @@ def main():
                    help="Bar history window (default: 60)")
     p.add_argument("--dry-run", action="store_true",
                    help="Compute calibration but do not write to Cloud SQL")
+    p.add_argument("--as-of", default=None, metavar="YYYY-MM-DD",
+                   help="Calibrate AS OF this date — uses bars from "
+                        "(as-of − lookback-days) to as-of inclusive, "
+                        "and writes calibration_date = as-of. Used by the "
+                        "#250 backfill to populate prior-quarter rows; "
+                        "default is today (live cadence).")
     args = p.parse_args()
+
+    as_of = _parse_as_of(args.as_of)
 
     if not is_cloud_sql_configured():
         log.error("Cloud SQL env vars missing — aborting.")
@@ -233,14 +286,18 @@ def main():
 
     eng = get_engine()
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    log.info("Calibrating %d ticker(s): %s (lookback=%dd)",
-             len(tickers), ", ".join(tickers), args.lookback_days)
+    if as_of:
+        log.info("Calibrating %d ticker(s) AS OF %s: %s (lookback=%dd)",
+                 len(tickers), as_of, ", ".join(tickers), args.lookback_days)
+    else:
+        log.info("Calibrating %d ticker(s): %s (lookback=%dd)",
+                 len(tickers), ", ".join(tickers), args.lookback_days)
 
     rows = []
     for ticker in tickers:
         log.info("→ %s", ticker)
-        bars = fetch_bars(ticker, args.lookback_days, eng)
-        cal = calibrate_ticker(ticker, bars, args.lookback_days)
+        bars = fetch_bars(ticker, args.lookback_days, eng, as_of=as_of)
+        cal = calibrate_ticker(ticker, bars, args.lookback_days, as_of=as_of)
         if cal:
             rows.append(cal)
             log.info("  ✓ atr_60m=%s%%  rvol[%s, %s]  rsi_med=%s",
