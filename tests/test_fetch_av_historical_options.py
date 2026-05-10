@@ -220,13 +220,8 @@ def test_process_ticker_dedups_before_upsert(monkeypatch):
             (len(df), table, list(conflict_cols))
         ),
     )
-    # Block GCS upload to keep test hermetic
-    monkeypatch.setattr(
-        mod, "upload_dataframe_as_parquet",
-        lambda *a, **k: None,
-    )
 
-    mod.process_ticker("SPY", "2026-04-25", bucket="", api_key="k")
+    mod.process_ticker("SPY", "2026-04-25", api_key="k")
 
     assert len(upserts) == 1
     n_rows, table, conflict_cols = upserts[0]
@@ -254,12 +249,12 @@ def test_process_ticker_skip_existing_short_circuits(monkeypatch):
     )
     # Should return without touching AV
     mod.process_ticker(
-        "SPY", "2026-04-25", bucket="", api_key="k", skip_existing=True
+        "SPY", "2026-04-25", api_key="k", skip_existing=True
     )
 
 
 def test_process_ticker_skips_when_av_returns_empty(monkeypatch):
-    """No data from AV → no upsert, no GCS upload, no crash."""
+    """No data from AV → no upsert, no crash."""
     from gcp.fetchers import fetch_av_historical_options as mod
 
     monkeypatch.setattr(
@@ -274,15 +269,9 @@ def test_process_ticker_skips_when_av_returns_empty(monkeypatch):
     monkeypatch.setattr(
         mod, "upsert_dataframe", lambda df, t, c: upserts.append(df),
     )
-    uploads = []
-    monkeypatch.setattr(
-        mod, "upload_dataframe_as_parquet",
-        lambda *a, **k: uploads.append(a),
-    )
 
-    mod.process_ticker("SPY", "2026-04-25", bucket="b", api_key="k")
+    mod.process_ticker("SPY", "2026-04-25", api_key="k")
     assert upserts == []
-    assert uploads == []
 
 
 # ──────────────────────────────────────────────────────────────────────
