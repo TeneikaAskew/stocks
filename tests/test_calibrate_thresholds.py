@@ -309,3 +309,129 @@ def test_parse_as_of_accepts_today_boundary():
     from scripts.calibrate_thresholds import _parse_as_of
     today_str = _date.today().isoformat()
     assert _parse_as_of(today_str) == _date.today()
+
+
+# ── #250 Drift guard ─────────────────────────────────────────────────────
+
+def _drift_prior_df(values_per_col: dict) -> pd.DataFrame:
+    """Build a synthetic 4-row prior-history DataFrame for check_drift().
+    `values_per_col` maps column → list of 4 prior values."""
+    from datetime import date as _date
+    rows = []
+    for i, dt in enumerate(["2025-04-01", "2025-07-01", "2025-10-01", "2026-01-01"]):
+        row = {"calibration_date": _date.fromisoformat(dt)}
+        for col, vals in values_per_col.items():
+            row[col] = vals[i]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _stub_eng_returning(prior_df: pd.DataFrame, monkeypatch):
+    """Patch pd.read_sql so check_drift's SQL pull returns prior_df.
+    The eng object is opaque — only its identity matters for the patch."""
+    monkeypatch.setattr(
+        "pandas.read_sql",
+        lambda sql, eng, params: prior_df.copy(),
+    )
+
+
+def test_drift_no_prior_rows_passes_through(monkeypatch):
+    """0 prior rows → pass-through, no flag, no refuse."""
+    from datetime import date as _date
+    from scripts.calibrate_thresholds import check_drift
+    _stub_eng_returning(pd.DataFrame(columns=["calibration_date", "atr_60m_median"]), monkeypatch)
+    new_row = {"calibration_date": _date(2026, 4, 1), "atr_60m_median": 1.0}
+    drift, refuse, msgs = check_drift("SPY", new_row, eng=None)
+    assert drift is False
+    assert refuse is False
+
+
+def test_drift_below_2_sigma_no_flag(monkeypatch):
+    """4 prior rows clustered tightly + new row within 2σ → no flag."""
+    from datetime import date as _date
+    from scripts.calibrate_thresholds import check_drift
+    # Prior values 1.0/1.0/1.0/1.0 → mean=1, sd=0. Edge case: handled
+    # separately — use slightly varied values.
+    prior = _drift_prior_df({"atr_60m_median": [1.00, 1.02, 0.98, 1.01]})
+    _stub_eng_returning(prior, monkeypatch)
+    # mean ≈ 1.0025, sd ≈ 0.017, 2σ band ≈ ±0.034
+    new_row = {"calibration_date": _date(2026, 4, 15), "atr_60m_median": 1.015}
+    drift, refuse, _ = check_drift("SPY", new_row, eng=None)
+    assert drift is False, "1.015 vs mean 1.0025 with sd 0.017 is well within 2σ"
+    assert refuse is False
+
+
+def test_drift_above_2_sigma_flags_no_refuse(monkeypatch):
+    """4 prior rows + new row at ~2.5σ → drift_flagged=True, refuse=False."""
+    from datetime import date as _date
+    from scripts.calibrate_thresholds import check_drift
+    prior = _drift_prior_df({"atr_60m_median": [1.00, 1.02, 0.98, 1.01]})
+    _stub_eng_returning(prior, monkeypatch)
+    # Push to ~2.5σ above mean: mean ≈ 1.0025, sd ≈ 0.017, so 1.044 ≈ 2.4σ
+    new_row = {"calibration_date": _date(2026, 4, 15), "atr_60m_median": 1.05}
+    drift, refuse, msgs = check_drift("SPY", new_row, eng=None)
+    assert drift is True
+    assert refuse is False, "2-3σ should flag but not refuse"
+    assert any("DRIFT" in m for m in msgs)
+
+
+def test_drift_above_3_sigma_refuses(monkeypatch):
+    """4 prior rows + new row at ~5σ → refuse=True (caller respects --force)."""
+    from datetime import date as _date
+    from scripts.calibrate_thresholds import check_drift
+    prior = _drift_prior_df({"atr_60m_median": [1.00, 1.02, 0.98, 1.01]})
+    _stub_eng_returning(prior, monkeypatch)
+    # 5σ — clearly past 3σ refusal threshold
+    new_row = {"calibration_date": _date(2026, 4, 15), "atr_60m_median": 2.0}
+    drift, refuse, msgs = check_drift("SPY", new_row, eng=None)
+    assert drift is True
+    assert refuse is True
+    assert any("REFUSE" in m for m in msgs)
+
+
+def test_drift_flat_history_any_change_flags(monkeypatch):
+    """Prior values all identical (sd=0) — any change should flag."""
+    from datetime import date as _date
+    from scripts.calibrate_thresholds import check_drift
+    prior = _drift_prior_df({"atr_60m_median": [1.0, 1.0, 1.0, 1.0]})
+    _stub_eng_returning(prior, monkeypatch)
+    new_row = {"calibration_date": _date(2026, 4, 15), "atr_60m_median": 1.001}
+    drift, refuse, msgs = check_drift("SPY", new_row, eng=None)
+    assert drift is True
+    assert refuse is False  # flat-history flag is warn-level, not refuse
+    assert any("flat" in m.lower() for m in msgs)
+
+
+def test_drift_skips_new_row_with_none_value(monkeypatch):
+    """A NULL new value isn't compared — moves on to other columns."""
+    from datetime import date as _date
+    from scripts.calibrate_thresholds import check_drift
+    prior = _drift_prior_df({
+        "atr_60m_median": [1.0, 1.02, 0.98, 1.01],
+        "rsi_p50":        [50.0, 51.0, 49.0, 50.5],
+    })
+    _stub_eng_returning(prior, monkeypatch)
+    new_row = {
+        "calibration_date": _date(2026, 4, 15),
+        "atr_60m_median": None,    # skip — no comparison
+        "rsi_p50": 50.2,           # within 2σ
+    }
+    drift, refuse, _ = check_drift("SPY", new_row, eng=None)
+    assert drift is False
+    assert refuse is False
+
+
+def test_drift_min_prior_rows_threshold(monkeypatch):
+    """Only 2 prior rows → can't compute drift, returns False/False."""
+    from datetime import date as _date
+    from scripts.calibrate_thresholds import check_drift
+    prior = pd.DataFrame([
+        {"calibration_date": _date(2025, 10, 1), "atr_60m_median": 1.0},
+        {"calibration_date": _date(2026, 1, 1), "atr_60m_median": 1.0},
+    ])
+    _stub_eng_returning(prior, monkeypatch)
+    new_row = {"calibration_date": _date(2026, 4, 1), "atr_60m_median": 5.0}
+    drift, refuse, msgs = check_drift("SPY", new_row, eng=None)
+    assert drift is False, "fewer than 3 prior rows should pass-through"
+    assert refuse is False
+    assert any("skipping drift check" in m for m in msgs)
