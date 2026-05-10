@@ -316,41 +316,88 @@ def test_weekday_range_single_day():
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_resolve_start_from_latest_returns_max_plus_one(monkeypatch):
-    """SQL holds 2026-04-13 as the latest snapshot → start = 2026-04-14."""
+def test_resolve_start_from_latest_uniform_coverage(monkeypatch):
+    """All tickers at 2026-04-13 → start = 2026-04-14."""
     from gcp.fetchers import fetch_av_historical_options as mod
 
     monkeypatch.setattr(
         "gcp.database.query_to_dataframe",
-        lambda *a, **k: pd.DataFrame([{"d": pd.Timestamp("2026-04-13")}]),
+        lambda *a, **k: pd.DataFrame([
+            {"ticker": "SPY", "d": pd.Timestamp("2026-04-13")},
+            {"ticker": "IWM", "d": pd.Timestamp("2026-04-13")},
+        ]),
     )
     out = mod._resolve_start_from_latest(["SPY", "IWM"])
     assert out == date(2026, 4, 14)
 
 
-def test_resolve_start_from_latest_empty_sql_falls_back_to_today(monkeypatch):
-    """No rows for the requested tickers → start = today (caller can
-    pass an explicit --start-date for a wide initial backfill)."""
+def test_resolve_start_from_latest_uses_min_of_per_ticker_max(monkeypatch):
+    """SPY/IWM/SPX through Apr 30, QQQ behind at Apr 16 → start = Apr 17.
+
+    The whole point of MIN-of-per-ticker-MAX (Codex P1 #390): a single
+    tail-behind ticker pulls the start back so its missing days get
+    re-fetched, while the others' already-present days are skipped via
+    per-(ticker, date) skip-existing in process_ticker.
+    """
     from gcp.fetchers import fetch_av_historical_options as mod
 
     monkeypatch.setattr(
         "gcp.database.query_to_dataframe",
-        lambda *a, **k: pd.DataFrame([{"d": None}]),
+        lambda *a, **k: pd.DataFrame([
+            {"ticker": "SPY", "d": pd.Timestamp("2026-04-30")},
+            {"ticker": "IWM", "d": pd.Timestamp("2026-04-30")},
+            {"ticker": "SPX", "d": pd.Timestamp("2026-04-30")},
+            {"ticker": "QQQ", "d": pd.Timestamp("2026-04-16")},
+        ]),
+    )
+    out = mod._resolve_start_from_latest(["SPY", "IWM", "SPX", "QQQ"])
+    assert out == date(2026, 4, 17)
+
+
+def test_resolve_start_from_latest_newly_added_ticker_excluded(monkeypatch):
+    """A ticker with no rows yet drops out of the GROUP BY entirely.
+    The remaining tickers' MIN(MAX) is used and the new ticker gets
+    swept into the date range via per-(ticker, date) skip-existing."""
+    from gcp.fetchers import fetch_av_historical_options as mod
+
+    monkeypatch.setattr(
+        "gcp.database.query_to_dataframe",
+        lambda *a, **k: pd.DataFrame([
+            {"ticker": "SPY", "d": pd.Timestamp("2026-04-30")},
+            {"ticker": "IWM", "d": pd.Timestamp("2026-04-30")},
+            # AVGO requested but absent from result → newly-added
+        ]),
+    )
+    out = mod._resolve_start_from_latest(["SPY", "IWM", "AVGO"])
+    assert out == date(2026, 5, 1)
+
+
+def test_resolve_start_from_latest_no_rows_at_all_falls_back_to_today(monkeypatch):
+    """All requested tickers have NULL MAX (none in the table yet) →
+    start = today (caller can override with explicit --start-date)."""
+    from gcp.fetchers import fetch_av_historical_options as mod
+
+    monkeypatch.setattr(
+        "gcp.database.query_to_dataframe",
+        lambda *a, **k: pd.DataFrame(columns=["ticker", "d"]),
     )
     out = mod._resolve_start_from_latest(["NEW_TICKER"])
     assert out == date.today()
 
 
-def test_resolve_start_from_latest_empty_dataframe(monkeypatch):
-    """query returns empty df (no rows at all) → today fallback."""
+def test_resolve_start_from_latest_filters_null_d(monkeypatch):
+    """A row with d=NaT should be ignored, not treated as the MIN."""
     from gcp.fetchers import fetch_av_historical_options as mod
 
     monkeypatch.setattr(
         "gcp.database.query_to_dataframe",
-        lambda *a, **k: pd.DataFrame(columns=["d"]),
+        lambda *a, **k: pd.DataFrame([
+            {"ticker": "SPY", "d": pd.Timestamp("2026-04-30")},
+            {"ticker": "BAD", "d": pd.NaT},
+        ]),
     )
-    out = mod._resolve_start_from_latest(["SPY"])
-    assert out == date.today()
+    out = mod._resolve_start_from_latest(["SPY", "BAD"])
+    assert out == date(2026, 5, 1)  # SPY's MAX+1, BAD ignored
 
 
 def test_resolve_start_from_latest_no_tickers():
@@ -361,8 +408,8 @@ def test_resolve_start_from_latest_no_tickers():
     assert out == date.today()
 
 
-def test_resolve_start_from_latest_passes_tickers_into_sql(monkeypatch):
-    """Verifies the SQL call gets the expected ticker bind params."""
+def test_resolve_start_from_latest_sql_shape(monkeypatch):
+    """Verifies the SQL call uses GROUP BY + alphavantage filter + bind params."""
     from gcp.fetchers import fetch_av_historical_options as mod
 
     captured = {}
@@ -370,11 +417,14 @@ def test_resolve_start_from_latest_passes_tickers_into_sql(monkeypatch):
     def fake_query(sql, params):
         captured["sql"] = sql
         captured["params"] = params
-        return pd.DataFrame([{"d": pd.Timestamp("2026-04-13")}])
+        return pd.DataFrame([
+            {"ticker": "SPY", "d": pd.Timestamp("2026-04-13")},
+        ])
 
     monkeypatch.setattr("gcp.database.query_to_dataframe", fake_query)
     mod._resolve_start_from_latest(["SPY", "IWM", "QQQ"])
 
     assert "MAX(snapshot_date)" in captured["sql"]
+    assert "GROUP BY ticker" in captured["sql"]
     assert "data_source = 'alphavantage'" in captured["sql"]
     assert captured["params"] == {"t0": "SPY", "t1": "IWM", "t2": "QQQ"}

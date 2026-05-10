@@ -168,14 +168,31 @@ def _weekday_range(start: date, end: date) -> list[str]:
 
 
 def _resolve_start_from_latest(tickers: list[str]) -> date:
-    """Look up MAX(snapshot_date) in etf_options_snapshots across the
-    requested tickers (data_source='alphavantage') and return the day
-    after as the resumable start date. Falls back to today when no
-    rows exist (fresh DB).
+    """Compute the start date that catches up the WORST-COVERED ticker.
 
-    Used by --from-latest to make the monthly Cloud Scheduler invocation
-    self-contained: no hardcoded args, the job catches up from wherever
-    the last successful run left off.
+    Strategy: SELECT MAX(snapshot_date) GROUP BY ticker, take MIN across
+    those per-ticker watermarks, return MIN + 1 day. Falls back to today
+    when no ticker has any rows yet.
+
+    Why MIN-of-per-ticker-MAX instead of a global MAX:
+    1. Tail-behind ticker — if QQQ's last fetch failed but SPY/IWM/SPX
+       moved on, global MAX picks SPY's tail and the date range starts
+       AFTER QQQ's gap. QQQ's missing tail is never re-fetched.
+       MIN-of-per-ticker-MAX picks QQQ's older watermark instead,
+       sweeping the missing days for QQQ while SPY's already-present
+       dates are skipped via per-(ticker, date) skip-existing.
+    2. Newly-added ticker with no history — drops out of the GROUP BY
+       (no rows means no row in result). It still gets fetched for
+       every date in the range that the existing tickers' watermark
+       establishes, and per-(ticker, date) skip-existing fall-through
+       lets AV calls land for it.
+
+    Does NOT catch mid-range gaps within a single ticker (e.g. QQQ has
+    Apr 14, 15, 17, 18, 19 — gap at Apr 16 with later data present).
+    Per-ticker MAX is still Apr 19, MIN across tickers might be Apr 19,
+    range starts Apr 20 → Apr 16's gap survives. For mid-range gaps,
+    invoke explicitly with --start-date pointing at the gap; the
+    monthly self-resume cron is for tail-coverage only.
     """
     from gcp.database import query_to_dataframe
 
@@ -185,20 +202,32 @@ def _resolve_start_from_latest(tickers: list[str]) -> date:
     placeholders = ",".join(f":t{i}" for i in range(len(tickers)))
     params = {f"t{i}": t for i, t in enumerate(tickers)}
     df = query_to_dataframe(
-        f"SELECT MAX(snapshot_date) AS d FROM etf_options_snapshots "
+        f"SELECT ticker, MAX(snapshot_date) AS d FROM etf_options_snapshots "
         f"WHERE ticker IN ({placeholders}) "
-        f"AND data_source = 'alphavantage'",
+        f"AND data_source = 'alphavantage' "
+        f"GROUP BY ticker",
         params,
     )
-    if df.empty or pd.isna(df.iloc[0]["d"]):
+
+    # Tickers with no rows don't appear in the GROUP BY output. They get
+    # caught up implicitly: per-(ticker, date) skip-existing in
+    # process_ticker returns no hit for them, so AV is called for every
+    # date in the established range.
+    watermarks = [
+        pd.to_datetime(r["d"]).date()
+        for _, r in df.iterrows()
+        if pd.notna(r["d"])
+    ]
+    if not watermarks:
         log.warning(
-            "  --from-latest: no existing rows for %s — defaulting start to today",
+            "  --from-latest: no existing rows for any of %s — defaulting "
+            "start to today",
             tickers,
         )
         return date.today()
 
-    last = pd.to_datetime(df.iloc[0]["d"]).date()
-    return last + timedelta(days=1)
+    oldest = min(watermarks)
+    return oldest + timedelta(days=1)
 
 
 def main():
