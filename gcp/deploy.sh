@@ -1112,7 +1112,13 @@ setup_pg_dump_iam() {
         --quiet 2>&1 | tail -3
 
     echo
-    echo "3) Setting GCS lifecycle rule: delete sql-dumps/* older than 30 days"
+    echo "3) Updating GCS lifecycle rules (sql-dumps/ → 30d, raw/ → 730d)"
+    # gcloud storage buckets update --lifecycle-file REPLACES the whole
+    # bucket lifecycle config, so we must include every rule we want to
+    # keep. The raw/ → 730d rule was originally set in setup_cloud_sql.sh
+    # for parquet retention; mirroring it here preserves that policy
+    # alongside the new sql-dumps/ → 30d rule. If gcp/setup_cloud_sql.sh
+    # ever changes its rule definition, update this block to match.
     cat >/tmp/sql_dumps_lifecycle.json <<EOF
 {
   "rule": [
@@ -1121,6 +1127,13 @@ setup_pg_dump_iam() {
       "condition": {
         "age": 30,
         "matchesPrefix": ["sql-dumps/"]
+      }
+    },
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "age": 730,
+        "matchesPrefix": ["raw/"]
       }
     }
   ]
@@ -1833,6 +1846,7 @@ case "${1:-help}" in
         deploy_auto_refresh_top_n
         deploy_signal_quality_report
         deploy_signal_quality_alarm
+        deploy_weekly_pg_dump
         deploy_notifier
         deploy_schedulers
         backfill_watchlist
