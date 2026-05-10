@@ -49,6 +49,22 @@ from lib.strategies.timeframe import assign_timeframe
 from lib.strategies.catalyst_proximity import get_catalyst_context
 
 
+# 2026-05-10 (issue #386 logging gap): basicConfig was previously inside
+# main() — but module-level `logger.info` calls fire BEFORE main() runs
+# (e.g. during `from gcp.signal_monitor import ...` in unit tests), and
+# more importantly the previous structure meant Python's default WARNING
+# level dropped every INFO log including session_summary, mr fire, and
+# the new cap-diagnostics. Cloud Logging from production runs showed
+# zero `INFO` lines pre-fix. Move basicConfig to module-level so logger
+# handlers attach BEFORE any logger.info call in this file. Idempotent —
+# re-running basicConfig is a no-op once a handler is attached.
+import logging as _logging
+if not _logging.getLogger().handlers:
+    _logging.basicConfig(
+        level=_logging.INFO,
+        format='%(asctime)s %(levelname)s %(name)s: %(message)s',
+    )
+
 logger = logging.getLogger(__name__)
 
 AV_BASE_URL = 'https://www.alphavantage.co/query'
@@ -590,9 +606,26 @@ class SignalMonitor:
         self._latest_broken_levels = broken_levels
 
         # Skip if at daily limits
-        if self.daily_trades[ticker] >= self.risk.max_daily_trades:
+        # 2026-05-10 #386 diagnostics: log every cap-check decision so we
+        # can prove from Cloud Logging whether the counter is actually
+        # being read (and what value it holds) at fire time. Pre-fix the
+        # production data showed 300+ alerts/day on a 5/ticker cap,
+        # indicating the check was either reading 0 every time or never
+        # short-circuiting. These logs let the next session prove or
+        # disprove that.
+        cap = self.risk.max_daily_trades
+        cur = self.daily_trades.get(ticker, 0)
+        if cur >= cap:
+            logger.info(
+                "cap_diag: SKIP ticker=%s daily_trades=%d cap=%d (cap reached)",
+                ticker, cur, cap,
+            )
             return
         if self.daily_pnl[ticker] <= self.risk.daily_loss_limit:
+            logger.info(
+                "cap_diag: SKIP ticker=%s daily_pnl=%.4f loss_limit=%.4f",
+                ticker, self.daily_pnl[ticker], self.risk.daily_loss_limit,
+            )
             return
 
         # Evaluate signal — Phase 1.6: also runs momentum on the same
@@ -689,6 +722,20 @@ class SignalMonitor:
 
     def fire_alert(self, ticker, sig, total_score, strength, size, strat_bonus, latest):
         """Send signal alert to Discord."""
+        # 2026-05-10 #386 diagnostics: prove that fire_alert is reached
+        # (i.e. the cap check at line 593 didn't short-circuit) and what
+        # the counter looks like at entry. The increment at the bottom of
+        # this method is the only thing that bumps daily_trades — if we
+        # see "fire_alert ENTER ... daily_trades=N" with N never crossing
+        # the cap, the counter isn't accumulating (pre-increment failure
+        # or post-counter-reset). If we see counter values >= cap, the
+        # cap check is broken upstream.
+        logger.info(
+            "fire_alert ENTER: ticker=%s direction=%s daily_trades=%d cap=%d",
+            ticker, sig.get('direction', '?'),
+            self.daily_trades.get(ticker, 0),
+            self.risk.max_daily_trades,
+        )
         direction = sig['direction']
         price = latest.get('Close', latest.get('Last', 0))
         agreement = getattr(self, '_latest_agreement', None)
@@ -836,6 +883,16 @@ class SignalMonitor:
         # cap by 22× on 5/7 because the cap check `daily_trades[ticker]
         # >= max_daily_trades` was reading a frozen 0.
         self.daily_trades[ticker] = self.daily_trades.get(ticker, 0) + 1
+        # 2026-05-10 #386 diagnostic: paired with the fire_alert ENTER log
+        # above, this lets us prove from Cloud Logging whether the
+        # increment runs (and what counter value it produced) for each
+        # fire. If we see N "fire_alert ENTER" logs but only K "incremented"
+        # logs with K < N, control is exiting fire_alert before the
+        # increment.
+        logger.info(
+            "cap_diag: incremented ticker=%s daily_trades=%d cap=%d",
+            ticker, self.daily_trades[ticker], self.risk.max_daily_trades,
+        )
 
     def _persist_signal_alert(self, ticker, sig, total_score, strength, size,
                               strat_bonus, latest, target, time_stop):
@@ -1227,18 +1284,9 @@ def run_orb_snapshot(window: str) -> int:
 
 
 def main():
-    # Configure root logger BEFORE any logger.info call lands. Pre-fix
-    # the deployed `python -m gcp.signal_monitor` had no basicConfig, so
-    # Python's default WARNING level suppressed every INFO log including
-    # the new session_summary lines (Codex P1 review on PR #320). All
-    # existing logger.info calls in this module (watchlist source at
-    # line 141, mr fire at line 383, exit alerts, persist results, etc.)
-    # were also silently dropped from Cloud Logging — fixing this
-    # surfaces them as a positive externality.
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s %(levelname)s %(name)s: %(message)s',
-    )
+    # Logging is configured at module-level (see top of file). Re-running
+    # basicConfig here would no-op because a handler is already attached;
+    # call removed to keep the configuration in one place.
     import argparse
     parser = argparse.ArgumentParser(description='Real-time signal monitor')
     parser.add_argument('--mode', choices=['loop', 'orb-snapshot', 'replay'],
