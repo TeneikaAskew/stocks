@@ -647,9 +647,13 @@ deploy_fetch_alphavantage() {
 # Replaces the disabled .github/workflows/fetch-alphavantage-options-daily.yml.
 #
 # Spec design:
-# - --start-date 2016-01-04 is our chosen uniform floor; --end-date is omitted
-#   so the fetcher defaults to today (date.today() in main()), making the job
-#   self-extending without spec edits as time advances.
+# - --from-latest tells the fetcher to compute start-date = MAX(snapshot_date
+#   in etf_options_snapshots) + 1 day across the requested tickers. end-date
+#   defaults to today. This makes the job self-resuming: every Cloud Scheduler
+#   invocation catches up from wherever the last successful run left off, no
+#   spec edits or args overrides needed as time advances. Initial runs against
+#   an empty table fall through to start=today (caller can override with an
+#   explicit --start-date for a wide historical backfill).
 # - Range mode auto-enables --skip-existing in the fetcher, so re-runs only
 #   fetch (ticker, date) pairs missing from etf_options_snapshots — cheap
 #   incremental cost after the first full backfill.
@@ -663,10 +667,10 @@ deploy_fetch_alphavantage() {
 #   so a re-dispatch after failure converges without duplicate emails.
 # - 12h task-timeout sized for the worst case of an empty-SQL initial run
 #   (~10 years × 4 tickers ≈ 10K AV calls @ 150 RPM ≈ 70 min). Steady-state
-#   incremental runs finish in under a minute.
+#   monthly runs finish in under a minute (~22 trading days × 4 tickers).
 #
-# No Cloud Scheduler binding wired here — see deploy_schedulers() for that
-# decision. Without one, the job runs only when manually invoked.
+# Scheduler binding: av-options-monthly cron at 0 5 1 * * (5:00 UTC on the
+# 1st of every month) — see deploy_schedulers().
 deploy_av_options_backfill() {
     echo "Deploying fetch-av-options-backfill job..."
 
@@ -692,7 +696,7 @@ deploy_av_options_backfill() {
         --task-timeout 43200
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_av_historical_options"
-        --args "--tickers,SPY IWM QQQ SPX,--start-date,2016-01-04"
+        --args "--tickers,SPY IWM QQQ SPX,--from-latest"
         ${secrets_flag}
         --set-env-vars "${non_secret_env}"
         --quiet
@@ -1587,22 +1591,18 @@ deploy_schedulers() {
     # 16:00 ET close, well beyond AV's typical ingestion window.
     _schedule "fetch-market-data-daily"  "0 23 * * 1-5"   "fetch-market-data"
 
-    # ETF options intraday (9x/day) was REMOVED — see commit message.
-    # Daily EOD snapshots are produced by the fetch-av-options-backfill job
-    # (deploy_av_options_backfill) but it has NO scheduler binding here —
-    # currently runs only when manually invoked via:
-    #   gcloud run jobs execute fetch-av-options-backfill --region us-east1
-    # The disabled .github/workflows/fetch-alphavantage-options-daily.yml
-    # used to fire this daily; after migration to a Cloud Run Job the
-    # equivalent _schedule entry was never added. Coverage gaps since the
-    # GH workflow was disabled are real (e.g. last EOD snapshot lagged by
-    # weeks before this comment was written). The Options UI queries AV
-    # live for "current chain" via OptionsFlowPage fallback — that's the
-    # workaround that hides the staleness from the UI side. To restore
-    # nightly refresh, add:
-    #   _schedule "av-options-daily" "0 1 * * 2-6" "fetch-av-options-backfill"
-    # (01:00 UTC Tue–Sat covers Mon–Fri EOD after AV publishes ~midnight UTC.)
-    # See docs/DATA_PIPELINE.md.
+    # AV HISTORICAL_OPTIONS — 1st of each month at 5:00 UTC (1 AM ET).
+    # The job spec uses --from-latest, so each invocation queries
+    # MAX(snapshot_date) from etf_options_snapshots and backfills from
+    # there to today. On a healthy cadence this picks up ~22 trading
+    # days × 4 tickers ≈ 88 AV calls (~35 sec at 150 RPM) once a month.
+    # If the user wants daily freshness (rather than the once-a-month
+    # roll-up), change to "0 5 * * *" — same args work because
+    # --from-latest is self-resuming.
+    _schedule "av-options-monthly"  "0 5 1 * *"  "fetch-av-options-backfill"
+    # Live options queries beyond the last refresh continue to flow
+    # through the OptionsFlowPage AV-fallback path; the SQL table is
+    # the source of truth for historical analysis.
 
     # AlphaVantage monthly intraday — 1st of each month 9 PM ET
     _schedule "av-intraday-monthly"  "0 21 1 * *"  "fetch-alphavantage-intraday"
