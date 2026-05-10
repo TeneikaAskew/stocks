@@ -17,6 +17,7 @@ Dependencies:
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass, field
+from datetime import date as date_type
 from typing import Dict, List, Optional, Tuple
 
 from lib.strat import StratClassifier
@@ -97,16 +98,43 @@ def classify_level_strat(
 # ─── Previous period levels (fixed, no repainting) ───────────────────────
 
 
-def compute_previous_levels(daily_df: pd.DataFrame) -> Dict[str, StratLevel]:
-    """Compute previous period H/L levels from daily OHLCV data.
+def compute_previous_levels(
+    daily_df: pd.DataFrame,
+    analysis_date: Optional[date_type] = None,
+) -> Dict[str, StratLevel]:
+    """Compute previous-period H/L/C levels from daily OHLCV data.
 
     Reads the raw OHLCV to compute period aggregates, then classifies
-    each period relative to the one before it.
+    each period relative to the one before it. Emits three levels per
+    timeframe — high, low, AND close — so charts that reference PDC/PWC
+    have the same source-of-truth as PDH/PDL.
 
     Args:
         daily_df: DataFrame with Open/High/Low/Close columns,
-                  DatetimeIndex or a 'date'/'Date'/'Time' column.
-                  Sorted ascending. Needs ~1 year for yearly levels.
+            DatetimeIndex or a 'date'/'Date'/'Time' column. Sorted
+            ascending. Needs ~1 year for yearly levels.
+        analysis_date: When given, treat this date as "today". For
+            each timeframe (day, week, month, quarter, year) the
+            function finds the period containing analysis_date and
+            returns levels for the period immediately BEFORE that one.
+
+            This fixes the off-by-one bug observed on 2026-05-06 QQQ:
+            the brief filtered today's in-progress bar out via
+            ``idx < analysis_date``, so iloc[-2] of each grouping
+            picked the day-before-yesterday instead of yesterday — PDH
+            wrote $676.73 (5/4 high) when the chart's PDH was $682.77
+            (5/5 high), which fed the trade_planner a stale baseline
+            and produced a $695.52 synthetic blue-sky trigger that
+            price never touched.
+
+            With analysis_date passed, the function uses period-filter
+            semantics — ``period < pd.Period(analysis_date, freq=…)``
+            for week/month/quarter and ``< analysis_date`` for day —
+            independent of where df's last bar happens to sit.
+
+            When None (legacy callers), falls back to iloc[-2]
+            behavior, which assumes df's last row is today's
+            in-progress bar.
     """
     if daily_df.empty or len(daily_df) < 2:
         return {}
@@ -147,13 +175,18 @@ def compute_previous_levels(daily_df: pd.DataFrame) -> Dict[str, StratLevel]:
 
     levels: Dict[str, StratLevel] = {}
 
-    # Period definitions: (group_key, label, abbreviation_prefix)
+    # Period definitions: (group_key, tf_label, prefix, period_freq).
+    # period_freq drives the analysis_date filter:
+    #   None → groupby key is python date; compare directly
+    #   'W' / 'M' / 'Q' → groupby key is pd.Period; compare to
+    #     pd.Period(analysis_date, freq=…)
+    #   'Y' → groupby key is int year; compare to analysis_date.year
     periods = [
-        ('_day', 'day', 'PD'),
-        ('_week', 'week', 'PW'),
-        ('_month', 'month', 'PM'),
-        ('_quarter', 'quarter', 'PQ'),
-        ('_year', 'year', 'PY'),
+        ('_day', 'day', 'PD', None),
+        ('_week', 'week', 'PW', 'W'),
+        ('_month', 'month', 'PM', 'M'),
+        ('_quarter', 'quarter', 'PQ', 'Q'),
+        ('_year', 'year', 'PY', 'Y'),
     ]
 
     df['_day'] = df['_date'].dt.date
@@ -162,22 +195,42 @@ def compute_previous_levels(daily_df: pd.DataFrame) -> Dict[str, StratLevel]:
     df['_quarter'] = df['_date'].dt.to_period('Q')
     df['_year'] = df['_date'].dt.year
 
-    for group_col, tf_label, prefix in periods:
+    for group_col, tf_label, prefix, period_freq in periods:
         grp = df.groupby(group_col).agg(
             H=('_high', 'max'),
             L=('_low', 'min'),
             O=('_open', 'first'),
             C=('_close', 'last'),
         )
-        if len(grp) < 2:
+        if grp.empty:
             continue
 
-        # Previous completed period
-        prev_period = grp.iloc[-2]
-        prev_label = str(grp.index[-2])
+        # Pick the previous-period row.
+        if analysis_date is not None:
+            if period_freq is None:
+                cutoff = analysis_date
+            elif period_freq == 'Y':
+                cutoff = analysis_date.year
+            else:
+                cutoff = pd.Period(analysis_date, freq=period_freq)
+            prev_grp = grp[grp.index < cutoff]
+            if prev_grp.empty:
+                continue
+            prev_period = prev_grp.iloc[-1]
+            prev_label = str(prev_grp.index[-1])
+            p_n2 = prev_grp.iloc[-2] if len(prev_grp) >= 2 else None
+        else:
+            # Legacy: assume df's last row is today's in-progress bar
+            # → previous period is iloc[-2].
+            if len(grp) < 2:
+                continue
+            prev_period = grp.iloc[-2]
+            prev_label = str(grp.index[-2])
+            p_n2 = grp.iloc[-3] if len(grp) >= 3 else None
 
         h_name = f'{prefix}H'
         l_name = f'{prefix}L'
+        c_name = f'{prefix}C'
 
         levels[h_name] = StratLevel(
             name=h_name, price=float(prev_period['H']),
@@ -191,17 +244,23 @@ def compute_previous_levels(daily_df: pd.DataFrame) -> Dict[str, StratLevel]:
             strat_class='', is_current=False,
             period_label=prev_label,
         )
+        levels[c_name] = StratLevel(
+            name=c_name, price=float(prev_period['C']),
+            timeframe=tf_label, level_type='close',
+            strat_class='', is_current=False,
+            period_label=prev_label,
+        )
 
-        # Classify: compare prev period to the one before it
-        if len(grp) >= 3:
-            p_n1 = grp.iloc[-2]  # prev period
-            p_n2 = grp.iloc[-3]  # period before prev
+        # Classify prev period vs the period before it.
+        if p_n2 is not None:
             strat = classify_level_strat(
-                p_n1['H'], p_n1['L'], p_n1['C'], p_n1['O'],
+                prev_period['H'], prev_period['L'],
+                prev_period['C'], prev_period['O'],
                 p_n2['H'], p_n2['L'],
             )
             levels[h_name].strat_class = strat
             levels[l_name].strat_class = strat
+            levels[c_name].strat_class = strat
 
     return levels
 
@@ -336,6 +395,60 @@ def compute_current_levels(
 
 
 # ��── Gap detection ────────────────────────────────────────────────────────
+
+
+# ─── Intraday levels (premarket, ORB) — persisted alongside structural ─────
+
+
+def compute_premarket_levels(
+    pre_high: Optional[float],
+    pre_low: Optional[float],
+) -> Dict[str, StratLevel]:
+    """Build StratLevel rows for premarket high / low.
+
+    pre_high / pre_low come from `lib.indicators.calculate_premarket_context`
+    (4:00–9:30 ET aggregation per `market_data_intraday`). Persisting
+    them to `strat_levels` lets:
+
+      * the live signal_monitor see PMK_H / PMK_L as triggerable
+        crossings during RTH (PR #381 added the read-side; this PR
+        adds the write-side data they read),
+      * `lib/agents/trade_planner.select_trigger_and_regime` use them
+        as candidate triggers in the blue-sky path instead of having
+        to synthesize an ATR-projected level above pre_high (the
+        5/6 QQQ case where the synthetic $695.52 trigger never got
+        hit but pre_high $692.86 was the actual turn level — see
+        the 5/6 chart's PWH/PWO inside-bar consolidation).
+
+    Returns an empty dict when both inputs are None (no premarket
+    data — typical for the first half-hour after a long weekend or
+    when the intraday fetcher is mid-write). Caller decides what to
+    do with that — premarket_brief logs and proceeds without these
+    levels.
+
+    NOTE: caller appends the resulting StratLevels to a LevelMap
+    BEFORE calling persist_level_map, so they share the same as_of
+    timestamp + source_data_as_of guard as the structural levels.
+    """
+    out: Dict[str, StratLevel] = {}
+    if pre_high is not None and pre_high > 0:
+        out['PMK_H'] = StratLevel(
+            name='PMK_H', price=float(pre_high),
+            timeframe='intraday', level_type='high',
+            strat_class='', is_current=True,
+            period_label='premarket',
+        )
+    if pre_low is not None and pre_low > 0:
+        out['PMK_L'] = StratLevel(
+            name='PMK_L', price=float(pre_low),
+            timeframe='intraday', level_type='low',
+            strat_class='', is_current=True,
+            period_label='premarket',
+        )
+    return out
+
+
+# ─── Gap levels ─────────────────────────────────────────────────────────────
 
 
 def compute_gap_levels(daily_df: pd.DataFrame, lookback: int = 20) -> List[StratLevel]:
@@ -718,6 +831,7 @@ def build_level_map(
     daily_strat_class: str = '',
     combo: str = '',
     atr: Optional[float] = None,
+    analysis_date: Optional[date_type] = None,
 ) -> LevelMap:
     """Build the complete level map for a ticker.
 
@@ -727,8 +841,14 @@ def build_level_map(
     staleness filter inside `identify_triggers`. When None, only the
     percent-distance axis is enforced — back-compat for callers that
     haven't been updated to pass ATR.
+
+    `analysis_date` flows through to compute_previous_levels — see its
+    docstring. When the caller has already filtered df via
+    ``idx < analysis_date`` (e.g. the premarket brief), passing
+    analysis_date here yields PDH/PDL/PWH/etc. anchored to the period
+    BEFORE analysis_date, regardless of df's iloc layout.
     """
-    prev_levels = compute_previous_levels(daily_df)
+    prev_levels = compute_previous_levels(daily_df, analysis_date=analysis_date)
     curr_levels = compute_current_levels(daily_df, current_price)
     gap_levels = compute_gap_levels(daily_df, lookback=20)
 
