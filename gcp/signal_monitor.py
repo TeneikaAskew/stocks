@@ -55,10 +55,19 @@ from lib.strategies.catalyst_proximity import get_catalyst_context
 # more importantly the previous structure meant Python's default WARNING
 # level dropped every INFO log including session_summary, mr fire, and
 # the new cap-diagnostics. Cloud Logging from production runs showed
-# zero `INFO` lines pre-fix. Move basicConfig to module-level so logger
-# handlers attach BEFORE any logger.info call in this file. Idempotent —
-# re-running basicConfig is a no-op once a handler is attached.
+# zero `INFO` lines pre-fix. Move logger configuration to module-level so
+# handlers + INFO level are set BEFORE any logger.info call in this file.
+#
+# Codex P2 review on PR #391: a naive `if not handlers: basicConfig()`
+# guard preserves the same failure mode when ANY transitively-imported
+# module (requests, pandas, lib/* code) has already attached a root
+# handler — basicConfig is then skipped AND the existing handler keeps
+# the default WARNING level, so our INFO logs stay suppressed. Fix is
+# two-step: (1) always set root level to INFO so any existing handler
+# inherits it; (2) only basicConfig when no handler exists, to avoid
+# duplicating handler output if some other module already configured one.
 import logging as _logging
+_logging.getLogger().setLevel(_logging.INFO)
 if not _logging.getLogger().handlers:
     _logging.basicConfig(
         level=_logging.INFO,
