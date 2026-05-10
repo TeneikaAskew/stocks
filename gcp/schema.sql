@@ -1725,6 +1725,17 @@ CREATE TABLE IF NOT EXISTS ticker_calibration (
 CREATE INDEX IF NOT EXISTS idx_ticker_calibration_recent
     ON ticker_calibration (ticker, calibration_date DESC);
 
+-- 2026-05-10 (#250) drift guard. When a quarterly calibration produces
+-- a value > 2σ from the rolling 4-row mean for any percentile column,
+-- the row is written but flagged. Live resolver in
+-- lib/strategies/calibration.py falls back to Tier-B (universal) when
+-- drift_flagged=TRUE so a single anomalous calibration window doesn't
+-- whipsaw production thresholds. Values > 3σ refuse the write entirely
+-- (must --force to override). See scripts/calibrate_thresholds.py
+-- _check_drift() for the implementation.
+ALTER TABLE ticker_calibration
+    ADD COLUMN IF NOT EXISTS drift_flagged BOOLEAN DEFAULT FALSE;
+
 
 -- ─────────────────────────────────────────────────────────
 -- EXIT_CONFIG_OVERRIDES: per-ticker target/stop/time overrides
