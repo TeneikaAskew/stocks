@@ -161,10 +161,16 @@ def classify_proximity_bucket(
     return "quiet"
 
 
-def _query_or_empty(sql: str, params: tuple) -> pd.DataFrame:
+def _query_or_empty(sql: str, params: dict) -> pd.DataFrame:
     """Run a Cloud SQL query and return DataFrame, or empty on any
     failure (DB unavailable, table missing, etc.). Catalyst proximity
     is enrichment — never block signal persistence on its absence.
+
+    `params` is a dict for SQLAlchemy's `text()` binding (`:name` style).
+    Pre-2026-05-10, this took a tuple with `%s` placeholders, which
+    silently failed at every signal-monitor session start with
+    "ArgumentError: List argument must consist only of dictionaries"
+    (issue #393). All callers updated to dict form.
     """
     try:
         from gcp.database import is_cloud_sql_configured
@@ -187,11 +193,11 @@ def _nearest_economic(ts_et: datetime, window_h: int = 24) -> tuple:
     sql = """
         SELECT event_date, event_time, event_name, importance
           FROM economic_events
-         WHERE event_date BETWEEN (%s::timestamp - INTERVAL '1 day')::date
-                              AND (%s::timestamp + INTERVAL '1 day')::date
+         WHERE event_date BETWEEN (CAST(:ts AS timestamp) - INTERVAL '1 day')::date
+                              AND (CAST(:ts AS timestamp) + INTERVAL '1 day')::date
          ORDER BY event_date, event_time
     """
-    df = _query_or_empty(sql, (ts_et, ts_et))
+    df = _query_or_empty(sql, {"ts": ts_et})
     if df.empty:
         return (None, None, None, None)
 
@@ -227,13 +233,13 @@ def _nearest_earnings(ticker: str, ts_et: datetime) -> tuple:
     sql = """
         SELECT earnings_date, earnings_time
           FROM earnings_calendar
-         WHERE ticker = %s
-           AND earnings_date BETWEEN (%s::timestamp - INTERVAL '1 day')::date
-                                AND (%s::timestamp + INTERVAL '1 day')::date
+         WHERE ticker = :ticker
+           AND earnings_date BETWEEN (CAST(:ts AS timestamp) - INTERVAL '1 day')::date
+                                AND (CAST(:ts AS timestamp) + INTERVAL '1 day')::date
          ORDER BY earnings_date
          LIMIT 5
     """
-    df = _query_or_empty(sql, (ticker, ts_et, ts_et))
+    df = _query_or_empty(sql, {"ticker": ticker, "ts": ts_et})
     if df.empty:
         return (None, None, None, None)
 
@@ -269,14 +275,14 @@ def _nearest_8k(ticker: str, ts_et: datetime) -> tuple:
     sql = """
         SELECT filing_date, items
           FROM sec_filings
-         WHERE ticker = %s
+         WHERE ticker = :ticker
            AND form = '8-K'
-           AND filing_date BETWEEN (%s::timestamp - INTERVAL '6 days')::date
-                              AND (%s::timestamp)::date
+           AND filing_date BETWEEN (CAST(:ts AS timestamp) - INTERVAL '6 days')::date
+                              AND (CAST(:ts AS timestamp))::date
          ORDER BY filing_date DESC
          LIMIT 5
     """
-    df = _query_or_empty(sql, (ticker, ts_et, ts_et))
+    df = _query_or_empty(sql, {"ticker": ticker, "ts": ts_et})
     if df.empty:
         return (None, None)
     # Filter to material item codes (1.01, 2.01, 5.02, 7.01, 8.01)
