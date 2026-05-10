@@ -665,6 +665,101 @@ keep the SA scoped to a single GCP project; rely on Cloud Audit Logs
 for forensics. The dual-key option remains available if a future
 threat model justifies the operational cost; today it doesn't.
 
+### Backup and disaster recovery
+
+Cloud SQL `trading-db` has three layers of backup; the GCS parquet
+shadow-copy that fetchers used to write was retired in 2026-05 because
+it covered only 2 of 30+ tables and added I/O cost without recovery
+value once these layers landed.
+
+| Layer | What | Retention | Recovery granularity | Where |
+|---|---|---|---|---|
+| **Daily PD snapshots** | Cloud SQL automated snapshots | 7 most recent | One restore point per day at ~03:00 UTC | Cloud SQL backups list |
+| **Point-in-time recovery (PITR)** | WAL archive | 7 days of transaction log | Any second within last 7 days | Cloud SQL transaction log |
+| **Weekly `pg_dump`** | Logical SQL dump (gzipped) | 30 days (lifecycle rule) | Whole-DB snapshot, every Sunday 04:00 UTC | `gs://${PROJECT_ID}-trading-data/sql-dumps/` |
+
+The first two are managed by Cloud SQL itself. The third is the
+`cloud-sql-weekly-export` Cloud Run Job + `cloud-sql-weekly-export-sunday`
+scheduler defined in `gcp/deploy.sh` (`deploy_weekly_pg_dump` +
+`setup_pg_dump_iam`). The pg_dump survives instance deletion or a
+region-wide GCP issue — the snapshots and PITR don't.
+
+#### When to reach for which
+
+| Scenario | Use |
+|---|---|
+| `DROP TABLE` or `DELETE FROM` mistake; need to restore to 5 minutes ago | **PITR** — fine-grained, no row loss within the recovery window |
+| Schema migration corrupted yesterday's data; need to restore to before the migration | **Daily snapshot** from 24h ago |
+| Cloud SQL instance accidentally deleted, or a hypothetical region outage in `us-east1` | **Weekly pg_dump** — restore into a fresh instance from the GCS dump |
+| Audit a row's history (timestamps, who-wrote-what) | None of the above — no row-level audit log; rely on application-side write logs and `created_at` columns |
+
+#### Restore commands (read-only reference — run with care)
+
+```bash
+# 1. List available daily snapshots
+gcloud sql backups list --instance=trading-db --project=adept-mountain-474619-d4
+
+# 2. Restore a daily snapshot into a fresh instance (preferred over
+#    in-place — gives you a chance to validate before swapping)
+gcloud sql backups restore <BACKUP_ID> \
+    --restore-instance=trading-db-restore-test \
+    --backup-instance=trading-db \
+    --project=adept-mountain-474619-d4
+
+# 3. PITR restore to a specific timestamp (creates a new instance,
+#    point-in-time = anywhere in the last 7 days)
+gcloud sql instances clone trading-db trading-db-pitr-test \
+    --point-in-time=2026-05-09T14:30:00.000Z \
+    --project=adept-mountain-474619-d4
+
+# 4. Pull the latest weekly pg_dump and restore to a local Postgres
+#    or a throwaway Cloud SQL instance
+gcloud storage ls gs://adept-mountain-474619-d4-trading-data/sql-dumps/
+gcloud storage cp gs://adept-mountain-474619-d4-trading-data/sql-dumps/trading-YYYYMMDD-HHMMSS.sql.gz - \
+    | gunzip \
+    | psql "<connection-string-of-target-db>"
+```
+
+**Always restore to a fresh instance first**, validate, then promote.
+Never run `gcloud sql import sql` directly into the live `trading-db`.
+
+#### What is NOT backed up
+
+- **GCS objects** under `gs://${PROJECT_ID}-trading-data/raw/` (legacy
+  parquet snapshots) — these were the old shadow-copy and are scheduled
+  for cleanup once the weekly pg_dump has produced at least one verified
+  dump. Don't add new dependencies on this prefix.
+- **`platform/` build artifacts**, **Docker images** in Artifact Registry
+  (rebuildable from source), **GitHub Actions logs / artifacts** (kept
+  by GitHub, not by us).
+- **Discord channel history** — Discord retains it; we don't.
+
+#### Verifying backups are healthy
+
+A weekly cron healthcheck would be ideal but isn't yet implemented.
+Until then, on-demand:
+
+```bash
+# 1. Verify last pg_dump landed and is non-empty
+gcloud storage ls -l gs://adept-mountain-474619-d4-trading-data/sql-dumps/ \
+    | sort -k2 | tail -2
+
+# 2. Verify it gunzips cleanly (smoke test the integrity)
+gcloud storage cp gs://.../trading-LATEST.sql.gz - | gzip -t && echo "OK"
+
+# 3. Verify PITR is still enabled
+gcloud sql instances describe trading-db --format='value(settings.backupConfiguration.pointInTimeRecoveryEnabled)'
+# Should print: True
+
+# 4. Verify the daily snapshot ran today
+gcloud sql backups list --instance=trading-db --limit=1 \
+    --format='value(startTime,status)'
+# startTime should be within last 24h, status SUCCESSFUL
+```
+
+If any of these fails, treat as a sev-2 incident: backups are the floor
+under every other safety mechanism.
+
 ### GitHub API access from the sandbox
 
 The sandbox cannot run `gh` (not installed). To dispatch workflows, read
