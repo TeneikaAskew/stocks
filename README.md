@@ -109,6 +109,50 @@ Full per-table flow with all 27 jobs is in [DATA_DEPENDENCIES.md §7](DATA_DEPEN
 
 ---
 
+## Tech stack
+
+**Frontend** ([`platform/`](platform/))
+- React 19 + TypeScript 5.9, Vite 7, TailwindCSS 4
+- TanStack Query / Table, Zustand, React Router 7
+- Recharts, D3, lightweight-charts, lucide-react
+- Vitest (unit) + Playwright (e2e, incl. IAP-authed cloud project)
+
+**Backend API** ([`platform/api/`](platform/api/))
+- FastAPI + Uvicorn, httpx
+- pandas + pyarrow for in-memory slicing of GCS parquet
+- `google-cloud-aiplatform` + `google-genai` for AI agents (Vertex / Gemini)
+
+**Core Python** ([`lib/`](lib/), [`gcp/`](gcp/), [`scripts/`](scripts/))
+- pandas, numpy, pyarrow, scikit-learn, scipy
+- `py_vollib` + `py_vollib_vectorized` for options Greeks (incl. SPX BSM IV solver)
+- `yfinance`, `fredapi`, `finvizfinance`, AlphaVantage via `requests`
+- `tenacity` for retries; matplotlib / seaborn / plotly + Streamlit for ad-hoc viz
+- Jupyter / JupyterLab notebooks for analysis
+
+**Data + infra (GCP)**
+- Cloud SQL Postgres (`trading` DB) — schema in [`gcp/schema.sql`](gcp/schema.sql), accessed via [`gcp/database.py`](gcp/database.py) using the Cloud SQL Connector + pg8000
+- GCS for parquet fetcher output
+- Cloud Run + Cloud Run Jobs (Dockerfile-based deploys via [`gcp/deploy.sh`](gcp/deploy.sh))
+- Cloud Scheduler (40+ crons) orchestrating the fetcher fleet
+- Secret Manager for API keys + GitHub PAT
+- Workload Identity Federation for keyless GH Actions → GCP auth
+
+**Automation**
+- GitHub Actions for scheduled fetchers, backtests, freshness watchdogs, and the [`db-query.yml`](.github/workflows/db-query.yml) SQL bridge
+- Reusable [`handle-workflow-failure.yml`](.github/workflows/handle-workflow-failure.yml) auto-opens labeled issues + draft PRs on any failure
+
+**Adjacent surfaces**
+- Discord (primary user surface) — webhooks + slash-command interactions ([`gcp/discord_interactions/`](gcp/discord_interactions/))
+- Google Apps Script ([`google-apps-script/`](google-apps-script/), [`appsscript.json`](appsscript.json)) for legacy sheet automation
+- TradingView Pine Script v6 indicators ([`tradingview-pine-scripts/`](tradingview-pine-scripts/))
+
+**Tooling**
+- Make ([`Makefile`](Makefile)), Docker / docker-compose
+- ESLint 9 + typescript-eslint on the frontend
+- Pinned deps via [`requirements.lock`](requirements.lock) and [`requirements-gcp.lock`](requirements-gcp.lock)
+
+---
+
 ## Cost at a glance
 
 - **~\$13/month run-rate** at March pricing (~\$3/month at April pricing, possibly with a credit applied)
