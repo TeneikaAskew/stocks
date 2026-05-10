@@ -650,10 +650,20 @@ port (sandbox blocks all egress except 443). A GH-Actions-mediated query
 workflow is the only path that works without a desktop fallback. The
 runner reuses `gcp/database.py:get_engine()` and the existing
 `CLOUD_SQL_CONNECTION_NAME` / `DB_USER` / `DB_PASS` / `DB_NAME` repo
-secrets. Auth uses a dedicated SA key
-(`CLAUDE_CODE_WEB_GCP_SA_KEY`, distinct from the data-pipeline workflows'
-`GCP_SA_KEY`) so a key compromise here doesn't put scheduled fetchers at
-risk simultaneously.
+secrets. Auth uses **`CLAUDE_CODE_WEB_GCP_SA_KEY`** — the same SA key
+used by every other data-pipeline workflow in this repo since the
+2026-05-10 consolidation. The original "web-sandbox vs data-pipeline"
+key split was paranoia-tier separation that didn't buy anything in
+this single-owner / single-project setup; both surfaces share blast
+radius. The `claude-web@` SA holds `roles/editor` at the project
+level which is sufficient for every workflow that touches GCP.
+
+A consequence of the consolidation: a `CLAUDE_CODE_WEB_GCP_SA_KEY`
+compromise now affects every workflow in this repo. Mitigations: rotate
+via `gcloud iam service-accounts keys` + GitHub repo secret update;
+keep the SA scoped to a single GCP project; rely on Cloud Audit Logs
+for forensics. The dual-key option remains available if a future
+threat model justifies the operational cost; today it doesn't.
 
 ### GitHub API access from the sandbox
 

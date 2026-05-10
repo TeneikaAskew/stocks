@@ -57,10 +57,11 @@ jobs:
 
       - name: Write GCP service account key
         env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          # 2026-05-10: consolidated on CLAUDE_CODE_WEB_GCP_SA_KEY.
+          GCP_SA_KEY: ${{ secrets.CLAUDE_CODE_WEB_GCP_SA_KEY }}
         run: |
           if [ -z "$GCP_SA_KEY" ]; then
-            echo "::error::GCP_SA_KEY secret is not set"
+            echo "::error::CLAUDE_CODE_WEB_GCP_SA_KEY secret is not set"
             exit 1
           fi
           echo "$GCP_SA_KEY" > "$RUNNER_TEMP/gcp-key.json"
