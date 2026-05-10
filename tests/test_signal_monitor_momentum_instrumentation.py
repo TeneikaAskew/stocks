@@ -159,27 +159,37 @@ def test_counters_bump_every_bar_post_369():
 # ── 4b) Codex P1 on #320: main() must configure INFO logging ────────
 
 def test_main_configures_info_logging_so_session_summary_appears():
-    """Codex P1 review on PR #320 (#3211919294): without
-    `logging.basicConfig(level=INFO)` in main(), the deployed Cloud
-    Run job runs with Python's default WARNING root level and every
-    `logger.info(...)` call — including the new session_summary —
-    is silently dropped. The 5-day rollup at #304 would see no data
-    even though the counters incremented correctly.
+    """Codex P1 review on PR #320 (#3211919294): without INFO-level
+    logging configured for the deployed Cloud Run job, every
+    `logger.info(...)` call — including session_summary — is silently
+    dropped at Python's default WARNING level. The 5-day rollup at
+    #304 would see no data even though the counters incremented.
 
-    This test parses the source of `gcp.signal_monitor.main` and
-    asserts the basicConfig call is present and at INFO level. A
-    runtime test would have to clobber root logger state which is
-    flaky in the pytest harness."""
-    import inspect
-    from gcp.signal_monitor import main
-    src = inspect.getsource(main)
-    assert 'logging.basicConfig' in src, (
-        "main() must call logging.basicConfig so INFO-level logs "
-        "(including the new session_summary) reach Cloud Logging"
+    PR #391 (#386 logging fix) moved the configuration from inside main()
+    to module-level (so `logger.info` calls at module-import-time also
+    land, and so a handler attached by a transitively-imported module
+    doesn't suppress INFO via a stale WARNING level). This test now
+    asserts the BEHAVIOR — that importing gcp.signal_monitor leaves the
+    root logger at INFO level with at least one handler — rather than
+    parsing main()'s source for a specific function call (over-constrained
+    against the implementation location).
+    """
+    import importlib
+    import logging
+    import gcp.signal_monitor
+    # Reload so the module-level basicConfig + setLevel run again under
+    # whatever logging state the prior test order has left in place.
+    importlib.reload(gcp.signal_monitor)
+
+    root = logging.getLogger()
+    assert root.level <= logging.INFO and root.level != logging.NOTSET, (
+        f"Root logger level must be INFO or DEBUG "
+        f"(got {logging.getLevelName(root.level)}); "
+        f"otherwise gcp.signal_monitor's logger.info calls are dropped"
     )
-    assert 'level=logging.INFO' in src, (
-        "main()'s basicConfig must set level=logging.INFO; "
-        "otherwise the root logger stays at WARNING and INFO is dropped"
+    assert root.handlers, (
+        "Root logger must have at least one handler attached after "
+        "gcp.signal_monitor is imported; otherwise INFO logs go nowhere"
     )
 
 
