@@ -66,7 +66,8 @@ def _unavailable(reason: str) -> dict:
 
 
 def summarize_market_context(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = False,
 ) -> dict:
     """Daily OHLCV + indicators + regime classification.
 
@@ -91,7 +92,13 @@ def summarize_market_context(
       because the 8:30 AM ET fetcher populates those fields before
       the insight pipeline runs at 8:45 AM. Yesterday's pre_high
       would be a day-old reading.
+
+    ``inclusive_today`` (added to make the contract explicit):
+      Default False — premarket contract used by the insight pipeline.
+      Set True for EOD / backtest contexts that want to read today's
+      completed daily row.
     """
+    daily_op = "<=" if inclusive_today else "<"
     daily_sql = (
         "SELECT date, open, high, low, close, volume, "
         "       sma_200, ema_20, ema_50, rsi_14, macd, macd_signal, "
@@ -100,7 +107,7 @@ def summarize_market_context(
         "       pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr "
         "FROM market_data_daily "
         "WHERE ticker = :ticker "
-        + ("AND date < :as_of " if as_of else "")
+        + (f"AND date {daily_op} :as_of " if as_of else "")
         + "ORDER BY date DESC LIMIT 1"
     )
     params: dict[str, Any] = {"ticker": ticker.upper()}
@@ -238,7 +245,8 @@ def summarize_market_context(
 
 
 def summarize_strat_status(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = True,
 ) -> dict:
     """Rob Smith strat state — delegates to lib.strat.compute_strat_status.
 
@@ -252,10 +260,15 @@ def summarize_strat_status(
     ``effective_pdl`` for inside-of-inside compressions. The deterministic
     trade planner uses these to walk the level hierarchy on gap days
     instead of always anchoring entry at PDH/PDL.
+
+    ``inclusive_today`` forwards to compute_strat_status — see its
+    docstring. Default True for backwards-compat; the insight pipeline
+    passes False (premarket context: today's daily row excluded).
     """
     from lib.strat import compute_strat_status
 
-    status = compute_strat_status(ticker, as_of=as_of)
+    status = compute_strat_status(ticker, as_of=as_of,
+                                  inclusive_today=inclusive_today)
     if not status.get("available"):
         return _unavailable(status.get("reason") or f"strat unavailable for {ticker}")
 
@@ -300,7 +313,14 @@ def summarize_strat_status(
                 if isinstance(df.index, _pd.DatetimeIndex) and df.index.tz is not None:
                     df = df.copy()
                     df.index = df.index.tz_localize(None)
-                df = df[df.index <= cutoff]
+                # Match the cutoff semantic used inside compute_strat_status:
+                #   inclusive_today=True  → df.index <= cutoff (backtest contract)
+                #   inclusive_today=False → df.index < midnight-of-cutoff-date
+                #                          (premarket contract — exclude entire as_of date)
+                if inclusive_today:
+                    df = df[df.index <= cutoff]
+                else:
+                    df = df[df.index < cutoff.normalize()]
             level_map = compute_previous_levels(df)
             level_dict: dict[str, float] = {}
             for name in ("PDH", "PDL", "PWH", "PWL", "PMH", "PML",
@@ -1304,21 +1324,29 @@ def retrieve_similar_journal(
 
 
 def build_context_bundle(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = False,
 ) -> dict:
     """Collect all summarizer outputs into one dict for analyst prompts.
 
     Each section is either a populated dict with `available: True` or
     `{available: False, reason: ...}`. A top-level `failed_sections`
     list tells the orchestrator which sections to mark degraded.
+
+    ``inclusive_today`` (default False): premarket contract. Today's
+    daily bar is excluded from market_context + strat_status because
+    on a live 8:30 AM ET / replay-of-8:30 AM run, today's RTH bar
+    either doesn't exist yet (live) or would be look-ahead (replay).
+    Set True only for explicit EOD analytics that *want* today's
+    closed bar.
     """
     bundle = {
         "ticker": ticker.upper(),
         "as_of": str(as_of) if as_of else None,
     }
     sections = {
-        "market": lambda: summarize_market_context(ticker, as_of),
-        "strat": lambda: summarize_strat_status(ticker, as_of),
+        "market": lambda: summarize_market_context(ticker, as_of, inclusive_today=inclusive_today),
+        "strat": lambda: summarize_strat_status(ticker, as_of, inclusive_today=inclusive_today),
         "options": lambda: summarize_options_flow(ticker, as_of),
         "gamma": lambda: summarize_gamma_levels(ticker, as_of),
         "signals": lambda: summarize_signals_history(ticker, as_of=as_of),

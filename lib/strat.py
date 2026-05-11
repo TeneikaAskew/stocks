@@ -409,6 +409,7 @@ def compute_strat_status(
     as_of: Optional[date_type] = None,
     timeframes: Optional[list[str]] = None,
     strat_config: Optional[StratConfig] = None,
+    inclusive_today: bool = True,
 ) -> Dict[str, Any]:
     """Compute the latest Strat candle, in-force combo, and FTFC scoring.
 
@@ -419,6 +420,18 @@ def compute_strat_status(
 
     Returns a dict with the StratSnapshot shape used by the LLM analyst
     plus richer fields the brief uses (`ftfc_labels`, `combo`).
+
+    ``inclusive_today``:
+      - True (default, legacy contract): ``as_of`` cutoff is
+        **inclusive** — ``df.index <= as_of``. Used by backtests / EOD
+        analytics that want "what would the strat say AT the close of
+        day X" semantics. Today's row is included if it exists.
+      - False (premarket contract): ``as_of`` cutoff is **strict** —
+        ``df.index < as_of``. Mirrors what the 8:30 AM ET premarket
+        brief sees (today's daily row hasn't been written yet OR has
+        NULL OHLC). The insight pipeline runs in this mode so a
+        ``INSIGHT_AS_OF=2026-05-06`` replay can't read 5/6's actual
+        RTH close as ``iloc[-1]``.
     """
     # Timeframe keys must match RESAMPLE_RULES in lib/data_loader.py:
     #   '5m', '15m', '30m', '1h', '4h', '12h', '1d', '1w', '1mo'
@@ -464,9 +477,24 @@ def compute_strat_status(
         if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
             df = df.copy()
             df.index = df.index.tz_localize(None)
-        df = df[df.index <= cutoff]
+        if inclusive_today:
+            # Inclusive cutoff: any bar on or before as_of's wall-clock
+            # instant. A tz-aware datetime as_of=4/20 13:15 UTC still
+            # admits the 4/20 midnight bar in this branch — preserves
+            # the legacy backtest contract.
+            df = df[df.index <= cutoff]
+            reason_suffix = f"on or before {as_of}"
+        else:
+            # Strict cutoff: exclude ANY bar whose DATE equals as_of's
+            # date. Daily bars are indexed at midnight, so comparing
+            # against a partial-day cutoff (e.g. 13:15 UTC) would still
+            # admit the midnight bar via `<`. Normalize to date for
+            # deterministic premarket semantic.
+            cutoff_date = cutoff.normalize()  # midnight of cutoff's date
+            df = df[df.index < cutoff_date]
+            reason_suffix = f"strictly before {as_of}"
         if df.empty or len(df) < 2:
-            return {"available": False, "reason": f"insufficient bars on or before {as_of}"}
+            return {"available": False, "reason": f"insufficient bars {reason_suffix}"}
 
     strat = StratClassifier(strat_config=strat_config)
 
