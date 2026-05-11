@@ -1424,12 +1424,22 @@ deploy_notifier() {
         --role="roles/pubsub.subscriber" --quiet
 
     # 5) Create Cloud Logging sink → Pub/Sub
-    # Filter catches Cloud Run Job execution failures but excludes the notifier
-    # itself to prevent infinite loops.
+    # Filter catches Cloud Run Job execution failures but excludes:
+    #   1. the notifier itself (prevents infinite loops)
+    #   2. Cloud Audit Logs (`cloudaudit.googleapis.com`) — every
+    #      `gcloud run jobs update` triggers an ERROR-severity audit log
+    #      because gcloud tries Jobs.CreateJob first (ALREADY_EXISTS at
+    #      ERROR severity) and falls back to UpdateJob. Without the
+    #      `logName:"run.googleapis.com"` clause, every deploy fired one
+    #      false-positive notification per job. Real execution failures
+    #      land on `run.googleapis.com/varlog/system` (task-failed
+    #      records) and `run.googleapis.com/stderr` (container stack
+    #      traces), both of which still match.
     local sink_filter
     sink_filter='resource.type="cloud_run_job"
 AND severity>=ERROR
-AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"'
+AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"
+AND logName:"run.googleapis.com"'
 
     gcloud logging sinks create "${NOTIFIER_SINK}" \
         "pubsub.googleapis.com/projects/${PROJECT_ID}/topics/${NOTIFIER_TOPIC}" \
