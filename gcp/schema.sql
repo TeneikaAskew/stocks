@@ -2172,3 +2172,19 @@ CREATE INDEX IF NOT EXISTS idx_signal_alerts_run_kind
     ON signal_alerts(run_kind) WHERE run_kind != 'live';
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_replay_id
     ON signal_alerts(replay_id) WHERE replay_id IS NOT NULL;
+
+-- Phase 1 direction gate (per docs/audits/2026-05-10-risk-reviewer-validation.md):
+-- the live signal_monitor reads insight_reports and decides whether
+-- to suppress / downgrade / tag the fire. These columns record the
+-- gate's view of each fire so we can post-hoc audit decisions and
+-- measure missed-winner rate (shadow mode).
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS insight_direction  VARCHAR(8),     -- 'long'/'short'/'flat'/null
+    ADD COLUMN IF NOT EXISTS insight_conviction VARCHAR(8),     -- 'low'/'medium'/'high'/null
+    ADD COLUMN IF NOT EXISTS insight_regime     VARCHAR(20),    -- 'normal'/'extended'/'orb_only'/null
+    ADD COLUMN IF NOT EXISTS gate_action        VARCHAR(16),    -- 'pass'/'suppress'/'downgrade'/'tag'/'annotate'
+    ADD COLUMN IF NOT EXISTS gate_reason        TEXT,           -- short label, e.g. 'opposing_weak_vs_plan_long'
+    ADD COLUMN IF NOT EXISTS thesis_invalidated BOOLEAN DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_signal_alerts_gate_action
+    ON signal_alerts(gate_action) WHERE gate_action IS NOT NULL;
