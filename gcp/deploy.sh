@@ -1633,9 +1633,15 @@ deploy_schedulers() {
     # Earnings calendar (UW + EW) — 7:15 AM ET weekdays
     _schedule "earnings-calendar-daily"  "15 7 * * 1-5"  "fetch-earnings-calendar"
 
-    # Earnings history (AV EARNINGS, per-ticker quarterly EPS) — Sunday 6 AM ET.
-    # Weekly cadence is enough since past quarters never change.
-    _schedule "earnings-history-weekly"  "0 6 * * 0"  "fetch-earnings-history"
+    # Earnings history (AV EARNINGS, per-ticker quarterly EPS) — daily at
+    # 7:45 AM ET, 30 min after earnings-calendar-daily lands and the AV
+    # options enrichment has populated options_volume across the brief
+    # window. This lets fetch_earnings_history pick up the broader
+    # options-tradeable universe (~3,000 tickers vs ~500 on the old
+    # has_options-only filter) so the 11pm compute-earnings-reactions
+    # run has the input rows it needs to compute playability scores
+    # for the names the brief actually surfaces.
+    _schedule "earnings-history-daily"  "45 7 * * 1-5"  "fetch-earnings-history"
 
     # Compute earnings reactions — daily at 11 PM ET (after market
     # close + EW strike eval at 11 PM, so the latest market_data_daily

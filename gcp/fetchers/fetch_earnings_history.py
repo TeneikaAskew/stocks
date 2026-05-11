@@ -230,14 +230,20 @@ def _earnings_calendar_tickers(
 ) -> list[str]:
     """Resolve tickers reporting earnings in the next N days from Cloud SQL.
 
-    With ``require_options=True`` (default), only returns tickers where
-    at least one earnings_calendar row marks ``has_options=true`` (set
-    by EW or UW). This collapses a typical 7d window from ~3,500
-    reporters to ~500 actually-tradable names, eliminating the silent
-    truncation we used to hit at the 500-ticker cap. AV/Yahoo never set
-    has_options, so the filter effectively means "EW or UW confirmed
-    this is options-tradable around earnings" — the right cut for an
-    earnings-options pipeline.
+    With ``require_options=True`` (default), only returns tickers we
+    have evidence have a tradeable options market:
+      (a) ``options_volume > 0`` set by the AV HISTORICAL_OPTIONS
+          enrichment in fetch_earnings_calendar.py (~3,000 tickers
+          enriched per daily run, covering the full optionable
+          universe), OR
+      (b) the legacy ``has_options=true`` flag (set by EW or UW
+          when they pick a strategy — covers ~500 tickers).
+
+    (a) is the primary filter post-AV-enrichment (broad coverage of
+    the actual optionable universe); (b) is a fallback for any ticker
+    AV hasn't been called on yet. Combined, this collapses a typical
+    7d window from ~3,500 reporters to ~3,000 tradeable names — vs
+    the prior ~500 from the EW/UW-only flag.
     """
     try:
         from gcp.database import query_to_dataframe
@@ -252,7 +258,10 @@ def _earnings_calendar_tickers(
         GROUP BY ticker
     """
     if require_options:
-        sql += '        HAVING BOOL_OR(COALESCE(has_options, false)) = true\n'
+        sql += (
+            '        HAVING BOOL_OR(COALESCE(options_volume, 0) > 0) = true\n'
+            '            OR BOOL_OR(COALESCE(has_options, false)) = true\n'
+        )
     sql += "        ORDER BY ticker\n"
     try:
         df = query_to_dataframe(sql, {"days": lookahead_days})
