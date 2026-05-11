@@ -964,14 +964,19 @@ CREATE TABLE IF NOT EXISTS model_routing (
     updated_by    VARCHAR(64)
 );
 
+-- Seed routes consistent with the Vertex adapter's default location
+-- (`global`, see lib/agents/vertex_adapter.py). gemini-2.0-flash lives
+-- ONLY on regional us-east1 and would 404 against the default global
+-- endpoint, so a fresh deploy must seed a model that lives on global
+-- (gemini-2.5-flash, gemini-3.1-flash-lite, etc). Updated 2026-05-11.
 INSERT INTO model_routing (role, provider, model) VALUES
-    ('analyst',           'vertex', 'gemini-2.0-flash'),
-    ('bull',              'vertex', 'gemini-2.0-flash'),
-    ('bear',              'vertex', 'gemini-2.0-flash'),
-    ('judge',             'vertex', 'gemini-2.0-flash'),
-    ('trader',            'vertex', 'gemini-2.0-flash'),
-    ('risk',              'vertex', 'gemini-2.0-flash'),
-    ('portfolio_manager', 'vertex', 'gemini-2.0-flash')
+    ('analyst',           'vertex', 'gemini-3.1-flash-lite'),
+    ('bull',              'vertex', 'gemini-3.1-flash-lite'),
+    ('bear',              'vertex', 'gemini-3.1-flash-lite'),
+    ('judge',             'vertex', 'gemini-3.1-flash-lite'),
+    ('trader',            'vertex', 'gemini-3.1-flash-lite'),
+    ('risk',              'vertex', 'gemini-3.1-flash-lite'),
+    ('portfolio_manager', 'vertex', 'gemini-3.1-flash-lite')
 ON CONFLICT (role) DO NOTHING;
 
 DROP TRIGGER IF EXISTS trg_model_routing_updated ON model_routing;
