@@ -44,7 +44,11 @@ PRICE_TABLE: dict[tuple[Provider, str], ModelRates] = {
         output_usd_per_mtok=1.50,
         cache_read_usd_per_mtok=0.025,
     ),
-    ("vertex", "gemini-3-flash"): ModelRates(
+    # Gemini 3 Flash is in Public Preview as of 2025-12-17; the callable
+    # Vertex model ID carries a `-preview` suffix. When it goes GA the
+    # alias `gemini-3-flash` will start resolving and this entry should
+    # be renamed (and the routing migrated) accordingly.
+    ("vertex", "gemini-3-flash-preview"): ModelRates(
         input_usd_per_mtok=0.50,
         output_usd_per_mtok=3.00,
         cache_read_usd_per_mtok=0.05,
