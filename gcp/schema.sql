@@ -1456,7 +1456,28 @@ ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS llm_overview          TEXT,
     ADD COLUMN IF NOT EXISTS llm_orb_explanation   TEXT,
     ADD COLUMN IF NOT EXISTS llm_analysis          TEXT,
-    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT;
+    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT,
+    -- Mirror the brief-playbook outcome tracking columns added to
+    -- premarket_analysis (2026-05-11). Without them, bulk_insert into
+    -- the history table silently drops the structured fields populated
+    -- by persist_to_cloud_sql, leaving the audit trail unable to
+    -- reconstruct the exact triggers/stops/targets that were
+    -- recommended on a given morning. Codex review on PR #444 caught
+    -- this on the initial PR; mirror is additive + idempotent.
+    ADD COLUMN IF NOT EXISTS calls_trigger_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_trigger_name    VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_stop_price      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_stop_name       VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_t1_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t2_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t3_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_name     VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_stop_price       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_stop_name        VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION;
 
 
 CREATE TABLE IF NOT EXISTS insight_reports_history (
