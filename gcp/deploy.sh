@@ -1352,6 +1352,16 @@ deploy_notifier() {
     env_string="$(_env_string)"
     env_string="${env_string},GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION}"
 
+    # The failure-notifier posts to a DEDICATED Discord channel for GCP job
+    # failures (secret `discord-webhook-gcp`), not the shared `discord-webhook`
+    # that the rest of the platform uses for briefs/alerts. We also fold in the
+    # GitHub PAT/repo secrets so a single --set-secrets flag carries every
+    # secret-mounted env var (a second --set-secrets on the same gcloud invoke
+    # replaces the first entirely, which previously masked the shared secrets).
+    local notifier_secrets="${DB_SECRET_FLAG#--set-secrets=}"
+    notifier_secrets="${notifier_secrets/discord-webhook:latest/discord-webhook-gcp:latest}"
+    notifier_secrets="${notifier_secrets},GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest"
+
     # 1) Deploy the Cloud Run service (overrides Dockerfile CMD with stdlib server)
     # Secrets are mounted from Secret Manager at runtime via --set-secrets so
     # they never appear in revision metadata (visible to anyone with run.services.get).
@@ -1360,9 +1370,8 @@ deploy_notifier() {
         --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 \
         --service-account "${SA_EMAIL}" \
         --command "python" --args "-m,gcp.failure_notifier" \
-        ${DB_SECRET_FLAG} \
         --set-env-vars "${env_string}" \
-        --set-secrets="GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest" \
+        --set-secrets="${notifier_secrets}" \
         --no-allow-unauthenticated \
         --quiet
 
