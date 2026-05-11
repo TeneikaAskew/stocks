@@ -77,7 +77,17 @@ def _get_genai_client():
 
 
 class VertexGeminiAdapter(LLMClient):
-    """Vertex AI Gemini implementation of LLMClient."""
+    """Vertex AI Gemini implementation of LLMClient.
+
+    Known limit: the adapter caches one google-genai client at the
+    location resolved on first call (`VERTEX_GEMINI_LOCATION` env var or
+    DEFAULT_GCP_LOCATION = "global"). All roles in `model_routing` must
+    therefore target models that live at that same location — mixing
+    `vertex:gemini-2.0-flash` (regional only) and `vertex:gemini-3.x`
+    (global only) in the same pipeline run would 404 one of them. If
+    mixed routing becomes a real need, key `_client` by location and
+    look up the right client per call.
+    """
 
     provider = "vertex"
 
