@@ -383,6 +383,49 @@ class TestComputeCurrentLevelsPremarketLabels:
         assert 'PWO' in levels
         assert 'CWO' not in levels
 
+    def test_pdo_strat_class_is_stable_across_premarket_price_gaps(self):
+        """Codex P2 review on PR #445: when emitting PDO, strat_class
+        must be computed from yesterday's CLOSE — not today's
+        ``current_price`` — so a premarket gap can't repaint a
+        completed session's classification.
+
+        Scenario: yesterday closed inside its own range. Today gaps
+        sharply above prev-day high. With the bug, today's
+        current_price gets folded into yesterday's high → reclassified
+        as 2U/Failed_2U. With the fix, PDO.strat_class is locked in
+        based on yesterday's actual close.
+        """
+        df = _daily_df(20)
+        # Override the last bar so we know its exact OHLC:
+        #   yesterday's range = [195, 205], close = 200 (inside both
+        #   prev-day H and L, so strat_class = '1' inside bar).
+        last_idx = len(df) - 1
+        df.iloc[last_idx, df.columns.get_loc('Open')]  = 197.0
+        df.iloc[last_idx, df.columns.get_loc('High')]  = 205.0
+        df.iloc[last_idx, df.columns.get_loc('Low')]   = 195.0
+        df.iloc[last_idx, df.columns.get_loc('Close')] = 200.0
+        # Set the prev-day above/below this range so '1' is the
+        # natural strat class
+        df.iloc[last_idx - 1, df.columns.get_loc('High')] = 210.0
+        df.iloc[last_idx - 1, df.columns.get_loc('Low')]  = 190.0
+
+        last_dt = pd.Timestamp(df['Date'].iloc[-1])
+        ad = (last_dt + pd.tseries.offsets.BDay(1)).date()
+
+        # Today gaps WAY above yesterday's high
+        gap_price = 230.0
+        levels = compute_current_levels(df, gap_price, analysis_date=ad)
+
+        assert 'PDO' in levels
+        # With the fix, PDO inherits yesterday's stable classification —
+        # current_price=230 does NOT leak into it. Pre-fix this would
+        # have been '2U' or 'Failed_2U' because today_high =
+        # max(205, 230) = 230 broke prev_day_high=210.
+        # We accept any class as long as it's NOT one that requires
+        # today's gap-up to compute (2U/Failed_2U/3).
+        assert levels['PDO'].strat_class not in ('2U', 'Failed_2U', '3'), \
+            f"PDO repainted to {levels['PDO'].strat_class} from premarket gap — expected stable class"
+
     def test_analysis_date_in_new_month_swaps_cmo_to_pmo(self):
         """First-trading-day-of-month brief: filtered df ends in the
         prior month AND a prior month already exists in the history.

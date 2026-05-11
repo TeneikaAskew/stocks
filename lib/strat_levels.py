@@ -358,23 +358,39 @@ def compute_current_levels(
         today = df.iloc[-1]
         today_open = (float(today['_open'])
                       if pd.notna(today['_open']) else current_price)
-        _h = today['_high']
-        today_high = max(float(_h) if pd.notna(_h) else current_price,
-                         current_price)
-        _l = today['_low']
-        today_low = min(float(_l) if pd.notna(_l) else current_price,
-                        current_price)
-
-        strat = classify_level_strat(
-            today_high, today_low, current_price, today_open,
-            float(prev_day['_high']), float(prev_day['_low']),
-        )
         # Is `today` actually today, or yesterday (df was filtered)?
         today_row_date = pd.Timestamp(today['_date']).normalize().date()
-        if ad_date is None or today_row_date == ad_date:
+        is_actually_today = (ad_date is None or today_row_date == ad_date)
+
+        if is_actually_today:
+            # Live mid-session / EOD context: fold current_price into
+            # today's repainting H/L so the strat class evolves with
+            # the tape.
+            _h = today['_high']
+            today_high = max(float(_h) if pd.notna(_h) else current_price,
+                             current_price)
+            _l = today['_low']
+            today_low = min(float(_l) if pd.notna(_l) else current_price,
+                            current_price)
+            strat = classify_level_strat(
+                today_high, today_low, current_price, today_open,
+                float(prev_day['_high']), float(prev_day['_low']),
+            )
             day_name = 'CDO'
             day_is_current = True
         else:
+            # Premarket replay context: `today` is yesterday's COMPLETED
+            # session. Codex P2 review on PR #445 — folding
+            # current_price into yesterday's H/L would let today's
+            # premarket gap repaint a closed session's strat class.
+            # Use yesterday's actual close instead.
+            yday_high = float(today['_high']) if pd.notna(today['_high']) else today_open
+            yday_low  = float(today['_low'])  if pd.notna(today['_low'])  else today_open
+            yday_close = float(today['_close']) if pd.notna(today['_close']) else today_open
+            strat = classify_level_strat(
+                yday_high, yday_low, yday_close, today_open,
+                float(prev_day['_high']), float(prev_day['_low']),
+            )
             day_name = 'PDO'
             day_is_current = False
         levels[day_name] = StratLevel(
@@ -392,19 +408,27 @@ def compute_current_levels(
 
     if not this_week.empty and not prev_weeks.empty:
         cw_open = float(this_week.iloc[0]['_open'])
-        cw_high = max(float(this_week['_high'].max()), current_price)
-        cw_low = min(float(this_week['_low'].min()), current_price)
 
         last_wk_period = prev_weeks['_week'].iloc[-1]
         last_wk = prev_weeks[prev_weeks['_week'] == last_wk_period]
         pw_high = float(last_wk['_high'].max())
         pw_low = float(last_wk['_low'].min())
 
-        strat = classify_level_strat(cw_high, cw_low, current_price, cw_open, pw_high, pw_low)
-        if ad_week_period is None or current_week == ad_week_period:
+        is_current_week = (ad_week_period is None or current_week == ad_week_period)
+        if is_current_week:
+            # In-progress week — fold today's tape into the repainting H/L.
+            cw_high = max(float(this_week['_high'].max()), current_price)
+            cw_low = min(float(this_week['_low'].min()), current_price)
+            strat = classify_level_strat(cw_high, cw_low, current_price, cw_open, pw_high, pw_low)
             wk_name = 'CWO'
             wk_is_current = True
         else:
+            # Completed previous week — strat class from the week's own
+            # close, not today's price (Codex P2 review on PR #445).
+            cw_high = float(this_week['_high'].max())
+            cw_low  = float(this_week['_low'].min())
+            cw_close = float(this_week.iloc[-1]['_close'])
+            strat = classify_level_strat(cw_high, cw_low, cw_close, cw_open, pw_high, pw_low)
             wk_name = 'PWO'
             wk_is_current = False
         levels[wk_name] = StratLevel(
@@ -422,18 +446,25 @@ def compute_current_levels(
 
     if not this_month.empty and not prev_months.empty:
         cm_open = float(this_month.iloc[0]['_open'])
-        cm_high = max(float(this_month['_high'].max()), current_price)
-        cm_low = min(float(this_month['_low'].min()), current_price)
 
         last_m = prev_months[prev_months['_month'] == prev_months['_month'].iloc[-1]]
         pm_high = float(last_m['_high'].max())
         pm_low = float(last_m['_low'].min())
 
-        strat = classify_level_strat(cm_high, cm_low, current_price, cm_open, pm_high, pm_low)
-        if ad_month_period is None or current_month == ad_month_period:
+        is_current_month = (ad_month_period is None or current_month == ad_month_period)
+        if is_current_month:
+            cm_high = max(float(this_month['_high'].max()), current_price)
+            cm_low = min(float(this_month['_low'].min()), current_price)
+            strat = classify_level_strat(cm_high, cm_low, current_price, cm_open, pm_high, pm_low)
             mo_name = 'CMO'
             mo_is_current = True
         else:
+            # Completed previous month — fixed strat class from month's
+            # own close (Codex P2 review on PR #445).
+            cm_high = float(this_month['_high'].max())
+            cm_low  = float(this_month['_low'].min())
+            cm_close = float(this_month.iloc[-1]['_close'])
+            strat = classify_level_strat(cm_high, cm_low, cm_close, cm_open, pm_high, pm_low)
             mo_name = 'PMO'
             mo_is_current = False
         levels[mo_name] = StratLevel(
