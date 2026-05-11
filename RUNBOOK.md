@@ -185,7 +185,7 @@ gcloud sql connect trading-db --user=trading_user --quiet <<<"SELECT MAX(date) F
 **Immediate response (5 min)**
 - Test the webhook directly:
   ```bash
-  WEBHOOK=$(gcloud secrets versions access latest --secret=discord-webhook)
+  WEBHOOK=$(gcloud secrets versions access latest --secret=discord-webhook-insights)
   curl -sS -X POST -H "Content-Type: application/json" \
     -d '{"content":"runbook test"}' "$WEBHOOK"
   ```
@@ -196,7 +196,7 @@ gcloud sql connect trading-db --user=trading_user --quiet <<<"SELECT MAX(date) F
 1. Discord → Server Settings → Integrations → Webhooks → recreate the webhook
 2. Update Secret Manager:
    ```bash
-   echo -n "<new-webhook-url>" | gcloud secrets versions add discord-webhook --data-file=-
+   echo -n "<new-webhook-url>" | gcloud secrets versions add discord-webhook-insights --data-file=-
    ```
 3. Redeploy any job that bakes the webhook URL into env vars at deploy time. Per `gcp/deploy.sh`, the brief / monitor / insight-discord-push jobs all use `_env_string()` which captures the **current** secret value at deploy time:
    ```bash
@@ -432,7 +432,8 @@ gcloud storage buckets create gs://adept-mountain-474619-d4-trading-data \
 #   - benzinga-api-key (benzinga.com)
 #   - sec-user-agent (your email — required by SEC)
 #   - github-pat / gh-stocks-repo-pat (github.com/settings/tokens)
-#   - discord-webhook (Discord → Server Settings → Integrations)
+#   - discord-webhook-insights (Discord → Server Settings → Integrations; main briefs/alerts channel)
+#   - discord-webhook-gcp (Discord webhook for the dedicated GCP-errors channel used by failure-notifier)
 #   - discord-bot-token / discord-public-key / discord-app-id (Discord Developer Portal)
 #   - admin-token (generate fresh: openssl rand -base64 32)
 # For each, store via:
