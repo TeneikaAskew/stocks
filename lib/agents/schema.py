@@ -113,6 +113,77 @@ class RiskFlag(BaseModel):
     message: str
 
 
+class RiskMetrics(BaseModel):
+    """Pre-computed deterministic distances on a PersonaPlan.
+
+    Empirical validation (docs/audits/2026-05-10-risk-reviewer-validation.md)
+    found that LLM-computed risk distances (e.g. "stop < 1 ATR") had
+    44.4% precision and 22.2% recall. The math itself is simple but
+    the LLM hallucinates the comparison. So all distances are computed
+    deterministically here and persisted; the LLM reviewer reads these
+    columns and applies threshold rules WITHOUT recomputing.
+
+    Empirically-validated thresholds (per the same audit, 36-day SPY/IWM/QQQ
+    sample):
+      * stop_distance_atr < 1.0       → -31.1pp win-rate signal (warn)
+      * stop_distance_pct > 1.0       → -24.9pp signal           (warn)
+      * entry_vs_sma200_pct > 10.0    → -21.8pp signal at >10%   (warn)
+      * any t_r_multiple < 1.5        → -18.8pp signal           (warn)
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    stop_distance_atr: Optional[float] = Field(
+        None,
+        description=(
+            "abs(entry_mid - stop) / atr_14 — how many ATRs of room "
+            "the stop has before it triggers. < 1.0 typically warns."
+        ),
+    )
+    stop_distance_pct: Optional[float] = Field(
+        None,
+        description=(
+            "abs(entry_mid - stop) / entry_mid * 100 — stop distance as "
+            "% of entry price. > 1.0 typically warns on indices."
+        ),
+    )
+    target_r_multiples: list[float] = Field(
+        default_factory=list,
+        description=(
+            "For each target, (target - entry_mid) / risk_per_unit, "
+            "signed by direction (positive = good R:R). Empty when "
+            "no targets or risk_per_unit == 0."
+        ),
+    )
+    entry_vs_sma200_pct: Optional[float] = Field(
+        None,
+        description=(
+            "(entry_mid - sma_200) / sma_200 * 100. Positive = entry "
+            "above 200 SMA (typical for trend-following longs)."
+        ),
+    )
+    entry_vs_sma200_atr: Optional[float] = Field(
+        None,
+        description="(entry_mid - sma_200) / atr_14 — same in ATR units.",
+    )
+    ftfc_aligned: Optional[bool] = Field(
+        None,
+        description=(
+            "True if direction matches FTFC sign (long+bullish or "
+            "short+bearish AND |ftfc_score| >= 0.5). Already deterministic "
+            "via _calibrate_conviction; surfaced here for reviewer prompts."
+        ),
+    )
+    invalidation_distance_atr: Optional[float] = Field(
+        None,
+        description=(
+            "abs(invalidation_level - stop) / atr_14 when invalidation "
+            "is a price-level (Optional). None when invalidation is "
+            "narrative-only."
+        ),
+    )
+
+
 class PersonaPlan(BaseModel):
     """Concrete trade plan emitted by one of the three risk-debate personas.
 
@@ -154,6 +225,16 @@ class PersonaPlan(BaseModel):
             "level >= 3 ATR away (recommend ORB confirmation). "
             "'orb_only' = no unbroken structural trigger; wait for the "
             "opening range to establish before entering."
+        ),
+    )
+    risk_metrics: Optional[RiskMetrics] = Field(
+        default=None,
+        description=(
+            "Pre-computed deterministic risk distances. Optional during "
+            "transition — rendered None when the bundle lacks atr_14 or "
+            "sma_200. Reviewer prompts read these fields directly; they "
+            "do NOT recompute the math (LLM math hallucinates ~55% of "
+            "the time per the 2026-05-10 validation audit)."
         ),
     )
 
