@@ -382,29 +382,19 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     if os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '0') != '1':
         earnings = [e for e in earnings if e.get('tier', 6) <= 3]
 
-    # Sort by tradeability first, tier as tiebreaker.
-    #
-    # Tier-only sorting put EW-confirmed-but-illiquid names (WELL, WM,
-    # MDLZ, NXPI, OKE — all options_volume=0) ahead of high-flow names
-    # like SBUX (20K options, $112B mcap) just because EW picked a
-    # strategy. From a trader's POV that's backwards: real options
-    # flow + institutional weight matters more than analyst confirmation.
-    #
-    # Composite score (options_volume + 1) × (market_cap_B + 1):
-    #   - Names with BOTH signals get multiplicative boost
-    #   - Names with zero options collapse toward linear market_cap
-    #     (well below names with real options flow)
-    #   - Tier still matters as a tiebreaker for similar-score names
-    def _rank_score(r):
-        ovol = r.get('options_volume') or 0
-        mcap = r.get('market_cap') or 0
-        return (ovol + 1) * (mcap / 1e9 + 1)
-
+    # Sort: open_interest DESC → options_volume DESC → market_cap DESC,
+    # with tier + ticker as final tiebreakers. OI primary because it's
+    # the most stable liquidity measure (volume bounces day-to-day, OI
+    # reflects the durable open positions). Volume secondary as the
+    # second-most-stable measure. Mcap last as the institutional weight
+    # tiebreaker for similar-OI/vol names.
     earnings.sort(key=lambda r: (
         r['date'],
-        -_rank_score(r),     # tradeability primary (DESC)
-        r['tier'],           # tier breaks ties (1 before 6)
-        r['ticker'],
+        -(r.get('open_interest')  or 0),  # DESC: open interest
+        -(r.get('options_volume') or 0),  # DESC: options volume
+        -(r.get('market_cap')     or 0),  # DESC: market cap
+        r['tier'],                         # ASC: tier breaks ties
+        r['ticker'],                       # ASC: alphabetical
     ))
 
     # Cap at top_n AFTER the tier sort so the cut keeps the highest-quality
