@@ -35,19 +35,46 @@ class ModelRates:
 
 PRICE_TABLE: dict[tuple[Provider, str], ModelRates] = {
     # Vertex Gemini — https://cloud.google.com/vertex-ai/generative-ai/pricing
-    ("vertex", "gemini-2.0-flash"): ModelRates(
+    # Rates verified against the official pricing page 2026-05-11. Cache-read
+    # rate is the steady-state context-cache hit rate; non-global pricing
+    # variants (effective 2026-07-01) are not modeled — we use the global
+    # rate as the canonical value.
+    ("vertex", "gemini-3.1-flash-lite"): ModelRates(
+        input_usd_per_mtok=0.25,
+        output_usd_per_mtok=1.50,
+        cache_read_usd_per_mtok=0.025,
+    ),
+    ("vertex", "gemini-3-flash"): ModelRates(
+        input_usd_per_mtok=0.50,
+        output_usd_per_mtok=3.00,
+        cache_read_usd_per_mtok=0.05,
+    ),
+    ("vertex", "gemini-2.5-flash"): ModelRates(
+        input_usd_per_mtok=0.30,
+        output_usd_per_mtok=2.50,
+        cache_read_usd_per_mtok=0.03,
+    ),
+    ("vertex", "gemini-2.5-flash-lite"): ModelRates(
         input_usd_per_mtok=0.10,
         output_usd_per_mtok=0.40,
+        cache_read_usd_per_mtok=0.01,
+    ),
+    # gemini-2.5-pro has tiered pricing (≤200K vs >200K input). The repo
+    # uses the ≤200K rate — every analyst/risk prompt in this pipeline is
+    # well under 200K tokens, so the cheaper tier always applies.
+    ("vertex", "gemini-2.5-pro"): ModelRates(
+        input_usd_per_mtok=1.25,
+        output_usd_per_mtok=10.00,
+        cache_read_usd_per_mtok=0.13,
+    ),
+    ("vertex", "gemini-2.0-flash"): ModelRates(
+        input_usd_per_mtok=0.15,
+        output_usd_per_mtok=0.60,
         cache_read_usd_per_mtok=0.025,
     ),
     ("vertex", "gemini-2.0-flash-lite"): ModelRates(
         input_usd_per_mtok=0.075,
         output_usd_per_mtok=0.30,
-    ),
-    ("vertex", "gemini-2.5-pro"): ModelRates(
-        input_usd_per_mtok=1.25,
-        output_usd_per_mtok=10.00,
-        cache_read_usd_per_mtok=0.31,
     ),
     # Anthropic — https://www.anthropic.com/pricing
     ("anthropic", "claude-opus-4-6"): ModelRates(
