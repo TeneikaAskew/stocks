@@ -1170,6 +1170,38 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             d['recommended_orb_window'] = orb_choice['window']
             d['recommended_orb_reason'] = orb_choice['reason']
 
+            # Persist STRUCTURED trigger/stop/target prices alongside the
+            # narrative `playbook` string. The text is what the trader sees
+            # in Discord; the structured columns let downstream analytics
+            # (premarket_playbook_resolver — see issue tracking outcome
+            # tracking, follow-up to 2026-05-11 user request) compute
+            # whether the recommended setup actually played out during RTH.
+            #
+            # Pre-this-PR these values lived only in level_map and got lost
+            # after format_levels_for_brief consumed them. Persisting them
+            # is necessary to walk subsequent intraday bars and report
+            # "trigger hit at HH:MM, T1 hit at HH:MM, stop never touched,
+            # EOD pnl +0.97%". Without them, brief-playbook-outcome analytics
+            # would have to parse the LLM prose — fragile and brittle.
+            ct = level_map.calls_trigger or {}
+            pt = level_map.puts_trigger or {}
+            ct_targets = ct.get('targets', []) if ct else []
+            pt_targets = pt.get('targets', []) if pt else []
+            d['calls_trigger_price'] = ct.get('trigger_level') if ct else None
+            d['calls_trigger_name']  = ct.get('trigger_name')  if ct else None
+            d['calls_stop_price']    = ct.get('stop')          if ct else None
+            d['calls_stop_name']     = ct.get('stop_name')     if ct else None
+            d['calls_t1_price'] = ct_targets[0]['price'] if len(ct_targets) >= 1 else None
+            d['calls_t2_price'] = ct_targets[1]['price'] if len(ct_targets) >= 2 else None
+            d['calls_t3_price'] = ct_targets[2]['price'] if len(ct_targets) >= 3 else None
+            d['puts_trigger_price'] = pt.get('trigger_level') if pt else None
+            d['puts_trigger_name']  = pt.get('trigger_name')  if pt else None
+            d['puts_stop_price']    = pt.get('stop')          if pt else None
+            d['puts_stop_name']     = pt.get('stop_name')     if pt else None
+            d['puts_t1_price'] = pt_targets[0]['price'] if len(pt_targets) >= 1 else None
+            d['puts_t2_price'] = pt_targets[1]['price'] if len(pt_targets) >= 2 else None
+            d['puts_t3_price'] = pt_targets[2]['price'] if len(pt_targets) >= 3 else None
+
             # Persist level map to Cloud SQL so the realtime signal_monitor
             # (which doesn't itself recompute) can query it for level-break
             # detection during market hours.
@@ -2513,6 +2545,26 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             # Track B audit G.P0.4 + G.P0.5 — freshness telemetry
             'data_as_of': data.get('data_as_of'),
             'data_freshness_status': data.get('data_freshness_status'),
+
+            # Structured playbook fields (foundation for premarket_playbook_resolver
+            # outcome tracking — added 2026-05-11). The narrative `playbook`
+            # text is what the trader reads; these columns are what the EOD
+            # resolver walks intraday bars against to compute trigger-hit /
+            # target-hit / stop-hit / EOD-pnl per recommended setup.
+            'calls_trigger_price': data.get('calls_trigger_price'),
+            'calls_trigger_name':  data.get('calls_trigger_name'),
+            'calls_stop_price':    data.get('calls_stop_price'),
+            'calls_stop_name':     data.get('calls_stop_name'),
+            'calls_t1_price':      data.get('calls_t1_price'),
+            'calls_t2_price':      data.get('calls_t2_price'),
+            'calls_t3_price':      data.get('calls_t3_price'),
+            'puts_trigger_price':  data.get('puts_trigger_price'),
+            'puts_trigger_name':   data.get('puts_trigger_name'),
+            'puts_stop_price':     data.get('puts_stop_price'),
+            'puts_stop_name':      data.get('puts_stop_name'),
+            'puts_t1_price':       data.get('puts_t1_price'),
+            'puts_t2_price':       data.get('puts_t2_price'),
+            'puts_t3_price':       data.get('puts_t3_price'),
             # Track B audit G.P2.11 — persist LLM-generated brief
             # commentary for audit trail. The four strings are
             # non-deterministic Gemini-Flash outputs (gcp/brief_explanations.py)

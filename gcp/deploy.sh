@@ -576,6 +576,39 @@ deploy_signal_monitor_eod_resolver() {
         --quiet
 }
 
+# ── Premarket playbook resolver (Cloud Run Job) ──────────────────────────────
+# EOD resolver for premarket_analysis brief-playbook outcomes (2026-05-11).
+# Walks each (analysis_date, ticker) row's RTH 1-min bars and records
+# trigger_hit_ts / target_hit_ts / stop_hit_ts / reversal / MAE / MFE /
+# EOD pnl. Self-heals when structured input columns are NULL via
+# derive_level_map_from_daily — see gcp/premarket_playbook_resolver.py.
+#
+# Capacity (CLAUDE.md §0):
+#   Volume:    ~3 tier-1 ETFs/day × 1 row × ~3 KB intraday window = tiny
+#   Velocity:  3 SQL reads + 3 writes per run = 6 round-trips
+#   Wall:      ~30s daily steady-state, ~5 min for one-shot backfill
+#   timeout:   3600s = 1hr (≥ 4× wall-clock headroom for backfill mode)
+#   memory:    1Gi (peak 50 MB × overhead margin)
+#   retries:   0 (idempotent via outcome_resolved_at; transient retries don't help)
+deploy_premarket_playbook_resolver() {
+    echo "Deploying premarket-playbook-resolver job..."
+    gcloud run jobs create premarket-playbook-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.premarket_playbook_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update premarket-playbook-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.premarket_playbook_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Weekend review (Cloud Run Job) ───────────────────────────────────────────
 deploy_weekend() {
     echo "Deploying weekend review job..."
@@ -1586,6 +1619,12 @@ deploy_schedulers() {
     # still is_open=TRUE or with exit_ts NULL and resolves them via the
     # gcp.signal_monitor_eod_resolver replay path. Per Track D G.P0.10.
     _schedule "signal-monitor-eod-resolver-daily" "30 16 * * 1-5"  "signal-monitor-eod-resolver"
+    # Premarket brief-playbook outcome resolver — 4:30 PM ET weekdays.
+    # Walks each (analysis_date, ticker) row's RTH 1-min bars and records
+    # trigger_hit_ts / target_hit_ts / stop_hit_ts / reversal / MAE / MFE /
+    # EOD pnl. Same wall-clock slot as the alerts resolver above
+    # (different job, different table — no contention).
+    _schedule "premarket-playbook-resolver-daily" "30 16 * * 1-5"  "premarket-playbook-resolver"
     # ORB scheduled snapshots — 9:45 ET (15-min ORB) and 10:00 ET (30-min ORB).
     # Uses the same signal-monitor job image with --mode=orb-snapshot.
     _schedule_with_args "orb-15m-alert"  "45 9 * * 1-5"  "signal-monitor" \
@@ -1836,6 +1875,7 @@ case "${1:-help}" in
     premarket)   build_image && deploy_premarket ;;
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
+    playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
     insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;
@@ -1856,6 +1896,7 @@ case "${1:-help}" in
         deploy_premarket
         deploy_monitor
         deploy_signal_monitor_eod_resolver
+        deploy_premarket_playbook_resolver
         deploy_weekend
         deploy_fetchers
         setup_insight_tasks_queue
