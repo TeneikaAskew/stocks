@@ -762,10 +762,14 @@ deploy_fetch_earnings_calendar() {
     ew_pass="$(_secret ew-pass 2>/dev/null || true)"
     ew_env="$(_env_string)${ew_user:+,EW_USER=${ew_user}}${ew_pass:+,EW_PASS=${ew_pass}}"
 
+    # task-timeout 1800s (30 min): the AV HISTORICAL_OPTIONS enrichment
+    # adds 1 API call per unique earnings ticker in the today-1..today+7
+    # window. At ~800–2000 unique tickers × 150 RPM ≈ 5–14 min, plus
+    # source fetches (~3 min) = ~10–17 min total. 30 min gives 2× headroom.
     gcloud run jobs create fetch-earnings-calendar \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --max-retries 1 \
-        --task-timeout 300 \
+        --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
         ${DB_SECRET_FLAG} \
@@ -773,6 +777,7 @@ deploy_fetch_earnings_calendar() {
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-calendar \
         --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
         --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ew_env}" \

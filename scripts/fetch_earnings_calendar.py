@@ -24,7 +24,8 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, date
 from pathlib import Path
 
 import pandas as pd
@@ -225,6 +226,122 @@ def fetch_alphavantage_earnings(horizon: str = '3month') -> pd.DataFrame:
         logger.info("AV total: %d records across %d unique tickers",
                      len(result), result['ticker'].nunique())
     return result
+
+
+# ── AV HISTORICAL_OPTIONS enrichment ────────────────────────────────────────
+# Sums daily option chain volume + OI per ticker so the brief's
+# options_volume filter has signal for ALL earnings tickers — not only
+# the ~30/day UnusualWhales covers.
+
+def _previous_trading_weekday(d: date) -> date:
+    """Most recent weekday strictly before d. Ignores market holidays —
+    AV returns 'No data' for those, which the caller handles."""
+    d = d - timedelta(days=1)
+    while d.weekday() >= 5:  # 5=Sat, 6=Sun
+        d -= timedelta(days=1)
+    return d
+
+
+def fetch_av_options_summary(ticker: str, snapshot_date: str, api_key: str,
+                             timeout: int = 60) -> tuple:
+    """One AV HISTORICAL_OPTIONS call → (volume, open_interest, status).
+
+    Returns
+    -------
+    (vol, oi, status) where status is one of:
+        'has_options'   — chain returned; vol/oi are summed across contracts
+        'no_options'    — AV "No data for symbol" (ticker has no listed options)
+        'error:<msg>'   — rate limit, transient API failure; vol/oi are None
+    """
+    params = {
+        'function': 'HISTORICAL_OPTIONS',
+        'symbol':   ticker,
+        'date':     snapshot_date,
+        'apikey':   api_key,
+        'datatype': 'json',
+    }
+    try:
+        r = requests.get('https://www.alphavantage.co/query',
+                         params=params, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        return (None, None, f'error:{type(e).__name__}')
+
+    msg = data.get('message', '') or data.get('Information', '') or data.get('Note', '')
+    chain = data.get('data', []) or []
+
+    if msg == 'success' and chain:
+        vol = sum(int(float(r.get('volume') or 0)) for r in chain)
+        oi = sum(int(float(r.get('open_interest') or 0)) for r in chain)
+        return (vol, oi, 'has_options')
+
+    if isinstance(msg, str) and msg.startswith('No data for symbol'):
+        # Positive signal: ticker exists but has no listed options.
+        # Persist 0 so the brief filter drops it without re-querying.
+        return (0, 0, 'no_options')
+
+    # Rate limit, malformed key, etc. — leave NULL so next run retries.
+    return (None, None, f'error:{(msg or "unknown")[:60]}')
+
+
+def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
+                           api_key: str, rpm: int = 150) -> pd.DataFrame:
+    """Per-ticker AV HISTORICAL_OPTIONS enrichment.
+
+    Dedupes by ticker so each ticker hits AV once regardless of how many
+    (source, strategy) rows it has in df. Broadcasts the chain-summed
+    volume + OI back into df, but only into rows where the column is
+    currently NULL — so UnusualWhales rows (which carry real per-row
+    options_volume / open_interest) are not overwritten.
+
+    Tickers whose AV call returns 'error:...' are left NULL so the
+    next scheduled run can retry.
+    """
+    if df.empty or 'ticker' not in df.columns:
+        return df
+
+    tickers = sorted(t for t in df['ticker'].dropna().unique() if t)
+    if not tickers:
+        return df
+
+    delay_s = 60.0 / max(rpm, 1)
+    logger.info("AV options enrichment: %d unique tickers on %s (rpm=%d)",
+                len(tickers), snapshot_date, rpm)
+
+    results: dict = {}  # ticker -> (vol, oi, status)
+    counters = {'has_options': 0, 'no_options': 0, 'error': 0}
+    for i, t in enumerate(tickers, 1):
+        vol, oi, status = fetch_av_options_summary(t, snapshot_date, api_key)
+        results[t] = (vol, oi, status)
+        bucket = 'has_options' if status == 'has_options' else (
+                 'no_options' if status == 'no_options' else 'error')
+        counters[bucket] += 1
+        if i % 50 == 0 or i == len(tickers):
+            logger.info("  AV options: %d/%d  has=%d no=%d err=%d",
+                        i, len(tickers),
+                        counters['has_options'], counters['no_options'],
+                        counters['error'])
+        time.sleep(delay_s)
+
+    df = df.copy()
+    if 'options_volume' not in df.columns:
+        df['options_volume'] = None
+    if 'open_interest' not in df.columns:
+        df['open_interest'] = None
+
+    def _fill(row, key, idx):
+        existing = row[key]
+        if existing is not None and not pd.isna(existing):
+            return existing
+        return results.get(row['ticker'], (None, None, ''))[idx]
+
+    df['options_volume'] = df.apply(lambda r: _fill(r, 'options_volume', 0), axis=1)
+    df['open_interest']  = df.apply(lambda r: _fill(r, 'open_interest', 1), axis=1)
+
+    logger.info("AV options enrichment complete: has=%d no=%d err=%d",
+                counters['has_options'], counters['no_options'], counters['error'])
+    return df
 
 
 # ── Earnings Whispers auth + fetch ───────────────────────────────────────────
@@ -1135,6 +1252,20 @@ def main():
         default="3month",
         help="AlphaVantage earnings horizon (default: 3month)",
     )
+    parser.add_argument(
+        "--no-av-options-enrich",
+        action="store_true",
+        help="Skip AV HISTORICAL_OPTIONS enrichment (default: enabled — "
+             "populates options_volume + open_interest for every earnings "
+             "ticker via 1 AV call/ticker on the most recent trading day)",
+    )
+    parser.add_argument(
+        "--av-options-snapshot-date",
+        type=str,
+        default="",
+        help="Override snapshot date for AV options enrichment (YYYY-MM-DD). "
+             "Default: previous weekday.",
+    )
 
     args = parser.parse_args()
 
@@ -1225,6 +1356,21 @@ def main():
         & (all_rows_df["date"] <= clamp_end)
     ]
     print(f"Filtered: {before_n} → {len(all_rows_df)} announcements (across all sources)")
+
+    # AV HISTORICAL_OPTIONS enrichment — populates options_volume + open_interest
+    # per ticker so the brief's options filter has signal for ALL earnings names,
+    # not only the small subset UW covers. One AV call per unique ticker (dedup'd
+    # across sources/strategies) on the most recent trading day.
+    if not args.no_av_options_enrich:
+        av_key = os.environ.get('ALPHA_VANTAGE_API_KEY') or os.environ.get('AV_API_KEY')
+        if not av_key:
+            logger.warning("ALPHA_VANTAGE_API_KEY / AV_API_KEY not set — "
+                           "skipping AV options enrichment")
+        else:
+            snapshot_date = (args.av_options_snapshot_date
+                             or _previous_trading_weekday(datetime.now().date())
+                                 .strftime('%Y-%m-%d'))
+            all_rows_df = enrich_with_av_options(all_rows_df, snapshot_date, av_key)
 
     # Deduplicate for JSON cache: prefer EW (carries strategy) > AV > UW > Yahoo.
     # The JSON file is a human-readable summary — one row per (ticker, date)
