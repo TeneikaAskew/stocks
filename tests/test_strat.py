@@ -733,3 +733,55 @@ class TestComputeStratStatusAsOf:
         assert out['date'] == '2026-04-22'
         # trigger_high = 4/21 high ($179.40), the bar before 4/22
         assert out['trigger_high'] == pytest.approx(179.40)
+
+    # ── inclusive_today contract (added 2026-05-11) ────────────────────
+    #
+    # `as_of` semantic by default is inclusive (`<=`) for legacy backtest
+    # callers that want "the strat as of close of day X". The premarket
+    # contract — used by the insight pipeline AND the brief — is strict
+    # (`<`): today's bar isn't visible because at 8:30 AM ET on day X,
+    # today's daily row either hasn't been written yet OR has NULL OHLC.
+
+    def test_inclusive_today_default_true_legacy_contract(self):
+        """Default inclusive_today=True → as_of=4/20 includes the 4/20 bar."""
+        from datetime import date
+        from lib.strat import compute_strat_status
+        df = self._build_daily_df()
+        out = compute_strat_status('TEST', df=df, as_of=date(2026, 4, 20))
+        assert out['available'] is True
+        assert out['date'] == '2026-04-20'                 # ← 4/20 included
+        # iloc[-2] = 4/17 = the trigger source
+        assert out['trigger_high'] == pytest.approx(168.35)
+
+    def test_inclusive_today_false_premarket_contract(self):
+        """inclusive_today=False → as_of=4/20 excludes the 4/20 bar.
+
+        Mirrors the brief's `idx < cutoff` semantic. iloc[-1] becomes
+        the most recent completed bar BEFORE 4/20, which is 4/17.
+        trigger_high then comes from iloc[-2] = 4/16 ($165.0).
+        """
+        from datetime import date
+        from lib.strat import compute_strat_status
+        df = self._build_daily_df()
+        out = compute_strat_status(
+            'TEST', df=df, as_of=date(2026, 4, 20),
+            inclusive_today=False,
+        )
+        assert out['available'] is True
+        assert out['date'] == '2026-04-17'                 # ← 4/20 excluded
+        # iloc[-2] is now 4/16, high = 165.0
+        assert out['trigger_high'] == pytest.approx(165.0)
+
+    def test_inclusive_today_false_with_tz_aware_datetime(self):
+        """Strict-less semantic also handles tz-aware as_of correctly."""
+        from datetime import datetime, timezone
+        from lib.strat import compute_strat_status
+        df = self._build_daily_df()
+        out = compute_strat_status(
+            'TEST', df=df,
+            as_of=datetime(2026, 4, 20, 13, 15, 0, tzinfo=timezone.utc),
+            inclusive_today=False,
+        )
+        assert out['available'] is True
+        assert out['date'] == '2026-04-17'                 # 4/20 excluded
+        assert out['trigger_high'] == pytest.approx(165.0)

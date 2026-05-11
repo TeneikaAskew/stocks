@@ -1255,6 +1255,77 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS llm_playbook          TEXT;
 
 
+-- ─────────────────────────────────────────────────────────
+-- Brief-playbook outcome tracking (added 2026-05-11)
+-- ─────────────────────────────────────────────────────────
+--
+-- Two halves: STRUCTURED inputs (the trigger / stop / target prices the
+-- brief recommended) and RESOLVED outcomes (what actually happened during
+-- RTH). The brief writer fills the `*_price` / `*_name` columns at
+-- generation time; the EOD resolver job fills the `*_hit_ts` / `*_pnl_*` /
+-- `*_excursion_*` columns after market close by walking
+-- market_data_intraday for that (date, ticker).
+--
+-- Pre-this-block the playbook lived only as LLM prose in the `playbook`
+-- column — fine for human reading, useless for analytics. Now we can
+-- answer "did 5/6 QQQ's recommended CALL trigger actually print, when did
+-- it hit T1, was T3 reached, what was the EOD pnl per share / per $10k
+-- notional?" via SQL.
+--
+-- Resolver job: gcp/premarket_playbook_resolver.py
+-- Cron: 30 16 * * 1-5 America/New_York (16:30 ET, after RTH close)
+-- Idempotent: re-running on the same date overwrites with the same values
+ALTER TABLE premarket_analysis
+    -- ── STRUCTURED inputs ────────────────────────────────────────────
+    ADD COLUMN IF NOT EXISTS calls_trigger_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_trigger_name    VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_stop_price      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_stop_name       VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_t1_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t2_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t3_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_name     VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_stop_price       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_stop_name        VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION,
+
+    -- ── RESOLVED outcomes — CALLS leg ────────────────────────────────
+    ADD COLUMN IF NOT EXISTS calls_trigger_hit_ts  TIMESTAMPTZ,   -- first bar where high >= trigger
+    ADD COLUMN IF NOT EXISTS calls_t1_hit_ts       TIMESTAMPTZ,   -- after trigger, first bar where high >= t1
+    ADD COLUMN IF NOT EXISTS calls_t2_hit_ts       TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_t3_hit_ts       TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_stop_hit_ts     TIMESTAMPTZ,   -- after trigger, first bar where low <= stop
+    ADD COLUMN IF NOT EXISTS calls_reversal_after_trigger BOOLEAN, -- True iff stop_hit_ts > trigger_hit_ts
+    ADD COLUMN IF NOT EXISTS calls_time_to_t1_min  INTEGER,       -- minutes from trigger to T1
+    ADD COLUMN IF NOT EXISTS calls_mae_pct         DOUBLE PRECISION, -- (trigger - min_low_after_trigger)/trigger * 100
+    ADD COLUMN IF NOT EXISTS calls_mfe_pct         DOUBLE PRECISION, -- (max_high_after_trigger - trigger)/trigger * 100
+    ADD COLUMN IF NOT EXISTS calls_eod_pnl_pct     DOUBLE PRECISION, -- final realized pct (at first stop/target/EOD close)
+    ADD COLUMN IF NOT EXISTS calls_eod_pnl_dollar  DOUBLE PRECISION, -- pct/100 * notional ($10,000 default)
+
+    -- ── RESOLVED outcomes — PUTS leg (mirror of CALLS) ───────────────
+    ADD COLUMN IF NOT EXISTS puts_trigger_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_t1_hit_ts        TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_t2_hit_ts        TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_t3_hit_ts        TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_stop_hit_ts      TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_reversal_after_trigger BOOLEAN,
+    ADD COLUMN IF NOT EXISTS puts_time_to_t1_min   INTEGER,
+    ADD COLUMN IF NOT EXISTS puts_mae_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_mfe_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_eod_pnl_pct      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_eod_pnl_dollar   DOUBLE PRECISION,
+
+    -- ── Resolver metadata ────────────────────────────────────────────
+    ADD COLUMN IF NOT EXISTS outcome_resolved_at   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS outcome_resolver_version VARCHAR(20);
+
+CREATE INDEX IF NOT EXISTS idx_premarket_analysis_outcome_resolved
+    ON premarket_analysis(outcome_resolved_at) WHERE outcome_resolved_at IS NOT NULL;
+
+
 -- ============================================================================
 -- Live migration: rename premarket_analysis.strat_daily -> strat_candle.
 -- The methodology doc renames every "candle classification" surface to
@@ -1385,7 +1456,28 @@ ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS llm_overview          TEXT,
     ADD COLUMN IF NOT EXISTS llm_orb_explanation   TEXT,
     ADD COLUMN IF NOT EXISTS llm_analysis          TEXT,
-    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT;
+    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT,
+    -- Mirror the brief-playbook outcome tracking columns added to
+    -- premarket_analysis (2026-05-11). Without them, bulk_insert into
+    -- the history table silently drops the structured fields populated
+    -- by persist_to_cloud_sql, leaving the audit trail unable to
+    -- reconstruct the exact triggers/stops/targets that were
+    -- recommended on a given morning. Codex review on PR #444 caught
+    -- this on the initial PR; mirror is additive + idempotent.
+    ADD COLUMN IF NOT EXISTS calls_trigger_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_trigger_name    VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_stop_price      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_stop_name       VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_t1_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t2_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t3_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_name     VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_stop_price       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_stop_name        VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION;
 
 
 CREATE TABLE IF NOT EXISTS insight_reports_history (
