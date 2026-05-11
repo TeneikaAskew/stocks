@@ -285,15 +285,74 @@ def fetch_av_options_summary(ticker: str, snapshot_date: str, api_key: str,
     return (None, None, f'error:{(msg or "unknown")[:60]}')
 
 
+def _load_existing_options_from_db(date_keys: set) -> dict:
+    """Load existing (options_volume, open_interest) from earnings_calendar
+    for the given (ticker, earnings_date) pairs.
+
+    Returns {(ticker, earnings_date): (vol, oi)} where at least one of
+    vol/oi is non-null. Pairs absent from the result either don't exist
+    in the table or have both columns NULL.
+
+    Used by enrich_with_av_options to (a) skip AV calls for already-
+    populated (ticker, date) pairs and (b) hydrate today's fresh df so
+    the upsert doesn't NULL-out yesterday's good values.
+    """
+    if not date_keys:
+        return {}
+    try:
+        _root = str(Path(__file__).resolve().parent.parent)
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from gcp.database import query_to_dataframe, is_cloud_sql_configured
+    except ImportError:
+        return {}
+    if not is_cloud_sql_configured():
+        return {}
+
+    dates = sorted({d for _, d in date_keys})
+    sql = """
+        SELECT ticker, earnings_date,
+               MAX(options_volume) AS options_volume,
+               MAX(open_interest)  AS open_interest
+        FROM earnings_calendar
+        WHERE earnings_date = ANY(:dates)
+          AND (options_volume IS NOT NULL OR open_interest IS NOT NULL)
+        GROUP BY ticker, earnings_date
+    """
+    try:
+        df = query_to_dataframe(sql, {'dates': dates})
+    except Exception as e:
+        logger.warning("DB load for AV-options skip-check failed: %s", e)
+        return {}
+    if df.empty:
+        return {}
+    out: dict = {}
+    for _, r in df.iterrows():
+        ed = r['earnings_date']
+        if hasattr(ed, 'date'):
+            ed = ed.date()
+        key = (r['ticker'], ed)
+        vol = int(r['options_volume']) if pd.notna(r.get('options_volume')) else None
+        oi = int(r['open_interest']) if pd.notna(r.get('open_interest')) else None
+        if vol is None and oi is None:
+            continue
+        out[key] = (vol, oi)
+    return out
+
+
 def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
                            api_key: str, rpm: int = 150) -> pd.DataFrame:
     """Per-ticker AV HISTORICAL_OPTIONS enrichment.
 
-    Dedupes by ticker so each ticker hits AV once regardless of how many
-    (source, strategy) rows it has in df. Broadcasts the chain-summed
-    volume + OI back into df, but only into rows where the column is
-    currently NULL — so UnusualWhales rows (which carry real per-row
-    options_volume / open_interest) are not overwritten.
+    Pipeline:
+      1. Hydrate df with existing DB (ticker, earnings_date) options
+         values so the upsert later doesn't NULL-out yesterday's data.
+      2. Compute the set of tickers that STILL have at least one
+         (ticker, earnings_date) without options_volume in df.
+      3. Call AV once per ticker in that needs-AV set (each ticker
+         hits AV at most once even with many source/strategy rows).
+      4. Broadcast AV results into NULL columns only — preserving
+         UnusualWhales' real per-row values and the DB-hydrated values.
 
     Tickers whose AV call returns 'error:...' are left NULL so the
     next scheduled run can retry.
@@ -301,15 +360,68 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
     if df.empty or 'ticker' not in df.columns:
         return df
 
-    tickers = sorted(t for t in df['ticker'].dropna().unique() if t)
+    df = df.copy()
+    if 'options_volume' not in df.columns:
+        df['options_volume'] = None
+    if 'open_interest' not in df.columns:
+        df['open_interest'] = None
+
+    # 1) Hydrate from DB for every (ticker, earnings_date) in df.
+    date_col = 'date' if 'date' in df.columns else 'earnings_date'
+
+    def _to_date(v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        if hasattr(v, 'date'):
+            return v.date()
+        if isinstance(v, str):
+            try:
+                return datetime.strptime(v[:10], '%Y-%m-%d').date()
+            except ValueError:
+                return None
+        return v
+
+    pairs_in_df = {
+        (r['ticker'], _to_date(r[date_col]))
+        for _, r in df.iterrows()
+        if r.get('ticker') and r.get(date_col) is not None
+    }
+    db_existing = _load_existing_options_from_db(pairs_in_df)
+    if db_existing:
+        logger.info("AV options enrichment: hydrated %d (ticker,date) pairs from DB",
+                    len(db_existing))
+
+        def _hydrate(row, key, idx):
+            existing = row[key]
+            if existing is not None and not pd.isna(existing):
+                return existing
+            v = db_existing.get((row['ticker'], _to_date(row[date_col])))
+            return v[idx] if v else None
+
+        df['options_volume'] = df.apply(lambda r: _hydrate(r, 'options_volume', 0), axis=1)
+        df['open_interest']  = df.apply(lambda r: _hydrate(r, 'open_interest', 1), axis=1)
+
+    # 2) Per the (report_date, ticker) rule: skip AV for tickers whose
+    #    every (ticker, date) pair already has BOTH options_volume AND
+    #    open_interest populated (either from this run's UW source or
+    #    from prior runs we hydrated above). A ticker is in needs_av iff
+    #    at least one row has a NULL in either column after hydration.
+    needs_av = set()
+    for ticker, grp in df.groupby('ticker'):
+        if grp['options_volume'].isna().any() or grp['open_interest'].isna().any():
+            needs_av.add(ticker)
+    total_tickers = df['ticker'].nunique()
+    tickers = sorted(needs_av)
+    skipped = total_tickers - len(tickers)
+    logger.info("AV options enrichment: %d unique tickers (skipping %d "
+                "already-populated) on %s (rpm=%d)",
+                len(tickers), skipped, snapshot_date, rpm)
     if not tickers:
         return df
 
+    # 3) One AV call per ticker.
     delay_s = 60.0 / max(rpm, 1)
-    logger.info("AV options enrichment: %d unique tickers on %s (rpm=%d)",
-                len(tickers), snapshot_date, rpm)
-
-    results: dict = {}  # ticker -> (vol, oi, status)
+    results: dict = {}
     counters = {'has_options': 0, 'no_options': 0, 'error': 0}
     for i, t in enumerate(tickers, 1):
         vol, oi, status = fetch_av_options_summary(t, snapshot_date, api_key)
@@ -324,12 +436,7 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
                         counters['error'])
         time.sleep(delay_s)
 
-    df = df.copy()
-    if 'options_volume' not in df.columns:
-        df['options_volume'] = None
-    if 'open_interest' not in df.columns:
-        df['open_interest'] = None
-
+    # 4) Broadcast: only fill NULLs.
     def _fill(row, key, idx):
         existing = row[key]
         if existing is not None and not pd.isna(existing):
@@ -339,8 +446,9 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
     df['options_volume'] = df.apply(lambda r: _fill(r, 'options_volume', 0), axis=1)
     df['open_interest']  = df.apply(lambda r: _fill(r, 'open_interest', 1), axis=1)
 
-    logger.info("AV options enrichment complete: has=%d no=%d err=%d",
-                counters['has_options'], counters['no_options'], counters['error'])
+    logger.info("AV options enrichment complete: has=%d no=%d err=%d skipped=%d",
+                counters['has_options'], counters['no_options'],
+                counters['error'], skipped)
     return df
 
 
