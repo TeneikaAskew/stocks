@@ -160,9 +160,9 @@ Applied to each timeframe pair:
 | PQH / PQL | Previous Quarter High / Low | Quarterly |
 | PMH / PML | Previous Month High / Low | Monthly |
 | PWH / PWL | Previous Week High / Low | Weekly |
-| PDH / PDL | Previous Day High / Low | Daily (most traded) |
-| PDC / PWC / PMC | Previous Day / Week / Month Close | Same as the period H/L |
-| PDO / PWO / PMO | Previous Day / Week / Month **Open** | Emitted ONLY in premarket context, when today's row is filtered out of the daily df and the latest-open level is therefore the PREVIOUS period's open. Observable before today's RTH. |
+| PDH / PDL | Previous **trading-session** High / Low — most recent completed RTH (Friday on a Monday brief, last open session before a holiday, etc.). NOT necessarily calendar-yesterday. | Daily (most traded) |
+| PDC / PWC / PMC | Previous trading-session / Week / Month Close | Same disambiguation — "trading session," not "calendar yesterday." |
+| PDO / PWO / PMO | Previous trading-session / Week / Month **Open** | Emitted ONLY in premarket context, when today's row is filtered out of the daily df and the latest-open level is therefore the PREVIOUS period's open. Observable before today's RTH. On Mondays / post-holidays, PDO is Friday's (or pre-holiday's) open — not calendar-yesterday's. |
 
 ### Current levels (live, repaints)
 
