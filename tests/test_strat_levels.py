@@ -313,6 +313,103 @@ class TestComputeCurrentLevels:
         assert levels['CDO'].price == price
 
 
+# ─── compute_current_levels — premarket label disambiguation ─────────────
+#
+# The 8:30 AM ET brief filters its df to `date < analysis_date` so today's
+# NULL-OHLC row doesn't poison the level math. After that filter,
+# `df.iloc[-1]` is the previous trading day. Pre-fix this was still labelled
+# CDO (Current Day Open) which leaked the implication "today's open exists"
+# — but today hasn't opened yet. Fix: emit PDO/PWO/PMO when analysis_date
+# falls in a later period than the last row.
+
+
+class TestComputeCurrentLevelsPremarketLabels:
+    """Verify the CDO/PDO (etc.) label switch driven by analysis_date."""
+
+    def test_legacy_callers_get_cdo_label_when_no_analysis_date(self):
+        """No analysis_date passed → legacy CDO label preserved."""
+        df = _daily_df(10)
+        price = float(df['Close'].iloc[-1])
+        levels = compute_current_levels(df, price)   # no analysis_date
+        assert 'CDO' in levels
+        assert 'PDO' not in levels
+        assert levels['CDO'].is_current is True
+
+    def test_analysis_date_same_day_as_last_row_emits_cdo(self):
+        """When the last bar's date == analysis_date (EOD analytics
+        with today's bar already in the data) the label IS honest."""
+        df = _daily_df(10)
+        price = float(df['Close'].iloc[-1])
+        ad = pd.Timestamp(df['Date'].iloc[-1]).date()
+        levels = compute_current_levels(df, price, analysis_date=ad)
+        assert 'CDO' in levels
+        assert 'PDO' not in levels
+
+    def test_analysis_date_after_last_row_swaps_to_pdo(self):
+        """8:30 AM premarket brief on Monday: filtered df ends at Friday.
+        analysis_date = Monday → label MUST be PDO, not CDO.
+        Price value is unchanged (the bug is purely labelling).
+        """
+        df = _daily_df(20)
+        last_dt = pd.Timestamp(df['Date'].iloc[-1])
+        ad = (last_dt + pd.tseries.offsets.BDay(1)).date()
+        price = float(df['Close'].iloc[-1])
+
+        levels = compute_current_levels(df, price, analysis_date=ad)
+        assert 'PDO' in levels
+        assert 'CDO' not in levels
+        # Value is unchanged — pre-fix it would have been emitted as CDO
+        # with the SAME price; the fix is purely cosmetic on the label.
+        assert levels['PDO'].price == float(df['Open'].iloc[-1])
+        # is_current=False once relabelled — PDO is not "current"
+        assert levels['PDO'].is_current is False
+
+    def test_analysis_date_in_new_week_swaps_cwo_to_pwo(self):
+        """Monday brief: filtered df ends Friday. The week of iloc[-1]
+        is BEFORE analysis_date's week. Label must be PWO."""
+        df = _daily_df(30)
+        # Find the first Monday strictly after the last bar's date.
+        last_dt = pd.Timestamp(df['Date'].iloc[-1])
+        ad_ts = last_dt + pd.Timedelta(days=1)
+        while ad_ts.dayofweek != 0:
+            ad_ts = ad_ts + pd.Timedelta(days=1)
+        # Brief-style cutoff: drop any row on/after ad
+        df_filtered = df[pd.to_datetime(df['Date']) < ad_ts].copy()
+        price = float(df_filtered['Close'].iloc[-1])
+
+        levels = compute_current_levels(
+            df_filtered, price, analysis_date=ad_ts.date(),
+        )
+        assert 'PWO' in levels
+        assert 'CWO' not in levels
+
+    def test_analysis_date_in_new_month_swaps_cmo_to_pmo(self):
+        """First-trading-day-of-month brief: filtered df ends in the
+        prior month AND a prior month already exists in the history.
+        Label must be PMO."""
+        # 90 business days starting in late October — gives us Oct, Nov,
+        # Dec rows AND ends in late January, then we set analysis_date to
+        # the first business day of February.
+        dates = pd.bdate_range('2024-10-01', '2025-01-31')
+        n = len(dates)
+        np.random.seed(7)
+        close = 200 * np.exp(np.cumsum(np.random.normal(0.0003, 0.01, n)))
+        df = pd.DataFrame({
+            'Date': dates,
+            'Open': close * (1 - 0.002),
+            'High': close * (1 + 0.005),
+            'Low':  close * (1 - 0.005),
+            'Close': close,
+            'Volume': 1_000_000,
+        })
+        ad = pd.Timestamp('2025-02-03').date()  # Mon, first business day Feb
+        price = float(df['Close'].iloc[-1])
+
+        levels = compute_current_levels(df, price, analysis_date=ad)
+        assert 'PMO' in levels
+        assert 'CMO' not in levels
+
+
 # ─── compute_gap_levels ──────────────────────────────────────────────────
 
 

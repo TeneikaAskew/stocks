@@ -271,10 +271,36 @@ def compute_previous_levels(
 def compute_current_levels(
     daily_df: pd.DataFrame,
     current_price: float,
+    analysis_date: Optional[date_type] = None,
 ) -> Dict[str, StratLevel]:
-    """Compute current period open levels with live Strat classification.
+    """Compute the latest available day/week/month open levels.
 
-    These levels REPAINT as price evolves.
+    These levels REPAINT as price evolves intraday.
+
+    Label semantics — CDO / PDO disambiguation
+    ──────────────────────────────────────────
+    Pre-2026-05-11 this function always labelled the latest open as
+    ``CDO`` ("Current Day Open"). That was correct only when the
+    caller passed a df whose last row was actually *today*'s session
+    — i.e. mid-session or post-close with today's RTH open populated.
+
+    The 8:30 AM ET premarket brief filters its df to
+    ``date < analysis_date`` (so today's NULL-OHLC row doesn't poison
+    the level builder). After that filter, ``df.iloc[-1]`` is the
+    PREVIOUS trading day. Labelling that open "CDO" silently leaks
+    the implication "this is today's open" — but today hasn't opened
+    yet. Across replays (5/6: CDO = 5/5 open; 5/11: CDO = 5/8 open)
+    this was consistently the previous session's open.
+
+    Fix: when ``analysis_date`` is passed, compare the last row's date
+    against it:
+      - same day → emit ``CDO`` (label is honest)
+      - earlier  → emit ``PDO`` (Previous Day Open)
+    Same logic for week (CWO ↔ PWO) and month (CMO ↔ PMO).
+
+    When ``analysis_date`` is None (legacy / live mid-session use),
+    keep the historical ``CDO``/``CWO``/``CMO`` labels — no semantic
+    shift for those callers.
     """
     if daily_df.empty or len(daily_df) < 2:
         return {}
@@ -313,17 +339,23 @@ def compute_current_levels(
     df = df.sort_values('_date')
     levels: Dict[str, StratLevel] = {}
 
-    # Current Day Open
+    # Convert analysis_date once for period comparisons.
+    if analysis_date is not None:
+        ad_ts = pd.Timestamp(analysis_date)
+        if ad_ts.tz is not None:
+            ad_ts = ad_ts.tz_convert('UTC').tz_localize(None)
+        ad_date = ad_ts.normalize().date()
+        ad_week_period = pd.Period(ad_ts, freq='W')
+        ad_month_period = pd.Period(ad_ts, freq='M')
+    else:
+        ad_date = None
+        ad_week_period = None
+        ad_month_period = None
+
+    # Day-level open
     if len(df) >= 2:
         prev_day = df.iloc[-2]
         today = df.iloc[-1]
-        # Today's row exists but may have NULL OHLC when the pre-market
-        # refresh job (8:30 AM ET) populated only pre_* columns and the
-        # 11pm fetcher hasn't filled in regular-session high/low/open/
-        # close yet. Fall back to current_price so the brief at 8:45 AM
-        # doesn't crash. The pre_high/pre_low values are surfaced
-        # separately by the brief embed; here we just need a non-null
-        # CDO + intraday high/low for the level-classification step.
         today_open = (float(today['_open'])
                       if pd.notna(today['_open']) else current_price)
         _h = today['_high']
@@ -337,14 +369,22 @@ def compute_current_levels(
             today_high, today_low, current_price, today_open,
             float(prev_day['_high']), float(prev_day['_low']),
         )
-        levels['CDO'] = StratLevel(
-            name='CDO', price=today_open,
+        # Is `today` actually today, or yesterday (df was filtered)?
+        today_row_date = pd.Timestamp(today['_date']).normalize().date()
+        if ad_date is None or today_row_date == ad_date:
+            day_name = 'CDO'
+            day_is_current = True
+        else:
+            day_name = 'PDO'
+            day_is_current = False
+        levels[day_name] = StratLevel(
+            name=day_name, price=today_open,
             timeframe='day', level_type='open',
-            strat_class=strat, is_current=True,
-            period_label=str(today['_date'].date()) if hasattr(today['_date'], 'date') else str(today['_date']),
+            strat_class=strat, is_current=day_is_current,
+            period_label=str(today_row_date),
         )
 
-    # Current Week Open
+    # Week-level open
     df['_week'] = df['_date'].dt.to_period('W')
     current_week = df['_week'].iloc[-1]
     this_week = df[df['_week'] == current_week]
@@ -361,14 +401,20 @@ def compute_current_levels(
         pw_low = float(last_wk['_low'].min())
 
         strat = classify_level_strat(cw_high, cw_low, current_price, cw_open, pw_high, pw_low)
-        levels['CWO'] = StratLevel(
-            name='CWO', price=cw_open,
+        if ad_week_period is None or current_week == ad_week_period:
+            wk_name = 'CWO'
+            wk_is_current = True
+        else:
+            wk_name = 'PWO'
+            wk_is_current = False
+        levels[wk_name] = StratLevel(
+            name=wk_name, price=cw_open,
             timeframe='week', level_type='open',
-            strat_class=strat, is_current=True,
+            strat_class=strat, is_current=wk_is_current,
             period_label=str(current_week),
         )
 
-    # Current Month Open
+    # Month-level open
     df['_month'] = df['_date'].dt.to_period('M')
     current_month = df['_month'].iloc[-1]
     this_month = df[df['_month'] == current_month]
@@ -384,10 +430,16 @@ def compute_current_levels(
         pm_low = float(last_m['_low'].min())
 
         strat = classify_level_strat(cm_high, cm_low, current_price, cm_open, pm_high, pm_low)
-        levels['CMO'] = StratLevel(
-            name='CMO', price=cm_open,
+        if ad_month_period is None or current_month == ad_month_period:
+            mo_name = 'CMO'
+            mo_is_current = True
+        else:
+            mo_name = 'PMO'
+            mo_is_current = False
+        levels[mo_name] = StratLevel(
+            name=mo_name, price=cm_open,
             timeframe='month', level_type='open',
-            strat_class=strat, is_current=True,
+            strat_class=strat, is_current=mo_is_current,
             period_label=str(current_month),
         )
 
@@ -849,7 +901,7 @@ def build_level_map(
     BEFORE analysis_date, regardless of df's iloc layout.
     """
     prev_levels = compute_previous_levels(daily_df, analysis_date=analysis_date)
-    curr_levels = compute_current_levels(daily_df, current_price)
+    curr_levels = compute_current_levels(daily_df, current_price, analysis_date=analysis_date)
     gap_levels = compute_gap_levels(daily_df, lookback=20)
 
     # Trigger-eligible level set: prev + current periods. Gap levels
