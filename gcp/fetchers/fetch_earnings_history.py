@@ -230,20 +230,13 @@ def _earnings_calendar_tickers(
 ) -> list[str]:
     """Resolve tickers reporting earnings in the next N days from Cloud SQL.
 
-    With ``require_options=True`` (default), only returns tickers we
-    have evidence have a tradeable options market:
-      (a) ``options_volume > 0`` set by the AV HISTORICAL_OPTIONS
-          enrichment in fetch_earnings_calendar.py (~3,000 tickers
-          enriched per daily run, covering the full optionable
-          universe), OR
-      (b) the legacy ``has_options=true`` flag (set by EW or UW
-          when they pick a strategy — covers ~500 tickers).
-
-    (a) is the primary filter post-AV-enrichment (broad coverage of
-    the actual optionable universe); (b) is a fallback for any ticker
-    AV hasn't been called on yet. Combined, this collapses a typical
-    7d window from ~3,500 reporters to ~3,000 tradeable names — vs
-    the prior ~500 from the EW/UW-only flag.
+    With ``require_options=True`` (default), returns only tickers whose
+    AV HISTORICAL_OPTIONS chain summary has populated options_volume > 0
+    (set by fetch_earnings_calendar.py's enrichment). This is the
+    canonical "has a tradeable options market today" signal — covers
+    the full optionable universe (~3,000 tickers) regardless of whether
+    EW/UW picked a strategy. Replaces the prior has_options=true
+    EW/UW-only flag which covered only ~500 names.
     """
     try:
         from gcp.database import query_to_dataframe
@@ -258,10 +251,7 @@ def _earnings_calendar_tickers(
         GROUP BY ticker
     """
     if require_options:
-        sql += (
-            '        HAVING BOOL_OR(COALESCE(options_volume, 0) > 0) = true\n'
-            '            OR BOOL_OR(COALESCE(has_options, false)) = true\n'
-        )
+        sql += '        HAVING BOOL_OR(COALESCE(options_volume, 0) > 0) = true\n'
     sql += "        ORDER BY ticker\n"
     try:
         df = query_to_dataframe(sql, {"days": lookahead_days})
@@ -271,6 +261,37 @@ def _earnings_calendar_tickers(
     if df is None or df.empty:
         return []
     return [str(t).upper() for t in df["ticker"].tolist()]
+
+
+def _filter_already_have_history(tickers: list[str]) -> tuple[list[str], int]:
+    """Drop tickers that already have at least one row in earnings_history.
+
+    Past quarters never change, so a ticker with history rows is
+    considered "processed" — re-fetching its AV EARNINGS only burns
+    API budget. Returns (tickers_needing_fetch, n_skipped).
+
+    To force re-fetch (e.g. to pick up a quarter that landed since
+    the last run), pass --force on the CLI.
+    """
+    if not tickers:
+        return tickers, 0
+    try:
+        from gcp.database import query_to_dataframe
+    except ImportError:
+        return tickers, 0
+    try:
+        df = query_to_dataframe(
+            "SELECT DISTINCT ticker FROM earnings_history WHERE ticker = ANY(:t)",
+            {"t": tickers},
+        )
+    except Exception as e:
+        log.warning("earnings_history skip-check failed (%s) — fetching all", e)
+        return tickers, 0
+    if df is None or df.empty:
+        return tickers, 0
+    already = {str(t).upper() for t in df["ticker"].tolist()}
+    remaining = [t for t in tickers if t not in already]
+    return remaining, len(already)
 
 
 def _earnings_history_tickers() -> list[str]:
@@ -332,6 +353,13 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and print without writing to DB.")
     parser.add_argument(
+        "--force", action="store_true",
+        help="Fetch all resolved tickers even if they already have rows "
+             "in earnings_history. Default behavior is to skip tickers "
+             "with existing data (idempotent re-runs); use --force to "
+             "pull a new quarter that just landed.",
+    )
+    parser.add_argument(
         "--no-backfill", action="store_true",
         help="Skip the post-fetch market-data backfill chain. "
              "Default: after a successful earnings_history fetch we kick "
@@ -373,13 +401,24 @@ def main():
         log.info("No tickers to process — exiting")
         return
 
+    # Skip tickers we already have history for (idempotent re-runs).
+    # --force bypasses the skip when a new quarter lands.
+    if not args.force:
+        tickers, n_skipped = _filter_already_have_history(tickers)
+        if n_skipped:
+            log.info("Skipped %d tickers already in earnings_history "
+                     "(use --force to re-fetch)", n_skipped)
+        if not tickers:
+            log.info("All resolved tickers already processed — exiting")
+            return
+
     if len(tickers) > args.max_tickers:
         log.warning("Ticker count %d exceeds max-tickers cap %d; truncating",
                     len(tickers), args.max_tickers)
         tickers = tickers[:args.max_tickers]
 
     log.info("Earnings History Fetch Job (AlphaVantage EARNINGS)")
-    log.info("  Tickers : %d", len(tickers))
+    log.info("  Tickers : %d (after skip-already-processed)", len(tickers))
     log.info("  SQL     : %s", "yes" if is_cloud_sql_configured() else "NO")
 
     frames = []

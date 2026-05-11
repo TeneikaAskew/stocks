@@ -529,6 +529,33 @@ def _resolve_tickers(args) -> list[str]:
     return [str(t).upper() for t in df['ticker'].tolist()]
 
 
+def _filter_already_have_reactions(tickers: list[str]) -> tuple[list[str], int]:
+    """Drop tickers that already have at least one row in earnings_reactions.
+
+    Reaction stats are computed from earnings_history × market_data_daily.
+    A ticker with existing reactions has been processed; re-computing
+    would only be needed when a new quarter lands in earnings_history
+    (which fetch_earnings_history triggers via its own --force path).
+
+    Returns (tickers_needing_compute, n_skipped). Pass --force to bypass.
+    """
+    if not tickers:
+        return tickers, 0
+    try:
+        df = query_to_dataframe(
+            "SELECT DISTINCT ticker FROM earnings_reactions WHERE ticker = ANY(:t)",
+            {"t": tickers},
+        )
+    except Exception as e:
+        log.warning("earnings_reactions skip-check failed (%s) — computing all", e)
+        return tickers, 0
+    if df is None or df.empty:
+        return tickers, 0
+    already = {str(t).upper() for t in df['ticker'].tolist()}
+    remaining = [t for t in tickers if t not in already]
+    return remaining, len(already)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Populate earnings_reactions from earnings_history × market_data_daily"
@@ -537,6 +564,11 @@ def main():
                         help="Comma-separated tickers (overrides watchlist+calendar resolution).")
     parser.add_argument('--dry-run', action='store_true',
                         help="Print computed rows without writing.")
+    parser.add_argument('--force', action='store_true',
+                        help="Recompute even for tickers already in "
+                             "earnings_reactions. Default skips them "
+                             "(idempotent re-runs); use --force when a "
+                             "new quarter lands in earnings_history.")
     args = parser.parse_args()
 
     tickers = _resolve_tickers(args)
@@ -544,7 +576,17 @@ def main():
         log.warning("No tickers to process — exiting")
         return
 
-    log.info("compute_earnings_reactions: %d tickers", len(tickers))
+    if not args.force:
+        tickers, n_skipped = _filter_already_have_reactions(tickers)
+        if n_skipped:
+            log.info("Skipped %d tickers already in earnings_reactions "
+                     "(use --force to recompute)", n_skipped)
+        if not tickers:
+            log.info("All resolved tickers already processed — exiting")
+            return
+
+    log.info("compute_earnings_reactions: %d tickers (after skip-already-processed)",
+             len(tickers))
     n = populate_for_tickers(tickers, dry_run=args.dry_run)
     print(f"compute_earnings_reactions: {n} rows {'computed' if args.dry_run else 'upserted'}")
 
