@@ -76,6 +76,82 @@ class LegOutcome:
     eod_pnl_dollar: Optional[float] = None
 
 
+def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Optional[dict]:
+    """Self-healing fallback: re-derive the structured CALL/PUT setup by
+    calling the same ``lib.strat_levels.build_level_map`` the brief writer
+    uses, against daily data filtered to dates < ``analysis_date``.
+
+    Returns a dict of structured fields ready to UPSERT into
+    premarket_analysis (calls_trigger_price / puts_trigger_price /
+    stops / T1-T3 / *_name), or None when daily data is missing.
+
+    This exists because historical premarket_analysis rows (pre-PR shipping
+    the structured-column writer) have NULL trigger/stop/target columns.
+    Rather than parse the prose ``playbook`` text (fragile + error-prone),
+    the resolver re-runs the brief's level-map logic against the same
+    daily data the brief would have seen. Same source-of-truth function,
+    same answer. CLAUDE.md §3.6 — production replay paths, no throwaway
+    harnesses.
+    """
+    from lib.strat_levels import build_level_map  # local import to keep top-level light
+
+    # Load daily history for this ticker. We want everything up to and
+    # NOT including analysis_date so the level map only sees data the
+    # brief could have known about premarket.
+    daily_sql = text("""
+        SELECT date, open, high, low, close, atr_14, strat_candle, strat_combo
+        FROM market_data_daily
+        WHERE ticker = :t AND date < :d
+        ORDER BY date
+    """)
+    df = pd.read_sql(daily_sql, engine, params={'t': ticker.upper(), 'd': str(analysis_date)})
+    if df.empty or len(df) < 2:
+        logger.warning("derive_level_map: insufficient daily rows for %s before %s (%d)",
+                       ticker, analysis_date, len(df))
+        return None
+
+    df['Date'] = pd.to_datetime(df['date'])
+    df = df.set_index('Date').rename(columns={
+        'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close',
+    })
+
+    last = df.iloc[-1]
+    # current_price proxy: the most-recent close BEFORE analysis_date.
+    # This is what a live brief running at 8:30 AM would see when no
+    # premarket data has come in yet. Deterministic + reproducible.
+    current_price = float(last['Close'])
+    atr = float(last['atr_14']) if pd.notna(last['atr_14']) else None
+    strat_class = str(last.get('strat_candle') or '')
+    combo = str(last.get('strat_combo') or '')
+
+    level_map = build_level_map(
+        ticker=ticker, daily_df=df, current_price=current_price,
+        daily_strat_class=strat_class, combo=combo,
+        atr=atr, analysis_date=analysis_date,
+    )
+
+    ct = level_map.calls_trigger or {}
+    pt = level_map.puts_trigger or {}
+    ct_targets = ct.get('targets', []) if ct else []
+    pt_targets = pt.get('targets', []) if pt else []
+    return {
+        'calls_trigger_price': ct.get('trigger_level'),
+        'calls_trigger_name':  ct.get('trigger_name'),
+        'calls_stop_price':    ct.get('stop'),
+        'calls_stop_name':     ct.get('stop_name'),
+        'calls_t1_price': ct_targets[0]['price'] if len(ct_targets) >= 1 else None,
+        'calls_t2_price': ct_targets[1]['price'] if len(ct_targets) >= 2 else None,
+        'calls_t3_price': ct_targets[2]['price'] if len(ct_targets) >= 3 else None,
+        'puts_trigger_price': pt.get('trigger_level'),
+        'puts_trigger_name':  pt.get('trigger_name'),
+        'puts_stop_price':    pt.get('stop'),
+        'puts_stop_name':     pt.get('stop_name'),
+        'puts_t1_price': pt_targets[0]['price'] if len(pt_targets) >= 1 else None,
+        'puts_t2_price': pt_targets[1]['price'] if len(pt_targets) >= 2 else None,
+        'puts_t3_price': pt_targets[2]['price'] if len(pt_targets) >= 3 else None,
+    }
+
+
 def resolve_leg(
     direction: str,         # 'call' or 'put'
     trigger_price: Optional[float],
@@ -241,13 +317,28 @@ def resolve_one(
                     ticker, analysis_date, row['outcome_resolved_at'])
         return None
 
-    # No setup at all? Skip silently.
+    # Self-healing fallback: if structured input columns are NULL (e.g.
+    # historical row written before the structured-column persistence
+    # PR), re-derive the level map from daily data using the same
+    # build_level_map() function the brief writer uses, then UPDATE the
+    # structured columns in-place. Same source-of-truth, same answer.
+    structured_inputs = None
     if (
         (row['calls_trigger_price'] is None or pd.isna(row['calls_trigger_price']))
         and (row['puts_trigger_price'] is None or pd.isna(row['puts_trigger_price']))
     ):
-        logger.info("%s %s has no calls/puts trigger price — skipping", ticker, analysis_date)
-        return None
+        logger.info("%s %s structured inputs are NULL — deriving from daily data",
+                    ticker, analysis_date)
+        structured_inputs = derive_level_map_from_daily(ticker, analysis_date, engine)
+        if structured_inputs is None or (
+            structured_inputs['calls_trigger_price'] is None
+            and structured_inputs['puts_trigger_price'] is None
+        ):
+            logger.info("%s %s level map yielded no triggers — skipping", ticker, analysis_date)
+            return None
+        # Make the row dict look as if these came from the DB so the
+        # downstream resolve_leg(...) calls work unchanged.
+        row = {**row.to_dict(), **structured_inputs}
 
     # Pull RTH intraday bars (9:30-16:00 ET = 13:30-20:00 UTC during EDT,
     # 14:30-21:00 UTC during EST). Use ET-aware filtering for DST safety.
@@ -319,34 +410,60 @@ def resolve_one(
         'outcome_resolver_version': RESOLVER_VERSION,
     }
 
-    update_sql = text(f"""
-        UPDATE premarket_analysis SET
-            calls_trigger_hit_ts = :calls_trigger_hit_ts,
-            calls_t1_hit_ts = :calls_t1_hit_ts,
-            calls_t2_hit_ts = :calls_t2_hit_ts,
-            calls_t3_hit_ts = :calls_t3_hit_ts,
-            calls_stop_hit_ts = :calls_stop_hit_ts,
-            calls_reversal_after_trigger = :calls_reversal_after_trigger,
-            calls_time_to_t1_min = :calls_time_to_t1_min,
-            calls_mae_pct = :calls_mae_pct,
-            calls_mfe_pct = :calls_mfe_pct,
-            calls_eod_pnl_pct = :calls_eod_pnl_pct,
-            calls_eod_pnl_dollar = :calls_eod_pnl_dollar,
-            puts_trigger_hit_ts = :puts_trigger_hit_ts,
-            puts_t1_hit_ts = :puts_t1_hit_ts,
-            puts_t2_hit_ts = :puts_t2_hit_ts,
-            puts_t3_hit_ts = :puts_t3_hit_ts,
-            puts_stop_hit_ts = :puts_stop_hit_ts,
-            puts_reversal_after_trigger = :puts_reversal_after_trigger,
-            puts_time_to_t1_min = :puts_time_to_t1_min,
-            puts_mae_pct = :puts_mae_pct,
-            puts_mfe_pct = :puts_mfe_pct,
-            puts_eod_pnl_pct = :puts_eod_pnl_pct,
-            puts_eod_pnl_dollar = :puts_eod_pnl_dollar,
-            outcome_resolved_at = :outcome_resolved_at,
-            outcome_resolver_version = :outcome_resolver_version
-        WHERE analysis_date = :d AND ticker = :t
-    """)
+    # If the fallback re-derived structured inputs, write those too so
+    # the row becomes self-describing and future resolver runs skip the
+    # re-derivation step.
+    if structured_inputs is not None:
+        updates.update(structured_inputs)
+
+    update_sql_set_clauses = [
+        "calls_trigger_hit_ts = :calls_trigger_hit_ts",
+        "calls_t1_hit_ts = :calls_t1_hit_ts",
+        "calls_t2_hit_ts = :calls_t2_hit_ts",
+        "calls_t3_hit_ts = :calls_t3_hit_ts",
+        "calls_stop_hit_ts = :calls_stop_hit_ts",
+        "calls_reversal_after_trigger = :calls_reversal_after_trigger",
+        "calls_time_to_t1_min = :calls_time_to_t1_min",
+        "calls_mae_pct = :calls_mae_pct",
+        "calls_mfe_pct = :calls_mfe_pct",
+        "calls_eod_pnl_pct = :calls_eod_pnl_pct",
+        "calls_eod_pnl_dollar = :calls_eod_pnl_dollar",
+        "puts_trigger_hit_ts = :puts_trigger_hit_ts",
+        "puts_t1_hit_ts = :puts_t1_hit_ts",
+        "puts_t2_hit_ts = :puts_t2_hit_ts",
+        "puts_t3_hit_ts = :puts_t3_hit_ts",
+        "puts_stop_hit_ts = :puts_stop_hit_ts",
+        "puts_reversal_after_trigger = :puts_reversal_after_trigger",
+        "puts_time_to_t1_min = :puts_time_to_t1_min",
+        "puts_mae_pct = :puts_mae_pct",
+        "puts_mfe_pct = :puts_mfe_pct",
+        "puts_eod_pnl_pct = :puts_eod_pnl_pct",
+        "puts_eod_pnl_dollar = :puts_eod_pnl_dollar",
+        "outcome_resolved_at = :outcome_resolved_at",
+        "outcome_resolver_version = :outcome_resolver_version",
+    ]
+    if structured_inputs is not None:
+        update_sql_set_clauses.extend([
+            "calls_trigger_price = :calls_trigger_price",
+            "calls_trigger_name = :calls_trigger_name",
+            "calls_stop_price = :calls_stop_price",
+            "calls_stop_name = :calls_stop_name",
+            "calls_t1_price = :calls_t1_price",
+            "calls_t2_price = :calls_t2_price",
+            "calls_t3_price = :calls_t3_price",
+            "puts_trigger_price = :puts_trigger_price",
+            "puts_trigger_name = :puts_trigger_name",
+            "puts_stop_price = :puts_stop_price",
+            "puts_stop_name = :puts_stop_name",
+            "puts_t1_price = :puts_t1_price",
+            "puts_t2_price = :puts_t2_price",
+            "puts_t3_price = :puts_t3_price",
+        ])
+    update_sql = text(
+        "UPDATE premarket_analysis SET " + ", ".join(update_sql_set_clauses)
+        + " WHERE analysis_date = :d AND ticker = :t"
+    )
+
     with engine.begin() as conn:
         conn.execute(update_sql, {**updates, 'd': str(analysis_date), 't': ticker.upper()})
     logger.info("resolved %s %s: calls_pnl=%s%% puts_pnl=%s%%",
