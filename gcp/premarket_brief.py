@@ -382,30 +382,15 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     if os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '0') != '1':
         earnings = [e for e in earnings if e.get('tier', 6) <= 3]
 
-    # Sort: open_interest DESC → options_volume DESC → market_cap DESC,
-    # with tier + ticker as final tiebreakers. OI primary because it's
-    # the most stable liquidity measure (volume bounces day-to-day, OI
-    # reflects the durable open positions). Volume secondary as the
-    # second-most-stable measure. Mcap last as the institutional weight
-    # tiebreaker for similar-OI/vol names.
-    earnings.sort(key=lambda r: (
-        r['date'],
-        -(r.get('open_interest')  or 0),  # DESC: open interest
-        -(r.get('options_volume') or 0),  # DESC: options volume
-        -(r.get('market_cap')     or 0),  # DESC: market cap
-        r['tier'],                         # ASC: tier breaks ties
-        r['ticker'],                       # ASC: alphabetical
-    ))
-
-    # Cap at top_n AFTER the tier sort so the cut keeps the highest-quality
-    # rows. ``top_n=0`` disables the cap (legacy behaviour).
-    if top_n and top_n > 0:
-        earnings = earnings[:top_n]
-
-    # Enrich with the historical reaction profile + playability_score.
+    # Enrich BEFORE sorting so playability_score (move-magnitude ×
+    # direction-consistency × log(options_volume)) drives the top-N
+    # selection — not just after the cut. The intent is to surface
+    # tickers that genuinely have high volatility AND consistent
+    # post-earnings moves, which is exactly what the score captures
+    # from the last 12 quarters of last_1d_reactions.
+    #
     # Each row gains:
-    #   - playability_score (vol-normalized, options-weighted; None when
-    #     no historical data available)
+    #   - playability_score (None when no historical data available)
     #   - playability_archetype ('bullish_trend' | 'bearish_trend' |
     #     'reversal_play' | 'mixed' | 'quiet')
     #   - playability_n_q + the underlying inputs for the embed to render
@@ -416,6 +401,24 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     except Exception as e:
         # Don't fail the brief if the populator hasn't run yet — just log.
         logger.warning("playability enrichment skipped: %s", e)
+
+    # Sort: playability_score DESC primary; OI/vol/mcap as fallback for
+    # tickers without history (typically newly-IPO'd or no last_1d_reactions
+    # populated yet). Tier + ticker break the final ties.
+    earnings.sort(key=lambda r: (
+        r['date'],
+        -(r.get('playability_score') or 0),  # DESC: vol × consistency × log(vol)
+        -(r.get('open_interest')     or 0),  # DESC: OI fallback
+        -(r.get('options_volume')    or 0),  # DESC: vol fallback
+        -(r.get('market_cap')        or 0),  # DESC: mcap fallback
+        r['tier'],                            # ASC: tier breaks ties
+        r['ticker'],                          # ASC: alphabetical
+    ))
+
+    # Cap at top_n AFTER the playability-driven sort so the cut keeps
+    # the most-tradeable rows. ``top_n=0`` disables the cap (legacy).
+    if top_n and top_n > 0:
+        earnings = earnings[:top_n]
 
     return {'mode': mode, 'start': start, 'end': end, 'earnings': earnings}
 
