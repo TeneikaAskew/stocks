@@ -72,7 +72,8 @@
 - [x] `db-trading-pass` = (generated, stored) ✅
 - [x] `gcs-trading-bucket` = `adept-mountain-474619-d4-trading-data` ✅
 - [x] `av-api-key` = (from .env `ALPHA_VANTAGE_API_KEY`) ✅
-- [x] `discord-webhook` = (set) ✅ 2026-02-22
+- [x] `discord-webhook-insights` = (set) ✅ 2026-02-22 (renamed from `discord-webhook` 2026-05-11; main briefs/alerts channel)
+- [x] `discord-webhook-gcp` = (set) ✅ 2026-05-11 (dedicated GCP-errors channel used by failure-notifier)
 
 ---
 

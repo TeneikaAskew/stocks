@@ -1283,7 +1283,7 @@ Creates: Cloud SQL instance `trading-db` (~5 min), database, user, GCS bucket, s
 
 ```bash
 echo -n 'https://discord.com/api/webhooks/YOUR_ID/TOKEN' | \
-  gcloud secrets create discord-webhook --data-file=- --replication-policy=automatic
+  gcloud secrets create discord-webhook-insights --data-file=- --replication-policy=automatic
 
 echo -n 'YOUR_AV_KEY' | \
   gcloud secrets create av-api-key --data-file=- --replication-policy=automatic
@@ -1367,7 +1367,8 @@ gcloud storage ls gs://adept-mountain-474619-d4-trading-data/raw/
 | `db-trading-user` | `trading_user` | All Cloud Run jobs |
 | `db-trading-pass` | (generated at setup) | All Cloud Run jobs |
 | `gcs-trading-bucket` | `adept-mountain-474619-d4-trading-data` | All Cloud Run jobs |
-| `discord-webhook` | Discord webhook URL | premarket, signal-monitor, weekend |
+| `discord-webhook-insights` | Discord webhook URL (briefs/alerts channel) | premarket, signal-monitor, weekend |
+| `discord-webhook-gcp` | Discord webhook URL (dedicated GCP-errors channel) | failure-notifier |
 | `av-api-key` | AlphaVantage API key | fetch-alphavantage-intraday |
 
 ### Cloud Run Environment Variables

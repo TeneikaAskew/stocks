@@ -299,7 +299,7 @@ setup_insight_tasks_queue() {
 # canonical names; both resolve to the same Secret Manager secret.
 #
 # Required vs optional secrets:
-#   * DB_PASS, av-api-key, discord-webhook are created by
+#   * DB_PASS, av-api-key, discord-webhook-insights are created by
 #     setup_cloud_sql.sh — assumed present; deploy fails fast if missing.
 #   * fred-api-key, benzinga-api-key are optional add-ons — deploys
 #     gracefully skip them when not provisioned, preserving the
@@ -310,7 +310,7 @@ _build_secret_flag() {
     local pairs="DB_PASS=db-trading-pass:latest"
     pairs="${pairs},AV_API_KEY=av-api-key:latest"
     pairs="${pairs},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
-    pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook:latest"
+    pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
     if gcloud secrets describe fred-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
         pairs="${pairs},FRED_API_KEY=fred-api-key:latest"
     else
@@ -1353,13 +1353,13 @@ deploy_notifier() {
     env_string="${env_string},GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION}"
 
     # The failure-notifier posts to a DEDICATED Discord channel for GCP job
-    # failures (secret `discord-webhook-gcp`), not the shared `discord-webhook`
+    # failures (secret `discord-webhook-gcp`), not `discord-webhook-insights`
     # that the rest of the platform uses for briefs/alerts. We also fold in the
     # GitHub PAT/repo secrets so a single --set-secrets flag carries every
     # secret-mounted env var (a second --set-secrets on the same gcloud invoke
     # replaces the first entirely, which previously masked the shared secrets).
     local notifier_secrets="${DB_SECRET_FLAG#--set-secrets=}"
-    notifier_secrets="${notifier_secrets/discord-webhook:latest/discord-webhook-gcp:latest}"
+    notifier_secrets="${notifier_secrets/discord-webhook-insights:latest/discord-webhook-gcp:latest}"
     notifier_secrets="${notifier_secrets},GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest"
 
     # 1) Deploy the Cloud Run service (overrides Dockerfile CMD with stdlib server)
