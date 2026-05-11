@@ -29,10 +29,15 @@ from unittest.mock import patch
 # ends up cleared in each path.
 
 def _resolve_no_discord(args_no_discord: bool, env: dict) -> bool:
-    """Mirror of the logic in main(). Three sources for "skip Discord"."""
+    """Mirror of the logic in main(). Sources for "skip Discord":
+    BRIEF_NO_DISCORD=false explicit override wins over everything else;
+    otherwise --no-discord, BRIEF_NO_DISCORD=true, or BRIEF_AS_OF triggers."""
+    no_discord_env = env.get('BRIEF_NO_DISCORD', '').lower()
+    if no_discord_env == 'false':
+        return False  # explicit force-on
     return (
         args_no_discord
-        or env.get('BRIEF_NO_DISCORD', '').lower() == 'true'
+        or no_discord_env == 'true'
         or bool(env.get('BRIEF_AS_OF'))
     )
 
@@ -75,13 +80,18 @@ def test_brief_as_of_empty_does_not_suppress():
     assert _resolve_no_discord(False, {'BRIEF_AS_OF': ''}) is False
 
 
-def test_any_source_triggers_suppression():
-    """Multiple sources combine OR-wise."""
-    assert _resolve_no_discord(True, {'BRIEF_NO_DISCORD': 'false',
-                                       'BRIEF_AS_OF': ''}) is True
+def test_suppression_sources_combine_or_wise_when_no_explicit_force():
+    """Multiple suppression sources combine OR-wise. The explicit
+    BRIEF_NO_DISCORD=false override (tested separately) wins over
+    these — that's the only way to force Discord on when other
+    suppression signals are set."""
+    # Note: BRIEF_NO_DISCORD=false case is now tested separately under
+    # 'explicit force-on' tests below — it's the override and wins.
     assert _resolve_no_discord(False, {'BRIEF_NO_DISCORD': 'true',
                                         'BRIEF_AS_OF': ''}) is True
     assert _resolve_no_discord(False, {'BRIEF_AS_OF': '2026-05-06'}) is True
+    # CLI flag alone
+    assert _resolve_no_discord(True, {}) is True
 
 
 # Integration-ish: assert the actual main() flow resolves webhook_url
@@ -119,3 +129,34 @@ def test_brief_main_keeps_webhook_url_in_live_mode():
     suppressed = _resolve_no_discord(False, env)
     webhook_url = '' if suppressed else env.get('DISCORD_WEBHOOK_URL')
     assert webhook_url == 'https://discord.com/webhook/REAL'
+
+
+# ── BRIEF_NO_DISCORD=false explicit override ─────────────────────
+
+
+def test_explicit_force_on_overrides_brief_as_of():
+    """The 'I want to see what 5/6 would have looked like in Discord'
+    use case: BRIEF_NO_DISCORD=false should force Discord ON even when
+    BRIEF_AS_OF is set (which normally auto-suppresses)."""
+    env = {'BRIEF_AS_OF': '2026-05-06', 'BRIEF_NO_DISCORD': 'false'}
+    assert _resolve_no_discord(False, env) is False, \
+        "explicit BRIEF_NO_DISCORD=false should override AS_OF auto-suppress"
+
+
+def test_explicit_force_on_overrides_cli_flag():
+    """If both --no-discord and BRIEF_NO_DISCORD=false are set,
+    explicit env-var override wins (env vars are per-execution config)."""
+    env = {'BRIEF_NO_DISCORD': 'false'}
+    assert _resolve_no_discord(True, env) is False
+
+
+def test_explicit_force_on_alone_default():
+    """BRIEF_NO_DISCORD=false alone means default Discord behavior (post)."""
+    env = {'BRIEF_NO_DISCORD': 'false'}
+    assert _resolve_no_discord(False, env) is False
+
+
+def test_brief_no_discord_true_still_suppresses():
+    """Regression check: =true still suppresses (case-insensitive)."""
+    assert _resolve_no_discord(False, {'BRIEF_NO_DISCORD': 'TRUE'}) is True
+    assert _resolve_no_discord(False, {'BRIEF_NO_DISCORD': 'true'}) is True
