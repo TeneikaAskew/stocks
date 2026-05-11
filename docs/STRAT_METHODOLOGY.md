@@ -161,16 +161,18 @@ Applied to each timeframe pair:
 | PMH / PML | Previous Month High / Low | Monthly |
 | PWH / PWL | Previous Week High / Low | Weekly |
 | PDH / PDL | Previous Day High / Low | Daily (most traded) |
+| PDC / PWC / PMC | Previous Day / Week / Month Close | Same as the period H/L |
+| PDO / PWO / PMO | Previous Day / Week / Month **Open** | Emitted ONLY in premarket context, when today's row is filtered out of the daily df and the latest-open level is therefore the PREVIOUS period's open. Observable before today's RTH. |
 
 ### Current levels (live, repaints)
 
-| Abbrev | Full name |
-|---|---|
-| CYO | Current Year Open |
-| CQO | Current Quarter Open |
-| CMO | Current Month Open |
-| CWO | Current Week Open |
-| CDO | Current Day Open |
+| Abbrev | Full name | When emitted |
+|---|---|---|
+| CYO | Current Year Open | When the analysis horizon is mid-year |
+| CQO | Current Quarter Open | When mid-quarter |
+| CMO | Current Month Open | When mid-month |
+| CWO | Current Week Open | When mid-week |
+| CDO | Current Day **Open** | **Only emitted once today's session has actually opened** — i.e. mid-session or post-close (today's row is in the df). At 8:30 AM ET premarket, today's row is filtered out and the level builder emits **PDO** instead (the previous day's open, which IS observable premarket). The build_level_map call passes `analysis_date` so the emitter can tell the two contexts apart. |
 
 ### Intraday levels
 
