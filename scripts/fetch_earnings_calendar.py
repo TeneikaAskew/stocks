@@ -391,12 +391,16 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
         logger.info("AV options enrichment: hydrated %d (ticker,date) pairs from DB",
                     len(db_existing))
 
+        # Overwrite every row's options_volume/open_interest with the
+        # canonical (DB-stored, AV-chain-sum) value for that (ticker,
+        # date). This replaces UW's per-strategy contract counts and
+        # EW's NULL placeholders with the chain-wide aggregate so every
+        # row in the DB carries the same per-(ticker, date) value.
         def _hydrate(row, key, idx):
-            existing = row[key]
-            if existing is not None and not pd.isna(existing):
-                return existing
             v = db_existing.get((row['ticker'], _to_date(row[date_col])))
-            return v[idx] if v else None
+            if v is not None and v[idx] is not None:
+                return v[idx]
+            return row[key]
 
         df['options_volume'] = df.apply(lambda r: _hydrate(r, 'options_volume', 0), axis=1)
         df['open_interest']  = df.apply(lambda r: _hydrate(r, 'open_interest', 1), axis=1)
@@ -436,12 +440,15 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
                         counters['error'])
         time.sleep(delay_s)
 
-    # 4) Broadcast: only fill NULLs.
+    # 4) Broadcast AV chain sum onto every row for the ticker —
+    #    overwrites UW per-strategy contract counts and EW NULLs.
+    #    Only AV "error:..." responses (None, None) are left as-is so a
+    #    transient rate-limit doesn't blow away an existing value.
     def _fill(row, key, idx):
-        existing = row[key]
-        if existing is not None and not pd.isna(existing):
-            return existing
-        return results.get(row['ticker'], (None, None, ''))[idx]
+        new = results.get(row['ticker'], (None, None, ''))[idx]
+        if new is not None:
+            return new
+        return row[key]
 
     df['options_volume'] = df.apply(lambda r: _fill(r, 'options_volume', 0), axis=1)
     df['open_interest']  = df.apply(lambda r: _fill(r, 'open_interest', 1), axis=1)
