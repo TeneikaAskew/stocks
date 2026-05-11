@@ -402,24 +402,37 @@ def _walk_back_to_mother_bar(df, labels) -> tuple[Optional[float], Optional[floa
 
 
 def summarize_options_flow(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = True,
 ) -> dict:
     """Latest AlphaVantage EOD options chain snapshot aggregates.
 
     Returns total call/put volume, put/call ratio, max-pain strike,
     top open-interest strikes, and weighted average IV.
+
+    ``inclusive_today``:
+      All etf_options_snapshots rows are taken at 19:00 ET (post-close).
+      The DB has exactly one snapshot per (ticker, snapshot_date).
+      - True (default): WHERE snapshot_date <= as_of — admits as_of's
+        EOD snapshot. Use for EOD analytics or "what would the chain
+        look like at end of day X" semantics.
+      - False (premarket contract): WHERE snapshot_date < as_of —
+        excludes as_of's EOD snapshot entirely. The latest snapshot
+        the brief / insight pipeline can legitimately see at 8:30 AM
+        ET on as_of is the prior trading day's 19:00 ET snapshot.
     """
+    snap_op = "<=" if inclusive_today else "<"
     sql = (
         "SELECT option_type, strike, volume, open_interest, "
         "       implied_volatility, delta "
         "FROM etf_options_snapshots "
         "WHERE ticker = :ticker "
         "  AND data_source = 'alphavantage' "
-        + ("AND snapshot_date <= :as_of " if as_of else "")
+        + (f"AND snapshot_date {snap_op} :as_of " if as_of else "")
         + "  AND snapshot_date = ("
         "      SELECT MAX(snapshot_date) FROM etf_options_snapshots "
         "      WHERE ticker = :ticker AND data_source = 'alphavantage'"
-        + ("      AND snapshot_date <= :as_of" if as_of else "")
+        + (f"      AND snapshot_date {snap_op} :as_of" if as_of else "")
         + "  )"
     )
     params: dict[str, Any] = {"ticker": ticker.upper()}
@@ -475,7 +488,8 @@ def summarize_options_flow(
 
 
 def summarize_gamma_levels(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = True,
 ) -> dict:
     """Stratalyst-style gamma analytics: King / Gate / Spot / Flip + regime.
 
@@ -484,9 +498,13 @@ def summarize_gamma_levels(
     output feeds the gamma analyst prompt; any consumer wanting a richer
     response should call the /api/options/{ticker}/{date}/levels endpoint
     directly instead of consuming this summary.
+
+    ``inclusive_today`` mirrors summarize_options_flow — see its
+    docstring. False = premarket contract (no as_of-dated EOD snapshot).
     """
     from lib import gamma  # local import to avoid circular at module load
 
+    snap_op = "<=" if inclusive_today else "<"
     sql = (
         "SELECT option_type, strike, expiration, "
         "       open_interest, gamma, vega, delta, "
@@ -494,11 +512,11 @@ def summarize_gamma_levels(
         "FROM etf_options_snapshots "
         "WHERE ticker = :ticker "
         "  AND data_source = 'alphavantage' "
-        + ("AND snapshot_date <= :as_of " if as_of else "")
+        + (f"AND snapshot_date {snap_op} :as_of " if as_of else "")
         + "  AND snapshot_date = ("
         "      SELECT MAX(snapshot_date) FROM etf_options_snapshots "
         "      WHERE ticker = :ticker AND data_source = 'alphavantage'"
-        + ("      AND snapshot_date <= :as_of" if as_of else "")
+        + (f"      AND snapshot_date {snap_op} :as_of" if as_of else "")
         + "  )"
     )
     params: dict[str, Any] = {"ticker": ticker.upper()}
@@ -1347,8 +1365,8 @@ def build_context_bundle(
     sections = {
         "market": lambda: summarize_market_context(ticker, as_of, inclusive_today=inclusive_today),
         "strat": lambda: summarize_strat_status(ticker, as_of, inclusive_today=inclusive_today),
-        "options": lambda: summarize_options_flow(ticker, as_of),
-        "gamma": lambda: summarize_gamma_levels(ticker, as_of),
+        "options": lambda: summarize_options_flow(ticker, as_of, inclusive_today=inclusive_today),
+        "gamma": lambda: summarize_gamma_levels(ticker, as_of, inclusive_today=inclusive_today),
         "signals": lambda: summarize_signals_history(ticker, as_of=as_of),
         "backtest": lambda: summarize_backtest_metrics(ticker, as_of=as_of),
         "catalysts": lambda: summarize_catalysts(ticker, as_of),
