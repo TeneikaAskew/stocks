@@ -26,7 +26,14 @@ from .pricing import Usage
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_GCP_PROJECT = "adept-mountain-474619-d4"
-DEFAULT_GCP_LOCATION = "us-east1"
+# Default to the `global` endpoint, not the regional us-east1 endpoint. As
+# of 2026-05, Vertex hosts the older Gemini models (2.0.x) ONLY on regional
+# endpoints (us-east1, us-central1, ...) and the newer models (2.5.x, 3.x)
+# ONLY on `global`. Hitting us-east1 with a 3.x model returns 404. The
+# pipeline now defaults to global so the model-routing table can target
+# any current GA Gemini variant; rare cases that need a regional override
+# can set VERTEX_GEMINI_LOCATION=us-east1 explicitly.
+DEFAULT_GCP_LOCATION = "global"
 DEFAULT_GCP_KEY_FILE = str(PROJECT_ROOT / ".gcp-key.json")
 
 
@@ -43,7 +50,11 @@ def _get_genai_client():
     from google import genai
 
     project = os.environ.get("GCP_PROJECT_ID", DEFAULT_GCP_PROJECT)
-    location = os.environ.get("GCP_REGION", DEFAULT_GCP_LOCATION)
+    # VERTEX_GEMINI_LOCATION is the only knob; we deliberately do NOT fall
+    # back to GCP_REGION because every Cloud Run job sets GCP_REGION=us-east1
+    # (for Cloud SQL / GCS / Run itself), which would silently force Gemini
+    # into the regional endpoint and 404 on any newer model.
+    location = os.environ.get("VERTEX_GEMINI_LOCATION", DEFAULT_GCP_LOCATION)
     key_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", DEFAULT_GCP_KEY_FILE)
 
     credentials = None
@@ -66,7 +77,17 @@ def _get_genai_client():
 
 
 class VertexGeminiAdapter(LLMClient):
-    """Vertex AI Gemini implementation of LLMClient."""
+    """Vertex AI Gemini implementation of LLMClient.
+
+    Known limit: the adapter caches one google-genai client at the
+    location resolved on first call (`VERTEX_GEMINI_LOCATION` env var or
+    DEFAULT_GCP_LOCATION = "global"). All roles in `model_routing` must
+    therefore target models that live at that same location — mixing
+    `vertex:gemini-2.0-flash` (regional only) and `vertex:gemini-3.x`
+    (global only) in the same pipeline run would 404 one of them. If
+    mixed routing becomes a real need, key `_client` by location and
+    look up the right client per call.
+    """
 
     provider = "vertex"
 
