@@ -2771,20 +2771,33 @@ def main(argv: Optional[list[str]] = None):
         or ('cli' if sys.stdin.isatty() else 'cloud-run-job')
     )
 
-    # Resolve Discord-suppression policy. Three sources, in priority order:
-    #   1. --no-discord CLI flag
-    #   2. BRIEF_NO_DISCORD=true env var
-    #   3. BRIEF_AS_OF set (historical replay — never want to re-post
-    #      stale content to a real-time channel)
-    # When ANY of these is true, webhook_url is cleared so the "if
-    # webhook_url" guard below skips the Discord push. The persistence
-    # path (persist_to_cloud_sql) is unaffected — premarket_analysis +
-    # premarket_analysis_history rows are always written regardless.
-    no_discord = (
-        args.no_discord
-        or os.environ.get('BRIEF_NO_DISCORD', '').lower() == 'true'
-        or bool(os.environ.get('BRIEF_AS_OF'))
-    )
+    # Resolve Discord-suppression policy.
+    #
+    # Sources (any one of the first three triggers suppress; explicit
+    # `BRIEF_NO_DISCORD=false` overrides the BRIEF_AS_OF auto-suppression
+    # for the use case "I want to see what the brief would have looked
+    # like for a historical date in Discord, even though it's a replay"):
+    #
+    #   1. `BRIEF_NO_DISCORD=false` env var → FORCE Discord on
+    #      (overrides everything else; takes priority)
+    #   2. `--no-discord` CLI flag → suppress
+    #   3. `BRIEF_NO_DISCORD=true` env var → suppress
+    #   4. `BRIEF_AS_OF` set (historical replay) → suppress (default
+    #      safety; rendering stale content to a live channel is usually
+    #      wrong, but the explicit override above lets you opt back in)
+    #
+    # The persistence path (persist_to_cloud_sql) is unaffected by any
+    # of these — premarket_analysis + premarket_analysis_history rows
+    # are always written regardless of the Discord policy.
+    no_discord_env = os.environ.get('BRIEF_NO_DISCORD', '').lower()
+    if no_discord_env == 'false':
+        no_discord = False  # explicit force-on; wins over AS_OF auto-suppress
+    else:
+        no_discord = (
+            args.no_discord
+            or no_discord_env == 'true'
+            or bool(os.environ.get('BRIEF_AS_OF'))
+        )
     webhook_url = '' if no_discord else os.environ.get('DISCORD_WEBHOOK_URL')
 
     cfg = load_config()
