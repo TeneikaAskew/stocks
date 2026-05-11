@@ -411,7 +411,7 @@ def page_discord_slash() -> str:
 
     cells.append(vertex("p6_sql", "Cloud SQL&#xa;trades / signal_alerts / market_data",
                         1100, 220, 240, 70, "data", bold=True))
-    cells.append(vertex("p6_disc_back", "Discord channel&#xa;via discord-webhook secret",
+    cells.append(vertex("p6_disc_back", "Discord channel&#xa;via discord-webhook-insights secret",
                         1100, 400, 240, 70, "ext", bold=True))
 
     cells.append(edge("p6_e1", "p6_user", "p6_di", "1️⃣  interaction (HTTP POST)",
@@ -439,7 +439,7 @@ def page_discord_slash() -> str:
     cells.append(vertex("p6_note",
         "Two Discord secrets — different purposes:&#xa;"
         "• discord-public-key — verifies INCOMING interactions are signed by Discord&#xa;"
-        "• discord-webhook — Job posts OUTGOING messages back to a channel",
+        "• discord-webhook-insights — Job posts OUTGOING messages back to the briefs/alerts channel",
         80, 280, 600, 90, "white"))
 
     return page("💬 Discord Slash-Cmd", 1400, 520, cells)

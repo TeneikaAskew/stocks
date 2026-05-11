@@ -299,7 +299,7 @@ setup_insight_tasks_queue() {
 # canonical names; both resolve to the same Secret Manager secret.
 #
 # Required vs optional secrets:
-#   * DB_PASS, av-api-key, discord-webhook are created by
+#   * DB_PASS, av-api-key, discord-webhook-insights are created by
 #     setup_cloud_sql.sh — assumed present; deploy fails fast if missing.
 #   * fred-api-key, benzinga-api-key are optional add-ons — deploys
 #     gracefully skip them when not provisioned, preserving the
@@ -310,7 +310,7 @@ _build_secret_flag() {
     local pairs="DB_PASS=db-trading-pass:latest"
     pairs="${pairs},AV_API_KEY=av-api-key:latest"
     pairs="${pairs},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
-    pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook:latest"
+    pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
     if gcloud secrets describe fred-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
         pairs="${pairs},FRED_API_KEY=fred-api-key:latest"
     else
@@ -1352,6 +1352,16 @@ deploy_notifier() {
     env_string="$(_env_string)"
     env_string="${env_string},GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION}"
 
+    # The failure-notifier posts to a DEDICATED Discord channel for GCP job
+    # failures (secret `discord-webhook-gcp`), not `discord-webhook-insights`
+    # that the rest of the platform uses for briefs/alerts. We also fold in the
+    # GitHub PAT/repo secrets so a single --set-secrets flag carries every
+    # secret-mounted env var (a second --set-secrets on the same gcloud invoke
+    # replaces the first entirely, which previously masked the shared secrets).
+    local notifier_secrets="${DB_SECRET_FLAG#--set-secrets=}"
+    notifier_secrets="${notifier_secrets/discord-webhook-insights:latest/discord-webhook-gcp:latest}"
+    notifier_secrets="${notifier_secrets},GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest"
+
     # 1) Deploy the Cloud Run service (overrides Dockerfile CMD with stdlib server)
     # Secrets are mounted from Secret Manager at runtime via --set-secrets so
     # they never appear in revision metadata (visible to anyone with run.services.get).
@@ -1360,9 +1370,8 @@ deploy_notifier() {
         --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 \
         --service-account "${SA_EMAIL}" \
         --command "python" --args "-m,gcp.failure_notifier" \
-        ${DB_SECRET_FLAG} \
         --set-env-vars "${env_string}" \
-        --set-secrets="GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest" \
+        --set-secrets="${notifier_secrets}" \
         --no-allow-unauthenticated \
         --quiet
 
@@ -1415,12 +1424,22 @@ deploy_notifier() {
         --role="roles/pubsub.subscriber" --quiet
 
     # 5) Create Cloud Logging sink → Pub/Sub
-    # Filter catches Cloud Run Job execution failures but excludes the notifier
-    # itself to prevent infinite loops.
+    # Filter catches Cloud Run Job execution failures but excludes:
+    #   1. the notifier itself (prevents infinite loops)
+    #   2. Cloud Audit Logs (`cloudaudit.googleapis.com`) — every
+    #      `gcloud run jobs update` triggers an ERROR-severity audit log
+    #      because gcloud tries Jobs.CreateJob first (ALREADY_EXISTS at
+    #      ERROR severity) and falls back to UpdateJob. Without the
+    #      `logName:"run.googleapis.com"` clause, every deploy fired one
+    #      false-positive notification per job. Real execution failures
+    #      land on `run.googleapis.com/varlog/system` (task-failed
+    #      records) and `run.googleapis.com/stderr` (container stack
+    #      traces), both of which still match.
     local sink_filter
     sink_filter='resource.type="cloud_run_job"
 AND severity>=ERROR
-AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"'
+AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"
+AND logName:"run.googleapis.com"'
 
     gcloud logging sinks create "${NOTIFIER_SINK}" \
         "pubsub.googleapis.com/projects/${PROJECT_ID}/topics/${NOTIFIER_TOPIC}" \

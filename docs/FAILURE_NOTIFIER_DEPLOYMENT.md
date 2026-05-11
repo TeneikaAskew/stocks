@@ -51,16 +51,16 @@ gcloud artifacts repositories describe trading --location=us-east1
 
 ### 3. Discord webhook URL stored in Secret Manager
 
-The notifier reads `DISCORD_WEBHOOK_URL` from the shared env string. Verify it exists:
+The notifier reads `DISCORD_WEBHOOK_URL` from the dedicated `discord-webhook-gcp` secret (a separate Discord channel for GCP job failures). The shared `discord-webhook-insights` secret is used by the rest of the platform (briefs, signal alerts) but NOT by the failure-notifier. Verify the GCP-errors secret exists:
 ```bash
-gcloud secrets versions access latest --secret=discord-webhook --quiet | head -c 30
+gcloud secrets versions access latest --secret=discord-webhook-gcp --quiet | head -c 30
 # Should print the beginning of your webhook URL
 ```
 
 If missing, create it:
 ```bash
 printf 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN' \
-  | gcloud secrets create discord-webhook --replication-policy=automatic --data-file=-
+  | gcloud secrets create discord-webhook-gcp --replication-policy=automatic --data-file=-
 ```
 
 ### 4. Docker installed (for local testing only)
