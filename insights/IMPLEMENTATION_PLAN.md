@@ -58,7 +58,7 @@ ticker, date ──► ──┤                 ├──► bull_researcher �
 - **Risk debate** (3 personas, 1 round default) — each persona returns a JSON critique.
 - **Portfolio manager** (structured output) — final `InsightReport` with all sections merged.
 
-Every node calls `llm_client.complete(role=<role>, ...)` — the client looks up the configured model for that role from the `model_routing` Cloud SQL table (see Admin Dashboard below) and dispatches to the correct provider adapter. **Day-one config**: all 7 roles route to `vertex:gemini-2.0-flash` (or whichever Vertex model the user picks at deploy). Day-two config: admin flips specific roles to Anthropic/OpenAI from the UI.
+Every node calls `llm_client.complete(role=<role>, ...)` — the client looks up the configured model for that role from the `model_routing` Cloud SQL table (see Admin Dashboard below) and dispatches to the correct provider adapter. **Current config (as of 2026-05-11)**: all 7 roles route to `vertex:gemini-3.1-flash-lite` on the `global` endpoint. Day-two config: admin flips specific roles to a different Vertex model, or to Anthropic/OpenAI, from the UI. _Note: the original day-one config was `vertex:gemini-2.0-flash` on `us-east1`; migrated 2026-05-11 after DSQ-contention 429s — see `lib/agents/vertex_adapter.py` for the location/model selection logic._
 
 Orchestration is a **hand-rolled async orchestrator** (~200 lines) — no LangGraph. The graph is 11 nodes; Python `asyncio.gather` for the parallel analyst tier and sequential awaits for the rest is simpler to debug and has no framework lock-in.
 
@@ -133,19 +133,21 @@ Add the `model_routing` table that drives the admin dashboard:
 CREATE TABLE model_routing (
     role VARCHAR(32) PRIMARY KEY,       -- analyst | bull | bear | judge | trader | risk | portfolio_manager
     provider VARCHAR(32) NOT NULL,      -- vertex | anthropic | openai
-    model VARCHAR(64) NOT NULL,         -- e.g. gemini-2.0-flash, claude-sonnet-4-6, gpt-5
+    model VARCHAR(64) NOT NULL,         -- e.g. gemini-3.1-flash-lite, claude-sonnet-4-6, gpt-5
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_by VARCHAR(64)
 );
--- Day-one seed: all roles → Vertex Gemini 2.0 Flash (reuses existing .gcp-key.json, no new secret needed)
+-- Current seed: all roles → Vertex gemini-3.1-flash-lite on the `global` endpoint
+-- (migrated 2026-05-11 from gemini-2.0-flash on us-east1 after DSQ contention).
+-- Reuses existing .gcp-key.json, no new secret needed.
 INSERT INTO model_routing (role, provider, model) VALUES
-    ('analyst',           'vertex', 'gemini-2.0-flash'),
-    ('bull',              'vertex', 'gemini-2.0-flash'),
-    ('bear',              'vertex', 'gemini-2.0-flash'),
-    ('judge',             'vertex', 'gemini-2.0-flash'),
-    ('trader',            'vertex', 'gemini-2.0-flash'),
-    ('risk',              'vertex', 'gemini-2.0-flash'),
-    ('portfolio_manager', 'vertex', 'gemini-2.0-flash');
+    ('analyst',           'vertex', 'gemini-3.1-flash-lite'),
+    ('bull',              'vertex', 'gemini-3.1-flash-lite'),
+    ('bear',              'vertex', 'gemini-3.1-flash-lite'),
+    ('judge',             'vertex', 'gemini-3.1-flash-lite'),
+    ('trader',            'vertex', 'gemini-3.1-flash-lite'),
+    ('risk',              'vertex', 'gemini-3.1-flash-lite'),
+    ('portfolio_manager', 'vertex', 'gemini-3.1-flash-lite');
 ```
 
 ## Files to Create / Modify
@@ -247,7 +249,7 @@ Cost depends entirely on which provider/model each role is routed to. The `llm_c
    - `curl -X POST localhost:8000/api/insights/report/SPY/refresh` returns a `run_id`, polling eventually returns the new report.
    - `curl -X POST localhost:8000/api/insights/chat -d '{...}'` still streams Gemini responses.
 5. **Frontend**: `cd platform && npm run dev`, open `/insights`, confirm structured report renders with all 7 cards for SPY. Switch to `/insights/chat` and send a message. Switch to `/insights/history` and see ≥1 row. Click "Re-analyze" and watch the loading → refresh cycle.
-6. **Admin dashboard**: open `/admin`, confirm all 7 roles show `vertex:gemini-2.0-flash`. Change the `trader` role to a different Vertex model, click Test (expect success), click Save. Re-run the pipeline via the Re-analyze button and verify `model_versions.trader` in the new report reflects the change. Attempt to set `trader` to `anthropic:claude-sonnet-4-6` without `ANTHROPIC_API_KEY` set — expect the Test call to return a credential error and the Save button to stay disabled.
+6. **Admin dashboard**: open `/admin`, confirm all 7 roles show `vertex:gemini-3.1-flash-lite`. Change the `trader` role to a different Vertex model, click Test (expect success), click Save. Re-run the pipeline via the Re-analyze button and verify `model_versions.trader` in the new report reflects the change. Attempt to set `trader` to `anthropic:claude-sonnet-4-6` without `ANTHROPIC_API_KEY` set — expect the Test call to return a credential error and the Save button to stay disabled.
 7. **E2E**: `make test-e2e` with the new `insights.spec.ts` + `admin.spec.ts` green.
 8. **Workflow dry-run**: trigger `daily-insight-reports.yml` via `workflow_dispatch`, confirm it writes to Cloud SQL and the failure handler fires on a forced failure.
 9. **Cost check**: sum `cost_usd` from the last 24h of `insight_reports` — should be <$0.20/day on the day-one all-Gemini config.

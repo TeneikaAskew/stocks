@@ -83,7 +83,7 @@ class _Explanation(BaseModel):
 # Default to Vertex / Gemini Flash — same path the insight pipeline uses.
 # Override via env for local dev or A/B comparison.
 _DEFAULT_PROVIDER = os.environ.get("BRIEF_LLM_PROVIDER", "vertex")
-_DEFAULT_MODEL = os.environ.get("BRIEF_LLM_MODEL", "gemini-2.0-flash")
+_DEFAULT_MODEL = os.environ.get("BRIEF_LLM_MODEL", "gemini-3.1-flash-lite")
 _TIMEOUT_SEC = float(os.environ.get("BRIEF_LLM_TIMEOUT_SEC", "12"))
 
 
