@@ -397,9 +397,11 @@ def test_build_context_bundle_catches_exceptions(monkeypatch):
 
     monkeypatch.setattr(summarizers, "_query", bad_query)
     bundle = summarizers.build_context_bundle("SPY")
-    # Every section should have failed gracefully
+    # Every section should have failed gracefully.
+    # `signals` was removed from the bundle on 2026-05-11 to break the
+    # signal-monitor feedback loop; it's no longer in the section set.
     assert set(bundle["failed_sections"]) >= {
-        "market", "strat", "options", "gamma", "signals", "backtest", "catalysts"
+        "market", "strat", "options", "gamma", "backtest", "catalysts"
     }
     assert bundle["market"]["available"] is False
     # Audit 2026-05-08 G.P2.13: per-section failure reasons must
