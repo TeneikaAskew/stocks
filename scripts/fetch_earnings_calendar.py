@@ -407,19 +407,36 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
 
     # 2) Per the (report_date, ticker) rule: skip AV for tickers whose
     #    every (ticker, date) pair already has BOTH options_volume AND
-    #    open_interest populated (either from this run's UW source or
-    #    from prior runs we hydrated above). A ticker is in needs_av iff
-    #    at least one row has a NULL in either column after hydration.
-    needs_av = set()
+    #    open_interest populated.
+    #
+    # EXCEPTION: tickers reporting TODAY always get a fresh AV call,
+    # even if yesterday's run populated them. The snapshot date moves
+    # forward each morning (yesterday's weekday close), so today's
+    # reporters need a re-fetch so the brief sees current OI + volume
+    # rather than stale data from a prior session.
+    today_dt = datetime.now().date()
+    today_tickers: set = set()
     for ticker, grp in df.groupby('ticker'):
+        # A ticker reports "today" if any of its rows has earnings_date = today.
+        for ed in grp[date_col].dropna().unique():
+            if _to_date(ed) == today_dt:
+                today_tickers.add(ticker)
+                break
+
+    needs_av = set(today_tickers)  # always include today's reporters
+    for ticker, grp in df.groupby('ticker'):
+        if ticker in needs_av:
+            continue
         if grp['options_volume'].isna().any() or grp['open_interest'].isna().any():
             needs_av.add(ticker)
     total_tickers = df['ticker'].nunique()
     tickers = sorted(needs_av)
     skipped = total_tickers - len(tickers)
-    logger.info("AV options enrichment: %d unique tickers (skipping %d "
-                "already-populated) on %s (rpm=%d)",
-                len(tickers), skipped, snapshot_date, rpm)
+    logger.info("AV options enrichment: %d unique tickers (%d today-refresh "
+                "+ %d backfill) on %s (rpm=%d); skipping %d already-populated future-date",
+                len(tickers), len(today_tickers),
+                len(tickers) - len(today_tickers), snapshot_date,
+                rpm, skipped)
     if not tickers:
         return df
 
