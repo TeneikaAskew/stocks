@@ -156,6 +156,23 @@ def bulk_insert(df: pd.DataFrame, chunk_size: int = 1000) -> tuple[int, int]:
     inserted = 0
     col_list = ', '.join(COLS)
 
+    # Postgres INT columns in historical_signals (per gcp/schema.sql + the
+    # phase-1/1.5 ALTER blocks). Pandas widens these to float64 the moment
+    # any row in the same column is NaN, and pg8000 then binds the value
+    # as the string "15.0" which Postgres rejects with 22P02 ("invalid
+    # input syntax for type integer"). Coerce here at bind-time so the
+    # caller can keep using normal float-with-NaN frames without thinking
+    # about dtype gymnastics.
+    _INT_COLS = frozenset((
+        'signal_strength',      # SMALLINT
+        'duration_minutes',     # SMALLINT
+        'best_window_min',      # SMALLINT
+        'entry_volume',         # BIGINT
+        'expected_hold_min',    # INTEGER (Phase 1)
+        'next_catalyst_min',    # INTEGER (Phase 1.5)
+        'last_catalyst_min',    # INTEGER (Phase 1.5)
+    ))
+
     with engine.begin() as conn:
         for chunk_start in range(0, len(df), chunk_size):
             chunk = df.iloc[chunk_start:chunk_start + chunk_size]
@@ -172,6 +189,30 @@ def bulk_insert(df: pd.DataFrame, chunk_size: int = 1000) -> tuple[int, int]:
                     # NaN/Inf scalars from pandas → None
                     if isinstance(val, float) and (pd.isna(val) or val in (float('inf'), float('-inf'))):
                         val = None
+                    # Int columns: coerce float-y values back to int. After
+                    # the NaN/Inf check above, anything left in an int col
+                    # must be a real number we want as int. We accept
+                    # numpy scalars (call `.item()` first) and plain
+                    # Python int/float, but bail to None if the value
+                    # isn't representable as an integer (e.g. unexpected
+                    # str). bool is a subclass of int — exclude it
+                    # explicitly to avoid silently writing 0/1 from a
+                    # boolean column that landed in an int slot.
+                    elif val is not None and c in _INT_COLS:
+                        if hasattr(val, 'item'):
+                            val = val.item()
+                        if isinstance(val, bool):
+                            val = None  # type confusion; surface as NULL
+                        elif isinstance(val, (int, float)):
+                            try:
+                                val = int(val)
+                            except (TypeError, ValueError, OverflowError):
+                                val = None
+                        else:
+                            # Unknown type for an INT column → surface
+                            # as None rather than letting pg8000 build
+                            # a bad bind string.
+                            val = None
                     params[key] = val
                     row_keys.append(f':{key}')
                 value_tuples.append(f'({", ".join(row_keys)})')
