@@ -405,38 +405,52 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
         df['options_volume'] = df.apply(lambda r: _hydrate(r, 'options_volume', 0), axis=1)
         df['open_interest']  = df.apply(lambda r: _hydrate(r, 'open_interest', 1), axis=1)
 
-    # 2) Per the (report_date, ticker) rule: skip AV for tickers whose
-    #    every (ticker, date) pair already has BOTH options_volume AND
-    #    open_interest populated.
+    # 2) Narrow the enrichment universe to AV ∩ UW only — the same
+    #    cut the brief applies. Enriching the long tail of tickers
+    #    that aren't in BOTH AlphaVantage and Unusual Whales is wasted
+    #    work: the brief won't surface them. UW's curated daily list
+    #    (~25-37 names/day) is the natural gate.
     #
-    # EXCEPTION: tickers reporting TODAY always get a fresh AV call,
-    # even if yesterday's run populated them. The snapshot date moves
-    # forward each morning (yesterday's weekday close), so today's
-    # reporters need a re-fetch so the brief sees current OI + volume
-    # rather than stale data from a prior session.
+    # Within AV ∩ UW:
+    #   - Tickers reporting TODAY always get a fresh AV call (the
+    #     snapshot date moves forward each morning, so yesterday's
+    #     data is stale by definition).
+    #   - Future-date AV∩UW tickers skip if already populated; they'll
+    #     be re-fetched on their own report morning.
     today_dt = datetime.now().date()
+    # Build (ticker → {sources, reports_today})
     today_tickers: set = set()
+    av_uw_tickers: set = set()
+    src_col = 'source' if 'source' in df.columns else 'data_source'
+    av_aliases = {'alphavantage', 'AlphaVantage'}
+    uw_aliases = {'unusual_whales', 'UnusualWhales'}
     for ticker, grp in df.groupby('ticker'):
-        # A ticker reports "today" if any of its rows has earnings_date = today.
-        for ed in grp[date_col].dropna().unique():
-            if _to_date(ed) == today_dt:
-                today_tickers.add(ticker)
-                break
+        sources = set(grp[src_col].dropna().astype(str).unique())
+        if sources & av_aliases and sources & uw_aliases:
+            av_uw_tickers.add(ticker)
+            for ed in grp[date_col].dropna().unique():
+                if _to_date(ed) == today_dt:
+                    today_tickers.add(ticker)
+                    break
 
-    needs_av = set(today_tickers)  # always include today's reporters
-    for ticker, grp in df.groupby('ticker'):
-        if ticker in needs_av:
-            continue
+    # needs_av = today's AV∩UW (force refresh) + future-date AV∩UW with NULLs
+    needs_av = set(today_tickers)
+    for ticker in av_uw_tickers - today_tickers:
+        grp = df[df['ticker'] == ticker]
         if grp['options_volume'].isna().any() or grp['open_interest'].isna().any():
             needs_av.add(ticker)
+
     total_tickers = df['ticker'].nunique()
     tickers = sorted(needs_av)
-    skipped = total_tickers - len(tickers)
-    logger.info("AV options enrichment: %d unique tickers (%d today-refresh "
-                "+ %d backfill) on %s (rpm=%d); skipping %d already-populated future-date",
-                len(tickers), len(today_tickers),
-                len(tickers) - len(today_tickers), snapshot_date,
-                rpm, skipped)
+    non_av_uw = total_tickers - len(av_uw_tickers)
+    skipped_future = len(av_uw_tickers) - len(tickers)
+    logger.info(
+        "AV options enrichment: %d AV∩UW tickers (%d today-refresh + "
+        "%d future-backfill) on %s (rpm=%d); dropping %d non-AV∩UW, "
+        "skipping %d already-populated future-date AV∩UW",
+        len(tickers), len(today_tickers), len(tickers) - len(today_tickers),
+        snapshot_date, rpm, non_av_uw, skipped_future,
+    )
     if not tickers:
         return df
 
