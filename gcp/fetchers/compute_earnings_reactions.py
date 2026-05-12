@@ -529,18 +529,50 @@ def _resolve_tickers(args) -> list[str]:
     return [str(t).upper() for t in df['ticker'].tolist()]
 
 
-def _filter_already_have_reactions(tickers: list[str]) -> tuple[list[str], int]:
-    """Drop tickers that already have at least one row in earnings_reactions.
+def _tickers_reporting_in_window(window_days: int) -> set:
+    """Tickers in earnings_calendar with earnings_date in [today, today+window]."""
+    try:
+        df = query_to_dataframe(
+            """
+            SELECT DISTINCT ticker
+            FROM earnings_calendar
+            WHERE earnings_date BETWEEN CURRENT_DATE
+                AND CURRENT_DATE + (:days || ' days')::interval
+            """,
+            {"days": int(window_days)},
+        )
+    except Exception as e:
+        log.warning("report-window lookup failed (%s)", e)
+        return set()
+    if df is None or df.empty:
+        return set()
+    return {str(t).upper() for t in df['ticker'].tolist()}
 
-    Reaction stats are computed from earnings_history × market_data_daily.
-    A ticker with existing reactions has been processed; re-computing
-    would only be needed when a new quarter lands in earnings_history
-    (which fetch_earnings_history triggers via its own --force path).
 
-    Returns (tickers_needing_compute, n_skipped). Pass --force to bypass.
+def _resolve_scope(cli_scope=None) -> str:
+    """'weekly' on Sundays or when overridden; else 'daily'."""
+    if cli_scope in ('daily', 'weekly'):
+        return cli_scope
+    import os as _os
+    env = _os.environ.get('PIPELINE_SCOPE', '').strip().lower()
+    if env in ('daily', 'weekly'):
+        return env
+    from datetime import datetime as _dt
+    return 'weekly' if _dt.now().weekday() == 6 else 'daily'
+
+
+def _filter_already_have_reactions(
+    tickers, force_set=None,
+):
+    """Skip tickers with existing reactions UNLESS in force_set.
+
+    force_set: tickers reporting in the current run's window — always
+    re-compute these (their just-released quarter needs a new reaction
+    row).
     """
     if not tickers:
         return tickers, 0
+    force_set = force_set or set()
     try:
         df = query_to_dataframe(
             "SELECT DISTINCT ticker FROM earnings_reactions WHERE ticker = ANY(:t)",
@@ -552,8 +584,9 @@ def _filter_already_have_reactions(tickers: list[str]) -> tuple[list[str], int]:
     if df is None or df.empty:
         return tickers, 0
     already = {str(t).upper() for t in df['ticker'].tolist()}
-    remaining = [t for t in tickers if t not in already]
-    return remaining, len(already)
+    remaining = [t for t in tickers if t not in already or t in force_set]
+    n_skipped = len(tickers) - len(remaining)
+    return remaining, n_skipped
 
 
 def main():
@@ -569,6 +602,12 @@ def main():
                              "earnings_reactions. Default skips them "
                              "(idempotent re-runs); use --force when a "
                              "new quarter lands in earnings_history.")
+    parser.add_argument('--scope', choices=['daily', 'weekly'], default=None,
+                        help="Pipeline scope (overrides PIPELINE_SCOPE / "
+                             "day-of-week auto-detect). 'daily' force-"
+                             "recomputes tickers reporting today; "
+                             "'weekly' force-recomputes tickers reporting "
+                             "in the next 7 days.")
     args = parser.parse_args()
 
     tickers = _resolve_tickers(args)
@@ -577,15 +616,21 @@ def main():
         return
 
     if not args.force:
-        tickers, n_skipped = _filter_already_have_reactions(tickers)
-        if n_skipped:
-            log.info("Skipped %d tickers already in earnings_reactions "
-                     "(use --force to recompute)", n_skipped)
+        scope = _resolve_scope(args.scope)
+        window_days = 7 if scope == 'weekly' else 0
+        force_set = _tickers_reporting_in_window(window_days)
+        tickers, n_skipped = _filter_already_have_reactions(tickers, force_set)
+        log.info(
+            "scope=%s report-window=[today, today+%dd] "
+            "force-recompute=%d tickers; skipped %d already-processed "
+            "outside window",
+            scope, window_days, len(force_set & set(tickers)), n_skipped,
+        )
         if not tickers:
             log.info("All resolved tickers already processed — exiting")
             return
 
-    log.info("compute_earnings_reactions: %d tickers (after skip-already-processed)",
+    log.info("compute_earnings_reactions: %d tickers (after window-aware skip)",
              len(tickers))
     n = populate_for_tickers(tickers, dry_run=args.dry_run)
     print(f"compute_earnings_reactions: {n} rows {'computed' if args.dry_run else 'upserted'}")

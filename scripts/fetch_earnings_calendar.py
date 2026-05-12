@@ -27,6 +27,7 @@ import sys
 import time
 from datetime import datetime, timedelta, date
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 import requests
@@ -233,7 +234,43 @@ def fetch_alphavantage_earnings(horizon: str = '3month') -> pd.DataFrame:
 # options_volume filter has signal for ALL earnings tickers — not only
 # the ~30/day UnusualWhales covers.
 
-def _previous_trading_weekday(d: date) -> date:
+def _resolve_target_dates_for_av_options(scope: str) -> list:
+    """Resolve the dates whose AV ∩ UW reporters should get an AV options
+    refresh on this run.
+
+    scope='weekly'  (Sunday 7 PM ET run): the upcoming Mon-Fri (5 dates).
+        Snapshot date will be the previous weekday close (Friday).
+    scope='daily'   (Mon-Thu 7 PM ET evening run): the next calendar
+        day, only when it's a weekday AND the gap is exactly 1 day.
+        Returns [] on Friday (tomorrow=Sat → no earnings) — Friday
+        evening just does post-close history+reactions for today's
+        reporters; Monday is handled by Sunday's weekly run.
+
+    Returns a list of date objects (may be empty).
+    """
+    today = datetime.now().date()
+    if scope == 'weekly':
+        # Find next Monday (or today if already Monday/weekday … but the
+        # weekly scope is invoked on Sunday by the scheduler).
+        d = today + timedelta(days=1)
+        while d.weekday() != 0:  # 0=Mon
+            d += timedelta(days=1)
+        return [d + timedelta(days=i) for i in range(5)]  # Mon-Fri
+    # daily: only tomorrow, only if it's a weekday and gap is 1 day
+    tomorrow = today + timedelta(days=1)
+    if tomorrow.weekday() >= 5:
+        return []
+    return [tomorrow]
+
+
+def _resolve_scope(cli_scope: Optional[str] = None) -> str:
+    """Scope = 'weekly' on Sundays (or when overridden), else 'daily'."""
+    if cli_scope in ('daily', 'weekly'):
+        return cli_scope
+    env = os.environ.get('PIPELINE_SCOPE', '').strip().lower()
+    if env in ('daily', 'weekly'):
+        return env
+    return 'weekly' if datetime.now().weekday() == 6 else 'daily'
     """Most recent weekday strictly before d. Ignores market holidays —
     AV returns 'No data' for those, which the caller handles."""
     d = d - timedelta(days=1)
@@ -341,7 +378,9 @@ def _load_existing_options_from_db(date_keys: set) -> dict:
 
 
 def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
-                           api_key: str, rpm: int = 150) -> pd.DataFrame:
+                           api_key: str, rpm: int = 150,
+                           scope: str = 'daily',
+                           target_dates_override: Optional[list] = None) -> pd.DataFrame:
     """Per-ticker AV HISTORICAL_OPTIONS enrichment.
 
     Pipeline:
@@ -405,51 +444,46 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
         df['options_volume'] = df.apply(lambda r: _hydrate(r, 'options_volume', 0), axis=1)
         df['open_interest']  = df.apply(lambda r: _hydrate(r, 'open_interest', 1), axis=1)
 
-    # 2) Narrow the enrichment universe to AV ∩ UW only — the same
-    #    cut the brief applies. Enriching the long tail of tickers
-    #    that aren't in BOTH AlphaVantage and Unusual Whales is wasted
-    #    work: the brief won't surface them. UW's curated daily list
-    #    (~25-37 names/day) is the natural gate.
+    # 2) Narrow the enrichment universe to AV ∩ UW tickers reporting
+    #    on the target date(s) for this run's scope:
+    #      - 'daily' (Mon-Thu 7 PM ET): tomorrow only (so the next-day
+    #        brief reads tomorrow's reporters with TODAY's close snapshot).
+    #        Friday returns [] (Sat doesn't trade; Mon prep is Sunday's job).
+    #      - 'weekly' (Sun 7 PM ET): the full upcoming Mon-Fri.
     #
-    # Within AV ∩ UW:
-    #   - Tickers reporting TODAY always get a fresh AV call (the
-    #     snapshot date moves forward each morning, so yesterday's
-    #     data is stale by definition).
-    #   - Future-date AV∩UW tickers skip if already populated; they'll
-    #     be re-fetched on their own report morning.
-    today_dt = datetime.now().date()
-    # Build (ticker → {sources, reports_today})
-    today_tickers: set = set()
-    av_uw_tickers: set = set()
+    # Tickers outside AV ∩ UW are dropped entirely — the brief filter
+    # wouldn't surface them anyway, so calling AV is wasted work.
+    target_dates = set(target_dates_override or _resolve_target_dates_for_av_options(scope))
     src_col = 'source' if 'source' in df.columns else 'data_source'
     av_aliases = {'alphavantage', 'AlphaVantage'}
     uw_aliases = {'unusual_whales', 'UnusualWhales'}
+    needs_av: set = set()
+    av_uw_in_target: set = set()
     for ticker, grp in df.groupby('ticker'):
         sources = set(grp[src_col].dropna().astype(str).unique())
-        if sources & av_aliases and sources & uw_aliases:
-            av_uw_tickers.add(ticker)
-            for ed in grp[date_col].dropna().unique():
-                if _to_date(ed) == today_dt:
-                    today_tickers.add(ticker)
-                    break
-
-    # needs_av = today's AV∩UW (force refresh) + future-date AV∩UW with NULLs
-    needs_av = set(today_tickers)
-    for ticker in av_uw_tickers - today_tickers:
-        grp = df[df['ticker'] == ticker]
-        if grp['options_volume'].isna().any() or grp['open_interest'].isna().any():
+        if not (sources & av_aliases and sources & uw_aliases):
+            continue
+        # Reports in target window?
+        ticker_dates = {_to_date(ed) for ed in grp[date_col].dropna().unique()}
+        if ticker_dates & target_dates:
+            av_uw_in_target.add(ticker)
             needs_av.add(ticker)
 
     total_tickers = df['ticker'].nunique()
     tickers = sorted(needs_av)
-    non_av_uw = total_tickers - len(av_uw_tickers)
-    skipped_future = len(av_uw_tickers) - len(tickers)
+    non_av_uw = total_tickers - sum(
+        1 for t, g in df.groupby('ticker')
+        if (set(g[src_col].dropna().astype(str).unique()) & av_aliases) and
+           (set(g[src_col].dropna().astype(str).unique()) & uw_aliases)
+    )
     logger.info(
-        "AV options enrichment: %d AV∩UW tickers (%d today-refresh + "
-        "%d future-backfill) on %s (rpm=%d); dropping %d non-AV∩UW, "
-        "skipping %d already-populated future-date AV∩UW",
-        len(tickers), len(today_tickers), len(tickers) - len(today_tickers),
-        snapshot_date, rpm, non_av_uw, skipped_future,
+        "AV options enrichment [scope=%s]: %d AV∩UW tickers reporting in "
+        "target_dates=%s on snapshot=%s (rpm=%d); dropped %d non-AV∩UW, "
+        "%d AV∩UW outside target window",
+        scope, len(tickers),
+        sorted(d.isoformat() for d in target_dates),
+        snapshot_date, rpm, non_av_uw,
+        total_tickers - non_av_uw - len(av_uw_in_target),
     )
     if not tickers:
         return df
@@ -1413,6 +1447,14 @@ def main():
         help="Override snapshot date for AV options enrichment (YYYY-MM-DD). "
              "Default: previous weekday.",
     )
+    parser.add_argument(
+        "--scope",
+        choices=["daily", "weekly"],
+        default=None,
+        help="Pipeline scope (overrides auto-detection from day-of-week / "
+             "PIPELINE_SCOPE env var). 'daily' targets tomorrow's AV ∩ UW "
+             "reporters; 'weekly' targets the next Mon-Fri (Sunday setup).",
+    )
 
     args = parser.parse_args()
 
@@ -1514,10 +1556,13 @@ def main():
             logger.warning("ALPHA_VANTAGE_API_KEY / AV_API_KEY not set — "
                            "skipping AV options enrichment")
         else:
+            scope = _resolve_scope(getattr(args, 'scope', None))
             snapshot_date = (args.av_options_snapshot_date
                              or _previous_trading_weekday(datetime.now().date())
                                  .strftime('%Y-%m-%d'))
-            all_rows_df = enrich_with_av_options(all_rows_df, snapshot_date, av_key)
+            all_rows_df = enrich_with_av_options(
+                all_rows_df, snapshot_date, av_key, scope=scope,
+            )
 
     # Deduplicate for JSON cache: prefer EW (carries strategy) > AV > UW > Yahoo.
     # The JSON file is a human-readable summary — one row per (ticker, date)

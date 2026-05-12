@@ -1564,7 +1564,10 @@ deploy_schedulers() {
     # brief misclassifies scheduled runs as manual_replay in history.
     _schedule_brief "premarket-brief-daily"    "30 8 * * 1-5"   "premarket-brief"
     # Pre-market brief — 9:00 AM ET Sundays (week-ahead earnings digest)
-    _schedule_brief "premarket-brief-sunday"   "0 9 * * 0"      "premarket-brief"
+    # Sunday brief moved to 9 PM ET (after weekly-earnings-refresh-* at
+    # 7-7:30 PM has populated fresh AV options + history + reactions
+    # for the upcoming Mon-Fri).
+    _schedule_brief "premarket-brief-sunday"   "0 21 * * 0"      "premarket-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
     # Signal monitor EOD resolver — 4:30 PM ET weekdays (30 min after close
@@ -1630,34 +1633,36 @@ deploy_schedulers() {
     # Economic events — 7 AM ET weekdays (before pre-market brief)
     _schedule "economic-events-daily"  "0 7 * * 1-5"  "fetch-economic-events"
 
-    # Earnings calendar (UW + EW) — 7:15 AM ET weekdays
-    _schedule "earnings-calendar-daily"  "15 7 * * 1-5"  "fetch-earnings-calendar"
-
-    # Earnings history (AV EARNINGS, per-ticker quarterly EPS) — daily at
-    # 7:45 AM ET, 30 min after earnings-calendar-daily lands and the AV
-    # options enrichment has populated options_volume across the brief
-    # window. This lets fetch_earnings_history pick up the broader
-    # options-tradeable universe (~3,000 tickers vs ~500 on the old
-    # has_options-only filter) so the 11pm compute-earnings-reactions
-    # run has the input rows it needs to compute playability scores
-    # for the names the brief actually surfaces.
-    _schedule "earnings-history-daily"  "45 7 * * 1-5"  "fetch-earnings-history"
-
-    # Compute earnings reactions — daily at 11 PM ET (after market
-    # close + EW strike eval at 11 PM, so the latest market_data_daily
-    # bars are settled). Daily cadence (not weekly) so:
-    #   1. Tomorrow's BMO reporters always have fresh sustain stats
-    #      from today's close
-    #   2. Yesterday's AMC reporters get their D+1 reaction row populated
-    #      the same evening, so the next-morning brief's conditional
-    #      lean has fresh history including today's quarter
-    #   3. New tickers in earnings_history (added by Sunday weekly
-    #      fetch) get reaction rows within ≤1 day, not 7
+    # ─────────────────────────────────────────────────────────────────
+    # Earnings pipeline (evening) — single chain Mon-Fri @ 7 PM ET +
+    # weekly setup Sun @ 7 PM ET. See docs/RUNBOOK_BACKFILL.md for the
+    # full architecture rationale.
     #
-    # Cost: pure DB join, no external API. ~5 min for the full ~320
-    # ticker universe. Recomputes idempotently — same row content,
-    # only updated_at advances.
-    _schedule "compute-earnings-reactions-daily"  "0 23 * * 1-5"  "compute-earnings-reactions"
+    # Daily (Mon-Fri 7 PM) — `daily-earnings-refresh`:
+    #   - fetch-earnings-calendar (scope=daily): AV HISTORICAL_OPTIONS
+    #     for TOMORROW's AV ∩ UW reporters (snapshot = today's close)
+    #   - fetch-earnings-history (scope=daily): force-refetch today's
+    #     reporters to capture post-close eps_actual
+    #   - compute-earnings-reactions (scope=daily): re-compute today's
+    #     just-reported tickers
+    #
+    # Weekly (Sun 7 PM) — `weekly-earnings-refresh`:
+    #   - fetch-earnings-calendar (scope=weekly): AV options for ALL
+    #     upcoming Mon-Fri AV ∩ UW (snapshot = Friday close)
+    #   - fetch-earnings-history (scope=weekly): pre-fetch history for
+    #     next-week's universe, skip-already-processed handles rest
+    #   - compute-earnings-reactions (scope=weekly): same window
+    #
+    # Daily morning runs are deleted — data lands the prior evening
+    # so the 8:30 AM Discord brief reads pre-fetched, settled data.
+    # ─────────────────────────────────────────────────────────────────
+    _schedule "daily-earnings-refresh-calendar"   "0 19 * * 1-5"  "fetch-earnings-calendar"
+    _schedule "daily-earnings-refresh-history"   "15 19 * * 1-5"  "fetch-earnings-history"
+    _schedule "daily-earnings-refresh-reactions" "30 19 * * 1-5"  "compute-earnings-reactions"
+
+    _schedule "weekly-earnings-refresh-calendar"   "0 19 * * 0"  "fetch-earnings-calendar"
+    _schedule "weekly-earnings-refresh-history"   "15 19 * * 0"  "fetch-earnings-history"
+    _schedule "weekly-earnings-refresh-reactions" "30 19 * * 0"  "compute-earnings-reactions"
 
     # Pre-market refresh — 8:20 AM ET, 10 min before the morning brief.
     # premarket-brief-daily (the Discord push) fires at 8:30 AM ET, so

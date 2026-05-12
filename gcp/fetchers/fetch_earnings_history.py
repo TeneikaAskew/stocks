@@ -269,18 +269,49 @@ def _earnings_calendar_tickers(
     return [str(t).upper() for t in df["ticker"].tolist()]
 
 
-def _filter_already_have_history(tickers: list[str]) -> tuple[list[str], int]:
-    """Drop tickers that already have at least one row in earnings_history.
+def _tickers_reporting_in_window(window_days: int) -> set:
+    """Tickers in earnings_calendar with earnings_date in [today, today+window_days].
 
-    Past quarters never change, so a ticker with history rows is
-    considered "processed" — re-fetching its AV EARNINGS only burns
-    API budget. Returns (tickers_needing_fetch, n_skipped).
+    Daily scope: window_days=0 → today only (capture post-close eps_actual).
+    Weekly scope: window_days=7 → today through next 7 days (full setup).
+    """
+    try:
+        from gcp.database import query_to_dataframe
+    except ImportError:
+        return set()
+    try:
+        df = query_to_dataframe(
+            """
+            SELECT DISTINCT ticker
+            FROM earnings_calendar
+            WHERE earnings_date BETWEEN CURRENT_DATE
+                AND CURRENT_DATE + (:days || ' days')::interval
+            """,
+            {"days": int(window_days)},
+        )
+    except Exception as e:
+        log.warning("report-window lookup failed (%s)", e)
+        return set()
+    if df is None or df.empty:
+        return set()
+    return {str(t).upper() for t in df["ticker"].tolist()}
 
-    To force re-fetch (e.g. to pick up a quarter that landed since
-    the last run), pass --force on the CLI.
+
+def _filter_already_have_history(
+    tickers: list, force_set: set = None,
+) -> tuple:
+    """Skip tickers that have history rows — UNLESS they're in force_set.
+
+    force_set: tickers we always re-fetch even if rows exist. Used to
+    capture a newly-reported quarter (eps_actual) for tickers reporting
+    in the current run's window.
+
+    Past quarters never change, so a ticker with rows AND not reporting
+    in the window stays skipped. Returns (tickers_needing_fetch, n_skipped).
     """
     if not tickers:
         return tickers, 0
+    force_set = force_set or set()
     try:
         from gcp.database import query_to_dataframe
     except ImportError:
@@ -296,8 +327,20 @@ def _filter_already_have_history(tickers: list[str]) -> tuple[list[str], int]:
     if df is None or df.empty:
         return tickers, 0
     already = {str(t).upper() for t in df["ticker"].tolist()}
-    remaining = [t for t in tickers if t not in already]
-    return remaining, len(already)
+    remaining = [t for t in tickers if t not in already or t in force_set]
+    n_skipped = len(tickers) - len(remaining)
+    return remaining, n_skipped
+
+
+def _resolve_scope(cli_scope: str = None) -> str:
+    """'weekly' on Sundays or when overridden; else 'daily'."""
+    if cli_scope in ('daily', 'weekly'):
+        return cli_scope
+    env = os.environ.get('PIPELINE_SCOPE', '').strip().lower()
+    if env in ('daily', 'weekly'):
+        return env
+    from datetime import datetime as _dt
+    return 'weekly' if _dt.now().weekday() == 6 else 'daily'
 
 
 def _earnings_history_tickers() -> list[str]:
@@ -374,6 +417,13 @@ def main():
              "11pm compute-earnings-reactions run. Smart-switch makes this "
              "free (zero AV calls) when no new tickers appeared.",
     )
+    parser.add_argument(
+        "--scope", choices=["daily", "weekly"], default=None,
+        help="Pipeline scope (overrides PIPELINE_SCOPE env / day-of-week "
+             "auto-detect). 'daily' force-refetches tickers reporting "
+             "today (capture eps_actual post-close); 'weekly' force-"
+             "refetches tickers reporting in the next 7 days.",
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
@@ -407,13 +457,20 @@ def main():
         log.info("No tickers to process — exiting")
         return
 
-    # Skip tickers we already have history for (idempotent re-runs).
-    # --force bypasses the skip when a new quarter lands.
+    # Skip tickers we already have history for, UNLESS they report in
+    # the current run's window (force-refetch so the just-released
+    # quarter / eps_actual is captured).
     if not args.force:
-        tickers, n_skipped = _filter_already_have_history(tickers)
-        if n_skipped:
-            log.info("Skipped %d tickers already in earnings_history "
-                     "(use --force to re-fetch)", n_skipped)
+        scope = _resolve_scope(args.scope)
+        window_days = 7 if scope == 'weekly' else 0
+        force_set = _tickers_reporting_in_window(window_days)
+        tickers, n_skipped = _filter_already_have_history(tickers, force_set)
+        log.info(
+            "scope=%s report-window=[today, today+%dd] "
+            "force-refetch=%d tickers; skipped %d already-processed "
+            "outside window",
+            scope, window_days, len(force_set & set(tickers)), n_skipped,
+        )
         if not tickers:
             log.info("All resolved tickers already processed — exiting")
             return
