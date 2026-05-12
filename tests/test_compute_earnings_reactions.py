@@ -813,3 +813,109 @@ class TestComputeReactionATR:
         assert r['pre_report_atr'] == 0.0
         # zero pre — ratio undefined, must be None not inf
         assert r['reaction_day_range_in_atr_units'] is None
+
+
+# ─────────────────────────────────────────────────────────────
+# fetch_daily_windows_for_ticker_dates — per-ticker batching
+# (issue #452 — N+1 → 1 SQL query per ticker)
+# ─────────────────────────────────────────────────────────────
+
+from unittest.mock import patch
+
+class TestFetchDailyWindowsForTickerDates:
+    """The bulk fetcher is the architectural fix for the 30-min Cloud Run
+    task-timeout — it MUST issue exactly one query per ticker (not one
+    per reported_date). Pin that contract with a query-counter test."""
+
+    def _sample_bars(self):
+        """30-year daily-bar coverage spanning two reported_dates."""
+        import pandas as pd
+        from datetime import date as _date, timedelta as _td
+        rows = []
+        start = _date(2025, 1, 1)
+        for i in range(500):
+            d = start + _td(days=i)
+            rows.append({
+                'date': d, 'open': 100.0, 'high': 101.0,
+                'low':  99.0, 'close': 100.5, 'volume': 1000,
+                'atr_14': 1.5,
+            })
+        return pd.DataFrame(rows)
+
+    def test_empty_reported_dates_returns_empty(self):
+        from gcp.fetchers.compute_earnings_reactions import (
+            fetch_daily_windows_for_ticker_dates,
+        )
+        out = fetch_daily_windows_for_ticker_dates('AAPL', [])
+        assert out == {}
+
+    def test_one_query_per_ticker_regardless_of_date_count(self):
+        """4 reported_dates → 1 SQL query (not 4). This is the contract
+        that makes the timeout fix work."""
+        from gcp.fetchers import compute_earnings_reactions as cer
+        bars = self._sample_bars()
+        with patch.object(cer, 'query_to_dataframe', return_value=bars) as qm:
+            from datetime import date
+            out = cer.fetch_daily_windows_for_ticker_dates(
+                'AAPL',
+                [date(2025, 2, 1), date(2025, 4, 15),
+                 date(2025, 6, 1), date(2025, 12, 1)],
+            )
+        assert qm.call_count == 1, (
+            "bulk fetcher must issue exactly one DB round-trip per ticker "
+            "regardless of how many reported_dates are passed in"
+        )
+        assert set(out.keys()) == {
+            __import__('datetime').date(2025, 2, 1),
+            __import__('datetime').date(2025, 4, 15),
+            __import__('datetime').date(2025, 6, 1),
+            __import__('datetime').date(2025, 12, 1),
+        }
+
+    def test_window_slices_per_reported_date(self):
+        """Each returned df is bounded to [reported_date-20d, +25d]."""
+        from gcp.fetchers import compute_earnings_reactions as cer
+        bars = self._sample_bars()
+        from datetime import date, timedelta
+        with patch.object(cer, 'query_to_dataframe', return_value=bars):
+            out = cer.fetch_daily_windows_for_ticker_dates(
+                'AAPL', [date(2025, 6, 1)],
+            )
+        win = out[date(2025, 6, 1)]
+        assert not win.empty
+        assert win['date'].min() >= date(2025, 6, 1) - timedelta(days=20)
+        assert win['date'].max() <= date(2025, 6, 1) + timedelta(days=25)
+
+    def test_empty_db_returns_empty_window_per_date(self):
+        """If market_data_daily has no rows for the ticker (sparse data),
+        every reported_date maps to an empty DataFrame so the caller's
+        compute_reaction returns None for each — never crashes."""
+        import pandas as pd
+        from gcp.fetchers import compute_earnings_reactions as cer
+        from datetime import date
+        with patch.object(cer, 'query_to_dataframe',
+                          return_value=pd.DataFrame()):
+            out = cer.fetch_daily_windows_for_ticker_dates(
+                'XYZ',
+                [date(2025, 1, 1), date(2025, 6, 1)],
+            )
+        assert all(df.empty for df in out.values())
+        assert set(out.keys()) == {date(2025, 1, 1), date(2025, 6, 1)}
+
+    def test_query_range_covers_union_of_dates(self):
+        """The single SQL query's date range must cover the union of all
+        reported_dates' windows — min-20d to max+25d."""
+        from gcp.fetchers import compute_earnings_reactions as cer
+        bars = self._sample_bars()
+        from datetime import date, timedelta
+        with patch.object(cer, 'query_to_dataframe', return_value=bars) as qm:
+            cer.fetch_daily_windows_for_ticker_dates(
+                'AAPL', [date(2025, 2, 1), date(2025, 10, 1)],
+            )
+        args, kwargs = qm.call_args
+        # query_to_dataframe(sql, params) — params is the 2nd positional
+        params = args[1] if len(args) > 1 else kwargs.get('params') or kwargs
+        # Accept either dict-style or kwargs-style param passing
+        if hasattr(params, 'get'):
+            assert params['start'] == date(2025, 2, 1) - timedelta(days=20)
+            assert params['end']   == date(2025, 10, 1) + timedelta(days=25)
