@@ -491,6 +491,74 @@ def test_derive_key_levels_extracts_strat_market_options():
     }
 
 
+def test_derive_key_levels_surfaces_full_multi_timeframe_map():
+    """2026-05-11 fix: report.key_levels must include the full multi-
+    timeframe level map (PDH/PDL/PWH/PWL/PMH/PML/PQH/PQL/PYH/PYL +
+    effective_PDH/PDL) so users can audit the trade-planner's regime
+    classification — not just 'Prev High / Prev Low'.
+
+    The QQQ 5/6 replay surfaced this gap: blue-sky classification
+    depended on PWH/PMH/PQH/PYH all being below pre-market range,
+    but those levels were never visible in the report."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat": {
+            "available": True,
+            "trigger_high": 682.77,
+            "trigger_low": 677.51,
+            "levels": {
+                "PDH": 682.77, "PDL": 677.51,
+                "PWH": 682.77, "PWL": 668.80,
+                "PMH": 682.77, "PML": 571.92,
+                "PQH": 636.60, "PQL": 555.60,
+                "PYH": 637.01, "PYL": 402.39,
+                "effective_PDH": 682.77, "effective_PDL": 677.51,
+            },
+        },
+        "market":  {"available": True, "sma_200": 605.24, "ema_20": 648.61},
+        "options": {"available": True, "max_pain_strike_proxy": 600.0},
+    }
+    levels = _derive_key_levels(bundle)
+    # All 10 multi-timeframe levels surfaced with descriptive labels
+    assert levels["Prev Day High"] == 682.77
+    assert levels["Prev Day Low"] == 677.51
+    assert levels["Prev Week High"] == 682.77
+    assert levels["Prev Week Low"] == 668.80
+    assert levels["Prev Month High"] == 682.77
+    assert levels["Prev Month Low"] == 571.92
+    assert levels["Prev Quarter High"] == 636.60
+    assert levels["Prev Quarter Low"] == 555.60
+    assert levels["Prev Year High"] == 637.01
+    assert levels["Prev Year Low"] == 402.39
+    assert levels["Effective PDH"] == 682.77
+    assert levels["Effective PDL"] == 677.51
+    # Legacy fields suppressed when the new ones are present
+    assert "Prev High" not in levels
+    assert "Prev Low" not in levels
+    # Other sections still surface
+    assert levels["SMA 200"] == 605.24
+    assert levels["EMA 20"] == 648.61
+    assert levels["Max Pain"] == 600.0
+
+
+def test_derive_key_levels_legacy_fallback_when_no_levels_dict():
+    """When the strat section has trigger_high/low but no `levels` dict
+    (degraded bundle — level builder threw), keep emitting the legacy
+    'Prev High / Prev Low' labels for backwards-compat."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat":   {"available": True, "trigger_high": 510.0, "trigger_low": 495.0},
+        "market":  {"available": True, "sma_200": 480.0, "ema_20": 500.0},
+        "options": {"available": True, "max_pain_strike_proxy": 505.0},
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels["Prev High"] == 510.0
+    assert levels["Prev Low"] == 495.0
+    assert "Prev Day High" not in levels
+
+
 def test_derive_key_levels_skips_unavailable_sections():
     from lib.agents.orchestrator import _derive_key_levels
 
