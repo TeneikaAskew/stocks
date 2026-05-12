@@ -128,13 +128,20 @@ deploy_insight_discord_push() {
 deploy_historical_signals_watchlist() {
     echo "Deploying historical-signals-watchlist job..."
 
+    # NOTE: `--args="--from-watchlist"` MUST use the `=` form (no space).
+    # When the arg value starts with `-`, gcloud's argparse interprets a
+    # space-separated form (`--args "--from-watchlist"`) as a new flag
+    # named `--from-watchlist` and errors with "argument --args: expected
+    # one argument". See CLAUDE.md rule 5.4 ("Cloud Run Job sizing
+    # checklist"). Pre-fix this aborted ./gcp/deploy.sh insights and
+    # ./gcp/deploy.sh all mid-way through the deploy bundle.
     gcloud run jobs create historical-signals-watchlist \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 2Gi --cpu 1 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.run_historical_signals" \
-        --args "--from-watchlist" \
+        --args="--from-watchlist" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
@@ -142,7 +149,7 @@ deploy_historical_signals_watchlist() {
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,scripts.run_historical_signals" \
-        --args "--from-watchlist" \
+        --args="--from-watchlist" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
