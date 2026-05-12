@@ -870,7 +870,9 @@ def _get_gemini_client():
     from google import genai
 
     project = os.environ.get("GCP_PROJECT_ID", "adept-mountain-474619-d4")
-    location = os.environ.get("GCP_REGION", "us-east1")
+    # Match lib/agents/vertex_adapter.py: prefer VERTEX_GEMINI_LOCATION, default
+    # to `global` (Vertex hosts gemini-3.x ONLY on global; us-east1 returns 404).
+    location = os.environ.get("VERTEX_GEMINI_LOCATION", "global")
     key_file = os.environ.get(
         "GOOGLE_APPLICATION_CREDENTIALS",
         str(PROJECT_ROOT / ".gcp-key.json"),
@@ -913,7 +915,7 @@ async def _stream_gemini(request: ChatRequest) -> AsyncGenerator[str, None]:
         system_prompt = CHAT_SYSTEM_PROMPTS.get(request.mode, CHAT_SYSTEM_PROMPTS["chat"])
 
         for chunk in client.models.generate_content_stream(
-            model="gemini-2.0-flash",
+            model="gemini-3.1-flash-lite",
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,

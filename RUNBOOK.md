@@ -481,7 +481,7 @@ gcloud run jobs execute premarket-brief --region=us-east1 --wait
 
 Things that could fail silently today because nothing watches them. Ranked by silent-failure cost.
 
-1. **🔴 Insight pipeline showing $0.00 Vertex AI / Gemini cost over 90 days.** Per [COST_ANALYSIS.md §4B](COST_ANALYSIS.md), Gemini 2.0 Flash has paid pricing per token (no zero-cost tier). $0 means either (a) no rounding above sub-cent, or (b) the pipeline isn't actually invoking Gemini. **No alarm watches "is insight-pipeline producing output."** A failure here is invisible from billing and from Discord (the brief still posts; only the insight digest goes silent).
+1. **🔴 Insight pipeline showing $0.00 Vertex AI / Gemini cost over 90 days.** Per [COST_ANALYSIS.md §4B](COST_ANALYSIS.md), the active Gemini model (`gemini-3.1-flash-lite` as of 2026-05-11) has paid pricing per token (no zero-cost tier). $0 means either (a) no rounding above sub-cent, or (b) the pipeline isn't actually invoking Gemini. **No alarm watches "is insight-pipeline producing output."** A failure here is invisible from billing and from Discord (the brief still posts; only the insight digest goes silent).
    - **Fix:** add a `signal-quality-alarm`-style daily check that queries `SELECT COUNT(*) FROM insight_reports WHERE as_of >= CURRENT_DATE - INTERVAL '1 day'` and posts to Discord if 0.
 
 2. **🔴 `ticker_calibration` written but never read.** Per [DATA_DEPENDENCIES.md §5](DATA_DEPENDENCIES.md), `scripts/calibrate_thresholds.py` writes the table; `lib/strategies/config.py` documents reading it but still hardcodes thresholds. **Calibration could be silently broken for months** and nobody would notice because nothing reads the output.
