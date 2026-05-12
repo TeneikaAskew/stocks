@@ -321,7 +321,25 @@ def summarize_strat_status(
                     df = df[df.index <= cutoff]
                 else:
                     df = df[df.index < cutoff.normalize()]
-            level_map = compute_previous_levels(df)
+            # PR #400 fix applied to this code path: pass analysis_date so
+            # compute_previous_levels uses period-filter semantics ("the
+            # period BEFORE the period containing analysis_date") instead
+            # of the legacy iloc[-2] fallback that assumes df's last row
+            # is today's in-progress bar. Without this, the bundle showed
+            # 5/4's H/L as PDH/PDL on a 2026-05-06 replay because the df
+            # had already been pre-filtered to exclude 5/6 — iloc[-2]
+            # then picked 5/4 instead of 5/5. PR #400 fixed this for the
+            # brief + playbook_resolver; this code path was missed.
+            analysis_date_for_levels = None
+            if as_of is not None:
+                import pandas as _pd
+                _ts = _pd.Timestamp(as_of)
+                if _ts.tz is not None:
+                    _ts = _ts.tz_convert('UTC').tz_localize(None)
+                analysis_date_for_levels = _ts.date()
+            level_map = compute_previous_levels(
+                df, analysis_date=analysis_date_for_levels
+            )
             level_dict: dict[str, float] = {}
             for name in ("PDH", "PDL", "PWH", "PWL", "PMH", "PML",
                          "PQH", "PQL", "PYH", "PYL"):
