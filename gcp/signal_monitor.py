@@ -399,8 +399,18 @@ class SignalMonitor:
             # Use the latest live close as current_price; the actual price
             # will be passed in check_level_breaks for crossing detection.
             current_price = float(df[close_col].iloc[-1])
+            # PR #400 fix applied to this code path: pass analysis_date
+            # so build_level_map → compute_previous_levels uses period-
+            # filter semantics. Replay-aware: use the replay clock when
+            # set, fall back to today's ET date in live mode. Without
+            # this, replay runs picked day-before-yesterday's PDH/PDL.
+            if self.replay_clock_ts is not None:
+                _analysis_date = pd.Timestamp(self.replay_clock_ts).date()
+            else:
+                _analysis_date = datetime.now(_ET).date()
             self.level_maps[ticker] = build_level_map(
                 ticker=ticker, daily_df=df, current_price=current_price,
+                analysis_date=_analysis_date,
             )
             self.level_refresh_success_count[ticker] = (
                 self.level_refresh_success_count.get(ticker, 0) + 1
