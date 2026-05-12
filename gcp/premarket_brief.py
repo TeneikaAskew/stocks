@@ -386,7 +386,11 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     # The Sunday weekly view relaxes (1) and (2) since UW/AV options
     # data is stale for next-week dates that haven't seen Friday's
     # close yet — see PR #398.
-    if mode == 'daily':
+    # BRIEF_INCLUDE_UNCONFIRMED=1 bypasses the AV ∩ UW gate AND the
+    # liquidity floors — useful for debugging tier classification, for
+    # tests that exercise the tier system in isolation, or for legacy
+    # callers that want the pre-filter view.
+    if mode == 'daily' and os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '') != '1':
         earnings = [
             e for e in earnings
             if (e.get('options_volume') or 0) > 0
@@ -394,16 +398,6 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
             and 'alphavantage' in (e.get('sources') or [])
             and 'unusual_whales' in (e.get('sources') or [])
         ]
-
-    # BRIEF_INCLUDE_UNCONFIRMED kept for backward-compat / debug.
-    # When set, bypasses the AV ∩ UW gate above (reverts to legacy
-    # tier ≤ 3 behavior).
-    if os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '') == '1':
-        # Re-pull pre-filter view: query result was already grouped, so
-        # this branch is only meaningful when the env var is set BEFORE
-        # the gate runs. Documented for legacy callers — modern path is
-        # the AV ∩ UW gate above.
-        pass
 
     # Enrich BEFORE sorting so playability_score (move-magnitude ×
     # direction-consistency × log(options_volume)) drives the top-N
