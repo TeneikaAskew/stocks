@@ -386,18 +386,26 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     # The Sunday weekly view relaxes (1) and (2) since UW/AV options
     # data is stale for next-week dates that haven't seen Friday's
     # close yet — see PR #398.
-    # BRIEF_INCLUDE_UNCONFIRMED=1 bypasses the AV ∩ UW gate AND the
-    # liquidity floors — useful for debugging tier classification, for
-    # tests that exercise the tier system in isolation, or for legacy
-    # callers that want the pre-filter view.
-    if mode == 'daily' and os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '') != '1':
+    # Filter is split into two layers:
+    #   (a) liquidity floor — options_volume > 0 AND open_interest > 1000
+    #       (always applied in daily mode; weak/illiquid chains have
+    #        nothing to trade regardless of source confirmation)
+    #   (b) source-confirmation gate — AV ∩ UW
+    #       (bypassable via BRIEF_INCLUDE_UNCONFIRMED=1 for debug,
+    #        tier-system tests, or legacy callers that want the
+    #        pre-gate view)
+    if mode == 'daily':
         earnings = [
             e for e in earnings
             if (e.get('options_volume') or 0) > 0
             and (e.get('open_interest') or 0) > 1000
-            and 'alphavantage' in (e.get('sources') or [])
-            and 'unusual_whales' in (e.get('sources') or [])
         ]
+        if os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '') != '1':
+            earnings = [
+                e for e in earnings
+                if 'alphavantage' in (e.get('sources') or [])
+                and 'unusual_whales' in (e.get('sources') or [])
+            ]
 
     # Enrich BEFORE sorting so playability_score (move-magnitude ×
     # direction-consistency × log(options_volume)) drives the top-N
