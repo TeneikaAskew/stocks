@@ -372,25 +372,27 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     # so dropping every row because UW hasn't refreshed produces an
     # empty list (the user sees "no earnings this week" despite ~5000
     # rows in the table for the next 5 weekdays).
-    # Filter pipeline (refined 2026-05-11):
+    # Filter pipeline (refined 2026-05-12):
     #   1. AV ∩ UW source confirmation — both AlphaVantage AND Unusual
     #      Whales must list the (ticker, date). UW's curated daily list
     #      is the gate (~25-37 names/day); AV cross-confirms the date.
     #      EW is NOT a gate — it cuts out major institutional names
     #      (SONY, TCOM, JBS) and high-OI small-caps that don't fit EW's
     #      strategy templates but are still tradeable.
-    #   2. options_volume > 0 — must have some daily flow
-    #   3. open_interest > 1000 — drops tiny chains (real positions exist)
-    #   4. mcap: no floor — let OI gate the micro-caps
+    #   2. open_interest > 1000 — real open positions exist. OI is
+    #      the durable liquidity signal: daily volume can be 0 on
+    #      quiet days but open contracts don't evaporate. The
+    #      options_volume gate would have dropped every 5/12 ticker
+    #      because the AV-chain snapshot landed on a quiet 5/8 Friday.
+    #   3. mcap: no floor — let OI gate the micro-caps.
     #
-    # The Sunday weekly view relaxes (1) and (2) since UW/AV options
-    # data is stale for next-week dates that haven't seen Friday's
-    # close yet — see PR #398.
+    # The Sunday weekly view relaxes (1) since UW/AV calendar data
+    # is stale for next-week dates that haven't seen Friday's close
+    # yet — see PR #398.
     if mode == 'daily':
         earnings = [
             e for e in earnings
-            if (e.get('options_volume') or 0) > 0
-            and (e.get('open_interest') or 0) > 1000
+            if (e.get('open_interest') or 0) > 1000
             and 'alphavantage' in (e.get('sources') or [])
             and 'unusual_whales' in (e.get('sources') or [])
         ]
