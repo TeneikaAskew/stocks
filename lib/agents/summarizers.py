@@ -591,6 +591,17 @@ def summarize_signals_history(
 ) -> dict:
     """signal_alerts aggregates anchored at `as_of`.
 
+    NOT called by `build_insight_bundle` as of 2026-05-11 — feeding
+    signal_alerts into the LLM bundle creates a self-reinforcing
+    feedback loop with signal-monitor (which gates on the insight
+    pipeline's `insight_direction`). See the comment on the `sections`
+    dict in `build_insight_bundle` for the full rationale.
+
+    Kept callable so external analytics scripts, ad-hoc debugging, and
+    the `signal-monitor-eod-resolver` pipeline can still aggregate the
+    history. Do NOT re-add this back to the bundle without addressing
+    the circular dependency.
+
     Returns the `lookback_days` window ending at `as_of` (defaults to
     now when None). Grouped by direction/strength, with the 5 most
     recent rows for reference. Historical runs therefore see the same
@@ -1367,7 +1378,20 @@ def build_context_bundle(
         "strat": lambda: summarize_strat_status(ticker, as_of, inclusive_today=inclusive_today),
         "options": lambda: summarize_options_flow(ticker, as_of, inclusive_today=inclusive_today),
         "gamma": lambda: summarize_gamma_levels(ticker, as_of, inclusive_today=inclusive_today),
-        "signals": lambda: summarize_signals_history(ticker, as_of=as_of),
+        # NOTE: `signals` (signal_alerts history) is deliberately NOT in
+        # the LLM bundle. signal-monitor uses the insight pipeline's
+        # `insight_direction` as a firing gate (PR #419, "Phase 1
+        # insight direction gate"), so feeding signal_alerts back into
+        # the LLM creates a self-reinforcing feedback loop: insight
+        # decides direction → signal-monitor fires alerts in that
+        # direction → next insight run reads those alerts → confirms
+        # the same direction → repeat.
+        # Observed 2026-05-11: gemini-3.1-flash-lite committed to
+        # SHORT/medium on SPY based on 5 fresh weak PUT alerts (all
+        # exited time_stop with avg return -0.05%), even though
+        # ftfc_direction was bullish. summarize_signals_history()
+        # remains callable for external analytics / debugging, but
+        # the insight prompt no longer sees it.
         "backtest": lambda: summarize_backtest_metrics(ticker, as_of=as_of),
         "catalysts": lambda: summarize_catalysts(ticker, as_of),
         "sentiment": lambda: summarize_news_sentiment(ticker, as_of),
