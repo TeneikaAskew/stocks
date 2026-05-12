@@ -251,6 +251,71 @@ def test_bulk_insert_clean_for_json_handles_nan_in_extra(fake_engine_factory):
     assert decoded["pct_to_target"] is None
 
 
+@pytest.mark.parametrize("col,float_val,expected_int", [
+    ("signal_strength",  4.0,  4),
+    ("duration_minutes", 20.0, 20),
+    ("best_window_min",  15.0, 15),
+    ("entry_volume",     250_000.0, 250_000),
+    ("expected_hold_min", 30.0, 30),
+    ("next_catalyst_min", 45.0, 45),
+    ("last_catalyst_min", 60.0, 60),
+])
+def test_bulk_insert_coerces_int_columns_from_float(
+    fake_engine_factory, col, float_val, expected_int,
+):
+    """Pandas widens INT-typed columns to float64 when any row has NaN.
+    pg8000 then sends "15.0" to Postgres which rejects with 22P02
+    ("invalid input syntax for type integer"). The sender must coerce
+    float-y values back to int at bind time. Issues #455 / #456."""
+    from gcp.historical_signals import bulk_insert
+
+    conn = fake_engine_factory()
+    overrides = {col: float_val}
+    row = _make_row(datetime(2026, 4, 25, 10, 0), **overrides)
+    bulk_insert(pd.DataFrame([row]), chunk_size=10)
+
+    _, params = conn.calls[0]
+    assert params[f"p0_{col}"] == expected_int
+    assert isinstance(params[f"p0_{col}"], int)
+
+
+def test_bulk_insert_coerces_int_columns_handles_nan(fake_engine_factory):
+    """NaN values in INT columns should still become None (not get
+    crashed by int() in the coercion path)."""
+    from gcp.historical_signals import bulk_insert
+
+    conn = fake_engine_factory()
+    row = _make_row(
+        datetime(2026, 4, 25, 10, 0),
+        signal_strength=float("nan"),
+        next_catalyst_min=float("nan"),
+    )
+    bulk_insert(pd.DataFrame([row]), chunk_size=10)
+
+    _, params = conn.calls[0]
+    assert params["p0_signal_strength"] is None
+    assert params["p0_next_catalyst_min"] is None
+
+
+def test_bulk_insert_int_coercion_does_not_truncate_floats_to_zero(
+    fake_engine_factory,
+):
+    """Sanity check: a real float value like 15.7 in an INT column means
+    the upstream pipeline has a data bug (durations should be whole
+    minutes). int() truncates toward zero — 15.7 → 15 — which preserves
+    the data better than rounding to 16. Pin the truncation behavior so
+    a future refactor doesn't silently change semantics."""
+    from gcp.historical_signals import bulk_insert
+
+    conn = fake_engine_factory()
+    row = _make_row(datetime(2026, 4, 25, 10, 0), duration_minutes=15.7)
+    bulk_insert(pd.DataFrame([row]), chunk_size=10)
+
+    _, params = conn.calls[0]
+    assert params["p0_duration_minutes"] == 15
+    assert isinstance(params["p0_duration_minutes"], int)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # _clean_for_json + _json_default helpers
 # ──────────────────────────────────────────────────────────────────────
