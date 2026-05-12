@@ -484,9 +484,10 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
     df['options_volume'] = df.apply(lambda r: _fill(r, 'options_volume', 0), axis=1)
     df['open_interest']  = df.apply(lambda r: _fill(r, 'open_interest', 1), axis=1)
 
-    logger.info("AV options enrichment complete: has=%d no=%d err=%d skipped=%d",
+    logger.info("AV options enrichment complete: has=%d no=%d err=%d "
+                "(dropped %d non-AV∩UW, skipped %d already-populated)",
                 counters['has_options'], counters['no_options'],
-                counters['error'], skipped)
+                counters['error'], non_av_uw, skipped_future)
     return df
 
 
