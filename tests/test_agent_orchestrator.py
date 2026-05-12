@@ -917,13 +917,19 @@ def test_pipeline_records_per_role_cost(canned_bundle, seven_role_snapshot):
     assert abs(sum(report.per_role_cost.values()) - report.run_cost_usd) < 1e-4
 
 
-def test_pipeline_filters_supporting_signals_by_direction(
+def test_pipeline_emits_empty_supporting_signals(
     canned_bundle, seven_role_snapshot
 ):
-    """Audit 2026-05-08 G.P2.14: supporting_signals must not contradict
-    the report direction. The canned signal_alerts fixture returns a
-    single CALL row, so a long report keeps it and a short/flat report
-    on the same data would drop it (covered by unit-level tests above)."""
+    """2026-05-11: `signal_alerts` has been removed from the insight LLM
+    bundle to break the feedback loop with signal-monitor (which gates
+    on `insight_direction`). The orchestrator no longer reads
+    `bundle["signals"]`, so `report.supporting_signals` is always empty.
+
+    This supersedes the former G.P2.14 direction-filter test
+    (`test_pipeline_filters_supporting_signals_by_direction`) — the
+    direction filter still works at the unit level via
+    `test_build_signal_refs_filters_by_long_direction`, but the
+    pipeline-level fixture no longer surfaces any signals at all."""
     mock = _MockLLM()
     report = asyncio.run(
         orchestrator.run_insight_pipeline(
@@ -932,9 +938,8 @@ def test_pipeline_filters_supporting_signals_by_direction(
             llm_factory=_mock_factory_ctor(mock),
         )
     )
-    # PM mock returns long; the only stubbed alert is direction=CALL.
     assert report.direction == "long"
-    assert all(s.direction == "CALL" for s in report.supporting_signals)
+    assert report.supporting_signals == []
 
 
 # ─── Audit 2026-05-08 G.P1.9 — thesis-vs-targets consistency validator ───
