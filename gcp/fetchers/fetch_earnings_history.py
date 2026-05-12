@@ -230,13 +230,16 @@ def _earnings_calendar_tickers(
 ) -> list[str]:
     """Resolve tickers reporting earnings in the next N days from Cloud SQL.
 
-    With ``require_options=True`` (default), returns only tickers whose
-    AV HISTORICAL_OPTIONS chain summary has populated options_volume > 0
-    (set by fetch_earnings_calendar.py's enrichment). This is the
-    canonical "has a tradeable options market today" signal — covers
-    the full optionable universe (~3,000 tickers) regardless of whether
-    EW/UW picked a strategy. Replaces the prior has_options=true
-    EW/UW-only flag which covered only ~500 names.
+    With ``require_options=True`` (default), returns tickers whose
+    earnings dates are confirmed by BOTH AlphaVantage AND Unusual
+    Whales (the AV ∩ UW cut). UW's curated daily list (~25-37 names)
+    is the natural gate for "options-tradeable on earnings"; AV
+    cross-confirms the announcement date. EW is NOT used as a gate
+    because it cuts out major institutional names (SONY, TCOM, JBS,
+    EC, SKM, etc.) and dozens of high-OI small-caps that don't fit
+    EW's strategy templates but are still tradeable.
+
+    Typical 7d window: 3,400 reporters → ~115 AV ∩ UW tickers.
     """
     try:
         from gcp.database import query_to_dataframe
@@ -251,7 +254,10 @@ def _earnings_calendar_tickers(
         GROUP BY ticker
     """
     if require_options:
-        sql += '        HAVING BOOL_OR(COALESCE(options_volume, 0) > 0) = true\n'
+        sql += (
+            '        HAVING BOOL_OR(data_source = \'alphavantage\') = true\n'
+            '            AND BOOL_OR(data_source = \'unusual_whales\') = true\n'
+        )
     sql += "        ORDER BY ticker\n"
     try:
         df = query_to_dataframe(sql, {"days": lookahead_days})
