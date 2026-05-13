@@ -234,6 +234,15 @@ def fetch_alphavantage_earnings(horizon: str = '3month') -> pd.DataFrame:
 # options_volume filter has signal for ALL earnings tickers — not only
 # the ~30/day UnusualWhales covers.
 
+def _previous_trading_weekday(d: date) -> date:
+    """Most recent weekday strictly before d (ignores market holidays —
+    AV returns 'No data' for those, which the caller handles)."""
+    d = d - timedelta(days=1)
+    while d.weekday() >= 5:  # 5=Sat, 6=Sun
+        d -= timedelta(days=1)
+    return d
+
+
 def _resolve_target_dates_for_av_options(scope: str) -> list:
     """Resolve the dates whose AV ∩ UW reporters should get an AV options
     refresh on this run.
