@@ -280,12 +280,6 @@ def _resolve_scope(cli_scope: Optional[str] = None) -> str:
     if env in ('daily', 'weekly'):
         return env
     return 'weekly' if datetime.now().weekday() == 6 else 'daily'
-    """Most recent weekday strictly before d. Ignores market holidays —
-    AV returns 'No data' for those, which the caller handles."""
-    d = d - timedelta(days=1)
-    while d.weekday() >= 5:  # 5=Sat, 6=Sun
-        d -= timedelta(days=1)
-    return d
 
 
 def fetch_av_options_summary(ticker: str, snapshot_date: str, api_key: str,
@@ -528,9 +522,9 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
     df['open_interest']  = df.apply(lambda r: _fill(r, 'open_interest', 1), axis=1)
 
     logger.info("AV options enrichment complete: has=%d no=%d err=%d "
-                "(dropped %d non-AV∩UW, skipped %d already-populated)",
+                "(dropped %d non-AV∩UW)",
                 counters['has_options'], counters['no_options'],
-                counters['error'], non_av_uw, skipped_future)
+                counters['error'], non_av_uw)
     return df
 
 
