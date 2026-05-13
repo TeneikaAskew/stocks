@@ -86,17 +86,22 @@ def _all_tickers() -> list[str]:
     return [str(t).upper() for t in df['ticker'].tolist()]
 
 
-# Every SQL column produced by the indicator-compute path. Source of
-# truth lives in gcp/database.DAILY_INDICATOR_TO_SQL_COLUMN; the strat
-# columns (strat_candle / strat_combo) are populated by the same
-# compute path and are included here so they participate in gap
-# detection. NB: ftfc_score / strat_setup are intentionally excluded
-# because they're populated by the live writer's per-day pass, not by
-# the historical-history recompute — checking them here would force a
-# re-compute on every healthy bar.
+# Every SQL column produced by the indicator-compute path whose NULL
+# values mean "this bar wasn't computed" — i.e. checking them for NULL
+# is a reliable gap signal. Source of truth lives in
+# gcp.database.DAILY_INDICATOR_TO_SQL_COLUMN; strat_candle is added
+# because it's deterministic from OHLC (every bar should have it).
+#
+# Excluded:
+#   - strat_combo:  legitimately NULL on most bars (combos fire only
+#                   when the 2-3 prior bars form a recognised pattern;
+#                   ~95% of bars have no combo). Including it would
+#                   queue every ticker for re-compute every day.
+#   - ftfc_score / strat_setup: populated only by the live writer's
+#                   per-day pass, not by the historical backfill.
 _DERIVED_COLS_FOR_GAP_CHECK: tuple[str, ...] = tuple(
     list(DAILY_INDICATOR_TO_SQL_COLUMN.values())
-    + ['strat_candle', 'strat_combo']
+    + ['strat_candle']
 )
 
 
@@ -164,12 +169,31 @@ def _build_indicator_rows(ticker: str, df: pd.DataFrame) -> list[dict]:
     if df.empty or len(df) < 2:
         return []
 
-    # Drop bars with any null OHLCV. The compute path assumes float math.
-    df = df.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'])
+    # Drop bars with any null OHLCV. The compute path assumes float math
+    # (add_all_indicators does subtractions that crash on None operands —
+    # seen on RIVN/SPX in the initial backfill). Log every dropped
+    # (ticker, date) so operators can see exactly which bars were lost
+    # and trace them back to the upstream daily fetcher if needed.
+    n_in = len(df)
+    null_mask = df[['Open', 'High', 'Low', 'Close', 'Volume']].isna().any(axis=1)
+    n_dropped = int(null_mask.sum())
+    if n_dropped > 0:
+        dropped_dates = df.loc[null_mask, 'date'].tolist()
+        # Cap the per-bar log to first 20 to avoid drowning a many-NULL
+        # ticker's output; summary line always carries the total count.
+        sample = ", ".join(str(d) for d in dropped_dates[:20])
+        ellipsis = f" (+{n_dropped - 20} more)" if n_dropped > 20 else ""
+        log.warning(
+            "  %s: dropping %d/%d bars with NULL OHLCV. dates: %s%s",
+            ticker, n_dropped, n_in, sample, ellipsis,
+        )
+    df = df.loc[~null_mask].reset_index(drop=True)
     if df.empty or len(df) < 2:
-        log.warning("  %s: all bars had NULL OHLCV — skipping", ticker)
+        log.warning(
+            "  %s: all %d bars had NULL OHLCV — skipping (no rows to compute on)",
+            ticker, n_in,
+        )
         return []
-    df = df.reset_index(drop=True)
 
     from lib.indicators import add_all_indicators
 
@@ -197,10 +221,16 @@ def _build_indicator_rows(ticker: str, df: pd.DataFrame) -> list[dict]:
             enriched[['Open', 'High', 'Low', 'Close']], labels
         )
         enriched['strat_candle'] = labels.astype(str).replace({'X': None})
-        # combos returns a sparse frame indexed where a combo fired;
-        # join back to enriched on the index so non-combo bars stay NaN.
-        if not combos.empty and 'combo' in combos.columns:
-            enriched['strat_combo'] = combos['combo']
+        # detect_combos() returns a DataFrame ALIGNED to the input index
+        # with columns 'strat_candle', 'strat_combo', 'strat_setup',
+        # 'trigger_high', 'trigger_low', 'consecutive_1s'. Bars where no
+        # combo fired carry strat_combo == 'none' (string), NOT NaN.
+        # Pull the column straight off the returned frame.
+        if not combos.empty and 'strat_combo' in combos.columns:
+            sc = combos['strat_combo']
+            # 'none' is the sentinel for "no combo on this bar" — surface
+            # it as NULL so the column reflects "combo here" vs "no combo".
+            enriched['strat_combo'] = sc.where(sc != 'none', None)
         else:
             enriched['strat_combo'] = None
     except Exception as e:
