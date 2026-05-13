@@ -93,10 +93,12 @@ def _all_tickers() -> list[str]:
 # because it's deterministic from OHLC (every bar should have it).
 #
 # Excluded:
-#   - strat_combo:  legitimately NULL on most bars (combos fire only
-#                   when the 2-3 prior bars form a recognised pattern;
-#                   ~95% of bars have no combo). Including it would
-#                   queue every ticker for re-compute every day.
+#   - strat_combo:  legitimately NULL on ~21% of bars (early bars
+#                   without enough lookback, or bars that don't match
+#                   any combo's precondition). Including it as a gap
+#                   signal would force a re-compute on every ticker
+#                   every day. Empirical: 78.8% covered post-backfill
+#                   on the 656k-row corpus.
 #   - ftfc_score / strat_setup: populated only by the live writer's
 #                   per-day pass, not by the historical backfill.
 _DERIVED_COLS_FOR_GAP_CHECK: tuple[str, ...] = tuple(
