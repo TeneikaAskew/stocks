@@ -68,15 +68,26 @@ insider_agg AS (
 ),
 hist_agg AS (
     -- 12-quarter rolling stats using only PRIOR quarters (no look-ahead).
+    -- The CASE branches guard on ``prev.id IS NULL`` so the null-extended
+    -- row from the LEFT JOIN LATERAL (for tickers with no prior history)
+    -- contributes NULL — not 0.0 — to the rate aggregates. Without the
+    -- guard, a first-observation quarter would surface as 0% consistent
+    -- / 0% reversal / 0% gap-up rather than "missing history".
     SELECT
         b.ticker,
         b.fiscal_date_ending,
         AVG(prev.reaction_gap_pct)                        AS hist12q_avg_gap_pct,
         AVG(ABS(prev.reaction_gap_pct))                   AS hist12q_avg_abs_gap_pct,
         AVG(prev.sustain_5d_pct)                          AS hist12q_avg_sustain_5d_pct,
-        AVG(CASE WHEN prev.direction_consistent_5d THEN 1.0 ELSE 0.0 END) AS hist12q_consistent_rate,
-        AVG(CASE WHEN prev.is_reversal_5d        THEN 1.0 ELSE 0.0 END) AS hist12q_reversal_rate,
-        AVG(CASE WHEN prev.reaction_gap_pct > 0  THEN 1.0 ELSE 0.0 END) AS hist12q_gap_up_rate,
+        AVG(CASE WHEN prev.id IS NULL THEN NULL
+                 WHEN prev.direction_consistent_5d THEN 1.0
+                 ELSE 0.0 END)                            AS hist12q_consistent_rate,
+        AVG(CASE WHEN prev.id IS NULL THEN NULL
+                 WHEN prev.is_reversal_5d THEN 1.0
+                 ELSE 0.0 END)                            AS hist12q_reversal_rate,
+        AVG(CASE WHEN prev.id IS NULL THEN NULL
+                 WHEN prev.reaction_gap_pct > 0 THEN 1.0
+                 ELSE 0.0 END)                            AS hist12q_gap_up_rate,
         AVG(prev.surprise_pct)                            AS hist12q_avg_surprise_pct,
         COUNT(prev.id)                                    AS hist12q_n
     FROM base b
