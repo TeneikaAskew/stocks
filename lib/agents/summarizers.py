@@ -66,7 +66,8 @@ def _unavailable(reason: str) -> dict:
 
 
 def summarize_market_context(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = False,
 ) -> dict:
     """Daily OHLCV + indicators + regime classification.
 
@@ -91,7 +92,13 @@ def summarize_market_context(
       because the 8:30 AM ET fetcher populates those fields before
       the insight pipeline runs at 8:45 AM. Yesterday's pre_high
       would be a day-old reading.
+
+    ``inclusive_today`` (added to make the contract explicit):
+      Default False — premarket contract used by the insight pipeline.
+      Set True for EOD / backtest contexts that want to read today's
+      completed daily row.
     """
+    daily_op = "<=" if inclusive_today else "<"
     daily_sql = (
         "SELECT date, open, high, low, close, volume, "
         "       sma_200, ema_20, ema_50, rsi_14, macd, macd_signal, "
@@ -100,7 +107,7 @@ def summarize_market_context(
         "       pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr "
         "FROM market_data_daily "
         "WHERE ticker = :ticker "
-        + ("AND date < :as_of " if as_of else "")
+        + (f"AND date {daily_op} :as_of " if as_of else "")
         + "ORDER BY date DESC LIMIT 1"
     )
     params: dict[str, Any] = {"ticker": ticker.upper()}
@@ -238,7 +245,8 @@ def summarize_market_context(
 
 
 def summarize_strat_status(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = True,
 ) -> dict:
     """Rob Smith strat state — delegates to lib.strat.compute_strat_status.
 
@@ -252,10 +260,15 @@ def summarize_strat_status(
     ``effective_pdl`` for inside-of-inside compressions. The deterministic
     trade planner uses these to walk the level hierarchy on gap days
     instead of always anchoring entry at PDH/PDL.
+
+    ``inclusive_today`` forwards to compute_strat_status — see its
+    docstring. Default True for backwards-compat; the insight pipeline
+    passes False (premarket context: today's daily row excluded).
     """
     from lib.strat import compute_strat_status
 
-    status = compute_strat_status(ticker, as_of=as_of)
+    status = compute_strat_status(ticker, as_of=as_of,
+                                  inclusive_today=inclusive_today)
     if not status.get("available"):
         return _unavailable(status.get("reason") or f"strat unavailable for {ticker}")
 
@@ -300,8 +313,33 @@ def summarize_strat_status(
                 if isinstance(df.index, _pd.DatetimeIndex) and df.index.tz is not None:
                     df = df.copy()
                     df.index = df.index.tz_localize(None)
-                df = df[df.index <= cutoff]
-            level_map = compute_previous_levels(df)
+                # Match the cutoff semantic used inside compute_strat_status:
+                #   inclusive_today=True  → df.index <= cutoff (backtest contract)
+                #   inclusive_today=False → df.index < midnight-of-cutoff-date
+                #                          (premarket contract — exclude entire as_of date)
+                if inclusive_today:
+                    df = df[df.index <= cutoff]
+                else:
+                    df = df[df.index < cutoff.normalize()]
+            # PR #400 fix applied to this code path: pass analysis_date so
+            # compute_previous_levels uses period-filter semantics ("the
+            # period BEFORE the period containing analysis_date") instead
+            # of the legacy iloc[-2] fallback that assumes df's last row
+            # is today's in-progress bar. Without this, the bundle showed
+            # 5/4's H/L as PDH/PDL on a 2026-05-06 replay because the df
+            # had already been pre-filtered to exclude 5/6 — iloc[-2]
+            # then picked 5/4 instead of 5/5. PR #400 fixed this for the
+            # brief + playbook_resolver; this code path was missed.
+            analysis_date_for_levels = None
+            if as_of is not None:
+                import pandas as _pd
+                _ts = _pd.Timestamp(as_of)
+                if _ts.tz is not None:
+                    _ts = _ts.tz_convert('UTC').tz_localize(None)
+                analysis_date_for_levels = _ts.date()
+            level_map = compute_previous_levels(
+                df, analysis_date=analysis_date_for_levels
+            )
             level_dict: dict[str, float] = {}
             for name in ("PDH", "PDL", "PWH", "PWL", "PMH", "PML",
                          "PQH", "PQL", "PYH", "PYL"):
@@ -382,24 +420,37 @@ def _walk_back_to_mother_bar(df, labels) -> tuple[Optional[float], Optional[floa
 
 
 def summarize_options_flow(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = True,
 ) -> dict:
     """Latest AlphaVantage EOD options chain snapshot aggregates.
 
     Returns total call/put volume, put/call ratio, max-pain strike,
     top open-interest strikes, and weighted average IV.
+
+    ``inclusive_today``:
+      All etf_options_snapshots rows are taken at 19:00 ET (post-close).
+      The DB has exactly one snapshot per (ticker, snapshot_date).
+      - True (default): WHERE snapshot_date <= as_of — admits as_of's
+        EOD snapshot. Use for EOD analytics or "what would the chain
+        look like at end of day X" semantics.
+      - False (premarket contract): WHERE snapshot_date < as_of —
+        excludes as_of's EOD snapshot entirely. The latest snapshot
+        the brief / insight pipeline can legitimately see at 8:30 AM
+        ET on as_of is the prior trading day's 19:00 ET snapshot.
     """
+    snap_op = "<=" if inclusive_today else "<"
     sql = (
         "SELECT option_type, strike, volume, open_interest, "
         "       implied_volatility, delta "
         "FROM etf_options_snapshots "
         "WHERE ticker = :ticker "
         "  AND data_source = 'alphavantage' "
-        + ("AND snapshot_date <= :as_of " if as_of else "")
+        + (f"AND snapshot_date {snap_op} :as_of " if as_of else "")
         + "  AND snapshot_date = ("
         "      SELECT MAX(snapshot_date) FROM etf_options_snapshots "
         "      WHERE ticker = :ticker AND data_source = 'alphavantage'"
-        + ("      AND snapshot_date <= :as_of" if as_of else "")
+        + (f"      AND snapshot_date {snap_op} :as_of" if as_of else "")
         + "  )"
     )
     params: dict[str, Any] = {"ticker": ticker.upper()}
@@ -455,7 +506,8 @@ def summarize_options_flow(
 
 
 def summarize_gamma_levels(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = True,
 ) -> dict:
     """Stratalyst-style gamma analytics: King / Gate / Spot / Flip + regime.
 
@@ -464,9 +516,13 @@ def summarize_gamma_levels(
     output feeds the gamma analyst prompt; any consumer wanting a richer
     response should call the /api/options/{ticker}/{date}/levels endpoint
     directly instead of consuming this summary.
+
+    ``inclusive_today`` mirrors summarize_options_flow — see its
+    docstring. False = premarket contract (no as_of-dated EOD snapshot).
     """
     from lib import gamma  # local import to avoid circular at module load
 
+    snap_op = "<=" if inclusive_today else "<"
     sql = (
         "SELECT option_type, strike, expiration, "
         "       open_interest, gamma, vega, delta, "
@@ -474,11 +530,11 @@ def summarize_gamma_levels(
         "FROM etf_options_snapshots "
         "WHERE ticker = :ticker "
         "  AND data_source = 'alphavantage' "
-        + ("AND snapshot_date <= :as_of " if as_of else "")
+        + (f"AND snapshot_date {snap_op} :as_of " if as_of else "")
         + "  AND snapshot_date = ("
         "      SELECT MAX(snapshot_date) FROM etf_options_snapshots "
         "      WHERE ticker = :ticker AND data_source = 'alphavantage'"
-        + ("      AND snapshot_date <= :as_of" if as_of else "")
+        + (f"      AND snapshot_date {snap_op} :as_of" if as_of else "")
         + "  )"
     )
     params: dict[str, Any] = {"ticker": ticker.upper()}
@@ -552,6 +608,17 @@ def summarize_signals_history(
     as_of: Optional[date_type] = None,
 ) -> dict:
     """signal_alerts aggregates anchored at `as_of`.
+
+    NOT called by `build_insight_bundle` as of 2026-05-11 — feeding
+    signal_alerts into the LLM bundle creates a self-reinforcing
+    feedback loop with signal-monitor (which gates on the insight
+    pipeline's `insight_direction`). See the comment on the `sections`
+    dict in `build_insight_bundle` for the full rationale.
+
+    Kept callable so external analytics scripts, ad-hoc debugging, and
+    the `signal-monitor-eod-resolver` pipeline can still aggregate the
+    history. Do NOT re-add this back to the bundle without addressing
+    the circular dependency.
 
     Returns the `lookback_days` window ending at `as_of` (defaults to
     now when None). Grouped by direction/strength, with the 5 most
@@ -1304,24 +1371,45 @@ def retrieve_similar_journal(
 
 
 def build_context_bundle(
-    ticker: str, as_of: Optional[date_type] = None
+    ticker: str, as_of: Optional[date_type] = None,
+    inclusive_today: bool = False,
 ) -> dict:
     """Collect all summarizer outputs into one dict for analyst prompts.
 
     Each section is either a populated dict with `available: True` or
     `{available: False, reason: ...}`. A top-level `failed_sections`
     list tells the orchestrator which sections to mark degraded.
+
+    ``inclusive_today`` (default False): premarket contract. Today's
+    daily bar is excluded from market_context + strat_status because
+    on a live 8:30 AM ET / replay-of-8:30 AM run, today's RTH bar
+    either doesn't exist yet (live) or would be look-ahead (replay).
+    Set True only for explicit EOD analytics that *want* today's
+    closed bar.
     """
     bundle = {
         "ticker": ticker.upper(),
         "as_of": str(as_of) if as_of else None,
     }
     sections = {
-        "market": lambda: summarize_market_context(ticker, as_of),
-        "strat": lambda: summarize_strat_status(ticker, as_of),
-        "options": lambda: summarize_options_flow(ticker, as_of),
-        "gamma": lambda: summarize_gamma_levels(ticker, as_of),
-        "signals": lambda: summarize_signals_history(ticker, as_of=as_of),
+        "market": lambda: summarize_market_context(ticker, as_of, inclusive_today=inclusive_today),
+        "strat": lambda: summarize_strat_status(ticker, as_of, inclusive_today=inclusive_today),
+        "options": lambda: summarize_options_flow(ticker, as_of, inclusive_today=inclusive_today),
+        "gamma": lambda: summarize_gamma_levels(ticker, as_of, inclusive_today=inclusive_today),
+        # NOTE: `signals` (signal_alerts history) is deliberately NOT in
+        # the LLM bundle. signal-monitor uses the insight pipeline's
+        # `insight_direction` as a firing gate (PR #419, "Phase 1
+        # insight direction gate"), so feeding signal_alerts back into
+        # the LLM creates a self-reinforcing feedback loop: insight
+        # decides direction → signal-monitor fires alerts in that
+        # direction → next insight run reads those alerts → confirms
+        # the same direction → repeat.
+        # Observed 2026-05-11: gemini-3.1-flash-lite committed to
+        # SHORT/medium on SPY based on 5 fresh weak PUT alerts (all
+        # exited time_stop with avg return -0.05%), even though
+        # ftfc_direction was bullish. summarize_signals_history()
+        # remains callable for external analytics / debugging, but
+        # the insight prompt no longer sees it.
         "backtest": lambda: summarize_backtest_metrics(ticker, as_of=as_of),
         "catalysts": lambda: summarize_catalysts(ticker, as_of),
         "sentiment": lambda: summarize_news_sentiment(ticker, as_of),

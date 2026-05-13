@@ -83,7 +83,7 @@ class _Explanation(BaseModel):
 # Default to Vertex / Gemini Flash — same path the insight pipeline uses.
 # Override via env for local dev or A/B comparison.
 _DEFAULT_PROVIDER = os.environ.get("BRIEF_LLM_PROVIDER", "vertex")
-_DEFAULT_MODEL = os.environ.get("BRIEF_LLM_MODEL", "gemini-2.0-flash")
+_DEFAULT_MODEL = os.environ.get("BRIEF_LLM_MODEL", "gemini-3.1-flash-lite")
 _TIMEOUT_SEC = float(os.environ.get("BRIEF_LLM_TIMEOUT_SEC", "12"))
 
 
@@ -243,12 +243,27 @@ _PLAYBOOK_PROMPT = (
     "You are a trading-desk analyst explaining one ticker's strat playbook "
     "in one paragraph. You'll receive the ticker's pre-formatted playbook "
     "(CALLS-above level, stop, T1/T2/T3 with named structural references "
-    "like PDH, PWH, CDO, CWO; PUTS-below mirror; PMG zones). Write ONE or "
-    "TWO sentences naming WHICH level was chosen as the trigger and WHY "
-    "(its structural meaning) WITH THE PRICE, where the stop sits relative "
-    "to the trigger in ATR-units if mentionable, and what each target "
-    "represents. Always cite the specific price alongside the level name "
-    "— e.g. 'CDO ($276.67)' not just 'CDO'. "
+    "like PDH, PWH, PDO, PWO, CDO, CWO; PUTS-below mirror; PMG zones). "
+    "Level glossary you MUST honour: "
+    "PDH/PDL/PDC = Previous-trading-session High/Low/Close — i.e. the "
+    "MOST RECENT completed RTH session, which is Friday on a Monday brief "
+    "and the day before a market holiday after one. DO NOT call it "
+    "'yesterday' on Mondays / post-holidays; say 'Friday' or 'the prior "
+    "trading session' when uncertain. "
+    "PDO = Previous-trading-session Open (same disambiguation as PDH). "
+    "PWH/PWL/PWC/PWO = Previous Week High/Low/Close/Open (last completed "
+    "Mon–Fri week). "
+    "PMH/PML/PMC/PMO = Previous Month equivalents (last completed "
+    "calendar month). "
+    "CDO/CWO/CMO = CURRENT day/week/month Open — only present once the "
+    "current period has actually opened (mid-session, EOD). "
+    "DO NOT describe PDO/PWO/PMO as 'today/this week/this month's open' "
+    "— those are previous-period opens, observable BEFORE today's RTH. "
+    "Write ONE or TWO sentences naming WHICH level was chosen as the "
+    "trigger and WHY (its structural meaning) WITH THE PRICE, where the "
+    "stop sits relative to the trigger in ATR-units if mentionable, and "
+    "what each target represents. Always cite the specific price "
+    "alongside the level name — e.g. 'PDO ($276.67)' not just 'PDO'. "
     "When the playbook is ORB-only (price has cleared every structural "
     "level), name the LAST cleared level with its price (e.g. 'price is "
     "above PWH $222 and PQH $214 — every structural resistance has been "

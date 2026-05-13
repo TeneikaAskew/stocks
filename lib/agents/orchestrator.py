@@ -476,11 +476,16 @@ async def run_insight_pipeline(
     strat_status = _build_strat_snapshot(strat_section)
     catalysts = _build_catalysts(bundle.get("catalysts", {}))
 
-    # Deterministic fallback for key_levels — the PM agent often returns
-    # an empty dict, leaving the report section blank. Back-fill from the
-    # context bundle we already queried (no new SQL).
-    if not pm.key_levels:
-        pm.key_levels = _derive_key_levels(bundle)
+    # Deterministic key_levels — sourced directly from the context bundle
+    # so the report always shows the FULL multi-timeframe level map
+    # (PDH/PDL/PWH/PWL/PMH/PML/PQH/PQL/PYH/PYL + effective_PDH/PDL +
+    # gamma flip/kings/gates + EMA 20/SMA 200 + Max Pain), not just
+    # whichever subset the PM LLM happened to surface. Previously this
+    # was a fallback-only path that ran when pm.key_levels was empty,
+    # which is why QQQ 5/6 reports showed only "Prev High / Prev Low"
+    # and hid PWH/PMH/PQH/PYH from the user even though the trade
+    # planner's blue-sky classification depended on them.
+    pm.key_levels = _derive_key_levels(bundle)
 
     # Flatten all risk flags from all personas. The numeric `plan` field
     # the LLM personas may emit is intentionally IGNORED here — it's
@@ -909,11 +914,44 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
 
     strat = bundle.get("strat", {}) or {}
     if strat.get("available"):
+        # Full multi-timeframe level map populated by
+        # summarize_strat_status → compute_previous_levels. Surface every
+        # timeframe (day/week/month/quarter/year + mother-bar walk-back)
+        # so users can audit which level the trade-planner classified
+        # against. "Prev High/Low" alone hid PWH/PMH/PQH/PYH/effective_*
+        # from the report even though the planner's blue-sky / extended /
+        # normal regime classification depended on them.
+        # Label map: short codes -> human-readable. Order matters only
+        # for readability — Python 3.7+ dicts preserve insertion.
+        _LEVEL_LABEL_MAP = (
+            ("PDH", "Prev Day High"),
+            ("PDL", "Prev Day Low"),
+            ("PWH", "Prev Week High"),
+            ("PWL", "Prev Week Low"),
+            ("PMH", "Prev Month High"),
+            ("PML", "Prev Month Low"),
+            ("PQH", "Prev Quarter High"),
+            ("PQL", "Prev Quarter Low"),
+            ("PYH", "Prev Year High"),
+            ("PYL", "Prev Year Low"),
+            ("effective_PDH", "Effective PDH"),
+            ("effective_PDL", "Effective PDL"),
+        )
+        strat_levels = strat.get("levels") or {}
+        for code, label in _LEVEL_LABEL_MAP:
+            v = strat_levels.get(code)
+            if isinstance(v, (int, float)):
+                levels[label] = float(v)
+
+        # Legacy "Prev High/Low" kept for any consumer that still keys
+        # off those exact labels (admin dashboard, divergence card).
+        # When the full level map is present these are duplicates of
+        # PDH/PDL but with the older naming.
         th = strat.get("trigger_high")
         tl = strat.get("trigger_low")
-        if isinstance(th, (int, float)):
+        if isinstance(th, (int, float)) and "Prev Day High" not in levels:
             levels["Prev High"] = float(th)
-        if isinstance(tl, (int, float)):
+        if isinstance(tl, (int, float)) and "Prev Day Low" not in levels:
             levels["Prev Low"] = float(tl)
 
     market = bundle.get("market", {}) or {}

@@ -1188,6 +1188,38 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             d['recommended_orb_window'] = orb_choice['window']
             d['recommended_orb_reason'] = orb_choice['reason']
 
+            # Persist STRUCTURED trigger/stop/target prices alongside the
+            # narrative `playbook` string. The text is what the trader sees
+            # in Discord; the structured columns let downstream analytics
+            # (premarket_playbook_resolver — see issue tracking outcome
+            # tracking, follow-up to 2026-05-11 user request) compute
+            # whether the recommended setup actually played out during RTH.
+            #
+            # Pre-this-PR these values lived only in level_map and got lost
+            # after format_levels_for_brief consumed them. Persisting them
+            # is necessary to walk subsequent intraday bars and report
+            # "trigger hit at HH:MM, T1 hit at HH:MM, stop never touched,
+            # EOD pnl +0.97%". Without them, brief-playbook-outcome analytics
+            # would have to parse the LLM prose — fragile and brittle.
+            ct = level_map.calls_trigger or {}
+            pt = level_map.puts_trigger or {}
+            ct_targets = ct.get('targets', []) if ct else []
+            pt_targets = pt.get('targets', []) if pt else []
+            d['calls_trigger_price'] = ct.get('trigger_level') if ct else None
+            d['calls_trigger_name']  = ct.get('trigger_name')  if ct else None
+            d['calls_stop_price']    = ct.get('stop')          if ct else None
+            d['calls_stop_name']     = ct.get('stop_name')     if ct else None
+            d['calls_t1_price'] = ct_targets[0]['price'] if len(ct_targets) >= 1 else None
+            d['calls_t2_price'] = ct_targets[1]['price'] if len(ct_targets) >= 2 else None
+            d['calls_t3_price'] = ct_targets[2]['price'] if len(ct_targets) >= 3 else None
+            d['puts_trigger_price'] = pt.get('trigger_level') if pt else None
+            d['puts_trigger_name']  = pt.get('trigger_name')  if pt else None
+            d['puts_stop_price']    = pt.get('stop')          if pt else None
+            d['puts_stop_name']     = pt.get('stop_name')     if pt else None
+            d['puts_t1_price'] = pt_targets[0]['price'] if len(pt_targets) >= 1 else None
+            d['puts_t2_price'] = pt_targets[1]['price'] if len(pt_targets) >= 2 else None
+            d['puts_t3_price'] = pt_targets[2]['price'] if len(pt_targets) >= 3 else None
+
             # Persist level map to Cloud SQL so the realtime signal_monitor
             # (which doesn't itself recompute) can query it for level-break
             # detection during market hours.
@@ -2531,6 +2563,26 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             # Track B audit G.P0.4 + G.P0.5 — freshness telemetry
             'data_as_of': data.get('data_as_of'),
             'data_freshness_status': data.get('data_freshness_status'),
+
+            # Structured playbook fields (foundation for premarket_playbook_resolver
+            # outcome tracking — added 2026-05-11). The narrative `playbook`
+            # text is what the trader reads; these columns are what the EOD
+            # resolver walks intraday bars against to compute trigger-hit /
+            # target-hit / stop-hit / EOD-pnl per recommended setup.
+            'calls_trigger_price': data.get('calls_trigger_price'),
+            'calls_trigger_name':  data.get('calls_trigger_name'),
+            'calls_stop_price':    data.get('calls_stop_price'),
+            'calls_stop_name':     data.get('calls_stop_name'),
+            'calls_t1_price':      data.get('calls_t1_price'),
+            'calls_t2_price':      data.get('calls_t2_price'),
+            'calls_t3_price':      data.get('calls_t3_price'),
+            'puts_trigger_price':  data.get('puts_trigger_price'),
+            'puts_trigger_name':   data.get('puts_trigger_name'),
+            'puts_stop_price':     data.get('puts_stop_price'),
+            'puts_stop_name':      data.get('puts_stop_name'),
+            'puts_t1_price':       data.get('puts_t1_price'),
+            'puts_t2_price':       data.get('puts_t2_price'),
+            'puts_t3_price':       data.get('puts_t3_price'),
             # Track B audit G.P2.11 — persist LLM-generated brief
             # commentary for audit trail. The four strings are
             # non-deterministic Gemini-Flash outputs (gcp/brief_explanations.py)
@@ -2789,20 +2841,33 @@ def main(argv: Optional[list[str]] = None):
         or ('cli' if sys.stdin.isatty() else 'cloud-run-job')
     )
 
-    # Resolve Discord-suppression policy. Three sources, in priority order:
-    #   1. --no-discord CLI flag
-    #   2. BRIEF_NO_DISCORD=true env var
-    #   3. BRIEF_AS_OF set (historical replay — never want to re-post
-    #      stale content to a real-time channel)
-    # When ANY of these is true, webhook_url is cleared so the "if
-    # webhook_url" guard below skips the Discord push. The persistence
-    # path (persist_to_cloud_sql) is unaffected — premarket_analysis +
-    # premarket_analysis_history rows are always written regardless.
-    no_discord = (
-        args.no_discord
-        or os.environ.get('BRIEF_NO_DISCORD', '').lower() == 'true'
-        or bool(os.environ.get('BRIEF_AS_OF'))
-    )
+    # Resolve Discord-suppression policy.
+    #
+    # Sources (any one of the first three triggers suppress; explicit
+    # `BRIEF_NO_DISCORD=false` overrides the BRIEF_AS_OF auto-suppression
+    # for the use case "I want to see what the brief would have looked
+    # like for a historical date in Discord, even though it's a replay"):
+    #
+    #   1. `BRIEF_NO_DISCORD=false` env var → FORCE Discord on
+    #      (overrides everything else; takes priority)
+    #   2. `--no-discord` CLI flag → suppress
+    #   3. `BRIEF_NO_DISCORD=true` env var → suppress
+    #   4. `BRIEF_AS_OF` set (historical replay) → suppress (default
+    #      safety; rendering stale content to a live channel is usually
+    #      wrong, but the explicit override above lets you opt back in)
+    #
+    # The persistence path (persist_to_cloud_sql) is unaffected by any
+    # of these — premarket_analysis + premarket_analysis_history rows
+    # are always written regardless of the Discord policy.
+    no_discord_env = os.environ.get('BRIEF_NO_DISCORD', '').lower()
+    if no_discord_env == 'false':
+        no_discord = False  # explicit force-on; wins over AS_OF auto-suppress
+    else:
+        no_discord = (
+            args.no_discord
+            or no_discord_env == 'true'
+            or bool(os.environ.get('BRIEF_AS_OF'))
+        )
     webhook_url = '' if no_discord else os.environ.get('DISCORD_WEBHOOK_URL')
 
     cfg = load_config()

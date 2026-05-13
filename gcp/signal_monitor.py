@@ -40,6 +40,11 @@ from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
 from lib.strategies.brief_bias import alignment as _brief_alignment
 from lib.strategies.brief_bias import get_premarket_bias
+from lib.strategies.insight_cache import (
+    InsightCache,
+    evaluate_direction_gate,
+    fetch_insight_for_ticker,
+)
 from lib.strategies.calibration import (
     get_call_rsi_range,
     get_put_rsi_range,
@@ -177,6 +182,25 @@ class SignalMonitor:
         # The harness in scripts/replay_signal_monitor.py sets this
         # per-bar.
         self.replay_clock_ts: Optional[pd.Timestamp] = None
+
+        # Phase 1 — InsightCache (per docs/replays/2026-05-10-corrected-baseline-v2.md
+        # §6 + docs/audits/2026-05-10-risk-reviewer-validation.md):
+        #
+        # Empirical baseline (951 directional fires across 36 days
+        # SPY/IWM/QQQ): aligned-with-plan fires win 55.7%, opposite
+        # fires win 35.4% (-20.3pp). Filtering opposing weak removes
+        # most of the loss-rich opposite bucket without dropping
+        # legitimate reversal signals (medium+ kept with tag).
+        #
+        # Pull-based cache with 60s staleness check — picks up a fresh
+        # insight publish within one poll cycle. Default fetcher is
+        # disabled when INSIGHT_GATE_MODE='disabled' so the gate can be
+        # killed via env var without a redeploy. Default mode 'active'
+        # applies the matrix; 'shadow' logs decisions but does NOT
+        # apply (for counterfactual measurement before flipping live).
+        self.insight_cache = InsightCache(refresh_after_seconds=60.0)
+        self.insight_invalidated: dict[str, bool] = {}
+        self.insight_gate_mode = os.environ.get('INSIGHT_GATE_MODE', 'active').lower()
 
     def _resolve_watchlist(self) -> list[str]:
         """Return the active live-signal-monitor watchlist.
@@ -375,8 +399,18 @@ class SignalMonitor:
             # Use the latest live close as current_price; the actual price
             # will be passed in check_level_breaks for crossing detection.
             current_price = float(df[close_col].iloc[-1])
+            # PR #400 fix applied to this code path: pass analysis_date
+            # so build_level_map → compute_previous_levels uses period-
+            # filter semantics. Replay-aware: use the replay clock when
+            # set, fall back to today's ET date in live mode. Without
+            # this, replay runs picked day-before-yesterday's PDH/PDL.
+            if self.replay_clock_ts is not None:
+                _analysis_date = pd.Timestamp(self.replay_clock_ts).date()
+            else:
+                _analysis_date = datetime.now(_ET).date()
             self.level_maps[ticker] = build_level_map(
                 ticker=ticker, daily_df=df, current_price=current_price,
+                analysis_date=_analysis_date,
             )
             self.level_refresh_success_count[ticker] = (
                 self.level_refresh_success_count.get(ticker, 0) + 1
@@ -745,6 +779,57 @@ class SignalMonitor:
 
         size = get_position_size(total_score, self.risk)
         strength = get_signal_strength_label(total_score, self.risk)
+
+        # Phase 1 direction gate: read today's insight (cached, 60s
+        # refresh) and decide pass/suppress/downgrade/tag/annotate.
+        # Mode 'disabled' → bypass entirely. Mode 'shadow' → compute
+        # decision but always pass (for counterfactual logging).
+        gate_action = 'pass'
+        gate_reason = ''
+        if self.insight_gate_mode != 'disabled':
+            try:
+                today = self._now(_ET).date()
+                from gcp.database import get_engine
+                _engine = get_engine()
+                ctx = self.insight_cache.get(
+                    ticker,
+                    fetcher=lambda t: fetch_insight_for_ticker(t, today, _engine),
+                )
+                decision = evaluate_direction_gate(
+                    fire_direction=sig['direction'],
+                    fire_strength=strength,
+                    insight=ctx,
+                    insight_invalidated=self.insight_invalidated.get(ticker, False),
+                )
+                gate_action = decision.action
+                gate_reason = decision.reason
+                # Stash for fire_alert / persist (visibility into gate decision)
+                self._latest_insight_ctx = ctx
+                self._latest_gate_action = gate_action
+                self._latest_gate_reason = gate_reason
+                # Apply the gate (unless shadow mode)
+                if self.insight_gate_mode != 'shadow':
+                    if gate_action == 'suppress':
+                        logger.info(
+                            "%s %s fire SUPPRESSED by direction gate: %s",
+                            ticker, sig['direction'], gate_reason,
+                        )
+                        return  # short-circuit: do not fire
+                    elif gate_action == 'downgrade':
+                        old = strength
+                        strength = decision.new_strength or 'weak'
+                        size = get_position_size(total_score, self.risk)  # re-resolve
+                        logger.info(
+                            "%s %s fire DOWNGRADED %s → %s by direction gate: %s",
+                            ticker, sig['direction'], old, strength, gate_reason,
+                        )
+                    # 'pass', 'tag', 'annotate' all proceed to fire as-is
+            except Exception as exc:
+                # Gate must never crash the monitor — fall through to fire.
+                logger.warning(
+                    "direction gate raised for %s: %s — fire proceeds as-is",
+                    ticker, exc,
+                )
 
         self.fire_alert(ticker, sig, total_score, strength, size, strat_bonus, latest)
 

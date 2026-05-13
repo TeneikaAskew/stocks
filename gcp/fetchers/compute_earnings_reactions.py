@@ -413,6 +413,13 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
     populator can write ATR-context columns without a second pull
     (the column is populated by the daily fetcher's full-range
     indicator pass; rows without it stay NULL in the output).
+
+    NOTE: For the bulk populate path (`populate_for_tickers`), prefer
+    `fetch_daily_windows_for_ticker_dates` which issues ONE query per
+    ticker instead of one per (ticker, reported_date). This per-call
+    function is kept for ad-hoc callers (CLI smoke tests) and is the
+    legacy code path that caused the 30-min Cloud Run task-timeout —
+    see issue #452 and the post-fix benchmarks in the PR description.
     """
     sql = """
         SELECT date, open, high, low, close, volume, atr_14
@@ -432,6 +439,66 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
     return df
 
 
+def fetch_daily_windows_for_ticker_dates(
+    ticker: str, reported_dates: list[date],
+) -> dict[date, pd.DataFrame]:
+    """Bulk-fetch ~30-day windows for one ticker across many earnings dates.
+
+    Issues a single SQL query covering [min(dates) - 20d, max(dates) + 25d]
+    and then slices the result in-memory per ``reported_date``. Returns a
+    ``{reported_date → 30-day-window DataFrame}`` map matching what
+    `fetch_daily_window(ticker, d)` would have returned for each date.
+
+    Why: the prior populate_for_tickers loop called fetch_daily_window
+    once per (ticker, reported_date) pair. With ~73,667 earnings_history
+    rows across ~1,174 tickers, that produced ~73,667 SQL round-trips
+    at ~1s each over the pg8000+Cloud SQL Connector path — wall-clock
+    of ~20 hours, well beyond the 30-min Cloud Run task-timeout the
+    job has configured. CLAUDE.md Rule 0.4 ("Batch SQL queries by
+    partition/grouping key — never per-row when N could exceed 100")
+    explicitly calls this anti-pattern out.
+
+    Post-fix: 1 query per ticker × ~1,174 tickers ≈ 1,174 queries ≈ 20
+    minutes — comfortably inside the timeout. Issue #452.
+
+    Memory bound: per-ticker window pulls cover that ticker's full
+    earnings date span (typically 5-30 years × 252 trading days × 7
+    columns ≈ 5,000-50,000 rows × ~80 bytes ≈ <4 MB per ticker). Only
+    one ticker's window is materialised at a time when callers iterate
+    ticker-by-ticker, so peak working set stays small.
+    """
+    if not reported_dates:
+        return {}
+    min_date = min(reported_dates) - timedelta(days=20)
+    max_date = max(reported_dates) + timedelta(days=25)
+    sql = """
+        SELECT date, open, high, low, close, volume, atr_14
+          FROM market_data_daily
+         WHERE ticker = :t AND date BETWEEN :start AND :end
+         ORDER BY date
+    """
+    df = query_to_dataframe(sql, {'t': ticker, 'start': min_date, 'end': max_date})
+    out: dict[date, pd.DataFrame] = {}
+    if df.empty:
+        # No daily bars at all for this ticker in the union window —
+        # every reported_date gets an empty frame so the caller's
+        # downstream compute_reaction() returns None for each.
+        for d in reported_dates:
+            out[d] = df
+        return out
+    df['date'] = pd.to_datetime(df['date']).dt.date
+    df = df.sort_values('date').reset_index(drop=True)
+    for d in reported_dates:
+        start = d - timedelta(days=20)
+        end = d + timedelta(days=25)
+        mask = (df['date'] >= start) & (df['date'] <= end)
+        # .copy() so downstream mutations (compute_reaction sets new
+        # columns on the slice) don't trigger SettingWithCopyWarning
+        # or clobber the parent frame.
+        out[d] = df.loc[mask].reset_index(drop=True).copy()
+    return out
+
+
 def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
     """Build earnings_reactions rows for the given tickers, upsert.
 
@@ -446,21 +513,50 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
     log.info("earnings_history rows: %d  /  calendar timing fallback: %s",
              len(eps_df), calendar_timing)
 
+    # Group earnings by ticker so we issue ONE market_data_daily query
+    # per ticker (covering the union of its reported_dates) instead of
+    # one per (ticker, reported_date) pair. This is the fix for issue
+    # #452 — the prior per-row pattern queued ~73,667 round-trips and
+    # consistently hit the 30-min Cloud Run task-timeout.
+    # CLAUDE.md Rule 0.4: "Batch SQL queries by partition/grouping key
+    # — never per-row when N could exceed 100."
     rows: list[dict] = []
     skipped: int = 0
-    for _, eps in eps_df.iterrows():
-        ticker = eps['ticker']
-        report_time = eps.get('report_time')
-        yahoo_report_time = eps.get('yahoo_report_time')
-        cal_timing = calendar_timing.get(ticker)
-        basis = normalize_timing(report_time, cal_timing, yahoo_report_time)
+    ticker_groups = list(eps_df.groupby('ticker', sort=False))
+    n_tickers = len(ticker_groups)
+    log.info("processing %d tickers × ~%d earnings rows each",
+             n_tickers, len(eps_df) // max(n_tickers, 1))
 
-        daily = fetch_daily_window(ticker, eps['reported_date'])
-        result = compute_reaction(eps.to_dict(), daily, basis)
-        if result is None:
-            skipped += 1
-            continue
-        rows.append(result)
+    for ti, (ticker, ticker_eps) in enumerate(ticker_groups, start=1):
+        # Collect every reported_date this ticker has, then bulk-fetch
+        # the daily bars in one query covering the full date span.
+        dates_for_ticker = ticker_eps['reported_date'].tolist()
+        windows = fetch_daily_windows_for_ticker_dates(ticker, dates_for_ticker)
+
+        ticker_kept = 0
+        ticker_skipped = 0
+        for _, eps in ticker_eps.iterrows():
+            report_time = eps.get('report_time')
+            yahoo_report_time = eps.get('yahoo_report_time')
+            cal_timing = calendar_timing.get(ticker)
+            basis = normalize_timing(report_time, cal_timing, yahoo_report_time)
+
+            daily = windows.get(eps['reported_date'], pd.DataFrame())
+            result = compute_reaction(eps.to_dict(), daily, basis)
+            if result is None:
+                ticker_skipped += 1
+                continue
+            rows.append(result)
+            ticker_kept += 1
+
+        skipped += ticker_skipped
+        # Per-ticker progress log — every 25 tickers + the final one.
+        # CLAUDE.md Rule 0.4: "Observable progress — log per-group counts
+        # so a 30-minute job is debuggable, not a black box."
+        if ti % 25 == 0 or ti == n_tickers:
+            log.info("ticker=%s [%d/%d] kept=%d skipped=%d  (cum rows=%d)",
+                     ticker, ti, n_tickers,
+                     ticker_kept, ticker_skipped, len(rows))
 
     log.info("Computed %d reaction rows  (skipped %d for insufficient bars)",
              len(rows), skipped)

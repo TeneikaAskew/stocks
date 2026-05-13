@@ -23,8 +23,8 @@ def test_usage_cost_basic_input_output():
         input_tokens=1_000_000,
         output_tokens=500_000,
     )
-    # 1M input @ $0.10 + 0.5M output @ $0.40 = $0.10 + $0.20 = $0.30
-    assert u.cost_usd() == pytest.approx(0.30, rel=1e-6)
+    # 1M input @ $0.15 + 0.5M output @ $0.60 = $0.15 + $0.30 = $0.45
+    assert u.cost_usd() == pytest.approx(0.45, rel=1e-6)
 
 
 def test_usage_cost_with_cache_read_discount():

@@ -498,10 +498,16 @@ def test_select_trigger_blue_sky_synth_when_uptrend_at_ath():
         pyh=730.0, pyl=600.0,
     )
     regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "long")
-    # Synthetic trigger: cleared_above (max(733.93, 736.13)=736.13) + 0.20*10.02
-    # = 736.13 + 2.004 ≈ 738.13 (default offset is 0.20 — see _BLUE_SKY_ATR_OFFSET)
+    # 2026-05-12 anchor fix: synthetic trigger is now anchored on the
+    # NEAREST cleared structural level below cleared_above, not on
+    # cleared_above itself. For SPY 5/7 fixture:
+    #   structural_long = (eff_pdh=734.59, pwh=725.04, pmh=722.12,
+    #                      pqh=720.0, pyh=730.0)
+    #   cleared_above = max(pre_vwap 733.93, pre_high 736.13) = 736.13
+    #   nearest structural below 736.13 = 734.59 (eff_pdh)
+    #   synthetic_trigger = 734.59 + 0.20 × 10.02 = 736.59
     assert regime == "normal"  # distance < 3 ATR
-    assert trigger == pytest.approx(738.13, abs=0.05)
+    assert trigger == pytest.approx(736.59, abs=0.05)
     assert distance is not None and distance < 3.0
     assert stop_anchor is not None
 
@@ -525,9 +531,15 @@ def test_select_trigger_blue_sky_short_mirror():
         pyh=120.0, pyl=98.6,
     )
     regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "short")
-    # Synthetic: cleared_below=min(99.0, 98.5)=98.5; trigger = 98.5 - 0.20*2 = 98.10
+    # 2026-05-12 anchor fix: short synthetic anchored on the NEAREST
+    # structural level ABOVE cleared_below.
+    #   structural_short = (eff_pdl=99.5, pwl=99.5, pml=99.0, pql=99.5,
+    #                       pyl=98.6)
+    #   cleared_below = min(pre_vwap 99.0, pre_low 98.5) = 98.5
+    #   nearest structural above 98.5 = 98.6 (pyl)
+    #   synthetic_trigger = 98.6 - 0.20 × 2 = 98.20
     assert regime == "normal"
-    assert trigger == pytest.approx(98.10, abs=0.05)
+    assert trigger == pytest.approx(98.20, abs=0.05)
     assert distance is not None and distance < 3.0
 
 
@@ -644,10 +656,11 @@ def test_blue_sky_synth_produces_actionable_persona_plans():
         assert p.regime == "normal"  # not orb_only any more
         assert p.position_size_pct > 0.0
         assert len(p.targets) >= 1
-        # Entry zone clusters around the synthetic trigger ≈ 738.13
-        # (cleared_above 736.13 + 0.20 × ATR 10.02). Aggressive/neutral
-        # entry_lo = trigger; conservative bumps +0.10 ATR.
-        assert p.entry_zone.low >= 736.13  # at or past pre_high
+        # 2026-05-12 anchor fix: synthetic trigger now anchored on the
+        # nearest cleared structural level (eff_pdh=734.59 here), not
+        # on pre_high. New trigger ≈ 736.59 (734.59 + 0.20×10.02).
+        # Aggressive/neutral entry_lo = trigger; conservative bumps +0.10 ATR.
+        assert p.entry_zone.low >= 734.59  # at or past eff_pdh anchor
         assert p.entry_zone.high < 760.0   # not unbounded
         # Rationale should flag the blue-sky context and recommend ORB
         # confirmation — synthetic trigger is structurally above all
@@ -671,15 +684,16 @@ def test_blue_sky_per_ticker_override_used_when_set():
         pqh=720.0, pql=700.0,
         pyh=730.0, pyl=600.0,
     )
-    # Tier-A (per-ticker) override of 0.30 — should produce trigger
-    # 736.13 + 0.30*10.02 = 739.14
+    # 2026-05-12 anchor fix: synthetic now anchored on eff_pdh=734.59
+    # instead of cleared_above=736.13. Tier-A 0.30 override:
+    #   734.59 + 0.30 × 10.02 = 734.59 + 3.006 ≈ 737.60
     ctx_a = _level_ctx(blue_sky_atr_offset=0.30, **base)
     _, trigger_a, *_ = select_trigger_and_regime(ctx_a, "long")
-    assert trigger_a == pytest.approx(739.14, abs=0.05)
-    # Tier-B (None) → falls back to global 0.20, trigger = 738.13
+    assert trigger_a == pytest.approx(737.60, abs=0.05)
+    # Tier-B (None) → global 0.20:  734.59 + 0.20 × 10.02 ≈ 736.59
     ctx_b = _level_ctx(blue_sky_atr_offset=None, **base)
     _, trigger_b, *_ = select_trigger_and_regime(ctx_b, "long")
-    assert trigger_b == pytest.approx(738.13, abs=0.05)
+    assert trigger_b == pytest.approx(736.59, abs=0.05)
 
 
 def test_blue_sky_rationale_absent_for_historical_trigger():
@@ -695,3 +709,45 @@ def test_blue_sky_rationale_absent_for_historical_trigger():
     for p in plans:
         if p.regime == "normal":
             assert "Blue-sky" not in p.rationale
+
+
+def test_blue_sky_anchor_uses_nearest_structural_qqq_5_6_replay():
+    """Reproduction of QQQ 2026-05-06 trade plan with the PDH off-by-one
+    fix AND the new structural-anchor logic.
+
+    Pre-fix: trigger = cleared_above (pre_high 692.86) + 0.20×9.70 = 694.80
+    Post-fix: trigger = eff_pdh 682.77 + 0.20×9.70 = 684.71
+              (nearest structural level below cleared_above)
+
+    Why the change matters: the old anchor chased the overnight wick;
+    the new anchor confirms continuation just above the most recent
+    structural breakout, giving more breathing room above the entry
+    on gap-up days at ATHs."""
+    ctx = _level_ctx(
+        close=681.61,          # QQQ 5/5 close
+        atr=9.70,
+        pre_vwap=688.5,        # premarket consolidation midpoint
+        pre_high=692.86,
+        pre_low=681.61,
+        gap_pct=2.74,
+        # 5/5 effective PDH/PDL after the off-by-one fix
+        effective_pdh=682.77, effective_pdl=677.51,
+        # Multi-timeframe levels through 5/5 close
+        pwh=675.97, pwl=653.81,
+        pmh=668.90, pml=571.92,
+        pqh=636.60, pql=555.60,
+        pyh=637.01, pyl=402.39,
+    )
+    regime, trigger, _, distance, is_blue_sky = select_trigger_and_regime(
+        ctx, "long"
+    )
+    # All structural longs (eff_pdh, pwh, pmh, pqh, pyh) are below
+    # cleared_above (= max(pre_vwap, pre_high) = 692.86) — pure blue-sky.
+    # Nearest structural below 692.86 = eff_pdh 682.77.
+    # Anchored trigger = 682.77 + 0.20 × 9.70 = 684.71
+    assert is_blue_sky is True
+    assert regime == "normal"
+    assert trigger == pytest.approx(684.71, abs=0.05)
+    # Pre-fix value 694.80 must NOT come back — guards against regression
+    # to the pre_high-anchored formula.
+    assert trigger < 690.0

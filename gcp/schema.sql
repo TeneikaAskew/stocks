@@ -964,14 +964,19 @@ CREATE TABLE IF NOT EXISTS model_routing (
     updated_by    VARCHAR(64)
 );
 
+-- Seed routes consistent with the Vertex adapter's default location
+-- (`global`, see lib/agents/vertex_adapter.py). gemini-2.0-flash lives
+-- ONLY on regional us-east1 and would 404 against the default global
+-- endpoint, so a fresh deploy must seed a model that lives on global
+-- (gemini-2.5-flash, gemini-3.1-flash-lite, etc). Updated 2026-05-11.
 INSERT INTO model_routing (role, provider, model) VALUES
-    ('analyst',           'vertex', 'gemini-2.0-flash'),
-    ('bull',              'vertex', 'gemini-2.0-flash'),
-    ('bear',              'vertex', 'gemini-2.0-flash'),
-    ('judge',             'vertex', 'gemini-2.0-flash'),
-    ('trader',            'vertex', 'gemini-2.0-flash'),
-    ('risk',              'vertex', 'gemini-2.0-flash'),
-    ('portfolio_manager', 'vertex', 'gemini-2.0-flash')
+    ('analyst',           'vertex', 'gemini-3.1-flash-lite'),
+    ('bull',              'vertex', 'gemini-3.1-flash-lite'),
+    ('bear',              'vertex', 'gemini-3.1-flash-lite'),
+    ('judge',             'vertex', 'gemini-3.1-flash-lite'),
+    ('trader',            'vertex', 'gemini-3.1-flash-lite'),
+    ('risk',              'vertex', 'gemini-3.1-flash-lite'),
+    ('portfolio_manager', 'vertex', 'gemini-3.1-flash-lite')
 ON CONFLICT (role) DO NOTHING;
 
 DROP TRIGGER IF EXISTS trg_model_routing_updated ON model_routing;
@@ -1255,6 +1260,77 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS llm_playbook          TEXT;
 
 
+-- ─────────────────────────────────────────────────────────
+-- Brief-playbook outcome tracking (added 2026-05-11)
+-- ─────────────────────────────────────────────────────────
+--
+-- Two halves: STRUCTURED inputs (the trigger / stop / target prices the
+-- brief recommended) and RESOLVED outcomes (what actually happened during
+-- RTH). The brief writer fills the `*_price` / `*_name` columns at
+-- generation time; the EOD resolver job fills the `*_hit_ts` / `*_pnl_*` /
+-- `*_excursion_*` columns after market close by walking
+-- market_data_intraday for that (date, ticker).
+--
+-- Pre-this-block the playbook lived only as LLM prose in the `playbook`
+-- column — fine for human reading, useless for analytics. Now we can
+-- answer "did 5/6 QQQ's recommended CALL trigger actually print, when did
+-- it hit T1, was T3 reached, what was the EOD pnl per share / per $10k
+-- notional?" via SQL.
+--
+-- Resolver job: gcp/premarket_playbook_resolver.py
+-- Cron: 30 16 * * 1-5 America/New_York (16:30 ET, after RTH close)
+-- Idempotent: re-running on the same date overwrites with the same values
+ALTER TABLE premarket_analysis
+    -- ── STRUCTURED inputs ────────────────────────────────────────────
+    ADD COLUMN IF NOT EXISTS calls_trigger_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_trigger_name    VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_stop_price      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_stop_name       VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_t1_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t2_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t3_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_name     VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_stop_price       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_stop_name        VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION,
+
+    -- ── RESOLVED outcomes — CALLS leg ────────────────────────────────
+    ADD COLUMN IF NOT EXISTS calls_trigger_hit_ts  TIMESTAMPTZ,   -- first bar where high >= trigger
+    ADD COLUMN IF NOT EXISTS calls_t1_hit_ts       TIMESTAMPTZ,   -- after trigger, first bar where high >= t1
+    ADD COLUMN IF NOT EXISTS calls_t2_hit_ts       TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_t3_hit_ts       TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_stop_hit_ts     TIMESTAMPTZ,   -- after trigger, first bar where low <= stop
+    ADD COLUMN IF NOT EXISTS calls_reversal_after_trigger BOOLEAN, -- True iff stop_hit_ts > trigger_hit_ts
+    ADD COLUMN IF NOT EXISTS calls_time_to_t1_min  INTEGER,       -- minutes from trigger to T1
+    ADD COLUMN IF NOT EXISTS calls_mae_pct         DOUBLE PRECISION, -- (trigger - min_low_after_trigger)/trigger * 100
+    ADD COLUMN IF NOT EXISTS calls_mfe_pct         DOUBLE PRECISION, -- (max_high_after_trigger - trigger)/trigger * 100
+    ADD COLUMN IF NOT EXISTS calls_eod_pnl_pct     DOUBLE PRECISION, -- final realized pct (at first stop/target/EOD close)
+    ADD COLUMN IF NOT EXISTS calls_eod_pnl_dollar  DOUBLE PRECISION, -- pct/100 * notional ($10,000 default)
+
+    -- ── RESOLVED outcomes — PUTS leg (mirror of CALLS) ───────────────
+    ADD COLUMN IF NOT EXISTS puts_trigger_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_t1_hit_ts        TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_t2_hit_ts        TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_t3_hit_ts        TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_stop_hit_ts      TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_reversal_after_trigger BOOLEAN,
+    ADD COLUMN IF NOT EXISTS puts_time_to_t1_min   INTEGER,
+    ADD COLUMN IF NOT EXISTS puts_mae_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_mfe_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_eod_pnl_pct      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_eod_pnl_dollar   DOUBLE PRECISION,
+
+    -- ── Resolver metadata ────────────────────────────────────────────
+    ADD COLUMN IF NOT EXISTS outcome_resolved_at   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS outcome_resolver_version VARCHAR(20);
+
+CREATE INDEX IF NOT EXISTS idx_premarket_analysis_outcome_resolved
+    ON premarket_analysis(outcome_resolved_at) WHERE outcome_resolved_at IS NOT NULL;
+
+
 -- ============================================================================
 -- Live migration: rename premarket_analysis.strat_daily -> strat_candle.
 -- The methodology doc renames every "candle classification" surface to
@@ -1385,7 +1461,28 @@ ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS llm_overview          TEXT,
     ADD COLUMN IF NOT EXISTS llm_orb_explanation   TEXT,
     ADD COLUMN IF NOT EXISTS llm_analysis          TEXT,
-    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT;
+    ADD COLUMN IF NOT EXISTS llm_playbook          TEXT,
+    -- Mirror the brief-playbook outcome tracking columns added to
+    -- premarket_analysis (2026-05-11). Without them, bulk_insert into
+    -- the history table silently drops the structured fields populated
+    -- by persist_to_cloud_sql, leaving the audit trail unable to
+    -- reconstruct the exact triggers/stops/targets that were
+    -- recommended on a given morning. Codex review on PR #444 caught
+    -- this on the initial PR; mirror is additive + idempotent.
+    ADD COLUMN IF NOT EXISTS calls_trigger_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_trigger_name    VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_stop_price      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_stop_name       VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS calls_t1_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t2_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_t3_price        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_trigger_name     VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_stop_price       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_stop_name        VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION;
 
 
 CREATE TABLE IF NOT EXISTS insight_reports_history (
@@ -2156,3 +2253,35 @@ ALTER TABLE signal_alerts
     ADD COLUMN IF NOT EXISTS brief_bias        VARCHAR(16),
     ADD COLUMN IF NOT EXISTS brief_alignment   VARCHAR(16),
     ADD COLUMN IF NOT EXISTS brief_setup_count INTEGER;
+
+-- Phase 1 prereq (issue #404, PR feat/replay-persist-mode):
+-- replay-mode signal-monitor writes here too with these tag columns so
+-- replay rows are identifiable + queryable but don't pollute live data
+-- analysis. Live rows: run_kind='live' (default) AND replay_id IS NULL.
+-- Replay rows: run_kind='replay' AND replay_id=<UUID-per-execution>.
+-- This unlocks Phase 1 acceptance testing (need full per-fire detail
+-- which Cloud Run logs truncate at ~85 records).
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS run_kind   VARCHAR(16) NOT NULL DEFAULT 'live',
+    ADD COLUMN IF NOT EXISTS replay_id  UUID;
+
+CREATE INDEX IF NOT EXISTS idx_signal_alerts_run_kind
+    ON signal_alerts(run_kind) WHERE run_kind != 'live';
+CREATE INDEX IF NOT EXISTS idx_signal_alerts_replay_id
+    ON signal_alerts(replay_id) WHERE replay_id IS NOT NULL;
+
+-- Phase 1 direction gate (per docs/audits/2026-05-10-risk-reviewer-validation.md):
+-- the live signal_monitor reads insight_reports and decides whether
+-- to suppress / downgrade / tag the fire. These columns record the
+-- gate's view of each fire so we can post-hoc audit decisions and
+-- measure missed-winner rate (shadow mode).
+ALTER TABLE signal_alerts
+    ADD COLUMN IF NOT EXISTS insight_direction  VARCHAR(8),     -- 'long'/'short'/'flat'/null
+    ADD COLUMN IF NOT EXISTS insight_conviction VARCHAR(8),     -- 'low'/'medium'/'high'/null
+    ADD COLUMN IF NOT EXISTS insight_regime     VARCHAR(20),    -- 'normal'/'extended'/'orb_only'/null
+    ADD COLUMN IF NOT EXISTS gate_action        VARCHAR(16),    -- 'pass'/'suppress'/'downgrade'/'tag'/'annotate'
+    ADD COLUMN IF NOT EXISTS gate_reason        TEXT,           -- short label, e.g. 'opposing_weak_vs_plan_long'
+    ADD COLUMN IF NOT EXISTS thesis_invalidated BOOLEAN DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_signal_alerts_gate_action
+    ON signal_alerts(gate_action) WHERE gate_action IS NOT NULL;

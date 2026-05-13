@@ -491,6 +491,74 @@ def test_derive_key_levels_extracts_strat_market_options():
     }
 
 
+def test_derive_key_levels_surfaces_full_multi_timeframe_map():
+    """2026-05-11 fix: report.key_levels must include the full multi-
+    timeframe level map (PDH/PDL/PWH/PWL/PMH/PML/PQH/PQL/PYH/PYL +
+    effective_PDH/PDL) so users can audit the trade-planner's regime
+    classification — not just 'Prev High / Prev Low'.
+
+    The QQQ 5/6 replay surfaced this gap: blue-sky classification
+    depended on PWH/PMH/PQH/PYH all being below pre-market range,
+    but those levels were never visible in the report."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat": {
+            "available": True,
+            "trigger_high": 682.77,
+            "trigger_low": 677.51,
+            "levels": {
+                "PDH": 682.77, "PDL": 677.51,
+                "PWH": 682.77, "PWL": 668.80,
+                "PMH": 682.77, "PML": 571.92,
+                "PQH": 636.60, "PQL": 555.60,
+                "PYH": 637.01, "PYL": 402.39,
+                "effective_PDH": 682.77, "effective_PDL": 677.51,
+            },
+        },
+        "market":  {"available": True, "sma_200": 605.24, "ema_20": 648.61},
+        "options": {"available": True, "max_pain_strike_proxy": 600.0},
+    }
+    levels = _derive_key_levels(bundle)
+    # All 10 multi-timeframe levels surfaced with descriptive labels
+    assert levels["Prev Day High"] == 682.77
+    assert levels["Prev Day Low"] == 677.51
+    assert levels["Prev Week High"] == 682.77
+    assert levels["Prev Week Low"] == 668.80
+    assert levels["Prev Month High"] == 682.77
+    assert levels["Prev Month Low"] == 571.92
+    assert levels["Prev Quarter High"] == 636.60
+    assert levels["Prev Quarter Low"] == 555.60
+    assert levels["Prev Year High"] == 637.01
+    assert levels["Prev Year Low"] == 402.39
+    assert levels["Effective PDH"] == 682.77
+    assert levels["Effective PDL"] == 677.51
+    # Legacy fields suppressed when the new ones are present
+    assert "Prev High" not in levels
+    assert "Prev Low" not in levels
+    # Other sections still surface
+    assert levels["SMA 200"] == 605.24
+    assert levels["EMA 20"] == 648.61
+    assert levels["Max Pain"] == 600.0
+
+
+def test_derive_key_levels_legacy_fallback_when_no_levels_dict():
+    """When the strat section has trigger_high/low but no `levels` dict
+    (degraded bundle — level builder threw), keep emitting the legacy
+    'Prev High / Prev Low' labels for backwards-compat."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "strat":   {"available": True, "trigger_high": 510.0, "trigger_low": 495.0},
+        "market":  {"available": True, "sma_200": 480.0, "ema_20": 500.0},
+        "options": {"available": True, "max_pain_strike_proxy": 505.0},
+    }
+    levels = _derive_key_levels(bundle)
+    assert levels["Prev High"] == 510.0
+    assert levels["Prev Low"] == 495.0
+    assert "Prev Day High" not in levels
+
+
 def test_derive_key_levels_skips_unavailable_sections():
     from lib.agents.orchestrator import _derive_key_levels
 
@@ -917,13 +985,19 @@ def test_pipeline_records_per_role_cost(canned_bundle, seven_role_snapshot):
     assert abs(sum(report.per_role_cost.values()) - report.run_cost_usd) < 1e-4
 
 
-def test_pipeline_filters_supporting_signals_by_direction(
+def test_pipeline_emits_empty_supporting_signals(
     canned_bundle, seven_role_snapshot
 ):
-    """Audit 2026-05-08 G.P2.14: supporting_signals must not contradict
-    the report direction. The canned signal_alerts fixture returns a
-    single CALL row, so a long report keeps it and a short/flat report
-    on the same data would drop it (covered by unit-level tests above)."""
+    """2026-05-11: `signal_alerts` has been removed from the insight LLM
+    bundle to break the feedback loop with signal-monitor (which gates
+    on `insight_direction`). The orchestrator no longer reads
+    `bundle["signals"]`, so `report.supporting_signals` is always empty.
+
+    This supersedes the former G.P2.14 direction-filter test
+    (`test_pipeline_filters_supporting_signals_by_direction`) — the
+    direction filter still works at the unit level via
+    `test_build_signal_refs_filters_by_long_direction`, but the
+    pipeline-level fixture no longer surfaces any signals at all."""
     mock = _MockLLM()
     report = asyncio.run(
         orchestrator.run_insight_pipeline(
@@ -932,9 +1006,8 @@ def test_pipeline_filters_supporting_signals_by_direction(
             llm_factory=_mock_factory_ctor(mock),
         )
     )
-    # PM mock returns long; the only stubbed alert is direction=CALL.
     assert report.direction == "long"
-    assert all(s.direction == "CALL" for s in report.supporting_signals)
+    assert report.supporting_signals == []
 
 
 # ─── Audit 2026-05-08 G.P1.9 — thesis-vs-targets consistency validator ───

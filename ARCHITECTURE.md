@@ -116,7 +116,7 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 2. **7:00 AM ET** — `insider-transactions-daily` populates `insider_transactions`.
 3. **7:15 AM ET** — `earnings-calendar-daily` refreshes `earnings_calendar` with today's reporters.
 4. **8:20 AM ET** — `premarket-refresh-daily` ([`gcp/fetchers/fetch_premarket_refresh.py`](gcp/fetchers/fetch_premarket_refresh.py)) polls AV intraday for ~50 tickers and writes `gap_pct`, `pre_high`, `pre_low`, `pre_vwap` to `market_data_daily`.
-5. **8:30 AM ET** — `premarket-brief-daily` ([`gcp/premarket_brief.py`](gcp/premarket_brief.py)) reads everything, runs `lib.strat.compute_strat_status`, `lib.strat_levels.build_level_map`, `lib.earnings_reactions.conditional_lean_summary`, formats a multi-embed Discord message, posts via the `discord-webhook` secret, and persists the analysis to `premarket_analysis`.
+5. **8:30 AM ET** — `premarket-brief-daily` ([`gcp/premarket_brief.py`](gcp/premarket_brief.py)) reads everything, runs `lib.strat.compute_strat_status`, `lib.strat_levels.build_level_map`, `lib.earnings_reactions.conditional_lean_summary`, formats a multi-embed Discord message, posts via the `discord-webhook-insights` secret, and persists the analysis to `premarket_analysis`.
 6. **8:45 AM ET** — `insight-pipeline-daily` runs the multi-agent AI pipeline for SPY/IWM/QQQ; results land in `insight_runs` + `insight_reports`.
 7. **9:15 AM ET** — `insight-discord-push-daily` reads the morning's `insight_reports` and pushes the digest to Discord.
 8. **9:25 AM ET** — `signal-monitor-daily` ([`gcp/signal_monitor.py`](gcp/signal_monitor.py)) starts the rolling 60-second loop until 4:00 PM ET, polling AV intraday and posting CALL/PUT alerts when conditions clear thresholds. Per-fire scoring: `total_score = (base_score + strat_bonus + agreement_bonus) × proximity_multiplier`, where `agreement_bonus` is `AGREEMENT_BONUS` (+1.0) if both momentum + mean-reversion strategies agree on a bar (#231), and `proximity_multiplier` is the empirical catalyst-window weight from `lib/strategies/catalyst_proximity.py` (#227). Raw `base_score` and `proximity_multiplier` both persist on `signal_alerts` for post-hoc analysis. ORB snapshots fire as separate scheduler invocations at 9:45 (15m) and 10:00 (30m).
@@ -140,7 +140,7 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 
 1. Discord sends an interaction (e.g. `/replay TICKER`) to **`discord-interactions`** Cloud Run Service (port 8080).
 2. The service verifies the request via the `discord-public-key` secret, then invokes the appropriate Cloud Run Job (`backfill-ticker`, `backtest`, `validate-brief`) via the Run API.
-3. The triggered Job posts results back to Discord via `discord-webhook`.
+3. The triggered Job posts results back to Discord via `discord-webhook-insights`.
 
 ## Architecture diagram
 

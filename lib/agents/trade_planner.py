@@ -340,10 +340,42 @@ def select_trigger_and_regime(
                 if ctx.blue_sky_atr_offset is not None
                 else _BLUE_SKY_ATR_OFFSET
             )
+            # 2026-05-12 fix: anchor the synthetic trigger on the NEAREST
+            # cleared structural level (in the direction of bias), not on
+            # `cleared_above` which is max(ref, pre_high) — i.e., the raw
+            # overnight wick.
+            #
+            # Why: pre_high is transient (gap wicks can push it arbitrarily
+            # above structure without reflecting it). The user-intended
+            # blue-sky formula is "nearest structural level + 0.20 × ATR" —
+            # confirmation of continuation just above the most recent
+            # structural breakout, not chase-up above the overnight wick.
+            #
+            # QQQ 2026-05-06 example: pre_high $692.86 vs eff_pdh $682.77.
+            # Pre-fix trigger = $694.80 (pre_high + 1.94). Post-fix
+            # trigger = $684.71 (eff_pdh + 1.94) — hits intraday with
+            # meaningfully more room above the entry.
+            #
+            # In pure blue-sky (every structural level below cleared_above)
+            # the "nearest structural below current" reduces to "highest
+            # structural level". Falls back to `cleared_above` only when
+            # no structural level is populated (sparse-history degraded
+            # bundle — preserves prior behaviour for that edge case).
             if direction == "long":
-                synthetic_trigger = cleared_above + offset * atr
+                structural_below = sorted(
+                    [float(lv) for lv in same_side_structural
+                     if lv is not None and float(lv) < cleared_above],
+                    reverse=True,
+                )
+                anchor = structural_below[0] if structural_below else cleared_above
+                synthetic_trigger = anchor + offset * atr
             else:
-                synthetic_trigger = cleared_below - offset * atr
+                structural_above = sorted(
+                    [float(lv) for lv in same_side_structural
+                     if lv is not None and float(lv) > cleared_below],
+                )
+                anchor = structural_above[0] if structural_above else cleared_below
+                synthetic_trigger = anchor - offset * atr
             distance_atr = abs(synthetic_trigger - ref) / atr
             regime: Regime = (
                 "normal" if distance_atr < _EXTENDED_DISTANCE_ATR else "extended"
@@ -556,6 +588,17 @@ def _plan(
                                  regime=regime, distance_atr=distance_atr,
                                  trigger=trigger, is_blue_sky=is_blue_sky)
 
+    risk_metrics = compute_risk_metrics(
+        entry_lo=round(entry_lo, 2),
+        entry_hi=round(entry_hi, 2),
+        stop=round(stop, 2),
+        targets=[round(t, 2) for t in targets],
+        direction=ctx.direction,
+        atr=atr,
+        sma_200=ctx.sma_200,
+        ftfc_score=ctx.ftfc_score,
+    )
+
     return PersonaPlan(
         persona=persona,  # type: ignore[arg-type]
         entry_zone=EntryZone(low=round(entry_lo, 2), high=round(entry_hi, 2)),
@@ -564,7 +607,69 @@ def _plan(
         position_size_pct=round(size, 2),
         rationale=rationale,
         regime=regime,
+        risk_metrics=risk_metrics,
     )
+
+
+def compute_risk_metrics(
+    entry_lo: float,
+    entry_hi: float,
+    stop: float,
+    targets: list[float],
+    direction: Direction,
+    atr: float,
+    sma_200: Optional[float] = None,
+    ftfc_score: Optional[float] = None,
+    invalidation_level: Optional[float] = None,
+) -> "RiskMetrics":
+    """Compute deterministic risk distances for a persona plan.
+
+    These values populate ``PersonaPlan.risk_metrics`` and are read by
+    the LLM risk reviewers in place of recomputing the math themselves
+    (the LLM hallucinates ~55% of the time per the 2026-05-10 audit).
+
+    All distances are unsigned magnitudes EXCEPT ``target_r_multiples``
+    which is signed by direction (positive = good R:R, negative = target
+    on the wrong side of entry).
+
+    Returns a fully-populated RiskMetrics; fields that depend on missing
+    inputs (atr=0, sma_200=None, etc.) are set to None individually.
+    """
+    from .schema import RiskMetrics  # local import to avoid circulars
+    entry_mid = (entry_lo + entry_hi) / 2
+    risk_per_unit = abs(entry_mid - stop)
+    sign = 1.0 if direction == "long" else -1.0 if direction == "short" else 0.0
+
+    metrics_kwargs: dict = {}
+    if atr > 0 and risk_per_unit > 0:
+        metrics_kwargs["stop_distance_atr"] = round(risk_per_unit / atr, 3)
+    if entry_mid > 0:
+        metrics_kwargs["stop_distance_pct"] = round(
+            risk_per_unit / entry_mid * 100, 3
+        )
+    if risk_per_unit > 0 and sign != 0 and targets:
+        metrics_kwargs["target_r_multiples"] = [
+            round((t - entry_mid) / risk_per_unit * sign, 3)
+            for t in targets
+        ]
+    if sma_200 is not None and sma_200 > 0:
+        metrics_kwargs["entry_vs_sma200_pct"] = round(
+            (entry_mid - sma_200) / sma_200 * 100, 3
+        )
+        if atr > 0:
+            metrics_kwargs["entry_vs_sma200_atr"] = round(
+                (entry_mid - sma_200) / atr, 3
+            )
+    if ftfc_score is not None:
+        metrics_kwargs["ftfc_aligned"] = (
+            (direction == "long" and ftfc_score >= 0.5)
+            or (direction == "short" and ftfc_score <= -0.5)
+        )
+    if invalidation_level is not None and atr > 0:
+        metrics_kwargs["invalidation_distance_atr"] = round(
+            abs(invalidation_level - stop) / atr, 3
+        )
+    return RiskMetrics(**metrics_kwargs)
 
 
 def _orb_only_plan(ctx: PlanContext, persona: str) -> PersonaPlan:
@@ -592,6 +697,20 @@ def _orb_only_plan(ctx: PlanContext, persona: str) -> PersonaPlan:
         "ORB-only: no unbroken structural trigger above pre-market range. "
         "Wait for the 15-min opening range to establish before entering."
     )
+    # ORB-only plans get computed risk_metrics too (the entry/stop are
+    # placeholders but the math is still well-defined). The reviewer
+    # rules will see the placeholder distances and fire flags as normal;
+    # the regime banner already tells the trader to wait for ORB.
+    risk_metrics = compute_risk_metrics(
+        entry_lo=placeholder_lo,
+        entry_hi=placeholder_hi,
+        stop=placeholder_stop,
+        targets=[],
+        direction=ctx.direction,
+        atr=atr,
+        sma_200=ctx.sma_200,
+        ftfc_score=ctx.ftfc_score,
+    )
     return PersonaPlan(
         persona=persona,  # type: ignore[arg-type]
         entry_zone=EntryZone(low=placeholder_lo, high=placeholder_hi),
@@ -600,6 +719,7 @@ def _orb_only_plan(ctx: PlanContext, persona: str) -> PersonaPlan:
         position_size_pct=0.0,
         rationale=rationale,
         regime="orb_only",
+        risk_metrics=risk_metrics,
     )
 
 

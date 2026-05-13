@@ -128,13 +128,20 @@ deploy_insight_discord_push() {
 deploy_historical_signals_watchlist() {
     echo "Deploying historical-signals-watchlist job..."
 
+    # NOTE: `--args="--from-watchlist"` MUST use the `=` form (no space).
+    # When the arg value starts with `-`, gcloud's argparse interprets a
+    # space-separated form (`--args "--from-watchlist"`) as a new flag
+    # named `--from-watchlist` and errors with "argument --args: expected
+    # one argument". See CLAUDE.md rule 5.4 ("Cloud Run Job sizing
+    # checklist"). Pre-fix this aborted ./gcp/deploy.sh insights and
+    # ./gcp/deploy.sh all mid-way through the deploy bundle.
     gcloud run jobs create historical-signals-watchlist \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 2Gi --cpu 1 --max-retries 1 \
         --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.run_historical_signals" \
-        --args "--from-watchlist" \
+        --args="--from-watchlist" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet 2>/dev/null || \
@@ -142,7 +149,7 @@ deploy_historical_signals_watchlist() {
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,-m,scripts.run_historical_signals" \
-        --args "--from-watchlist" \
+        --args="--from-watchlist" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
@@ -299,7 +306,7 @@ setup_insight_tasks_queue() {
 # canonical names; both resolve to the same Secret Manager secret.
 #
 # Required vs optional secrets:
-#   * DB_PASS, av-api-key, discord-webhook are created by
+#   * DB_PASS, av-api-key, discord-webhook-insights are created by
 #     setup_cloud_sql.sh — assumed present; deploy fails fast if missing.
 #   * fred-api-key, benzinga-api-key are optional add-ons — deploys
 #     gracefully skip them when not provisioned, preserving the
@@ -310,7 +317,7 @@ _build_secret_flag() {
     local pairs="DB_PASS=db-trading-pass:latest"
     pairs="${pairs},AV_API_KEY=av-api-key:latest"
     pairs="${pairs},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
-    pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook:latest"
+    pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
     if gcloud secrets describe fred-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
         pairs="${pairs},FRED_API_KEY=fred-api-key:latest"
     else
@@ -571,6 +578,39 @@ deploy_signal_monitor_eod_resolver() {
     gcloud run jobs update signal-monitor-eod-resolver \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.signal_monitor_eod_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Premarket playbook resolver (Cloud Run Job) ──────────────────────────────
+# EOD resolver for premarket_analysis brief-playbook outcomes (2026-05-11).
+# Walks each (analysis_date, ticker) row's RTH 1-min bars and records
+# trigger_hit_ts / target_hit_ts / stop_hit_ts / reversal / MAE / MFE /
+# EOD pnl. Self-heals when structured input columns are NULL via
+# derive_level_map_from_daily — see gcp/premarket_playbook_resolver.py.
+#
+# Capacity (CLAUDE.md §0):
+#   Volume:    ~3 tier-1 ETFs/day × 1 row × ~3 KB intraday window = tiny
+#   Velocity:  3 SQL reads + 3 writes per run = 6 round-trips
+#   Wall:      ~30s daily steady-state, ~5 min for one-shot backfill
+#   timeout:   3600s = 1hr (≥ 4× wall-clock headroom for backfill mode)
+#   memory:    1Gi (peak 50 MB × overhead margin)
+#   retries:   0 (idempotent via outcome_resolved_at; transient retries don't help)
+deploy_premarket_playbook_resolver() {
+    echo "Deploying premarket-playbook-resolver job..."
+    gcloud run jobs create premarket-playbook-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 3600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.premarket_playbook_resolver" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update premarket-playbook-resolver \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.premarket_playbook_resolver" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
@@ -1357,6 +1397,16 @@ deploy_notifier() {
     env_string="$(_env_string)"
     env_string="${env_string},GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION}"
 
+    # The failure-notifier posts to a DEDICATED Discord channel for GCP job
+    # failures (secret `discord-webhook-gcp`), not `discord-webhook-insights`
+    # that the rest of the platform uses for briefs/alerts. We also fold in the
+    # GitHub PAT/repo secrets so a single --set-secrets flag carries every
+    # secret-mounted env var (a second --set-secrets on the same gcloud invoke
+    # replaces the first entirely, which previously masked the shared secrets).
+    local notifier_secrets="${DB_SECRET_FLAG#--set-secrets=}"
+    notifier_secrets="${notifier_secrets/discord-webhook-insights:latest/discord-webhook-gcp:latest}"
+    notifier_secrets="${notifier_secrets},GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest"
+
     # 1) Deploy the Cloud Run service (overrides Dockerfile CMD with stdlib server)
     # Secrets are mounted from Secret Manager at runtime via --set-secrets so
     # they never appear in revision metadata (visible to anyone with run.services.get).
@@ -1365,9 +1415,8 @@ deploy_notifier() {
         --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 \
         --service-account "${SA_EMAIL}" \
         --command "python" --args "-m,gcp.failure_notifier" \
-        ${DB_SECRET_FLAG} \
         --set-env-vars "${env_string}" \
-        --set-secrets="GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest" \
+        --set-secrets="${notifier_secrets}" \
         --no-allow-unauthenticated \
         --quiet
 
@@ -1420,12 +1469,22 @@ deploy_notifier() {
         --role="roles/pubsub.subscriber" --quiet
 
     # 5) Create Cloud Logging sink → Pub/Sub
-    # Filter catches Cloud Run Job execution failures but excludes the notifier
-    # itself to prevent infinite loops.
+    # Filter catches Cloud Run Job execution failures but excludes:
+    #   1. the notifier itself (prevents infinite loops)
+    #   2. Cloud Audit Logs (`cloudaudit.googleapis.com`) — every
+    #      `gcloud run jobs update` triggers an ERROR-severity audit log
+    #      because gcloud tries Jobs.CreateJob first (ALREADY_EXISTS at
+    #      ERROR severity) and falls back to UpdateJob. Without the
+    #      `logName:"run.googleapis.com"` clause, every deploy fired one
+    #      false-positive notification per job. Real execution failures
+    #      land on `run.googleapis.com/varlog/system` (task-failed
+    #      records) and `run.googleapis.com/stderr` (container stack
+    #      traces), both of which still match.
     local sink_filter
     sink_filter='resource.type="cloud_run_job"
 AND severity>=ERROR
-AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"'
+AND resource.labels.job_name!="'"${NOTIFIER_SERVICE}"'"
+AND logName:"run.googleapis.com"'
 
     gcloud logging sinks create "${NOTIFIER_SINK}" \
         "pubsub.googleapis.com/projects/${PROJECT_ID}/topics/${NOTIFIER_TOPIC}" \
@@ -1575,6 +1634,12 @@ deploy_schedulers() {
     # still is_open=TRUE or with exit_ts NULL and resolves them via the
     # gcp.signal_monitor_eod_resolver replay path. Per Track D G.P0.10.
     _schedule "signal-monitor-eod-resolver-daily" "30 16 * * 1-5"  "signal-monitor-eod-resolver"
+    # Premarket brief-playbook outcome resolver — 4:30 PM ET weekdays.
+    # Walks each (analysis_date, ticker) row's RTH 1-min bars and records
+    # trigger_hit_ts / target_hit_ts / stop_hit_ts / reversal / MAE / MFE /
+    # EOD pnl. Same wall-clock slot as the alerts resolver above
+    # (different job, different table — no contention).
+    _schedule "premarket-playbook-resolver-daily" "30 16 * * 1-5"  "premarket-playbook-resolver"
     # ORB scheduled snapshots — 9:45 ET (15-min ORB) and 10:00 ET (30-min ORB).
     # Uses the same signal-monitor job image with --mode=orb-snapshot.
     _schedule_with_args "orb-15m-alert"  "45 9 * * 1-5"  "signal-monitor" \
@@ -1833,6 +1898,7 @@ case "${1:-help}" in
     premarket)   build_image && deploy_premarket ;;
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
+    playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
     weekend)     build_image && deploy_weekend ;;
     fetchers)    build_image && deploy_fetchers && backfill_watchlist ;;
     insights)    build_image && setup_insight_tasks_queue && deploy_insight_pipeline && deploy_insight_discord_push && deploy_historical_signals_watchlist && deploy_auto_refresh_top_n ;;
@@ -1853,6 +1919,7 @@ case "${1:-help}" in
         deploy_premarket
         deploy_monitor
         deploy_signal_monitor_eod_resolver
+        deploy_premarket_playbook_resolver
         deploy_weekend
         deploy_fetchers
         setup_insight_tasks_queue
