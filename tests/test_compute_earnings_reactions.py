@@ -11,7 +11,7 @@ Covers:
 - Reversal flag firing correctly
 - Direction consistency edge cases (zero reaction_gap)
 """
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import pytest
@@ -800,9 +800,50 @@ class TestComputeReactionATR:
         # post_report_atr (D+1 for AMC) is independent and present
         assert r['post_report_atr'] == 2.4
 
+    def test_inline_atr14_fallback_when_upstream_column_missing(self):
+        """When ``atr_14`` is NaN/missing but the daily window has ≥15
+        bars, the populator computes ATR-14 inline from OHLC and produces
+        a non-NULL pre_report_atr. Guards against the regression where
+        the column was 1.7%-populated upstream and silently NULLed 99%
+        of earnings_reactions rows for the brief."""
+        import numpy as np
+        # 16 bars (15 pre + 1 reaction). Synthetic OHLC with constant
+        # 2.0-wide bars makes ATR-14 deterministic.
+        rows = []
+        for i in range(15):
+            d = date(2026, 3, 2) + timedelta(days=i)
+            # weekday-only — skip weekends
+            if d.weekday() >= 5:
+                continue
+            rows.append((d, 100.0, 102.0, 100.0, 101.0, np.nan))
+        # tack on extras until we have at least 17 trading days
+        cur = rows[-1][0] + timedelta(days=1)
+        while len(rows) < 18:
+            if cur.weekday() < 5:
+                rows.append((cur, 100.0, 102.0, 100.0, 101.0, np.nan))
+            cur += timedelta(days=1)
+        df = _bars_with_atr(rows)
+        # Pick a D that has 14+ prior bars in the frame
+        d_report = df.iloc[15]['date']
+        r = compute_reaction(_eps(d_report), df, 'AMC')
+        assert r is not None, "compute should succeed with 16 bars"
+        assert r['pre_report_atr'] is not None, \
+            "inline ATR-14 should fire when upstream is NaN"
+        # All bars have TR = high - low = 2.0; ATR-14 converges to 2.0
+        assert abs(r['pre_report_atr'] - 2.0) < 0.01
+
     def test_atr_ratio_null_when_pre_atr_is_zero(self):
         """A zero pre-report ATR (synthetic / market-closed edge case)
-        shouldn't produce a divide-by-zero — the ratio stays NULL."""
+        shouldn't produce a divide-by-zero — the ratio stays NULL.
+
+        Post-fix semantics: a zero atr_14 in the daily frame is treated
+        as 'missing' and triggers the inline ATR-14 fallback in _atr().
+        With only 3 bars in this fixture the inline fallback also can't
+        compute (needs 14 prior bars), so pre_report_atr surfaces as
+        None. The original assertion only cared that the ratio not
+        divide-by-zero — both old (=0.0) and new (=None) shapes satisfy
+        that, and None is a more honest value for a meaningless 0 ATR.
+        """
         df = _bars_with_atr([
             (date(2026, 3, 3), 100.0, 100.0, 100.0, 100.0, 1.0),
             (date(2026, 3, 4), 100.0, 100.0, 100.0, 100.0, 0.0),  # D atr = 0 (AMC pre)
@@ -810,8 +851,8 @@ class TestComputeReactionATR:
         ])
         r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
         assert r is not None
-        assert r['pre_report_atr'] == 0.0
-        # zero pre — ratio undefined, must be None not inf
+        assert r['pre_report_atr'] is None
+        # ratio undefined regardless of which path produced the None
         assert r['reaction_day_range_in_atr_units'] is None
 
 
@@ -873,7 +914,8 @@ class TestFetchDailyWindowsForTickerDates:
         }
 
     def test_window_slices_per_reported_date(self):
-        """Each returned df is bounded to [reported_date-20d, +25d]."""
+        """Each returned df is bounded to [reported_date-40d, +25d].
+        The -40 floor gives the inline ATR-14 fallback its 14 prior bars."""
         from gcp.fetchers import compute_earnings_reactions as cer
         bars = self._sample_bars()
         from datetime import date, timedelta
@@ -883,7 +925,7 @@ class TestFetchDailyWindowsForTickerDates:
             )
         win = out[date(2025, 6, 1)]
         assert not win.empty
-        assert win['date'].min() >= date(2025, 6, 1) - timedelta(days=20)
+        assert win['date'].min() >= date(2025, 6, 1) - timedelta(days=40)
         assert win['date'].max() <= date(2025, 6, 1) + timedelta(days=25)
 
     def test_empty_db_returns_empty_window_per_date(self):
@@ -904,7 +946,8 @@ class TestFetchDailyWindowsForTickerDates:
 
     def test_query_range_covers_union_of_dates(self):
         """The single SQL query's date range must cover the union of all
-        reported_dates' windows — min-20d to max+25d."""
+        reported_dates' windows — min-40d to max+25d. The -40 floor (was
+        -20) gives the inline ATR-14 fallback its 14 prior trading bars."""
         from gcp.fetchers import compute_earnings_reactions as cer
         bars = self._sample_bars()
         from datetime import date, timedelta
@@ -917,5 +960,5 @@ class TestFetchDailyWindowsForTickerDates:
         params = args[1] if len(args) > 1 else kwargs.get('params') or kwargs
         # Accept either dict-style or kwargs-style param passing
         if hasattr(params, 'get'):
-            assert params['start'] == date(2025, 2, 1) - timedelta(days=20)
+            assert params['start'] == date(2025, 2, 1) - timedelta(days=40)
             assert params['end']   == date(2025, 10, 1) + timedelta(days=25)
