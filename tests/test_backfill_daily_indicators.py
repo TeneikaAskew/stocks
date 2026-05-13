@@ -38,11 +38,32 @@ class TestTickerResolution:
         with patch.object(mod, 'query_to_dataframe', return_value=gap_tickers) as qm:
             out = mod._tickers_with_gaps(7)
         assert out == ['AAA', 'BBB']
-        # The query must filter on atr_14 IS NULL and the lookback window
+        # The query must use num_nulls() across every derived column,
+        # not the old single-column atr_14 canary that would miss
+        # partial-writes (e.g. macd populated but rsi_14 NULL).
         sql, params = qm.call_args[0]
-        assert 'atr_14 IS NULL' in sql
+        assert 'num_nulls(' in sql
+        assert 'atr_14' in sql       # part of the OR-list
+        assert 'rsi_14' in sql       # part of the OR-list
+        assert 'macd' in sql         # part of the OR-list
+        assert 'strat_candle' in sql # strat included too
         assert 'CURRENT_DATE' in sql
         assert params == {'d': 7}
+
+    def test_gap_check_covers_every_derived_column(self):
+        """Regression guard: the set of columns in the gap-check SQL
+        must include every column the compute path persists. If a
+        future indicator is added to DAILY_INDICATOR_TO_SQL_COLUMN
+        but not surfaced to _DERIVED_COLS_FOR_GAP_CHECK, partial
+        writes for the new column will be silently ignored."""
+        from gcp.database import DAILY_INDICATOR_TO_SQL_COLUMN
+        for sql_col in DAILY_INDICATOR_TO_SQL_COLUMN.values():
+            assert sql_col in mod._DERIVED_COLS_FOR_GAP_CHECK, (
+                f"{sql_col!r} is in DAILY_INDICATOR_TO_SQL_COLUMN but "
+                "missing from _DERIVED_COLS_FOR_GAP_CHECK — partial "
+                "writes for this column will not trigger a daily-mode "
+                "re-compute."
+            )
 
     def test_mode_daily_empty_when_no_gaps(self):
         with patch.object(mod, 'query_to_dataframe', return_value=pd.DataFrame()):

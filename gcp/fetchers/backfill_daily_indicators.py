@@ -14,16 +14,19 @@ Why this exists:
 Two modes, one scheduled job — no manual one-offs needed:
 
     --mode=daily   (default; runs nightly)
-        Auto-discover tickers that have NULL atr_14 in the last
-        ``--lookback-days`` (default 7). Re-compute their full
-        indicator surface and upsert. Cheap when the table is
-        healthy; converges quickly when new tickers / new bars
-        arrive.
+        Auto-discover tickers where ANY derived indicator column
+        (atr_14, rsi_14, macd, ema_*, bb_*, obv, rvol, stoch_*,
+        consecutive_*, volatility_20d, price_vs_ema*, strat_candle,
+        strat_combo — every column the compute path persists) is
+        NULL in the last ``--lookback-days`` (default 7). Re-compute
+        their full history and upsert. Cheap when healthy.
 
     --mode=full
         Process every ticker in market_data_daily regardless of
-        coverage. Used by the weekly catch-up scheduler entry and
-        on-demand recoveries.
+        per-row coverage. Used by the weekly catch-up scheduler
+        entry and on-demand recoveries. Re-computes every indicator
+        for every bar — does NOT skip on per-column nulls because
+        the full-mode contract is "trust nothing, recompute".
 
 Both modes are idempotent: the per-ticker compute is a deterministic
 function of the underlying OHLCV, and the upsert merges on
@@ -83,21 +86,41 @@ def _all_tickers() -> list[str]:
     return [str(t).upper() for t in df['ticker'].tolist()]
 
 
+# Every SQL column produced by the indicator-compute path. Source of
+# truth lives in gcp/database.DAILY_INDICATOR_TO_SQL_COLUMN; the strat
+# columns (strat_candle / strat_combo) are populated by the same
+# compute path and are included here so they participate in gap
+# detection. NB: ftfc_score / strat_setup are intentionally excluded
+# because they're populated by the live writer's per-day pass, not by
+# the historical-history recompute — checking them here would force a
+# re-compute on every healthy bar.
+_DERIVED_COLS_FOR_GAP_CHECK: tuple[str, ...] = tuple(
+    list(DAILY_INDICATOR_TO_SQL_COLUMN.values())
+    + ['strat_candle', 'strat_combo']
+)
+
+
 def _tickers_with_gaps(lookback_days: int) -> list[str]:
     """Tickers that have at least one row in the last ``lookback_days``
-    where ``atr_14`` is NULL.
+    where ANY derived indicator column is NULL.
 
-    atr_14 is a canary: every healthy bar has it (the live writer
-    populates the full 250-bar slice on every fetch). A NULL means
-    either a brand-new ticker the live writer hasn't covered yet, or
-    a row inserted by some other path that skipped the indicator
-    pass. Either way it needs a re-compute.
+    Uses Postgres ``num_nulls()`` over every column the compute path
+    persists (atr_14, rsi_14, macd_*, ema_*, ma_*, bb_*, obv, rvol,
+    stoch_*, consecutive_*, volatility_20d, price_vs_ema*, plus the
+    two strat string columns). A single NULL anywhere in that list
+    flags the (ticker, date) row as in need of a re-compute — the
+    daily mode then queues that ticker for a full-history pass.
+
+    This replaces the prior single-column canary (atr_14) so a
+    partial-write that left e.g. macd populated but rsi_14 NULL
+    isn't silently ignored.
     """
-    sql = """
+    cols_sql = ", ".join(_DERIVED_COLS_FOR_GAP_CHECK)
+    sql = f"""
         SELECT DISTINCT ticker
         FROM market_data_daily
         WHERE date >= CURRENT_DATE - (:d || ' days')::interval
-          AND atr_14 IS NULL
+          AND num_nulls({cols_sql}) > 0
         ORDER BY ticker
     """
     df = query_to_dataframe(sql, {'d': lookback_days})
