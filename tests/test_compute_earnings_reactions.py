@@ -914,8 +914,8 @@ class TestFetchDailyWindowsForTickerDates:
         }
 
     def test_window_slices_per_reported_date(self):
-        """Each returned df is bounded to [reported_date-40d, +25d].
-        The -40 floor gives the inline ATR-14 fallback its 14 prior bars."""
+        """Each returned df is bounded to [reported_date-90d, +25d].
+        The -90 floor gives the inline ATR-14 fallback ~60 prior bars."""
         from gcp.fetchers import compute_earnings_reactions as cer
         bars = self._sample_bars()
         from datetime import date, timedelta
@@ -925,7 +925,7 @@ class TestFetchDailyWindowsForTickerDates:
             )
         win = out[date(2025, 6, 1)]
         assert not win.empty
-        assert win['date'].min() >= date(2025, 6, 1) - timedelta(days=40)
+        assert win['date'].min() >= date(2025, 6, 1) - timedelta(days=90)
         assert win['date'].max() <= date(2025, 6, 1) + timedelta(days=25)
 
     def test_empty_db_returns_empty_window_per_date(self):
@@ -946,8 +946,8 @@ class TestFetchDailyWindowsForTickerDates:
 
     def test_query_range_covers_union_of_dates(self):
         """The single SQL query's date range must cover the union of all
-        reported_dates' windows — min-40d to max+25d. The -40 floor (was
-        -20) gives the inline ATR-14 fallback its 14 prior trading bars."""
+        reported_dates' windows — min-90d to max+25d. The -90 floor gives
+        the inline ATR-14 fallback ~60 prior trading bars (well above 14)."""
         from gcp.fetchers import compute_earnings_reactions as cer
         bars = self._sample_bars()
         from datetime import date, timedelta
@@ -960,5 +960,5 @@ class TestFetchDailyWindowsForTickerDates:
         params = args[1] if len(args) > 1 else kwargs.get('params') or kwargs
         # Accept either dict-style or kwargs-style param passing
         if hasattr(params, 'get'):
-            assert params['start'] == date(2025, 2, 1) - timedelta(days=40)
+            assert params['start'] == date(2025, 2, 1) - timedelta(days=90)
             assert params['end']   == date(2025, 10, 1) + timedelta(days=25)

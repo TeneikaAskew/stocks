@@ -302,9 +302,24 @@ def compute_reaction(
         end_idx = int(idx_arr[0])
         start_idx = end_idx - 14
         if start_idx < 0:
+            # Genuinely under-historied — market_data_daily doesn't have
+            # 14 prior bars for this ticker at this date. Log so the
+            # operator can decide whether to backfill the upstream
+            # daily-bars fetcher for the ticker.
+            log.warning(
+                "inline ATR-14 skipped for %s @ %s: only %d prior bars "
+                "in window (need 14). Consider backfilling "
+                "market_data_daily for this ticker.",
+                eps_row.get('ticker', '?'), bar_date, end_idx,
+            )
             return None
         window = daily.iloc[start_idx:end_idx + 1].copy()
         if len(window) < 15:
+            log.warning(
+                "inline ATR-14 skipped for %s @ %s: window has %d bars "
+                "after slice (need 15).",
+                eps_row.get('ticker', '?'), bar_date, len(window),
+            )
             return None
         h = window['high'].astype(float).to_numpy()
         l = window['low'].astype(float).to_numpy()
@@ -479,13 +494,15 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
          WHERE ticker = :t AND date BETWEEN :start AND :end
          ORDER BY date
     """
-    # Window: −40 calendar / +25 calendar. The −40 floor (was −20) gives
-    # us 14+ trading bars before D so the inline-ATR fallback in
-    # compute_reaction()'s _atr() has data to work with even when the
-    # upstream atr_14 column is NULL.
+    # Window: −90 calendar / +25 calendar. The −90 floor (was −40) gives
+    # ~60 trading bars before D — comfortably above the 14 needed by the
+    # inline ATR-14 fallback even after stretches of weekends/holidays,
+    # so we essentially never NULL out pre_report_atr because of a thin
+    # slice. The lookback is local Cloud SQL (no API cost) so widening
+    # is free.
     params = {
         't': ticker,
-        'start': reported_date - timedelta(days=40),
+        'start': reported_date - timedelta(days=90),
         'end': reported_date + timedelta(days=25),
     }
     df = query_to_dataframe(sql, params)
@@ -525,9 +542,10 @@ def fetch_daily_windows_for_ticker_dates(
     """
     if not reported_dates:
         return {}
-    # −40 calendar floor (was −20) so the inline ATR-14 fallback in
-    # compute_reaction()._atr() always has 14 prior trading bars.
-    min_date = min(reported_dates) - timedelta(days=40)
+    # −90 calendar floor (was −40) so the inline ATR-14 fallback in
+    # compute_reaction()._atr() always has ~60 trading bars even after
+    # weekend/holiday clusters. Local Cloud SQL pull, no API cost.
+    min_date = min(reported_dates) - timedelta(days=90)
     max_date = max(reported_dates) + timedelta(days=25)
     sql = """
         SELECT date, open, high, low, close, volume, atr_14
@@ -547,9 +565,9 @@ def fetch_daily_windows_for_ticker_dates(
     df['date'] = pd.to_datetime(df['date']).dt.date
     df = df.sort_values('date').reset_index(drop=True)
     for d in reported_dates:
-        # Match the −40 floor used by the SQL pull above so the inline
-        # ATR-14 fallback in _atr() always has its 14 prior bars.
-        start = d - timedelta(days=40)
+        # Match the −90 floor used by the SQL pull above so the inline
+        # ATR-14 fallback in _atr() always has ~60 prior bars.
+        start = d - timedelta(days=90)
         end = d + timedelta(days=25)
         mask = (df['date'] >= start) & (df['date'] <= end)
         # .copy() so downstream mutations (compute_reaction sets new
