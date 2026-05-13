@@ -960,10 +960,22 @@ deploy_fetch_earnings_history() {
     # 7200s timeout: 45 tickers × ~50s/ticker (AV API + DB upsert, full-mode
     # tickers can pull 1k+ bars) ≈ 2250s wall-clock — 1800s was 0.8× the
     # estimate (issue #269 — task hit the 1800s cap at ticker [37/45] on
-    # 2026-05-04). 7200 = 3.2× the wall-clock per CLAUDE.md §0 rule 5
-    # ("≥ 4× the wall-clock estimate"; this is close but free since
-    # Cloud Run charges runtime not cap).
+    # 2026-05-04). 7200 = 3.2× the wall-clock per CLAUDE.md §0 rule 5.
+    #
+    # BACKFILL_ALL_HISTORY=true: when the chained _run_backfill step
+    # fires at the end of fetch_earnings_history, target EVERY ticker
+    # in earnings_history (not just those currently active in
+    # earnings_calendar with options_volume>0 + stock_volume>=500k).
+    # Smart-switch in _pick_backfill_outputsize skips tickers that
+    # already have ≥1500 bars + ≤1 day stale, so no AV calls are
+    # wasted on already-backfilled tickers — only NEW tickers and
+    # tickers with stale/missing bars actually trigger fetches.
+    # This self-heals the OHLCV coverage gap that blocked the
+    # 2026-05-13 reactions backfill (814 of 1148 past-90d reporters
+    # missing reaction rows because their bars weren't ever fetched).
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
+    local env_string
+    env_string="$(_env_string),BACKFILL_ALL_HISTORY=true"
     gcloud run jobs create fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 1Gi --cpu 1 --max-retries 1 \
@@ -971,14 +983,14 @@ deploy_fetch_earnings_history() {
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${env_string}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-history \
         --image "${IMAGE}" --region "${REGION}" \
         --task-timeout 7200 \
         --command "python,-m,gcp.fetchers.fetch_earnings_history" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "$(_env_string)" \
+        --set-env-vars "${env_string}" \
         --quiet
 }
 
