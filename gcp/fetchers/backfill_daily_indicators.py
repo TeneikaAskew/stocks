@@ -247,12 +247,23 @@ def _build_indicator_rows(ticker: str, df: pd.DataFrame) -> list[dict]:
             val = bar.get(src)
             if val is not None and pd.notna(val):
                 row[dst] = int(val) if dst in _INT_COLS else float(val)
-        # Strat (string columns; only write when non-null/non-X)
+        # Strat (string columns; only write when value carries actual
+        # information). Filter every sentinel that means "no value here":
+        #   - None / NaN (proper nulls)
+        #   - 'X' (strat_candle sentinel for unclassifiable bar)
+        #   - 'none' (strat_combo sentinel for "no combo fired")
+        #   - 'nan' (string-coerced NaN — happens when an object-dtype
+        #     pandas Series serialises NaN values to string via str(), seen
+        #     in the 2026-05-13 backfill where ~17% of SPY bars landed
+        #     as the literal string 'nan' before this guard.)
+        _STRAT_NULL_SENTINELS = ('', 'X', 'nan', 'none', 'None', 'NaN')
         strat_candle = bar.get('strat_candle')
-        if strat_candle and pd.notna(strat_candle) and str(strat_candle) != 'X':
+        if (strat_candle is not None and pd.notna(strat_candle)
+                and str(strat_candle) not in _STRAT_NULL_SENTINELS):
             row['strat_candle'] = str(strat_candle)
         strat_combo = bar.get('strat_combo')
-        if strat_combo and pd.notna(strat_combo):
+        if (strat_combo is not None and pd.notna(strat_combo)
+                and str(strat_combo) not in _STRAT_NULL_SENTINELS):
             row['strat_combo'] = str(strat_combo)[:30]
         if len(row) > 2:
             rows.append(row)

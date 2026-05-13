@@ -124,6 +124,25 @@ class TestComputePass:
         bars['Volume'] = None
         assert mod._build_indicator_rows('TEST', bars) == []
 
+    def test_strat_combo_nan_string_is_filtered(self):
+        """Regression guard for the 2026-05-13 backfill bug where
+        ~17% of SPY bars landed as the literal string 'nan' in
+        strat_combo because pandas object-dtype Series serialise
+        NaN via str() to the 'nan' string. The row-builder MUST
+        filter every sentinel for "no value here" — None, NaN,
+        and the 'nan' / 'none' / 'X' / '' string sentinels — and
+        never write them to the upsert dict."""
+        bars = _synth_bars(40)
+        rows = mod._build_indicator_rows('TEST', bars)
+        for r in rows:
+            for col in ('strat_candle', 'strat_combo'):
+                if col in r:
+                    assert r[col] not in ('', 'X', 'nan', 'none',
+                                          'None', 'NaN'), (
+                        f"{col}={r[col]!r} is a null-sentinel that "
+                        "should have been filtered before upsert"
+                    )
+
 
 class TestBackfillTicker:
     def test_backfill_ticker_upserts_rows(self):
