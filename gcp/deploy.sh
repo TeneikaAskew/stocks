@@ -662,6 +662,33 @@ deploy_fetch_market_data() {
         --quiet
 }
 
+deploy_backfill_daily_indicators() {
+    echo "Deploying backfill-daily-indicators job..."
+    # Self-healing job that fixes NULL derived-indicator columns in
+    # market_data_daily. Default mode=daily auto-discovers tickers
+    # with NULL atr_14 in the last 7 days — cheap when healthy.
+    # Weekly --mode=full sweep catches anything daily missed.
+    # 10800s (3h) timeout: full sweep on ~1,200 tickers × ~2s ≈ 40min
+    # wall-clock; daily sweep on ~50 tickers ≈ 2min. Headroom for spikes.
+    gcloud run jobs create backfill-daily-indicators \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backfill-daily-indicators \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 10800 \
+        --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 deploy_fetch_alphavantage() {
     echo "Deploying fetch-alphavantage-intraday job..."
     # ALPHA_VANTAGE_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per
@@ -1093,6 +1120,7 @@ deploy_fetch_news_sentiment_topics() {
 
 deploy_fetchers() {
     deploy_fetch_market_data
+    deploy_backfill_daily_indicators
     deploy_fetch_alphavantage
     deploy_av_options_backfill
     deploy_fetch_fred_rates
@@ -1866,6 +1894,26 @@ deploy_schedulers() {
     # Decouples the earnings-reactions brief from the watchlist-only
     # ticker mode that misses tomorrow's reporters.
     _schedule "news-sentiment-earnings-0600"  "0 6 * * 1-5"  "fetch-news-sentiment-earnings"
+
+    # Self-healing backfill of derived indicator columns in
+    # market_data_daily (atr_14, rsi_14, macd, ema_*, bb_*, etc.).
+    # daily mode (default env on the job) at 02:30 ET Mon-Sat —
+    # auto-discovers tickers with NULL atr_14 in last 7d, re-computes.
+    _schedule "backfill-indicators-daily"  "30 2 * * 1-6"  "backfill-daily-indicators"
+
+    # full mode at 03:00 ET Sunday via containerOverride — sweeps every
+    # ticker. Persisted job env stays "daily" for the weekday entries.
+    local _BFILL_FULL_BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"BACKFILL_MODE","value":"full"}]}]}}'
+    gcloud scheduler jobs create http "backfill-indicators-weekly" \
+        --location "${REGION}" \
+        --schedule "0 3 * * 0" \
+        --time-zone "America/New_York" \
+        --uri "$(_job_uri "backfill-daily-indicators")" \
+        --http-method POST \
+        --headers "Content-Type=application/json" \
+        --message-body "${_BFILL_FULL_BODY}" \
+        --oauth-service-account-email "${SA_EMAIL}" \
+        --quiet 2>/dev/null || echo "  backfill-indicators-weekly: already exists"
 
     # AI Insights daily report — 8:45 AM ET weekdays, after premarket-brief
     # (which seeds the strat + daily indicators the pipeline consumes).
