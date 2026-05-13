@@ -662,6 +662,33 @@ deploy_fetch_market_data() {
         --quiet
 }
 
+deploy_backfill_daily_indicators() {
+    echo "Deploying backfill-daily-indicators job..."
+    # Self-healing job that fixes NULL derived-indicator columns in
+    # market_data_daily. Default mode=daily auto-discovers tickers
+    # with NULL atr_14 in the last 7 days — cheap when healthy.
+    # Weekly --mode=full sweep catches anything daily missed.
+    # 10800s (3h) timeout: full sweep on ~1,200 tickers × ~2s ≈ 40min
+    # wall-clock; daily sweep on ~50 tickers ≈ 2min. Headroom for spikes.
+    gcloud run jobs create backfill-daily-indicators \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 10800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backfill-daily-indicators \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 10800 \
+        --command "python,-m,gcp.fetchers.backfill_daily_indicators" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 deploy_fetch_alphavantage() {
     echo "Deploying fetch-alphavantage-intraday job..."
     # ALPHA_VANTAGE_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per
@@ -1028,6 +1055,41 @@ deploy_fetch_news_sentiment() {
         --quiet
 }
 
+deploy_fetch_news_sentiment_earnings() {
+    echo "Deploying fetch-news-sentiment-earnings (upcoming-reporter mode) job..."
+    # Same Docker image as the ticker-mode job; differs only in env:
+    # EARNINGS_WINDOW_DAYS=7 makes the fetcher resolve its ticker
+    # universe to (earnings_calendar ±7d) ∪ watchlist. Runs once a day
+    # before the brief so tomorrow's reporters always have a 48h news
+    # cold-start cushion landed in news_sentiment before the embed
+    # consumes it. AV cost: ~30 cold-start reporters × 1 call = 30
+    # calls/day — well under the 150 RPM plan ceiling.
+    gcloud run jobs create fetch-news-sentiment-earnings \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 1 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update fetch-news-sentiment-earnings \
+        --image "${IMAGE}" --region "${REGION}" \
+        --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+
+    # EARNINGS_WINDOW_DAYS=7 → fetcher's main() unions earnings_calendar
+    # (±7d) with the watchlist. NEWS_SINCE_LAST=1 → incremental per-ticker
+    # floor so cold-start reporters pull 48h and steady-state reporters
+    # only pull deltas. MAX_TICKERS=300 caps the resolved set.
+    gcloud run jobs update fetch-news-sentiment-earnings \
+        --region "${REGION}" \
+        --update-env-vars "^@^EARNINGS_WINDOW_DAYS=7@NEWS_SINCE_LAST=1@MAX_TICKERS=300" \
+        --quiet
+}
+
 deploy_fetch_news_sentiment_topics() {
     echo "Deploying fetch-news-sentiment-topics (topic mode) job..."
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
@@ -1058,6 +1120,7 @@ deploy_fetch_news_sentiment_topics() {
 
 deploy_fetchers() {
     deploy_fetch_market_data
+    deploy_backfill_daily_indicators
     deploy_fetch_alphavantage
     deploy_av_options_backfill
     deploy_fetch_fred_rates
@@ -1072,6 +1135,7 @@ deploy_fetchers() {
     deploy_fetch_top_movers
     deploy_fetch_news_sentiment
     deploy_fetch_news_sentiment_topics
+    deploy_fetch_news_sentiment_earnings
 }
 
 # ── Backup / disaster-recovery jobs ───────────────────────────────────────────
@@ -1822,6 +1886,34 @@ deploy_schedulers() {
     for h in 08 09 10 11 12 13 14 15 16 17; do
         _schedule "news-topics-${h}05"  "5 ${h} * * 1-5"  "fetch-news-sentiment-topics"
     done
+
+    # Upcoming-reporter mode: 06:00 ET weekdays, before premarket-brief
+    # (08:45). EARNINGS_WINDOW_DAYS=7 on the job resolves the universe
+    # to (earnings_calendar ±7d) ∪ watchlist; NEWS_SINCE_LAST=1 means
+    # cold-start reporters pull 48h once and incremental from then on.
+    # Decouples the earnings-reactions brief from the watchlist-only
+    # ticker mode that misses tomorrow's reporters.
+    _schedule "news-sentiment-earnings-0600"  "0 6 * * 1-5"  "fetch-news-sentiment-earnings"
+
+    # Self-healing backfill of derived indicator columns in
+    # market_data_daily (atr_14, rsi_14, macd, ema_*, bb_*, etc.).
+    # daily mode (default env on the job) at 02:30 ET Mon-Sat —
+    # auto-discovers tickers with NULL atr_14 in last 7d, re-computes.
+    _schedule "backfill-indicators-daily"  "30 2 * * 1-6"  "backfill-daily-indicators"
+
+    # full mode at 03:00 ET Sunday via containerOverride — sweeps every
+    # ticker. Persisted job env stays "daily" for the weekday entries.
+    local _BFILL_FULL_BODY='{"overrides":{"containerOverrides":[{"env":[{"name":"BACKFILL_MODE","value":"full"}]}]}}'
+    gcloud scheduler jobs create http "backfill-indicators-weekly" \
+        --location "${REGION}" \
+        --schedule "0 3 * * 0" \
+        --time-zone "America/New_York" \
+        --uri "$(_job_uri "backfill-daily-indicators")" \
+        --http-method POST \
+        --headers "Content-Type=application/json" \
+        --message-body "${_BFILL_FULL_BODY}" \
+        --oauth-service-account-email "${SA_EMAIL}" \
+        --quiet 2>/dev/null || echo "  backfill-indicators-weekly: already exists"
 
     # AI Insights daily report — 8:45 AM ET weekdays, after premarket-brief
     # (which seeds the strat + daily indicators the pipeline consumes).
