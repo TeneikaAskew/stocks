@@ -101,6 +101,29 @@ class TestComputePass:
         bars = _synth_bars(1)
         assert mod._build_indicator_rows('TEST', bars) == []
 
+    def test_null_ohlcv_rows_are_dropped_not_crashing(self):
+        """RIVN had None volume on early bars; SPX has None volume on
+        every bar (it's an index). Pre-fix, add_all_indicators threw
+        TypeError('NoneType' - 'NoneType') and the populator skipped
+        the entire ticker. Post-fix, null-OHLCV bars are dropped and
+        the rest compute normally."""
+        bars = _synth_bars(60)
+        # Inject NULL volume on a few early bars
+        bars.loc[:5, 'Volume'] = None
+        rows = mod._build_indicator_rows('TEST', bars)
+        # Should still produce rows — just from the cleaned subset
+        assert len(rows) > 30
+        # PK + indicators on every row
+        for r in rows:
+            assert r['ticker'] == 'TEST'
+
+    def test_all_null_ohlcv_returns_empty_with_warning(self):
+        """Index-only tickers (no volume) won't have anything to
+        compute on. Return empty cleanly, don't crash."""
+        bars = _synth_bars(20)
+        bars['Volume'] = None
+        assert mod._build_indicator_rows('TEST', bars) == []
+
 
 class TestBackfillTicker:
     def test_backfill_ticker_upserts_rows(self):

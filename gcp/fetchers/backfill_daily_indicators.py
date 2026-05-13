@@ -152,9 +152,24 @@ def _full_history(ticker: str) -> pd.DataFrame:
 def _build_indicator_rows(ticker: str, df: pd.DataFrame) -> list[dict]:
     """Run add_all_indicators + strat over the full history, return one
     upsert dict per bar whose row carries at least one non-NULL indicator.
+
+    Pre-filter: rows with any None/NaN in OHLCV are dropped before the
+    compute step. add_all_indicators does arithmetic on these columns
+    that propagates None through to subtractions ('NoneType' - 'NoneType'
+    TypeError seen on RIVN / SPX during the initial backfill, 2026-05-13).
+    Indices like SPX have no volume in some sources; new tickers like
+    RIVN have None for early bars. Skip them rather than crash the
+    whole ticker.
     """
     if df.empty or len(df) < 2:
         return []
+
+    # Drop bars with any null OHLCV. The compute path assumes float math.
+    df = df.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'])
+    if df.empty or len(df) < 2:
+        log.warning("  %s: all bars had NULL OHLCV — skipping", ticker)
+        return []
+    df = df.reset_index(drop=True)
 
     from lib.indicators import add_all_indicators
 
