@@ -500,6 +500,18 @@ CREATE TABLE IF NOT EXISTS earnings_reactions (
     -- Behavioral flags (mirror direction_consistent_5d / is_reversal_5d).
     pre_drift_consistent_5d     BOOLEAN,            -- sign(drift_5d_pct) == sign(drift_3d_pct) AND |drift_5d_pct| >= 1.0
     pre_drift_reverses_into_gap BOOLEAN,            -- sign(drift_5d_pct) != sign(reaction_gap_pct) — known only post-event, useful for backtests
+    -- Intraday range over the pre-earnings window (symmetric with the post-
+    -- earnings max_high_*d_pct / min_low_*d_pct columns). Anchored at the
+    -- START of each window (D-N close), so a positive max_high_pre_5d_pct
+    -- means the stock printed at least one intraday high N% above where it
+    -- closed 5 trading days before the report. Catches the "ran and gave
+    -- back" pattern that pure close-to-close drift misses.
+    max_high_pre_3d_pct         DOUBLE PRECISION,   -- (MAX(high) in D-3..D-1  - D-3 close)  / D-3 close  × 100
+    min_low_pre_3d_pct          DOUBLE PRECISION,   -- (MIN(low)  in D-3..D-1  - D-3 close)  / D-3 close  × 100
+    max_high_pre_5d_pct         DOUBLE PRECISION,
+    min_low_pre_5d_pct          DOUBLE PRECISION,
+    max_high_pre_10d_pct        DOUBLE PRECISION,
+    min_low_pre_10d_pct         DOUBLE PRECISION,
 
     -- Report day (D)
     d_open                      DOUBLE PRECISION,
@@ -611,7 +623,15 @@ ALTER TABLE earnings_reactions
     ADD COLUMN IF NOT EXISTS drift_3d_pct                DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS drift_5d_pct                DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS pre_drift_consistent_5d     BOOLEAN,
-    ADD COLUMN IF NOT EXISTS pre_drift_reverses_into_gap BOOLEAN;
+    ADD COLUMN IF NOT EXISTS pre_drift_reverses_into_gap BOOLEAN,
+    -- Intraday high/low over pre-earnings window (symmetric with post-
+    -- earnings max_high_*d_pct / min_low_*d_pct). Anchored at D-N close.
+    ADD COLUMN IF NOT EXISTS max_high_pre_3d_pct         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS min_low_pre_3d_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS max_high_pre_5d_pct         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS min_low_pre_5d_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS max_high_pre_10d_pct        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS min_low_pre_10d_pct         DOUBLE PRECISION;
 
 
 -- ─────────────────────────────────────────────────────────

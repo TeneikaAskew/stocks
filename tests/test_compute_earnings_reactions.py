@@ -222,6 +222,40 @@ class TestComputeReactionAMC:
         # drift_5d > 0 AND reaction_gap > 0 → no reversal
         assert r['pre_drift_reverses_into_gap'] is False
 
+    def test_amc_pre_window_intraday_high_low(self):
+        """Added 2026-05-14. Intraday max_high / min_low over each pre-window,
+        anchored at the D-N close (symmetric with post-earnings max_high_*d_pct
+        and min_low_*d_pct). Captures 'ran and gave back' patterns that pure
+        close-to-close drift misses."""
+        df = self._build_bars()
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+
+        # 5d pre-window (D-5=2/25 .. D-1=3/3):
+        #   bars: 2/25 (high 106, low 103.5), 2/26 (107, 104.5),
+        #         2/27 (108, 105.5), 3/2 (109, 106.5), 3/3 (110.5, 107.5)
+        #   max(high) = 110.5, min(low) = 103.5
+        #   anchor = D-5 close = 105
+        #   max_high_pre_5d_pct = (110.5 - 105) / 105 * 100 ≈ 5.238
+        #   min_low_pre_5d_pct  = (103.5 - 105) / 105 * 100 ≈ -1.429
+        assert abs(r['max_high_pre_5d_pct'] - 5.2381) < 0.01
+        assert abs(r['min_low_pre_5d_pct']  - (-1.4286)) < 0.01
+
+        # 3d pre-window (D-3=2/27 .. D-1=3/3): highs [108,109,110.5], lows [105.5,106.5,107.5]
+        #   anchor = D-3 close = 107
+        #   max_high_pre_3d_pct = (110.5 - 107) / 107 * 100 ≈ 3.271
+        #   min_low_pre_3d_pct  = (105.5 - 107) / 107 * 100 ≈ -1.402
+        assert abs(r['max_high_pre_3d_pct'] - 3.2710) < 0.01
+        assert abs(r['min_low_pre_3d_pct']  - (-1.4019)) < 0.01
+
+        # 10d pre-window (D-10=2/18 .. D-1=3/3):
+        #   max(high) across 10 bars = 110.5 (3/3)
+        #   min(low) across 10 bars = 99.5 (2/18)
+        #   anchor = D-10 close = 100.5
+        #   max_high_pre_10d_pct = (110.5 - 100.5) / 100.5 * 100 ≈ 9.950
+        #   min_low_pre_10d_pct  = (99.5  - 100.5) / 100.5 * 100 ≈ -0.995
+        assert abs(r['max_high_pre_10d_pct'] - 9.9502) < 0.01
+        assert abs(r['min_low_pre_10d_pct']  - (-0.9950)) < 0.01
+
     def test_amc_max_run_and_drawdown(self):
         df = self._build_bars()
         r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')

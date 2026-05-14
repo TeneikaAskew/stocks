@@ -154,6 +154,33 @@ def compute_reaction(
     # pre_drift_reverses_into_gap is post-event (sign of drift_5d vs
     # reaction_gap). Computed below after reaction_gap is known.
 
+    # Intraday range over each pre-earnings window. Symmetric with post-
+    # earnings max_high_3d_pct / min_low_3d_pct etc. Anchor is the D-N close
+    # (start of window). Captures "ran and gave back" patterns that pure
+    # close-to-close drift misses — e.g. HIMS 2026-05-11 closed up only
+    # 3.67% over the prior week but its intraday high in that window was
+    # ~10% above D-5 close.
+    def pre_window_high_low(window_days: int, anchor_close):
+        if anchor_close is None or anchor_close <= 0:
+            return (None, None)
+        bars = []
+        for off in range(window_days, 0, -1):   # D-N .. D-1 inclusive
+            bar = safe(d_idx - off)
+            if bar is not None:
+                bars.append(bar)
+        if not bars:
+            return (None, None)
+        max_high = max(float(b['high']) for b in bars)
+        min_low  = min(float(b['low'])  for b in bars)
+        return (
+            (max_high - anchor_close) / anchor_close * 100,
+            (min_low  - anchor_close) / anchor_close * 100,
+        )
+
+    max_high_pre_3d_pct,  min_low_pre_3d_pct  = pre_window_high_low(3,  d_minus_3_close)
+    max_high_pre_5d_pct,  min_low_pre_5d_pct  = pre_window_high_low(5,  d_minus_5_close)
+    max_high_pre_10d_pct, min_low_pre_10d_pct = pre_window_high_low(10, d_minus_10_close)
+
     # Raw gap math (always computed; raw inputs to reaction_gap)
     pre_report_gap = (
         (float(d['open']) - float(d_minus_1['close']))
@@ -361,6 +388,13 @@ def compute_reaction(
         'drift_3d_pct': drift_3d_pct,
         'pre_drift_consistent_5d': pre_drift_consistent_5d,
         'pre_drift_reverses_into_gap': pre_drift_reverses_into_gap,
+        # Intraday pre-window range (symmetric with post-earnings max_high_*d_pct / min_low_*d_pct)
+        'max_high_pre_3d_pct':  max_high_pre_3d_pct,
+        'min_low_pre_3d_pct':   min_low_pre_3d_pct,
+        'max_high_pre_5d_pct':  max_high_pre_5d_pct,
+        'min_low_pre_5d_pct':   min_low_pre_5d_pct,
+        'max_high_pre_10d_pct': max_high_pre_10d_pct,
+        'min_low_pre_10d_pct':  min_low_pre_10d_pct,
         'd_open': float(d['open']),
         'd_high': float(d['high']),
         'd_low': float(d['low']),
