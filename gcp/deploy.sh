@@ -509,6 +509,34 @@ deploy_backtest() {
         --quiet
 }
 
+# ── Pre-earnings drift backtest (Cloud Run Job, one-shot) ────────────────────
+# Walk-forward validation of compute_pre_drift_score against historical
+# earnings_reactions. Run once after the compute job has backfilled the
+# new D-5/D-3 close columns, then re-run only when the formula changes.
+# Output is captured from execution logs:
+#   gcloud beta run jobs executions logs read <execution> --region=us-east1 \
+#     | sed -n '/BEGIN_BACKTEST_REPORT/,/END_BACKTEST_REPORT/p'
+# Memory/CPU/timeout mirror backtest-playability for parity.
+deploy_backtest_pre_drift() {
+    echo "Deploying backtest-pre-drift job..."
+    gcloud run jobs create backtest-pre-drift \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.backtest_pre_drift" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backtest-pre-drift \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 1800 \
+        --command "python,-m,scripts.backtest_pre_drift" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 
 # ── Pre-market brief (Cloud Run Job) ─────────────────────────────────────────
 deploy_premarket() {
@@ -1917,6 +1945,7 @@ case "${1:-help}" in
     schedulers)  deploy_schedulers ;;
     backfill)    shift; backfill_watchlist "$@" ;;
     apply-schema) build_image && deploy_apply_schema_migrations ;;
+    backtest-pre-drift) build_image && deploy_backtest_pre_drift ;;
     pg-dump)      build_image && deploy_weekly_pg_dump ;;
     setup-pg-dump-iam) setup_pg_dump_iam ;;
     fred-rates)   build_image && deploy_fetch_fred_rates ;;

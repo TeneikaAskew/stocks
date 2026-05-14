@@ -668,6 +668,267 @@ def enrich_with_playability(
     return rows
 
 
+# ════════════════════════════════════════════════════════════
+# Pre-earnings drift (added 2026-05-14)
+#
+# Mirrors the post-earnings playability stack but anchored on
+# the 5 trading days BEFORE the report. Surfaces tickers that
+# consistently run up (pre_bullish_run) or fade (pre_bearish_fade)
+# into the print so the brief can suggest CALL/PUT entries 3-5
+# days out instead of only on report day.
+#
+# All four helpers below are direct symmetric analogs:
+#   compute_pre_drift_score  ↔ compute_playability_score
+#   classify_pre_drift_archetype ↔ classify_archetype
+#   query_pre_drift_stats    ↔ query_reaction_stats
+#   enrich_with_pre_drift    ↔ enrich_with_playability
+# ════════════════════════════════════════════════════════════
+
+# Quintile boundaries for pre-drift score. CALIBRATION NOTE: these are
+# placeholders matching the post-earnings playability boundaries. The
+# real values will be set by scripts/backtest_pre_drift.py after the
+# walk-forward validation completes. Until that backtest runs, keep
+# these in sync with _QUINTILE_BOUNDARIES (line 137) — same shape, same
+# magnitudes, so the confidence labels render reasonably.
+_PRE_DRIFT_QUINTILE_BOUNDARIES = (15.7, 21.2, 28.2, 41.9)
+
+
+def pre_drift_score_quintile(score: Optional[float]) -> Optional[str]:
+    """Q1-Q5 bucket for a pre_drift_score (vs post-earnings score_quintile)."""
+    if score is None:
+        return None
+    for i, bound in enumerate(_PRE_DRIFT_QUINTILE_BOUNDARIES, start=1):
+        if score < bound:
+            return f'Q{i}'
+    return 'Q5'
+
+
+def pre_drift_confidence_label(score: Optional[float]) -> Optional[str]:
+    """Return the brief's English confidence tag (e.g. '🔥 HIGH') for a
+    pre_drift_score. Reuses the same CONFIDENCE_LABELS dict as the
+    post-earnings score so the reader sees a consistent vocabulary.
+    """
+    q = pre_drift_score_quintile(score)
+    return CONFIDENCE_LABELS.get(q) if q else None
+
+
+# Action map — what trade to set up based on pre-earnings drift pattern.
+# Quiet skipped at the filter layer (drift < 1.5% magnitude).
+PRE_DRIFT_ACTION_HINT = {
+    'pre_bullish_run':  'CALL into print',
+    'pre_bearish_fade': 'PUT into print',
+    'pre_choppy':       '',                # no actionable directional play
+    'pre_quiet':        'skip',
+}
+
+
+def pre_drift_action_for_archetype(archetype: Optional[str]) -> str:
+    """Return the trade-setup label rendered in the pre-drift embed."""
+    return PRE_DRIFT_ACTION_HINT.get(archetype or 'pre_quiet', 'skip')
+
+
+def compute_pre_drift_score(
+    drift_magnitude_pct:      Optional[float],
+    typical_daily_return_pct: Optional[float],
+    pre_dir_consistency:      Optional[float],
+    pre_reversal_rate:        Optional[float],
+    options_volume:           Optional[float],
+) -> Optional[float]:
+    """Pre-earnings drift score. SAME FORMULA SHAPE as playability_score
+    so the quintile + confidence-label semantics carry over.
+
+    Inputs:
+      drift_magnitude_pct  — mean of |drift_5d_pct| over last 12 quarters
+      typical_daily_return_pct — same 60-day median |daily return| baseline
+      pre_dir_consistency  — fraction of quarters where drift_5d agrees with
+                             the *modal* direction (>0 if mostly up runs,
+                             <0 if mostly fades)
+      pre_reversal_rate    — fraction where pre_drift_reverses_into_gap
+                             (sign flips between pre-run and earnings gap)
+      options_volume       — current liquidity proxy (same as post-earnings)
+    """
+    if drift_magnitude_pct is None or typical_daily_return_pct is None:
+        return None
+    if typical_daily_return_pct <= 0:
+        return None
+    if pre_dir_consistency is None or pre_reversal_rate is None:
+        return None
+    if options_volume is None or options_volume <= 0:
+        return None
+
+    move_norm = drift_magnitude_pct / typical_daily_return_pct
+    confidence = max(pre_dir_consistency, 0.5 + 0.5 * pre_reversal_rate)
+    log_liquidity = math.log(options_volume + 1)
+    return move_norm * confidence * log_liquidity
+
+
+def classify_pre_drift_archetype(
+    drift_magnitude_pct:    Optional[float],
+    directional_drift_pct:  Optional[float],
+    pre_dir_consistency:    Optional[float],
+    pre_reversal_rate:      Optional[float],
+) -> str:
+    """Return one of five pre-drift archetype tags.
+
+      pre_bullish_run  — consistent UP into earnings
+      pre_bearish_fade — consistent DOWN into earnings
+      pre_choppy       — moves but no consistent direction (or reversal-prone)
+      pre_quiet        — drift too small to play (< 1.5% avg magnitude)
+
+    Thresholds mirror classify_archetype()'s shape so the two pipelines
+    feel consistent — same magnitude floor (1.5%), same consistency
+    threshold (0.65), same directional-bias gate (±0.5%).
+    """
+    if drift_magnitude_pct is None or drift_magnitude_pct < 1.5:
+        return 'pre_quiet'
+    if pre_dir_consistency is None or pre_reversal_rate is None:
+        return 'pre_quiet'
+
+    # Strong reversal pattern → choppy (no directional bet)
+    if pre_reversal_rate >= 0.40 and pre_dir_consistency < 0.50:
+        return 'pre_choppy'
+
+    # Directional run with bias
+    if pre_dir_consistency >= 0.65 and directional_drift_pct is not None:
+        if directional_drift_pct > 0.5:
+            return 'pre_bullish_run'
+        if directional_drift_pct < -0.5:
+            return 'pre_bearish_fade'
+
+    return 'pre_choppy'
+
+
+def query_pre_drift_stats(
+    tickers: list[str],
+    lookback_quarters: Optional[int] = None,
+) -> dict:
+    """Fetch per-ticker pre-drift aggregates over the last N quarters.
+
+    Returns: {ticker: {n_q, drift_magnitude_pct, directional_drift_pct,
+                       pre_dir_consistency, pre_reversal_rate}}
+    Tickers missing pre-drift data (no D-5 close in window) are absent.
+    """
+    if lookback_quarters is None:
+        lookback_quarters = DEFAULT_LOOKBACK_QUARTERS
+    if not tickers:
+        return {}
+    try:
+        from gcp.database import query_to_dataframe, is_cloud_sql_configured
+    except ImportError:
+        return {}
+    if not is_cloud_sql_configured():
+        return {}
+
+    placeholders = ','.join(f"'{t}'" for t in tickers)
+    # NOTE: pre_dir_consistency here means "% of quarters drift was positive"
+    # — we treat the modal direction as bullish. classify_pre_drift_archetype
+    # then uses both consistency AND directional_drift_pct sign to decide
+    # bullish_run vs bearish_fade. This matches how dir_consistency works
+    # for post-earnings (sign agreement, not absolute direction).
+    sql = f"""
+        WITH ranked AS (
+            SELECT
+                ticker,
+                drift_5d_pct,
+                pre_drift_consistent_5d,
+                pre_drift_reverses_into_gap,
+                ROW_NUMBER() OVER (
+                    PARTITION BY ticker
+                    ORDER BY reported_date DESC
+                ) AS rn
+            FROM earnings_reactions
+            WHERE ticker IN ({placeholders})
+              AND drift_5d_pct IS NOT NULL
+        )
+        SELECT
+            ticker,
+            COUNT(*)                                            AS n_q,
+            AVG(ABS(drift_5d_pct))                              AS drift_magnitude_pct,
+            AVG(drift_5d_pct)                                   AS directional_drift_pct,
+            AVG(CASE WHEN pre_drift_consistent_5d THEN 1.0
+                     WHEN pre_drift_consistent_5d IS NULL THEN NULL
+                     ELSE 0.0 END)                              AS pre_dir_consistency,
+            AVG(CASE WHEN pre_drift_reverses_into_gap THEN 1.0
+                     WHEN pre_drift_reverses_into_gap IS NULL THEN NULL
+                     ELSE 0.0 END)                              AS pre_reversal_rate
+        FROM ranked
+        WHERE rn <= {int(lookback_quarters)}
+        GROUP BY ticker
+    """
+    try:
+        df = query_to_dataframe(sql)
+    except Exception:
+        return {}
+    if df.empty:
+        return {}
+    out = {}
+    for _, r in df.iterrows():
+        out[r['ticker']] = {
+            'n_q':                   int(r['n_q']),
+            'drift_magnitude_pct':   _to_float(r.get('drift_magnitude_pct')),
+            'directional_drift_pct': _to_float(r.get('directional_drift_pct')),
+            'pre_dir_consistency':   _to_float(r.get('pre_dir_consistency')),
+            'pre_reversal_rate':     _to_float(r.get('pre_reversal_rate')),
+        }
+    return out
+
+
+def enrich_with_pre_drift(
+    rows: list[dict],
+    lookback_quarters: Optional[int] = None,
+    daily_return_window: int = 60,
+) -> list[dict]:
+    """Attach pre_drift_* fields to each row. Mirror of
+    enrich_with_playability() — mutates in place AND returns.
+
+    Adds:
+      pre_drift_score, pre_drift_archetype, pre_drift_n_q,
+      pre_drift_magnitude_pct, pre_drift_directional_pct,
+      pre_dir_consistency, pre_reversal_rate
+
+    Rows where stats are missing get score=None, archetype='pre_quiet'.
+    """
+    if not rows:
+        return rows
+    if lookback_quarters is None:
+        lookback_quarters = DEFAULT_LOOKBACK_QUARTERS
+    tickers = sorted({str(r['ticker']) for r in rows if r.get('ticker')})
+    stats_map = query_pre_drift_stats(tickers, lookback_quarters)
+    daily_map = query_typical_daily_return(tickers, daily_return_window)
+
+    for r in rows:
+        ticker = str(r.get('ticker', ''))
+        stats = stats_map.get(ticker)
+        typical = daily_map.get(ticker)
+        opt_vol = r.get('options_volume')
+
+        if stats is None:
+            r['pre_drift_score'] = None
+            r['pre_drift_archetype'] = 'pre_quiet'
+            r['pre_drift_n_q'] = 0
+            continue
+
+        r['pre_drift_score'] = compute_pre_drift_score(
+            drift_magnitude_pct      = stats.get('drift_magnitude_pct'),
+            typical_daily_return_pct = typical,
+            pre_dir_consistency      = stats.get('pre_dir_consistency'),
+            pre_reversal_rate        = stats.get('pre_reversal_rate'),
+            options_volume           = opt_vol,
+        )
+        r['pre_drift_archetype'] = classify_pre_drift_archetype(
+            drift_magnitude_pct   = stats.get('drift_magnitude_pct'),
+            directional_drift_pct = stats.get('directional_drift_pct'),
+            pre_dir_consistency   = stats.get('pre_dir_consistency'),
+            pre_reversal_rate     = stats.get('pre_reversal_rate'),
+        )
+        r['pre_drift_n_q']              = stats.get('n_q', 0)
+        r['pre_drift_magnitude_pct']    = stats.get('drift_magnitude_pct')
+        r['pre_drift_directional_pct']  = stats.get('directional_drift_pct')
+        r['pre_dir_consistency']        = stats.get('pre_dir_consistency')
+        r['pre_reversal_rate']          = stats.get('pre_reversal_rate')
+    return rows
+
+
 # ────────────────────────────────────────────────────────────
 # Internal helpers
 # ────────────────────────────────────────────────────────────

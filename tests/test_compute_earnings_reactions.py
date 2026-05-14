@@ -197,6 +197,31 @@ class TestComputeReactionAMC:
         assert r['d_minus_1_close'] == 110.0
         assert abs(r['pre_earnings_drift_10d_pct'] - 9.4527) < 0.01
 
+    def test_amc_pre_drift_5d_and_3d(self):
+        """Added 2026-05-14 with the pre-earnings drift pipeline. Pins
+        the new D-5/D-3 close columns + drift_5d_pct / drift_3d_pct."""
+        df = self._build_bars()
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        # D = 2026-03-04 → D-5 = 2026-02-25 (close 105.0), D-3 = 2026-02-27 (close 107.0)
+        # D-1 close = 110.0
+        assert r['d_minus_5_close'] == 105.0
+        assert r['d_minus_3_close'] == 107.0
+        assert r['d_minus_2_close'] == 108.0
+        # drift_5d_pct = (110 - 105) / 105 ≈ 4.762
+        # drift_3d_pct = (110 - 107) / 107 ≈ 2.804
+        assert abs(r['drift_5d_pct'] - 4.7619) < 0.01
+        assert abs(r['drift_3d_pct'] - 2.8037) < 0.01
+
+    def test_amc_pre_drift_flags(self):
+        """The two derived booleans on the pre-drift row."""
+        df = self._build_bars()
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        # Both drift_5d (+4.76) and drift_3d (+2.80) are positive and
+        # drift_5d magnitude > 1% → consistent_5d True.
+        assert r['pre_drift_consistent_5d'] is True
+        # drift_5d > 0 AND reaction_gap > 0 → no reversal
+        assert r['pre_drift_reverses_into_gap'] is False
+
     def test_amc_max_run_and_drawdown(self):
         df = self._build_bars()
         r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')

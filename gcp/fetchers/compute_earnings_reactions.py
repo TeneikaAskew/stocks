@@ -110,7 +110,10 @@ def compute_reaction(
         return daily.iloc[idx] if 0 <= idx < len(daily) else None
 
     d_minus_10 = safe(d_idx - 10)
-    d_minus_1 = safe(d_idx - 1)
+    d_minus_5  = safe(d_idx - 5)
+    d_minus_3  = safe(d_idx - 3)
+    d_minus_2  = safe(d_idx - 2)
+    d_minus_1  = safe(d_idx - 1)
     d = safe(d_idx)
     d_plus_1 = safe(d_idx + 1)
     if any(x is None for x in (d_minus_1, d, d_plus_1)):
@@ -125,6 +128,31 @@ def compute_reaction(
             (float(d_minus_1['close']) - d_minus_10_close)
             / d_minus_10_close * 100
         )
+
+    # Finer-grained pre-earnings drift (added 2026-05-14). Each horizon
+    # is computed independently — a freshly-IPO'd ticker may have D-3 but
+    # not D-5, etc. Nulls are explicit; downstream consumers handle them.
+    d_minus_5_close = float(d_minus_5['close']) if d_minus_5 is not None else None
+    d_minus_3_close = float(d_minus_3['close']) if d_minus_3 is not None else None
+    d_minus_2_close = float(d_minus_2['close']) if d_minus_2 is not None else None
+    drift_5d_pct = (
+        (float(d_minus_1['close']) - d_minus_5_close) / d_minus_5_close * 100
+        if d_minus_5_close else None
+    )
+    drift_3d_pct = (
+        (float(d_minus_1['close']) - d_minus_3_close) / d_minus_3_close * 100
+        if d_minus_3_close else None
+    )
+    # Behavioral flag: consistent run-up/down across both horizons + non-trivial magnitude.
+    pre_drift_consistent_5d = None
+    if drift_5d_pct is not None and drift_3d_pct is not None:
+        pre_drift_consistent_5d = bool(
+            ((drift_5d_pct > 0 and drift_3d_pct > 0)
+             or (drift_5d_pct < 0 and drift_3d_pct < 0))
+            and abs(drift_5d_pct) >= 1.0
+        )
+    # pre_drift_reverses_into_gap is post-event (sign of drift_5d vs
+    # reaction_gap). Computed below after reaction_gap is known.
 
     # Raw gap math (always computed; raw inputs to reaction_gap)
     pre_report_gap = (
@@ -306,6 +334,15 @@ def compute_reaction(
         else None
     )
 
+    # Post-event flag: did the pre-earnings drift reverse on the gap?
+    # Useful as a contrarian signal in the backtest.
+    pre_drift_reverses_into_gap = None
+    if drift_5d_pct is not None and reaction_gap is not None:
+        pre_drift_reverses_into_gap = bool(
+            (drift_5d_pct > 0 and reaction_gap < 0)
+            or (drift_5d_pct < 0 and reaction_gap > 0)
+        )
+
     return {
         'ticker': eps_row['ticker'],
         'fiscal_date_ending': eps_row['fiscal_date_ending'],
@@ -315,8 +352,15 @@ def compute_reaction(
         'estimated_eps': eps_row.get('estimated_eps'),
         'surprise_pct': eps_row.get('surprise_pct'),
         'd_minus_10_close': d_minus_10_close,
+        'd_minus_5_close':  d_minus_5_close,
+        'd_minus_3_close':  d_minus_3_close,
+        'd_minus_2_close':  d_minus_2_close,
         'd_minus_1_close': float(d_minus_1['close']),
         'pre_earnings_drift_10d_pct': pre_drift_10d,
+        'drift_5d_pct': drift_5d_pct,
+        'drift_3d_pct': drift_3d_pct,
+        'pre_drift_consistent_5d': pre_drift_consistent_5d,
+        'pre_drift_reverses_into_gap': pre_drift_reverses_into_gap,
         'd_open': float(d['open']),
         'd_high': float(d['high']),
         'd_low': float(d['low']),

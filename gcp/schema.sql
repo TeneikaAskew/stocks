@@ -488,6 +488,19 @@ CREATE TABLE IF NOT EXISTS earnings_reactions (
     d_minus_1_close             DOUBLE PRECISION,
     pre_earnings_drift_10d_pct  DOUBLE PRECISION,    -- (D-1 close - D-10 close) / D-10 close × 100
 
+    -- Finer-grained pre-earnings horizons (added 2026-05-14 — symmetric
+    -- with sustain_3d/5d/10d post-earnings). Used by the pre-drift
+    -- pipeline to surface tickers that consistently run UP or fade DOWN
+    -- in the days leading into a print.
+    d_minus_5_close             DOUBLE PRECISION,
+    d_minus_3_close             DOUBLE PRECISION,
+    d_minus_2_close             DOUBLE PRECISION,
+    drift_3d_pct                DOUBLE PRECISION,    -- (D-1 close - D-3 close) / D-3 close × 100
+    drift_5d_pct                DOUBLE PRECISION,    -- (D-1 close - D-5 close) / D-5 close × 100
+    -- Behavioral flags (mirror direction_consistent_5d / is_reversal_5d).
+    pre_drift_consistent_5d     BOOLEAN,            -- sign(drift_5d_pct) == sign(drift_3d_pct) AND |drift_5d_pct| >= 1.0
+    pre_drift_reverses_into_gap BOOLEAN,            -- sign(drift_5d_pct) != sign(reaction_gap_pct) — known only post-event, useful for backtests
+
     -- Report day (D)
     d_open                      DOUBLE PRECISION,
     d_high                      DOUBLE PRECISION,
@@ -585,6 +598,20 @@ ALTER TABLE earnings_reactions
     ADD COLUMN IF NOT EXISTS min_low_5d_pct   DOUBLE PRECISION,    -- worst drawdown within 5 trading days
     ADD COLUMN IF NOT EXISTS max_high_10d_pct DOUBLE PRECISION,    -- best UP exit within 10 trading days
     ADD COLUMN IF NOT EXISTS min_low_10d_pct  DOUBLE PRECISION;    -- worst drawdown within 10 trading days
+
+
+-- Pre-earnings drift (D-5/D-3/D-2) — added 2026-05-14 to feed the
+-- pre-drift analysis pipeline (symmetric with post-earnings sustain_3d/
+-- 5d/10d). Live migration is idempotent; next compute-earnings-reactions
+-- run with --force --scope=full populates every historical row.
+ALTER TABLE earnings_reactions
+    ADD COLUMN IF NOT EXISTS d_minus_5_close             DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS d_minus_3_close             DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS d_minus_2_close             DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS drift_3d_pct                DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS drift_5d_pct                DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS pre_drift_consistent_5d     BOOLEAN,
+    ADD COLUMN IF NOT EXISTS pre_drift_reverses_into_gap BOOLEAN;
 
 
 -- ─────────────────────────────────────────────────────────
