@@ -449,3 +449,94 @@ def test_overall_status_unknown_when_no_rows():
 
     rep = FreshnessReport(checked_at="x", expected_market_close="y", rows=[])
     assert rep.overall_status == "unknown"
+
+
+# ── settle_hour_et: per-table fetcher-aware day cutoff ───────────────────────
+# Pre-fix bug: most_recent_trading_day() always returned today after 16 ET
+# (market close), but after-hours fetchers don't write today's row until
+# 21-23 ET. So between market close and fetcher run, the gap-scan flagged
+# today's row as missing → STALE → freshness watchdog fired hourly.
+# fetch-market-data Cloud Scheduler is at 23:00 ET; etf_options_snapshots
+# (PR #489) at 21:00 ET. The settle_hour_et knob lets each CHECK declare
+# when day-D's row is "expected" so the gap-scan doesn't false-flag.
+
+
+def test_settle_hour_default_is_market_close():
+    """Default settle_hour_et=16 preserves prior behavior."""
+    from scripts.audit_data_freshness import most_recent_trading_day
+
+    # Wed 2026-05-13 17:00 ET = 21:00 UTC. Past market close (16 ET) →
+    # today is most recent.
+    now = datetime(2026, 5, 13, 21, 0, 0)
+    assert most_recent_trading_day(now) == date(2026, 5, 13)
+
+
+def test_settle_hour_23_returns_yesterday_when_before_settle():
+    """For market_data_daily (settle_hour_et=23), Wed 17 ET should return
+    Tue (today's row not expected yet since fetcher hasn't run)."""
+    from scripts.audit_data_freshness import most_recent_trading_day
+
+    # Wed 2026-05-13 17:00 ET = 21:00 UTC — past 16 (market close) but
+    # before 23 (fetcher run). Should return Tue.
+    now = datetime(2026, 5, 13, 21, 0, 0)
+    assert most_recent_trading_day(now, settle_hour_et=23) == date(2026, 5, 12)
+
+
+def test_settle_hour_23_returns_today_when_past_settle():
+    """For market_data_daily, Wed 23:30 ET (= Thu 03:30 UTC) is past
+    settle, today's row expected, returns today."""
+    from scripts.audit_data_freshness import most_recent_trading_day
+
+    # Wed 2026-05-13 23:30 ET = Thu 2026-05-14 03:30 UTC
+    now = datetime(2026, 5, 14, 3, 30, 0)
+    assert most_recent_trading_day(now, settle_hour_et=23) == date(2026, 5, 13)
+
+
+def test_settle_hour_21_for_etf_options():
+    """etf_options_snapshots fetcher fires 21:00 ET. Wed 19 ET → yesterday;
+    Wed 22 ET → today."""
+    from scripts.audit_data_freshness import most_recent_trading_day
+
+    # Wed 19:00 ET = 23:00 UTC. Before settle 21 → yesterday.
+    pre = datetime(2026, 5, 13, 23, 0, 0)
+    assert most_recent_trading_day(pre, settle_hour_et=21) == date(2026, 5, 12)
+    # Wed 22:00 ET = Thu 02:00 UTC. After settle 21 → today.
+    post = datetime(2026, 5, 14, 2, 0, 0)
+    assert most_recent_trading_day(post, settle_hour_et=21) == date(2026, 5, 13)
+
+
+def test_recent_trading_days_uses_settle_hour():
+    """_recent_trading_days plumbs settle_hour_et through to
+    most_recent_trading_day so the gap scan rolls back when before settle."""
+    from scripts.audit_data_freshness import _recent_trading_days
+
+    # Wed 17 ET = 21 UTC. settle_hour_et=23 (market_data_daily) → end at Tue.
+    now = datetime(2026, 5, 13, 21, 0, 0)
+    days = _recent_trading_days(now, n=3, settle_hour_et=23)
+    # End should be Tue 5/12, going back: Tue, Mon, Fri
+    assert days == [date(2026, 5, 12), date(2026, 5, 11), date(2026, 5, 8)]
+
+
+def test_settle_hour_walks_past_weekend():
+    """Settle-hour rollback also respects weekend skip. Sat morning with
+    settle_hour_et=23 → previous Friday."""
+    from scripts.audit_data_freshness import most_recent_trading_day
+
+    # Sat 2026-05-16 10:00 UTC. Way past Friday's settle (23 ET Fri =
+    # Sat 03 UTC). settle_hour_et=23 → expected = Fri 5/15.
+    now = datetime(2026, 5, 16, 10, 0, 0)
+    assert most_recent_trading_day(now, settle_hour_et=23) == date(2026, 5, 15)
+
+
+def test_check_dicts_declare_settle_hour_for_after_hours_fetchers():
+    """Regression guard: the three after-hours fetchers must declare
+    settle_hour_et so the cron rollouts stay in sync with the watchdog."""
+    from scripts.audit_data_freshness import CHECKS
+
+    by_name = {c["name"]: c for c in CHECKS}
+    # market_data_daily — 23:00 ET cron
+    assert by_name["market_data_daily"]["settle_hour_et"] == 23
+    # etf_options_snapshots — 21:00 ET cron (PR #489 av-options-daily)
+    assert by_name["etf_options_snapshots"]["settle_hour_et"] == 21
+    # market_data_intraday — 21:00 ET cron (av-intraday-nightly)
+    assert by_name["market_data_intraday"]["settle_hour_et"] == 21

@@ -67,6 +67,10 @@ CHECKS: list[dict] = [
         "where": "close IS NOT NULL",
         "min_rows_per_day": 1,
         "gap_scan_days": 5,
+        # fetch-market-data-daily Cloud Scheduler fires 23:00 ET — give
+        # 30min buffer for AV pull + DB upsert. Today's row is "expected"
+        # starting 23:30 ET; before that the gap-scan rolls back to D-1.
+        "settle_hour_et": 23,
     },
     {
         "name": "market_data_intraday",
@@ -78,6 +82,9 @@ CHECKS: list[dict] = [
         "where": "interval = '1min'",
         "min_rows_per_day": 350,    # ~full RTH session at 1-min
         "gap_scan_days": 5,
+        # av-intraday-nightly fires 21:00 ET Tue-Sat. Today's bars
+        # land that night.
+        "settle_hour_et": 21,
     },
     {
         "name": "etf_options_snapshots",
@@ -89,6 +96,9 @@ CHECKS: list[dict] = [
         "where": "data_source = 'alphavantage'",
         "min_rows_per_day": 100,    # chain is typically 1k+, 100 is a conservative floor
         "gap_scan_days": 5,
+        # av-options-daily fires 21:00 ET Mon-Fri (PR #489) → today's
+        # chain expected by ~21:30 ET.
+        "settle_hour_et": 21,
     },
     # Skipped 2026-05-10: earnings_options_snapshots is an orphan table.
     # No live writer; only `gcp/migrate_to_gcp.py` (the one-time historical
@@ -162,16 +172,32 @@ MARKET_HOLIDAYS_2026 = {
 }
 
 
-def most_recent_trading_day(now_utc: datetime) -> date:
-    """Return the most recent date that the US market was open as of now.
+def most_recent_trading_day(now_utc: datetime, settle_hour_et: int = 16) -> date:
+    """Return the most recent date the US market was open AND data is settled.
 
-    Converts UTC to America/New_York to handle EDT/EST correctly (UTC-4 in
-    summer, UTC-5 in winter) before checking against the 4 PM close.
+    `settle_hour_et` is the ET hour after which day-D's row is expected to
+    exist in the table being audited. Defaults to 16 (4 PM ET = market
+    close) which preserves prior behavior for tables written during RTH
+    (signal_alerts, market_data_intraday). For after-hours fetchers the
+    caller passes a later hour:
+
+      market_data_daily — fetcher fires 23:00 ET → settle_hour_et=23
+      etf_options_snapshots — fetcher fires 21:00 ET → settle_hour_et=22
+
+    Without this knob, the watchdog flagged today as missing for ~7 hours
+    every weekday (between 16:00 ET market close and 23:00 ET fetcher run),
+    creating ~70 false-positive freshness issues on issue #449 over a
+    couple days. Each false stale matched the actual fetcher schedule —
+    they cleared once the fetcher wrote, then re-fired the next day.
+
+    Converts UTC to America/New_York to handle EDT/EST correctly (UTC-4
+    in summer, UTC-5 in winter) before checking against settle_hour_et.
     """
     et_now = now_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("America/New_York"))
     d = et_now.date()
-    # If we're still before market close (4 PM ET), yesterday is the most recent close
-    if et_now.time() < time(16, 0, 0):
+    # If we're still before settle_hour_et, today's data isn't expected
+    # yet — most recent settled day is yesterday.
+    if et_now.time() < time(settle_hour_et, 0, 0):
         d = d - timedelta(days=1)
     # Walk backward past weekends and holidays
     while d.weekday() >= 5 or d in MARKET_HOLIDAYS_2026:
@@ -349,9 +375,15 @@ def _query_freshness_one(
     )
 
 
-def _recent_trading_days(now_utc: datetime, n: int) -> list[date]:
-    """Return the last `n` trading days ending at `most_recent_trading_day(now)`."""
-    end = most_recent_trading_day(now_utc)
+def _recent_trading_days(now_utc: datetime, n: int, settle_hour_et: int = 16) -> list[date]:
+    """Return the last `n` trading days ending at the most recent SETTLED day.
+
+    `settle_hour_et` mirrors `most_recent_trading_day` — caller passes the
+    ET hour after which day-D's data is expected to exist. Tables written
+    after hours (market_data_daily, etf_options_snapshots) need a later
+    cutoff than RTH-written tables.
+    """
+    end = most_recent_trading_day(now_utc, settle_hour_et=settle_hour_et)
     days: list[date] = []
     d = end
     while len(days) < n:
@@ -372,7 +404,8 @@ def _query_gap_scan(check: dict, now_utc: datetime) -> list[FreshnessRow]:
     ts_col = check["ts_column"]
     ticker_col = check.get("ticker_column", "ticker")
     n = check["gap_scan_days"]
-    expected_days = _recent_trading_days(now_utc, n)
+    settle = check.get("settle_hour_et", 16)
+    expected_days = _recent_trading_days(now_utc, n, settle_hour_et=settle)
     tickers = check.get("tickers", TICKERS)
 
     date_expr = ts_col if check["ts_is_date"] else f"DATE({ts_col})"
@@ -485,19 +518,32 @@ def _query_value_sanity(now_utc: datetime) -> list[FreshnessRow]:
 
 
 def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
-    """Run all freshness checks and return a full report."""
+    """Run all freshness checks and return a full report.
+
+    Each CHECK can declare `settle_hour_et` — the ET hour after which
+    day-D's data is expected. Defaults to 16 (market close). Tables
+    written by after-hours fetchers (market_data_daily at 23 ET,
+    etf_options_snapshots at 21 ET) set higher values so the gap-scan
+    doesn't false-flag today's row as missing during the
+    market-close → fetcher-run window.
+    """
     now = now_utc or datetime.now(UTC).replace(tzinfo=None)
-    expected_date = most_recent_trading_day(now)
+    # The "global" expected_date is anchored at market close (16 ET) for
+    # the report header only — actual freshness checks use per-CHECK
+    # settle_hour_et below.
+    expected_date_for_header = most_recent_trading_day(now)
 
     report = FreshnessReport(
         checked_at=now.isoformat() + "Z",
-        expected_market_close=expected_date.isoformat(),
+        expected_market_close=expected_date_for_header.isoformat(),
     )
 
     for check in CHECKS:
+        check_settle = check.get("settle_hour_et", 16)
+        check_expected_date = most_recent_trading_day(now, settle_hour_et=check_settle)
         tickers_to_check = check.get("tickers", TICKERS) if check.get("per_ticker") else [None]
         for t in tickers_to_check:
-            row = _query_freshness_one(check, expected_date, ticker=t, now_utc=now)
+            row = _query_freshness_one(check, check_expected_date, ticker=t, now_utc=now)
             report.rows.append(row)
 
         # Gap scan: only reports failing (ticker, day) combinations
