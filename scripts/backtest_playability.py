@@ -309,6 +309,15 @@ def write_report(df: pd.DataFrame, output: Path, min_nq: int) -> None:
     output.write_text("".join(md_lines))
     log.info("Wrote %s (%d predictions, overall hit rate %.1f%%)",
              output, total, overall_hit_rate * 100)
+    # Also print to stdout so the report is captured in Cloud Logging
+    # when run via Cloud Run Job (container fs is ephemeral).
+    print("\n" + "=" * 70)
+    print("BEGIN_BACKTEST_REPORT")
+    print("=" * 70)
+    print("".join(md_lines))
+    print("=" * 70)
+    print("END_BACKTEST_REPORT")
+    print("=" * 70)
 
 
 def main():
