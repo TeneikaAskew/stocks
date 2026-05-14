@@ -143,16 +143,21 @@ def test_options_flow_ratios_and_top_oi(patch_query):
         "etf_options_snapshots",
         pd.DataFrame([
             {"option_type": "calls", "strike": 500, "volume": 10_000,
-             "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5},
+             "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5,
+             "snapshot_date": date(2026, 5, 12)},
             {"option_type": "calls", "strike": 505, "volume": 5_000,
-             "open_interest": 30_000, "implied_volatility": 0.20, "delta": 0.4},
+             "open_interest": 30_000, "implied_volatility": 0.20, "delta": 0.4,
+             "snapshot_date": date(2026, 5, 12)},
             {"option_type": "puts", "strike": 495, "volume": 8_000,
-             "open_interest": 40_000, "implied_volatility": 0.22, "delta": -0.45},
+             "open_interest": 40_000, "implied_volatility": 0.22, "delta": -0.45,
+             "snapshot_date": date(2026, 5, 12)},
             {"option_type": "puts", "strike": 490, "volume": 3_000,
-             "open_interest": 25_000, "implied_volatility": 0.24, "delta": -0.35},
+             "open_interest": 25_000, "implied_volatility": 0.24, "delta": -0.35,
+             "snapshot_date": date(2026, 5, 12)},
         ]),
     )
-    out = summarizers.summarize_options_flow("SPY")
+    # as_of=2026-05-13 (Wed) reading 2026-05-12 (Tue) chain = 1 trading day behind = fresh
+    out = summarizers.summarize_options_flow("SPY", as_of=date(2026, 5, 13))
     assert out["call_volume"] == 15_000
     assert out["put_volume"] == 11_000
     assert out["put_call_ratio"] == round(11_000 / 15_000, 3)
@@ -164,6 +169,42 @@ def test_options_flow_ratios_and_top_oi(patch_query):
 def test_options_flow_unavailable(patch_query):
     out = summarizers.summarize_options_flow("SPY")
     assert out["available"] is False
+
+
+def test_options_flow_stale_chain_returns_unavailable(patch_query):
+    """3+ trading days behind as_of → return _unavailable instead of serving."""
+    patch_query(
+        "etf_options_snapshots",
+        pd.DataFrame([
+            {"option_type": "calls", "strike": 500, "volume": 10_000,
+             "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5,
+             "snapshot_date": date(2026, 5, 8)},   # Friday
+        ]),
+    )
+    # Wed 5/13 brief reading Fri 5/8 chain = 3 trading days (Fri, Mon, Tue) behind = STALE
+    out = summarizers.summarize_options_flow("SPY", as_of=date(2026, 5, 13))
+    assert out["available"] is False
+    assert "chain stale" in out["reason"]
+    assert "3 trading days behind" in out["reason"]
+
+
+def test_options_flow_monday_morning_friday_chain_is_fresh(patch_query):
+    """Standard institutional convention: Mon brief reads Fri-EOD chain (1 trading day)."""
+    patch_query(
+        "etf_options_snapshots",
+        pd.DataFrame([
+            {"option_type": "calls", "strike": 100, "volume": 100,
+             "open_interest": 1000, "implied_volatility": 0.20, "delta": 0.5,
+             "snapshot_date": date(2026, 5, 8)},   # Friday
+            {"option_type": "puts", "strike": 100, "volume": 100,
+             "open_interest": 1000, "implied_volatility": 0.20, "delta": -0.5,
+             "snapshot_date": date(2026, 5, 8)},
+        ]),
+    )
+    # Mon 5/11 brief reading Fri 5/8 chain = 1 trading day = FRESH
+    out = summarizers.summarize_options_flow("SPY", as_of=date(2026, 5, 11))
+    assert out["available"] is not False  # served, not _unavailable
+    assert out["call_volume"] == 100
 
 
 # ---------------------------------------------------------------------------
@@ -428,21 +469,26 @@ def test_gamma_levels_extracts_kings_and_regime(patch_query):
             # Heavy puts at 95 → negative GEX below
             {"option_type": "puts",  "strike": 95.0, "expiration": date(2025, 11, 21),
              "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": -0.30,
-             "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13},
+             "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13,
+             "snapshot_date": date(2026, 5, 12)},
             # ATM call/put balanced
             {"option_type": "calls", "strike": 100.0, "expiration": date(2025, 11, 21),
              "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": 0.50,
-             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55},
+             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
+             "snapshot_date": date(2026, 5, 12)},
             {"option_type": "puts",  "strike": 100.0, "expiration": date(2025, 11, 21),
              "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": -0.50,
-             "bid": 1.45, "ask": 1.55, "mark": 1.50, "last_price": 1.50},
+             "bid": 1.45, "ask": 1.55, "mark": 1.50, "last_price": 1.50,
+             "snapshot_date": date(2026, 5, 12)},
             # Heavy calls at 105 → positive GEX above
             {"option_type": "calls", "strike": 105.0, "expiration": date(2025, 11, 21),
              "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": 0.30,
-             "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13},
+             "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13,
+             "snapshot_date": date(2026, 5, 12)},
         ]),
     )
-    out = summarizers.summarize_gamma_levels("XYZ")
+    # as_of=2026-05-13 (Wed) reading 2026-05-12 (Tue) chain = 1 trading day behind = fresh
+    out = summarizers.summarize_gamma_levels("XYZ", as_of=date(2026, 5, 13))
     assert out["available"] is True
     assert out["spot"] == pytest.approx(100.0, abs=0.5)
     # Spot via parity (mark prices balanced at 100)
@@ -464,16 +510,59 @@ def test_gamma_levels_unavailable_when_no_chain(patch_query):
     assert "no etf_options_snapshots" in out["reason"]
 
 
+def test_gamma_levels_stale_chain_returns_unavailable(patch_query):
+    """3+ trading days behind as_of → return _unavailable (Wed brief / Fri-EOD chain)."""
+    patch_query(
+        "etf_options_snapshots",
+        pd.DataFrame([
+            {"option_type": "calls", "strike": 100.0, "expiration": date(2026, 5, 30),
+             "open_interest": 1000, "gamma": 0.05, "vega": 0.10, "delta": 0.50,
+             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
+             "snapshot_date": date(2026, 5, 8)},   # Friday — 3 trading days behind Wed
+            {"option_type": "puts",  "strike": 100.0, "expiration": date(2026, 5, 30),
+             "open_interest": 1000, "gamma": 0.05, "vega": 0.10, "delta": -0.50,
+             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
+             "snapshot_date": date(2026, 5, 8)},
+        ]),
+    )
+    out = summarizers.summarize_gamma_levels("SPY", as_of=date(2026, 5, 13))
+    assert out["available"] is False
+    assert "chain stale" in out["reason"]
+    assert "3 trading days behind" in out["reason"]
+
+
+def test_chain_freshness_boundary_2_trading_days_is_fresh():
+    """Boundary: exactly 2 trading days behind = served (threshold is > 2)."""
+    # Mon → Wed = 2 trading days behind (Mon, Tue, Wed excluded as end)
+    reason = summarizers._check_chain_freshness(
+        chain_date=date(2026, 5, 11),   # Mon
+        target_date=date(2026, 5, 13),  # Wed
+    )
+    assert reason is None
+
+
+def test_chain_freshness_3_trading_days_is_stale():
+    """Boundary: 3 trading days behind = stale."""
+    reason = summarizers._check_chain_freshness(
+        chain_date=date(2026, 5, 11),   # Mon
+        target_date=date(2026, 5, 14),  # Thu (Mon, Tue, Wed = 3 trading days)
+    )
+    assert reason is not None
+    assert "3 trading days behind" in reason
+
+
 def test_build_context_bundle_includes_gamma(patch_query):
     patch_query(
         "etf_options_snapshots",
         pd.DataFrame([
             {"option_type": "calls", "strike": 100.0, "expiration": date(2025, 11, 21),
              "open_interest": 1000, "gamma": 0.05, "vega": 0.10, "delta": 0.50,
-             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55},
+             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
+             "snapshot_date": date(2026, 5, 12)},
             {"option_type": "puts",  "strike": 100.0, "expiration": date(2025, 11, 21),
              "open_interest": 1000, "gamma": 0.05, "vega": 0.10, "delta": -0.50,
-             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55},
+             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
+             "snapshot_date": date(2026, 5, 12)},
         ]),
     )
     bundle = summarizers.build_context_bundle("XYZ")
