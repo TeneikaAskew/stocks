@@ -285,8 +285,17 @@ def write_report(df: pd.DataFrame, output: Path, min_nq: int) -> None:
 
     md_lines.append("## Hit rate by archetype × score quintile\n\n")
     md_lines.append("Cell values are hit rates. NaN means no predictions in that bucket.\n\n")
-    md_lines.append(pivot.to_markdown(floatfmt='.1%'))
-    md_lines.append("\n\n")
+    # Render pivot table manually (avoids tabulate dep)
+    col_headers = ["archetype"] + [str(c) for c in pivot.columns]
+    md_lines.append("| " + " | ".join(col_headers) + " |\n")
+    md_lines.append("|" + "|".join(["---"] * len(col_headers)) + "|\n")
+    for archetype, row in pivot.iterrows():
+        cells = [archetype]
+        for col in pivot.columns:
+            v = row[col]
+            cells.append(f"{v:.1%}" if pd.notna(v) else "—")
+        md_lines.append("| " + " | ".join(cells) + " |\n")
+    md_lines.append("\n")
 
     md_lines.append("## Interpretation\n")
     md_lines.append("- **Archetype hit rate > 50%** for directional types (bullish/bearish) ")
