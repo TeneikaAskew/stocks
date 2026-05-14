@@ -77,7 +77,13 @@ def deep_backfill(ticker: str, api_key: str) -> int:
                 'open':   float(bar['1. open']),
                 'high':   float(bar['2. high']),
                 'low':    float(bar['3. low']),
-                'close':  float(bar['5. adjusted close']),
+                # Use UNADJUSTED close to match what fetch_market_data writes
+                # (line 171 of gcp/fetchers/fetch_market_data.py). AV's
+                # '5. adjusted close' is split+dividend adjusted but the
+                # OHL are NOT — mixing them produces phantom 50%+ moves
+                # on split days. Consistent unadjusted across all fields
+                # keeps relative same-day math sane.
+                'close':  float(bar['4. close']),
                 'volume': int(float(bar['6. volume'])),
             })
         except (KeyError, ValueError):
