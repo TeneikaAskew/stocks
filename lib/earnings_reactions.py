@@ -134,6 +134,32 @@ ARCHETYPE_ACTION_HINT = {
 }
 
 
+# Quintile boundaries calibrated against the 21,592-prediction backtest
+# (scripts/backtest_playability.py, 2026-05-14). Hit rates per quintile:
+#   Q1 (<15.7):     34.8%
+#   Q2 (15.7-21.2): 42.9%
+#   Q3 (21.2-28.2): 46.5%
+#   Q4 (28.2-41.9): 51.7%
+#   Q5 (>=41.9):    58.9%
+# Boundaries are midpoints between adjacent quintile-avg scores so a
+# score landing exactly at the average maps to that quintile.
+_QUINTILE_BOUNDARIES = (15.7, 21.2, 28.2, 41.9)
+
+
+def score_quintile(score: Optional[float]) -> Optional[str]:
+    """Return Q1-Q5 label for a playability_score, or None.
+
+    Q5 = top quintile (highest historical hit rate). Q1 = bottom.
+    See _QUINTILE_BOUNDARIES for thresholds and calibration source.
+    """
+    if score is None:
+        return None
+    for i, bound in enumerate(_QUINTILE_BOUNDARIES, start=1):
+        if score < bound:
+            return f'Q{i}'
+    return 'Q5'
+
+
 def action_hint_for_archetype(archetype: Optional[str]) -> str:
     """Return the plain-English action hint for an archetype tag.
     Defaults to 'skip' for None / unknown values."""

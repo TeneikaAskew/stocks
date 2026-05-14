@@ -2062,7 +2062,11 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         # just what's known:
         #   bullish_trend  → CALL  (high directional bias up)
         #   bearish_trend  → PUT   (high directional bias down)
-        #   reversal_play  → FADE  (pop-and-fade pattern)
+        #   reversal_play  → (no tag — backtest 2026-05-14 showed score
+        #                    inverts: Q5 hit rate 37.2% vs Q1 41.8%, so
+        #                    high-score reversal_play is ACTIVELY worse.
+        #                    Archetype still surfaces via the quintile
+        #                    tag below for context.)
         #   mixed          → STRDL (straddle — pure vol play)
         #   quiet          → (omit row entirely; filter drops it)
         # Sample-size tag (nQ) gates confidence: only nQ ≥ 12 names
@@ -2072,12 +2076,20 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         action_map = {
             'bullish_trend': 'CALL',
             'bearish_trend': 'PUT',
-            'reversal_play': 'FADE',
             'mixed':         'STRDL',
         }
         action = action_map.get(archetype)
         if action:
             extras.append(action)
+        # Quintile tag (Q1-Q5) — historical hit rate position for this
+        # score against the 21,592-prediction backtest. Q5 = top quintile
+        # (58.9% hit rate), Q1 = bottom (34.8%). Shown for all archetypes
+        # including reversal_play so the reader can see that a
+        # 'reversal_play Q5' is actually weaker than a 'reversal_play Q1'.
+        from lib.earnings_reactions import score_quintile
+        q = score_quintile(r.get('playability_score'))
+        if q:
+            extras.append(q)
         # Strategy + strike + EW verdict deliberately NOT rendered here
         # — those move to the dedicated 🔮 Whispers section at the
         # bottom of the embed. Mixing strategy recommendations with the
