@@ -1771,11 +1771,33 @@ deploy_schedulers() {
     # AV HISTORICAL_OPTIONS — 1st of each month at 5:00 UTC (1 AM ET).
     # The job spec uses --from-latest, so each invocation queries
     # MAX(snapshot_date) from etf_options_snapshots and backfills from
-    # there to today. On a healthy cadence this picks up ~22 trading
-    # days × 4 tickers ≈ 88 AV calls (~35 sec at 150 RPM) once a month.
-    # If the user wants daily freshness (rather than the once-a-month
-    # roll-up), change to "0 5 * * *" — same args work because
-    # --from-latest is self-resuming.
+    # there to today.
+    #
+    # Daily cron — 01:00 UTC (= 21:00 ET) Mon-Fri, after AV publishes
+    # EOD. Healthy steady-state: 4 tickers (SPY/IWM/QQQ/SPX) × 1 trading
+    # day ≈ ~10 AV calls (~5s at 150 RPM). Self-healing: if the cron
+    # is paused or the job fails for N days, the next successful run
+    # picks up everything since MAX(snapshot_date) automatically.
+    #
+    # This replaces the legacy
+    # .github/workflows/fetch-alphavantage-options-daily.yml — that GH
+    # workflow had two persistent issues: (1) requires GCS_BUCKET repo
+    # secret that was never set after the 2026-05-10 SA-key
+    # consolidation, so every scheduled run since then exited 1 at the
+    # secret-validation step; (2) GitHub auto-disables scheduled
+    # workflows after 60 days of inactivity, requiring manual
+    # re-enable in repo settings. The Cloud Run Job has GCS_BUCKET
+    # baked in via deploy_av_options_backfill() and never
+    # auto-disables.
+    #
+    # Monthly cron stays as a safety-net roll-up that catches up
+    # everything since the last write — useful if the daily cron is
+    # paused for maintenance or hits a multi-day outage. Healthy
+    # cadence makes the monthly run a near-no-op (~22 trading days
+    # × 4 tickers ≈ 88 AV calls). Both crons hit the same
+    # --from-latest job; ON CONFLICT DO UPDATE in the upsert path
+    # makes overlap idempotent.
+    _schedule "av-options-daily"    "0 1 * * 1-5"  "fetch-av-options-backfill"
     _schedule "av-options-monthly"  "0 5 1 * *"  "fetch-av-options-backfill"
     # Live options queries beyond the last refresh continue to flow
     # through the OptionsFlowPage AV-fallback path; the SQL table is
