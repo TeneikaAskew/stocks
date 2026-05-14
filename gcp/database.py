@@ -203,21 +203,30 @@ def upsert_dataframe(
             table, len(df.columns), chunksize, effective_chunksize,
         )
 
-    with engine.begin() as conn:
-        for i in range(0, len(records), effective_chunksize):
-            batch = records[i: i + effective_chunksize]
-            stmt = pg_insert(tbl).values(batch)
+    # Re-checkout the connection per chunk so pool_pre_ping fires each
+    # time. Pre-fix this function held one `engine.begin()` checkout
+    # across every chunk, which meant the TLS session that died mid-job
+    # was never re-validated — the next `conn.execute()` hit the dead
+    # pg8000 socket and surfaced SSL BAD_LENGTH. Codex P1 on PR #483
+    # called this out. Each chunk is now its own committed transaction;
+    # for idempotent upserts (ON CONFLICT DO UPDATE / DO NOTHING) this
+    # is actually preferable — partial progress is durable on crash.
+    # Cost: ~5 ms per checkout × N chunks.
+    for i in range(0, len(records), effective_chunksize):
+        batch = records[i: i + effective_chunksize]
+        stmt = pg_insert(tbl).values(batch)
 
-            if update_cols:
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=conflict_cols,
-                    set_={col: stmt.excluded[col] for col in update_cols},
-                )
-            else:
-                stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
+        if update_cols:
+            stmt = stmt.on_conflict_do_update(
+                index_elements=conflict_cols,
+                set_={col: stmt.excluded[col] for col in update_cols},
+            )
+        else:
+            stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
 
+        with engine.begin() as conn:
             conn.execute(stmt)
-            total += len(batch)
+        total += len(batch)
 
     logger.info("Upserted %d rows into %s", total, table)
     return total
@@ -273,17 +282,24 @@ def bulk_insert_dataframe(
         )
 
     # Commit after every batch rather than wrapping all rows in one giant
-    # transaction.  A single transaction for millions of rows creates excessive
-    # WAL pressure on Cloud SQL and may never commit within query-timeout limits.
-    with engine.connect() as conn:
-        for i in range(0, len(records), effective_chunksize):
-            batch = records[i: i + effective_chunksize]
-            # Use .values(batch) to emit ONE multi-row INSERT per chunk, not
-            # executemany (conn.execute(stmt, list)) which sends one INSERT per
-            # row and is extremely slow for millions of rows.
+    # transaction. A single transaction for millions of rows creates
+    # excessive WAL pressure on Cloud SQL and may never commit within
+    # query-timeout limits.
+    #
+    # Re-checkout the connection per chunk so pool_pre_ping fires each
+    # time. Pre-fix this function held one `engine.connect()` checkout
+    # across every chunk, which meant the TLS session that died mid-job
+    # was never re-validated — the next `conn.execute()` hit the dead
+    # pg8000 socket and surfaced SSL BAD_LENGTH (Codex P1 on PR #483).
+    # `engine.begin()` checkouts + auto-commits per chunk.
+    for i in range(0, len(records), effective_chunksize):
+        batch = records[i: i + effective_chunksize]
+        # Use .values(batch) to emit ONE multi-row INSERT per chunk, not
+        # executemany (conn.execute(stmt, list)) which sends one INSERT
+        # per row and is extremely slow for millions of rows.
+        with engine.begin() as conn:
             conn.execute(tbl.insert().values(batch))
-            conn.commit()
-            total += len(batch)
+        total += len(batch)
 
     logger.info("Bulk-inserted %d rows into %s", total, table)
     return total
