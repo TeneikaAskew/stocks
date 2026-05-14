@@ -69,3 +69,93 @@ def test_create_engine_retains_existing_pool_args():
     kw = {k.arg: k.value for k in call.keywords if k.arg is not None}
     for required in ("pool_recycle", "pool_size", "pool_timeout", "max_overflow"):
         assert required in kw, f"create_engine missing {required} kwarg"
+
+
+def _function_body_source(name: str) -> str:
+    """Return source code of the named function in gcp/database.py."""
+    import inspect
+    src = Path("gcp/database.py").read_text()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(src, node)
+    raise AssertionError(f"function {name!r} not found in gcp/database.py")
+
+
+def test_upsert_dataframe_checks_out_per_chunk():
+    """`upsert_dataframe` MUST re-checkout the connection inside the
+    chunk loop, not once at the top.
+
+    Codex P1 on PR #483 (2026-05-14) caught that `pool_pre_ping` only
+    fires at engine checkout, not on subsequent `conn.execute()` calls.
+    For long bulk loops the original `with engine.begin() as conn:` at
+    the top of the function defeated pre-ping for every chunk after
+    the first — the dead TLS socket got reused and BAD_LENGTH happened
+    anyway.
+
+    AST shape check: the `with engine.begin()` (or `engine.connect()`)
+    must appear INSIDE a `for` loop, not as a top-level wrapper.
+    """
+    src = _function_body_source("upsert_dataframe")
+    fn = ast.parse(src).body[0]
+    assert isinstance(fn, ast.FunctionDef)
+
+    def _is_engine_with(node):
+        if not isinstance(node, ast.With):
+            return False
+        for item in node.items:
+            ce = item.context_expr
+            if isinstance(ce, ast.Call) and isinstance(ce.func, ast.Attribute):
+                if ce.func.attr in ("begin", "connect"):
+                    return True
+        return False
+
+    # Find every `with engine.begin()/connect()` and every `for` loop;
+    # at least one engine-with must be NESTED inside a for loop.
+    nested_engine_with_in_for = False
+    for node in ast.walk(fn):
+        if isinstance(node, ast.For):
+            for inner in ast.walk(node):
+                if inner is node:
+                    continue
+                if _is_engine_with(inner):
+                    nested_engine_with_in_for = True
+                    break
+
+    assert nested_engine_with_in_for, (
+        "upsert_dataframe must re-checkout the SQLAlchemy connection per "
+        "chunk so pool_pre_ping fires on each chunk's checkout. See PR "
+        "#483 Codex P1 review — without per-chunk checkout, a stale TLS "
+        "session mid-bulk surfaces as 'ssl.SSLError: [SSL: BAD_LENGTH]'."
+    )
+
+
+def test_bulk_insert_dataframe_checks_out_per_chunk():
+    """Same per-chunk checkout requirement as upsert_dataframe."""
+    src = _function_body_source("bulk_insert_dataframe")
+    fn = ast.parse(src).body[0]
+
+    def _is_engine_with(node):
+        if not isinstance(node, ast.With):
+            return False
+        for item in node.items:
+            ce = item.context_expr
+            if isinstance(ce, ast.Call) and isinstance(ce.func, ast.Attribute):
+                if ce.func.attr in ("begin", "connect"):
+                    return True
+        return False
+
+    nested = False
+    for node in ast.walk(fn):
+        if isinstance(node, ast.For):
+            for inner in ast.walk(node):
+                if inner is node:
+                    continue
+                if _is_engine_with(inner):
+                    nested = True
+                    break
+
+    assert nested, (
+        "bulk_insert_dataframe must re-checkout the SQLAlchemy connection "
+        "per chunk (same reason as upsert_dataframe — Codex P1 / PR #483)."
+    )
