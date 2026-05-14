@@ -427,24 +427,50 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         # Don't fail the brief if the populator hasn't run yet — just log.
         logger.warning("playability enrichment skipped: %s", e)
 
-    # Confidence floor: only show tickers with ≥12 quarters (3 years) of
-    # earnings_reactions history. 1-2 quarter samples produce noisy
-    # archetype tags and dir_consistency rates (e.g. 100% from n=1
-    # carries zero predictive weight). Tightens the brief from ~20
-    # names/day → ~10-12 high-conviction names/day.
-    # Daily mode only — Sunday weekly preview keeps the broader set.
+    # Two-track split (added 2026-05-14):
+    #   Track A "earnings"   → nQ ≥ 12 AND not Q1-SKIP. Full archetype +
+    #                          confidence label rendered. Sorted by score.
+    #   Track B "watchlist"  → nQ < 12 AND high flow (OI ≥ 50k AND vol ≥ 5k).
+    #                          IPO-edge names like CRCL ($30B mcap, 768k OI)
+    #                          surface here instead of being silently dropped.
+    #                          No archetype/score — just flow stats + nQ.
+    # The two lists are mutually exclusive — a ticker is in exactly one.
+    # Daily mode only; weekly preview keeps the broader pre-split view.
+    watchlist: list[dict] = []
     if mode == 'daily' and os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '') != '1':
         min_nq = int(os.environ.get('BRIEF_MIN_REACTION_QUARTERS', '12'))
+        wl_min_oi  = int(os.environ.get('BRIEF_WATCHLIST_MIN_OI',  '50000'))
+        wl_min_vol = int(os.environ.get('BRIEF_WATCHLIST_MIN_VOL', '5000'))
+
         before_n = len(earnings)
-        earnings = [e for e in earnings if (e.get('playability_n_q') or 0) >= min_nq]
+        next_earnings = []
+        for e in earnings:
+            nq = e.get('playability_n_q') or 0
+            if nq >= min_nq:
+                next_earnings.append(e)
+            elif ((e.get('open_interest') or 0) >= wl_min_oi
+                  and (e.get('options_volume') or 0) >= wl_min_vol):
+                watchlist.append(e)
+        earnings = next_earnings
         logger.info(
-            "Reaction-confidence filter: %d → %d names (kept nQ ≥ %d)",
-            before_n, len(earnings), min_nq,
+            "Two-track split: %d → Track A=%d (nQ≥%d), Track B=%d (OI≥%d & vol≥%d)",
+            before_n, len(earnings), min_nq, len(watchlist), wl_min_oi, wl_min_vol,
         )
 
-    # Sort: playability_score DESC primary; OI/vol/mcap as fallback for
-    # tickers without history (typically newly-IPO'd or no last_1d_reactions
-    # populated yet). Tier + ticker break the final ties.
+        # Drop Q1 (SKIP) names from Track A — below-baseline conviction
+        # (34.8% hit rate per backtest) doesn't deserve a row in the brief.
+        try:
+            from lib.earnings_reactions import score_quintile
+            before_a = len(earnings)
+            earnings = [e for e in earnings
+                        if score_quintile(e.get('playability_score')) != 'Q1']
+            if before_a != len(earnings):
+                logger.info("Dropped %d Q1-SKIP names from Track A",
+                            before_a - len(earnings))
+        except Exception as exc:
+            logger.warning("Q1 filter skipped: %s", exc)
+
+    # Sort Track A: playability_score DESC primary; OI/vol/mcap fallback.
     earnings.sort(key=lambda r: (
         r['date'],
         -(r.get('playability_score') or 0),  # DESC: vol × consistency × log(vol)
@@ -455,12 +481,23 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         r['ticker'],                          # ASC: alphabetical
     ))
 
+    # Sort Track B: open_interest DESC (per user-locked policy 2026-05-14).
+    # Watchlist names have no score so OI is the natural priority signal.
+    watchlist.sort(key=lambda r: (
+        r['date'],
+        -(r.get('open_interest')     or 0),
+        -(r.get('options_volume')    or 0),
+        -(r.get('market_cap')        or 0),
+        r['ticker'],
+    ))
+
     # Cap at top_n AFTER the playability-driven sort so the cut keeps
     # the most-tradeable rows. ``top_n=0`` disables the cap (legacy).
     if top_n and top_n > 0:
         earnings = earnings[:top_n]
 
-    return {'mode': mode, 'start': start, 'end': end, 'earnings': earnings}
+    return {'mode': mode, 'start': start, 'end': end,
+            'earnings': earnings, 'watchlist': watchlist}
 
 
 # ── Yesterday-AMC reaction view (PR 3) ──────────────────────────────────────
@@ -2057,39 +2094,41 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         gap_str = _gap_str(r.get('gap_pct'))
         if gap_str:
             extras.append(gap_str)
-        # Playability archetype + sample size (added 2026-05-14).
-        # Compact action hint inline so the row says what to DO, not
-        # just what's known:
-        #   bullish_trend  → CALL  (high directional bias up)
-        #   bearish_trend  → PUT   (high directional bias down)
-        #   reversal_play  → (no tag — backtest 2026-05-14 showed score
-        #                    inverts: Q5 hit rate 37.2% vs Q1 41.8%, so
-        #                    high-score reversal_play is ACTIVELY worse.
-        #                    Archetype still surfaces via the quintile
-        #                    tag below for context.)
-        #   mixed          → STRDL (straddle — pure vol play)
-        #   quiet          → (omit row entirely; filter drops it)
-        # Sample-size tag (nQ) gates confidence: only nQ ≥ 12 names
-        # reach the embed (filtered upstream) so we omit the count from
-        # the inline tag to save chars.
+        # Playability archetype → action (revised 2026-05-14 post-backtest).
+        # Every row gets a tradeable action; confidence label below
+        # tells you how to size it.
+        #   bullish_trend  → CALL   (directional)
+        #   bearish_trend  → PUT    (directional)
+        #   mixed          → STRDL  (vol-only — no direction)
+        #   reversal_play  → STRDL  (anti-predictive direction per
+        #                            backtest — vol still happens,
+        #                            don't bet a side)
+        #   quiet          → (filtered upstream)
         archetype = r.get('playability_archetype')
         action_map = {
             'bullish_trend': 'CALL',
             'bearish_trend': 'PUT',
+            'reversal_play': 'STRDL',
             'mixed':         'STRDL',
         }
         action = action_map.get(archetype)
         if action:
             extras.append(action)
-        # Quintile tag (Q1-Q5) — historical hit rate position for this
-        # score against the 21,592-prediction backtest. Q5 = top quintile
-        # (58.9% hit rate), Q1 = bottom (34.8%). Shown for all archetypes
-        # including reversal_play so the reader can see that a
-        # 'reversal_play Q5' is actually weaker than a 'reversal_play Q1'.
-        from lib.earnings_reactions import score_quintile
-        q = score_quintile(r.get('playability_score'))
-        if q:
-            extras.append(q)
+        # Confidence label — tells the reader how much to size this trade.
+        # Replaces academic Q1-Q5 with plain English:
+        #   🔥 HIGH   (Q5, 58.9% hit) — size up
+        #   ✅ SOLID  (Q4, 51.7%)     — standard sizing
+        #   🟡 OK     (Q3, 46.5%)     — small position only
+        #   ❓ WEAK   (Q2, 42.9%)     — paper / watch
+        # Q1 (SKIP, 34.8% — below baseline) is filtered upstream so
+        # never rendered.
+        try:
+            from lib.earnings_reactions import confidence_label
+            conf = confidence_label(r.get('playability_score'))
+            if conf:
+                extras.append(conf)
+        except Exception:
+            pass
         # Strategy + strike + EW verdict deliberately NOT rendered here
         # — those move to the dedicated 🔮 Whispers section at the
         # bottom of the embed. Mixing strategy recommendations with the
@@ -2252,7 +2291,51 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         if amc:
             sections.append(amc)
 
-        # 4. Whispers — separated from the BMO/AMC rows so EW's strategy
+        # 4. High-Flow Watchlist (Track B) — IPO-edge names with huge
+        # institutional flow but < 12Q earnings history. No archetype/
+        # score (sample too small) — just flow stats + nQ. Sorted by
+        # OI DESC per user policy 2026-05-14.
+        watchlist = earnings_data.get('watchlist') or []
+        if watchlist:
+            def _compact(n):
+                """Format 768421 → '768k', 1_530_000 → '1.5M'."""
+                v = _valid_num(n)
+                if v is None or v <= 0:
+                    return None
+                if v >= 1_000_000_000:
+                    return f'{v/1_000_000_000:.1f}B'
+                if v >= 1_000_000:
+                    return f'{v/1_000_000:.1f}M'
+                if v >= 1_000:
+                    return f'{v/1_000:.0f}k'
+                return f'{v:.0f}'
+
+            w_lines = [
+                f'\n**\U0001f4ca High-Flow Watchlist** ({len(watchlist)})',
+                '_Huge flow but < 12Q history — no score/archetype. DYOR._'
+            ]
+            for r in watchlist:
+                parts = []
+                em = _valid_num(r.get('expected_move'))
+                if em is not None:
+                    parts.append(f'EM ${em:.2f}')
+                oi = _compact(r.get('open_interest'))
+                if oi:
+                    parts.append(f'OI {oi}')
+                vol = _compact(r.get('options_volume'))
+                if vol:
+                    parts.append(f'Vol {vol}')
+                mcap = _compact(r.get('market_cap'))
+                if mcap:
+                    parts.append(f'{mcap} mcap')
+                nq = r.get('playability_n_q') or 0
+                if nq:
+                    parts.append(f'nQ={nq}')
+                extra = f' — {" | ".join(parts)}' if parts else ''
+                w_lines.append(f"**{r['ticker']}**{extra}")
+            sections.append('\n'.join(w_lines))
+
+        # 5. Whispers — separated from the BMO/AMC rows so EW's strategy
         # picks (strike, structure, historical hit-rate) don't get read
         # as "today's actionable recommendation". An EW Long Call $16
         # might be a 3-day position around earnings, not a today-only

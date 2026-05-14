@@ -160,6 +160,31 @@ def score_quintile(score: Optional[float]) -> Optional[str]:
     return 'Q5'
 
 
+# Quintile → English confidence label used by the brief renderer.
+# Hit rates from backtest (2026-05-14):
+#   Q5 = 🔥 HIGH   (58.9%)  — size up
+#   Q4 = ✅ SOLID  (51.7%)  — standard sizing
+#   Q3 = 🟡 OK     (46.5%)  — small position only
+#   Q2 = ❓ WEAK   (42.9%)  — paper / watch
+#   Q1 = 🚫 SKIP   (34.8%)  — below baseline; brief drops these rows
+CONFIDENCE_LABELS = {
+    'Q5': '\U0001f525 HIGH',   # 🔥
+    'Q4': '✅ SOLID',      # ✅
+    'Q3': '\U0001f7e1 OK',     # 🟡
+    'Q2': '❓ WEAK',       # ❓
+    'Q1': '\U0001f6ab SKIP',   # 🚫
+}
+
+
+def confidence_label(score: Optional[float]) -> Optional[str]:
+    """Return the brief's English confidence tag (e.g. '🔥 HIGH') for a
+    playability_score, or None if the score isn't computable.
+    """
+    q = score_quintile(score)
+    return CONFIDENCE_LABELS.get(q) if q else None
+    return 'Q5'
+
+
 def action_hint_for_archetype(archetype: Optional[str]) -> str:
     """Return the plain-English action hint for an archetype tag.
     Defaults to 'skip' for None / unknown values."""
