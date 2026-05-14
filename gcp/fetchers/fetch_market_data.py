@@ -575,9 +575,18 @@ BACKFILL_LOOKBACK_DAYS = 365 * 10
 BACKFILL_DEPTH_THRESHOLD_BARS = 1500   # ~6y; below this needs full pull
 
 
-def _backfill_targets() -> list[tuple[str, int, object]]:
+def _backfill_targets() -> list:
     """Tickers in earnings_history that the brief would render, with
-    their current OHLCV state. Returns (ticker, bar_count, max_date)."""
+    their current OHLCV state. Returns (ticker, bar_count, max_date).
+
+    Default filter requires the ticker to be currently active in
+    earnings_calendar (options_volume > 0, stock_volume >= 500k).
+
+    Set ``BACKFILL_ALL_HISTORY=true`` to bypass that filter and target
+    EVERY ticker in earnings_history — used when backfilling for a
+    multi-quarter reactions recompute, where past reporters need OHLCV
+    even if they're not in the current options/stock-volume window.
+    """
     if not is_cloud_sql_configured():
         return []
     try:
@@ -585,30 +594,47 @@ def _backfill_targets() -> list[tuple[str, int, object]]:
     except ImportError:
         return []
 
-    sql = """
-        WITH eligible AS (
-            SELECT DISTINCT ticker FROM earnings_calendar
-             WHERE COALESCE(options_volume, 0) > 0
-               AND COALESCE(stock_volume,   0) >= 500000
-          UNION
-            SELECT ticker FROM watchlists
-             WHERE COALESCE(in_brief, false) OR COALESCE(in_insight, false)
-        ),
-        eh_eligible AS (
-            SELECT DISTINCT eh.ticker FROM earnings_history eh
-             WHERE eh.ticker IN (SELECT ticker FROM eligible)
-        )
-        SELECT eh.ticker,
-               COALESCE(mdd.n, 0)        AS bar_count,
-               mdd.max_date              AS max_date
-          FROM eh_eligible eh
-          LEFT JOIN (
-              SELECT ticker, COUNT(*) AS n, MAX(date) AS max_date
-                FROM market_data_daily
-               GROUP BY ticker
-          ) mdd ON mdd.ticker = eh.ticker
-         ORDER BY eh.ticker
-    """
+    backfill_all = os.environ.get('BACKFILL_ALL_HISTORY', '').strip().lower() == 'true'
+
+    if backfill_all:
+        # Skip the eligible filter — every earnings_history ticker counts.
+        sql = """
+            SELECT eh.ticker,
+                   COALESCE(mdd.n, 0)        AS bar_count,
+                   mdd.max_date              AS max_date
+              FROM (SELECT DISTINCT ticker FROM earnings_history) eh
+              LEFT JOIN (
+                  SELECT ticker, COUNT(*) AS n, MAX(date) AS max_date
+                    FROM market_data_daily
+                   GROUP BY ticker
+              ) mdd ON mdd.ticker = eh.ticker
+             ORDER BY eh.ticker
+        """
+    else:
+        sql = """
+            WITH eligible AS (
+                SELECT DISTINCT ticker FROM earnings_calendar
+                 WHERE COALESCE(options_volume, 0) > 0
+                   AND COALESCE(stock_volume,   0) >= 500000
+              UNION
+                SELECT ticker FROM watchlists
+                 WHERE COALESCE(in_brief, false) OR COALESCE(in_insight, false)
+            ),
+            eh_eligible AS (
+                SELECT DISTINCT eh.ticker FROM earnings_history eh
+                 WHERE eh.ticker IN (SELECT ticker FROM eligible)
+            )
+            SELECT eh.ticker,
+                   COALESCE(mdd.n, 0)        AS bar_count,
+                   mdd.max_date              AS max_date
+              FROM eh_eligible eh
+              LEFT JOIN (
+                  SELECT ticker, COUNT(*) AS n, MAX(date) AS max_date
+                    FROM market_data_daily
+                   GROUP BY ticker
+              ) mdd ON mdd.ticker = eh.ticker
+             ORDER BY eh.ticker
+        """
     df = query_to_dataframe(sql)
     if df.empty:
         return []

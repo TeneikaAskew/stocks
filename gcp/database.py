@@ -74,6 +74,15 @@ def get_engine():
             max_overflow=2,
             pool_timeout=30,
             pool_recycle=1800,
+            # pool_pre_ping issues a cheap SELECT 1 before handing out a
+            # pooled connection — catches stale/dropped connections
+            # (Cloud SQL TLS sessions can silently die mid-job during
+            # long backfills; observed 2026-05-14 at [675/1038] in
+            # fetch-market-data after ~2h 45m of continuous use).
+            # Stale connection → ping fails → SQLAlchemy invalidates
+            # and creates a fresh one. Net cost: one extra round-trip
+            # per checkout (~5 ms on Cloud SQL).
+            pool_pre_ping=True,
         )
         logger.info("Cloud SQL engine created: %s", _connection_name())
         return _engine

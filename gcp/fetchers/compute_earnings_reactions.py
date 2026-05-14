@@ -110,7 +110,10 @@ def compute_reaction(
         return daily.iloc[idx] if 0 <= idx < len(daily) else None
 
     d_minus_10 = safe(d_idx - 10)
-    d_minus_1 = safe(d_idx - 1)
+    d_minus_5  = safe(d_idx - 5)
+    d_minus_3  = safe(d_idx - 3)
+    d_minus_2  = safe(d_idx - 2)
+    d_minus_1  = safe(d_idx - 1)
     d = safe(d_idx)
     d_plus_1 = safe(d_idx + 1)
     if any(x is None for x in (d_minus_1, d, d_plus_1)):
@@ -125,6 +128,58 @@ def compute_reaction(
             (float(d_minus_1['close']) - d_minus_10_close)
             / d_minus_10_close * 100
         )
+
+    # Finer-grained pre-earnings drift (added 2026-05-14). Each horizon
+    # is computed independently — a freshly-IPO'd ticker may have D-3 but
+    # not D-5, etc. Nulls are explicit; downstream consumers handle them.
+    d_minus_5_close = float(d_minus_5['close']) if d_minus_5 is not None else None
+    d_minus_3_close = float(d_minus_3['close']) if d_minus_3 is not None else None
+    d_minus_2_close = float(d_minus_2['close']) if d_minus_2 is not None else None
+    drift_5d_pct = (
+        (float(d_minus_1['close']) - d_minus_5_close) / d_minus_5_close * 100
+        if d_minus_5_close else None
+    )
+    drift_3d_pct = (
+        (float(d_minus_1['close']) - d_minus_3_close) / d_minus_3_close * 100
+        if d_minus_3_close else None
+    )
+    # Behavioral flag: consistent run-up/down across both horizons + non-trivial magnitude.
+    pre_drift_consistent_5d = None
+    if drift_5d_pct is not None and drift_3d_pct is not None:
+        pre_drift_consistent_5d = bool(
+            ((drift_5d_pct > 0 and drift_3d_pct > 0)
+             or (drift_5d_pct < 0 and drift_3d_pct < 0))
+            and abs(drift_5d_pct) >= 1.0
+        )
+    # pre_drift_reverses_into_gap is post-event (sign of drift_5d vs
+    # reaction_gap). Computed below after reaction_gap is known.
+
+    # Intraday range over each pre-earnings window. Symmetric with post-
+    # earnings max_high_3d_pct / min_low_3d_pct etc. Anchor is the D-N close
+    # (start of window). Captures "ran and gave back" patterns that pure
+    # close-to-close drift misses — e.g. HIMS 2026-05-11 closed up only
+    # 3.67% over the prior week but its intraday high in that window was
+    # ~10% above D-5 close.
+    def pre_window_high_low(window_days: int, anchor_close):
+        if anchor_close is None or anchor_close <= 0:
+            return (None, None)
+        bars = []
+        for off in range(window_days, 0, -1):   # D-N .. D-1 inclusive
+            bar = safe(d_idx - off)
+            if bar is not None:
+                bars.append(bar)
+        if not bars:
+            return (None, None)
+        max_high = max(float(b['high']) for b in bars)
+        min_low  = min(float(b['low'])  for b in bars)
+        return (
+            (max_high - anchor_close) / anchor_close * 100,
+            (min_low  - anchor_close) / anchor_close * 100,
+        )
+
+    max_high_pre_3d_pct,  min_low_pre_3d_pct  = pre_window_high_low(3,  d_minus_3_close)
+    max_high_pre_5d_pct,  min_low_pre_5d_pct  = pre_window_high_low(5,  d_minus_5_close)
+    max_high_pre_10d_pct, min_low_pre_10d_pct = pre_window_high_low(10, d_minus_10_close)
 
     # Raw gap math (always computed; raw inputs to reaction_gap)
     pre_report_gap = (
@@ -373,6 +428,15 @@ def compute_reaction(
         else None
     )
 
+    # Post-event flag: did the pre-earnings drift reverse on the gap?
+    # Useful as a contrarian signal in the backtest.
+    pre_drift_reverses_into_gap = None
+    if drift_5d_pct is not None and reaction_gap is not None:
+        pre_drift_reverses_into_gap = bool(
+            (drift_5d_pct > 0 and reaction_gap < 0)
+            or (drift_5d_pct < 0 and reaction_gap > 0)
+        )
+
     return {
         'ticker': eps_row['ticker'],
         'fiscal_date_ending': eps_row['fiscal_date_ending'],
@@ -382,8 +446,22 @@ def compute_reaction(
         'estimated_eps': eps_row.get('estimated_eps'),
         'surprise_pct': eps_row.get('surprise_pct'),
         'd_minus_10_close': d_minus_10_close,
+        'd_minus_5_close':  d_minus_5_close,
+        'd_minus_3_close':  d_minus_3_close,
+        'd_minus_2_close':  d_minus_2_close,
         'd_minus_1_close': float(d_minus_1['close']),
         'pre_earnings_drift_10d_pct': pre_drift_10d,
+        'drift_5d_pct': drift_5d_pct,
+        'drift_3d_pct': drift_3d_pct,
+        'pre_drift_consistent_5d': pre_drift_consistent_5d,
+        'pre_drift_reverses_into_gap': pre_drift_reverses_into_gap,
+        # Intraday pre-window range (symmetric with post-earnings max_high_*d_pct / min_low_*d_pct)
+        'max_high_pre_3d_pct':  max_high_pre_3d_pct,
+        'min_low_pre_3d_pct':   min_low_pre_3d_pct,
+        'max_high_pre_5d_pct':  max_high_pre_5d_pct,
+        'min_low_pre_5d_pct':   min_low_pre_5d_pct,
+        'max_high_pre_10d_pct': max_high_pre_10d_pct,
+        'min_low_pre_10d_pct':  min_low_pre_10d_pct,
         'd_open': float(d['open']),
         'd_high': float(d['high']),
         'd_low': float(d['low']),
@@ -703,6 +781,74 @@ def _resolve_tickers(args) -> list[str]:
     return [str(t).upper() for t in df['ticker'].tolist()]
 
 
+def _tickers_reporting_in_window(window_days: int) -> set:
+    """Tickers in earnings_calendar with earnings_date in [today, today+window]."""
+    try:
+        # Anchor the window in America/New_York, NOT the DB session timezone.
+        # Cloud SQL Postgres is set to UTC (verified `SHOW timezone` returns
+        # 'UTC') and these jobs are scheduled at 7:30 PM ET. During EST
+        # (UTC-5, Nov–Mar) that's 00:30 UTC the NEXT day, so a bare
+        # CURRENT_DATE returns tomorrow's reporters and reactions for the
+        # tickers that just reported tonight get skipped. During EDT (UTC-4)
+        # 19:30 ET = 23:30 UTC, same calendar day, so the bug is dormant —
+        # but anchoring in ET removes the seasonal failure mode.
+        df = query_to_dataframe(
+            """
+            SELECT DISTINCT ticker
+            FROM earnings_calendar
+            WHERE earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date
+                AND (NOW() AT TIME ZONE 'America/New_York')::date + (:days || ' days')::interval
+            """,
+            {"days": int(window_days)},
+        )
+    except Exception as e:
+        log.warning("report-window lookup failed (%s)", e)
+        return set()
+    if df is None or df.empty:
+        return set()
+    return {str(t).upper() for t in df['ticker'].tolist()}
+
+
+def _resolve_scope(cli_scope=None) -> str:
+    """'weekly' on Sundays or when overridden; else 'daily'."""
+    if cli_scope in ('daily', 'weekly'):
+        return cli_scope
+    import os as _os
+    env = _os.environ.get('PIPELINE_SCOPE', '').strip().lower()
+    if env in ('daily', 'weekly'):
+        return env
+    from datetime import datetime as _dt
+    return 'weekly' if _dt.now().weekday() == 6 else 'daily'
+
+
+def _filter_already_have_reactions(
+    tickers, force_set=None,
+):
+    """Skip tickers with existing reactions UNLESS in force_set.
+
+    force_set: tickers reporting in the current run's window — always
+    re-compute these (their just-released quarter needs a new reaction
+    row).
+    """
+    if not tickers:
+        return tickers, 0
+    force_set = force_set or set()
+    try:
+        df = query_to_dataframe(
+            "SELECT DISTINCT ticker FROM earnings_reactions WHERE ticker = ANY(:t)",
+            {"t": tickers},
+        )
+    except Exception as e:
+        log.warning("earnings_reactions skip-check failed (%s) — computing all", e)
+        return tickers, 0
+    if df is None or df.empty:
+        return tickers, 0
+    already = {str(t).upper() for t in df['ticker'].tolist()}
+    remaining = [t for t in tickers if t not in already or t in force_set]
+    n_skipped = len(tickers) - len(remaining)
+    return remaining, n_skipped
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Populate earnings_reactions from earnings_history × market_data_daily"
@@ -711,6 +857,17 @@ def main():
                         help="Comma-separated tickers (overrides watchlist+calendar resolution).")
     parser.add_argument('--dry-run', action='store_true',
                         help="Print computed rows without writing.")
+    parser.add_argument('--force', action='store_true',
+                        help="Recompute even for tickers already in "
+                             "earnings_reactions. Default skips them "
+                             "(idempotent re-runs); use --force when a "
+                             "new quarter lands in earnings_history.")
+    parser.add_argument('--scope', choices=['daily', 'weekly'], default=None,
+                        help="Pipeline scope (overrides PIPELINE_SCOPE / "
+                             "day-of-week auto-detect). 'daily' force-"
+                             "recomputes tickers reporting today; "
+                             "'weekly' force-recomputes tickers reporting "
+                             "in the next 7 days.")
     args = parser.parse_args()
 
     tickers = _resolve_tickers(args)
@@ -718,7 +875,23 @@ def main():
         log.warning("No tickers to process — exiting")
         return
 
-    log.info("compute_earnings_reactions: %d tickers", len(tickers))
+    if not args.force:
+        scope = _resolve_scope(args.scope)
+        window_days = 7 if scope == 'weekly' else 0
+        force_set = _tickers_reporting_in_window(window_days)
+        tickers, n_skipped = _filter_already_have_reactions(tickers, force_set)
+        log.info(
+            "scope=%s report-window=[today, today+%dd] "
+            "force-recompute=%d tickers; skipped %d already-processed "
+            "outside window",
+            scope, window_days, len(force_set & set(tickers)), n_skipped,
+        )
+        if not tickers:
+            log.info("All resolved tickers already processed — exiting")
+            return
+
+    log.info("compute_earnings_reactions: %d tickers (after window-aware skip)",
+             len(tickers))
     n = populate_for_tickers(tickers, dry_run=args.dry_run)
     print(f"compute_earnings_reactions: {n} rows {'computed' if args.dry_run else 'upserted'}")
 

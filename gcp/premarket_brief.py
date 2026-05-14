@@ -372,50 +372,50 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     # so dropping every row because UW hasn't refreshed produces an
     # empty list (the user sees "no earnings this week" despite ~5000
     # rows in the table for the next 5 weekdays).
+    # Filter pipeline (refined 2026-05-11):
+    #   1. AV ∩ UW source confirmation — both AlphaVantage AND Unusual
+    #      Whales must list the (ticker, date). UW's curated daily list
+    #      is the gate (~25-37 names/day); AV cross-confirms the date.
+    #      EW is NOT a gate — it cuts out major institutional names
+    #      (SONY, TCOM, JBS) and high-OI small-caps that don't fit EW's
+    #      strategy templates but are still tradeable.
+    #   2. options_volume > 0 — must have some daily flow
+    #   3. open_interest > 1000 — drops tiny chains (real positions exist)
+    #   4. mcap: no floor — let OI gate the micro-caps
+    #
+    # The Sunday weekly view relaxes (1) and (2) since UW/AV options
+    # data is stale for next-week dates that haven't seen Friday's
+    # close yet — see PR #398.
+    # Filter is split into two layers:
+    #   (a) liquidity floor — options_volume > 0 AND open_interest > 1000
+    #       (always applied in daily mode; weak/illiquid chains have
+    #        nothing to trade regardless of source confirmation)
+    #   (b) source-confirmation gate — AV ∩ UW
+    #       (bypassable via BRIEF_INCLUDE_UNCONFIRMED=1 for debug,
+    #        tier-system tests, or legacy callers that want the
+    #        pre-gate view)
     if mode == 'daily':
-        earnings = [e for e in earnings if (e.get('options_volume') or 0) > 0]
+        earnings = [
+            e for e in earnings
+            if (e.get('options_volume') or 0) > 0
+            and (e.get('open_interest') or 0) > 1000
+        ]
+        if os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '') != '1':
+            earnings = [
+                e for e in earnings
+                if 'alphavantage' in (e.get('sources') or [])
+                and 'unusual_whales' in (e.get('sources') or [])
+            ]
 
-    # Confirmed-only filter: keep tier 1-3 only (multi-source confirmed +
-    # strategy picks). Tier 4-6 are single-source / AV-only / EW-alone —
-    # the long tail. Override via BRIEF_INCLUDE_UNCONFIRMED=1 if you ever
-    # want the legacy "everything" view back.
-    if os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '0') != '1':
-        earnings = [e for e in earnings if e.get('tier', 6) <= 3]
-
-    # Sort by tradeability first, tier as tiebreaker.
+    # Enrich BEFORE sorting so playability_score (move-magnitude ×
+    # direction-consistency × log(options_volume)) drives the top-N
+    # selection — not just after the cut. The intent is to surface
+    # tickers that genuinely have high volatility AND consistent
+    # post-earnings moves, which is exactly what the score captures
+    # from the last 12 quarters of last_1d_reactions.
     #
-    # Tier-only sorting put EW-confirmed-but-illiquid names (WELL, WM,
-    # MDLZ, NXPI, OKE — all options_volume=0) ahead of high-flow names
-    # like SBUX (20K options, $112B mcap) just because EW picked a
-    # strategy. From a trader's POV that's backwards: real options
-    # flow + institutional weight matters more than analyst confirmation.
-    #
-    # Composite score (options_volume + 1) × (market_cap_B + 1):
-    #   - Names with BOTH signals get multiplicative boost
-    #   - Names with zero options collapse toward linear market_cap
-    #     (well below names with real options flow)
-    #   - Tier still matters as a tiebreaker for similar-score names
-    def _rank_score(r):
-        ovol = r.get('options_volume') or 0
-        mcap = r.get('market_cap') or 0
-        return (ovol + 1) * (mcap / 1e9 + 1)
-
-    earnings.sort(key=lambda r: (
-        r['date'],
-        -_rank_score(r),     # tradeability primary (DESC)
-        r['tier'],           # tier breaks ties (1 before 6)
-        r['ticker'],
-    ))
-
-    # Cap at top_n AFTER the tier sort so the cut keeps the highest-quality
-    # rows. ``top_n=0`` disables the cap (legacy behaviour).
-    if top_n and top_n > 0:
-        earnings = earnings[:top_n]
-
-    # Enrich with the historical reaction profile + playability_score.
     # Each row gains:
-    #   - playability_score (vol-normalized, options-weighted; None when
-    #     no historical data available)
+    #   - playability_score (None when no historical data available)
     #   - playability_archetype ('bullish_trend' | 'bearish_trend' |
     #     'reversal_play' | 'mixed' | 'quiet')
     #   - playability_n_q + the underlying inputs for the embed to render
@@ -427,7 +427,176 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         # Don't fail the brief if the populator hasn't run yet — just log.
         logger.warning("playability enrichment skipped: %s", e)
 
-    return {'mode': mode, 'start': start, 'end': end, 'earnings': earnings}
+    # Two-track split (added 2026-05-14):
+    #   Track A "earnings"   → nQ ≥ 12 AND not Q1-SKIP. Full archetype +
+    #                          confidence label rendered. Sorted by score.
+    #   Track B "watchlist"  → nQ < 12 AND high flow (OI ≥ 50k AND vol ≥ 5k).
+    #                          IPO-edge names like CRCL ($30B mcap, 768k OI)
+    #                          surface here instead of being silently dropped.
+    #                          No archetype/score — just flow stats + nQ.
+    # The two lists are mutually exclusive — a ticker is in exactly one.
+    # Daily mode only; weekly preview keeps the broader pre-split view.
+    watchlist: list[dict] = []
+    if mode == 'daily' and os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '') != '1':
+        min_nq = int(os.environ.get('BRIEF_MIN_REACTION_QUARTERS', '12'))
+        wl_min_oi  = int(os.environ.get('BRIEF_WATCHLIST_MIN_OI',  '50000'))
+        wl_min_vol = int(os.environ.get('BRIEF_WATCHLIST_MIN_VOL', '5000'))
+
+        before_n = len(earnings)
+        next_earnings = []
+        for e in earnings:
+            nq = e.get('playability_n_q') or 0
+            if nq >= min_nq:
+                next_earnings.append(e)
+            elif ((e.get('open_interest') or 0) >= wl_min_oi
+                  and (e.get('options_volume') or 0) >= wl_min_vol):
+                watchlist.append(e)
+        earnings = next_earnings
+        logger.info(
+            "Two-track split: %d → Track A=%d (nQ≥%d), Track B=%d (OI≥%d & vol≥%d)",
+            before_n, len(earnings), min_nq, len(watchlist), wl_min_oi, wl_min_vol,
+        )
+
+        # Drop Q1 (SKIP) names from Track A — below-baseline conviction
+        # (34.8% hit rate per backtest) doesn't deserve a row in the brief.
+        try:
+            from lib.earnings_reactions import score_quintile
+            before_a = len(earnings)
+            earnings = [e for e in earnings
+                        if score_quintile(e.get('playability_score')) != 'Q1']
+            if before_a != len(earnings):
+                logger.info("Dropped %d Q1-SKIP names from Track A",
+                            before_a - len(earnings))
+        except Exception as exc:
+            logger.warning("Q1 filter skipped: %s", exc)
+
+    # Sort Track A: playability_score DESC primary; OI/vol/mcap fallback.
+    earnings.sort(key=lambda r: (
+        r['date'],
+        -(r.get('playability_score') or 0),  # DESC: vol × consistency × log(vol)
+        -(r.get('open_interest')     or 0),  # DESC: OI fallback
+        -(r.get('options_volume')    or 0),  # DESC: vol fallback
+        -(r.get('market_cap')        or 0),  # DESC: mcap fallback
+        r['tier'],                            # ASC: tier breaks ties
+        r['ticker'],                          # ASC: alphabetical
+    ))
+
+    # Sort Track B: open_interest DESC (per user-locked policy 2026-05-14).
+    # Watchlist names have no score so OI is the natural priority signal.
+    watchlist.sort(key=lambda r: (
+        r['date'],
+        -(r.get('open_interest')     or 0),
+        -(r.get('options_volume')    or 0),
+        -(r.get('market_cap')        or 0),
+        r['ticker'],
+    ))
+
+    # Cap at top_n AFTER the playability-driven sort so the cut keeps
+    # the most-tradeable rows. ``top_n=0`` disables the cap (legacy).
+    if top_n and top_n > 0:
+        earnings = earnings[:top_n]
+
+    return {'mode': mode, 'start': start, 'end': end,
+            'earnings': earnings, 'watchlist': watchlist}
+
+
+# ── Pre-earnings drift view (added 2026-05-14) ──────────────────────────────
+
+def load_pre_drift_for_brief(today: date, days_ahead: int = 7) -> dict:
+    """Tickers reporting in the next ``days_ahead`` calendar days with a
+    strong historical pre-earnings drift pattern (bullish run or bearish
+    fade into the print).
+
+    Symmetric with the post-earnings load_earnings_for_brief() but
+    forward-looking — surfaces names where the model says "this stock
+    typically runs into earnings, consider entering 3-5 days early".
+
+    Filters (mirror Track A gates):
+      - AV ∩ UW source confirmation
+      - options_volume > 0 AND open_interest > 1000
+      - pre_drift_archetype != 'pre_quiet'
+      - confidence_label != 🚫 SKIP (Q1)
+
+    Returns:
+      {'start': today+1, 'end': today+days_ahead,
+       'rows': [...sorted by pre_drift_score DESC...]}
+    """
+    try:
+        from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    except ImportError:
+        return {'start': today, 'end': today, 'rows': []}
+    if not is_cloud_sql_configured():
+        return {'start': today, 'end': today, 'rows': []}
+
+    start = today + timedelta(days=1)
+    end   = today + timedelta(days=days_ahead)
+
+    # Dedupe at SQL — one row per ticker carrying the *max* OI/vol/mcap
+    # across all source rows for the next-week window. AV ∩ UW gate is
+    # applied via the array_agg(data_source) post-filter.
+    sql = """
+        SELECT
+            ticker,
+            MIN(earnings_date)                                     AS earnings_date,
+            MAX(options_volume)                                    AS options_volume,
+            MAX(open_interest)                                     AS open_interest,
+            MAX(market_cap)                                        AS market_cap,
+            MAX(expected_move)                                     AS expected_move,
+            MAX(earnings_time)                                     AS earnings_time,
+            array_agg(DISTINCT data_source)                        AS sources
+        FROM earnings_calendar
+        WHERE earnings_date BETWEEN :start AND :end
+        GROUP BY ticker
+        HAVING COALESCE(MAX(open_interest), 0) > 1000
+           AND COALESCE(MAX(options_volume), 0) > 0
+           AND 'alphavantage'   = ANY(array_agg(DISTINCT data_source))
+           AND 'unusual_whales' = ANY(array_agg(DISTINCT data_source))
+    """
+    try:
+        df = query_to_dataframe(sql, {'start': start, 'end': end})
+    except Exception as exc:
+        logger.warning("load_pre_drift_for_brief: query failed (%s)", exc)
+        return {'start': start, 'end': end, 'rows': []}
+    if df.empty:
+        return {'start': start, 'end': end, 'rows': []}
+
+    rows = []
+    for _, r in df.iterrows():
+        rows.append({
+            'ticker':         r['ticker'],
+            'earnings_date':  r.get('earnings_date'),
+            'time':           r.get('earnings_time'),
+            'options_volume': r.get('options_volume'),
+            'open_interest':  r.get('open_interest'),
+            'market_cap':     r.get('market_cap'),
+            'expected_move':  r.get('expected_move'),
+            'sources':        list(r.get('sources') or []),
+        })
+
+    # Enrich with pre-drift stats (mutates in place)
+    try:
+        from lib.earnings_reactions import enrich_with_pre_drift, pre_drift_score_quintile
+        enrich_with_pre_drift(rows)
+    except Exception as exc:
+        logger.warning("pre_drift enrichment skipped: %s", exc)
+        return {'start': start, 'end': end, 'rows': []}
+
+    # Filter: drop quiet archetype + Q1 SKIP scores
+    rows = [
+        r for r in rows
+        if r.get('pre_drift_archetype') not in (None, 'pre_quiet')
+        and pre_drift_score_quintile(r.get('pre_drift_score')) != 'Q1'
+    ]
+
+    # Sort by score DESC
+    rows.sort(key=lambda r: (
+        -(r.get('pre_drift_score')  or 0),
+        -(r.get('open_interest')    or 0),
+        -(r.get('options_volume')   or 0),
+        -(r.get('market_cap')       or 0),
+        r['ticker'],
+    ))
+    return {'start': start, 'end': end, 'rows': rows}
 
 
 # ── Yesterday-AMC reaction view (PR 3) ──────────────────────────────────────
@@ -957,6 +1126,20 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     is_sunday = today.weekday() == 6
     brief_top_n = int(os.environ.get('BRIEF_MAX_EARNINGS', '25'))
     brief['earnings'] = load_earnings_for_brief(today, weekly=is_sunday, top_n=brief_top_n)
+
+    # Pre-earnings drift — daily mode only (Sunday weekly preview already
+    # covers the full week's reporters). Forward-looking: surfaces tickers
+    # reporting in the next ~5 trading days with strong historical drift
+    # patterns. Disable via BRIEF_PRE_DRIFT=0.
+    if not is_sunday and os.environ.get('BRIEF_PRE_DRIFT', '1') != '0':
+        try:
+            brief['pre_drift'] = load_pre_drift_for_brief(
+                today,
+                days_ahead=int(os.environ.get('BRIEF_PRE_DRIFT_DAYS_AHEAD', '7')),
+            )
+        except Exception as exc:
+            logger.warning("pre_drift load failed: %s", exc)
+            brief['pre_drift'] = {'rows': []}
 
     # Yesterday's AMC reporters with today's pre-market gap (PR 3).
     # Skipped on Sundays — the weekly view is forward-looking, no
@@ -2024,6 +2207,41 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         gap_str = _gap_str(r.get('gap_pct'))
         if gap_str:
             extras.append(gap_str)
+        # Playability archetype → action (revised 2026-05-14 post-backtest).
+        # Every row gets a tradeable action; confidence label below
+        # tells you how to size it.
+        #   bullish_trend  → CALL   (directional)
+        #   bearish_trend  → PUT    (directional)
+        #   mixed          → STRDL  (vol-only — no direction)
+        #   reversal_play  → STRDL  (anti-predictive direction per
+        #                            backtest — vol still happens,
+        #                            don't bet a side)
+        #   quiet          → (filtered upstream)
+        archetype = r.get('playability_archetype')
+        action_map = {
+            'bullish_trend': 'CALL',
+            'bearish_trend': 'PUT',
+            'reversal_play': 'STRDL',
+            'mixed':         'STRDL',
+        }
+        action = action_map.get(archetype)
+        if action:
+            extras.append(action)
+        # Confidence label — tells the reader how much to size this trade.
+        # Replaces academic Q1-Q5 with plain English:
+        #   🔥 HIGH   (Q5, 58.9% hit) — size up
+        #   ✅ SOLID  (Q4, 51.7%)     — standard sizing
+        #   🟡 OK     (Q3, 46.5%)     — small position only
+        #   ❓ WEAK   (Q2, 42.9%)     — paper / watch
+        # Q1 (SKIP, 34.8% — below baseline) is filtered upstream so
+        # never rendered.
+        try:
+            from lib.earnings_reactions import confidence_label
+            conf = confidence_label(r.get('playability_score'))
+            if conf:
+                extras.append(conf)
+        except Exception:
+            pass
         # Strategy + strike + EW verdict deliberately NOT rendered here
         # — those move to the dedicated 🔮 Whispers section at the
         # bottom of the embed. Mixing strategy recommendations with the
@@ -2186,7 +2404,51 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         if amc:
             sections.append(amc)
 
-        # 4. Whispers — separated from the BMO/AMC rows so EW's strategy
+        # 4. High-Flow Watchlist (Track B) — IPO-edge names with huge
+        # institutional flow but < 12Q earnings history. No archetype/
+        # score (sample too small) — just flow stats + nQ. Sorted by
+        # OI DESC per user policy 2026-05-14.
+        watchlist = earnings_data.get('watchlist') or []
+        if watchlist:
+            def _compact(n):
+                """Format 768421 → '768k', 1_530_000 → '1.5M'."""
+                v = _valid_num(n)
+                if v is None or v <= 0:
+                    return None
+                if v >= 1_000_000_000:
+                    return f'{v/1_000_000_000:.1f}B'
+                if v >= 1_000_000:
+                    return f'{v/1_000_000:.1f}M'
+                if v >= 1_000:
+                    return f'{v/1_000:.0f}k'
+                return f'{v:.0f}'
+
+            w_lines = [
+                f'\n**\U0001f4ca High-Flow Watchlist** ({len(watchlist)})',
+                '_Huge flow but < 12Q history — no score/archetype. DYOR._'
+            ]
+            for r in watchlist:
+                parts = []
+                em = _valid_num(r.get('expected_move'))
+                if em is not None:
+                    parts.append(f'EM ${em:.2f}')
+                oi = _compact(r.get('open_interest'))
+                if oi:
+                    parts.append(f'OI {oi}')
+                vol = _compact(r.get('options_volume'))
+                if vol:
+                    parts.append(f'Vol {vol}')
+                mcap = _compact(r.get('market_cap'))
+                if mcap:
+                    parts.append(f'{mcap} mcap')
+                nq = r.get('playability_n_q') or 0
+                if nq:
+                    parts.append(f'nQ={nq}')
+                extra = f' — {" | ".join(parts)}' if parts else ''
+                w_lines.append(f"**{r['ticker']}**{extra}")
+            sections.append('\n'.join(w_lines))
+
+        # 5. Whispers — separated from the BMO/AMC rows so EW's strategy
         # picks (strike, structure, historical hit-rate) don't get read
         # as "today's actionable recommendation". An EW Long Call $16
         # might be a 3-day position around earnings, not a today-only
@@ -2203,6 +2465,100 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         'title': title,
         'description': description[:4090],
         'color': 0xf39c12,
+    }
+
+
+def _build_pre_drift_embed(pre_drift_data: dict) -> dict:
+    """Pre-Earnings Runners — separate embed surfacing tickers reporting
+    in the next 5 trading days that historically run UP (pre_bullish_run)
+    or fade DOWN (pre_bearish_fade) into the print.
+
+    Renders symmetrically with _build_earnings_embed:
+      • Tier dot (🟢 AV+UW+EW, 🔵 AV+UW)
+      • Ticker — EM | ACTION (CALL/PUT into print) | 🔥/✅/🟡/❓ confidence
+      • Sorted by pre_drift_score DESC (loader already does this)
+
+    Returns an empty-description embed when there are no actionable rows
+    so the caller can skip appending it to the Discord message.
+    """
+    rows = pre_drift_data.get('rows') or []
+    start = pre_drift_data.get('start')
+    end   = pre_drift_data.get('end')
+
+    if start and end and hasattr(start, 'strftime'):
+        if start == end:
+            window = start.strftime('%a %m/%d')
+        else:
+            window = f"{start.strftime('%a %m/%d')} → {end.strftime('%a %m/%d')}"
+        title = f"🎯 Pre-Earnings Runners — {window} — {len(rows)}"
+    else:
+        title = f"🎯 Pre-Earnings Runners — {len(rows)}"
+
+    if not rows:
+        return {'title': title, 'description': '', 'color': 0x9b59b6}
+
+    try:
+        from lib.earnings_reactions import (
+            pre_drift_confidence_label,
+            pre_drift_action_for_archetype,
+        )
+    except Exception:
+        return {'title': title, 'description': '', 'color': 0x9b59b6}
+
+    lines = [
+        '_Names reporting this week with strong historical pre-earnings drift._',
+        '_Action = trade setup 3-5 days into the print. Confidence = sizing hint._',
+        '',
+    ]
+
+    # Per-row cap aligned with Track A's 10-name cap so the embed stays scannable.
+    PRE_DRIFT_CAP = int(os.environ.get('BRIEF_PRE_DRIFT_CAP', '10'))
+    kept = rows[:PRE_DRIFT_CAP]
+
+    for r in kept:
+        ticker  = r['ticker']
+        srcs    = set(r.get('sources') or [])
+        # Same dot semantics as the earnings embed.
+        if {'alphavantage', 'unusual_whales', 'earnings_whispers'} <= srcs:
+            dot = '\U0001f7e2 '       # green
+        elif {'alphavantage', 'unusual_whales'} <= srcs:
+            dot = '\U0001f535 '       # blue
+        else:
+            dot = ''
+
+        parts = []
+        em = r.get('expected_move')
+        try:
+            em_v = float(em) if em is not None else None
+        except (TypeError, ValueError):
+            em_v = None
+        if em_v is not None:
+            parts.append(f'EM ${em_v:.2f}')
+
+        # Show the day they report so the reader knows the entry window
+        # (e.g. "reports Wed").
+        ed = r.get('earnings_date')
+        if ed and hasattr(ed, 'strftime'):
+            parts.append(f"reports {ed.strftime('%a')}")
+
+        action = pre_drift_action_for_archetype(r.get('pre_drift_archetype'))
+        if action:
+            parts.append(action)
+
+        conf = pre_drift_confidence_label(r.get('pre_drift_score'))
+        if conf:
+            parts.append(conf)
+
+        extra = f' — {" | ".join(parts)}' if parts else ''
+        lines.append(f'{dot}**{ticker}**{extra}')
+
+    if len(rows) > PRE_DRIFT_CAP:
+        lines.append(f'_+{len(rows) - PRE_DRIFT_CAP} more_')
+
+    return {
+        'title': title,
+        'description': '\n'.join(lines)[:4090],
+        'color': 0x9b59b6,    # purple — visually distinct from earnings (gold) + calendar
     }
 
 
@@ -2392,6 +2748,11 @@ def format_discord_messages(brief: dict) -> list[dict]:
     msg2 = []
     if earnings.get('fields') or earnings.get('description'):
         msg2.append(earnings)
+    # Pre-earnings drift sits between earnings (today) and calendar so the
+    # reader scans: TODAY → THIS WEEK PRE-DRIFT → ECONOMIC CALENDAR.
+    pre_drift = _build_pre_drift_embed(brief.get('pre_drift', {}))
+    if pre_drift.get('description'):
+        msg2.append(pre_drift)
     if calendar.get('fields') or calendar.get('description'):
         msg2.append(calendar)
 
