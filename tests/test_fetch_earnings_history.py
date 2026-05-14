@@ -416,3 +416,48 @@ class TestFetchHistory:
         df = fetch_history_for_ticker("NVDA", "fake-key", enrich_with_yahoo=True)
         assert df.iloc[0]["report_time"] is None
         assert df.iloc[0]["yahoo_report_time"] == "post-market"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Regression guard for the 2026-05-14 timezone fix (Codex P2 review on #488).
+#
+# The window query MUST anchor in America/New_York, NOT use bare CURRENT_DATE.
+# Cloud SQL Postgres is set to UTC (verified) and the schedulers fire at
+# 7:15 PM ET. During EST (Nov–Mar, UTC-5) that's 00:15 UTC next day, so a
+# bare CURRENT_DATE returns tomorrow's reporters and the helper skips
+# tonight's just-reported tickers. The bug is dormant during EDT (UTC-4)
+# but anchoring in ET removes the seasonal failure mode.
+# ────────────────────────────────────────────────────────────────────────────
+
+class TestTickersReportingInWindowTimezone:
+    def test_query_uses_america_new_york_not_naked_current_date(self, monkeypatch):
+        """Capture the SQL passed to query_to_dataframe and assert it
+        anchors the window in ET, not in the DB session timezone."""
+        from gcp.fetchers import fetch_earnings_history as feh
+        import pandas as pd
+
+        captured = {}
+
+        def fake_qdf(sql, params=None):
+            captured['sql'] = sql
+            captured['params'] = params
+            return pd.DataFrame({'ticker': ['NVDA', 'AVGO']})
+
+        monkeypatch.setattr(
+            'gcp.database.query_to_dataframe', fake_qdf
+        )
+        out = feh._tickers_reporting_in_window(0)
+
+        assert out == {'NVDA', 'AVGO'}
+        sql = captured['sql']
+        # MUST contain explicit ET timezone cast
+        assert "AT TIME ZONE 'America/New_York'" in sql, (
+            "Window query must anchor in ET (Codex P2 #488). "
+            "During EST (Nov–Mar), 7:15 PM ET is 00:15 UTC next day, so a "
+            "bare CURRENT_DATE on UTC-set Cloud SQL Postgres returns "
+            "tomorrow's reporters and daily-scope skips today's."
+        )
+        # MUST NOT use a naked CURRENT_DATE that depends on session TZ
+        assert 'BETWEEN CURRENT_DATE' not in sql, (
+            "Naked CURRENT_DATE re-introduces the timezone bug (Codex P2 #488)."
+        )

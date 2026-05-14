@@ -672,12 +672,20 @@ def _resolve_tickers(args) -> list[str]:
 def _tickers_reporting_in_window(window_days: int) -> set:
     """Tickers in earnings_calendar with earnings_date in [today, today+window]."""
     try:
+        # Anchor the window in America/New_York, NOT the DB session timezone.
+        # Cloud SQL Postgres is set to UTC (verified `SHOW timezone` returns
+        # 'UTC') and these jobs are scheduled at 7:30 PM ET. During EST
+        # (UTC-5, Nov–Mar) that's 00:30 UTC the NEXT day, so a bare
+        # CURRENT_DATE returns tomorrow's reporters and reactions for the
+        # tickers that just reported tonight get skipped. During EDT (UTC-4)
+        # 19:30 ET = 23:30 UTC, same calendar day, so the bug is dormant —
+        # but anchoring in ET removes the seasonal failure mode.
         df = query_to_dataframe(
             """
             SELECT DISTINCT ticker
             FROM earnings_calendar
-            WHERE earnings_date BETWEEN CURRENT_DATE
-                AND CURRENT_DATE + (:days || ' days')::interval
+            WHERE earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date
+                AND (NOW() AT TIME ZONE 'America/New_York')::date + (:days || ' days')::interval
             """,
             {"days": int(window_days)},
         )

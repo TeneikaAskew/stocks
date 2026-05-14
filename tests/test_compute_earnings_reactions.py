@@ -944,3 +944,40 @@ class TestFetchDailyWindowsForTickerDates:
         if hasattr(params, 'get'):
             assert params['start'] == date(2025, 2, 1) - timedelta(days=20)
             assert params['end']   == date(2025, 10, 1) + timedelta(days=25)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Regression guard for the 2026-05-14 timezone fix (Codex P2 review on #488).
+# Same shape as the guard in tests/test_fetch_earnings_history.py.
+# ────────────────────────────────────────────────────────────────────────────
+
+class TestTickersReportingInWindowTimezone:
+    def test_query_uses_america_new_york_not_naked_current_date(self, monkeypatch):
+        """Window query must anchor in ET, not DB session timezone.
+        During EST (Nov–Mar) 7:30 PM ET = 00:30 UTC next day, so a bare
+        CURRENT_DATE returns tomorrow's reporters and skips just-released
+        reactions. Dormant during EDT but the ET anchor fixes both."""
+        from gcp.fetchers import compute_earnings_reactions as cer
+        import pandas as pd
+
+        captured = {}
+
+        def fake_qdf(sql, params=None):
+            captured['sql'] = sql
+            return pd.DataFrame({'ticker': ['NVDA']})
+
+        monkeypatch.setattr(cer, 'query_to_dataframe', fake_qdf)
+        out = cer._tickers_reporting_in_window(0)
+
+        assert out == {'NVDA'}
+        sql = captured['sql']
+        assert "AT TIME ZONE 'America/New_York'" in sql, (
+            "Window query must anchor in ET (Codex P2 #488). "
+            "During EST (Nov–Mar), 7:30 PM ET is 00:30 UTC next day, so a "
+            "bare CURRENT_DATE on UTC-set Cloud SQL Postgres returns "
+            "tomorrow's reporters and reactions for tonight's AMC names "
+            "get skipped."
+        )
+        assert 'BETWEEN CURRENT_DATE' not in sql, (
+            "Naked CURRENT_DATE re-introduces the timezone bug (Codex P2 #488)."
+        )
