@@ -427,6 +427,21 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         # Don't fail the brief if the populator hasn't run yet — just log.
         logger.warning("playability enrichment skipped: %s", e)
 
+    # Confidence floor: only show tickers with ≥12 quarters (3 years) of
+    # earnings_reactions history. 1-2 quarter samples produce noisy
+    # archetype tags and dir_consistency rates (e.g. 100% from n=1
+    # carries zero predictive weight). Tightens the brief from ~20
+    # names/day → ~10-12 high-conviction names/day.
+    # Daily mode only — Sunday weekly preview keeps the broader set.
+    if mode == 'daily' and os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '') != '1':
+        min_nq = int(os.environ.get('BRIEF_MIN_REACTION_QUARTERS', '12'))
+        before_n = len(earnings)
+        earnings = [e for e in earnings if (e.get('playability_n_q') or 0) >= min_nq]
+        logger.info(
+            "Reaction-confidence filter: %d → %d names (kept nQ ≥ %d)",
+            before_n, len(earnings), min_nq,
+        )
+
     # Sort: playability_score DESC primary; OI/vol/mcap as fallback for
     # tickers without history (typically newly-IPO'd or no last_1d_reactions
     # populated yet). Tier + ticker break the final ties.
@@ -2042,6 +2057,27 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         gap_str = _gap_str(r.get('gap_pct'))
         if gap_str:
             extras.append(gap_str)
+        # Playability archetype + sample size (added 2026-05-14).
+        # Compact action hint inline so the row says what to DO, not
+        # just what's known:
+        #   bullish_trend  → CALL  (high directional bias up)
+        #   bearish_trend  → PUT   (high directional bias down)
+        #   reversal_play  → FADE  (pop-and-fade pattern)
+        #   mixed          → STRDL (straddle — pure vol play)
+        #   quiet          → (omit row entirely; filter drops it)
+        # Sample-size tag (nQ) gates confidence: only nQ ≥ 12 names
+        # reach the embed (filtered upstream) so we omit the count from
+        # the inline tag to save chars.
+        archetype = r.get('playability_archetype')
+        action_map = {
+            'bullish_trend': 'CALL',
+            'bearish_trend': 'PUT',
+            'reversal_play': 'FADE',
+            'mixed':         'STRDL',
+        }
+        action = action_map.get(archetype)
+        if action:
+            extras.append(action)
         # Strategy + strike + EW verdict deliberately NOT rendered here
         # — those move to the dedicated 🔮 Whispers section at the
         # bottom of the embed. Mixing strategy recommendations with the
