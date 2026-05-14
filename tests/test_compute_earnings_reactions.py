@@ -197,6 +197,65 @@ class TestComputeReactionAMC:
         assert r['d_minus_1_close'] == 110.0
         assert abs(r['pre_earnings_drift_10d_pct'] - 9.4527) < 0.01
 
+    def test_amc_pre_drift_5d_and_3d(self):
+        """Added 2026-05-14 with the pre-earnings drift pipeline. Pins
+        the new D-5/D-3 close columns + drift_5d_pct / drift_3d_pct."""
+        df = self._build_bars()
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        # D = 2026-03-04 → D-5 = 2026-02-25 (close 105.0), D-3 = 2026-02-27 (close 107.0)
+        # D-1 close = 110.0
+        assert r['d_minus_5_close'] == 105.0
+        assert r['d_minus_3_close'] == 107.0
+        assert r['d_minus_2_close'] == 108.0
+        # drift_5d_pct = (110 - 105) / 105 ≈ 4.762
+        # drift_3d_pct = (110 - 107) / 107 ≈ 2.804
+        assert abs(r['drift_5d_pct'] - 4.7619) < 0.01
+        assert abs(r['drift_3d_pct'] - 2.8037) < 0.01
+
+    def test_amc_pre_drift_flags(self):
+        """The two derived booleans on the pre-drift row."""
+        df = self._build_bars()
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+        # Both drift_5d (+4.76) and drift_3d (+2.80) are positive and
+        # drift_5d magnitude > 1% → consistent_5d True.
+        assert r['pre_drift_consistent_5d'] is True
+        # drift_5d > 0 AND reaction_gap > 0 → no reversal
+        assert r['pre_drift_reverses_into_gap'] is False
+
+    def test_amc_pre_window_intraday_high_low(self):
+        """Added 2026-05-14. Intraday max_high / min_low over each pre-window,
+        anchored at the D-N close (symmetric with post-earnings max_high_*d_pct
+        and min_low_*d_pct). Captures 'ran and gave back' patterns that pure
+        close-to-close drift misses."""
+        df = self._build_bars()
+        r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
+
+        # 5d pre-window (D-5=2/25 .. D-1=3/3):
+        #   bars: 2/25 (high 106, low 103.5), 2/26 (107, 104.5),
+        #         2/27 (108, 105.5), 3/2 (109, 106.5), 3/3 (110.5, 107.5)
+        #   max(high) = 110.5, min(low) = 103.5
+        #   anchor = D-5 close = 105
+        #   max_high_pre_5d_pct = (110.5 - 105) / 105 * 100 ≈ 5.238
+        #   min_low_pre_5d_pct  = (103.5 - 105) / 105 * 100 ≈ -1.429
+        assert abs(r['max_high_pre_5d_pct'] - 5.2381) < 0.01
+        assert abs(r['min_low_pre_5d_pct']  - (-1.4286)) < 0.01
+
+        # 3d pre-window (D-3=2/27 .. D-1=3/3): highs [108,109,110.5], lows [105.5,106.5,107.5]
+        #   anchor = D-3 close = 107
+        #   max_high_pre_3d_pct = (110.5 - 107) / 107 * 100 ≈ 3.271
+        #   min_low_pre_3d_pct  = (105.5 - 107) / 107 * 100 ≈ -1.402
+        assert abs(r['max_high_pre_3d_pct'] - 3.2710) < 0.01
+        assert abs(r['min_low_pre_3d_pct']  - (-1.4019)) < 0.01
+
+        # 10d pre-window (D-10=2/18 .. D-1=3/3):
+        #   max(high) across 10 bars = 110.5 (3/3)
+        #   min(low) across 10 bars = 99.5 (2/18)
+        #   anchor = D-10 close = 100.5
+        #   max_high_pre_10d_pct = (110.5 - 100.5) / 100.5 * 100 ≈ 9.950
+        #   min_low_pre_10d_pct  = (99.5  - 100.5) / 100.5 * 100 ≈ -0.995
+        assert abs(r['max_high_pre_10d_pct'] - 9.9502) < 0.01
+        assert abs(r['min_low_pre_10d_pct']  - (-0.9950)) < 0.01
+
     def test_amc_max_run_and_drawdown(self):
         df = self._build_bars()
         r = compute_reaction(_eps(date(2026, 3, 4)), df, 'AMC')
@@ -962,3 +1021,40 @@ class TestFetchDailyWindowsForTickerDates:
         if hasattr(params, 'get'):
             assert params['start'] == date(2025, 2, 1) - timedelta(days=90)
             assert params['end']   == date(2025, 10, 1) + timedelta(days=25)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Regression guard for the 2026-05-14 timezone fix (Codex P2 review on #488).
+# Same shape as the guard in tests/test_fetch_earnings_history.py.
+# ────────────────────────────────────────────────────────────────────────────
+
+class TestTickersReportingInWindowTimezone:
+    def test_query_uses_america_new_york_not_naked_current_date(self, monkeypatch):
+        """Window query must anchor in ET, not DB session timezone.
+        During EST (Nov–Mar) 7:30 PM ET = 00:30 UTC next day, so a bare
+        CURRENT_DATE returns tomorrow's reporters and skips just-released
+        reactions. Dormant during EDT but the ET anchor fixes both."""
+        from gcp.fetchers import compute_earnings_reactions as cer
+        import pandas as pd
+
+        captured = {}
+
+        def fake_qdf(sql, params=None):
+            captured['sql'] = sql
+            return pd.DataFrame({'ticker': ['NVDA']})
+
+        monkeypatch.setattr(cer, 'query_to_dataframe', fake_qdf)
+        out = cer._tickers_reporting_in_window(0)
+
+        assert out == {'NVDA'}
+        sql = captured['sql']
+        assert "AT TIME ZONE 'America/New_York'" in sql, (
+            "Window query must anchor in ET (Codex P2 #488). "
+            "During EST (Nov–Mar), 7:30 PM ET is 00:30 UTC next day, so a "
+            "bare CURRENT_DATE on UTC-set Cloud SQL Postgres returns "
+            "tomorrow's reporters and reactions for tonight's AMC names "
+            "get skipped."
+        )
+        assert 'BETWEEN CURRENT_DATE' not in sql, (
+            "Naked CURRENT_DATE re-introduces the timezone bug (Codex P2 #488)."
+        )

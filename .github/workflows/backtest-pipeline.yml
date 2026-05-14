@@ -56,6 +56,15 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
+    env:
+      # Cloud SQL credentials so lib/data_loader.py:DataLoader uses
+      # market_data_daily / market_data_intraday (priority 0) instead
+      # of falling through to local CSVs in data/{ticker}/ which
+      # don't exist in a fresh CI runner.
+      CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASS: ${{ secrets.DB_PASS }}
+      DB_NAME: ${{ secrets.DB_NAME }}
     steps:
       - uses: actions/checkout@v4
 
@@ -66,6 +75,27 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Authenticate to GCP
+        # Required for the Cloud SQL Python Connector — uses ADC.
+        env:
+          SA_KEY: ${{ secrets.CLAUDE_CODE_WEB_GCP_SA_KEY }}
+        run: |
+          if [ -z "$SA_KEY" ]; then
+            echo "::error::CLAUDE_CODE_WEB_GCP_SA_KEY secret is not set"
+            exit 1
+          fi
+          echo "$SA_KEY" > "$RUNNER_TEMP/sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/sa.json" >> "$GITHUB_ENV"
+
+      - name: Verify Cloud SQL config
+        run: |
+          for var in CLOUD_SQL_CONNECTION_NAME DB_USER DB_PASS DB_NAME; do
+            if [ -z "${!var}" ]; then
+              echo "::error::$var secret is not set"
+              exit 1
+            fi
+          done
 
       - name: Determine tickers
         id: tickers

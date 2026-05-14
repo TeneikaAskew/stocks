@@ -126,6 +126,12 @@ def _article_to_rows(article: dict) -> list[dict]:
         tk = (ts.get("ticker") or "").upper().strip()
         if not tk:
             continue
+        # AV emits non-equity identifiers like CRYPTO:BTC / FOREX:USD in
+        # ticker_sentiment. Drop them — downstream consumers only join on
+        # equity tickers, and the colon-prefixed forms blow the
+        # VARCHAR(10) ticker column (e.g. CRYPTO:DOGE = 11 chars).
+        if ":" in tk or len(tk) > 10:
+            continue
         rows.append(
             {
                 "ticker": tk,

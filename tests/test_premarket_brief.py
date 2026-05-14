@@ -1849,8 +1849,13 @@ class TestConfirmedOnlyFilter:
     Override to '1' brings them back."""
 
     def test_default_drops_tier_5_uw_only(self, monkeypatch, mock_cloud_sql):
-        # Override the autouse fixture to test default (filter ON) behavior
+        # Override the autouse fixture to test default (filter ON) behavior.
+        # Also disable the nQ-confidence filter (added 2026-05-14): this test
+        # exists to verify the AV ∩ UW source gate, not the reaction-history
+        # depth gate. The mocked DB returns no reaction stats so every row
+        # would otherwise have nQ=0 and get dropped.
         monkeypatch.delenv('BRIEF_INCLUDE_UNCONFIRMED', raising=False)
+        monkeypatch.setenv('BRIEF_MIN_REACTION_QUARTERS', '0')
         install, _ = mock_cloud_sql
         install(pd.DataFrame([
             _row('AAA', 'alphavantage', options_volume=10_000),
