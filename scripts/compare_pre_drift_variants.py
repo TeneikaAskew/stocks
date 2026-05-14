@@ -113,32 +113,46 @@ def add_variant_b_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     log.info("Computing Variant B days_since_* for %d reaction rows…", len(df))
     rows_b = []
-    skipped = 0
+    skipped_5d = 0
+    skipped_10d_only = 0
     for i, (_, r) in enumerate(df.iterrows(), 1):
         bars = fetch_bars_for_window(r['ticker'], r['reported_date'])
-        if bars.empty or len(bars) < 5:
-            rows_b.append(dict.fromkeys([
-                'days_since_max_high_5d', 'days_since_min_low_5d',
-                'days_since_max_high_10d', 'days_since_min_low_10d',
-            ]))
-            skipped += 1
-            continue
-        # bars is ascending by date — D-11..D-1. Reverse to D-1..D-N.
-        bars_desc = bars.iloc[::-1].reset_index(drop=True)
-        # 5d window = first 5 rows (D-1..D-5)
-        win5 = bars_desc.head(5)
-        # 10d window = first 10 rows (D-1..D-10)
-        win10 = bars_desc.head(10)
-        rows_b.append({
-            'days_since_max_high_5d':  int(win5['high'].astype(float).idxmax()),
-            'days_since_min_low_5d':   int(win5['low'].astype(float).idxmin()),
-            'days_since_max_high_10d': int(win10['high'].astype(float).idxmax()),
-            'days_since_min_low_10d':  int(win10['low'].astype(float).idxmin()),
-        })
+        bars_desc = (
+            bars.iloc[::-1].reset_index(drop=True)
+            if not bars.empty else bars
+        )
+        n = len(bars_desc)
+        row: dict = {
+            'days_since_max_high_5d':  None,
+            'days_since_min_low_5d':   None,
+            'days_since_max_high_10d': None,
+            'days_since_min_low_10d':  None,
+        }
+        # 5d window — requires at least 5 bars
+        if n >= 5:
+            win5 = bars_desc.head(5)
+            row['days_since_max_high_5d'] = int(win5['high'].astype(float).idxmax())
+            row['days_since_min_low_5d']  = int(win5['low'].astype(float).idxmin())
+        else:
+            skipped_5d += 1
+        # 10d window — requires at least 10 bars. Without this guard a row
+        # with 5-9 bars would emit a "10d" feature computed over a 5-9 day
+        # window, biasing the aggregate (Codex P2 #492). Null instead so
+        # Variant B's 10d columns drop these rows the same way Variant A
+        # does (max_high_pre_10d_pct IS NULL when D-10 is out of range).
+        if n >= 10:
+            win10 = bars_desc.head(10)
+            row['days_since_max_high_10d'] = int(win10['high'].astype(float).idxmax())
+            row['days_since_min_low_10d']  = int(win10['low'].astype(float).idxmin())
+        elif n >= 5:
+            skipped_10d_only += 1
+        rows_b.append(row)
         if i % 500 == 0:
             log.info("  …processed %d/%d rows", i, len(df))
 
-    log.info("  …done. skipped=%d (insufficient bars)", skipped)
+    log.info("  …done. skipped_5d=%d (insufficient bars); "
+             "skipped_10d_only=%d (5-9 bars — 10d nulled per Codex #492)",
+             skipped_5d, skipped_10d_only)
     return pd.concat([df.reset_index(drop=True),
                       pd.DataFrame(rows_b)], axis=1)
 
