@@ -1606,7 +1606,38 @@ AND logName:"run.googleapis.com"'
         --member="${sink_writer}" \
         --role="roles/pubsub.publisher" --quiet
 
+    # 7) Grant the notifier SA roles/run.viewer so reconcile_closures can
+    # list Cloud Run Job executions and detect "job has recovered → close
+    # the issue". Project-level binding is fine — read-only access to
+    # jobs/executions across the whole project.
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="roles/run.viewer" \
+        --condition=None --quiet >/dev/null 2>&1 \
+        || echo "  run.viewer binding: already exists"
+
+    # 8) Hourly reconciler — POST /reconcile so close_on_success drains
+    # any stale gcp-job-failure issues whose underlying job has since
+    # succeeded. Cron at the top of every hour. The endpoint is
+    # idempotent and cheap (~1 Cloud Run REST call per unique job_name
+    # in open-issues × 1 GitHub API call per closed issue).
+    gcloud scheduler jobs create http "reconcile-failure-notifier-hourly" \
+        --location "${REGION}" \
+        --schedule "0 * * * *" \
+        --time-zone "America/New_York" \
+        --uri "${service_url}/reconcile" \
+        --http-method POST \
+        --oidc-service-account-email "${SA_EMAIL}" \
+        --oidc-token-audience "${service_url}" \
+        --quiet 2>/dev/null \
+        || gcloud scheduler jobs update http "reconcile-failure-notifier-hourly" \
+            --location "${REGION}" \
+            --schedule "0 * * * *" \
+            --uri "${service_url}/reconcile" \
+            --quiet
+
     echo "failure-notifier deployed and wired to Cloud Logging."
+    echo "  Hourly reconciler scheduled: reconcile-failure-notifier-hourly"
 }
 
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────
