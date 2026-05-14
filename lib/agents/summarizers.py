@@ -76,8 +76,8 @@ MAX_OPTIONS_STALE_TRADING_DAYS = 2
 
 
 def _check_chain_freshness(
-    chain_date: date_type,
-    target_date: Optional[date_type] = None,
+    chain_date,
+    target_date=None,
     max_trading_days: int = MAX_OPTIONS_STALE_TRADING_DAYS,
 ) -> Optional[str]:
     """Return None when fresh, or a string reason when stale.
@@ -85,8 +85,17 @@ def _check_chain_freshness(
     Uses `numpy.busday_count` (Mon-Fri, no holiday awareness) which is
     close enough for staleness — false-flag on the rare Tuesday-after-
     Monday-holiday is acceptable defensive behavior.
+
+    Accepts either `date` or `datetime` for both inputs and coerces to
+    `.date()` before counting. `parse_as_of` returns timezone-aware
+    `datetime` when `INSIGHT_AS_OF` is a full ISO timestamp; passing
+    that straight to `np.busday_count` would raise.
     """
+    if isinstance(chain_date, datetime):
+        chain_date = chain_date.date()
     target = target_date if target_date else date_type.today()
+    if isinstance(target, datetime):
+        target = target.date()
     trading_days = int(np.busday_count(chain_date, target))
     if trading_days > max_trading_days:
         return (

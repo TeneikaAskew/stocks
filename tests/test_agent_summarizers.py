@@ -551,6 +551,27 @@ def test_chain_freshness_3_trading_days_is_stale():
     assert "3 trading days behind" in reason
 
 
+def test_chain_freshness_accepts_datetime_target():
+    """`INSIGHT_AS_OF` ISO timestamps land as tz-aware `datetime` via
+    `parse_as_of`. The helper must coerce to `.date()` before counting
+    so np.busday_count doesn't raise."""
+    from datetime import datetime, timezone
+    # Mon Tue Wed = 3 trading days but with datetime input — should still work
+    reason = summarizers._check_chain_freshness(
+        chain_date=datetime(2026, 5, 11, 16, 0, tzinfo=timezone.utc),
+        target_date=datetime(2026, 5, 14, 13, 30, tzinfo=timezone.utc),
+    )
+    assert reason is not None
+    assert "3 trading days behind" in reason
+
+    # Fresh case with datetime should also work
+    reason_fresh = summarizers._check_chain_freshness(
+        chain_date=datetime(2026, 5, 12, 21, 0, tzinfo=timezone.utc),
+        target_date=datetime(2026, 5, 13, 8, 45, tzinfo=timezone.utc),
+    )
+    assert reason_fresh is None
+
+
 def test_build_context_bundle_includes_gamma(patch_query):
     patch_query(
         "etf_options_snapshots",
@@ -565,7 +586,10 @@ def test_build_context_bundle_includes_gamma(patch_query):
              "snapshot_date": date(2026, 5, 12)},
         ]),
     )
-    bundle = summarizers.build_context_bundle("XYZ")
+    # Pass explicit as_of so this test doesn't decay over time (the
+    # snapshot_date is fixed at 2026-05-12; without as_of it would be
+    # compared against date.today() and start failing on 2026-05-15+).
+    bundle = summarizers.build_context_bundle("XYZ", as_of=date(2026, 5, 13))
     assert "gamma" in bundle
     # Other sections are unavailable in this fixture, but gamma must be the
     # one populated when only chain data is fixtured
