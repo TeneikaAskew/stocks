@@ -499,106 +499,6 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     return {'mode': mode, 'start': start, 'end': end,
             'earnings': earnings, 'watchlist': watchlist}
 
-
-# ── Pre-earnings drift view (added 2026-05-14) ──────────────────────────────
-
-def load_pre_drift_for_brief(today: date, days_ahead: int = 7) -> dict:
-    """Tickers reporting in the next ``days_ahead`` calendar days with a
-    strong historical pre-earnings drift pattern (bullish run or bearish
-    fade into the print).
-
-    Symmetric with the post-earnings load_earnings_for_brief() but
-    forward-looking — surfaces names where the model says "this stock
-    typically runs into earnings, consider entering 3-5 days early".
-
-    Filters (mirror Track A gates):
-      - AV ∩ UW source confirmation
-      - options_volume > 0 AND open_interest > 1000
-      - pre_drift_archetype != 'pre_quiet'
-      - confidence_label != 🚫 SKIP (Q1)
-
-    Returns:
-      {'start': today+1, 'end': today+days_ahead,
-       'rows': [...sorted by pre_drift_score DESC...]}
-    """
-    try:
-        from gcp.database import is_cloud_sql_configured, query_to_dataframe
-    except ImportError:
-        return {'start': today, 'end': today, 'rows': []}
-    if not is_cloud_sql_configured():
-        return {'start': today, 'end': today, 'rows': []}
-
-    start = today + timedelta(days=1)
-    end   = today + timedelta(days=days_ahead)
-
-    # Dedupe at SQL — one row per ticker carrying the *max* OI/vol/mcap
-    # across all source rows for the next-week window. AV ∩ UW gate is
-    # applied via the array_agg(data_source) post-filter.
-    sql = """
-        SELECT
-            ticker,
-            MIN(earnings_date)                                     AS earnings_date,
-            MAX(options_volume)                                    AS options_volume,
-            MAX(open_interest)                                     AS open_interest,
-            MAX(market_cap)                                        AS market_cap,
-            MAX(expected_move)                                     AS expected_move,
-            MAX(earnings_time)                                     AS earnings_time,
-            array_agg(DISTINCT data_source)                        AS sources
-        FROM earnings_calendar
-        WHERE earnings_date BETWEEN :start AND :end
-        GROUP BY ticker
-        HAVING COALESCE(MAX(open_interest), 0) > 1000
-           AND COALESCE(MAX(options_volume), 0) > 0
-           AND 'alphavantage'   = ANY(array_agg(DISTINCT data_source))
-           AND 'unusual_whales' = ANY(array_agg(DISTINCT data_source))
-    """
-    try:
-        df = query_to_dataframe(sql, {'start': start, 'end': end})
-    except Exception as exc:
-        logger.warning("load_pre_drift_for_brief: query failed (%s)", exc)
-        return {'start': start, 'end': end, 'rows': []}
-    if df.empty:
-        return {'start': start, 'end': end, 'rows': []}
-
-    rows = []
-    for _, r in df.iterrows():
-        rows.append({
-            'ticker':         r['ticker'],
-            'earnings_date':  r.get('earnings_date'),
-            'time':           r.get('earnings_time'),
-            'options_volume': r.get('options_volume'),
-            'open_interest':  r.get('open_interest'),
-            'market_cap':     r.get('market_cap'),
-            'expected_move':  r.get('expected_move'),
-            'sources':        list(r.get('sources') or []),
-        })
-
-    # Enrich with pre-drift stats (mutates in place)
-    try:
-        from lib.earnings_reactions import enrich_with_pre_drift, pre_drift_score_quintile
-        enrich_with_pre_drift(rows)
-    except Exception as exc:
-        logger.warning("pre_drift enrichment skipped: %s", exc)
-        return {'start': start, 'end': end, 'rows': []}
-
-    # Filter: drop quiet archetype + Q1 SKIP scores
-    rows = [
-        r for r in rows
-        if r.get('pre_drift_archetype') not in (None, 'pre_quiet')
-        and pre_drift_score_quintile(r.get('pre_drift_score')) != 'Q1'
-    ]
-
-    # Sort by score DESC
-    rows.sort(key=lambda r: (
-        -(r.get('pre_drift_score')  or 0),
-        -(r.get('open_interest')    or 0),
-        -(r.get('options_volume')   or 0),
-        -(r.get('market_cap')       or 0),
-        r['ticker'],
-    ))
-    return {'start': start, 'end': end, 'rows': rows}
-
-
 # ── Yesterday-AMC reaction view (PR 3) ──────────────────────────────────────
 
 def load_yesterday_amc_reactions(today: date, top_n: int = 5) -> list[dict]:
@@ -1126,20 +1026,6 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     is_sunday = today.weekday() == 6
     brief_top_n = int(os.environ.get('BRIEF_MAX_EARNINGS', '25'))
     brief['earnings'] = load_earnings_for_brief(today, weekly=is_sunday, top_n=brief_top_n)
-
-    # Pre-earnings drift — daily mode only (Sunday weekly preview already
-    # covers the full week's reporters). Forward-looking: surfaces tickers
-    # reporting in the next ~5 trading days with strong historical drift
-    # patterns. Disable via BRIEF_PRE_DRIFT=0.
-    if not is_sunday and os.environ.get('BRIEF_PRE_DRIFT', '1') != '0':
-        try:
-            brief['pre_drift'] = load_pre_drift_for_brief(
-                today,
-                days_ahead=int(os.environ.get('BRIEF_PRE_DRIFT_DAYS_AHEAD', '7')),
-            )
-        except Exception as exc:
-            logger.warning("pre_drift load failed: %s", exc)
-            brief['pre_drift'] = {'rows': []}
 
     # Yesterday's AMC reporters with today's pre-market gap (PR 3).
     # Skipped on Sundays — the weekly view is forward-looking, no
@@ -2467,101 +2353,6 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         'color': 0xf39c12,
     }
 
-
-def _build_pre_drift_embed(pre_drift_data: dict) -> dict:
-    """Pre-Earnings Runners — separate embed surfacing tickers reporting
-    in the next 5 trading days that historically run UP (pre_bullish_run)
-    or fade DOWN (pre_bearish_fade) into the print.
-
-    Renders symmetrically with _build_earnings_embed:
-      • Tier dot (🟢 AV+UW+EW, 🔵 AV+UW)
-      • Ticker — EM | ACTION (CALL/PUT into print) | 🔥/✅/🟡/❓ confidence
-      • Sorted by pre_drift_score DESC (loader already does this)
-
-    Returns an empty-description embed when there are no actionable rows
-    so the caller can skip appending it to the Discord message.
-    """
-    rows = pre_drift_data.get('rows') or []
-    start = pre_drift_data.get('start')
-    end   = pre_drift_data.get('end')
-
-    if start and end and hasattr(start, 'strftime'):
-        if start == end:
-            window = start.strftime('%a %m/%d')
-        else:
-            window = f"{start.strftime('%a %m/%d')} → {end.strftime('%a %m/%d')}"
-        title = f"🎯 Pre-Earnings Runners — {window} — {len(rows)}"
-    else:
-        title = f"🎯 Pre-Earnings Runners — {len(rows)}"
-
-    if not rows:
-        return {'title': title, 'description': '', 'color': 0x9b59b6}
-
-    try:
-        from lib.earnings_reactions import (
-            pre_drift_confidence_label,
-            pre_drift_action_for_archetype,
-        )
-    except Exception:
-        return {'title': title, 'description': '', 'color': 0x9b59b6}
-
-    lines = [
-        '_Names reporting this week with strong historical pre-earnings drift._',
-        '_Action = trade setup 3-5 days into the print. Confidence = sizing hint._',
-        '',
-    ]
-
-    # Per-row cap aligned with Track A's 10-name cap so the embed stays scannable.
-    PRE_DRIFT_CAP = int(os.environ.get('BRIEF_PRE_DRIFT_CAP', '10'))
-    kept = rows[:PRE_DRIFT_CAP]
-
-    for r in kept:
-        ticker  = r['ticker']
-        srcs    = set(r.get('sources') or [])
-        # Same dot semantics as the earnings embed.
-        if {'alphavantage', 'unusual_whales', 'earnings_whispers'} <= srcs:
-            dot = '\U0001f7e2 '       # green
-        elif {'alphavantage', 'unusual_whales'} <= srcs:
-            dot = '\U0001f535 '       # blue
-        else:
-            dot = ''
-
-        parts = []
-        em = r.get('expected_move')
-        try:
-            em_v = float(em) if em is not None else None
-        except (TypeError, ValueError):
-            em_v = None
-        if em_v is not None:
-            parts.append(f'EM ${em_v:.2f}')
-
-        # Show the day they report so the reader knows the entry window
-        # (e.g. "reports Wed").
-        ed = r.get('earnings_date')
-        if ed and hasattr(ed, 'strftime'):
-            parts.append(f"reports {ed.strftime('%a')}")
-
-        action = pre_drift_action_for_archetype(r.get('pre_drift_archetype'))
-        if action:
-            parts.append(action)
-
-        conf = pre_drift_confidence_label(r.get('pre_drift_score'))
-        if conf:
-            parts.append(conf)
-
-        extra = f' — {" | ".join(parts)}' if parts else ''
-        lines.append(f'{dot}**{ticker}**{extra}')
-
-    if len(rows) > PRE_DRIFT_CAP:
-        lines.append(f'_+{len(rows) - PRE_DRIFT_CAP} more_')
-
-    return {
-        'title': title,
-        'description': '\n'.join(lines)[:4090],
-        'color': 0x9b59b6,    # purple — visually distinct from earnings (gold) + calendar
-    }
-
-
 def _build_calendar_embed(events: dict, mode: str = 'daily') -> dict:
     """Embed 3: Economic calendar.
 
@@ -2748,11 +2539,6 @@ def format_discord_messages(brief: dict) -> list[dict]:
     msg2 = []
     if earnings.get('fields') or earnings.get('description'):
         msg2.append(earnings)
-    # Pre-earnings drift sits between earnings (today) and calendar so the
-    # reader scans: TODAY → THIS WEEK PRE-DRIFT → ECONOMIC CALENDAR.
-    pre_drift = _build_pre_drift_embed(brief.get('pre_drift', {}))
-    if pre_drift.get('description'):
-        msg2.append(pre_drift)
     if calendar.get('fields') or calendar.get('description'):
         msg2.append(calendar)
 
