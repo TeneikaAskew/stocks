@@ -88,7 +88,13 @@ def fetch_reactions_with_pre_window() -> pd.DataFrame:
 
 
 def fetch_bars_for_window(ticker: str, reported_date) -> pd.DataFrame:
-    """11 trading days before reported_date — D-10..D-1. One ticker, one row."""
+    """11 trading days before reported_date — D-10..D-1. One ticker, one row.
+
+    Single-row helper kept for tests + ad-hoc one-shot use. The bulk
+    pipeline below pre-fetches all bars in one query to avoid 38k
+    sequential DB round-trips at backfill scale (per CLAUDE.md §0
+    rule 4 — batch SQL queries by partition/grouping key).
+    """
     sql = """
         SELECT date, high, low
         FROM market_data_daily
@@ -103,6 +109,76 @@ def fetch_bars_for_window(ticker: str, reported_date) -> pd.DataFrame:
     return df.iloc[::-1].reset_index(drop=True)
 
 
+def fetch_all_bars_for_tickers(tickers: list[str]) -> dict[str, pd.DataFrame]:
+    """Bulk-fetch the relevant window for every ticker in ONE query per chunk.
+
+    Returns {ticker: DataFrame(date, high, low) sorted ascending by date}.
+
+    The window is **per-ticker**: each ticker only fetches bars in
+    [min(reported_date) - 15 calendar days, max(reported_date)]. A
+    naive `date >= MIN(reported_date)` across the whole chunk would
+    pull every bar back to the OLDEST ticker's first reaction for
+    EVERY ticker in the chunk — millions of unneeded rows when one
+    ticker has 2010 history and another goes back to 2024 (Codex P2
+    on PR #495).
+
+    The 15-day buffer covers the 10 trading days before each
+    reported_date (weekends/holidays inflate the calendar span vs
+    the 10-trading-day window we need).
+    """
+    if not tickers:
+        return {}
+    # Use a parameterized IN-list. Lots of tickers → split into chunks
+    # under the parameter limit. SQLAlchemy/pg8000 has no hard limit but
+    # query parsing slows past ~5000 placeholders, so chunk at 1000.
+    out: dict[str, pd.DataFrame] = {}
+    CHUNK = 1000
+    BUFFER_DAYS = 15  # 10 trading days + weekend/holiday padding
+    for i in range(0, len(tickers), CHUNK):
+        chunk = tickers[i:i + CHUNK]
+        placeholders = ','.join(f"'{t}'" for t in chunk)
+        # CTE pre-computes per-ticker bounds, then a JOIN limits each
+        # ticker's bar fetch to its own window. Avoids the chunk-wide
+        # MIN-only bound that pulled too many rows.
+        sql = f"""
+            WITH bounds AS (
+                SELECT ticker,
+                       MIN(reported_date) - {BUFFER_DAYS} AS earliest,
+                       MAX(reported_date)               AS latest
+                FROM earnings_reactions
+                WHERE ticker IN ({placeholders})
+                  AND drift_5d_pct IS NOT NULL
+                GROUP BY ticker
+            )
+            SELECT m.ticker, m.date, m.high, m.low
+            FROM market_data_daily m
+            JOIN bounds b ON b.ticker = m.ticker
+            WHERE m.date >= b.earliest
+              AND m.date <  b.latest
+            ORDER BY m.ticker, m.date
+        """
+        df = query_to_dataframe(sql)
+        if df is None or df.empty:
+            continue
+        for t, g in df.groupby('ticker'):
+            out[t] = g[['date', 'high', 'low']].reset_index(drop=True)
+        log.info("  bulk-fetched bars for %d tickers (chunk %d/%d, %d rows)",
+                 len(chunk), i // CHUNK + 1,
+                 (len(tickers) + CHUNK - 1) // CHUNK, len(df))
+    return out
+
+
+def _bars_in_window_from_cache(
+    bars: pd.DataFrame, reported_date,
+) -> pd.DataFrame:
+    """Slice the per-ticker bar cache to the up-to-11 bars BEFORE reported_date.
+    Returns ascending by date (oldest first)."""
+    if bars is None or bars.empty:
+        return pd.DataFrame()
+    pre = bars[bars['date'] < reported_date]
+    return pre.tail(11).reset_index(drop=True)
+
+
 def add_variant_b_features(df: pd.DataFrame) -> pd.DataFrame:
     """For each reaction row, compute days_since_max_high_5d / _10d and
     days_since_min_low_5d / _10d.
@@ -110,13 +186,25 @@ def add_variant_b_features(df: pd.DataFrame) -> pd.DataFrame:
     Convention: index runs D-1 (0) through D-N (N-1). So
     days_since_max_high_5d in {0,1,2,3,4}, with 0 meaning the highest
     intraday print in the 5-day window was D-1 (most recent).
+
+    Performance: bulk-fetches every relevant ticker's bars in ONE query
+    (chunked at 1000 tickers/chunk) before iterating rows in memory.
+    Cuts wall-clock from ~60min (38k sequential round-trips) to ~30s.
     """
     log.info("Computing Variant B days_since_* for %d reaction rows…", len(df))
+    tickers = df['ticker'].unique().tolist()
+    log.info("  bulk-fetching market_data_daily bars for %d tickers…", len(tickers))
+    bars_cache = fetch_all_bars_for_tickers(tickers)
+    log.info("  cached bars for %d tickers", len(bars_cache))
+
     rows_b = []
     skipped_5d = 0
     skipped_10d_only = 0
     for i, (_, r) in enumerate(df.iterrows(), 1):
-        bars = fetch_bars_for_window(r['ticker'], r['reported_date'])
+        bars = _bars_in_window_from_cache(
+            bars_cache.get(r['ticker'], pd.DataFrame()),
+            r['reported_date'],
+        )
         bars_desc = (
             bars.iloc[::-1].reset_index(drop=True)
             if not bars.empty else bars
