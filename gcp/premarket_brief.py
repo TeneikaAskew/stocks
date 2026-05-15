@@ -1127,11 +1127,19 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     brief_top_n = int(os.environ.get('BRIEF_MAX_EARNINGS', '25'))
     brief['earnings'] = load_earnings_for_brief(today, weekly=is_sunday, top_n=brief_top_n)
 
-    # Pre-earnings drift — daily mode only (Sunday weekly preview already
-    # covers the full week's reporters). Forward-looking: surfaces tickers
-    # reporting in the next ~5 trading days with strong historical drift
-    # patterns. Disable via BRIEF_PRE_DRIFT=0.
-    if not is_sunday and os.environ.get('BRIEF_PRE_DRIFT', '1') != '0':
+    # Pre-earnings drift — DISABLED BY DEFAULT as of 2026-05-15 after the
+    # backtest + cross-sectional audit showed the directional signal is a
+    # coin flip (pre_bullish_run Q5 hit rate 47.6%, pre_bearish_fade Q5
+    # hit rate 51.0%) and the strongest single feature (pre_report_atr_pct
+    # vs |reaction_gap_pct|) tops out at r=0.064 — below the threshold
+    # where we'd ship a brief embed without misleading the reader.
+    #
+    # The underlying schema/compute/lib code is kept intact — historical
+    # data is useful for ad-hoc analysis (and the score's pre_choppy
+    # archetype hit rate Q5=85.7% on >1.5% movement IS strong, just not
+    # strong enough to justify the directional CALL/PUT action tags we
+    # were rendering). To re-enable for testing, set BRIEF_PRE_DRIFT=1.
+    if not is_sunday and os.environ.get('BRIEF_PRE_DRIFT', '0') == '1':
         try:
             brief['pre_drift'] = load_pre_drift_for_brief(
                 today,
