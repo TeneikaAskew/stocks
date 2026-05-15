@@ -110,12 +110,21 @@ def fetch_bars_for_window(ticker: str, reported_date) -> pd.DataFrame:
 
 
 def fetch_all_bars_for_tickers(tickers: list[str]) -> dict[str, pd.DataFrame]:
-    """Bulk-fetch the recent ~30 trading days for every ticker in ONE query.
+    """Bulk-fetch the relevant window for every ticker in ONE query per chunk.
 
     Returns {ticker: DataFrame(date, high, low) sorted ascending by date}.
-    The 30-day per-ticker window is enough to cover any reaction's D-10
-    pre-window plus headroom; we slice to the actual D-N..D-1 window
-    in memory below.
+
+    The window is **per-ticker**: each ticker only fetches bars in
+    [min(reported_date) - 15 calendar days, max(reported_date)]. A
+    naive `date >= MIN(reported_date)` across the whole chunk would
+    pull every bar back to the OLDEST ticker's first reaction for
+    EVERY ticker in the chunk — millions of unneeded rows when one
+    ticker has 2010 history and another goes back to 2024 (Codex P2
+    on PR #495).
+
+    The 15-day buffer covers the 10 trading days before each
+    reported_date (weekends/holidays inflate the calendar span vs
+    the 10-trading-day window we need).
     """
     if not tickers:
         return {}
@@ -124,29 +133,38 @@ def fetch_all_bars_for_tickers(tickers: list[str]) -> dict[str, pd.DataFrame]:
     # query parsing slows past ~5000 placeholders, so chunk at 1000.
     out: dict[str, pd.DataFrame] = {}
     CHUNK = 1000
-    LOOKBACK_DAYS = 30  # well above the 10d we need + weekend padding
+    BUFFER_DAYS = 15  # 10 trading days + weekend/holiday padding
     for i in range(0, len(tickers), CHUNK):
         chunk = tickers[i:i + CHUNK]
         placeholders = ','.join(f"'{t}'" for t in chunk)
+        # CTE pre-computes per-ticker bounds, then a JOIN limits each
+        # ticker's bar fetch to its own window. Avoids the chunk-wide
+        # MIN-only bound that pulled too many rows.
         sql = f"""
-            SELECT ticker, date, high, low
-            FROM market_data_daily
-            WHERE ticker IN ({placeholders})
-              AND date >= (
-                  SELECT COALESCE(MIN(reported_date), CURRENT_DATE) - {LOOKBACK_DAYS}
-                  FROM earnings_reactions
-                  WHERE ticker IN ({placeholders})
-                    AND drift_5d_pct IS NOT NULL
-              )
-            ORDER BY ticker, date
+            WITH bounds AS (
+                SELECT ticker,
+                       MIN(reported_date) - {BUFFER_DAYS} AS earliest,
+                       MAX(reported_date)               AS latest
+                FROM earnings_reactions
+                WHERE ticker IN ({placeholders})
+                  AND drift_5d_pct IS NOT NULL
+                GROUP BY ticker
+            )
+            SELECT m.ticker, m.date, m.high, m.low
+            FROM market_data_daily m
+            JOIN bounds b ON b.ticker = m.ticker
+            WHERE m.date >= b.earliest
+              AND m.date <  b.latest
+            ORDER BY m.ticker, m.date
         """
         df = query_to_dataframe(sql)
         if df is None or df.empty:
             continue
         for t, g in df.groupby('ticker'):
             out[t] = g[['date', 'high', 'low']].reset_index(drop=True)
-        log.info("  bulk-fetched bars for %d tickers (chunk %d/%d)",
-                 len(chunk), i // CHUNK + 1, (len(tickers) + CHUNK - 1) // CHUNK)
+        log.info("  bulk-fetched bars for %d tickers (chunk %d/%d, %d rows)",
+                 len(chunk), i // CHUNK + 1,
+                 (len(tickers) + CHUNK - 1) // CHUNK, len(df))
     return out
 
 
