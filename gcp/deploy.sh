@@ -318,6 +318,15 @@ _build_secret_flag() {
     pairs="${pairs},AV_API_KEY=av-api-key:latest"
     pairs="${pairs},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
     pairs="${pairs},DISCORD_WEBHOOK_URL=discord-webhook-insights:latest"
+    # Earnings-specific channel — the Earnings embed routes here; analytics
+    # + calendar stay on DISCORD_WEBHOOK_URL. premarket_brief.py falls back
+    # to the main webhook when this is unset, so deploys without the secret
+    # remain functional. Gracefully skipped when not provisioned.
+    if gcloud secrets describe discord-webhook-earnings --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        pairs="${pairs},DISCORD_WEBHOOK_EARNINGS_URL=discord-webhook-earnings:latest"
+    else
+        echo "  (skipping DISCORD_WEBHOOK_EARNINGS_URL — secret 'discord-webhook-earnings' not in project)" >&2
+    fi
     if gcloud secrets describe fred-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
         pairs="${pairs},FRED_API_KEY=fred-api-key:latest"
     else
