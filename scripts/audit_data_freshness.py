@@ -82,9 +82,15 @@ CHECKS: list[dict] = [
         "where": "interval = '1min'",
         "min_rows_per_day": 350,    # ~full RTH session at 1-min
         "gap_scan_days": 5,
-        # av-intraday-nightly fires 21:00 ET Tue-Sat. Today's bars
-        # land that night.
+        # av-intraday-nightly cron `0 21 * * 2-6` ET — fires Tue-Sat at
+        # 21 ET, picking up the PREVIOUS day's bars (Tue 21 ET writes
+        # Mon's bars; Sat 21 ET writes Fri's). So intraday data lags by
+        # 1 trading day relative to the cron's fire date. Codex P2 on
+        # PR #494 caught this: settle_hour_et=21 alone would expect
+        # Mon's bars at Mon 21 ET (when nothing has fired) and false-
+        # flag every Tuesday morning.
         "settle_hour_et": 21,
+        "settle_lag_days": 1,
     },
     {
         "name": "etf_options_snapshots",
@@ -172,37 +178,75 @@ MARKET_HOLIDAYS_2026 = {
 }
 
 
-def most_recent_trading_day(now_utc: datetime, settle_hour_et: int = 16) -> date:
-    """Return the most recent date the US market was open AND data is settled.
+def most_recent_trading_day(
+    now_utc: datetime,
+    settle_hour_et: int = 16,
+    settle_lag_days: int = 0,
+) -> date:
+    """Return the most recent trading day for which data is settled at `now`.
 
-    `settle_hour_et` is the ET hour after which day-D's row is expected to
-    exist in the table being audited. Defaults to 16 (4 PM ET = market
-    close) which preserves prior behavior for tables written during RTH
-    (signal_alerts, market_data_intraday). For after-hours fetchers the
-    caller passes a later hour:
+    Two parameters model the writer's cadence:
 
-      market_data_daily — fetcher fires 23:00 ET → settle_hour_et=23
-      etf_options_snapshots — fetcher fires 21:00 ET → settle_hour_et=22
+    `settle_hour_et` — the ET hour-of-day after which the writer is
+        expected to have run for that day's data. Defaults to 16 (4 PM
+        ET = market close) for tables written during RTH (signal_alerts,
+        premarket_analysis).
 
-    Without this knob, the watchdog flagged today as missing for ~7 hours
-    every weekday (between 16:00 ET market close and 23:00 ET fetcher run),
-    creating ~70 false-positive freshness issues on issue #449 over a
-    couple days. Each false stale matched the actual fetcher schedule —
-    they cleared once the fetcher wrote, then re-fired the next day.
+    `settle_lag_days` — how many trading days the writer LAGS behind the
+        data it writes. Defaults to 0 (writer fires same day as the
+        data, e.g. fetch-market-data at 23 ET writes today's daily bar).
+        Set to 1 when the cron fires the NEXT trading day (e.g.
+        av-intraday-nightly at 21 ET on day D+1 writes day D's bars —
+        Codex P2 caught this on PR #494).
+
+    The two combine: anchor the most-recent day at settle_hour_et, then
+    roll back `settle_lag_days` additional trading days. Examples for
+    av-intraday-nightly (settle_hour_et=21, settle_lag_days=1):
+
+        Tue 22 ET (post-settle): anchor=Tue, roll back 1 → Mon ✅
+            (Tue's cron fired and wrote Mon's bars)
+        Tue 19 ET (pre-settle):  anchor=Mon, roll back 1 → Friday ✅
+            (Tue's cron not yet fired; Mon's bars not yet expected)
+
+    Without the lag knob, the watchdog would expect Mon's bars at Mon
+    21 ET (when the cron hasn't fired) and false-flag every Tuesday
+    morning until 21 ET.
+
+    Without the hour knob (the original bug), the watchdog flagged today
+    as missing for ~7 hours every weekday between 16:00 ET market close
+    and 23:00 ET fetcher run — creating ~70 false-positive freshness
+    issues on #449 over a few days.
 
     Converts UTC to America/New_York to handle EDT/EST correctly (UTC-4
     in summer, UTC-5 in winter) before checking against settle_hour_et.
     """
     et_now = now_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("America/New_York"))
-    d = et_now.date()
-    # If we're still before settle_hour_et, today's data isn't expected
-    # yet — most recent settled day is yesterday.
+    # Step 1: anchor on the most recent CALENDAR day whose settle-hour
+    # has passed. For lag-0 fetchers this is just "today if past
+    # settle_hour else yesterday." For lag-1 fetchers (intraday cron is
+    # Tue-Sat) the cron's fire-day can be a Saturday — that's fine,
+    # cron-fire-day is a calendar concept; the trading-day skip happens
+    # in the lag-walk-back step below.
+    cron_day = et_now.date()
     if et_now.time() < time(settle_hour_et, 0, 0):
-        d = d - timedelta(days=1)
-    # Walk backward past weekends and holidays
-    while d.weekday() >= 5 or d in MARKET_HOLIDAYS_2026:
-        d = d - timedelta(days=1)
-    return d
+        cron_day = cron_day - timedelta(days=1)
+    # Step 2: convert cron_day to the trading-day whose data was written.
+    # For lag=0 (writer fires same-day): walk back from cron_day to the
+    # nearest trading day (handles Sun/Sat/holiday cron_days).
+    # For lag=N (writer fires N trading days AFTER the data, e.g.
+    # av-intraday-nightly Tue 21 ET writes Mon's bars): walk back N
+    # trading days from cron_day.
+    data_day = cron_day
+    walks_remaining = max(settle_lag_days, 0)
+    if walks_remaining == 0:
+        while data_day.weekday() >= 5 or data_day in MARKET_HOLIDAYS_2026:
+            data_day = data_day - timedelta(days=1)
+    else:
+        for _ in range(walks_remaining):
+            data_day = data_day - timedelta(days=1)
+            while data_day.weekday() >= 5 or data_day in MARKET_HOLIDAYS_2026:
+                data_day = data_day - timedelta(days=1)
+    return data_day
 
 
 # ── Freshness report dataclass ───────────────────────────────────────────────
@@ -375,15 +419,23 @@ def _query_freshness_one(
     )
 
 
-def _recent_trading_days(now_utc: datetime, n: int, settle_hour_et: int = 16) -> list[date]:
+def _recent_trading_days(
+    now_utc: datetime,
+    n: int,
+    settle_hour_et: int = 16,
+    settle_lag_days: int = 0,
+) -> list[date]:
     """Return the last `n` trading days ending at the most recent SETTLED day.
 
-    `settle_hour_et` mirrors `most_recent_trading_day` — caller passes the
-    ET hour after which day-D's data is expected to exist. Tables written
-    after hours (market_data_daily, etf_options_snapshots) need a later
-    cutoff than RTH-written tables.
+    Both `settle_hour_et` and `settle_lag_days` are passed through to
+    most_recent_trading_day — see its docstring for the model. Tables
+    with delayed-cron writers (market_data_intraday) need
+    settle_lag_days=1 so the gap-scan doesn't expect bars before they're
+    written.
     """
-    end = most_recent_trading_day(now_utc, settle_hour_et=settle_hour_et)
+    end = most_recent_trading_day(
+        now_utc, settle_hour_et=settle_hour_et, settle_lag_days=settle_lag_days,
+    )
     days: list[date] = []
     d = end
     while len(days) < n:
@@ -405,7 +457,10 @@ def _query_gap_scan(check: dict, now_utc: datetime) -> list[FreshnessRow]:
     ticker_col = check.get("ticker_column", "ticker")
     n = check["gap_scan_days"]
     settle = check.get("settle_hour_et", 16)
-    expected_days = _recent_trading_days(now_utc, n, settle_hour_et=settle)
+    lag = check.get("settle_lag_days", 0)
+    expected_days = _recent_trading_days(
+        now_utc, n, settle_hour_et=settle, settle_lag_days=lag,
+    )
     tickers = check.get("tickers", TICKERS)
 
     date_expr = ts_col if check["ts_is_date"] else f"DATE({ts_col})"
@@ -540,7 +595,10 @@ def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
 
     for check in CHECKS:
         check_settle = check.get("settle_hour_et", 16)
-        check_expected_date = most_recent_trading_day(now, settle_hour_et=check_settle)
+        check_lag = check.get("settle_lag_days", 0)
+        check_expected_date = most_recent_trading_day(
+            now, settle_hour_et=check_settle, settle_lag_days=check_lag,
+        )
         tickers_to_check = check.get("tickers", TICKERS) if check.get("per_ticker") else [None]
         for t in tickers_to_check:
             row = _query_freshness_one(check, check_expected_date, ticker=t, now_utc=now)
