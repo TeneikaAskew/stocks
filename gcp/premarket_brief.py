@@ -2499,23 +2499,23 @@ def _build_playbook_embed(brief: dict) -> dict:
     }
 
 
-def format_discord_messages(brief: dict) -> list[dict]:
-    """Format brief as a LIST of Discord webhook payloads.
+def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
+    """Format brief as a list of (channel_kind, payload) tuples.
 
-    Discord caps each webhook payload at 6000 chars across all embeds.
-    Once the earnings embed gained BMO/AMC sections + tradeability
-    ranking + options-flow filter (commit 80ebf9f3), the combined
-    overview+tickers+playbook+earnings+calendar payload exceeds 6000
-    on busy mornings — so the legacy single-message format silently
-    dropped earnings and calendar.
+    Returns 1-3 messages, each tagged with the webhook channel it
+    should post to:
 
-    Split into two messages so each section has its own size budget:
-      Message 1: overview + ticker_analysis + playbook  (analytics)
-      Message 2: earnings + calendar                    (events)
+      ('main', overview + ticker_analysis + playbook)   — analytics
+      ('earnings', earnings)                            — company earnings
+      ('main', economic calendar)                       — macro events
+
+    The caller maps `channel_kind` to a webhook URL. If the earnings
+    webhook isn't configured, the caller falls back to the main
+    webhook so behaviour stays compatible.
 
     Per-message truncation still applies — if a single message would
     exceed 6000 chars on its own, lower-priority embeds drop within
-    that message until it fits. The OTHER message is unaffected.
+    that message until it fits. The OTHER messages are unaffected.
     """
     overview = _build_overview_embed(brief)
     ticker_fields = _build_ticker_fields(brief)
@@ -2530,20 +2530,26 @@ def format_discord_messages(brief: dict) -> list[dict]:
         'color': overview.get('color', 0x3498db),
     }
 
-    # ── Message 1: analytics ────────────────────────────────────────
-    msg1 = [overview, ticker_embed, playbook]
-    if not playbook.get('fields'):
-        msg1.remove(playbook)
+    # ── Main channel — analytics ────────────────────────────────────
+    main_msg = [overview, ticker_embed]
+    if playbook.get('fields'):
+        main_msg.append(playbook)
 
-    # ── Message 2: events ───────────────────────────────────────────
-    msg2 = []
+    # ── Earnings channel — company earnings ─────────────────────────
+    earnings_msg = []
     if earnings.get('fields') or earnings.get('description'):
-        msg2.append(earnings)
-    if calendar.get('fields') or calendar.get('description'):
-        msg2.append(calendar)
+        earnings_msg.append(earnings)
 
-    messages = []
-    for embeds in (msg1, msg2):
+    # ── Main channel — macro calendar (separate message so it doesn't
+    # eat the analytics char budget) ────────────────────────────────
+    calendar_msg = []
+    if calendar.get('fields') or calendar.get('description'):
+        calendar_msg.append(calendar)
+
+    output: list[tuple[str, dict]] = []
+    for kind, embeds in [('main', main_msg),
+                         ('earnings', earnings_msg),
+                         ('main', calendar_msg)]:
         # Per-message truncation
         while embeds and sum(len(json.dumps(e)) for e in embeds) > MAX_EMBED_CHARS:
             logger.warning(
@@ -2552,8 +2558,17 @@ def format_discord_messages(brief: dict) -> list[dict]:
             )
             embeds.pop()
         if embeds:
-            messages.append({'embeds': embeds})
-    return messages
+            output.append((kind, {'embeds': embeds}))
+    return output
+
+
+def format_discord_messages(brief: dict) -> list[dict]:
+    """Backward-compatible API. Returns just the payloads (drops the
+    channel-kind tag). Tests + legacy callers keep working unchanged;
+    new callers should prefer format_discord_messages_routed to honour
+    the earnings channel split.
+    """
+    return [msg for _kind, msg in format_discord_messages_routed(brief)]
 
 
 def format_discord_message(brief: dict) -> dict:
@@ -2998,6 +3013,14 @@ def main(argv: Optional[list[str]] = None):
             or bool(os.environ.get('BRIEF_AS_OF'))
         )
     webhook_url = '' if no_discord else os.environ.get('DISCORD_WEBHOOK_URL')
+    # Earnings-specific channel. The Earnings embed routes here so
+    # company earnings don't drown out analytics in the main feed.
+    # Falls back to the main webhook when not configured, so existing
+    # deployments behave identically.
+    earnings_webhook_url = (
+        '' if no_discord
+        else (os.environ.get('DISCORD_WEBHOOK_EARNINGS_URL') or webhook_url)
+    )
 
     cfg = load_config()
     data_dir = os.environ.get('DATA_DIR', cfg.market.data_dir)
@@ -3016,22 +3039,23 @@ def main(argv: Optional[list[str]] = None):
     print(f"Persisted {n} rows to premarket_analysis "
           f"(history rows always written)")
 
-    messages = format_discord_messages(brief)
+    routed = format_discord_messages_routed(brief)
     if webhook_url:
-        for i, message in enumerate(messages, start=1):
+        for i, (kind, message) in enumerate(routed, start=1):
+            target = earnings_webhook_url if kind == 'earnings' else webhook_url
             try:
-                send_to_discord(message, webhook_url,
+                send_to_discord(message, target,
                                 timeout=cfg.monitor.discord_timeout)
-                logger.info("sent message %d/%d (%d embeds)",
-                            i, len(messages),
+                logger.info("sent message %d/%d to %s channel (%d embeds)",
+                            i, len(routed), kind,
                             len(message.get('embeds', [])))
             except Exception:
-                logger.exception("Discord post failed for message %d/%d",
-                                 i, len(messages))
+                logger.exception("Discord post failed for message %d/%d (%s)",
+                                 i, len(routed), kind)
     else:
         print("\nDISCORD_WEBHOOK_URL not set -- printing payloads only")
-        for i, message in enumerate(messages, start=1):
-            print(f"\n--- payload {i}/{len(messages)} ---")
+        for i, (kind, message) in enumerate(routed, start=1):
+            print(f"\n--- payload {i}/{len(routed)} (channel={kind}) ---")
             print(json.dumps(message, indent=2))
 
 
