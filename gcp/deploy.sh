@@ -1586,7 +1586,60 @@ AND logName:"run.googleapis.com"'
         --member="${sink_writer}" \
         --role="roles/pubsub.publisher" --quiet
 
+    # 7) Grant the notifier SA roles/run.viewer so reconcile_closures can
+    # list Cloud Run Job executions and detect "job has recovered → close
+    # the issue". Project-level binding is fine — read-only access to
+    # jobs/executions across the whole project.
+    #
+    # No `|| echo` swallow here: gcloud add-iam-policy-binding exits 0 on
+    # idempotent re-binding (existing binding is fine), so the only ways
+    # this command fails are REAL failures (deployer lacks setIamPolicy,
+    # API disabled, project missing). Those MUST abort deploy_notifier()
+    # so the operator notices and grants the role — otherwise the
+    # reconciler silently runs without view access, every Cloud Run
+    # execution lookup returns 403→unknown, and stale issues never close
+    # while the deploy looks "successful". Codex P2 caught the original
+    # `|| echo "already exists"` masking this critical failure mode.
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="roles/run.viewer" \
+        --condition=None --quiet >/dev/null
+
+    # 8) Grant the scheduler's OIDC identity (SA_EMAIL) roles/run.invoker
+    # on the failure-notifier service. The service is deployed with
+    # --no-allow-unauthenticated; without this binding the hourly
+    # reconcile-failure-notifier-hourly cron's POST /reconcile gets a
+    # 403 from Cloud Run and the reconciler never executes. The
+    # existing pubsub_sa binding (lines 1541-1544 above) only authorizes
+    # the Pub/Sub push delivery path — different identity.
+    # Codex P1 caught this missing grant.
+    gcloud run services add-iam-policy-binding "${NOTIFIER_SERVICE}" \
+        --region "${REGION}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="roles/run.invoker" --quiet
+
+    # 9) Hourly reconciler — POST /reconcile so close_on_success drains
+    # any stale gcp-job-failure issues whose underlying job has since
+    # succeeded. Cron at the top of every hour. The endpoint is
+    # idempotent and cheap (~1 Cloud Run REST call per unique job_name
+    # in open-issues × 1 GitHub API call per closed issue).
+    gcloud scheduler jobs create http "reconcile-failure-notifier-hourly" \
+        --location "${REGION}" \
+        --schedule "0 * * * *" \
+        --time-zone "America/New_York" \
+        --uri "${service_url}/reconcile" \
+        --http-method POST \
+        --oidc-service-account-email "${SA_EMAIL}" \
+        --oidc-token-audience "${service_url}" \
+        --quiet 2>/dev/null \
+        || gcloud scheduler jobs update http "reconcile-failure-notifier-hourly" \
+            --location "${REGION}" \
+            --schedule "0 * * * *" \
+            --uri "${service_url}/reconcile" \
+            --quiet
+
     echo "failure-notifier deployed and wired to Cloud Logging."
+    echo "  Hourly reconciler scheduled: reconcile-failure-notifier-hourly"
 }
 
 # ── Cloud Scheduler triggers ──────────────────────────────────────────────────

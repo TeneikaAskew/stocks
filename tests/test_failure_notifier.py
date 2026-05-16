@@ -423,3 +423,271 @@ def test_handler_post_clamps_oversized_body(monkeypatch):
     assert received_lengths == [fn.MAX_BODY], (
         "handler must clamp the read at MAX_BODY"
     )
+
+
+# ── Race-aware dedupe (close-after-create) ──────────────────────────────────
+
+
+@patch("gcp.failure_notifier.requests.patch")
+@patch("gcp.failure_notifier.requests.post")
+@patch("gcp.failure_notifier.requests.get")
+def test_create_or_update_closes_race_created_duplicate(mock_get, mock_post, mock_patch):
+    """When two notifier instances race and both create issues, the
+    second one (higher number) must close itself with a comment routing
+    content to the canonical (lower number)."""
+    # First GET (find_existing_issue) → no existing
+    # Second GET (find_all_open_issues after create) → 2 issues found
+    mock_get.side_effect = [
+        MagicMock(status_code=200, json=lambda: [], raise_for_status=MagicMock()),
+        MagicMock(
+            status_code=200,
+            json=lambda: [{"number": 100}, {"number": 105}],
+            raise_for_status=MagicMock(),
+        ),
+    ]
+    # POST 1: create issue → returns 105 (we lost the race)
+    # POST 2: comment on canonical (#100) about closure
+    # POST 3: comment on duplicate (#105) before closing
+    mock_post.return_value = MagicMock(
+        status_code=201,
+        json=lambda: {"number": 105},
+        raise_for_status=MagicMock(),
+    )
+    mock_patch.return_value = MagicMock(status_code=200, raise_for_status=MagicMock())
+
+    details = {
+        "job_name": "fetch-market-data",
+        "execution_name": "abc",
+        "severity": "ERROR",
+        "timestamp": "2026-05-14T12:00:00Z",
+        "message": "ssl error",
+        "log_url": "https://example.test/logs",
+        "project_id": "p",
+        "location": "us-east1",
+    }
+
+    number, created = fn.create_or_update_github_issue("owner/repo", "ghp_t", details)
+
+    # Returns the CANONICAL number, not the duplicate we created
+    assert number == 100
+    assert created is False
+    # PATCH was called to close the duplicate
+    mock_patch.assert_called_once()
+    patched_url = mock_patch.call_args[0][0]
+    assert patched_url.endswith("/issues/105")
+    assert mock_patch.call_args.kwargs["json"]["state"] == "closed"
+
+
+@patch("gcp.failure_notifier.requests.patch")
+@patch("gcp.failure_notifier.requests.post")
+@patch("gcp.failure_notifier.requests.get")
+def test_create_or_update_no_dedupe_when_only_one_issue(mock_get, mock_post, mock_patch):
+    """When the post-create re-query returns only our newly-created issue,
+    no dedupe close happens."""
+    mock_get.side_effect = [
+        MagicMock(status_code=200, json=lambda: [], raise_for_status=MagicMock()),
+        MagicMock(
+            status_code=200,
+            json=lambda: [{"number": 99}],
+            raise_for_status=MagicMock(),
+        ),
+    ]
+    mock_post.return_value = MagicMock(
+        status_code=201,
+        json=lambda: {"number": 99},
+        raise_for_status=MagicMock(),
+    )
+
+    number, created = fn.create_or_update_github_issue(
+        "owner/repo", "ghp_t",
+        {
+            "job_name": "fetch-news-sentiment",
+            "execution_name": "x",
+            "severity": "ERROR",
+            "timestamp": "2026-05-14T12:00:00Z",
+            "message": "ok",
+            "log_url": "https://e.test",
+            "project_id": "p",
+            "location": "us-east1",
+        },
+    )
+
+    assert number == 99
+    assert created is True
+    mock_patch.assert_not_called()  # no close
+
+
+# ── close_issue helper ──────────────────────────────────────────────────────
+
+
+@patch("gcp.failure_notifier.requests.patch")
+@patch("gcp.failure_notifier.requests.post")
+def test_close_issue_posts_comment_then_patches_state(mock_post, mock_patch):
+    mock_post.return_value = MagicMock(status_code=201, raise_for_status=MagicMock())
+    mock_patch.return_value = MagicMock(status_code=200, raise_for_status=MagicMock())
+
+    fn.close_issue("owner/repo", 42, "all good now", "ghp_t")
+
+    # POST = comment, PATCH = state change
+    posted_url = mock_post.call_args[0][0]
+    patched_url = mock_patch.call_args[0][0]
+    assert "/issues/42/comments" in posted_url
+    assert patched_url.endswith("/issues/42")
+    assert mock_patch.call_args.kwargs["json"] == {"state": "closed"}
+
+
+@patch("gcp.failure_notifier.requests.patch")
+def test_close_issue_skips_comment_when_blank(mock_patch):
+    mock_patch.return_value = MagicMock(status_code=200, raise_for_status=MagicMock())
+    fn.close_issue("owner/repo", 7, "", "t")
+    # Only PATCH was called; no comment POST
+    mock_patch.assert_called_once()
+
+
+# ── reconcile_closures ──────────────────────────────────────────────────────
+
+
+def test_reconcile_closures_closes_recovered_jobs(monkeypatch):
+    """Open issues for a job whose latest execution succeeded must be closed."""
+    # Two issues open: one for fetch-market-data (recovered), one for
+    # signal-monitor (still failing).
+    open_issues = [
+        {"number": 474, "labels": [
+            {"name": "automated"}, {"name": "gcp-job-failure"},
+            {"name": "fetch-market-data"},
+        ]},
+        {"number": 475, "labels": [
+            {"name": "gcp-job-failure"}, {"name": "fetch-market-data"},
+        ]},
+        {"number": 480, "labels": [
+            {"name": "gcp-job-failure"}, {"name": "signal-monitor"},
+        ]},
+    ]
+
+    def fake_find_all(repo, labels, token):
+        return open_issues
+
+    def fake_status(job_name, project_id, region):
+        if job_name == "fetch-market-data":
+            return {"name": "tpw6z", "completed": True, "succeeded": True,
+                    "completion_time": "2026-05-14T12:06:47Z"}
+        if job_name == "signal-monitor":
+            return {"name": "abc", "completed": True, "succeeded": False,
+                    "completion_time": "2026-05-14T13:00:00Z"}
+        return None
+
+    closed: list[int] = []
+
+    def fake_close(repo, num, comment, token):
+        closed.append(num)
+
+    monkeypatch.setattr(fn, "find_all_open_issues", fake_find_all)
+    monkeypatch.setattr(fn, "_get_latest_execution_status", fake_status)
+    monkeypatch.setattr(fn, "close_issue", fake_close)
+
+    summary = fn.reconcile_closures(
+        "owner/repo", "ghp_t", "my-project", "us-east1",
+    )
+
+    assert sorted(closed) == [474, 475]  # both fetch-market-data issues closed
+    assert summary["closed"] == 2
+    assert summary["still_failing"] == 1
+    assert summary["jobs_inspected"] == 2
+    assert summary["issues_inspected"] == 3
+
+
+def test_reconcile_closures_handles_unknown_status(monkeypatch):
+    """When Cloud Run query fails (404 / auth / network), the job is
+    marked unknown and the issue stays open."""
+    monkeypatch.setattr(fn, "find_all_open_issues", lambda *a, **kw: [
+        {"number": 999, "labels": [
+            {"name": "gcp-job-failure"}, {"name": "ghost-job"},
+        ]},
+    ])
+    monkeypatch.setattr(fn, "_get_latest_execution_status",
+                        lambda *a, **kw: None)
+    closed: list[int] = []
+    monkeypatch.setattr(fn, "close_issue",
+                        lambda *a, **kw: closed.append(a[1]))
+
+    summary = fn.reconcile_closures("o/r", "t", "p", "us-east1")
+
+    assert closed == []  # no closure
+    assert summary["unknown"] == 1
+    assert summary["closed"] == 0
+
+
+def test_reconcile_closures_handles_no_open_issues(monkeypatch):
+    """Empty case: no open issues → 0 across the board."""
+    monkeypatch.setattr(fn, "find_all_open_issues", lambda *a, **kw: [])
+    summary = fn.reconcile_closures("o/r", "t", "p", "us-east1")
+    assert summary == {
+        "issues_inspected": 0, "jobs_inspected": 0, "closed": 0,
+        "still_failing": 0, "unknown": 0,
+    }
+
+
+# ── /reconcile HTTP endpoint ────────────────────────────────────────────────
+
+
+def test_handle_reconcile_returns_summary_json(monkeypatch):
+    monkeypatch.setenv("GITHUB_PAT", "ghp_t")
+    monkeypatch.setenv("GITHUB_REPO", "owner/repo")
+    monkeypatch.setenv("GCP_PROJECT_ID", "my-project")
+    monkeypatch.setenv("GCP_REGION", "us-east1")
+
+    captured = {}
+
+    def fake_reconcile(repo, token, project_id, region):
+        captured["repo"] = repo
+        captured["project_id"] = project_id
+        return {"closed": 3, "still_failing": 1, "issues_inspected": 4,
+                "jobs_inspected": 2, "unknown": 0}
+
+    monkeypatch.setattr(fn, "reconcile_closures", fake_reconcile)
+    status, body = fn.handle_reconcile()
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["closed"] == 3
+    assert captured["repo"] == "owner/repo"
+    assert captured["project_id"] == "my-project"
+
+
+def test_handle_reconcile_503_when_env_missing(monkeypatch):
+    monkeypatch.delenv("GITHUB_PAT", raising=False)
+    monkeypatch.delenv("GITHUB_REPO", raising=False)
+    status, body = fn.handle_reconcile()
+    assert status == 503
+    assert "GITHUB_PAT" in body or "GITHUB_REPO" in body
+
+
+def test_handler_post_reconcile_routes_to_reconciler(monkeypatch):
+    """POST /reconcile invokes handle_reconcile, not handle_notification."""
+    notif_called = []
+    monkeypatch.setattr(fn, "handle_notification",
+                        lambda raw: notif_called.append(1) or (204, ""))
+    monkeypatch.setattr(fn, "handle_reconcile",
+                        lambda: (200, '{"closed": 0}'))
+
+    request_line = (
+        b"POST /reconcile HTTP/1.1\r\n"
+        b"Content-Length: 0\r\n"
+        b"\r\n"
+    )
+
+    import io
+    sock = _MockSocket(request_line)
+    handler = fn.Handler.__new__(fn.Handler)
+    handler.request = sock
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.server = None
+    handler.rfile = sock.makefile("rb")
+    handler.wfile = io.BytesIO()
+    handler.raw_requestline = handler.rfile.readline(65537)
+    handler.parse_request()
+    handler.do_POST()
+
+    out = handler.wfile.getvalue()
+    assert b"200" in out
+    assert b'"closed": 0' in out
+    assert notif_called == []  # notify was NOT routed
