@@ -58,7 +58,9 @@ CHECKS: list[dict] = [
         "ts_is_date": True,
         "expected_lag_hours": 30,
         "per_ticker": True,
-        "tickers": ("IWM", "SPY", "QQQ", "SPX"),
+        # SPX is intentionally NOT in this list — it's FRED-sourced with a
+        # different (slower) cadence. See the dedicated SPX check below.
+        "tickers": ("IWM", "SPY", "QQQ"),
         # Filter out the NULL-close placeholder rows the
         # `fetch-premarket-refresh` job writes during pre-market hours.
         # Without this, MAX(date) returns today even when the actual OHLCV
@@ -71,6 +73,40 @@ CHECKS: list[dict] = [
         # 30min buffer for AV pull + DB upsert. Today's row is "expected"
         # starting 23:30 ET; before that the gap-scan rolls back to D-1.
         "settle_hour_et": 23,
+    },
+    {
+        # SPX in market_data_daily is NOT AlphaVantage-sourced — AV's
+        # TIME_SERIES_DAILY does not cover index symbols. SPX's daily
+        # close is written by fetch-fred-rates (FRED SP500 series) into
+        # market_data_daily with ticker='SPX' — see
+        # gcp/fetchers/fetch_fred_rates.py:138.
+        #
+        # FRED publishes the SP500 series with a 1-2 trading-day lag, and
+        # the fred-rates-daily Cloud Scheduler fires at 06:30 ET — often
+        # before FRED's own morning refresh. Empirically (verified
+        # 2026-05-15) a Friday 06:30 ET run pulls SP500 only through the
+        # prior Wednesday — 2 trading days behind. Lumping SPX in with
+        # the AV ETF tickers above (settle_hour_et=23, lag=0) made the
+        # watchdog flag SPX as STALE every single day for the structural
+        # FRED lag — a permanent false positive, not a real gap.
+        #
+        # This dedicated check models the FRED cadence: settle_lag_days=2
+        # (SP500 lands ~2 trading days back) and a generous
+        # expected_lag_hours so a normal 1-2 day FRED lag is "ok", while
+        # a genuine multi-day FRED outage still trips warn/stale.
+        "name": "market_data_daily",
+        "ts_column": "date",
+        "ts_is_date": True,
+        "expected_lag_hours": 96,   # FRED SP500 lags 1-2 trading days
+        "per_ticker": True,
+        "tickers": ("SPX",),
+        "where": "close IS NOT NULL",
+        "min_rows_per_day": 1,
+        "gap_scan_days": 5,
+        # fred-rates-daily fires 06:30 ET; FRED SP500 settles ~2 trading
+        # days behind.
+        "settle_hour_et": 7,
+        "settle_lag_days": 2,
     },
     {
         "name": "market_data_intraday",

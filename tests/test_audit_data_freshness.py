@@ -529,14 +529,38 @@ def test_settle_hour_walks_past_weekend():
 
 
 def test_check_dicts_declare_settle_hour_for_after_hours_fetchers():
-    """Regression guard: the three after-hours fetchers must declare
-    settle_hour_et so the cron rollouts stay in sync with the watchdog."""
+    """Regression guard: the after-hours fetchers must declare
+    settle_hour_et so the cron rollouts stay in sync with the watchdog.
+
+    market_data_daily has TWO CHECK entries (AV ETFs + FRED SPX) so we
+    select each by its ticker set rather than by name alone."""
     from scripts.audit_data_freshness import CHECKS
 
     by_name = {c["name"]: c for c in CHECKS}
-    # market_data_daily — 23:00 ET cron, no lag (writes today's bar)
-    assert by_name["market_data_daily"]["settle_hour_et"] == 23
-    assert by_name["market_data_daily"].get("settle_lag_days", 0) == 0
+
+    # market_data_daily — AV ETF check: 23:00 ET cron, no lag.
+    av_daily = next(
+        c for c in CHECKS
+        if c["name"] == "market_data_daily" and "SPY" in c.get("tickers", ())
+    )
+    assert av_daily["settle_hour_et"] == 23
+    assert av_daily.get("settle_lag_days", 0) == 0
+    assert "SPX" not in av_daily["tickers"], (
+        "SPX must NOT be in the AV market_data_daily check — it is "
+        "FRED-sourced with a different cadence"
+    )
+
+    # market_data_daily — FRED SPX check: 06:30 ET cron, 2-day FRED lag.
+    spx_daily = next(
+        c for c in CHECKS
+        if c["name"] == "market_data_daily" and c.get("tickers") == ("SPX",)
+    )
+    assert spx_daily["settle_hour_et"] == 7
+    assert spx_daily["settle_lag_days"] == 2
+    assert spx_daily["expected_lag_hours"] >= 72, (
+        "SPX check must tolerate the 1-2 trading-day FRED publication lag"
+    )
+
     # etf_options_snapshots — 21:00 ET cron (PR #489 av-options-daily)
     assert by_name["etf_options_snapshots"]["settle_hour_et"] == 21
     assert by_name["etf_options_snapshots"].get("settle_lag_days", 0) == 0
@@ -544,6 +568,35 @@ def test_check_dicts_declare_settle_hour_for_after_hours_fetchers():
     # (Tue 21 ET writes Mon's bars). Codex P2 on PR #494.
     assert by_name["market_data_intraday"]["settle_hour_et"] == 21
     assert by_name["market_data_intraday"]["settle_lag_days"] == 1
+
+
+def test_spx_market_data_daily_split_into_own_check():
+    """SPX freshness must come from a dedicated FRED-cadence check, not
+    the AV ETF check. PR D root-cause: SPX in market_data_daily is
+    written by fetch-fred-rates (FRED SP500), which lags 1-2 trading
+    days — the watchdog was false-flagging it every day by lumping it
+    with the same-day AV ETF tickers."""
+    from scripts.audit_data_freshness import CHECKS
+
+    md_checks = [c for c in CHECKS if c["name"] == "market_data_daily"]
+    assert len(md_checks) == 2, "expected exactly 2 market_data_daily checks (AV + FRED SPX)"
+
+    spx_check = next(c for c in md_checks if c.get("tickers") == ("SPX",))
+    # The SPX check models FRED cadence — generous lag, 2-day settle lag.
+    assert spx_check["settle_lag_days"] == 2
+    assert spx_check["expected_lag_hours"] >= 72
+
+    # On a Friday 06:30 ET fred-rates run, the most recent SETTLED SPX
+    # day should be ~2 trading days back (matches the 2026-05-15
+    # production observation: Fri run pulled SP500 through Wed).
+    from scripts.audit_data_freshness import most_recent_trading_day
+    fri_morning = datetime(2026, 5, 15, 11, 0, 0)  # Fri 07:00 ET = 11 UTC
+    settled = most_recent_trading_day(
+        fri_morning,
+        settle_hour_et=spx_check["settle_hour_et"],
+        settle_lag_days=spx_check["settle_lag_days"],
+    )
+    assert settled == date(2026, 5, 13)  # Wed — 2 trading days before Fri
 
 
 # ── settle_lag_days: writer fires N trading days after the data ─────────────
