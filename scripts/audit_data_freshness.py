@@ -151,6 +151,19 @@ CHECKS: list[dict] = [
         "tickers": ("IWM", "SPY", "QQQ"),
     },
     {
+        # The insight-pipeline Cloud Run job (insight-pipeline-daily Cloud
+        # Scheduler, weekday mornings) is the only writer. `as_of` is the
+        # report's effective session date. This is the failure surface for
+        # the pipeline now that daily-insight-reports.yml no longer carries
+        # its own GitHub Actions cron — a failed run leaves this stale.
+        "name": "insight_reports",
+        "ts_column": "as_of",
+        "ts_is_date": False,
+        "expected_lag_hours": 30,
+        "per_ticker": True,
+        "tickers": ("SPY", "IWM", "QQQ"),
+    },
+    {
         "name": "signal_alerts",
         "ts_column": "alert_date",
         "ts_is_date": True,
