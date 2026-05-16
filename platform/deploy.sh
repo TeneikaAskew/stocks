@@ -48,7 +48,9 @@ gcloud run deploy "${SERVICE}" \
   --set-secrets "DB_PASS=${DB_PASS_SECRET}:latest" \
   --memory 1Gi \
   --cpu 1 \
+  --cpu-throttling \
   --timeout 300 \
+  --min-instances 0 \
   --max-instances 5 \
   ${ALLOW_UNAUTH_FLAG}
 
