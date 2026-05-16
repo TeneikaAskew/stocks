@@ -69,11 +69,9 @@ jobs:
       - name: Summarize staging URL
         if: success()
         run: |
-          STAGING_URL=$(gcloud run services describe trading-platform \
-            --region=us-east1 \
-            --flatten='status.traffic[]' \
-            --filter='status.traffic.tag=staging' \
-            --format='value(status.traffic.url)')
+          BASE_URL=$(gcloud run services describe trading-platform \
+            --region=us-east1 --format='value(status.url)')
+          STAGING_URL="https://staging---${BASE_URL#https://}"
           {
             echo "## Staging deploy complete"
             echo ""
