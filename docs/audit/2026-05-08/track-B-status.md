@@ -18,8 +18,7 @@ into a recurring scheduled job.
 
 | Round | Items closed | Status |
 |---|---|---|
-| Pre-audit | 1 (G.P0.4 stale-warn) | ✅ shipped via PR #293 before audit synthesis |
-| R1 (P0/P1) | 6 (G.P0.5, G.P1.5, G.P1.6, G.P1.7, G.P1.10, G.P2.11) | ✅ all merged 2026-05-08 → 2026-05-09 |
+| R1 (P0/P1) | 7 (G.P0.4, G.P0.5, G.P1.5, G.P1.6, G.P1.7, G.P1.10, G.P2.11) | ✅ all merged 2026-05-08 → 2026-05-09 |
 | R2 (P2) | 1 (G.P2.10 embed quality) | ✅ verified via [`track-B-followup-W8-embed-quality.md`](./track-B-followup-W8-embed-quality.md) |
 | Open | 0 | All Track-B items closed |
 
@@ -42,8 +41,8 @@ that addressed it.
 
 | ID | Item | Landed via |
 |---|---|---|
-| G.P0.4 | Brief: refuse-to-run / banner-warn on stale daily inputs | **PR #293** (pre-audit) — `gcp/premarket_brief.py` detects `(analysis_date − last_daily_bar_date) > 1 trading day`, sets `data['status']='STALE_DAILY_DATA'`, skips per-ticker analysis, stamps `premarket_analysis_history.notes` with the staleness gap |
-| G.P0.5 | Brief: per-ticker `data_as_of` field | **PR #335** (Track C R1 PR-A) — schema PR adding `data_as_of TIMESTAMPTZ` and `data_freshness_status TEXT` to `premarket_analysis`; **PR #336** (Track B PR-W6) — writer populates from `df.iloc[-1].name` per ticker; **PR #337** (PR-W7) — Discord overview embed surfaces the "Based on data from X to Y" line |
+| G.P0.4 | Brief: refuse-to-run / banner-warn on stale daily inputs | **PR #336** (Track B PR-W6 — `feat(brief): surface data freshness window and fail loud on stale daily inputs`) — adds `_resolve_data_freshness` helper, `STALE_DAILY_DATA` short-circuit in `generate_premarket_brief`, and the `data_freshness_summary` string with the ⚠ warning when stale. (PR #293 was the Track B *audit findings* docs PR — it identified G.P0.4 as a P0 item; PR #336 is the actual fix.) |
+| G.P0.5 | Brief: per-ticker `data_as_of` field | **PR #335** (Track C R1 PR-A) — schema PR adding `data_as_of TIMESTAMPTZ` and `data_freshness_status TEXT` to `premarket_analysis`; **PR #336** (same Track B PR-W6 as above — `data_as_of` populated from `df.iloc[-1].name`); **PR #337** (PR-W7) — Discord overview embed surfaces the "Based on data from X to Y" line |
 
 ### P1 (Track B own)
 
