@@ -295,6 +295,12 @@ def canned_bundle(monkeypatch):
             # Dispatch on the gamma-only column "gamma" so each consumer
             # gets the columns it needs and the gamma summarizer's
             # `min(expiration)` doesn't blow up.
+            # snapshot_date set to today() so the new 2-trading-day staleness
+            # guard in summarize_options_flow / summarize_gamma_levels (PR
+            # #482) doesn't false-flag this fixture as stale. The orchestrator
+            # tests call run_insight_pipeline without as_of, so the staleness
+            # check compares against date.today().
+            chain_snapshot_date = date.today()
             if "gamma, vega" in sql:
                 from datetime import timedelta
                 near_exp = (date(2026, 4, 15) + timedelta(days=14)).strftime("%Y-%m-%d")
@@ -313,13 +319,16 @@ def canned_bundle(monkeypatch):
                                 "delta": 0.5 if opt_type == "calls" else -0.45,
                                 "bid": 1.10, "ask": 1.20, "mark": 1.15,
                                 "last_price": 1.15,
+                                "snapshot_date": chain_snapshot_date,
                             })
                 return pd.DataFrame(rows)
             return pd.DataFrame([
                 {"option_type": "calls", "strike": 500, "volume": 10_000,
-                 "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5},
+                 "open_interest": 50_000, "implied_volatility": 0.18, "delta": 0.5,
+                 "snapshot_date": chain_snapshot_date},
                 {"option_type": "puts", "strike": 495, "volume": 8_000,
-                 "open_interest": 40_000, "implied_volatility": 0.22, "delta": -0.45},
+                 "open_interest": 40_000, "implied_volatility": 0.22, "delta": -0.45,
+                 "snapshot_date": chain_snapshot_date},
             ])
         if "signal_alerts" in sql:
             return pd.DataFrame([

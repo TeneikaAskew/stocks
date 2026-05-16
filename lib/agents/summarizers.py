@@ -60,6 +60,51 @@ def _unavailable(reason: str) -> dict:
     return {"available": False, "reason": reason}
 
 
+# Maximum trading-day gap between an options chain's snapshot_date and the
+# brief's as-of date before we silence the options/gamma sections. The AV
+# options fetcher writes EOD chains at ~21:00 ET; a Tuesday-morning brief
+# reading Monday-EOD chain is 1 trading day behind and is the standard
+# institutional convention. A Wednesday brief reading Friday-EOD chain
+# (today's actual 5/13 state) is 3 trading days behind — strikes have
+# rolled, expirations have been added, dealers have re-hedged. Citing
+# Kings/Gates/Flip off that chain misleads the LLM and the reader.
+#
+# Threshold of 2 means: chains 0-2 trading days behind = serve; 3+ = silence.
+# This covers Mon brief / Fri-EOD (1 day) and Tue brief / Mon-EOD (1 day)
+# as fresh, while flagging anything older than 2 trading days as stale.
+MAX_OPTIONS_STALE_TRADING_DAYS = 2
+
+
+def _check_chain_freshness(
+    chain_date,
+    target_date=None,
+    max_trading_days: int = MAX_OPTIONS_STALE_TRADING_DAYS,
+) -> Optional[str]:
+    """Return None when fresh, or a string reason when stale.
+
+    Uses `numpy.busday_count` (Mon-Fri, no holiday awareness) which is
+    close enough for staleness — false-flag on the rare Tuesday-after-
+    Monday-holiday is acceptable defensive behavior.
+
+    Accepts either `date` or `datetime` for both inputs and coerces to
+    `.date()` before counting. `parse_as_of` returns timezone-aware
+    `datetime` when `INSIGHT_AS_OF` is a full ISO timestamp; passing
+    that straight to `np.busday_count` would raise.
+    """
+    if isinstance(chain_date, datetime):
+        chain_date = chain_date.date()
+    target = target_date if target_date else date_type.today()
+    if isinstance(target, datetime):
+        target = target.date()
+    trading_days = int(np.busday_count(chain_date, target))
+    if trading_days > max_trading_days:
+        return (
+            f"chain stale: {trading_days} trading days behind {target} "
+            f"(snapshot_date={chain_date})"
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 1. Market context
 # ---------------------------------------------------------------------------
@@ -442,7 +487,7 @@ def summarize_options_flow(
     snap_op = "<=" if inclusive_today else "<"
     sql = (
         "SELECT option_type, strike, volume, open_interest, "
-        "       implied_volatility, delta "
+        "       implied_volatility, delta, snapshot_date "
         "FROM etf_options_snapshots "
         "WHERE ticker = :ticker "
         "  AND data_source = 'alphavantage' "
@@ -459,6 +504,12 @@ def summarize_options_flow(
     df = _query(sql, params)
     if df.empty:
         return _unavailable(f"no etf_options_snapshots for {ticker}")
+
+    chain_date_raw = df["snapshot_date"].iloc[0]
+    chain_date = chain_date_raw.date() if hasattr(chain_date_raw, "date") else pd.to_datetime(chain_date_raw).date()
+    stale_reason = _check_chain_freshness(chain_date, as_of)
+    if stale_reason:
+        return _unavailable(stale_reason)
 
     calls = df[df["option_type"] == "calls"]
     puts = df[df["option_type"] == "puts"]
@@ -526,7 +577,7 @@ def summarize_gamma_levels(
     sql = (
         "SELECT option_type, strike, expiration, "
         "       open_interest, gamma, vega, delta, "
-        "       bid, ask, mark, last_price "
+        "       bid, ask, mark, last_price, snapshot_date "
         "FROM etf_options_snapshots "
         "WHERE ticker = :ticker "
         "  AND data_source = 'alphavantage' "
@@ -543,6 +594,12 @@ def summarize_gamma_levels(
     df = _query(sql, params)
     if df.empty:
         return _unavailable(f"no etf_options_snapshots for {ticker}")
+
+    chain_date_raw = df["snapshot_date"].iloc[0]
+    chain_date = chain_date_raw.date() if hasattr(chain_date_raw, "date") else pd.to_datetime(chain_date_raw).date()
+    stale_reason = _check_chain_freshness(chain_date, as_of)
+    if stale_reason:
+        return _unavailable(stale_reason)
 
     # Map the chain rows to the dict shape lib.gamma accepts.
     type_map = {"calls": "call", "puts": "put"}
