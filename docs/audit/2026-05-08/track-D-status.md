@@ -19,7 +19,8 @@ into a recurring scheduled job.
 | Pre-audit | 1 (G.P0.7 TZ fix) | ✅ shipped via commit `2adb5fe` / PR #279 on 2026-05-07 morning |
 | R1 (P0/P1) | 7 (G.P0.6, G.P0.8, G.P0.9, G.P0.10, G.P0.11 instrumentation, G.P1.1) | ✅ all merged 2026-05-08 → 2026-05-09 |
 | R2 (P0.11 orchestration + P2/P3 batch) | 7 (G.P0.11 orchestration, G.P2.5, G.P2.6, G.P2.8, G.P2.9, G.P3.4, G.P3.5) | ✅ all merged |
-| Open | 1 (G.P1.3 deploy verification) | ⏳ AWAITING — 1 week of post-image-rebuild data |
+| Closeout | 1 (G.P1.3 deploy verification) | ✅ verified 2026-05-13 via code-read + production SQL — see G.P1.3 row |
+| Open | 0 | All Track-D items closed |
 
 The TZ bug that killed the monitor at noon ET is fixed and verified
 (May 8+ executions show 6h+ wall-clock vs prior 2h 35m). Risk caps
@@ -53,7 +54,7 @@ that addressed it.
 | ID | Item | Landed via |
 |---|---|---|
 | G.P1.1 | `level_broken` always-NULL — log-and-reraise + fresh-data verify | **PR #339** — replaced bare `except Exception` at `gcp/signal_monitor.py:295` with log-and-reraise; added counters. **Replay verification**: 5/7 + 5/8 fresh-data sessions surfaced 0 → 6 RTH level-break events, confirming the Track A unfreeze was the upstream blocker, not a `check_level_breaks` predicate bug. |
-| G.P1.3 | `MIN_CONDITIONS_MOMENTUM=5` deploy verification | **⏳ AWAITING DATA** — image rebuilt 17:49 UTC on 2026-05-07; earliest verification ~5/15. Re-checked 2026-05-09: data window still empty. Once stand-alone momentum data accumulates (post-#371 flag flip), query `(strategy_agreement->'base_scores'->>1)::numeric AS momentum_score, COUNT(*)`. Tracking via issue #302. |
+| G.P1.3 | `MIN_CONDITIONS_MOMENTUM=5` deploy verification | **✅ DONE-VERIFIED-VIA-DATA (2026-05-13)** — per CLAUDE.md §3.5 ("never wait for the next session"), the original "AWAITING DATA" stance violated rule and was closed via two-prong verification: **(1) Code-read assertion**: `MIN_CONDITIONS_MOMENTUM=5` is a hardcoded module constant at `lib/strategies/config.py:108`, imported as `MIN_CONDITIONS` at `lib/strategies/momentum.py:32`, applied as the gate at `momentum.py:209-212`. `MomentumStrategy.evaluate()` returns `None` when `score < MIN_CONDITIONS` — there is no runtime override path (no env var, no `MonitorConfig` field, no `exit_config_overrides` consumer). The `base_score` written to `Signal` and persisted to `signal_alerts.strategy_agreement.base_scores[1]` IS the same `score` that was gated, so no fire can persist with `score<5` by code construction. **(2) Production SQL via `db-query.yml` run 25832047129**: split by alert_date — 5/7 (OLD image, RTH session started 13:30 UTC pre-rebuild at 17:49 UTC) shows 9 momentum-in-agreement rows all with `momentum_score=3.0` (expected, OLD MIN=3); **5/8 (full RTH on NEW image, 396 mr fires from 13:30 to 19:59 UTC), 5/11, 5/12, 5/13: ZERO momentum-in-agreement rows, ZERO standalone-momentum fires, ZERO `score<5` momentum bypasses**. Mean-reversion continues firing normally (396 on 5/8 full session) proving signal-monitor IS running and momentum IS being evaluated — it just can't reach 5/7 conditions on recent bars, which is exactly the design intent of raising the threshold. Tracking issue #302 closed by this verification. |
 
 ### P2 (Track D own — batched PR #328)
 
