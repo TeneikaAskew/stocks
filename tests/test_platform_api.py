@@ -133,8 +133,19 @@ class TestSimilarSignalsAPI:
 
     def _patch_query(self, monkeypatch, stats_df, matches_df):
         """Install a fake `query_to_dataframe` that returns stats then
-        matches in call order. Mirrors how the router invokes it."""
+        matches in call order. Mirrors how the router invokes it.
+
+        Also forces `signals._CLOUD_SQL = True`. The /similar endpoint
+        503s up-front when `_CLOUD_SQL` is False (its no-DB guard), and
+        `_CLOUD_SQL` is evaluated at import time from the Cloud SQL env
+        vars — which are absent in the CI `Run Tests` job. Without this
+        patch the guard short-circuits before the mocked query is ever
+        reached, so the test would exercise the 503 path instead of the
+        behavior under test."""
         from gcp import database
+        from api.routers import signals as signals_module
+
+        monkeypatch.setattr(signals_module, "_CLOUD_SQL", True)
 
         calls = {"n": 0}
 
@@ -146,7 +157,13 @@ class TestSimilarSignalsAPI:
         monkeypatch.setattr(database, "query_to_dataframe", fake_query)
         return calls
 
-    def test_similar_invalid_direction_returns_400(self, client):
+    def test_similar_invalid_direction_returns_400(self, client, monkeypatch):
+        # Force _CLOUD_SQL=True so the endpoint reaches its direction
+        # validation instead of 503-ing on the no-DB guard (CI's
+        # Run Tests job has no Cloud SQL env vars).
+        from api.routers import signals as signals_module
+        monkeypatch.setattr(signals_module, "_CLOUD_SQL", True)
+
         r = client.get("/api/signals/IWM/similar?direction=BUY&rsi=55&score=4")
         assert r.status_code == 400
         assert "CALL or PUT" in r.json()["detail"]
