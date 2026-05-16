@@ -48,7 +48,16 @@ Use it alongside [audit_data_freshness.py](../scripts/audit_data_freshness.py) a
 - 🟡 **TODO**: add a Cloud Monitoring alert on `fetch-market-data` execution failures (email or Discord webhook)
 - 🟡 **TODO**: add a watchdog GitHub Actions workflow that runs at 23:30 UTC daily — queries `SELECT MAX(date) FROM market_data_daily WHERE ticker='IWM'` and, if the result is < today, re-invokes the Cloud Run job. The fail-fast guard + watchdog means the next incident takes hours to detect instead of days.
 
-**SPX note** — SPX is stuck at 2025-12-17 (pre-existing 4-month gap). SPX is an index with no intraday on AV; the script tries `TIME_SERIES_INTRADAY` for SPX every day and fails, but `TIME_SERIES_DAILY` should still work. Separate investigation needed in the fetcher logic.
+**SPX note** — SPX (the S&P 500 *index*) is intentionally NOT in
+`market_data_daily`. AlphaVantage's `TIME_SERIES_DAILY` /
+`TIME_SERIES_INTRADAY` do not cover index symbols, so SPX has no
+genuine OHLCV feed. A former FRED-`SP500`→`SPX` write (close-only,
+1-2 trading days stale) and a put-call-parity backfill script were
+both removed 2026-05-15 — neither produced real OHLCV data. SPX
+options Greeks derive spot from the live option chain via put-call
+parity (`lib/options_greeks.py`), so no `market_data_daily` SPX row
+is needed. SPX *option chains* remain fully covered in
+`etf_options_snapshots` (AV does provide SPX options).
 
 ---
 
@@ -423,10 +432,5 @@ gcloud alpha monitoring policies create \
 
 Skipped-execution (scheduler didn't fire) is caught by the freshness watchdog instead — it's simpler to check "did the data land" than to derive "did the scheduler fire" from GCP metrics.
 
-### 3. SPX parity ordering constraint
-`gcp/fetchers/fetch_market_data.py::process_spx_via_parity` derives SPX daily close via put-call parity from `etf_options_snapshots`. The options backfill job (`fetch-av-options-backfill`, ~01:00 UTC) **must** run before the daily fetcher (`fetch-market-data-daily`, 23:00 ET / 04:00 UTC next day) for the same calendar day. Current ordering gives a 22+ hour buffer.
-
-If the options backfill is ever moved later, update the daily fetcher schedule to run after it, or SPX will be 1 day behind the ETFs.
-
-### 4. Paused buggy intraday options schedulers (2026-04-14)
+### 3. Paused buggy intraday options schedulers (2026-04-14)
 The 9 `etf-options-*` intraday Cloud Scheduler triggers (9:30/9:35/9:40/10:00/11:30/13:00/14:30/15:30/16:05 ET) were paused on 2026-04-14. They had been silently broken since 2026-04-10 14:00 UTC (the same env-var regression incident) and wrote `data_source=NULL` rows which duplicated the reliable AV EOD backfill (`fetch-av-options-backfill`, 01:00 UTC). Re-enable only if real intraday options data is needed beyond the live AV API path.

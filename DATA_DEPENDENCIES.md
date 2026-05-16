@@ -64,13 +64,18 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 - [`gcp/fetchers/fetch_market_data.py:463`](gcp/fetchers/fetch_market_data.py#L463) — batch upsert
 - [`gcp/fetchers/fetch_market_data.py:731`](gcp/fetchers/fetch_market_data.py#L731) — `_run_backfill` upsert
 - [`gcp/fetchers/fetch_premarket_refresh.py:251`](gcp/fetchers/fetch_premarket_refresh.py#L251) — `INSERT … ON CONFLICT (gap_pct, pre_high, pre_low, pre_vwap)`
-- [`gcp/fetchers/fetch_fred_rates.py:138`](gcp/fetchers/fetch_fred_rates.py#L138) — SP500 close upsert as `ticker='SPX'`
 - [`gcp/premarket_brief.py:79`](gcp/premarket_brief.py#L79) — `DELETE FROM market_data_daily WHERE close IS NULL` (cleanup)
 - [`gcp/backfill_ticker.py:375`](gcp/backfill_ticker.py#L375), [`:414`](gcp/backfill_ticker.py#L414) — Discord `/replay`
 - [`gcp/migrate_to_gcp.py:188`](gcp/migrate_to_gcp.py#L188), [`:640`](gcp/migrate_to_gcp.py#L640) — one-shot historical
 - [`scripts/backfill_watchlist_data.py:233`](scripts/backfill_watchlist_data.py#L233) — coverage backfill
-- [`scripts/backfill_spx_from_options.py:138`](scripts/backfill_spx_from_options.py#L138) — parity-derived SPX
 - 3× `scripts/_backfill_*.py` — one-shot historical INSERTs
+- **No `SPX` writer.** The S&P 500 *index* has no genuine OHLCV feed
+  (AlphaVantage `TIME_SERIES_DAILY` excludes index symbols). The former
+  FRED-`SP500`→`SPX` upsert and the `backfill_spx_from_options.py`
+  parity-derived rows were removed 2026-05-15 — both produced
+  close-only / degenerate O=H=L=C data that was never real market
+  data. SPX options Greeks derive spot from the live chain via
+  put-call parity; no `market_data_daily` SPX row is needed.
 
 ### `market_data_intraday` (and partitions)
 - [`gcp/fetchers/fetch_market_data.py:432`](gcp/fetchers/fetch_market_data.py#L432) — `upsert_dataframe(..., 'market_data_intraday', ['ticker','interval','ts'])`
@@ -231,7 +236,7 @@ This doc complements [ARCHITECTURE.md](ARCHITECTURE.md) (which lists the 27 Clou
 - `lib/agents/ranker/signals.py:113,117` — ranker GEX features
 - [`lib/data_loader.py:397,415`](lib/data_loader.py#L397) — dynamic etf-vs-earnings table read
 - `platform/api/routers/options.py:198,209,265,277,282` — chains + nearest-date endpoints
-- `scripts/backfill_spx_from_options.py:59-178`, `scripts/maintenance/compute_spx_greeks.py:91,101,121`, `scripts/audit_data_freshness.py:443`, `scripts/analysis/options_pnl_translation.py:200`
+- `scripts/maintenance/compute_spx_greeks.py:91,101,121`, `scripts/audit_data_freshness.py:443`, `scripts/analysis/options_pnl_translation.py:200`
 
 ### `earnings_options_snapshots`
 - [`lib/data_loader.py:397,415`](lib/data_loader.py#L397) — dynamic table read (when `source='earnings'`). **No other production reader.**
