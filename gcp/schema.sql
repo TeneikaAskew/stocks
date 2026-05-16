@@ -409,6 +409,21 @@ ALTER TABLE earnings_calendar
 CREATE INDEX IF NOT EXISTS idx_earnings_calendar_sp500_date
     ON earnings_calendar (earnings_date DESC, is_s_p_500 DESC NULLS LAST);
 
+-- ─────────────────────────────────────────────────────────
+-- HELPER: set_updated_at() — generic BEFORE UPDATE trigger fn.
+-- Defined here, ahead of its first use, so a single-pass apply
+-- of this file (psql -f schema.sql -v ON_ERROR_STOP=1) succeeds.
+-- Shared by trg_earnings_calendar_updated, trg_market_data_daily_updated,
+-- and the other trg_*_updated triggers further down this file.
+-- ─────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$;
+
 DROP TRIGGER IF EXISTS trg_earnings_calendar_updated ON earnings_calendar;
 CREATE TRIGGER trg_earnings_calendar_updated
     BEFORE UPDATE ON earnings_calendar
@@ -945,18 +960,8 @@ CREATE INDEX IF NOT EXISTS idx_economic_events_date
     ON economic_events (event_date DESC);
 
 
--- ─────────────────────────────────────────────────────────
--- HELPER: auto-update updated_at on market_data_daily
--- ─────────────────────────────────────────────────────────
-
-CREATE OR REPLACE FUNCTION set_updated_at()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$;
-
+-- set_updated_at() is defined earlier in this file (just before
+-- trg_earnings_calendar_updated) so it exists ahead of its first use.
 DROP TRIGGER IF EXISTS trg_market_data_daily_updated ON market_data_daily;
 CREATE TRIGGER trg_market_data_daily_updated
     BEFORE UPDATE ON market_data_daily
