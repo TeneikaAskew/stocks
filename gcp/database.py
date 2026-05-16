@@ -90,7 +90,16 @@ def get_engine():
     direct_url = _direct_db_url()
     if direct_url:
         import sqlalchemy
-        _engine = sqlalchemy.create_engine(direct_url, pool_pre_ping=True)
+        # Mirror the Cloud SQL engine's pool config so both backends behave
+        # identically — pool_pre_ping plus recycle/size/timeout resilience.
+        _engine = sqlalchemy.create_engine(
+            direct_url,
+            pool_size=5,
+            max_overflow=2,
+            pool_timeout=30,
+            pool_recycle=1800,
+            pool_pre_ping=True,
+        )
         logger.info(
             "Direct DB engine created: %s:%s/%s",
             os.environ.get('DB_HOST'),
