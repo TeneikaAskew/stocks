@@ -1,0 +1,114 @@
+name: Deploy Platform (Staging)
+
+# Auto-deploys the trading-platform Cloud Run service to a `staging`-tagged
+# revision on every push to main that touches the platform or its shared
+# backend. The staging revision receives NO production traffic — the prod
+# URL (https://stocks.insightscollective.org) keeps serving the current
+# 100%-traffic revision.
+#
+# Promote a verified staging revision to production separately with:
+#   gcloud run services update-traffic trading-platform \
+#     --region=us-east1 --to-tags=staging=100
+#
+# See platform/deploy.sh (STAGING=1 mode) for the underlying deploy logic.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'platform/**'
+      - 'lib/**'
+      - 'requirements.txt'
+      - 'gcp/database.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize deploys; a queued push waits rather than racing an in-flight one.
+concurrency:
+  group: deploy-platform-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        env:
+          SA_KEY: ${{ secrets.CLAUDE_CODE_WEB_GCP_SA_KEY }}
+        run: |
+          if [ -z "$SA_KEY" ]; then
+            echo "::error::CLAUDE_CODE_WEB_GCP_SA_KEY secret is not set"
+            exit 1
+          fi
+          echo "$SA_KEY" > "$RUNNER_TEMP/gcp-key.json"
+          gcloud auth activate-service-account --key-file="$RUNNER_TEMP/gcp-key.json"
+          gcloud config set project adept-mountain-474619-d4
+
+      - name: Build image and deploy staging revision
+        env:
+          STAGING: '1'
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          for var in DB_USER DB_NAME; do
+            if [ -z "${!var}" ]; then
+              echo "::error::$var secret is not set"
+              exit 1
+            fi
+          done
+          ./platform/deploy.sh
+
+      - name: Summarize staging URL
+        if: success()
+        run: |
+          STAGING_URL=$(gcloud run services describe trading-platform \
+            --region=us-east1 \
+            --flatten='status.traffic[]' \
+            --filter='status.traffic.tag=staging' \
+            --format='value(status.traffic.url)')
+          {
+            echo "## Staging deploy complete"
+            echo ""
+            echo "| Environment | URL |"
+            echo "|---|---|"
+            echo "| Staging (this build — no production traffic) | ${STAGING_URL:-unknown} |"
+            echo "| Production (unchanged) | https://stocks.insightscollective.org |"
+            echo ""
+            echo "Promote this staging revision to production:"
+            echo '```'
+            echo "gcloud run services update-traffic trading-platform \\"
+            echo "  --region=us-east1 --to-tags=staging=100"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  handle-failure:
+    needs: deploy-staging
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Deploy Platform (Staging)"
+      failure_title: "❌ Platform staging deploy failed"
+      issue_labels: "workflow-failure,deploy,automated"
+      workflow_file: "deploy-platform-staging.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false
