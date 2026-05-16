@@ -200,3 +200,27 @@ class TestReplayMode:
             # Replay path completed successfully — must NOT be exit 2
             # (the AV-key fail-fast) or 3 (Cloud SQL fail-fast)
             assert exc.value.code == 0
+
+
+class TestSignalsWebhookRouting:
+    """SignalMonitor routes entries / exits / ORB snapshots to the
+    dedicated signals channel (DISCORD_WEBHOOK_SIGNALS_URL) when set,
+    falling back to DISCORD_WEBHOOK_URL otherwise."""
+
+    def test_prefers_signals_webhook(self, monkeypatch):
+        monkeypatch.setenv('DISCORD_WEBHOOK_SIGNALS_URL', 'https://discord.com/api/webhooks/SIG')
+        monkeypatch.setenv('DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/MAIN')
+        m = _build_monitor()
+        assert m.webhook_url == 'https://discord.com/api/webhooks/SIG'
+
+    def test_falls_back_to_main_webhook(self, monkeypatch):
+        monkeypatch.delenv('DISCORD_WEBHOOK_SIGNALS_URL', raising=False)
+        monkeypatch.setenv('DISCORD_WEBHOOK_URL', 'https://discord.com/api/webhooks/MAIN')
+        m = _build_monitor()
+        assert m.webhook_url == 'https://discord.com/api/webhooks/MAIN'
+
+    def test_none_when_neither_set(self, monkeypatch):
+        monkeypatch.delenv('DISCORD_WEBHOOK_SIGNALS_URL', raising=False)
+        monkeypatch.delenv('DISCORD_WEBHOOK_URL', raising=False)
+        m = _build_monitor()
+        assert m.webhook_url is None

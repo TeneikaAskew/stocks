@@ -100,7 +100,13 @@ class SignalMonitor:
         self.proximity_cfg = self.cfg.proximity
 
         self.strat = StratClassifier(strat_config=self.strat_cfg)
-        self.webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
+        # Signal entries, in-session exits and ORB snapshots route to the
+        # dedicated signals channel when configured; fall back to the main
+        # webhook so deploys without the secret behave identically.
+        self.webhook_url = (
+            os.environ.get('DISCORD_WEBHOOK_SIGNALS_URL')
+            or os.environ.get('DISCORD_WEBHOOK_URL')
+        )
         self.av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
 
         # Resolve live signal-monitor watchlist:

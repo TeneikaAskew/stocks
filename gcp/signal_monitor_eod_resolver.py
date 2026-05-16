@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from datetime import datetime, time as dt_time, timedelta
@@ -64,6 +65,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pandas as pd
+import requests
 
 from lib.config import load_config
 from lib.data_loader import DataLoader
@@ -95,6 +97,13 @@ class EODResolver:
         self.loader = DataLoader(data_dir=cfg.market.data_dir)
         # Per-day (ticker, alert_date) → DataFrame cache. Reset per run.
         self._intraday_cache: dict[Tuple[str, str], pd.DataFrame] = {}
+        # Post-close exits route to the dedicated signals channel when
+        # configured; fall back to the main webhook otherwise.
+        self.webhook_url = (
+            os.environ.get('DISCORD_WEBHOOK_SIGNALS_URL')
+            or os.environ.get('DISCORD_WEBHOOK_URL')
+        )
+        self.discord_timeout = cfg.monitor.discord_timeout
 
     # ── 1. Find unresolved alerts ─────────────────────────────────────
 
@@ -333,7 +342,68 @@ class EODResolver:
             })
             return result.rowcount or 0
 
-    # ── 4. Orchestration ──────────────────────────────────────────────
+    # ── 4. Discord digest ─────────────────────────────────────────────
+
+    @staticmethod
+    def build_digest_embed(resolved_exits: list[dict],
+                           since: Optional[str]) -> dict:
+        """Build a single summary embed for the run's resolved exits.
+
+        One embed per run (not per exit) — the resolver closes a whole
+        batch at once post-close, and a --backfill run can resolve
+        hundreds of rows; individual messages would hit Discord's rate
+        limit. The per-exit list is capped and sorted by |return| so the
+        biggest movers always show.
+        """
+        by_reason: dict[str, int] = {}
+        for ex in resolved_exits:
+            by_reason[ex['exit_reason']] = by_reason.get(ex['exit_reason'], 0) + 1
+        reason_summary = ' · '.join(f"{n} {r}" for r, n in sorted(by_reason.items()))
+
+        n = len(resolved_exits)
+        net = sum(ex['exit_return_pct'] for ex in resolved_exits)
+        avg = net / n
+        wins = sum(1 for ex in resolved_exits if ex['exit_return_pct'] > 0)
+
+        cap = 25
+        ranked = sorted(resolved_exits,
+                        key=lambda e: abs(e['exit_return_pct']), reverse=True)
+        lines = [
+            f"{'🟢' if ex['exit_return_pct'] >= 0 else '🔴'} "
+            f"**{ex['ticker']}** {ex['direction']} · {ex['exit_reason']} "
+            f"· {ex['exit_return_pct']:+.2f}%"
+            for ex in ranked[:cap]
+        ]
+        if n > cap:
+            lines.append(f"_…and {n - cap} more_")
+
+        return {
+            'title': 'EOD Signal Resolution',
+            'description': (
+                f"Resolved **{n}** post-close {'exit' if n == 1 else 'exits'}"
+                f"{f' (since {since})' if since else ''} — {reason_summary}\n"
+                f"Win rate {wins}/{n} · avg {avg:+.2f}% · net {net:+.2f}%\n\n"
+                + '\n'.join(lines)
+            ),
+            'color': 0x2ecc71 if net >= 0 else 0xe74c3c,
+            'timestamp': datetime.now(ZoneInfo("UTC")).isoformat(),
+        }
+
+    def _post_digest(self, resolved_exits: list[dict],
+                     since: Optional[str]) -> None:
+        """POST the digest embed. No-op when nothing resolved or no
+        webhook configured."""
+        if not self.webhook_url or not resolved_exits:
+            return
+        embed = self.build_digest_embed(resolved_exits, since)
+        try:
+            requests.post(self.webhook_url, json={'embeds': [embed]},
+                          timeout=self.discord_timeout)
+            logger.info("EOD digest posted: %d exits", len(resolved_exits))
+        except Exception as e:
+            logger.warning("EOD digest Discord post failed: %s", e)
+
+    # ── 5. Orchestration ──────────────────────────────────────────────
 
     def run(self, since: Optional[str] = None) -> dict:
         """Top-level entry. Returns a per-reason count summary."""
@@ -344,6 +414,7 @@ class EODResolver:
             return {'resolved': 0, 'skipped': 0, 'wall_clock_s': time.time() - t0}
 
         per_reason: dict[str, int] = {}
+        resolved_exits: list[dict] = []
         skipped = 0
         groups = df.groupby(['ticker', 'alert_date'])
         for (ticker, alert_date), group in groups:
@@ -359,12 +430,20 @@ class EODResolver:
                         per_reason[resolution['exit_reason']] = (
                             per_reason.get(resolution['exit_reason'], 0) + 1
                         )
+                        resolved_exits.append({
+                            'ticker': resolution['ticker'],
+                            'direction': alert['direction'],
+                            'exit_reason': resolution['exit_reason'],
+                            'exit_return_pct': resolution['exit_return_pct'],
+                        })
                 except Exception as e:
                     logger.warning(
                         "persist failed for %s @%s: %s",
                         ticker, alert['alert_ts'], e,
                     )
                     skipped += 1
+
+        self._post_digest(resolved_exits, since)
 
         wall_clock = time.time() - t0
         resolved = sum(per_reason.values())
