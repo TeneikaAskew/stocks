@@ -69,6 +69,7 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 | [`lib/api_client.py`](lib/api_client.py) | code | Resilient HTTP helper (retry + exponential backoff) for external APIs | `requests` | `lib.ticker_info` (currently only consumer; available for fetchers) |
 | [`lib/logging_config.py`](lib/logging_config.py) | code | Cloud-Run-friendly structured-JSON logging setup | — | All Jobs / Services (single `setup_logging()` import) |
 | [`gcp/deploy.sh`](gcp/deploy.sh) | code (ops) | One-stop deploy: builds image, creates/updates 27 Jobs + 4 Services + 28+ Schedulers + Pub/Sub + Cloud Tasks queue | gcloud CLI | Manual ops |
+| [`platform/deploy.sh`](platform/deploy.sh) | code (ops) | Builds + deploys the `trading-platform` service image (Cloud Build → `gcr.io`). `STAGING=1` mode deploys a `staging`-tagged revision at 0% traffic for the two-stage deploy pipeline | gcloud CLI, Cloud Build | CI workflow `deploy-platform-staging.yml`, manual ops |
 | [`gcp/schema.sql`](gcp/schema.sql) | code (ops) | All `CREATE TABLE IF NOT EXISTS` statements (38 statements; ~27 logical user-facing tables — the rest are LIST-partition children of `market_data_intraday`, `archive_yahoo_*` archives, and `*_history` audit copies) | — | `apply_schema.py` |
 
 ### GCP resources
@@ -87,7 +88,7 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 | `gcp-job-failures-sink` | Cloud Logging Sink | Filters `severity>=ERROR AND resource.type=cloud_run_job AND job_name!=failure-notifier` → Pub/Sub | — | Pub/Sub topic |
 | `_Default` / `_Required` Logging | Log Buckets + Sinks | GCP-managed default log retention | — | All services (auto) |
 | 19 Secret Manager secrets | Secret Manager | Credentials + config (see Resource references below) | — | Cloud Run Jobs (env injection in `deploy.sh`) |
-| `trading-platform` | Cloud Run Service | FastAPI dashboard backend | `lib/`, Cloud SQL | Browser via React app |
+| `trading-platform` | Cloud Run Service | FastAPI dashboard backend; custom domain `stocks.insightscollective.org` (Cloud Run domain mapping, Google-managed TLS, IAP-gated) | `lib/`, Cloud SQL | Browser via React app + custom domain |
 | `discord-interactions` | Cloud Run Service | Discord slash-command HTTP endpoint | Discord public key, Cloud Tasks | Discord |
 | `failure-notifier` | Cloud Run Service | Pub/Sub-driven GitHub-issue creator | `github-pat`, `github-repo` secrets | Pub/Sub push subscription |
 | `signal-monitor` | Cloud Run Service | **Likely orphaned** — see Reconciliation | — | Unknown |
@@ -141,6 +142,15 @@ Three cross-cutting capabilities sit alongside the job fleet: (1) a **failure-no
 1. Discord sends an interaction (e.g. `/replay TICKER`) to **`discord-interactions`** Cloud Run Service (port 8080).
 2. The service verifies the request via the `discord-public-key` secret, then invokes the appropriate Cloud Run Job (`backfill-ticker`, `backtest`, `validate-brief`) via the Run API.
 3. The triggered Job posts results back to Discord via `discord-webhook-insights`.
+
+### Platform deploy pipeline (staging → production)
+
+Added 2026-05-16. The `trading-platform` Cloud Run service deploys in two stages via GitHub Actions:
+
+1. **Deploy to staging** — [`deploy-platform-staging.yml`](.github/workflows/deploy-platform-staging.yml) triggers on push to `main` touching `platform/`, `lib/`, `requirements.txt`, or `gcp/database.py`. It runs `STAGING=1 ./platform/deploy.sh`, which builds the image with Cloud Build and deploys a Cloud Run revision tagged `staging` with `--no-traffic`. The revision is reachable at `https://staging---trading-platform-…run.app`; production traffic is untouched.
+2. **Promote to production** — [`promote-platform-prod.yml`](.github/workflows/promote-platform-prod.yml) is a manual `workflow_dispatch` that routes 100% of production traffic to the current `staging`-tagged revision (`gcloud run services update-traffic --to-tags=staging=100`). It shares the staging workflow's concurrency group so a deploy and a promote cannot interleave.
+
+Production is served at the custom domain **`stocks.insightscollective.org`** — a Cloud Run domain mapping with Google-managed TLS, gated by IAP. The generated `*.run.app` URL remains as a fallback. Both workflows authenticate with the `CLAUDE_CODE_WEB_GCP_SA_KEY` service-account secret.
 
 ## Architecture diagram
 
@@ -210,7 +220,7 @@ flowchart LR
     end
 
     subgraph SVC["Cloud Run Services"]
-        TP[trading-platform<br/>FastAPI + React]
+        TP[trading-platform<br/>FastAPI + React<br/>stocks.insightscollective.org]
         DI[discord-interactions]
         FN[failure-notifier]
         SMS[signal-monitor service<br/>⚠ orphaned]
@@ -223,7 +233,8 @@ flowchart LR
     end
 
     subgraph CICD["GitHub Actions"]
-        GHA[12 workflows<br/>backups + audits]
+        GHA[20 workflows<br/>backups · audits · deploy]
+        DEPLOYW[deploy-platform-staging<br/>+ promote-platform-prod]
     end
 
     SCH --> FETCH
@@ -262,12 +273,13 @@ flowchart LR
     SINK --> PST
     PST --> FN
     FN -->|create issue| GHA
+    DEPLOYW -->|Cloud Build + deploy| TP
 
     classDef code fill:#dde,stroke:#557,stroke-width:1px;
     classDef gcp fill:#fec,stroke:#a83,stroke-width:1px;
     classDef ext fill:#efe,stroke:#383,stroke-width:1px;
     classDef warn fill:#fdd,stroke:#a33,stroke-width:2px;
-    class FMD,FEH,FEC,FECON,FFR,FSEC,FNS,FAVI,FPR,FII,FTM,PMB,IP,IDP,SM,WR,CER,EWS,SQR,SQA,BFT,BT,VB,AR,ASM,LSIG,LIND,LSTRAT,LGAM,LER,LBT,LIN,TP,DI,FN code
+    class FMD,FEH,FEC,FECON,FFR,FSEC,FNS,FAVI,FPR,FII,FTM,PMB,IP,IDP,SM,WR,CER,EWS,SQR,SQA,BFT,BT,VB,AR,ASM,LSIG,LIND,LSTRAT,LGAM,LER,LBT,LIN,TP,DI,FN,DEPLOYW code
     class SQL,GCS,SECRETS,CT,PST,SINK,SCH gcp
     class AV,FRED,EDGAR,EW,FF,DISCORD,GHA ext
     class SMS warn
