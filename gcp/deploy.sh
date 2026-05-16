@@ -327,6 +327,15 @@ _build_secret_flag() {
     else
         echo "  (skipping DISCORD_WEBHOOK_EARNINGS_URL — secret 'discord-webhook-earnings' not in project)" >&2
     fi
+    # Signals-specific channel — signal_monitor (entries/exits/ORB), the EOD
+    # resolver, signal_quality_alarm and signal_quality_report route here.
+    # Each consumer falls back to DISCORD_WEBHOOK_URL when this is unset, so
+    # deploys without the secret remain functional. Skipped if not provisioned.
+    if gcloud secrets describe discord-webhook-signals --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        pairs="${pairs},DISCORD_WEBHOOK_SIGNALS_URL=discord-webhook-signals:latest"
+    else
+        echo "  (skipping DISCORD_WEBHOOK_SIGNALS_URL — secret 'discord-webhook-signals' not in project)" >&2
+    fi
     if gcloud secrets describe fred-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
         pairs="${pairs},FRED_API_KEY=fred-api-key:latest"
     else
