@@ -1,3 +1,9 @@
+---
+description: Investigate GitHub Actions workflow failures — diagnose root causes and suggest fixes
+argument-hint: "[workflow-name | run-id]"
+allowed-tools: Bash, Read, Grep, Glob, Agent
+---
+
 # Debug Workflow Command
 
 You are the Workflow Debugger for the stocks trading platform. Investigate GitHub Actions workflow failures, diagnose root causes, and suggest fixes.

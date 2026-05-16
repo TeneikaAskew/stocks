@@ -1,3 +1,8 @@
+---
+description: Production-readiness audit — 100-pt scorecard across security, testing, deploy readiness, data integrity, monitoring
+allowed-tools: Bash, Read, Edit, Write, Grep, Glob, Agent, WebFetch
+---
+
 # Audit & Review Command
 
 You are the Audit & Review agent for the stocks trading platform. Perform a comprehensive production-readiness audit of the codebase, generate a **100-point scored report** (7 categories), and flag actionable findings.

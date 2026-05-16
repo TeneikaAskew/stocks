@@ -412,13 +412,19 @@ deploy_discord_interactions() {
     env="${env},DISCORD_BOT_TOKEN=${discord_bot_token}"
     env="${env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
 
-    # Cloud Run service deploy. min-instances=0 keeps cost ~$0 when idle;
-    # cold start fits in Discord's 3-sec ack window (1-2 sec on this
-    # image). max-instances=5 caps autocomplete-burst cost.
+    # Cloud Run service deploy. min-instances=1 keeps one warm container so
+    # Discord's 3-sec interaction-ack window never blows up on cold start
+    # (measured: 4-10 s cold start on this image, well past the 3-s limit).
+    # --no-cpu-throttling keeps CPU on between requests so FastAPI
+    # BackgroundTasks (replay_in_background, validate_in_background,
+    # backtest_in_background) finish their work and edit the deferred reply
+    # instead of stalling at ~0 CPU after the response is sent.
+    # max-instances=5 caps autocomplete-burst cost.
     gcloud run deploy discord-interactions \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 \
-        --min-instances 0 --max-instances 5 \
+        --min-instances 1 --max-instances 5 \
+        --no-cpu-throttling \
         --timeout 600 \
         --port 8080 \
         --allow-unauthenticated \
