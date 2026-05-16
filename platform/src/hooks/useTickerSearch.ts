@@ -1,5 +1,4 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
 
 export interface SearchMatch {
   symbol: string;

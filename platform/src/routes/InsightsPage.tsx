@@ -205,6 +205,8 @@ export default function InsightsPage() {
             refreshing={refreshMut.isPending || isRunning}
             historical={!!viewingHistoricalId}
             onBackToLatest={() => setViewingHistoricalId(null)}
+            ticker={activeTicker}
+            brief={briefQuery.data ?? null}
           />
         ) : tab === 'history' ? (
           <HistoryView
@@ -267,6 +269,8 @@ function ReportView({
   refreshing,
   historical,
   onBackToLatest,
+  ticker,
+  brief,
 }: {
   loading: boolean;
   envelope: import('@/types/insights').InsightReportEnvelope | null;
@@ -275,6 +279,8 @@ function ReportView({
   refreshing: boolean;
   historical: boolean;
   onBackToLatest: () => void;
+  ticker: string;
+  brief: import('@/hooks/useInsights').BriefDirection | null;
 }) {
   if (loading) {
     return (
@@ -333,8 +339,8 @@ function ReportView({
         latencyMs={envelope.latency_ms}
       />
       <BriefVsInsightsCard
-        ticker={activeTicker}
-        brief={briefQuery.data ?? null}
+        ticker={ticker}
+        brief={brief}
         insightDirection={report.direction}
       />
       <div className="grid gap-4 md:grid-cols-2">

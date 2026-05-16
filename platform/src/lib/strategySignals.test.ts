@@ -19,6 +19,7 @@ function ind(over: Partial<Indicators> = {}): Indicators {
     stochD: 50,
     atr: 1.0,
     vwap: 100,
+    stochKPrev: null,
     ...over,
   };
 }
