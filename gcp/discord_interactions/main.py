@@ -469,10 +469,15 @@ def handle_replay(ticker: str, date_arg: str,
     triggered_by = f"discord:replay:{user_id}" if user_id else "discord:replay"
     # Brief: BRIEF_AS_OF + BRIEF_TICKERS. BRIEF_UPDATE=true so the new
     # persistence path UPSERTs the row instead of skipping it.
+    # BRIEF_NO_DISCORD=false overrides premarket_brief's default
+    # AS_OF-suppresses-Discord behaviour: a /replay is an explicit,
+    # interactive request, so the recomputed brief must post back to
+    # the channel the user invoked it from.
     brief_env = {
         "BRIEF_AS_OF":         d.isoformat(),
         "BRIEF_TICKERS":       ticker_u,
         "BRIEF_UPDATE":        "true",
+        "BRIEF_NO_DISCORD":    "false",
         "BRIEF_TRIGGERED_BY":  triggered_by,
     }
     brief_ok = execute_cloud_run_job("premarket-brief", brief_env)

@@ -350,6 +350,35 @@ def test_replay_dispatches_brief_and_insight_jobs():
     assert "✅" in msg or "queued" in msg.lower()
 
 
+def test_replay_refresh_path_forces_brief_to_post_to_discord():
+    """Regression: /replay's refresh / cache-miss path dispatches the
+    brief with BRIEF_AS_OF set. premarket_brief.main() suppresses
+    Discord whenever BRIEF_AS_OF is set (replays shouldn't spam the
+    channel) — but a /replay is an EXPLICIT, interactive request, so
+    the recomputed brief must post back. handle_replay must therefore
+    pass BRIEF_NO_DISCORD=false, which overrides that auto-suppress.
+
+    Without this, /replay TICKER DATE refresh:true recomputes the
+    brief and UPSERTs the row but posts nothing to Discord — the user
+    sees no response.
+    """
+    from gcp.discord_interactions.main import handle_replay
+    calls = []
+
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True), \
+         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.edit_deferred_reply"):
+        handle_replay("AMD", "2026-04-24", "appid", "tok", refresh=True)
+
+    brief_env = next(env for name, env in calls if name == "premarket-brief")
+    assert brief_env.get("BRIEF_NO_DISCORD") == "false", (
+        "refresh-replay must force the brief to post to Discord; "
+        f"got BRIEF_NO_DISCORD={brief_env.get('BRIEF_NO_DISCORD')!r}"
+    )
+
+
 def test_replay_invalid_date_returns_error_string():
     from gcp.discord_interactions.main import handle_replay
     msg = handle_replay("IWM", "not-a-date", "1234567890", "test-token")
