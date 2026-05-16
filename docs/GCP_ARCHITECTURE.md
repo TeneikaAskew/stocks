@@ -2,7 +2,7 @@
 
 **Audience:** engineers, operators, anyone trying to understand what's running, why, and where the data lives.
 **Scope:** every GCP service, Cloud Run job/service, Cloud SQL table, scheduled trigger, external integration, failure path, and cost line currently in production for this trading system.
-**Last updated:** 2026-05-04
+**Last updated:** 2026-05-16
 **Companion docs:** [`BRIEFING_DECK.md`](BRIEFING_DECK.md) (narrative overview), [`GCP_IMPLEMENTATION_GUIDE.md`](GCP_IMPLEMENTATION_GUIDE.md) (how to deploy), [`STRAT_METHODOLOGY.md`](STRAT_METHODOLOGY.md) (the analytical core).
 
 > For the live-state snapshot of Cloud Run Jobs/Services/Schedulers (auto-regenerated monthly by [`refresh-architecture-docs.yml`](../.github/workflows/refresh-architecture-docs.yml) against `gcloud asset search-all-resources`), see [`ARCHITECTURE.md`](../ARCHITECTURE.md). For the visual companion, see [`Architecture.drawio`](../Architecture.drawio). This deep-dive is hand-maintained and may lag the inventory by up to a month between regen runs.
@@ -327,15 +327,22 @@ Three long-lived HTTP services, all with `min-instances=0` so they cost nothing 
 | Aspect | Value |
 |---|---|
 | Image | Same `trading-system` image. Multi-stage Dockerfile builds Vite SPA + serves it via FastAPI |
-| Memory / CPU | 512 MiB / 1 vCPU |
+| Memory / CPU | 1 GiB / 1 vCPU |
 | Scaling | 0–5 instances |
 | Auth | **IAP (Identity-Aware Proxy) auto-managed** scoped to `bictech.org` Google identities. Admin email (`teneika@bictech.org`) bypasses the optional in-app token gate |
 | Endpoints | `/api/health`, `/api/me`, `/api/dashboard/*`, `/api/insights/*`, `/api/signals/*`, `/api/catalysts/*`, `/api/admin/*`, `/api/journal/*`, `/api/charts/*`, `/api/ranker/*`, `/dev` (admin-only diagnostic), and the SPA at `/` |
 | Cloud SQL | `--add-cloudsql-instances` connector path |
-| URL | `trading-platform-…run.app` |
-| Deploy path | Deployed by [`platform/deploy.sh`](../platform/deploy.sh) (separate from [`gcp/deploy.sh`](../gcp/deploy.sh)). Image lives in `gcr.io/adept-mountain-474619-d4/trading-platform`, **not** `us-east1-docker.pkg.dev/.../trading`. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) reconciliation §5 (item 4). |
+| URL | Custom domain `stocks.insightscollective.org` (Cloud Run domain mapping, Google-managed TLS, IAP-gated); the generated `trading-platform-…run.app` URL remains as a fallback |
+| Deploy path | Deployed by [`platform/deploy.sh`](../platform/deploy.sh) (separate from [`gcp/deploy.sh`](../gcp/deploy.sh)). Image lives in `gcr.io/adept-mountain-474619-d4/trading-platform`, **not** `us-east1-docker.pkg.dev/.../trading`. See [`ARCHITECTURE.md`](../ARCHITECTURE.md) reconciliation §5 (item 4). Two-stage staging→production CI pipeline since 2026-05-16 — see below. |
 
 This is the only thing a human directly hits in a browser.
+
+**Deploy pipeline (added 2026-05-16).** `trading-platform` deploys in two stages via GitHub Actions:
+
+- [`deploy-platform-staging.yml`](../.github/workflows/deploy-platform-staging.yml) — on push to `main` touching `platform/`, `lib/`, `requirements.txt`, or `gcp/database.py`, runs `STAGING=1 ./platform/deploy.sh` to build the image and deploy a Cloud Run revision tagged `staging` at **0% traffic** (`--no-traffic --tag staging`). Reachable at `https://staging---trading-platform-…run.app`; production traffic is untouched.
+- [`promote-platform-prod.yml`](../.github/workflows/promote-platform-prod.yml) — manual `workflow_dispatch` that routes 100% of production traffic to the current `staging`-tagged revision (`gcloud run services update-traffic --to-tags=staging=100`). Shares the staging workflow's concurrency group so a deploy and a promote cannot interleave.
+
+In `STAGING=1` mode `platform/deploy.sh` omits the `--no-allow-unauthenticated` flag: re-asserting the service IAM policy needs `run.services.setIamPolicy`, which the CI deploy service account does not hold, and a staging revision inherits the service's existing IAP-gated auth posture anyway.
 
 ### 7.2 `discord-interactions` — the slash command service
 
