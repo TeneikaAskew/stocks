@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """
-Cloud Run Job: Fetch macroeconomic rate inputs from FRED into Cloud SQL.
+Cloud Run Job: Fetch the FRED 3-month Treasury rate into Cloud SQL.
 
 Series fetched
 --------------
 1. ``DGS3MO``     3-month Treasury constant-maturity rate. The risk-free rate
                   ``r`` for Black-Scholes-Merton Greeks computation. Daily.
-2. ``SP500``      S&P 500 daily close. Written to ``market_data_daily`` with
-                  ``ticker='SPX'`` so the spot-price lookup used by
-                  ``lib.options_greeks.enrich_av_chain_with_greeks`` returns a
-                  real value for SPX (AlphaVantage ``TIME_SERIES_DAILY`` does
-                  not cover index symbols).
+
+This job used to ALSO pull the FRED ``SP500`` series and write it to
+``market_data_daily`` with ``ticker='SPX'``. That was removed 2026-05-15:
+FRED's ``SP500`` is close-only (no OHLV, no volume) and publishes 1-2
+trading days late, so it was never real market data — just a stale
+spot-price stand-in. The SPX options Greeks path
+(``lib.options_greeks.enrich_av_chain_with_greeks``) derives spot from
+the live option chain via put-call parity, which is same-day and exact;
+it does not need a ``market_data_daily`` SPX row. Do NOT re-add an
+``SP500 → SPX`` write here — index price data does not belong in a FRED
+macro-rates fetcher.
 
 Dividend yield ``q`` is NOT pulled from FRED — the agency does not publish a
 clean S&P 500 dividend-yield series. Instead we write a configurable constant
@@ -25,9 +31,6 @@ Usage
 
     # Daily incremental — pulls last 14 days only
     python -m gcp.fetchers.fetch_fred_rates
-
-    # Single-series mode (testing)
-    python -m gcp.fetchers.fetch_fred_rates --series DGS3MO --backfill
 """
 from __future__ import annotations
 
@@ -106,23 +109,6 @@ def fetch_dgs3mo(api_key: str, start: str, end: str) -> pd.DataFrame:
     return df[["date", "dgs3mo"]]
 
 
-def fetch_sp500(api_key: str, start: str, end: str) -> pd.DataFrame:
-    """Pull S&P 500 daily close.
-
-    FRED's ``SP500`` series is close-only (no OHLV, no volume). Returns a
-    DataFrame ready to upsert into ``market_data_daily`` with ``ticker='SPX'``.
-    """
-    df = _fred_observations("SP500", api_key, start, end)
-    if df.empty:
-        return df
-    df = df.rename(columns={"value": "close"})
-    df["ticker"] = "SPX"
-    df["adjusted_close"] = df["close"]   # indexes are total-return, no split adjustment
-    df["data_source"] = "fred"
-    # market_data_daily allows nullable open/high/low/volume — no need to fill.
-    return df[["ticker", "date", "close", "adjusted_close", "data_source"]]
-
-
 def upsert_daily_rates(df_dgs: pd.DataFrame, div_yld: float) -> int:
     """Merge DGS3MO into daily_rates, populating sp500_div_yld with the
     configured default. Idempotent; safe to re-run for the same dates.
@@ -134,18 +120,9 @@ def upsert_daily_rates(df_dgs: pd.DataFrame, div_yld: float) -> int:
     return upsert_dataframe(out, "daily_rates", conflict_cols=["date"])
 
 
-def upsert_spx_close(df_sp500: pd.DataFrame) -> int:
-    """Upsert SP500 close into market_data_daily as ticker='SPX'."""
-    if df_sp500.empty:
-        return 0
-    return upsert_dataframe(
-        df_sp500, "market_data_daily", conflict_cols=["ticker", "date"],
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Fetch FRED macro rates → Cloud SQL daily_rates + SPX prices.",
+        description="Fetch the FRED 3-month Treasury rate → Cloud SQL daily_rates.",
     )
     parser.add_argument(
         "--backfill", action="store_true",
@@ -159,11 +136,6 @@ def main() -> int:
     parser.add_argument(
         "--end", default=None,
         help="Custom end date YYYY-MM-DD. Defaults to today.",
-    )
-    parser.add_argument(
-        "--series", default="ALL",
-        choices=["ALL", "DGS3MO", "SP500"],
-        help="Restrict to a single series (debugging).",
     )
     parser.add_argument(
         "--div-yield", type=float, default=SP500_DIV_YIELD_DEFAULT,
@@ -190,22 +162,13 @@ def main() -> int:
         start = (today - timedelta(days=14)).isoformat()
     end = args.end or today.isoformat()
 
-    log.info("FRED rates fetch: %s → %s (series=%s, div_yld=%.4f)",
-             start, end, args.series, args.div_yield)
+    log.info("FRED rates fetch: %s → %s (div_yld=%.4f)",
+             start, end, args.div_yield)
 
-    n_rates = n_spx = 0
-
-    if args.series in ("ALL", "DGS3MO"):
-        df_dgs = fetch_dgs3mo(api_key, start, end)
-        n_rates = upsert_daily_rates(df_dgs, div_yld=args.div_yield)
-        log.info("daily_rates upserted: %d rows", n_rates)
-
-    if args.series in ("ALL", "SP500"):
-        df_sp = fetch_sp500(api_key, start, end)
-        n_spx = upsert_spx_close(df_sp)
-        log.info("market_data_daily(SPX) upserted: %d rows", n_spx)
-
-    log.info("Done. daily_rates=%d, spx_close=%d", n_rates, n_spx)
+    df_dgs = fetch_dgs3mo(api_key, start, end)
+    n_rates = upsert_daily_rates(df_dgs, div_yld=args.div_yield)
+    log.info("daily_rates upserted: %d rows", n_rates)
+    log.info("Done. daily_rates=%d", n_rates)
     return 0
 
 
