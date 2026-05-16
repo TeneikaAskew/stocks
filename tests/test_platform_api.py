@@ -122,7 +122,14 @@ class TestSignalsAPI:
 
 # ── Similar Signals API (analog matcher) ────────────────────────────────────
 
-@requires_data_backend
+# NOTE: deliberately NOT decorated with @requires_data_backend. Every test
+# in this class is hermetic — FastAPI Query-validation cases, the explicit
+# _CLOUD_SQL=False 503 case, and the happy-path cases that mock
+# query_to_dataframe AND patch _CLOUD_SQL=True via _patch_query. None of
+# them touch a real Cloud SQL backend, so they must run in the no-DB CI
+# `Run Tests` job — that's the whole point of mocking the query. Gating
+# them behind @requires_data_backend silently skipped real /similar
+# endpoint coverage in CI (Codex review, PR #501).
 class TestSimilarSignalsAPI:
     """`GET /api/signals/{ticker}/similar` — historical analog matcher.
 
