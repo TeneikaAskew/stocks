@@ -13,7 +13,7 @@ This doc records, as of 2026-05-13:
 
 ## Top-line verdict
 
-**43 of 66 audit items shipped (65%)** via 42 of 89 post-audit commits
+**44 of 66 audit items shipped (67%)** via 42 of 89 post-audit commits (G.P1.3 closed 2026-05-13 via code-read + production SQL verification, not a new commit)
 in ~5 days. All 14 P0 items are closed. The remaining 23 items are
 mostly P1/P2/P3 — blocked on data accumulation (5), deferred by
 design (3), open as needs-implementation (8), cosmetic (4), or
@@ -22,7 +22,7 @@ closed-via-other-PR (3).
 | Priority | Shipped | Total | % | Status |
 |---|---|---|---|---|
 | **P0** | **14/14** | 14 | **100%** | All foundation P0s landed; system trustworthy again |
-| **P1** | **11/21** | 21 | **52%** | 5 blocked-on-data, 5 needs-investigation/impl, 1 closed-via-PR |
+| **P1** | **12/21** | 21 | **57%** | 4 blocked-on-data, 5 needs-investigation/impl, 1 closed-via-PR (G.P1.3 closed 2026-05-13 via verification, not a deploy) |
 | **P2** | **14/24** | 24 | **58%** | 6 needs-impl, 3 deferred, 1 closed-via-PR |
 | **P3** | **5/7** | 7 | **71%** | 2 cosmetic remain |
 | **TOTAL** | **44/66** | 66 | **67%** | |
@@ -43,7 +43,7 @@ All 11 audit-tracking GitHub issues (#300, #301, #302, #303, #304,
 | **A** — Foundation | CLOSED + 5 follow-ups | [`track-A-status.md`](./track-A-status.md) | 6 | 6/6 | G.P1.13, G.P1.14, G.P1.15, G.P1.16, G.P2.21 |
 | **B** — Premarket brief | CLOSED | [`track-B-status.md`](./track-B-status.md) | 2 | 2/2 | None |
 | **C** — AI Insights | CLOSED | [`track-C-status.md`](./track-C-status.md) | 3 | 3/3 | None (Phase-1 follow-up #405 separate) |
-| **D** — Signal monitor | CLOSED + 1 awaiting | [`track-D-status.md`](./track-D-status.md) | 4 | 4/4 | G.P1.3 (awaiting data) |
+| **D** — Signal monitor | CLOSED (all items) | [`track-D-status.md`](./track-D-status.md) | 4 | 4/4 | none — G.P1.3 closed 2026-05-13 via code-read + SQL |
 | **E** — Per-ticker calibration | CLOSED + 4 follow-ups | [`track-E-status.md`](./track-E-status.md) | 3 | 3/3 | G.P1.11/G.P1.12 (blocked), G.P1.20 partial, G.P2.22 deferred, data-driven `disabled_conditions` (#380) |
 | **F** — Architecture docs | DRIFT-FIXED + 5 follow-ups | [`track-F-status.md`](./track-F-status.md) | 0 | n/a | G.P1.18, G.P2.15, G.P3.6, G.P3.7, infra #376 |
 
@@ -121,7 +121,7 @@ Status enum:
 |---|---|---|---|---|
 | G.P1.1 | C/D | `level_broken` always-NULL — log-and-reraise + fresh-data verify | **DONE-VERIFIED-VIA-REPLAY** | PR #339; 0 → 6 RTH events on 5/7+5/8 |
 | G.P1.2 | C | `level_break_pdh/pdl` zero fires | **DONE** | Covered by G.P1.1 (same upstream cause) |
-| G.P1.3 | D | `MIN_CONDITIONS_MOMENTUM=5` deploy verification | **OPEN-PENDING-DATA** | Issue #302; earliest ~5/15 |
+| G.P1.3 | D | `MIN_CONDITIONS_MOMENTUM=5` deploy verification | **DONE-VERIFIED-VIA-DATA** | Code-read: hardcoded gate at `lib/strategies/config.py:108` → `momentum.py:209-212`, no override path; SQL via `db-query.yml` run 25832047129: 5/7 (OLD image) 9 fires at score=3 expected; 5/8 full RTH + 5/11/12/13 → 0 momentum bypasses. Track D row has full evidence. |
 | G.P1.4 | C | `regime=orb_only` over-classification | **DONE** | PR #307 + #334 + #345 |
 | G.P1.5 | B | `signal_status` ↔ `ftfc_direction` contradiction | **DONE** | PR #306 |
 | G.P1.6 | B | `strat_setup` flag drift | **DONE** | PR #309 |
@@ -275,22 +275,23 @@ genuinely-remaining open work is:
 8. **G.P2.18** — React UI for per-ticker recommendations (Track E; 1 day)
 9. **G.P1.20** — Close the data-driven `disabled_conditions` loop via issue #380 (Track E; 3 small PRs)
 
-### Pending data accumulation (4 items)
+### Pending data accumulation (3 items — G.P1.3 closed 2026-05-13)
 
-10. **G.P1.3** — `MIN_CONDITIONS_MOMENTUM=5` deploy verification (Track D; query after ~5/15)
-11. **G.P1.11** — SPY CALL target unreachable verification (Track E; after ~5/23 walk-forward)
-12. **G.P1.12** — Global ExitConfig retune (Track E; after G.P1.11)
-13. **G.P2.22** — Walk-forward stability (Track E; deferred to ~2026-11-08)
+10. **G.P1.11** — SPY CALL target unreachable verification (Track E; after ~5/23 walk-forward)
+11. **G.P1.12** — Global ExitConfig retune (Track E; after G.P1.11)
+12. **G.P2.22** — Walk-forward stability (Track E; deferred to ~2026-11-08)
+
+(G.P1.3 was previously in this bucket; closed via code-read + production SQL verification per CLAUDE.md §3.5 "never wait for the next session — always backtest.")
 
 ### Cosmetic / cleanup (~3 items)
 
-14. **G.P2.21** — Soft-deleted watchlist row cleanup (Track A; 30 min)
-15. **G.P3.6** — 7th flow-detail diagram (Track F; 1 hr)
-16. **G.P3.7** — `.drawio` `lib_strat` cell expansion (Track F; 30 min)
+13. **G.P2.21** — Soft-deleted watchlist row cleanup (Track A; 30 min)
+14. **G.P3.6** — 7th flow-detail diagram (Track F; 1 hr)
+15. **G.P3.7** — `.drawio` `lib_strat` cell expansion (Track F; 30 min)
 
 ### Infra blocker (1 item)
 
-17. **#376** — GCP_SA_KEY secret missing + apply-schema-migrations image-bake (Track F-adjacent; 5 workflows currently failing silently)
+16. **#376** — GCP_SA_KEY secret missing + apply-schema-migrations image-bake (Track F-adjacent; 5 workflows currently failing silently)
 
 ---
 
@@ -310,9 +311,10 @@ In priority order:
    G.P1.16, G.P1.18, G.P2.15). Total estimated effort ~3 hours.
    Each can be a small standalone PR or close-with-comment.
 
-4. **Track the 4 pending-data items** via existing scheduled
-   workflows. G.P1.3 query ~5/15; G.P1.11/G.P1.12 after the 2026-05-23
-   walk-forward report; G.P2.22 deferred to ~2026-11-08.
+4. **Track the 3 pending-data items** via existing scheduled
+   workflows. G.P1.11/G.P1.12 after the 2026-05-23 walk-forward
+   report; G.P2.22 deferred to ~2026-11-08. (G.P1.3 closed 2026-05-13
+   via code-read + production SQL verification.)
 
 5. **Schedule the 4 needs-implementation items** as their own sprint
    work (G.P2.7, G.P2.17, G.P2.18, G.P1.20-via-#380).
