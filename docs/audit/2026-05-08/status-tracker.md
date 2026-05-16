@@ -103,7 +103,7 @@ Status enum:
 | G.P0.1 | A | Unfreeze daily fetcher + 17-day backfill | **DONE** | PR #321 + ops | [`p0-status-2026-05-09.md`](./p0-status-2026-05-09.md), [`track-A-status.md`](./track-A-status.md) |
 | G.P0.2 | A | Fail-fast on stale `--date` / zero rows | **DONE** | PR #322 | [`p0-status-2026-05-09.md`](./p0-status-2026-05-09.md) |
 | G.P0.3 | A | Re-enable Freshness Watchdog | **DONE** | PR #323 | [`p0-status-2026-05-09.md`](./p0-status-2026-05-09.md) |
-| G.P0.4 | B | Brief stale-warn guard | **DONE-PRE-AUDIT** | PR #293 | [`track-B-status.md`](./track-B-status.md) |
+| G.P0.4 | B | Brief stale-warn guard | **DONE** | PR #336 (PR #293 was the audit findings docs, not the fix) | [`track-B-status.md`](./track-B-status.md) |
 | G.P0.5 | B/C | `data_as_of` field | **DONE** | PR #335 (schema) + #336 (writer) + #337 (Discord) | [`track-B-status.md`](./track-B-status.md) |
 | G.P0.6 | C/D | JSONB writer fix + backfill | **DONE** | PR #308 | [`track-D-status.md`](./track-D-status.md), [`track-C-status.md`](./track-C-status.md) |
 | G.P0.7 | D | Signal monitor TZ fix verification | **DONE-VERIFIED-VIA-REPLAY** | Pre-audit commit `2adb5fe`/PR #279; verified via 5/7 wall-clock | [`track-D-status.md`](./track-D-status.md) |
