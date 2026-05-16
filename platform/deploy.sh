@@ -20,6 +20,16 @@ if [[ "${PUBLIC:-0}" == "1" ]]; then
   ALLOW_UNAUTH_FLAG="--allow-unauthenticated"
 fi
 
+# Staging: STAGING=1 ./deploy.sh deploys a new revision tagged `staging` that
+# receives NO production traffic. The prod URL keeps serving the current
+# 100%-traffic revision. Promote later with:
+#   gcloud run services update-traffic "${SERVICE}" --region "${REGION}" --to-tags=staging=100
+STAGING_FLAGS=()
+if [[ "${STAGING:-0}" == "1" ]]; then
+  STAGING_FLAGS=(--no-traffic --tag staging)
+  echo ">> STAGING mode: new revision tagged 'staging', no production traffic"
+fi
+
 echo ">> project=${PROJECT_ID} region=${REGION} service=${SERVICE}"
 gcloud config set project "${PROJECT_ID}" >/dev/null
 
@@ -50,7 +60,16 @@ gcloud run deploy "${SERVICE}" \
   --cpu 1 \
   --timeout 300 \
   --max-instances 5 \
-  ${ALLOW_UNAUTH_FLAG}
+  ${ALLOW_UNAUTH_FLAG} \
+  ${STAGING_FLAGS[@]+"${STAGING_FLAGS[@]}"}
 
 echo ">> done"
-gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.url)'
+if [[ "${STAGING:-0}" == "1" ]]; then
+  echo ">> staging revision URL (no production traffic):"
+  gcloud run services describe "${SERVICE}" --region "${REGION}" \
+    --flatten='status.traffic[]' \
+    --filter='status.traffic.tag=staging' \
+    --format='value(status.traffic.url)'
+else
+  gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.url)'
+fi
