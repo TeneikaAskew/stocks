@@ -106,8 +106,9 @@ jobs:
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
 
-        # Add CSV files in data directory (force add since .gitignore excludes *.csv)
-        git add -f google-apps-script/data/*.csv 2>/dev/null || true
+        # CSVs are gitignored and intentionally not committed — force-adding
+        # them grew the repo unbounded. Data is consumed within this run only.
+        git add google-apps-script/data/*.csv 2>/dev/null || true
 
         # Check if there are changes to commit
         if git diff --staged --quiet; then
