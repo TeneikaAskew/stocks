@@ -16,13 +16,18 @@ lock:
 	pip freeze --exclude-editable | sort > requirements.lock
 	@echo "Updated requirements.lock ($$(wc -l < requirements.lock) packages)"
 
-## Run the full test suite (unit + integration, excludes E2E)
+## Run the hermetic unit/API test suite (excludes E2E and DB-integration)
 test:
-	$(PYTHON) -m pytest tests/ -x -q --ignore=tests/test_e2e.py
+	$(PYTHON) -m pytest tests/ -x -q --ignore=tests/test_e2e.py --ignore=tests/integration
 
 ## Run Playwright E2E tests for all web apps (requires: make install-playwright)
 test-e2e:
 	$(PYTHON) -m pytest tests/test_e2e.py -v
+
+## Run real-SQL integration tests — needs a Postgres with gcp/schema.sql
+## applied and DB_HOST/DB_PORT/DB_USER/DB_PASS/DB_NAME exported.
+test-integration:
+	$(PYTHON) -m pytest tests/integration/ -q
 
 ## Run script CLI regression tests only
 test-scripts:
