@@ -356,7 +356,7 @@ def test_replay_refresh_path_forces_brief_to_post_to_discord():
     Discord whenever BRIEF_AS_OF is set (replays shouldn't spam the
     channel) — but a /replay is an EXPLICIT, interactive request, so
     the recomputed brief must post back. handle_replay must therefore
-    pass BRIEF_NO_DISCORD=false, which overrides that auto-suppress.
+    pass BRIEF_POST_TO_DISCORD=true, which overrides that auto-suppress.
 
     Without this, /replay TICKER DATE refresh:true recomputes the
     brief and UPSERTs the row but posts nothing to Discord — the user
@@ -373,9 +373,9 @@ def test_replay_refresh_path_forces_brief_to_post_to_discord():
         handle_replay("AMD", "2026-04-24", "appid", "tok", refresh=True)
 
     brief_env = next(env for name, env in calls if name == "premarket-brief")
-    assert brief_env.get("BRIEF_NO_DISCORD") == "false", (
+    assert brief_env.get("BRIEF_POST_TO_DISCORD") == "true", (
         "refresh-replay must force the brief to post to Discord; "
-        f"got BRIEF_NO_DISCORD={brief_env.get('BRIEF_NO_DISCORD')!r}"
+        f"got BRIEF_POST_TO_DISCORD={brief_env.get('BRIEF_POST_TO_DISCORD')!r}"
     )
 
 
