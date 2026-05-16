@@ -362,6 +362,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if not args.dry_run:
         webhook = os.environ.get("SIGNAL_QA_WEBHOOK_URL") \
+                  or os.environ.get("DISCORD_WEBHOOK_SIGNALS_URL") \
                   or os.environ.get("DISCORD_WEBHOOK_URL") or ""
         post_to_discord(webhook, payload)
 

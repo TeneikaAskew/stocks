@@ -352,3 +352,76 @@ def test_resolve_one_rsi_extreme_call(make_resolver):
     assert res['exit_reason'] == 'rsi_extreme', (
         f"steady-rise CALL must trip RSI>=80 before any other reason; got {res['exit_reason']}"
     )
+
+
+# ── 6) build_digest_embed — EOD Discord summary ───────────────────────
+
+def _resolved(ticker, direction, reason, ret):
+    return {'ticker': ticker, 'direction': direction,
+            'exit_reason': reason, 'exit_return_pct': ret}
+
+
+def test_build_digest_embed_basic_summary():
+    from gcp.signal_monitor_eod_resolver import EODResolver
+    exits = [
+        _resolved('SPY', 'CALL', 'target_hit', 2.5),
+        _resolved('IWM', 'PUT', 'time_stop', -1.0),
+        _resolved('QQQ', 'CALL', 'eod_close', 0.5),
+    ]
+    embed = EODResolver.build_digest_embed(exits, since=None)
+    assert embed['title'] == 'EOD Signal Resolution'
+    desc = embed['description']
+    assert 'Resolved **3** post-close exits' in desc
+    # by-reason summary, sorted
+    assert '1 eod_close' in desc and '1 target_hit' in desc and '1 time_stop' in desc
+    # net = 2.5 - 1.0 + 0.5 = 2.0, avg = 0.667, wins = 2/3
+    assert 'Win rate 2/3' in desc
+    assert 'net +2.00%' in desc
+    # net positive → green
+    assert embed['color'] == 0x2ecc71
+
+
+def test_build_digest_embed_net_negative_is_red():
+    from gcp.signal_monitor_eod_resolver import EODResolver
+    exits = [_resolved('SPY', 'CALL', 'time_stop', -3.0),
+             _resolved('IWM', 'PUT', 'eod_close', 1.0)]
+    embed = EODResolver.build_digest_embed(exits, since=None)
+    assert embed['color'] == 0xe74c3c
+    assert 'net -2.00%' in embed['description']
+
+
+def test_build_digest_embed_caps_list_at_25():
+    from gcp.signal_monitor_eod_resolver import EODResolver
+    # 30 exits — list capped at 25, overflow line shown
+    exits = [_resolved(f'T{i}', 'CALL', 'target_hit', float(i)) for i in range(1, 31)]
+    embed = EODResolver.build_digest_embed(exits, since=None)
+    desc = embed['description']
+    assert 'Resolved **30** post-close exits' in desc
+    assert '_…and 5 more_' in desc
+    # ranked by |return| desc — biggest mover (T30, +30%) must appear
+    assert '**T30**' in desc
+
+
+def test_build_digest_embed_since_in_description():
+    from gcp.signal_monitor_eod_resolver import EODResolver
+    embed = EODResolver.build_digest_embed(
+        [_resolved('SPY', 'CALL', 'target_hit', 1.0)], since='2026-04-01')
+    assert '(since 2026-04-01)' in embed['description']
+
+
+def test_post_digest_noop_without_webhook(make_resolver):
+    """_post_digest must not raise / not POST when webhook is unset."""
+    resolver = make_resolver()
+    resolver.webhook_url = None
+    with patch('gcp.signal_monitor_eod_resolver.requests.post') as post:
+        resolver._post_digest([_resolved('SPY', 'CALL', 'target_hit', 1.0)], None)
+    post.assert_not_called()
+
+
+def test_post_digest_noop_with_no_exits(make_resolver):
+    """Empty resolution batch → no Discord post even with a webhook set."""
+    resolver = make_resolver()
+    resolver.webhook_url = 'https://discord.com/api/webhooks/x/y'
+    with patch('gcp.signal_monitor_eod_resolver.requests.post') as post:
+        resolver._post_digest([], None)
+    post.assert_not_called()

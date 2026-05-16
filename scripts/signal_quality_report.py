@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -47,6 +48,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+import requests
 
 _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
@@ -617,6 +619,50 @@ def process_ticker_batch(
     return (len(metrics), n, counts)
 
 
+def build_quality_report_embed(
+    start: datetime, end: datetime, mode: str,
+    processed: int, upserted: int, counts: dict,
+) -> dict:
+    """Build the Discord summary embed for a quality-report run.
+
+    Pure function — no I/O, testable in isolation (per this module's
+    hermetic-testable contract). `counts` is keyed by the labels from
+    classify(): CLEAN_HIT / MIXED / NOISE / WRONG_DIRECTION /
+    INSUFFICIENT_DATA.
+    """
+    clean = counts.get('CLEAN_HIT', 0)
+    mixed = counts.get('MIXED', 0)
+    noise = counts.get('NOISE', 0)
+    wrong = counts.get('WRONG_DIRECTION', 0)
+    insufficient = counts.get('INSUFFICIENT_DATA', 0)
+    # Clean rate is measured only over signals whose window has closed.
+    decided = clean + mixed + noise + wrong
+    clean_rate = (clean / decided * 100.0) if decided else 0.0
+
+    lines = [
+        f"🟢 Clean hit: **{clean}**",
+        f"🟡 Mixed: **{mixed}**",
+        f"⚪ Noise: **{noise}**",
+        f"🔴 Wrong direction: **{wrong}**",
+    ]
+    if insufficient:
+        lines.append(f"⏳ Insufficient data: **{insufficient}** (window not closed)")
+
+    return {
+        'title': 'Signal Quality Report',
+        'description': (
+            f"Window **{start:%Y-%m-%d} → {end:%Y-%m-%d}** · mode `{mode}`\n"
+            f"Processed **{processed}** signals · {upserted} upserted to "
+            f"`signal_metrics`\n"
+            f"Clean rate **{clean_rate:.1f}%** ({clean}/{decided} decided)\n\n"
+            + '\n'.join(lines)
+        ),
+        'color': (0x2ecc71 if clean_rate >= 50
+                  else 0xf1c40f if clean_rate >= 30 else 0xe74c3c),
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -668,6 +714,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         "DONE processed=%d upserted=%d classifications=%s",
         total_processed, total_upserted, aggregate_counts,
     )
+
+    # Post a single summary embed to the dedicated signals channel
+    # (falls back to the main webhook). Skipped on dry-run.
+    webhook = (os.environ.get("DISCORD_WEBHOOK_SIGNALS_URL")
+               or os.environ.get("DISCORD_WEBHOOK_URL"))
+    if webhook and not args.dry_run:
+        embed = build_quality_report_embed(
+            start, end, args.mode,
+            total_processed, total_upserted, aggregate_counts,
+        )
+        try:
+            requests.post(webhook, json={'embeds': [embed]}, timeout=10)
+            logger.info("quality report summary posted to Discord")
+        except Exception as e:
+            logger.warning("quality report Discord post failed: %s", e)
+
     return 0
 
 
