@@ -30,15 +30,56 @@ def _connection_name() -> Optional[str]:
 
 
 def is_cloud_sql_configured() -> bool:
-    """Return True when all required Cloud SQL env vars are present."""
-    return all(
-        os.environ.get(v)
-        for v in ('CLOUD_SQL_CONNECTION_NAME', 'DB_USER', 'DB_PASS', 'DB_NAME')
+    """Return True when a database backend is configured.
+
+    Recognises BOTH connection modes get_engine() can connect with:
+      * Cloud SQL Connector — CLOUD_SQL_CONNECTION_NAME + DB_USER/PASS/NAME
+        (production)
+      * direct DB_HOST — DB_HOST + DB_USER/PASS/NAME (local dev / the CI
+        integration-test Postgres). See _direct_db_url().
+
+    Callers use this as a fail-fast guard before get_engine() (e.g.
+    signal_monitor's loop/replay guards and persistence paths). It must
+    return True for every mode get_engine() can actually use, or a
+    DB_HOST run would be aborted before the direct engine is reached.
+    """
+    if not all(os.environ.get(v) for v in ('DB_USER', 'DB_PASS', 'DB_NAME')):
+        return False
+    return bool(
+        os.environ.get('CLOUD_SQL_CONNECTION_NAME') or os.environ.get('DB_HOST')
     )
 
 
+def _direct_db_url() -> Optional[str]:
+    """Build a direct `postgresql+pg8000://` URL when `DB_HOST` is set.
+
+    This path exists for local development and the CI integration-test
+    job, which run against a plain Postgres container — NOT Cloud SQL.
+    Production never sets `DB_HOST` (it sets `CLOUD_SQL_CONNECTION_NAME`),
+    so the Cloud SQL Connector path in `get_engine()` is untouched in
+    prod. If both are somehow set, the explicit host wins.
+
+    Requires `DB_USER` / `DB_PASS` / `DB_NAME` alongside `DB_HOST`;
+    `DB_PORT` defaults to 5432.
+    """
+    host = os.environ.get('DB_HOST')
+    if not host:
+        return None
+    from urllib.parse import quote_plus
+    user = quote_plus(os.environ.get('DB_USER', ''))
+    password = quote_plus(os.environ.get('DB_PASS', ''))
+    db = os.environ.get('DB_NAME', '')
+    port = os.environ.get('DB_PORT', '5432')
+    return f"postgresql+pg8000://{user}:{password}@{host}:{port}/{db}"
+
+
 def get_engine():
-    """Return a SQLAlchemy engine connected to Cloud SQL via the Python Connector.
+    """Return a SQLAlchemy engine.
+
+    Two connection modes, selected by environment:
+      * `DB_HOST` set → a direct connection to a plain Postgres (local
+        dev / CI integration-test container). See `_direct_db_url()`.
+      * otherwise → Cloud SQL via the Python Connector (production).
 
     Uses a module-level singleton so connections are reused across calls.
     """
@@ -46,10 +87,23 @@ def get_engine():
     if _engine is not None:
         return _engine
 
+    direct_url = _direct_db_url()
+    if direct_url:
+        import sqlalchemy
+        _engine = sqlalchemy.create_engine(direct_url, pool_pre_ping=True)
+        logger.info(
+            "Direct DB engine created: %s:%s/%s",
+            os.environ.get('DB_HOST'),
+            os.environ.get('DB_PORT', '5432'),
+            os.environ.get('DB_NAME'),
+        )
+        return _engine
+
     if not is_cloud_sql_configured():
         raise RuntimeError(
             "Cloud SQL not configured. Set CLOUD_SQL_CONNECTION_NAME, "
-            "DB_USER, DB_PASS, DB_NAME environment variables."
+            "DB_USER, DB_PASS, DB_NAME environment variables "
+            "(or DB_HOST for a direct/local Postgres connection)."
         )
 
     try:
