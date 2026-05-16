@@ -749,7 +749,7 @@ export default function ChartsPage() {
               <MetricCard label="Trades" value={stats.totalTrades} />
               <MetricCard label="Win Rate" value={stats.closedTrades > 0 ? `${stats.winRate.toFixed(0)}%` : '--'} />
               <MetricCard label="Total P&L" value={stats.closedTrades > 0 ? `$${stats.totalPnL.toFixed(2)}` : '--'} />
-              <MetricCard label="Profit Factor" value={stats.closedTrades > 0 ? stats.profitFactor === Infinity ? '---' : stats.profitFactor.toFixed(2) : '--'} />
+              <MetricCard label="Profit Factor" value={stats.closedTrades > 0 && stats.profitFactor != null ? (stats.profitFactor === Infinity ? '---' : stats.profitFactor.toFixed(2)) : '--'} />
               <MetricCard label="CALL" value={stats.callCount} />
               <MetricCard label="PUT" value={stats.putCount} />
               <MetricCard label="Max Win" value={stats.maxWin > 0 ? `$${stats.maxWin.toFixed(2)}` : '--'} />
