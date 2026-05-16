@@ -7,14 +7,12 @@ import {
   RefreshCw,
   Search,
   Sparkles,
-  Trash2,
   X,
 } from 'lucide-react';
 import { useWatchlist } from '@/hooks/useWatchlist';
 import {
   useTickerSearch,
   useAddToWatchlist,
-  useRemoveFromWatchlist,
   type SearchMatch,
   type WatchlistAddResult,
 } from '@/hooks/useTickerSearch';
@@ -216,7 +214,7 @@ function TickerSearchPanel({
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [addedResult, setAddedResult] = useState<WatchlistAddResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Focus input on mount
   useEffect(() => {
