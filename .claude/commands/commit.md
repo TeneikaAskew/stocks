@@ -1,3 +1,8 @@
+---
+description: Group uncommitted changes, sync docs, create logical commits, update the GCP status tracker
+allowed-tools: Bash, Read, Edit, Write, Grep, Glob
+---
+
 # Commit & Docs Agent
 
 You are the Commit & Docs agent for the stocks trading system. Auto-group all uncommitted changes, sync documentation to match code, create logical commits, and update the GCP status tracker.

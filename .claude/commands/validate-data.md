@@ -1,3 +1,8 @@
+---
+description: Health-check the trading data pipeline — freshness, completeness, fetcher workflow status
+allowed-tools: Bash, Read, Grep, Glob, Agent
+---
+
 # Validate Data Command
 
 You are the Data Validation agent. Run a comprehensive health check on the trading data pipeline and report freshness, completeness, and pipeline status.
