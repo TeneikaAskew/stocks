@@ -188,7 +188,7 @@ The full table list — **38 tables (33 logical + 5 partition children of `marke
 
 | Table | Purpose | Writers | Readers |
 |---|---|---|---|
-| `market_data_daily` | Daily OHLCV + 60+ derived indicator columns + pre-market context per ticker per date. The single most-read table in the system. | **`fetch-market-data`** (11 PM nightly), **`fetch-premarket-refresh`** (8:20 AM), **`fetch-fred-rates`** (writes SPX row), **`backfill-ticker`** (on demand) | *premarket-brief*, *insight-pipeline*, *historical_signals*, *signal-monitor*, *trading-platform* (`/api/dashboard/brief/{ticker}`), *Charts page* |
+| `market_data_daily` | Daily OHLCV + 60+ derived indicator columns + pre-market context per ticker per date. The single most-read table in the system. ETF tickers only (SPY/IWM/QQQ + watchlist/earnings names); the SPX *index* has no OHLCV feed and is not stored here. | **`fetch-market-data`** (11 PM nightly), **`fetch-premarket-refresh`** (8:20 AM), **`backfill-ticker`** (on demand) | *premarket-brief*, *insight-pipeline*, *historical_signals*, *signal-monitor*, *trading-platform* (`/api/dashboard/brief/{ticker}`), *Charts page* |
 | `market_data_intraday` | 1-minute OHLCV bars. **Partitioned by ticker** (`PARTITION BY LIST (ticker)`) — five child partitions: `market_data_intraday_spy`, `_iwm`, `_qqq`, `_spx`, `_other` ([`gcp/schema.sql:106-114`](../gcp/schema.sql#L106)). ~30M+ rows. | **`fetch-alphavantage-intraday`** (monthly), **`fetch-market-data`** (current month) | *signal-monitor*, *historical_signals*, *brief premarket-context calc* |
 | `earnings_reactions` | Per-event playability scores + archetype tags joining `earnings_history × market_data_daily` ([`gcp/schema.sql:472`](../gcp/schema.sql#L472)). | **`compute-earnings-reactions`** (weekdays 23:00) | *premarket-brief earnings reaction profile*, *insight-pipeline* |
 | `daily_rates` | Risk-free rate (`DGS3MO`) + S&P dividend yield (configured constant). Used by Black-Scholes Greeks computations. | **`fetch-fred-rates`** (daily 6:30 AM) | *`lib.options_greeks`*, *backtest job* |
@@ -275,7 +275,7 @@ There are **no formal foreign keys** between domain tables — only the `insight
 | `fetch-market-data` | 1 GiB / 30 min | weekdays 23:00 | AV `TIME_SERIES_DAILY_ADJUSTED` (split-adjusted) + intraday for current month | `market_data_daily`, `market_data_intraday`, GCS parquet |
 | `fetch-premarket-refresh` | 512 MiB / 5 min | weekdays 08:20 | AV intraday for today's pre-market (4 AM–9:30 AM ET) | UPSERTs `pre_high/pre_low/pre_vwap/pre_volume/gap_pct/pre_range_atr` on `market_data_daily` |
 | `fetch-alphavantage-intraday` | 2 GiB / 1 hr | 1st of month, 21:00 | AV `TIME_SERIES_INTRADAY` 1-min bars, full month | `market_data_intraday` |
-| `fetch-fred-rates` | 512 MiB / 10 min | daily 06:30 | FRED `DGS3MO` (3-month T-bill), `SP500` close | `daily_rates`, `market_data_daily` (SPX row) |
+| `fetch-fred-rates` | 512 MiB / 10 min | daily 06:30 | FRED `DGS3MO` (3-month T-bill) | `daily_rates` |
 | `fetch-economic-events` | 512 MiB / – | weekdays 07:00 | ForexFactory JSON + FRED releases | `economic_events` |
 | `fetch-earnings-calendar` | 512 MiB / 5 min | weekdays 07:15 | AV `EARNINGS_CALENDAR` + Unusual Whales calendar + Earnings Whispers strategy picks | `earnings_calendar` |
 | `fetch-earnings-history` | 1 GiB / 30 min | Sun 06:00 | AV `EARNINGS` historical quarterly EPS | `earnings_history` |
@@ -440,7 +440,7 @@ Every external API the system depends on, with the role and the failure mode if 
 | Provider | What we fetch | How auth | Failure mode |
 |---|---|---|---|
 | **AlphaVantage** | `TIME_SERIES_DAILY_ADJUSTED`, `TIME_SERIES_INTRADAY` (with `entitlement=realtime` after PR #171), `EARNINGS`, `EARNINGS_CALENDAR`, `INSIDER_TRANSACTIONS`, `TOP_GAINERS_LOSERS`, `OVERVIEW`, `SYMBOL_SEARCH`, `NEWS_SENTIMENT`, `HISTORICAL_OPTIONS`, `REALTIME_BULK_QUOTES`, `GLOBAL_QUOTE` | API key (`av-api-key` secret + `ALPHA_VANTAGE_API_KEY` env alias) | Premium tier 150 req/min, 1200/day. Hitting the limit returns an empty response (no HTTP error), so we gate every fetcher with budget tracking and a top-N earnings cap |
-| **FRED** | `DGS3MO`, `SP500`, releases calendar | API key (`fred-api-key`) | Rate-limited but generous; failures logged and skipped (rates table holds last value) |
+| **FRED** | `DGS3MO`, releases calendar | API key (`fred-api-key`) | Rate-limited but generous; failures logged and skipped (rates table holds last value) |
 | **ForexFactory** | `ff_calendar_thisweek.json` mirror via FairEconomyMedia | None (open URL) | Fall back to FRED-only (no times) if ForexFactory 404s |
 | **SEC EDGAR** | `company_tickers.json`, `submissions/CIK*.json` | None; descriptive `User-Agent` required | Free; 10 RPS rate limit; we run at ~7 RPS |
 | **FinViz** | Per-ticker peers + `ticker_news` | None (HTML scrape) | Brittle; failures degrade RSS pipeline gracefully |
