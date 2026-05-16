@@ -530,37 +530,13 @@ def test_settle_hour_walks_past_weekend():
 
 def test_check_dicts_declare_settle_hour_for_after_hours_fetchers():
     """Regression guard: the after-hours fetchers must declare
-    settle_hour_et so the cron rollouts stay in sync with the watchdog.
-
-    market_data_daily has TWO CHECK entries (AV ETFs + FRED SPX) so we
-    select each by its ticker set rather than by name alone."""
+    settle_hour_et so the cron rollouts stay in sync with the watchdog."""
     from scripts.audit_data_freshness import CHECKS
 
     by_name = {c["name"]: c for c in CHECKS}
-
-    # market_data_daily — AV ETF check: 23:00 ET cron, no lag.
-    av_daily = next(
-        c for c in CHECKS
-        if c["name"] == "market_data_daily" and "SPY" in c.get("tickers", ())
-    )
-    assert av_daily["settle_hour_et"] == 23
-    assert av_daily.get("settle_lag_days", 0) == 0
-    assert "SPX" not in av_daily["tickers"], (
-        "SPX must NOT be in the AV market_data_daily check — it is "
-        "FRED-sourced with a different cadence"
-    )
-
-    # market_data_daily — FRED SPX check: 06:30 ET cron, 2-day FRED lag.
-    spx_daily = next(
-        c for c in CHECKS
-        if c["name"] == "market_data_daily" and c.get("tickers") == ("SPX",)
-    )
-    assert spx_daily["settle_hour_et"] == 7
-    assert spx_daily["settle_lag_days"] == 2
-    assert spx_daily["expected_lag_hours"] >= 72, (
-        "SPX check must tolerate the 1-2 trading-day FRED publication lag"
-    )
-
+    # market_data_daily — 23:00 ET cron, no lag (writes today's bar)
+    assert by_name["market_data_daily"]["settle_hour_et"] == 23
+    assert by_name["market_data_daily"].get("settle_lag_days", 0) == 0
     # etf_options_snapshots — 21:00 ET cron (PR #489 av-options-daily)
     assert by_name["etf_options_snapshots"]["settle_hour_et"] == 21
     assert by_name["etf_options_snapshots"].get("settle_lag_days", 0) == 0
@@ -570,33 +546,24 @@ def test_check_dicts_declare_settle_hour_for_after_hours_fetchers():
     assert by_name["market_data_intraday"]["settle_lag_days"] == 1
 
 
-def test_spx_market_data_daily_split_into_own_check():
-    """SPX freshness must come from a dedicated FRED-cadence check, not
-    the AV ETF check. PR D root-cause: SPX in market_data_daily is
-    written by fetch-fred-rates (FRED SP500), which lags 1-2 trading
-    days — the watchdog was false-flagging it every day by lumping it
-    with the same-day AV ETF tickers."""
+def test_spx_not_monitored_in_market_data_daily():
+    """SPX must NOT be in the market_data_daily freshness check. The S&P
+    500 *index* has no genuine OHLCV feed (AlphaVantage TIME_SERIES_DAILY
+    excludes index symbols); the old FRED-SP500 → SPX hack was removed
+    2026-05-15. SPX options Greeks derive spot via put-call parity, so
+    no market_data_daily SPX row is needed. SPX remains valid for the
+    etf_options_snapshots check (AV does provide SPX *option* chains)."""
     from scripts.audit_data_freshness import CHECKS
 
     md_checks = [c for c in CHECKS if c["name"] == "market_data_daily"]
-    assert len(md_checks) == 2, "expected exactly 2 market_data_daily checks (AV + FRED SPX)"
-
-    spx_check = next(c for c in md_checks if c.get("tickers") == ("SPX",))
-    # The SPX check models FRED cadence — generous lag, 2-day settle lag.
-    assert spx_check["settle_lag_days"] == 2
-    assert spx_check["expected_lag_hours"] >= 72
-
-    # On a Friday 06:30 ET fred-rates run, the most recent SETTLED SPX
-    # day should be ~2 trading days back (matches the 2026-05-15
-    # production observation: Fri run pulled SP500 through Wed).
-    from scripts.audit_data_freshness import most_recent_trading_day
-    fri_morning = datetime(2026, 5, 15, 11, 0, 0)  # Fri 07:00 ET = 11 UTC
-    settled = most_recent_trading_day(
-        fri_morning,
-        settle_hour_et=spx_check["settle_hour_et"],
-        settle_lag_days=spx_check["settle_lag_days"],
+    assert len(md_checks) == 1, "expected exactly 1 market_data_daily check"
+    assert "SPX" not in md_checks[0]["tickers"], (
+        "SPX must not be monitored in market_data_daily — it has no "
+        "real index OHLCV source"
     )
-    assert settled == date(2026, 5, 13)  # Wed — 2 trading days before Fri
+    # SPX IS still monitored for options (AV provides SPX option chains).
+    opt_check = next(c for c in CHECKS if c["name"] == "etf_options_snapshots")
+    assert "SPX" in opt_check["tickers"]
 
 
 # ── settle_lag_days: writer fires N trading days after the data ─────────────
