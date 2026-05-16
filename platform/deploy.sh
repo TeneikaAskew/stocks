@@ -15,9 +15,16 @@ DB_NAME="${DB_NAME:?set DB_NAME (e.g. export DB_NAME=trading)}"
 DB_PASS_SECRET="${DB_PASS_SECRET:-trading-db-pass}"
 
 # Auth: PUBLIC=1 ./deploy.sh skips the IAM gate (then put IAP or app-level auth in front).
-ALLOW_UNAUTH_FLAG="--no-allow-unauthenticated"
-if [[ "${PUBLIC:-0}" == "1" ]]; then
-  ALLOW_UNAUTH_FLAG="--allow-unauthenticated"
+# In STAGING mode the service-level IAM policy is left untouched — a staging
+# revision shares the service's existing auth posture, and re-asserting it
+# would need run.services.setIamPolicy, which the CI deploy SA does not hold.
+AUTH_FLAGS=()
+if [[ "${STAGING:-0}" != "1" ]]; then
+  if [[ "${PUBLIC:-0}" == "1" ]]; then
+    AUTH_FLAGS=(--allow-unauthenticated)
+  else
+    AUTH_FLAGS=(--no-allow-unauthenticated)
+  fi
 fi
 
 # Staging: STAGING=1 ./deploy.sh deploys a new revision tagged `staging` that
@@ -60,16 +67,16 @@ gcloud run deploy "${SERVICE}" \
   --cpu 1 \
   --timeout 300 \
   --max-instances 5 \
-  ${ALLOW_UNAUTH_FLAG} \
+  ${AUTH_FLAGS[@]+"${AUTH_FLAGS[@]}"} \
   ${STAGING_FLAGS[@]+"${STAGING_FLAGS[@]}"}
 
 echo ">> done"
 if [[ "${STAGING:-0}" == "1" ]]; then
   echo ">> staging revision URL (no production traffic):"
-  gcloud run services describe "${SERVICE}" --region "${REGION}" \
-    --flatten='status.traffic[]' \
-    --filter='status.traffic.tag=staging' \
-    --format='value(status.traffic.url)'
+  # The staging-tagged revision is reachable at the service URL with a
+  # `staging---` host prefix — Cloud Run's stable tag-URL convention.
+  base_url="$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.url)')"
+  echo "https://staging---${base_url#https://}"
 else
   gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.url)'
 fi
