@@ -1,4 +1,4 @@
-"""Tests for the --no-discord / BRIEF_NO_DISCORD / BRIEF_AS_OF Discord suppression policy.
+"""Tests for the --no-discord / BRIEF_POST_TO_DISCORD / BRIEF_AS_OF Discord posting policy.
 
 The premarket-brief used to require manual secret manipulation
 (temporarily unbind `DISCORD_WEBHOOK_URL` on the Cloud Run job) to
@@ -7,15 +7,16 @@ Discord channel. That was fragile — if the morning cron fires before
 the secret is restored, brief loses Discord; if you forget to restore,
 brief stays silent forever.
 
-This module replaces that with a parameterised policy:
+This module replaces that with a parameterised policy. `BRIEF_POST_TO_DISCORD`
+is a 3-state override env var:
 
-  1. `--no-discord` CLI flag (explicit)
-  2. `BRIEF_NO_DISCORD=true` env var (deployment override)
-  3. `BRIEF_AS_OF` is set (implicit — replays always skip)
+  * `true`  → force posting ON (wins over everything, incl. BRIEF_AS_OF)
+  * `false` → force posting OFF
+  * unset   → no override; posting is suppressed by `--no-discord` or
+              by `BRIEF_AS_OF` being set (replay), otherwise it posts.
 
-Any of these three sources triggers Discord suppression. The
-persist-to-Cloud-SQL path is unaffected — `premarket_analysis` rows are
-always written regardless.
+The persist-to-Cloud-SQL path is unaffected — `premarket_analysis` rows
+are always written regardless of the Discord policy.
 """
 from __future__ import annotations
 
@@ -23,21 +24,22 @@ import sys
 from unittest.mock import patch
 
 
-# Walk through the suppression policy logic directly. The actual
+# Walk through the posting policy logic directly. The actual
 # implementation lives in gcp/premarket_brief.py main() — we test the
 # decision function by recreating its inputs and asserting webhook_url
 # ends up cleared in each path.
 
 def _resolve_no_discord(args_no_discord: bool, env: dict) -> bool:
-    """Mirror of the logic in main(). Sources for "skip Discord":
-    BRIEF_NO_DISCORD=false explicit override wins over everything else;
-    otherwise --no-discord, BRIEF_NO_DISCORD=true, or BRIEF_AS_OF triggers."""
-    no_discord_env = env.get('BRIEF_NO_DISCORD', '').lower()
-    if no_discord_env == 'false':
+    """Mirror of the logic in main(). Returns True when Discord posting
+    is suppressed. BRIEF_POST_TO_DISCORD=true is the explicit force-on
+    override and wins over everything else; otherwise --no-discord,
+    BRIEF_POST_TO_DISCORD=false, or BRIEF_AS_OF triggers suppression."""
+    post_to_discord_env = env.get('BRIEF_POST_TO_DISCORD', '').lower()
+    if post_to_discord_env == 'true':
         return False  # explicit force-on
     return (
         args_no_discord
-        or no_discord_env == 'true'
+        or post_to_discord_env == 'false'
         or bool(env.get('BRIEF_AS_OF'))
     )
 
@@ -52,21 +54,22 @@ def test_cli_flag_suppresses():
 
 
 def test_env_var_suppresses():
-    assert _resolve_no_discord(False, {'BRIEF_NO_DISCORD': 'true'}) is True
+    assert _resolve_no_discord(False, {'BRIEF_POST_TO_DISCORD': 'false'}) is True
 
 
 def test_env_var_uppercase_suppresses():
     """Case-insensitive."""
-    assert _resolve_no_discord(False, {'BRIEF_NO_DISCORD': 'TRUE'}) is True
+    assert _resolve_no_discord(False, {'BRIEF_POST_TO_DISCORD': 'FALSE'}) is True
 
 
-def test_env_var_false_does_not_suppress():
-    assert _resolve_no_discord(False, {'BRIEF_NO_DISCORD': 'false'}) is False
+def test_env_var_true_does_not_suppress():
+    assert _resolve_no_discord(False, {'BRIEF_POST_TO_DISCORD': 'true'}) is False
 
 
-def test_env_var_unset_does_not_suppress():
-    """BRIEF_NO_DISCORD with non-boolean value falls through to default."""
-    assert _resolve_no_discord(False, {'BRIEF_NO_DISCORD': 'maybe'}) is False
+def test_env_var_non_boolean_does_not_suppress():
+    """BRIEF_POST_TO_DISCORD with a non-boolean value falls through to
+    the default (post)."""
+    assert _resolve_no_discord(False, {'BRIEF_POST_TO_DISCORD': 'maybe'}) is False
 
 
 def test_brief_as_of_implies_suppress():
@@ -82,12 +85,10 @@ def test_brief_as_of_empty_does_not_suppress():
 
 def test_suppression_sources_combine_or_wise_when_no_explicit_force():
     """Multiple suppression sources combine OR-wise. The explicit
-    BRIEF_NO_DISCORD=false override (tested separately) wins over
+    BRIEF_POST_TO_DISCORD=true override (tested separately) wins over
     these — that's the only way to force Discord on when other
     suppression signals are set."""
-    # Note: BRIEF_NO_DISCORD=false case is now tested separately under
-    # 'explicit force-on' tests below — it's the override and wins.
-    assert _resolve_no_discord(False, {'BRIEF_NO_DISCORD': 'true',
+    assert _resolve_no_discord(False, {'BRIEF_POST_TO_DISCORD': 'false',
                                         'BRIEF_AS_OF': ''}) is True
     assert _resolve_no_discord(False, {'BRIEF_AS_OF': '2026-05-06'}) is True
     # CLI flag alone
@@ -131,32 +132,32 @@ def test_brief_main_keeps_webhook_url_in_live_mode():
     assert webhook_url == 'https://discord.com/webhook/REAL'
 
 
-# ── BRIEF_NO_DISCORD=false explicit override ─────────────────────
+# ── BRIEF_POST_TO_DISCORD=true explicit override ─────────────────
 
 
 def test_explicit_force_on_overrides_brief_as_of():
     """The 'I want to see what 5/6 would have looked like in Discord'
-    use case: BRIEF_NO_DISCORD=false should force Discord ON even when
-    BRIEF_AS_OF is set (which normally auto-suppresses)."""
-    env = {'BRIEF_AS_OF': '2026-05-06', 'BRIEF_NO_DISCORD': 'false'}
+    use case: BRIEF_POST_TO_DISCORD=true should force Discord ON even
+    when BRIEF_AS_OF is set (which normally auto-suppresses)."""
+    env = {'BRIEF_AS_OF': '2026-05-06', 'BRIEF_POST_TO_DISCORD': 'true'}
     assert _resolve_no_discord(False, env) is False, \
-        "explicit BRIEF_NO_DISCORD=false should override AS_OF auto-suppress"
+        "explicit BRIEF_POST_TO_DISCORD=true should override AS_OF auto-suppress"
 
 
 def test_explicit_force_on_overrides_cli_flag():
-    """If both --no-discord and BRIEF_NO_DISCORD=false are set,
+    """If both --no-discord and BRIEF_POST_TO_DISCORD=true are set,
     explicit env-var override wins (env vars are per-execution config)."""
-    env = {'BRIEF_NO_DISCORD': 'false'}
+    env = {'BRIEF_POST_TO_DISCORD': 'true'}
     assert _resolve_no_discord(True, env) is False
 
 
 def test_explicit_force_on_alone_default():
-    """BRIEF_NO_DISCORD=false alone means default Discord behavior (post)."""
-    env = {'BRIEF_NO_DISCORD': 'false'}
+    """BRIEF_POST_TO_DISCORD=true alone means default Discord behavior (post)."""
+    env = {'BRIEF_POST_TO_DISCORD': 'true'}
     assert _resolve_no_discord(False, env) is False
 
 
-def test_brief_no_discord_true_still_suppresses():
-    """Regression check: =true still suppresses (case-insensitive)."""
-    assert _resolve_no_discord(False, {'BRIEF_NO_DISCORD': 'TRUE'}) is True
-    assert _resolve_no_discord(False, {'BRIEF_NO_DISCORD': 'true'}) is True
+def test_post_to_discord_false_still_suppresses():
+    """Regression check: =false still suppresses (case-insensitive)."""
+    assert _resolve_no_discord(False, {'BRIEF_POST_TO_DISCORD': 'FALSE'}) is True
+    assert _resolve_no_discord(False, {'BRIEF_POST_TO_DISCORD': 'false'}) is True

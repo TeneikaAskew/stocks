@@ -2961,7 +2961,7 @@ def main(argv: Optional[list[str]] = None):
              "premarket_analysis_history. Used by backfills and "
              "historical replays to avoid spamming the Discord channel "
              "with re-posted content. Equivalent env var: "
-             "BRIEF_NO_DISCORD=true. Default: post to Discord (live "
+             "BRIEF_POST_TO_DISCORD=false. Default: post to Discord (live "
              "behavior unchanged). Implied when BRIEF_AS_OF is set "
              "(replay) — historical replays would post stale content "
              "to a real-time Discord channel.",
@@ -2985,31 +2985,32 @@ def main(argv: Optional[list[str]] = None):
         or ('cli' if sys.stdin.isatty() else 'cloud-run-job')
     )
 
-    # Resolve Discord-suppression policy.
+    # Resolve whether this run posts to Discord.
     #
-    # Sources (any one of the first three triggers suppress; explicit
-    # `BRIEF_NO_DISCORD=false` overrides the BRIEF_AS_OF auto-suppression
-    # for the use case "I want to see what the brief would have looked
-    # like for a historical date in Discord, even though it's a replay"):
+    # BRIEF_POST_TO_DISCORD is a 3-state override env var:
+    #   - `true`  → FORCE posting on; wins over everything, including
+    #               the BRIEF_AS_OF replay auto-suppress. This is the
+    #               "show me a historical date's brief in Discord even
+    #               though it's a replay" case (used by /replay).
+    #   - `false` → FORCE posting off.
+    #   - unset   → no override; fall through to the rules below.
     #
-    #   1. `BRIEF_NO_DISCORD=false` env var → FORCE Discord on
-    #      (overrides everything else; takes priority)
-    #   2. `--no-discord` CLI flag → suppress
-    #   3. `BRIEF_NO_DISCORD=true` env var → suppress
-    #   4. `BRIEF_AS_OF` set (historical replay) → suppress (default
-    #      safety; rendering stale content to a live channel is usually
-    #      wrong, but the explicit override above lets you opt back in)
+    # When unset, posting is suppressed if ANY of these hold:
+    #   - `--no-discord` CLI flag
+    #   - `BRIEF_AS_OF` is set (historical replay — default safety, so
+    #     a backtest doesn't post stale content to a live channel)
+    # Otherwise (a normal live run) the brief posts.
     #
     # The persistence path (persist_to_cloud_sql) is unaffected by any
-    # of these — premarket_analysis + premarket_analysis_history rows
+    # of this — premarket_analysis + premarket_analysis_history rows
     # are always written regardless of the Discord policy.
-    no_discord_env = os.environ.get('BRIEF_NO_DISCORD', '').lower()
-    if no_discord_env == 'false':
+    post_to_discord_env = os.environ.get('BRIEF_POST_TO_DISCORD', '').lower()
+    if post_to_discord_env == 'true':
         no_discord = False  # explicit force-on; wins over AS_OF auto-suppress
     else:
         no_discord = (
             args.no_discord
-            or no_discord_env == 'true'
+            or post_to_discord_env == 'false'
             or bool(os.environ.get('BRIEF_AS_OF'))
         )
     webhook_url = '' if no_discord else os.environ.get('DISCORD_WEBHOOK_URL')
