@@ -1,6 +1,17 @@
 ---
 name: fallback-guard
-description: Reviews changed code for the five forbidden silent-fallback patterns defined in CLAUDE.md Rule 3.7 — `except Exception: return <empty>` in data-access code, `fillna(0)`/`or 0`/`?? 0`/`.get(k, 0)` on financial fields, `continue-on-error: true` in fetcher workflows, hardcoded financial-constant defaults (`_DEFAULT_RISK_FREE` etc.), and external API failures returning a fabricated value instead of a typed `UNAVAILABLE` envelope. Trigger on changes to lib/**, gcp/**, platform/api/**, platform/src/**, .github/workflows/fetch-*.yml, .github/workflows/analyze-*.yml, .github/workflows/validate-*.yml. Blocks /gcp-deploy and /audit-review on CRITICAL findings.
+description: >-
+  Reviews changed code for the five forbidden silent-fallback patterns
+  defined in CLAUDE.md Rule 3.7 — silent `except Exception` returning
+  an empty container in data-access code, `fillna(0)` / `or 0` / `?? 0`
+  / `.get(k, 0)` on financial fields, `continue-on-error` set true in
+  fetcher workflows, hardcoded financial-constant defaults
+  (`_DEFAULT_RISK_FREE` etc.), and external API failures returning a
+  fabricated value instead of a typed `UNAVAILABLE` envelope. Trigger
+  on changes to lib/**, gcp/**, platform/api/**, platform/src/**,
+  .github/workflows/fetch-*.yml, .github/workflows/analyze-*.yml,
+  .github/workflows/validate-*.yml. Blocks /gcp-deploy and
+  /audit-review on CRITICAL findings.
 model: sonnet
 color: red
 tools: Read, Grep, Glob, Bash
