@@ -967,3 +967,59 @@ def test_replay_cache_miss_falls_back_to_dispatch():
     assert "premarket-brief" in job_names
     assert "insight-pipeline" in job_names  # full recompute path
     assert "insight-discord-push" not in job_names  # not the cache-hit path
+
+
+# ── /replay-signals — stored-alert replay dispatch ───────────────────────
+
+def test_replay_signals_dispatches_job_with_env():
+    """handle_replay_signals dispatches the signal-replay job with the
+    SIGNAL_REPLAY_* env overrides the job reads."""
+    from gcp.discord_interactions.main import handle_replay_signals
+    calls = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True):
+        msg = handle_replay_signals("2026-05-15", "09:30", "10:30", "",
+                                    "appid", "tok")
+    assert len(calls) == 1
+    name, env = calls[0]
+    assert name == "signal-replay"
+    assert env["SIGNAL_REPLAY_DATE"] == "2026-05-15"
+    assert env["SIGNAL_REPLAY_START"] == "09:30"
+    assert env["SIGNAL_REPLAY_END"] == "10:30"
+    assert "SIGNAL_REPLAY_TICKERS" not in env
+    assert "🔁" in msg
+
+
+def test_replay_signals_bad_date_returns_error_no_dispatch():
+    """A malformed window fails fast with a user-facing error and never
+    dispatches the job."""
+    from gcp.discord_interactions.main import handle_replay_signals
+    calls = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True):
+        msg = handle_replay_signals("notadate", "09:30", "10:30", "",
+                                    "appid", "tok")
+    assert msg.startswith("❌")
+    assert calls == []
+
+
+def test_replay_signals_end_before_start_rejected():
+    from gcp.discord_interactions.main import handle_replay_signals
+    calls = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True):
+        msg = handle_replay_signals("2026-05-15", "10:30", "09:30", "",
+                                    "appid", "tok")
+    assert msg.startswith("❌")
+    assert calls == []
+
+
+def test_replay_signals_includes_ticker_filter():
+    from gcp.discord_interactions.main import handle_replay_signals
+    calls = []
+    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
+               side_effect=lambda n, e: calls.append((n, e)) or True):
+        handle_replay_signals("2026-05-15", "09:30", "16:00", "SPY,QQQ",
+                              "appid", "tok")
+    _, env = calls[0]
+    assert env["SIGNAL_REPLAY_TICKERS"] == "SPY,QQQ"

@@ -64,6 +64,36 @@ COMMANDS: list[dict] = [
         ],
     },
     {
+        "name": "replay-signals",
+        "description": "Re-post stored signal alerts to the signals channel for a date + ET time block",
+        "options": [
+            {
+                "name": "date",
+                "description": "Trading day to replay (YYYY-MM-DD)",
+                "type": STRING,
+                "required": True,
+            },
+            {
+                "name": "start",
+                "description": "ET start time HH:MM (default 09:30)",
+                "type": STRING,
+                "required": False,
+            },
+            {
+                "name": "end",
+                "description": "ET end time HH:MM (default 16:00)",
+                "type": STRING,
+                "required": False,
+            },
+            {
+                "name": "tickers",
+                "description": "Optional comma-separated ticker filter (default: all)",
+                "type": STRING,
+                "required": False,
+            },
+        ],
+    },
+    {
         "name": "validate",
         "description": "Did the predicted entry/stop/targets actually hit during intraday?",
         "options": [

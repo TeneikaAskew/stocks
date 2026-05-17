@@ -247,6 +247,34 @@ deploy_signal_quality_alarm() {
         --quiet
 }
 
+# ── Signal replay (Cloud Run Job — on-demand) ────────────────────────────────
+# Re-posts stored signal_alerts to the signals Discord channel for a
+# historical date + ET time block. Triggered by the /replay-signals
+# slash command (dispatched with per-execution SIGNAL_REPLAY_* env
+# overrides) or manually via `gcloud run jobs execute`.
+#
+# task-timeout 900: the job paces posts ~2s apart, capped at 200 alerts
+# (200 * 2s = 400s) + Discord 429 back-off headroom.
+deploy_signal_replay() {
+    echo "Deploying signal-replay job..."
+    gcloud run jobs create signal-replay \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 900 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_replay" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-replay \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 900 \
+        --command "python,-m,gcp.signal_replay" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Auto-refresh top-N (Cloud Run Job) ───────────────────────────────────────
 # Pre-warms the AI insight cache for the highest-scoring ranker tickers.
 # Calls lib.agents.ranker.rank_tickers, picks top N, enqueues a Cloud
@@ -2127,6 +2155,7 @@ case "${1:-help}" in
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
+    signal-replay) build_image && deploy_signal_replay ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     discord)     build_image && deploy_discord_interactions ;;
@@ -2145,6 +2174,7 @@ case "${1:-help}" in
         deploy_auto_refresh_top_n
         deploy_signal_quality_report
         deploy_signal_quality_alarm
+        deploy_signal_replay
         deploy_weekly_pg_dump
         deploy_notifier
         deploy_schedulers
@@ -2194,6 +2224,10 @@ case "${1:-help}" in
         echo "  signal-quality"
         echo "             Deploy signal-quality-report (Phase 0.5 measurement)"
         echo "             + signal-quality-alarm (regression detector) jobs."
+        echo "  signal-replay"
+        echo "             Deploy signal-replay job (re-posts stored signal_alerts"
+        echo "             to the signals channel for a date + ET time block;"
+        echo "             backs the /replay-signals slash command)."
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac
