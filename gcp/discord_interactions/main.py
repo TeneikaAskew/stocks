@@ -524,6 +524,53 @@ def replay_in_background(ticker: str, date_arg: str,
     edit_deferred_reply(application_id, interaction_token, msg)
 
 
+def handle_replay_signals(date_arg: str, start: str, end: str,
+                          tickers: str, application_id: str,
+                          interaction_token: str) -> str:
+    """Background handler for /replay-signals.
+
+    Validates the date + ET time block up front (so the user gets an
+    immediate, specific error rather than a silent job failure), then
+    dispatches the signal-replay Cloud Run Job, which re-posts the
+    stored signal_alerts for that window to the signals channel.
+    """
+    try:
+        from gcp.signal_replay import parse_time_block
+        parse_time_block(date_arg, start, end)
+    except ValueError as exc:
+        return f"❌ {exc}"
+
+    env = {
+        "SIGNAL_REPLAY_DATE":  date_arg,
+        "SIGNAL_REPLAY_START": start,
+        "SIGNAL_REPLAY_END":   end,
+    }
+    if tickers:
+        env["SIGNAL_REPLAY_TICKERS"] = tickers
+
+    if not execute_cloud_run_job("signal-replay", env):
+        return (f"❌ Failed to dispatch the signal replay for {date_arg}. "
+                f"Check the signal-replay Cloud Run Job logs.")
+
+    scope = f" · {tickers.upper()}" if tickers else ""
+    return (f"🔁 Replaying signals for **{date_arg} {start}–{end} ET**{scope} "
+            f"— stored alerts are posting to the signals channel now.")
+
+
+def replay_signals_in_background(date_arg: str, start: str, end: str,
+                                 tickers: str, application_id: str,
+                                 interaction_token: str) -> None:
+    """Wrapper executed by FastAPI BackgroundTasks. Edits the deferred
+    reply with the final status."""
+    try:
+        msg = handle_replay_signals(date_arg, start, end, tickers,
+                                    application_id, interaction_token)
+    except Exception as exc:
+        logger.exception("replay-signals handler crashed: %s", exc)
+        msg = f"❌ Internal error: {exc}"
+    edit_deferred_reply(application_id, interaction_token, msg)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # /watchlist subcommand handlers (Slice 2)
 # ──────────────────────────────────────────────────────────────────────
@@ -853,6 +900,24 @@ async def interactions(request: Request,
             return JSONResponse({
                 "type": DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
                 "data": {"content": f"🔄 Replaying {ticker.upper()} as of {date_arg} ({mode})..."},
+            })
+
+        if command_name == "replay-signals":
+            opts = _options_to_dict(data.get("options", []))
+            date_arg = str(opts.get("date", "")).strip()
+            start = str(opts.get("start") or "09:30").strip()
+            end = str(opts.get("end") or "16:00").strip()
+            tickers = str(opts.get("tickers", "")).strip()
+            if not date_arg:
+                return _ephemeral_reply("❌ `date` is required (YYYY-MM-DD).")
+            background.add_task(
+                replay_signals_in_background, date_arg, start, end,
+                tickers, app_id, token,
+            )
+            return JSONResponse({
+                "type": DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+                "data": {"content": f"🔁 Replaying signals for {date_arg} "
+                                    f"{start}–{end} ET..."},
             })
 
         if command_name == "watchlist":
