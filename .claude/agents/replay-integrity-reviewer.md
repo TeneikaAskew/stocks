@@ -17,7 +17,7 @@ description: >-
   lib/strat_levels.py, lib/strategies/insight_cache.py, and any new file
   under scripts/ that iterates bars or scores signals. Blocks /gcp-deploy
   and /audit-review on CRITICAL findings.
-model: sonnet
+model: opus
 color: cyan
 tools: Read, Grep, Glob, Bash
 ---

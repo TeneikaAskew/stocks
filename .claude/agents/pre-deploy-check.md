@@ -82,19 +82,33 @@ git diff --name-only origin/main...HEAD 2>/dev/null | grep -qx 'gcp/deploy.sh' \
 
 Block the deploy if it returns `GCP_CONFIG_EXIT=2` — a user-facing service on `min-instances=0`, a `BackgroundTasks` service missing `--no-cpu-throttling`, a plaintext secret on `--set-env-vars`, etc. Surface its CRITICAL findings inline. If `deploy.sh` is unchanged, mark `[SKIP]` (not a blocker).
 
-### [CRITICAL] 8. GCP capacity & cost review (if a Cloud Run Job entrypoint changed)
+### [CRITICAL] 8. GCP capacity & cost review (if a Cloud Run Job entrypoint or sizing flag changed)
 
-If any `gcp/*.py` or `gcp/fetchers/*.py` has changed since `main`, delegate to `gcp-capacity-cost-reviewer`.
+If any `gcp/*.py`, `gcp/fetchers/*.py`, or `gcp/deploy.sh` has changed since `main`, delegate to `gcp-capacity-cost-reviewer`.
 
 ```bash
-git diff --name-only origin/main...HEAD 2>/dev/null | grep -qE '^gcp/([^/]+\.py|fetchers/[^/]+\.py)$' \
-  && echo "Cloud Run Job code changed — running gcp-capacity-cost-reviewer" \
-  || echo "[SKIP] no Cloud Run Job code changed"
+git diff --name-only origin/main...HEAD 2>/dev/null | grep -qE '^gcp/([^/]+\.py|fetchers/[^/]+\.py|deploy\.sh)$' \
+  && echo "Cloud Run Job code or sizing flag changed — running gcp-capacity-cost-reviewer" \
+  || echo "[SKIP] no Cloud Run Job code or sizing flag changed"
 ```
 
-Block the deploy if it returns `CAPACITY_REVIEW_EXIT=2` — an N+1 query loop, a `task-timeout` that cannot fit the wall-clock estimate, an unbounded-memory accumulator, etc. (CLAUDE.md Rule 0). Surface its CRITICAL findings inline. If no job code changed, mark `[SKIP]` (not a blocker).
+`gcp/deploy.sh` is included because the capacity reviewer owns `task-timeout` / `memory` / `max-retries` sizing — a deploy-only change to those flags must still be sized against the wall-clock estimate. A `deploy.sh` change therefore runs both check 7 (config correctness) and check 8 (sizing math); that overlap is intentional.
 
-### [WARN] 9. `make test` passes
+Block the deploy if it returns `CAPACITY_REVIEW_EXIT=2` — an N+1 query loop, a `task-timeout` that cannot fit the wall-clock estimate, an unbounded-memory accumulator, etc. (CLAUDE.md Rule 0). Surface its CRITICAL findings inline. If nothing in scope changed, mark `[SKIP]` (not a blocker).
+
+### [CRITICAL] 9. Replay integrity review (if a replay / as-of file changed)
+
+If any replay / premarket-brief / insight / as-of file has changed since `main`, delegate to `replay-integrity-reviewer`.
+
+```bash
+git diff --name-only origin/main...HEAD 2>/dev/null | grep -qE '^(gcp/(signal_monitor|premarket_brief|insight_pipeline_job|signal_monitor_eod_resolver)\.py|scripts/(replay_signal_monitor|backfill_and_replay|generate_historical_report|backfill_history_tables)\.py|lib/strat_levels\.py|lib/strategies/insight_cache\.py)$' \
+  && echo "replay/as-of file changed — running replay-integrity-reviewer" \
+  || echo "[SKIP] no replay/as-of file changed"
+```
+
+Block the deploy if it returns `REPLAY_INTEGRITY_EXIT=2` — a throwaway replay harness, `add_all_indicators` used in place of `signal_monitor.calculate_indicators`, or as-of leakage (a function reading data dated `>=` its as-of cutoff). Surface its CRITICAL findings inline. If no replay/as-of file changed, mark `[SKIP]` (not a blocker).
+
+### [WARN] 10. `make test` passes
 
 ```bash
 make test 2>&1 | tail -20
@@ -102,13 +116,13 @@ make test 2>&1 | tail -20
 
 If tests fail, tag as WARN not CRITICAL (user may be mid-refactor). Honor `--skip-tests` flag; when set, emit `[tests skipped]` marker into stdout so caller can log it in the commit body.
 
-### [WARN] 10. Frontend type check
+### [WARN] 11. Frontend type check
 
 ```bash
 cd platform && npx tsc --noEmit 2>&1 | tail -20
 ```
 
-### [WARN] 11. All workflow YAML parses
+### [WARN] 12. All workflow YAML parses
 
 ```bash
 python -c "
@@ -121,7 +135,7 @@ sys.exit(1 if errors else 0)
 "
 ```
 
-### [WARN] 12. Uncommitted changes in deployable dirs
+### [WARN] 13. Uncommitted changes in deployable dirs
 
 ```bash
 DIRTY=$(git status --porcelain gcp/ lib/ platform/api/ platform/src/ 2>/dev/null | wc -l)
@@ -146,12 +160,13 @@ Mode: <deploy | local-prod-mode>
   [OK|FAIL] 6. schema
   [OK|FAIL|SKIP] 7. gcp config review
   [OK|FAIL|SKIP] 8. gcp capacity review
+  [OK|FAIL|SKIP] 9. replay integrity review
 
 [WARN]
-  [OK|WARN] 9. tests
-  [OK|WARN] 10. tsc
-  [OK|WARN] 11. yaml
-  [OK|WARN] 12. git clean
+  [OK|WARN] 10. tests
+  [OK|WARN] 11. tsc
+  [OK|WARN] 12. yaml
+  [OK|WARN] 13. git clean
 
 VERDICT: <GO | WARN | BLOCK>
 PRE_DEPLOY_EXIT=<0|1|2>
