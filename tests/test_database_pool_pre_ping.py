@@ -25,10 +25,19 @@ import ast
 from pathlib import Path
 
 
-def _find_create_engine_call() -> ast.Call:
-    """Locate the sqlalchemy.create_engine(...) call in gcp/database.py."""
+def _find_create_engine_calls() -> list[ast.Call]:
+    """Locate EVERY sqlalchemy.create_engine(...) call in gcp/database.py.
+
+    gcp/database.py has two: the Cloud SQL Connector engine (production)
+    and the direct DB_HOST engine (local dev / CI integration tests).
+    Both must keep the pinned pool args, so the guards below check every
+    call — not just the first one `ast.walk` happens to reach. Checking
+    only the first silently stopped guarding the Cloud SQL call once the
+    direct engine was added ahead of it.
+    """
     src = Path("gcp/database.py").read_text()
     tree = ast.parse(src)
+    calls: list[ast.Call] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             func = node.func
@@ -36,39 +45,40 @@ def _find_create_engine_call() -> ast.Call:
             # `create_engine(...)` (Name) since either form is valid.
             if (isinstance(func, ast.Attribute) and func.attr == "create_engine") or \
                (isinstance(func, ast.Name) and func.id == "create_engine"):
-                return node
-    raise AssertionError("could not find a create_engine(...) call in gcp/database.py")
+                calls.append(node)
+    assert calls, "could not find a create_engine(...) call in gcp/database.py"
+    return calls
 
 
 def test_create_engine_passes_pool_pre_ping_true():
-    """`sqlalchemy.create_engine` MUST be called with `pool_pre_ping=True`.
+    """EVERY `sqlalchemy.create_engine` call MUST pass `pool_pre_ping=True`.
 
     Without it, Cloud SQL TLS drops during long jobs surface as
     'ssl.SSLError: [SSL: BAD_LENGTH]' on the next pg8000 send.
     """
-    call = _find_create_engine_call()
-    kw = {k.arg: k.value for k in call.keywords if k.arg is not None}
-    assert "pool_pre_ping" in kw, (
-        "create_engine missing pool_pre_ping kwarg. The Cloud SQL "
-        "long-job failure mode (SSL BAD_LENGTH after a stale TLS "
-        "session) requires pre-ping to stay reliable. See module "
-        "docstring for the 2026-05-14 postmortem."
-    )
-    value = kw["pool_pre_ping"]
-    # Accept ast.Constant(True) — anything else (False, dynamic expression)
-    # means the protection is gone or conditionally disabled.
-    assert isinstance(value, ast.Constant) and value.value is True, (
-        f"pool_pre_ping must be the literal True (got {ast.dump(value)})."
-    )
+    for call in _find_create_engine_calls():
+        kw = {k.arg: k.value for k in call.keywords if k.arg is not None}
+        assert "pool_pre_ping" in kw, (
+            "create_engine missing pool_pre_ping kwarg. The Cloud SQL "
+            "long-job failure mode (SSL BAD_LENGTH after a stale TLS "
+            "session) requires pre-ping to stay reliable. See module "
+            "docstring for the 2026-05-14 postmortem."
+        )
+        value = kw["pool_pre_ping"]
+        # Accept ast.Constant(True) — anything else (False, dynamic expression)
+        # means the protection is gone or conditionally disabled.
+        assert isinstance(value, ast.Constant) and value.value is True, (
+            f"pool_pre_ping must be the literal True (got {ast.dump(value)})."
+        )
 
 
 def test_create_engine_retains_existing_pool_args():
     """Sanity-pin the other pool args so future refactors don't silently
     drop pool_recycle / pool_size and reintroduce a different failure."""
-    call = _find_create_engine_call()
-    kw = {k.arg: k.value for k in call.keywords if k.arg is not None}
-    for required in ("pool_recycle", "pool_size", "pool_timeout", "max_overflow"):
-        assert required in kw, f"create_engine missing {required} kwarg"
+    for call in _find_create_engine_calls():
+        kw = {k.arg: k.value for k in call.keywords if k.arg is not None}
+        for required in ("pool_recycle", "pool_size", "pool_timeout", "max_overflow"):
+            assert required in kw, f"create_engine missing {required} kwarg"
 
 
 def _function_body_source(name: str) -> str:
