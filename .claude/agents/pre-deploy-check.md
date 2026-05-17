@@ -70,7 +70,71 @@ Delegate to the `security-scan` agent. If it returns non-zero, mark this check a
 
 Delegate to `infra-drift-detector`. If it reports missing columns or type mismatches for any of the 9 core tables, block the deploy.
 
-### [WARN] 7. `make test` passes
+### [CRITICAL] 7. GCP Cloud Run config review (if `gcp/deploy.sh` changed)
+
+If `gcp/deploy.sh` has changed since `main`, delegate to `gcp-config-reviewer`.
+
+```bash
+git diff --name-only origin/main...HEAD 2>/dev/null | grep -qx 'gcp/deploy.sh' \
+  && echo "deploy.sh changed — running gcp-config-reviewer" \
+  || echo "[SKIP] deploy.sh unchanged"
+```
+
+Block the deploy if it returns `GCP_CONFIG_EXIT=2` — a user-facing service on `min-instances=0`, a `BackgroundTasks` service missing `--no-cpu-throttling`, a plaintext secret on `--set-env-vars`, etc. Surface its CRITICAL findings inline. If `deploy.sh` is unchanged, mark `[SKIP]` (not a blocker).
+
+### [CRITICAL] 8. GCP capacity & cost review (if a Cloud Run Job entrypoint or sizing flag changed)
+
+If any `gcp/*.py`, `gcp/fetchers/*.py`, or `gcp/deploy.sh` has changed since `main`, delegate to `gcp-capacity-cost-reviewer`.
+
+```bash
+git diff --name-only origin/main...HEAD 2>/dev/null | grep -qE '^gcp/([^/]+\.py|fetchers/[^/]+\.py|deploy\.sh)$' \
+  && echo "Cloud Run Job code or sizing flag changed — running gcp-capacity-cost-reviewer" \
+  || echo "[SKIP] no Cloud Run Job code or sizing flag changed"
+```
+
+`gcp/deploy.sh` is included because the capacity reviewer owns `task-timeout` / `memory` / `max-retries` sizing — a deploy-only change to those flags must still be sized against the wall-clock estimate. A `deploy.sh` change therefore runs both check 7 (config correctness) and check 8 (sizing math); that overlap is intentional.
+
+Block the deploy if it returns `CAPACITY_REVIEW_EXIT=2` — an N+1 query loop, a `task-timeout` that cannot fit the wall-clock estimate, an unbounded-memory accumulator, etc. (CLAUDE.md Rule 0). Surface its CRITICAL findings inline. If nothing in scope changed, mark `[SKIP]` (not a blocker).
+
+### [CRITICAL] 9. Replay integrity review (if a replay / as-of file changed)
+
+If any replay / premarket-brief / insight / as-of file has changed since `main`, delegate to `replay-integrity-reviewer`.
+
+```bash
+git diff --name-only origin/main...HEAD 2>/dev/null | grep -qE '^(gcp/(signal_monitor|premarket_brief|insight_pipeline_job|signal_monitor_eod_resolver)\.py|scripts/(replay_signal_monitor|backfill_and_replay|generate_historical_report|backfill_history_tables)\.py|lib/strat_levels\.py|lib/strategies/insight_cache\.py)$' \
+  && echo "replay/as-of file changed — running replay-integrity-reviewer" \
+  || echo "[SKIP] no replay/as-of file changed"
+```
+
+Block the deploy if it returns `REPLAY_INTEGRITY_EXIT=2` — a throwaway replay harness, `add_all_indicators` used in place of `signal_monitor.calculate_indicators`, or as-of leakage (a function reading data dated `>=` its as-of cutoff). Surface its CRITICAL findings inline. If no replay/as-of file changed, mark `[SKIP]` (not a blocker).
+
+### [CRITICAL] 10. Silent-fallback review (if data-layer / fetcher code changed)
+
+If any `lib/`, `gcp/`, `platform/api/`, or `platform/src/` file — or a `fetch-*` / `analyze-*` / `validate-*` workflow — has changed since `main`, delegate to `fallback-guard`.
+
+```bash
+git diff --name-only origin/main...HEAD 2>/dev/null \
+  | grep -qE '^(lib/|gcp/|platform/api/|platform/src/)|^\.github/workflows/(fetch|analyze|validate)-[^/]*\.yml$' \
+  && echo "data-layer code changed — running fallback-guard" \
+  || echo "[SKIP] no data-layer code changed"
+```
+
+Block the deploy if it returns `FALLBACK_GUARD_EXIT=2` — a newly introduced silent fallback from CLAUDE.md Rule 3.7's five forbidden patterns: `except: return <empty>` in data-access code, `fillna(0)` / `or 0` / `?? 0` on a financial field, `continue-on-error: true` on a fetch step, a hardcoded financial-constant default, or a fabricated value in place of a typed `UNAVAILABLE` envelope. The agent flags only *new* regressions, not the ~121 catalogued pre-existing fallbacks. Surface its CRITICAL findings inline. If nothing in scope changed, mark `[SKIP]` (not a blocker).
+
+### [CRITICAL] 11. Trading-logic review (if signal / backtest / indicator code changed)
+
+If any trading-logic file has changed since `main`, delegate to `trading-logic-reviewer`.
+
+```bash
+git diff --name-only origin/main...HEAD 2>/dev/null \
+  | grep -qE '^(lib/(signals|backtest|indicators|strat|walk_forward)\.py|scripts/run_backtest\.py|platform/src/lib/greeksCalculator\.ts|gcp/(signal_monitor|premarket_brief)\.py)$|^scripts/analysis/' \
+  && echo "trading-logic code changed — running trading-logic-reviewer" \
+  || echo "[SKIP] no trading-logic code changed"
+```
+
+Block the deploy if it returns `TRADING_REVIEW_EXIT=2` — look-ahead bias, survivorship bias, data snooping, incorrect P&L accounting, a wrong indicator formula, a Black-Scholes unit error, or a Sharpe-annualization mistake. Surface its CRITICAL findings inline. If no trading-logic file changed, mark `[SKIP]` (not a blocker).
+
+### [WARN] 12. `make test` passes
 
 ```bash
 make test 2>&1 | tail -20
@@ -78,13 +142,13 @@ make test 2>&1 | tail -20
 
 If tests fail, tag as WARN not CRITICAL (user may be mid-refactor). Honor `--skip-tests` flag; when set, emit `[tests skipped]` marker into stdout so caller can log it in the commit body.
 
-### [WARN] 8. Frontend type check
+### [WARN] 13. Frontend type check
 
 ```bash
 cd platform && npx tsc --noEmit 2>&1 | tail -20
 ```
 
-### [WARN] 9. All workflow YAML parses
+### [WARN] 14. All workflow YAML parses
 
 ```bash
 python -c "
@@ -97,7 +161,7 @@ sys.exit(1 if errors else 0)
 "
 ```
 
-### [WARN] 10. Uncommitted changes in deployable dirs
+### [WARN] 15. Uncommitted changes in deployable dirs
 
 ```bash
 DIRTY=$(git status --porcelain gcp/ lib/ platform/api/ platform/src/ 2>/dev/null | wc -l)
@@ -120,12 +184,17 @@ Mode: <deploy | local-prod-mode>
   [OK|FAIL] 4. GCS
   [OK|FAIL] 5. secrets
   [OK|FAIL] 6. schema
+  [OK|FAIL|SKIP] 7. gcp config review
+  [OK|FAIL|SKIP] 8. gcp capacity review
+  [OK|FAIL|SKIP] 9. replay integrity review
+  [OK|FAIL|SKIP] 10. silent-fallback review
+  [OK|FAIL|SKIP] 11. trading-logic review
 
 [WARN]
-  [OK|WARN] 7. tests
-  [OK|WARN] 8. tsc
-  [OK|WARN] 9. yaml
-  [OK|WARN] 10. git clean
+  [OK|WARN] 12. tests
+  [OK|WARN] 13. tsc
+  [OK|WARN] 14. yaml
+  [OK|WARN] 15. git clean
 
 VERDICT: <GO | WARN | BLOCK>
 PRE_DEPLOY_EXIT=<0|1|2>
