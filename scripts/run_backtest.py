@@ -58,6 +58,21 @@ def persist_trades(
     # ON CONFLICT DO UPDATE rather than appending duplicate rows.
     df.insert(4, 'trade_seq', range(len(df)))
 
+    # Coerce INTEGER-typed columns back to int. BacktestResult.to_dataframe()
+    # produces float64 columns the moment any row carries a NaN (pandas
+    # widens the whole column); pg8000 then binds e.g. strat_bonus=-1.0 as
+    # the string "-1.0" and Postgres rejects it with 22P02 ("invalid input
+    # syntax for type integer"). Per-value coercion: finite → int, NaN/None
+    # → None. Same fix as gcp/historical_signals.py:bulk_insert._INT_COLS.
+    _INT_COLS = ('trade_seq', 'base_score', 'strat_bonus',
+                 'total_score', 'orb_trend')
+    for col in _INT_COLS:
+        if col in df.columns:
+            df[col] = df[col].apply(
+                lambda v: None if v is None or (isinstance(v, float) and pd.isna(v))
+                else int(v)
+            )
+
     return upsert_dataframe(
         df,
         table='backtest_trades',

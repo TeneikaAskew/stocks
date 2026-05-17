@@ -1136,17 +1136,20 @@ deploy_compute_earnings_reactions() {
 # shared run_id the orchestrator generates.
 #
 # Capacity (3 tickers × {base, strat, sweep} ≈ 9 backtest-engine runs over
-# ~5y of 1-min bars):
+# ~5y of 1-min bars) — MEASURED on the 2026-05-17 first production run:
 #   - Volume: ~9 × a few-thousand simulated trades → < 100k rows total.
 #   - Velocity: DB writes are batched per ticker/mode via upsert_dataframe
 #     (chunked, ON CONFLICT) — ~7 write round-trips total, not per-row. The
 #     cost is CPU-bound simulation, not SQL round-trips.
-#   - Wall-clock: ~3-7 min per backtest-engine run × 9 ≈ 30-60 min typical.
-#     task-timeout 14400s (4h) gives the >= 4× headroom CLAUDE.md §5 wants;
-#     Cloud Run charges runtime not the cap, so headroom is free.
-# memory 2Gi: ~5y of 1-min OHLCV+indicators for one ticker is a few hundred
-# MB; the sweep resamples it to 5 timeframes. 2Gi covers peak working-set
-# with margin.
+#   - Wall-clock: MEASURED ~4h (14,360s) — base/strat backtests ~12min each,
+#     timeframe sweeps ~50min EACH (the dominant cost). The initial 14400s
+#     (4h) cap left only 40s of margin → bumped to 28800s (8h). Cloud Run
+#     charges runtime not the cap, so headroom is free.
+# memory 8Gi: MEASURED — 2Gi SIGKILL'd (OOM, exit -9) every step ~60s in.
+# run_backtest.py loads years of intraday 1-min history per ticker via
+# DataLoader.load_best_available; the sweep then resamples to 5 timeframes.
+# 8Gi/2CPU is the verified-sufficient floor (the GitHub runner was 16GB).
+# Cloud Run requires CPU >= 2 for memory > 4Gi.
 # max-retries 0: the job is idempotent (ON CONFLICT DO UPDATE keyed by
 # run_id) but a retry re-runs from scratch under a fresh run_id, doubling
 # spend without converging — re-dispatch manually if a run fails.
@@ -1162,7 +1165,7 @@ deploy_backtest_pipeline() {
     gcloud run jobs create backtest-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 8Gi --cpu 2 --max-retries 0 \
-        --task-timeout 14400 \
+        --task-timeout 28800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.run_pipeline" \
         ${DB_SECRET_FLAG} \
@@ -1171,7 +1174,7 @@ deploy_backtest_pipeline() {
     gcloud run jobs update backtest-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 8Gi --cpu 2 \
-        --task-timeout 14400 \
+        --task-timeout 28800 \
         --command "python,-m,scripts.run_pipeline" \
         --args "" \
         ${DB_SECRET_FLAG} \
