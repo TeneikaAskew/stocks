@@ -118,11 +118,18 @@ def main():
                 failed.append(f"backtest-strat-{ticker}")
 
         # --- Step 3: Timeframe sweeps ---
+        # --all-combos runs Phase 3 — every coarser-entry-TF + higher-TF-filter
+        # pair (5m+15m, 5m+30m, 5m+1h, 15m+30m, 15m+1h, 30m+1h), not just the
+        # 1m-anchored Phase 2 combos. The pipeline is the comprehensive
+        # backtest surface, so it always runs the full matrix; the coarser
+        # entry TFs have far fewer bars than 1m so the extra wall-clock is
+        # modest (~15-25 min/ticker) and well inside the 8h job timeout.
         if not args.skip_sweep:
             for ticker in tickers:
                 ok = run_step(
                     [python, str(SCRIPTS_DIR / "run_timeframe_sweep.py"),
-                     "--ticker", ticker, "--use-strat", "--run-id", run_id],
+                     "--ticker", ticker, "--use-strat", "--all-combos",
+                     "--run-id", run_id],
                     f"Timeframe sweep {ticker}",
                 )
                 if not ok:
