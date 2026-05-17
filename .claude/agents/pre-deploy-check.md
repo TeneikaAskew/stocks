@@ -108,7 +108,33 @@ git diff --name-only origin/main...HEAD 2>/dev/null | grep -qE '^(gcp/(signal_mo
 
 Block the deploy if it returns `REPLAY_INTEGRITY_EXIT=2` — a throwaway replay harness, `add_all_indicators` used in place of `signal_monitor.calculate_indicators`, or as-of leakage (a function reading data dated `>=` its as-of cutoff). Surface its CRITICAL findings inline. If no replay/as-of file changed, mark `[SKIP]` (not a blocker).
 
-### [WARN] 10. `make test` passes
+### [CRITICAL] 10. Silent-fallback review (if data-layer / fetcher code changed)
+
+If any `lib/`, `gcp/`, `platform/api/`, or `platform/src/` file — or a `fetch-*` / `analyze-*` / `validate-*` workflow — has changed since `main`, delegate to `fallback-guard`.
+
+```bash
+git diff --name-only origin/main...HEAD 2>/dev/null \
+  | grep -qE '^(lib/|gcp/|platform/api/|platform/src/)|^\.github/workflows/(fetch|analyze|validate)-[^/]*\.yml$' \
+  && echo "data-layer code changed — running fallback-guard" \
+  || echo "[SKIP] no data-layer code changed"
+```
+
+Block the deploy if it returns `FALLBACK_GUARD_EXIT=2` — a newly introduced silent fallback from CLAUDE.md Rule 3.7's five forbidden patterns: `except: return <empty>` in data-access code, `fillna(0)` / `or 0` / `?? 0` on a financial field, `continue-on-error: true` on a fetch step, a hardcoded financial-constant default, or a fabricated value in place of a typed `UNAVAILABLE` envelope. The agent flags only *new* regressions, not the ~121 catalogued pre-existing fallbacks. Surface its CRITICAL findings inline. If nothing in scope changed, mark `[SKIP]` (not a blocker).
+
+### [CRITICAL] 11. Trading-logic review (if signal / backtest / indicator code changed)
+
+If any trading-logic file has changed since `main`, delegate to `trading-logic-reviewer`.
+
+```bash
+git diff --name-only origin/main...HEAD 2>/dev/null \
+  | grep -qE '^(lib/(signals|backtest|indicators|strat|walk_forward)\.py|scripts/run_backtest\.py|platform/src/lib/greeksCalculator\.ts|gcp/(signal_monitor|premarket_brief)\.py)$|^scripts/analysis/' \
+  && echo "trading-logic code changed — running trading-logic-reviewer" \
+  || echo "[SKIP] no trading-logic code changed"
+```
+
+Block the deploy if it returns `TRADING_REVIEW_EXIT=2` — look-ahead bias, survivorship bias, data snooping, incorrect P&L accounting, a wrong indicator formula, a Black-Scholes unit error, or a Sharpe-annualization mistake. Surface its CRITICAL findings inline. If no trading-logic file changed, mark `[SKIP]` (not a blocker).
+
+### [WARN] 12. `make test` passes
 
 ```bash
 make test 2>&1 | tail -20
@@ -116,13 +142,13 @@ make test 2>&1 | tail -20
 
 If tests fail, tag as WARN not CRITICAL (user may be mid-refactor). Honor `--skip-tests` flag; when set, emit `[tests skipped]` marker into stdout so caller can log it in the commit body.
 
-### [WARN] 11. Frontend type check
+### [WARN] 13. Frontend type check
 
 ```bash
 cd platform && npx tsc --noEmit 2>&1 | tail -20
 ```
 
-### [WARN] 12. All workflow YAML parses
+### [WARN] 14. All workflow YAML parses
 
 ```bash
 python -c "
@@ -135,7 +161,7 @@ sys.exit(1 if errors else 0)
 "
 ```
 
-### [WARN] 13. Uncommitted changes in deployable dirs
+### [WARN] 15. Uncommitted changes in deployable dirs
 
 ```bash
 DIRTY=$(git status --porcelain gcp/ lib/ platform/api/ platform/src/ 2>/dev/null | wc -l)
@@ -161,12 +187,14 @@ Mode: <deploy | local-prod-mode>
   [OK|FAIL|SKIP] 7. gcp config review
   [OK|FAIL|SKIP] 8. gcp capacity review
   [OK|FAIL|SKIP] 9. replay integrity review
+  [OK|FAIL|SKIP] 10. silent-fallback review
+  [OK|FAIL|SKIP] 11. trading-logic review
 
 [WARN]
-  [OK|WARN] 10. tests
-  [OK|WARN] 11. tsc
-  [OK|WARN] 12. yaml
-  [OK|WARN] 13. git clean
+  [OK|WARN] 12. tests
+  [OK|WARN] 13. tsc
+  [OK|WARN] 14. yaml
+  [OK|WARN] 15. git clean
 
 VERDICT: <GO | WARN | BLOCK>
 PRE_DEPLOY_EXIT=<0|1|2>
