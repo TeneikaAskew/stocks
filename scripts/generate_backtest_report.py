@@ -38,6 +38,7 @@ from lib.insights import (
     insight_narrative_winners_losers,
     insight_timeframe_sweep,
     insight_combo_sweep,
+    insight_general_combo_sweep,
     insight_what_numbers_mean,
     insight_base_vs_strat,
     insight_filter_stats,
@@ -549,6 +550,9 @@ def _section_sweep(sweep_dfs: dict[str, pd.DataFrame]) -> list[str]:
     ]
     lines += insight_timeframe_sweep(sweep_dfs)
     lines += insight_combo_sweep(sweep_dfs)
+    # Phase 3 — coarser entry-TF combos (5m+15m, 15m+30m, ...). Renders
+    # nothing when the sweep ran without --all-combos. See PR #519.
+    lines += insight_general_combo_sweep(sweep_dfs)
     return lines
 
 
