@@ -1155,9 +1155,13 @@ deploy_compute_earnings_reactions() {
 #   gcloud run jobs execute backtest-pipeline --region us-east1 --wait
 deploy_backtest_pipeline() {
     echo "Deploying backtest-pipeline job..."
+    # 8Gi / 2 CPU: run_backtest.py loads years of intraday 1-min history
+    # per ticker via DataLoader.load_best_available — at 2Gi every step
+    # was SIGKILL'd (exit -9 / OOM) ~60s in. The GitHub runner this
+    # migrated off of had 16GB; 8Gi is the verified-sufficient floor.
     gcloud run jobs create backtest-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 2Gi --cpu 1 --max-retries 0 \
+        --memory 8Gi --cpu 2 --max-retries 0 \
         --task-timeout 14400 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.run_pipeline" \
@@ -1166,6 +1170,7 @@ deploy_backtest_pipeline() {
         --quiet 2>/dev/null || \
     gcloud run jobs update backtest-pipeline \
         --image "${IMAGE}" --region "${REGION}" \
+        --memory 8Gi --cpu 2 \
         --task-timeout 14400 \
         --command "python,-m,scripts.run_pipeline" \
         --args "" \
