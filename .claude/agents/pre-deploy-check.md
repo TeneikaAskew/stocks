@@ -70,7 +70,31 @@ Delegate to the `security-scan` agent. If it returns non-zero, mark this check a
 
 Delegate to `infra-drift-detector`. If it reports missing columns or type mismatches for any of the 9 core tables, block the deploy.
 
-### [WARN] 7. `make test` passes
+### [CRITICAL] 7. GCP Cloud Run config review (if `gcp/deploy.sh` changed)
+
+If `gcp/deploy.sh` has changed since `main`, delegate to `gcp-config-reviewer`.
+
+```bash
+git diff --name-only origin/main...HEAD 2>/dev/null | grep -qx 'gcp/deploy.sh' \
+  && echo "deploy.sh changed — running gcp-config-reviewer" \
+  || echo "[SKIP] deploy.sh unchanged"
+```
+
+Block the deploy if it returns `GCP_CONFIG_EXIT=2` — a user-facing service on `min-instances=0`, a `BackgroundTasks` service missing `--no-cpu-throttling`, a plaintext secret on `--set-env-vars`, etc. Surface its CRITICAL findings inline. If `deploy.sh` is unchanged, mark `[SKIP]` (not a blocker).
+
+### [CRITICAL] 8. GCP capacity & cost review (if a Cloud Run Job entrypoint changed)
+
+If any `gcp/*.py` or `gcp/fetchers/*.py` has changed since `main`, delegate to `gcp-capacity-cost-reviewer`.
+
+```bash
+git diff --name-only origin/main...HEAD 2>/dev/null | grep -qE '^gcp/([^/]+\.py|fetchers/[^/]+\.py)$' \
+  && echo "Cloud Run Job code changed — running gcp-capacity-cost-reviewer" \
+  || echo "[SKIP] no Cloud Run Job code changed"
+```
+
+Block the deploy if it returns `CAPACITY_REVIEW_EXIT=2` — an N+1 query loop, a `task-timeout` that cannot fit the wall-clock estimate, an unbounded-memory accumulator, etc. (CLAUDE.md Rule 0). Surface its CRITICAL findings inline. If no job code changed, mark `[SKIP]` (not a blocker).
+
+### [WARN] 9. `make test` passes
 
 ```bash
 make test 2>&1 | tail -20
@@ -78,13 +102,13 @@ make test 2>&1 | tail -20
 
 If tests fail, tag as WARN not CRITICAL (user may be mid-refactor). Honor `--skip-tests` flag; when set, emit `[tests skipped]` marker into stdout so caller can log it in the commit body.
 
-### [WARN] 8. Frontend type check
+### [WARN] 10. Frontend type check
 
 ```bash
 cd platform && npx tsc --noEmit 2>&1 | tail -20
 ```
 
-### [WARN] 9. All workflow YAML parses
+### [WARN] 11. All workflow YAML parses
 
 ```bash
 python -c "
@@ -97,7 +121,7 @@ sys.exit(1 if errors else 0)
 "
 ```
 
-### [WARN] 10. Uncommitted changes in deployable dirs
+### [WARN] 12. Uncommitted changes in deployable dirs
 
 ```bash
 DIRTY=$(git status --porcelain gcp/ lib/ platform/api/ platform/src/ 2>/dev/null | wc -l)
@@ -120,12 +144,14 @@ Mode: <deploy | local-prod-mode>
   [OK|FAIL] 4. GCS
   [OK|FAIL] 5. secrets
   [OK|FAIL] 6. schema
+  [OK|FAIL|SKIP] 7. gcp config review
+  [OK|FAIL|SKIP] 8. gcp capacity review
 
 [WARN]
-  [OK|WARN] 7. tests
-  [OK|WARN] 8. tsc
-  [OK|WARN] 9. yaml
-  [OK|WARN] 10. git clean
+  [OK|WARN] 9. tests
+  [OK|WARN] 10. tsc
+  [OK|WARN] 11. yaml
+  [OK|WARN] 12. git clean
 
 VERDICT: <GO | WARN | BLOCK>
 PRE_DEPLOY_EXIT=<0|1|2>
