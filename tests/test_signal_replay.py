@@ -213,15 +213,27 @@ def test_post_replays_honors_429_retry_after():
 
 # ── 6) fetch_alerts ────────────────────────────────────────────────────
 
+def _mock_engine(rows=None, execute_error=None):
+    """A MagicMock engine whose connect()→execute()→mappings().all()
+    yields `rows`, or raises `execute_error` from execute()."""
+    conn = MagicMock()
+    if execute_error is not None:
+        conn.execute.side_effect = execute_error
+    else:
+        conn.execute.return_value.mappings.return_value.all.return_value = rows or []
+    engine = MagicMock()
+    engine.connect.return_value.__enter__.return_value = conn
+    return engine
+
+
 def test_fetch_alerts_applies_ticker_filter_in_memory():
-    import pandas as pd
-    rows = pd.DataFrame([
+    sample = [
         {'ticker': 'SPY', 'alert_ts': datetime(2026, 5, 15, 14, tzinfo=_UTC)},
         {'ticker': 'QQQ', 'alert_ts': datetime(2026, 5, 15, 14, 5, tzinfo=_UTC)},
         {'ticker': 'IWM', 'alert_ts': datetime(2026, 5, 15, 14, 9, tzinfo=_UTC)},
-    ])
+    ]
     with patch('gcp.database.is_cloud_sql_configured', return_value=True), \
-         patch('gcp.database.query_to_dataframe', return_value=rows):
+         patch('gcp.database.get_engine', return_value=_mock_engine(sample)):
         out = fetch_alerts(datetime(2026, 5, 15, 13, 30, tzinfo=_UTC),
                            datetime(2026, 5, 15, 14, 30, tzinfo=_UTC),
                            tickers=['spy', 'IWM'])
@@ -232,5 +244,17 @@ def test_fetch_alerts_raises_when_cloud_sql_unconfigured():
     """No silent empty list — a missing DB config fails loud."""
     with patch('gcp.database.is_cloud_sql_configured', return_value=False):
         with pytest.raises(RuntimeError, match="Cloud SQL not configured"):
+            fetch_alerts(datetime(2026, 5, 15, 13, 30, tzinfo=_UTC),
+                         datetime(2026, 5, 15, 14, 30, tzinfo=_UTC))
+
+
+def test_fetch_alerts_propagates_query_failure():
+    """A failed SELECT must propagate — never silently become 0 alerts.
+    Regression guard: signal_replay.fetch_alerts must NOT route through
+    query_to_dataframe, which swallows query errors into an empty frame."""
+    engine = _mock_engine(execute_error=RuntimeError("connection reset"))
+    with patch('gcp.database.is_cloud_sql_configured', return_value=True), \
+         patch('gcp.database.get_engine', return_value=engine):
+        with pytest.raises(RuntimeError, match="connection reset"):
             fetch_alerts(datetime(2026, 5, 15, 13, 30, tzinfo=_UTC),
                          datetime(2026, 5, 15, 14, 30, tzinfo=_UTC))

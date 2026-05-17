@@ -94,12 +94,22 @@ def parse_time_block(date_str: str, start_str: str,
 def fetch_alerts(start_utc: datetime, end_utc: datetime,
                  tickers: Optional[list[str]] = None) -> list[dict]:
     """Return stored signal_alerts rows fired within [start, end), in
-    chronological order. Re-raises on a DB failure (no silent empty)."""
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    chronological order.
+
+    Runs the SELECT directly against the engine so a query failure
+    (transient connection drop, schema mismatch, …) propagates and the
+    job exits non-zero. A replay must never turn a DB error into a
+    silent "0 alerts" result — that is indistinguishable from a
+    legitimately empty window. Deliberately does NOT use
+    gcp.database.query_to_dataframe, which swallows query errors into
+    an empty DataFrame (CLAUDE.md rule 3.7).
+    """
+    from gcp.database import get_engine, is_cloud_sql_configured
     if not is_cloud_sql_configured():
         raise RuntimeError("Cloud SQL not configured — cannot fetch signal_alerts")
 
-    sql = """
+    import sqlalchemy
+    sql = sqlalchemy.text("""
         SELECT ticker, alert_ts, direction, total_score, strength_label,
                price_at_signal, target_price, time_stop_minutes,
                rsi, rvol, level_broken,
@@ -107,9 +117,11 @@ def fetch_alerts(start_utc: datetime, end_utc: datetime,
           FROM signal_alerts
          WHERE alert_ts >= :start AND alert_ts < :end
          ORDER BY alert_ts
-    """
-    df = query_to_dataframe(sql, {'start': start_utc, 'end': end_utc})
-    rows = df.to_dict('records')
+    """)
+    with get_engine().connect() as conn:
+        result = conn.execute(sql, {'start': start_utc, 'end': end_utc})
+        rows = [dict(r) for r in result.mappings().all()]
+
     if tickers:
         wanted = {t.upper() for t in tickers}
         rows = [r for r in rows if str(r['ticker']).upper() in wanted]
