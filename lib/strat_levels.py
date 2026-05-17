@@ -16,6 +16,7 @@ Dependencies:
 
 import pandas as pd
 import numpy as np
+import re
 from dataclasses import dataclass, field
 from datetime import date as date_type
 from typing import Dict, List, Optional, Tuple
@@ -990,6 +991,32 @@ def levels_to_named_dict(level_map: LevelMap) -> dict[str, float]:
     return out
 
 
+# Match the canonical gap-level name shape: GAP_H_YYYY-MM-DD / GAP_L_YYYY-MM-DD.
+# The internal `StratLevel.name` keeps the canonical form (signal_monitor's
+# level-break detection keys on it), but Discord/brief display renders the
+# friendlier "M/D Gap High" / "M/D Gap Low" via `_display_level_name`.
+_GAP_NAME_RE = re.compile(
+    r'^GAP_([HL])_(\d{4})-(\d{2})-(\d{2})$'
+)
+
+
+def _display_level_name(name: str) -> str:
+    """Render a StratLevel.name in the brief-friendly form.
+
+    Most names pass through unchanged (PDH, PWH, CMO, …). The exception is
+    gap levels emitted by ``compute_gap_levels`` whose canonical names look
+    like ``GAP_H_2026-05-05`` — those get rewritten to ``5/5 Gap High``
+    (likewise ``GAP_L_…`` → ``5/5 Gap Low``). Internal data is untouched;
+    this only changes the Discord/playbook rendering.
+    """
+    m = _GAP_NAME_RE.match(name or '')
+    if not m:
+        return name
+    side_code, _yyyy, mm, dd = m.groups()
+    side = 'High' if side_code == 'H' else 'Low'
+    return f"{int(mm)}/{int(dd)} Gap {side}"
+
+
 def format_levels_for_brief(
     level_map: LevelMap,
     bias: str,
@@ -1105,7 +1132,8 @@ def format_levels_for_brief(
             )
             if len(cleared) > 1:
                 rest = ', '.join(
-                    f"{lv.name} {lv.price:.2f}" for lv in cleared[1:]
+                    f"{_display_level_name(lv.name)} {lv.price:.2f}"
+                    for lv in cleared[1:]
                 )
                 lines.append(f"  Other cleared: {rest}")
         return '\n'.join(lines)
@@ -1218,15 +1246,15 @@ def format_levels_for_brief(
         if call_pre_banner:
             lines.append(call_pre_banner)
         if not cleared_call:
-            line = f"  CALLS above {ct['trigger_level']:.2f} ({ct['trigger_name']})"
+            line = f"  CALLS above {ct['trigger_level']:.2f} ({_display_level_name(ct['trigger_name'])})"
             if bias == 'bearish':
                 line += ' -- only if bias denied'
             lines.append(line)
             if ct.get('stop'):
-                lines.append(f"    Stop: {ct['stop']:.2f} ({ct['stop_name']})")
+                lines.append(f"    Stop: {ct['stop']:.2f} ({_display_level_name(ct['stop_name'])})")
             targets = ct.get('targets', [])
             for i, t in enumerate(targets, 1):
-                lines.append(f"    T{i}: {t['price']:.2f} ({t['name']})")
+                lines.append(f"    T{i}: {t['price']:.2f} ({_display_level_name(t['name'])})")
             # Label the room number by what's actually below it. The line
             # printed here measures "current price -> trigger" (which
             # `room_to_run_up` returns), not "trigger -> T1". Calling it
@@ -1244,15 +1272,15 @@ def format_levels_for_brief(
         if put_pre_banner:
             lines.append(put_pre_banner)
         if not cleared_put:
-            line = f"  PUTS below {pt['trigger_level']:.2f} ({pt['trigger_name']})"
+            line = f"  PUTS below {pt['trigger_level']:.2f} ({_display_level_name(pt['trigger_name'])})"
             if bias == 'bullish':
                 line += ' -- only if bias denied'
             lines.append(line)
             if pt.get('stop'):
-                lines.append(f"    Stop: {pt['stop']:.2f} ({pt['stop_name']})")
+                lines.append(f"    Stop: {pt['stop']:.2f} ({_display_level_name(pt['stop_name'])})")
             targets = pt.get('targets', [])
             for i, t in enumerate(targets, 1):
-                lines.append(f"    T{i}: {t['price']:.2f} ({t['name']})")
+                lines.append(f"    T{i}: {t['price']:.2f} ({_display_level_name(t['name'])})")
             if targets and level_map.room_to_run_down:
                 lines.append(f"    Room to trigger: {level_map.room_to_run_down:.2f}%")
     elif no_put_banner:
@@ -1262,7 +1290,7 @@ def format_levels_for_brief(
         lines.append('')
         lines.append('  PMG ZONES:')
         for z in level_map.pmg_zones[:3]:
-            names = ', '.join(z['level_names'])
+            names = ', '.join(_display_level_name(n) for n in z['level_names'])
             lines.append(
                 f"    {z['center_price']:.2f} ({names}) "
                 f"[strength: {z['strength']}]"

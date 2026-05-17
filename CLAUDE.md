@@ -305,6 +305,140 @@ strategy / indicator / signal pipeline:
 Anything that simulates a fire decision goes through the production
 replay paths.
 
+### 3.7. No Silent Fallbacks — Production-Grade Data Discipline
+
+**Added 2026-05-13 after the fallback audit that found ~121 silent-failure
+patterns across the codebase, six of which had documented production
+incidents already attached to them — most damningly, the
+`except Exception: return pd.DataFrame()` block in `gcp/database.py:88-102`
+and `lib/data_loader.py:80-86` is the *same* block whose own in-line comment
+diagnoses the 2026-05-04 → 05-08 `signal_alerts.level_broken = 0%` outage.
+The swallow survived its own remediation PR (#339). Periodic re-audit beats
+trusting "we already fixed that."**
+
+See `docs/audits/FALLBACK_AUDIT_2026-05-13.md` for the full inventory,
+incident postmortems, and remediation backlog.
+
+#### Rule
+
+A "silent fallback" is any code path that, on failure or missing input,
+returns a numeric / empty / sentinel value the caller cannot distinguish
+from a legitimate result. They lie to downstream code and conceal
+bugs, stale data, and vendor outages. They are forbidden in this repo
+except under the narrow conditions in **Allowed exceptions** below.
+
+The five forbidden patterns:
+
+1. **`except Exception: return <empty>`** in data-access code (DB, API
+   clients, fetchers). Re-raise; let the caller decide retry vs.
+   fail-loud. If observability is the motivation, increment a
+   structured counter at the call site instead of swallowing.
+
+2. **`fillna(0)` / `or 0` / `?? 0` / `.get(k, 0)` on financial fields.**
+   Price, volume, Greeks (delta/gamma/theta/vega/rho/iv), open interest,
+   sentiment scores, P&L, win rate, return %, RSI, stochK, RVOL, ATR,
+   FTFC score, consecutive streaks, durations. `0` must never be
+   ambiguous with "missing." Use `np.nan` / `None` / `null` end-to-end;
+   the display layer renders "—" with a "data unavailable" badge.
+
+3. **`continue-on-error: true` in fetcher workflows.** A failed fetch
+   must turn the workflow red and trigger the existing
+   `handle-workflow-failure.yml` reusable workflow (it opens an issue +
+   draft PR automatically). Silencing the failure ships stale or
+   missing rows to Cloud SQL and makes the next downstream consumer
+   look like the bug source.
+
+4. **Hardcoded financial-constant defaults** (`_DEFAULT_RISK_FREE`,
+   `_DEFAULT_DIV_YIELD`, neutral RSI = 50, neutral classification = 0,
+   etc.) used when a real value cannot be computed. Greeks shipped with
+   wrong `r` look plausible and are silently used to make trade
+   decisions — worse than no Greeks. Fail-fast `RuntimeError`;
+   downstream caller (Greeks pipeline) catches it and writes NULL with
+   a `last_rate_at` column for observability.
+
+5. **External API failure returning a fabricated value instead of an
+   explicit-unavailable envelope.** Vendor outages are a fact (we don't
+   control AlphaVantage / FRED / ForexFactory / Yahoo / Discord), but
+   the *response* must be `DataResult(status=UNAVAILABLE,
+   last_known_at=..., reason=...)`, never a synthetic 0 or empty
+   DataFrame. The frontend renders "data unavailable since X" badge;
+   signal generators skip the affected ticker with explicit reason.
+
+#### Rationale — `INTERNAL` vs `EXTERNAL` control
+
+The five rules collapse into one principle. Every failure mode is one of:
+
+- **`INTERNAL`** — code we own. A failure means there is a bug. Silencing
+  it conceals the bug. Always re-raise.
+- **`EXTERNAL`** — vendor API / network we don't control. We can't
+  prevent the failure; we *can* detect it, surface it explicitly, and
+  decide whether to skip the affected ticker / day / strategy. Always
+  return a typed `UNAVAILABLE` envelope, never fabricate a value.
+
+If you find yourself adding a `try`/`except` that returns an empty
+container "just in case," stop and ask: which bucket is this? Either
+answer leads away from the silent fallback.
+
+#### Allowed exceptions
+
+The only acceptable silent fallbacks:
+
+- **Cleanup paths in `finally:` blocks** (e.g.
+  `try: conn.close(); except Exception: pass`). The original error
+  has already propagated; the cleanup catch only prevents the cleanup
+  from masking the real error. Comment as `# cleanup — original
+  error already propagated`.
+- **Display-layer rendering of a `null` / `NaN` value as "—".** The
+  fallback is in the React component, not the data layer. Required
+  because the DOM cannot render `null`.
+- **Test fixtures and mocks.** Tests legitimately return canned data
+  on failure to exercise specific branches.
+
+#### Forbidden phrases (rewrite the code)
+
+If you find yourself writing any of these, the new code is wrong:
+
+- `except Exception: return pd.DataFrame()` / `return []` / `return {}` /
+  `return None` / `return 0`
+- `value or 0` / `value or []` / `value or {}` on a financial field
+- `df["price"].fillna(0)` / `df["delta"].fillna(0.5)` /
+  `df["rsi"].fillna(50)`
+- `.get("volume", 0)` / `.get("delta", 0.5)`
+- `?? 0` / `?? 0.5` / `?? ''` on a financial field in TS/JS
+- `continue-on-error: true` on a fetch / validation step
+- `if df.empty: return df` *as the only handling* — pair with an explicit
+  data-quality counter or raise
+- `_DEFAULT_RISK_FREE` / any module-level "if we can't fetch, use this"
+  constant on a value that has to track market reality
+
+#### Enforcement
+
+A new `fallback-guard` sub-agent (`.claude/agents/fallback-guard.md`)
+auto-triggers on edits to `lib/**`, `gcp/**`, `platform/api/**`,
+`platform/src/**`, `.github/workflows/fetch-*.yml`. It blocks PRs
+that introduce any of the five forbidden patterns. It is also wired
+into `/audit-review` as a gate and `/gcp-deploy` Step 0 via
+`pre-deploy-check` so production cannot ship new fallbacks.
+
+The agent is read-only — it flags and explains, it doesn't rewrite.
+Reviewer judgment is required because the rule has narrow legitimate
+exceptions (see above).
+
+#### When you find an *existing* fallback while doing other work
+
+You are not obligated to fix it in your current PR (the audit catalogues
+~121 of them; remediation is staged in `docs/audits/FALLBACK_AUDIT_2026-05-13.md`
+§10). But:
+
+- **Don't pattern-match off it** when writing new code. The fact that
+  `_query_cloud_sql` returns empty on error is a bug, not a contract.
+- **Don't extend it** ("I'll add one more `except` to be safe"). Every
+  new layer of swallowing makes the eventual fix harder.
+- **Do** add a comment `# AUDIT-2026-05-13: silent fallback — see
+  docs/audits/FALLBACK_AUDIT_2026-05-13.md §C-NN` if you touch a line
+  adjacent to one. This makes the remediation backlog trivially
+  greppable.
+
 ### 4. Testing Strategy Pattern
 Follow this rigorous testing approach:
 

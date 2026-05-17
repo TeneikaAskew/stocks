@@ -37,6 +37,7 @@ from scripts.signal_quality_report import (  # noqa: E402
     _resolve_window,
     _slice_intraday,
     best_clean_timeframe,
+    build_quality_report_embed,
     classify,
     compute_atr_pct,
     compute_metrics_for_signal,
@@ -584,3 +585,57 @@ def test_main_historical_with_lookback_days_succeeds():
                    "--skip-freshness-check"])
 
     assert rc == 0
+
+
+# ── build_quality_report_embed — Discord summary ───────────────────────
+
+def test_build_quality_report_embed_basic():
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 8, tzinfo=timezone.utc)
+    counts = {'CLEAN_HIT': 6, 'MIXED': 2, 'NOISE': 1, 'WRONG_DIRECTION': 1}
+    embed = build_quality_report_embed(start, end, 'historical', 10, 10, counts)
+    assert embed['title'] == 'Signal Quality Report'
+    desc = embed['description']
+    assert '2026-05-01 → 2026-05-08' in desc
+    assert 'mode `historical`' in desc
+    assert 'Processed **10** signals' in desc
+    # decided = 6+2+1+1 = 10, clean rate = 6/10 = 60.0%
+    assert 'Clean rate **60.0%** (6/10 decided)' in desc
+    # 60% >= 50 → green
+    assert embed['color'] == 0x2ecc71
+
+
+def test_build_quality_report_embed_insufficient_excluded_from_clean_rate():
+    """INSUFFICIENT_DATA rows must not dilute the clean rate denominator."""
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 2, tzinfo=timezone.utc)
+    counts = {'CLEAN_HIT': 3, 'MIXED': 0, 'NOISE': 1, 'WRONG_DIRECTION': 0,
+              'INSUFFICIENT_DATA': 96}
+    embed = build_quality_report_embed(start, end, 'rolling', 100, 100, counts)
+    # decided = 3+0+1+0 = 4 (not 100) → clean rate 3/4 = 75%
+    assert 'Clean rate **75.0%** (3/4 decided)' in embed['description']
+    assert 'Insufficient data: **96**' in embed['description']
+
+
+def test_build_quality_report_embed_color_thresholds():
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 2, tzinfo=timezone.utc)
+    # 40% clean → yellow (>=30, <50)
+    yellow = build_quality_report_embed(
+        start, end, 'rolling', 10, 10,
+        {'CLEAN_HIT': 4, 'NOISE': 6})
+    assert yellow['color'] == 0xf1c40f
+    # 10% clean → red (<30)
+    red = build_quality_report_embed(
+        start, end, 'rolling', 10, 10,
+        {'CLEAN_HIT': 1, 'NOISE': 9})
+    assert red['color'] == 0xe74c3c
+
+
+def test_build_quality_report_embed_zero_decided_no_div_by_zero():
+    """All-insufficient batch — clean rate is 0%, must not raise."""
+    start = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 5, 2, tzinfo=timezone.utc)
+    embed = build_quality_report_embed(
+        start, end, 'rolling', 5, 5, {'INSUFFICIENT_DATA': 5})
+    assert 'Clean rate **0.0%** (0/0 decided)' in embed['description']

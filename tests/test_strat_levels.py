@@ -671,6 +671,45 @@ class TestBuildLevelMap:
 # ─── format_levels_for_brief ──────────────────────────────────────────────
 
 
+class TestDisplayLevelName:
+    """The gap-level naming convention is GAP_H_YYYY-MM-DD internally;
+    display renders this as 'M/D Gap High' / 'M/D Gap Low'. Internal
+    StratLevel.name stays canonical so signal_monitor's level-break
+    detection still keys on it; only Discord/brief output uses the
+    friendlier form."""
+
+    def _display(self, name):
+        from lib.strat_levels import _display_level_name
+        return _display_level_name(name)
+
+    def test_gap_high_with_iso_date_renders_short_form(self):
+        assert self._display('GAP_H_2026-05-05') == '5/5 Gap High'
+
+    def test_gap_low_with_iso_date_renders_short_form(self):
+        assert self._display('GAP_L_2026-05-05') == '5/5 Gap Low'
+
+    def test_gap_drops_leading_zeros_in_month_and_day(self):
+        assert self._display('GAP_H_2026-04-28') == '4/28 Gap High'
+        assert self._display('GAP_L_2026-01-03') == '1/3 Gap Low'
+
+    def test_gap_keeps_double_digit_months_and_days(self):
+        assert self._display('GAP_H_2026-12-31') == '12/31 Gap High'
+        assert self._display('GAP_L_2026-11-15') == '11/15 Gap Low'
+
+    def test_non_gap_names_pass_through_unchanged(self):
+        for name in ('PDH', 'PDL', 'PWH', 'PMH', 'PQH', 'PYH',
+                     'PDC', 'PWC', 'PMC', 'CDO', 'CWO', 'CMO', 'PMK_H'):
+            assert self._display(name) == name
+
+    def test_malformed_gap_names_pass_through(self):
+        """If the gap regex doesn't match (legacy data, future format
+        change), pass through unchanged rather than crash."""
+        assert self._display('GAP_H_2026') == 'GAP_H_2026'  # no date
+        assert self._display('GAP_X_2026-05-05') == 'GAP_X_2026-05-05'  # wrong side
+        assert self._display('') == ''
+        assert self._display('SOMETHING_ELSE') == 'SOMETHING_ELSE'
+
+
 class TestFormatLevelsForBrief:
     def test_contains_calls_puts(self):
         df = _daily_df(60)

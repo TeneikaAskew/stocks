@@ -22,8 +22,6 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.conftest import requires_data_backend  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Mock AV responses
@@ -391,7 +389,12 @@ class TestGetTickerInfoCaching:
 # ---------------------------------------------------------------------------
 
 
-@requires_data_backend
+# Hermetic: every test in this class patches lib.ticker_info functions
+# (search_tickers / get_ticker_info / get_quote / get_peers) so no real
+# Alpha Vantage / Cloud SQL / FinViz call is made. The endpoints under
+# /api/insights/ticker/* never touch a data backend directly — they only
+# call the lib.ticker_info helpers, which are all mocked here. Runs in the
+# no-DB CI `Run Tests` job.
 class TestTickerInfoAPI:
     @pytest.fixture(scope="class")
     def client(self):
@@ -474,10 +477,18 @@ class TestTickerInfoAPI:
         assert data["ticker"] == "INTC"
         assert data["peers"] == ["AMD", "NVDA", "QCOM", "TSM"]
 
+    @patch("gcp.fetchers._watchlist.load_watchlist")
+    @patch("gcp.fetchers._watchlist.add_to_watchlist")
     @patch("lib.ticker_info.get_peers")
     @patch("lib.ticker_info.get_quote")
     @patch("lib.ticker_info.get_ticker_info")
-    def test_watchlist_add_endpoint(self, mock_info, mock_quote, mock_peers, client, tmp_path):
+    def test_watchlist_add_endpoint(
+        self, mock_info, mock_quote, mock_peers, mock_wl_add, mock_wl_load, client, tmp_path
+    ):
+        # The endpoint persists to the Cloud SQL `watchlists` table — mock
+        # the watchlist add/load so no real psycopg2 connection is attempted.
+        mock_wl_add.return_value = True
+        mock_wl_load.return_value = ["IWM", "QQQ", "SPY", "MSFT"]
         mock_info.return_value = {
             "Symbol": "MSFT", "Name": "Microsoft Corp", "Exchange": "NASDAQ",
             "Sector": "TECHNOLOGY", "Industry": "SOFTWARE",

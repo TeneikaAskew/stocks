@@ -247,6 +247,34 @@ deploy_signal_quality_alarm() {
         --quiet
 }
 
+# ── Signal replay (Cloud Run Job — on-demand) ────────────────────────────────
+# Re-posts stored signal_alerts to the signals Discord channel for a
+# historical date + ET time block. Triggered by the /replay-signals
+# slash command (dispatched with per-execution SIGNAL_REPLAY_* env
+# overrides) or manually via `gcloud run jobs execute`.
+#
+# task-timeout 900: the job paces posts ~2s apart, capped at 200 alerts
+# (200 * 2s = 400s) + Discord 429 back-off headroom.
+deploy_signal_replay() {
+    echo "Deploying signal-replay job..."
+    gcloud run jobs create signal-replay \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 512Mi --cpu 1 --max-retries 0 \
+        --task-timeout 900 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.signal_replay" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update signal-replay \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 900 \
+        --command "python,-m,gcp.signal_replay" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Auto-refresh top-N (Cloud Run Job) ───────────────────────────────────────
 # Pre-warms the AI insight cache for the highest-scoring ranker tickers.
 # Calls lib.agents.ranker.rank_tickers, picks top N, enqueues a Cloud
@@ -326,6 +354,15 @@ _build_secret_flag() {
         pairs="${pairs},DISCORD_WEBHOOK_EARNINGS_URL=discord-webhook-earnings:latest"
     else
         echo "  (skipping DISCORD_WEBHOOK_EARNINGS_URL — secret 'discord-webhook-earnings' not in project)" >&2
+    fi
+    # Signals-specific channel — signal_monitor (entries/exits/ORB), the EOD
+    # resolver, signal_quality_alarm and signal_quality_report route here.
+    # Each consumer falls back to DISCORD_WEBHOOK_URL when this is unset, so
+    # deploys without the secret remain functional. Skipped if not provisioned.
+    if gcloud secrets describe discord-webhook-signals --project="${PROJECT_ID}" >/dev/null 2>&1; then
+        pairs="${pairs},DISCORD_WEBHOOK_SIGNALS_URL=discord-webhook-signals:latest"
+    else
+        echo "  (skipping DISCORD_WEBHOOK_SIGNALS_URL — secret 'discord-webhook-signals' not in project)" >&2
     fi
     if gcloud secrets describe fred-api-key --project="${PROJECT_ID}" >/dev/null 2>&1; then
         pairs="${pairs},FRED_API_KEY=fred-api-key:latest"
@@ -412,13 +449,19 @@ deploy_discord_interactions() {
     env="${env},DISCORD_BOT_TOKEN=${discord_bot_token}"
     env="${env},GCP_PROJECT=${PROJECT_ID},GCP_REGION=${REGION}"
 
-    # Cloud Run service deploy. min-instances=0 keeps cost ~$0 when idle;
-    # cold start fits in Discord's 3-sec ack window (1-2 sec on this
-    # image). max-instances=5 caps autocomplete-burst cost.
+    # Cloud Run service deploy. min-instances=1 keeps one warm container so
+    # Discord's 3-sec interaction-ack window never blows up on cold start
+    # (measured: 4-10 s cold start on this image, well past the 3-s limit).
+    # --no-cpu-throttling keeps CPU on between requests so FastAPI
+    # BackgroundTasks (replay_in_background, validate_in_background,
+    # backtest_in_background) finish their work and edit the deferred reply
+    # instead of stalling at ~0 CPU after the response is sent.
+    # max-instances=5 caps autocomplete-burst cost.
     gcloud run deploy discord-interactions \
         --image "${IMAGE}" --region "${REGION}" \
         --memory 512Mi --cpu 1 \
-        --min-instances 0 --max-instances 5 \
+        --min-instances 1 --max-instances 5 \
+        --no-cpu-throttling \
         --timeout 600 \
         --port 8080 \
         --allow-unauthenticated \
@@ -532,6 +575,36 @@ deploy_premarket() {
     gcloud run jobs update premarket-brief \
         --image "${IMAGE}" --region "${REGION}" \
         --command "python,-m,gcp.premarket_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+# ── Earnings-reactions brief (Cloud Run Job) ─────────────────────────────────
+# On-demand job — posts a Discord brief ranking the next session's earnings
+# reporters by their historical post-earnings reaction pattern. Scheduled at
+# 8:35 AM ET weekdays (5 min after premarket-brief) by deploy_schedulers.
+#
+# Capacity: ~30-40 reporters/session. The job issues a FIXED number of
+# queries regardless of N (2 calendar reads + 2 batched history reads + 2
+# batched insider reads = 6 round-trips total — see CLAUDE.md Rule 0.4).
+# At pg8000 ≈ 2 s/round-trip that's ~12 s wall-clock; 600 s task-timeout is
+# 50x headroom. 1Gi/1CPU mirrors premarket-brief.
+deploy_earnings_reactions_brief() {
+    echo "Deploying earnings-reactions-brief job..."
+    gcloud run jobs create earnings-reactions-brief \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.earnings_reactions_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-reactions-brief \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,gcp.earnings_reactions_brief" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
         --quiet
@@ -1054,6 +1127,61 @@ deploy_compute_earnings_reactions() {
         --quiet
 }
 
+# Backtest pipeline (migrated off the .github/workflows/backtest-pipeline.yml
+# `report` job — that workload is data processing, not CI). Runs
+# scripts/run_pipeline.py: per ticker it simulates a base + strat backtest
+# and a timeframe sweep, then renders BACKTEST_RESULTS.md and records the
+# run in backtest_reports. The per-stage output (trades, sweeps) lands in
+# the backtest_trades / backtest_sweeps Cloud SQL tables, keyed by a
+# shared run_id the orchestrator generates.
+#
+# Capacity (3 tickers × {base, strat, sweep} ≈ 9 backtest-engine runs over
+# ~5y of 1-min bars) — MEASURED on the 2026-05-17 first production run:
+#   - Volume: ~9 × a few-thousand simulated trades → < 100k rows total.
+#   - Velocity: DB writes are batched per ticker/mode via upsert_dataframe
+#     (chunked, ON CONFLICT) — ~7 write round-trips total, not per-row. The
+#     cost is CPU-bound simulation, not SQL round-trips.
+#   - Wall-clock: MEASURED ~4h (14,360s) — base/strat backtests ~12min each,
+#     timeframe sweeps ~50min EACH (the dominant cost). The initial 14400s
+#     (4h) cap left only 40s of margin → bumped to 28800s (8h). Cloud Run
+#     charges runtime not the cap, so headroom is free.
+# memory 8Gi: MEASURED — 2Gi SIGKILL'd (OOM, exit -9) every step ~60s in.
+# run_backtest.py loads years of intraday 1-min history per ticker via
+# DataLoader.load_best_available; the sweep then resamples to 5 timeframes.
+# 8Gi/2CPU is the verified-sufficient floor (the GitHub runner was 16GB).
+# Cloud Run requires CPU >= 2 for memory > 4Gi.
+# max-retries 0: the job is idempotent (ON CONFLICT DO UPDATE keyed by
+# run_id) but a retry re-runs from scratch under a fresh run_id, doubling
+# spend without converging — re-dispatch manually if a run fails.
+#
+# On-demand only — NO Cloud Scheduler entry. Invoke with:
+#   gcloud run jobs execute backtest-pipeline --region us-east1 --wait
+deploy_backtest_pipeline() {
+    echo "Deploying backtest-pipeline job..."
+    # 8Gi / 2 CPU: run_backtest.py loads years of intraday 1-min history
+    # per ticker via DataLoader.load_best_available — at 2Gi every step
+    # was SIGKILL'd (exit -9 / OOM) ~60s in. The GitHub runner this
+    # migrated off of had 16GB; 8Gi is the verified-sufficient floor.
+    gcloud run jobs create backtest-pipeline \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 8Gi --cpu 2 --max-retries 0 \
+        --task-timeout 28800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.run_pipeline" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backtest-pipeline \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 8Gi --cpu 2 \
+        --task-timeout 28800 \
+        --command "python,-m,scripts.run_pipeline" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 deploy_fetch_news_sentiment() {
     echo "Deploying fetch-news-sentiment (ticker mode) job..."
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
@@ -1161,6 +1289,7 @@ deploy_fetchers() {
     deploy_fetch_news_sentiment
     deploy_fetch_news_sentiment_topics
     deploy_fetch_news_sentiment_earnings
+    deploy_backtest_pipeline
 }
 
 # ── Backup / disaster-recovery jobs ───────────────────────────────────────────
@@ -1764,6 +1893,11 @@ deploy_schedulers() {
     # 7-7:30 PM has populated fresh AV options + history + reactions
     # for the upcoming Mon-Fri).
     _schedule_brief "premarket-brief-sunday"   "0 21 * * 0"      "premarket-brief"
+    # Earnings-reactions brief — 8:35 AM ET weekdays (5 min after the
+    # pre-market brief). Ranks the next session's reporters by their
+    # historical post-earnings reaction pattern. Plain _schedule (no
+    # containerOverride) — the job carries no run-kind label of its own.
+    _schedule "earnings-reactions-brief-daily" "35 8 * * 1-5"  "earnings-reactions-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
     # Signal monitor EOD resolver — 4:30 PM ET weekdays (30 min after close
@@ -2097,6 +2231,7 @@ case "${1:-help}" in
     migrate)     shift; migrate "$@" ;;
     build)       build_image ;;
     premarket)   build_image && deploy_premarket ;;
+    earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
@@ -2112,12 +2247,14 @@ case "${1:-help}" in
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
+    signal-replay) build_image && deploy_signal_replay ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
     notifier)    build_image && deploy_notifier ;;
     discord)     build_image && deploy_discord_interactions ;;
     all)
         build_image
         deploy_premarket
+        deploy_earnings_reactions_brief
         deploy_monitor
         deploy_signal_monitor_eod_resolver
         deploy_premarket_playbook_resolver
@@ -2130,6 +2267,7 @@ case "${1:-help}" in
         deploy_auto_refresh_top_n
         deploy_signal_quality_report
         deploy_signal_quality_alarm
+        deploy_signal_replay
         deploy_weekly_pg_dump
         deploy_notifier
         deploy_schedulers
@@ -2143,6 +2281,10 @@ case "${1:-help}" in
         echo "  migrate    Migrate local Parquet data → GCS + Cloud SQL"
         echo "  build      Build and push Docker image"
         echo "  premarket  Deploy pre-market brief job"
+        echo "  earnings-reactions-brief"
+        echo "             Deploy earnings-reactions-brief job (Discord post"
+        echo "             ranking upcoming reporters by historical reaction"
+        echo "             pattern). Scheduled weekdays 8:35 AM ET."
         echo "  monitor    Deploy real-time signal monitor service"
         echo "  weekend    Deploy weekend review job"
         echo "  fetchers   Deploy all data-fetching Cloud Run jobs"
@@ -2179,6 +2321,10 @@ case "${1:-help}" in
         echo "  signal-quality"
         echo "             Deploy signal-quality-report (Phase 0.5 measurement)"
         echo "             + signal-quality-alarm (regression detector) jobs."
+        echo "  signal-replay"
+        echo "             Deploy signal-replay job (re-posts stored signal_alerts"
+        echo "             to the signals channel for a date + ET time block;"
+        echo "             backs the /replay-signals slash command)."
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac

@@ -115,12 +115,21 @@ def fetch_minute_data(ticker: str, fetch_date: str, api_key: str) -> pd.DataFram
         return pd.DataFrame()
 
 
-def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str) -> dict:
+def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str,
+                        allow_fallback: bool = True) -> dict:
     """
     Fetch daily OHLCV + adjusted_close from AlphaVantage TIME_SERIES_DAILY_ADJUSTED.
 
     Uses outputsize=compact (last 100 trading days) for the nightly update.
     Returns a dict of price fields, or {} on any error.
+
+    ``allow_fallback`` (default True): when ``fetch_date`` itself has no AV
+    entry, fall back to the most recent prior trading day. This is correct
+    for the normal path where intraday bars confirm ``fetch_date`` was a
+    real trading session. Callers in the no-intraday path MUST pass
+    ``allow_fallback=False`` — without intraday we can't distinguish a
+    holiday from a trading day locally, and the prior-day fallback would
+    write a holiday-dated row carrying the previous session's prices.
     """
     av_symbol = AV_SYMBOL_MAP.get(ticker, ticker)
     if not av_symbol or not api_key:
@@ -151,9 +160,10 @@ def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str) -> dict:
             return {}
 
         # Find the entry for fetch_date; fall back to the most recent prior day
-        # (handles weekends / holidays where today has no trading data yet)
+        # (handles weekends / holidays where today has no trading data yet) —
+        # but ONLY when allow_fallback is set (see docstring).
         row_data = ts.get(fetch_date)
-        if not row_data:
+        if not row_data and allow_fallback:
             for d in sorted(ts.keys(), reverse=True):
                 if d <= fetch_date:
                     row_data = ts[d]
@@ -161,7 +171,9 @@ def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str) -> dict:
                     break
 
         if not row_data:
-            log.warning("    AV daily: no matching date for %s on %s", ticker, fetch_date)
+            log.warning("    AV daily: no matching date for %s on %s%s",
+                        ticker, fetch_date,
+                        "" if allow_fallback else " (exact-match required)")
             return {}
 
         return {
@@ -191,8 +203,16 @@ def build_daily_row(ticker: str, minute_df: pd.DataFrame, fetch_date: str,
     and stored as end-of-day snapshot values.  All multi-day indicators (RSI,
     EMA, SMA, MACD, Bollinger, etc.) are computed in a separate step using the
     full daily series from Cloud SQL — see compute_and_upsert_daily_indicators().
+
+    Returns ``{}`` only when BOTH sources are empty. When intraday is missing
+    but ``av_ohlcv`` is present, the row is still built from the AV daily
+    endpoint — just without the intraday-derived VWAP fields. This keeps the
+    daily OHLCV + downstream indicators populated for tickers AV has no
+    1-min coverage for (the long tail of earnings names), which the prior
+    `if minute_df.empty: return {}` short-circuit silently dropped.
     """
-    if minute_df.empty:
+    has_minute = not minute_df.empty
+    if not has_minute and not av_ohlcv:
         return {}
 
     row: dict = {
@@ -214,7 +234,12 @@ def build_daily_row(ticker: str, minute_df: pd.DataFrame, fetch_date: str,
             'data_source': 'alphavantage_1min',
         })
 
-    # VWAP and Price_vs_VWAP are intraday session values — compute from 1-min bars
+    # VWAP and Price_vs_VWAP are intraday session values — only computable
+    # when 1-min bars are present. Skipped (left NULL) for the AV-daily-only
+    # path; that's correct, VWAP genuinely can't be derived without intraday.
+    if not has_minute:
+        return row
+
     from lib.indicators import calculate_vwap
     minute_close = minute_df['Close'] if 'Close' in minute_df.columns else minute_df['close']
     minute_high  = minute_df['High']  if 'High'  in minute_df.columns else minute_df['high']
@@ -433,27 +458,44 @@ def write_intraday_to_sql(ticker: str, df: pd.DataFrame, fetch_date: str):
 
 
 def process_ticker(ticker: str, fetch_date: str, av_api_key: str):
-    """Full pipeline for one ticker: fetch → enrich → write to Cloud SQL."""
+    """Full pipeline for one ticker: fetch → enrich → write to Cloud SQL.
+
+    Intraday-optional: AV has no 1-min coverage for the long tail of
+    earnings tickers, and a missing-intraday day used to short-circuit
+    the whole function — no daily OHLCV row, no indicators. Now, when
+    intraday is absent we still pull the AV *daily* endpoint (exact-date
+    match only) and persist the daily row + indicators from it.
+    """
     log.info("  Processing %s for %s...", ticker, fetch_date)
 
     # 1. Fetch 1-min bars from AlphaVantage TIME_SERIES_INTRADAY
     minute_df = fetch_minute_data(ticker, fetch_date, av_api_key)
-    if minute_df.empty:
-        log.warning("    No minute data for %s on %s", ticker, fetch_date)
-        return
+    has_intraday = not minute_df.empty
+    if has_intraday:
+        log.info("    Fetched %d minute bars", len(minute_df))
+        # 2. Write intraday bars to Cloud SQL
+        write_intraday_to_sql(ticker, minute_df, fetch_date)
+    else:
+        log.warning("    No minute data for %s on %s — trying AV daily endpoint",
+                    ticker, fetch_date)
 
-    log.info("    Fetched %d minute bars", len(minute_df))
-
-    # 2. Write intraday bars to Cloud SQL
-    write_intraday_to_sql(ticker, minute_df, fetch_date)
-
-    # 3. Fetch daily OHLCV from AlphaVantage (primary); fall back to minute aggregation
-    av_ohlcv = fetch_daily_from_av(ticker, fetch_date, av_api_key)
+    # 3. Fetch daily OHLCV from AlphaVantage. With intraday present, the
+    #    prior-day fallback is safe (intraday confirms it's a trading day).
+    #    Without intraday, require an exact fetch_date match so a holiday
+    #    doesn't get a row stamped with the prior session's prices.
+    av_ohlcv = fetch_daily_from_av(ticker, fetch_date, av_api_key,
+                                   allow_fallback=has_intraday)
     if av_ohlcv:
         log.info("    AV daily: open=%.2f close=%.2f adj=%.2f",
                  av_ohlcv['open'], av_ohlcv['close'], av_ohlcv['adjusted_close'])
-    else:
+    elif has_intraday:
         log.info("    AV daily unavailable; aggregating from AV intraday bars")
+    else:
+        # No intraday AND no exact-date AV daily — genuinely nothing for
+        # this ticker on this date (illiquid name, or a non-trading day).
+        log.warning("    No intraday and no AV daily for %s on %s — skipping",
+                    ticker, fetch_date)
+        return
 
     # 4. Build and upsert daily OHLCV row (no multi-day indicators yet)
     daily_row = build_daily_row(ticker, minute_df, fetch_date, av_ohlcv or None)

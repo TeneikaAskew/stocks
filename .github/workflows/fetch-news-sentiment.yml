@@ -1,10 +1,10 @@
 name: Fetch News Sentiment
 
 on:
-  schedule:
-    # Run 3x on weekdays (~8am, noon, 4pm ET). Primary execution is via
-    # Cloud Scheduler → Cloud Run Job; this GA schedule is the backup.
-    - cron: '0 12,16,20 * * 1-5'
+  # Primary execution: Cloud Scheduler (news-sentiment-0800..1700, hourly
+  # weekdays) -> fetch-news-sentiment Cloud Run Job. The GA cron was
+  # removed so this workflow no longer duplicates that schedule and burns
+  # Actions minutes; workflow_dispatch is kept as a manual break-glass.
   workflow_dispatch:
     inputs:
       tickers:

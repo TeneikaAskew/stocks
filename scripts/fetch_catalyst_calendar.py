@@ -96,7 +96,7 @@ CALENDAR_TYPES = {
 }
 
 # WSH event types that MAY require upgrade — Benzinga Corporate Events API
-# may cover some of these. Test with test_benzinga_corporate_events.py to confirm.
+# may cover some of these.
 WSH_ONLY_TYPES = [
     "PRODUCTION_UPDATE",
     "INTERIM_STATEMENT",

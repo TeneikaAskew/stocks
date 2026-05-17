@@ -30,15 +30,56 @@ def _connection_name() -> Optional[str]:
 
 
 def is_cloud_sql_configured() -> bool:
-    """Return True when all required Cloud SQL env vars are present."""
-    return all(
-        os.environ.get(v)
-        for v in ('CLOUD_SQL_CONNECTION_NAME', 'DB_USER', 'DB_PASS', 'DB_NAME')
+    """Return True when a database backend is configured.
+
+    Recognises BOTH connection modes get_engine() can connect with:
+      * Cloud SQL Connector — CLOUD_SQL_CONNECTION_NAME + DB_USER/PASS/NAME
+        (production)
+      * direct DB_HOST — DB_HOST + DB_USER/PASS/NAME (local dev / the CI
+        integration-test Postgres). See _direct_db_url().
+
+    Callers use this as a fail-fast guard before get_engine() (e.g.
+    signal_monitor's loop/replay guards and persistence paths). It must
+    return True for every mode get_engine() can actually use, or a
+    DB_HOST run would be aborted before the direct engine is reached.
+    """
+    if not all(os.environ.get(v) for v in ('DB_USER', 'DB_PASS', 'DB_NAME')):
+        return False
+    return bool(
+        os.environ.get('CLOUD_SQL_CONNECTION_NAME') or os.environ.get('DB_HOST')
     )
 
 
+def _direct_db_url() -> Optional[str]:
+    """Build a direct `postgresql+pg8000://` URL when `DB_HOST` is set.
+
+    This path exists for local development and the CI integration-test
+    job, which run against a plain Postgres container — NOT Cloud SQL.
+    Production never sets `DB_HOST` (it sets `CLOUD_SQL_CONNECTION_NAME`),
+    so the Cloud SQL Connector path in `get_engine()` is untouched in
+    prod. If both are somehow set, the explicit host wins.
+
+    Requires `DB_USER` / `DB_PASS` / `DB_NAME` alongside `DB_HOST`;
+    `DB_PORT` defaults to 5432.
+    """
+    host = os.environ.get('DB_HOST')
+    if not host:
+        return None
+    from urllib.parse import quote_plus
+    user = quote_plus(os.environ.get('DB_USER', ''))
+    password = quote_plus(os.environ.get('DB_PASS', ''))
+    db = os.environ.get('DB_NAME', '')
+    port = os.environ.get('DB_PORT', '5432')
+    return f"postgresql+pg8000://{user}:{password}@{host}:{port}/{db}"
+
+
 def get_engine():
-    """Return a SQLAlchemy engine connected to Cloud SQL via the Python Connector.
+    """Return a SQLAlchemy engine.
+
+    Two connection modes, selected by environment:
+      * `DB_HOST` set → a direct connection to a plain Postgres (local
+        dev / CI integration-test container). See `_direct_db_url()`.
+      * otherwise → Cloud SQL via the Python Connector (production).
 
     Uses a module-level singleton so connections are reused across calls.
     """
@@ -46,10 +87,34 @@ def get_engine():
     if _engine is not None:
         return _engine
 
+    direct_url = _direct_db_url()
+    if direct_url:
+        import sqlalchemy
+        # Same pool config as the Cloud SQL engine below: pool_pre_ping
+        # guards dropped connections on long local-dev sessions (same
+        # failure mode as the 2026-05-14 Cloud SQL TLS postmortem), and
+        # tests/test_database_pool_pre_ping.py pins all of these args.
+        _engine = sqlalchemy.create_engine(
+            direct_url,
+            pool_size=5,
+            max_overflow=2,
+            pool_timeout=30,
+            pool_recycle=1800,
+            pool_pre_ping=True,
+        )
+        logger.info(
+            "Direct DB engine created: %s:%s/%s",
+            os.environ.get('DB_HOST'),
+            os.environ.get('DB_PORT', '5432'),
+            os.environ.get('DB_NAME'),
+        )
+        return _engine
+
     if not is_cloud_sql_configured():
         raise RuntimeError(
             "Cloud SQL not configured. Set CLOUD_SQL_CONNECTION_NAME, "
-            "DB_USER, DB_PASS, DB_NAME environment variables."
+            "DB_USER, DB_PASS, DB_NAME environment variables "
+            "(or DB_HOST for a direct/local Postgres connection)."
         )
 
     try:
@@ -140,6 +205,54 @@ def _max_safe_chunksize(n_cols: int, requested_chunksize: int) -> int:
     return min(requested_chunksize, max_safe)
 
 
+def _coerce_int_columns(df: pd.DataFrame, tbl) -> pd.DataFrame:
+    """Coerce DataFrame columns that map to INTEGER-family SQL columns
+    back to int, returning a new DataFrame (the input is not mutated).
+
+    Why this exists — the recurring ``22P02`` bug class:
+        pandas widens an INTEGER column to ``float64`` the moment ANY
+        row in it carries a NaN. pg8000 then binds the value as the
+        string ``"15.0"`` / ``"-1.0"``, and Postgres rejects it with
+        ``22P02 invalid input syntax for type integer``.
+
+        This had been patched per-caller (``gcp/historical_signals.py``
+        ``bulk_insert._INT_COLS``; ``scripts/run_backtest.py``
+        ``persist_trades._INT_COLS``) — but every NEW writer that built
+        an INT column with a possible NaN reintroduced it. Doing the
+        coercion HERE, in the shared write path, keyed off the target
+        table's reflected column types, kills the bug class for every
+        caller, present and future.
+
+    Coercion rule: NaN / None → None (SQL NULL); any other value → int.
+    Non-INTEGER columns are left untouched. ``SmallInteger`` and
+    ``BigInteger`` both subclass ``sqlalchemy.Integer`` so all three
+    INT widths are covered by the single isinstance check.
+    """
+    import sqlalchemy
+
+    int_cols = [
+        c.name for c in tbl.columns
+        if isinstance(c.type, sqlalchemy.Integer)
+        and c.name in df.columns
+    ]
+    if not int_cols:
+        return df
+
+    df = df.copy()
+    for col in int_cols:
+        # Build an explicit object-dtype Series. A plain assignment of a
+        # [int, None, int, ...] list lets pandas re-infer the column as
+        # float64 (None → NaN) — re-widening it and defeating the whole
+        # coercion. dtype=object pins it so the column holds real Python
+        # ints and None, which pg8000 binds as INTEGER / NULL.
+        df[col] = pd.Series(
+            [None if pd.isna(v) else int(v) for v in df[col]],
+            index=df.index,
+            dtype=object,
+        )
+    return df
+
+
 def upsert_dataframe(
     df: pd.DataFrame,
     table: str,
@@ -190,6 +303,11 @@ def upsert_dataframe(
         )
     df = df[[c for c in df.columns if c in table_col_names]]
 
+    # Coerce INTEGER-family columns back to int (pandas float-widening on
+    # NaN → pg8000 binds "15.0" → Postgres 22P02). Keyed off the reflected
+    # table schema so it's automatic for every caller. See _coerce_int_columns.
+    df = _coerce_int_columns(df, tbl)
+
     if update_cols is None:
         update_cols = [c for c in df.columns if c not in conflict_cols]
 
@@ -203,21 +321,30 @@ def upsert_dataframe(
             table, len(df.columns), chunksize, effective_chunksize,
         )
 
-    with engine.begin() as conn:
-        for i in range(0, len(records), effective_chunksize):
-            batch = records[i: i + effective_chunksize]
-            stmt = pg_insert(tbl).values(batch)
+    # Re-checkout the connection per chunk so pool_pre_ping fires each
+    # time. Pre-fix this function held one `engine.begin()` checkout
+    # across every chunk, which meant the TLS session that died mid-job
+    # was never re-validated — the next `conn.execute()` hit the dead
+    # pg8000 socket and surfaced SSL BAD_LENGTH. Codex P1 on PR #483
+    # called this out. Each chunk is now its own committed transaction;
+    # for idempotent upserts (ON CONFLICT DO UPDATE / DO NOTHING) this
+    # is actually preferable — partial progress is durable on crash.
+    # Cost: ~5 ms per checkout × N chunks.
+    for i in range(0, len(records), effective_chunksize):
+        batch = records[i: i + effective_chunksize]
+        stmt = pg_insert(tbl).values(batch)
 
-            if update_cols:
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=conflict_cols,
-                    set_={col: stmt.excluded[col] for col in update_cols},
-                )
-            else:
-                stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
+        if update_cols:
+            stmt = stmt.on_conflict_do_update(
+                index_elements=conflict_cols,
+                set_={col: stmt.excluded[col] for col in update_cols},
+            )
+        else:
+            stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
 
+        with engine.begin() as conn:
             conn.execute(stmt)
-            total += len(batch)
+        total += len(batch)
 
     logger.info("Upserted %d rows into %s", total, table)
     return total
@@ -261,6 +388,9 @@ def bulk_insert_dataframe(
     table_col_names = {col.name for col in tbl.columns}
     df = df[[c for c in df.columns if c in table_col_names]]
 
+    # Coerce INTEGER-family columns back to int — see _coerce_int_columns.
+    df = _coerce_int_columns(df, tbl)
+
     records = df.to_dict(orient='records')
     total = 0
     effective_chunksize = _max_safe_chunksize(len(df.columns), chunksize)
@@ -273,17 +403,24 @@ def bulk_insert_dataframe(
         )
 
     # Commit after every batch rather than wrapping all rows in one giant
-    # transaction.  A single transaction for millions of rows creates excessive
-    # WAL pressure on Cloud SQL and may never commit within query-timeout limits.
-    with engine.connect() as conn:
-        for i in range(0, len(records), effective_chunksize):
-            batch = records[i: i + effective_chunksize]
-            # Use .values(batch) to emit ONE multi-row INSERT per chunk, not
-            # executemany (conn.execute(stmt, list)) which sends one INSERT per
-            # row and is extremely slow for millions of rows.
+    # transaction. A single transaction for millions of rows creates
+    # excessive WAL pressure on Cloud SQL and may never commit within
+    # query-timeout limits.
+    #
+    # Re-checkout the connection per chunk so pool_pre_ping fires each
+    # time. Pre-fix this function held one `engine.connect()` checkout
+    # across every chunk, which meant the TLS session that died mid-job
+    # was never re-validated — the next `conn.execute()` hit the dead
+    # pg8000 socket and surfaced SSL BAD_LENGTH (Codex P1 on PR #483).
+    # `engine.begin()` checkouts + auto-commits per chunk.
+    for i in range(0, len(records), effective_chunksize):
+        batch = records[i: i + effective_chunksize]
+        # Use .values(batch) to emit ONE multi-row INSERT per chunk, not
+        # executemany (conn.execute(stmt, list)) which sends one INSERT
+        # per row and is extremely slow for millions of rows.
+        with engine.begin() as conn:
             conn.execute(tbl.insert().values(batch))
-            conn.commit()
-            total += len(batch)
+        total += len(batch)
 
     logger.info("Bulk-inserted %d rows into %s", total, table)
     return total

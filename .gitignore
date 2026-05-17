@@ -125,6 +125,9 @@ reports/
 # Local Claude scheduler state
 .claude/scheduled_tasks.lock
 
+# Claude sub-agent git worktrees — transient, local-only git internals
+.claude/worktrees/
+
 # GCP inventory dumps (local only, not for commit)
 gcp_inventory.json
 gcp_iam.json

@@ -18,6 +18,7 @@ Usage:
 import argparse
 import sys
 import os
+import uuid
 from pathlib import Path
 from datetime import datetime, time as dtime
 from copy import deepcopy
@@ -31,6 +32,39 @@ from lib.data_loader import DataLoader
 from lib.indicators import add_all_indicators
 from lib.config import load_config, ExitConfig, SignalConfig
 from lib.backtest import BacktestEngine, BacktestResult
+
+
+def persist_sweeps(
+    sweep_rows: list,
+    run_id: str,
+    ticker: str,
+) -> int:
+    """Write timeframe-sweep rows to the backtest_sweeps Cloud SQL table.
+
+    Replaces the CSV hand-off to generate_backtest_report.py. Each row
+    is one (timeframe / combo) tested, tagged with the shared pipeline
+    ``run_id``. Raises on Cloud SQL failure — the table is the canonical
+    path (per CLAUDE.md §3.7: no silent fallbacks in data-access code).
+
+    Returns the number of rows written.
+    """
+    from gcp.database import upsert_dataframe
+
+    df = pd.DataFrame(sweep_rows)
+    if df.empty:
+        return 0
+
+    # Map the in-memory result_to_row() dict keys → table columns.
+    # 'label' and 'type' already match; the rest are 1:1.
+    df = df.rename(columns={'type': 'sweep_type'})
+    df.insert(0, 'run_id', run_id)
+    df.insert(1, 'ticker', ticker)
+
+    return upsert_dataframe(
+        df,
+        table='backtest_sweeps',
+        conflict_cols=['run_id', 'ticker', 'label'],
+    )
 
 
 # -- Timeframe definitions ----------------------------------------------------
@@ -353,7 +387,13 @@ def main():
                         help='Higher-TF filters for combination tests (default: 15m 30m 1h)')
     parser.add_argument('--all-combos', action='store_true',
                         help='Test ALL entry+filter combinations (5m+15m, 5m+30m, 15m+30m, etc.)')
+    parser.add_argument('--run-id', type=str, default=None,
+                        help=('Shared pipeline run UUID. run_pipeline.py '
+                              'passes one id to every sub-step so the report '
+                              'stage can group all rows from one run. If '
+                              'omitted, a fresh uuid4 is generated.'))
     args = parser.parse_args()
+    run_id = args.run_id or str(uuid.uuid4())
 
     # Load config (with per-ticker overrides)
     cfg = load_config(ticker=args.ticker)
@@ -544,6 +584,11 @@ def main():
     output_file = output_dir / f'timeframe_sweep_{args.ticker}_{timestamp}.csv'
     results_df.to_csv(output_file, index=False)
     print(f"\n\nResults saved to {output_file}")
+
+    # The backtest_sweeps Cloud SQL table is the canonical hand-off to
+    # the report stage; the local CSV above is kept for offline dev.
+    n_written = persist_sweeps(all_rows, run_id, args.ticker)
+    print(f"Wrote {n_written} sweep row(s) to backtest_sweeps (run_id={run_id})")
 
     # -- Summary ---------------------------------------------------------------
     print("\n" + "=" * 70)
