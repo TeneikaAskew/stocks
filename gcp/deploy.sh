@@ -580,6 +580,36 @@ deploy_premarket() {
         --quiet
 }
 
+# ── Earnings-reactions brief (Cloud Run Job) ─────────────────────────────────
+# On-demand job — posts a Discord brief ranking the next session's earnings
+# reporters by their historical post-earnings reaction pattern. Scheduled at
+# 8:35 AM ET weekdays (5 min after premarket-brief) by deploy_schedulers.
+#
+# Capacity: ~30-40 reporters/session. The job issues a FIXED number of
+# queries regardless of N (2 calendar reads + 2 batched history reads + 2
+# batched insider reads = 6 round-trips total — see CLAUDE.md Rule 0.4).
+# At pg8000 ≈ 2 s/round-trip that's ~12 s wall-clock; 600 s task-timeout is
+# 50x headroom. 1Gi/1CPU mirrors premarket-brief.
+deploy_earnings_reactions_brief() {
+    echo "Deploying earnings-reactions-brief job..."
+    gcloud run jobs create earnings-reactions-brief \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 \
+        --task-timeout 600 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,gcp.earnings_reactions_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-reactions-brief \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 600 \
+        --command "python,-m,gcp.earnings_reactions_brief" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 # ── Signal monitor (Cloud Run Job — runs during market hours, exits at close) ─
 deploy_monitor() {
     echo "Deploying signal monitor job..."
@@ -1807,6 +1837,11 @@ deploy_schedulers() {
     # 7-7:30 PM has populated fresh AV options + history + reactions
     # for the upcoming Mon-Fri).
     _schedule_brief "premarket-brief-sunday"   "0 21 * * 0"      "premarket-brief"
+    # Earnings-reactions brief — 8:35 AM ET weekdays (5 min after the
+    # pre-market brief). Ranks the next session's reporters by their
+    # historical post-earnings reaction pattern. Plain _schedule (no
+    # containerOverride) — the job carries no run-kind label of its own.
+    _schedule "earnings-reactions-brief-daily" "35 8 * * 1-5"  "earnings-reactions-brief"
     # Signal monitor — 9:25 AM ET weekdays (starts before open, exits at close)
     _schedule "signal-monitor-daily"     "25 9 * * 1-5"   "signal-monitor"
     # Signal monitor EOD resolver — 4:30 PM ET weekdays (30 min after close
@@ -2140,6 +2175,7 @@ case "${1:-help}" in
     migrate)     shift; migrate "$@" ;;
     build)       build_image ;;
     premarket)   build_image && deploy_premarket ;;
+    earnings-reactions-brief) build_image && deploy_earnings_reactions_brief ;;
     monitor)     build_image && deploy_monitor ;;
     eod-resolver) build_image && deploy_signal_monitor_eod_resolver ;;
     playbook-resolver) build_image && deploy_premarket_playbook_resolver ;;
@@ -2162,6 +2198,7 @@ case "${1:-help}" in
     all)
         build_image
         deploy_premarket
+        deploy_earnings_reactions_brief
         deploy_monitor
         deploy_signal_monitor_eod_resolver
         deploy_premarket_playbook_resolver
@@ -2188,6 +2225,10 @@ case "${1:-help}" in
         echo "  migrate    Migrate local Parquet data → GCS + Cloud SQL"
         echo "  build      Build and push Docker image"
         echo "  premarket  Deploy pre-market brief job"
+        echo "  earnings-reactions-brief"
+        echo "             Deploy earnings-reactions-brief job (Discord post"
+        echo "             ranking upcoming reporters by historical reaction"
+        echo "             pattern). Scheduled weekdays 8:35 AM ET."
         echo "  monitor    Deploy real-time signal monitor service"
         echo "  weekend    Deploy weekend review job"
         echo "  fetchers   Deploy all data-fetching Cloud Run jobs"
