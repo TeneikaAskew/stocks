@@ -171,3 +171,87 @@ def test_summarize_gamma_levels_real_schema(clean_db, seed):
     )
     assert out["chain_size"] == 4
     assert "regime" in out
+
+
+# ── backtest pipeline tables (Cloud Run migration) ────────────────────
+
+_BT_RUN_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def test_backtest_tables_exist(run_sql):
+    """The three backtest-pipeline tables applied cleanly from
+    gcp/schema.sql."""
+    df = run_sql(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'public'"
+    )
+    present = set(df["table_name"])
+    for expected in ("backtest_trades", "backtest_sweeps", "backtest_reports"):
+        assert expected in present, f"{expected} missing from applied schema"
+
+
+def test_load_trades_from_table_real_schema(clean_db, seed):
+    """generate_backtest_report.load_trades_from_table SELECTs * from
+    backtest_trades and post-processes the rows. Run it against the real
+    table — a column run_backtest.persist_trades writes that the schema
+    is missing would surface here (upsert silently drops unknown cols)."""
+    from scripts import generate_backtest_report as gr
+
+    entry = datetime(2026, 5, 12, 9, 31, tzinfo=timezone.utc)
+    seed("backtest_trades", [{
+        "run_id": _BT_RUN_ID, "ticker": "SPY", "use_strat": True,
+        "mode": "strat", "trade_seq": 0,
+        "entry_time": entry, "exit_time": entry + timedelta(minutes=8),
+        "direction": "CALL", "entry_price": 500.0, "exit_price": 502.0,
+        "exit_reason": "target", "base_score": 3, "strat_bonus": 1,
+        "total_score": 4, "position_size": 1.0, "return_pct": 0.004,
+        "mae": -0.002, "mfe": 0.006, "ftfc_score": 0.5, "orb_trend": 1,
+        "conditions": "rsi, ema, vwap",
+    }])
+
+    out = gr.load_trades_from_table("SPY", "strat", _BT_RUN_ID)
+    assert out is not None, "run-scoped query returned no rows"
+    assert len(out) == 1
+    # The derived columns lib/insights depends on must be present.
+    for col in ("duration_min", "won", "return_bps"):
+        assert col in out.columns
+    assert out["won"].iloc[0] == True  # noqa: E712
+
+
+def test_load_sweeps_from_table_real_schema(clean_db, seed):
+    """load_sweeps_from_table SELECTs * from backtest_sweeps and renames
+    sweep_type → type. Verify against the real columns."""
+    from scripts import generate_backtest_report as gr
+
+    seed("backtest_sweeps", [{
+        "run_id": _BT_RUN_ID, "ticker": "SPY", "label": "1m+15m",
+        "sweep_type": "combo", "trades": 60, "win_rate": 0.58,
+        "avg_win": 0.005, "avg_loss": -0.003, "pf": 1.9,
+        "expectancy": 0.0011, "max_dd": -0.03, "sharpe": 1.4,
+    }])
+
+    out = gr.load_sweeps_from_table("SPY", _BT_RUN_ID)
+    assert out is not None
+    assert "type" in out.columns and "sweep_type" not in out.columns
+    assert out["type"].iloc[0] == "combo"
+
+
+def test_persist_report_real_schema(clean_db, run_sql):
+    """persist_report INSERTs into backtest_reports with an ON CONFLICT
+    DO UPDATE. Run it twice with the same run_id — the second call must
+    overwrite (idempotent), not raise a unique-violation."""
+    from scripts import generate_backtest_report as gr
+
+    metrics = {"total_trades": 10, "win_rate": 0.55,
+               "expectancy_pct": 0.0007, "sharpe": 1.2}
+    gr.persist_report(_BT_RUN_ID, ["SPY", "IWM"], "# Report v1\n", metrics)
+    gr.persist_report(_BT_RUN_ID, ["SPY", "IWM"], "# Report v2\n", metrics)
+
+    df = run_sql(
+        "SELECT report_md, tickers, total_trades FROM backtest_reports "
+        "WHERE run_id = :rid",
+        {"rid": _BT_RUN_ID},
+    )
+    assert len(df) == 1, "ON CONFLICT failed — duplicate report rows"
+    assert df["report_md"].iloc[0] == "# Report v2\n"
+    assert list(df["tickers"].iloc[0]) == ["SPY", "IWM"]

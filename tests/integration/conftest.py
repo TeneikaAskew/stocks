@@ -36,6 +36,9 @@ def clean_db(db_engine):
         "etf_options_snapshots",
         "premarket_analysis",
         "daily_rates",
+        "backtest_trades",
+        "backtest_sweeps",
+        "backtest_reports",
     )
     with db_engine.begin() as conn:
         for t in tables:

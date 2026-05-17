@@ -62,7 +62,8 @@ def main():
     )
     parser.add_argument(
         "--report-only", action="store_true",
-        help="Only regenerate the report from existing CSVs",
+        help=("Only regenerate the report from an existing run's rows in "
+              "the backtest tables (requires --run-id)"),
     )
     parser.add_argument(
         "--output", type=str, default=None,
