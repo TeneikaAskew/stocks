@@ -205,6 +205,54 @@ def _max_safe_chunksize(n_cols: int, requested_chunksize: int) -> int:
     return min(requested_chunksize, max_safe)
 
 
+def _coerce_int_columns(df: pd.DataFrame, tbl) -> pd.DataFrame:
+    """Coerce DataFrame columns that map to INTEGER-family SQL columns
+    back to int, returning a new DataFrame (the input is not mutated).
+
+    Why this exists — the recurring ``22P02`` bug class:
+        pandas widens an INTEGER column to ``float64`` the moment ANY
+        row in it carries a NaN. pg8000 then binds the value as the
+        string ``"15.0"`` / ``"-1.0"``, and Postgres rejects it with
+        ``22P02 invalid input syntax for type integer``.
+
+        This had been patched per-caller (``gcp/historical_signals.py``
+        ``bulk_insert._INT_COLS``; ``scripts/run_backtest.py``
+        ``persist_trades._INT_COLS``) — but every NEW writer that built
+        an INT column with a possible NaN reintroduced it. Doing the
+        coercion HERE, in the shared write path, keyed off the target
+        table's reflected column types, kills the bug class for every
+        caller, present and future.
+
+    Coercion rule: NaN / None → None (SQL NULL); any other value → int.
+    Non-INTEGER columns are left untouched. ``SmallInteger`` and
+    ``BigInteger`` both subclass ``sqlalchemy.Integer`` so all three
+    INT widths are covered by the single isinstance check.
+    """
+    import sqlalchemy
+
+    int_cols = [
+        c.name for c in tbl.columns
+        if isinstance(c.type, sqlalchemy.Integer)
+        and c.name in df.columns
+    ]
+    if not int_cols:
+        return df
+
+    df = df.copy()
+    for col in int_cols:
+        # Build an explicit object-dtype Series. A plain assignment of a
+        # [int, None, int, ...] list lets pandas re-infer the column as
+        # float64 (None → NaN) — re-widening it and defeating the whole
+        # coercion. dtype=object pins it so the column holds real Python
+        # ints and None, which pg8000 binds as INTEGER / NULL.
+        df[col] = pd.Series(
+            [None if pd.isna(v) else int(v) for v in df[col]],
+            index=df.index,
+            dtype=object,
+        )
+    return df
+
+
 def upsert_dataframe(
     df: pd.DataFrame,
     table: str,
@@ -254,6 +302,11 @@ def upsert_dataframe(
             table, len(dropped), dropped,
         )
     df = df[[c for c in df.columns if c in table_col_names]]
+
+    # Coerce INTEGER-family columns back to int (pandas float-widening on
+    # NaN → pg8000 binds "15.0" → Postgres 22P02). Keyed off the reflected
+    # table schema so it's automatic for every caller. See _coerce_int_columns.
+    df = _coerce_int_columns(df, tbl)
 
     if update_cols is None:
         update_cols = [c for c in df.columns if c not in conflict_cols]
@@ -334,6 +387,9 @@ def bulk_insert_dataframe(
     # Only keep DataFrame columns that exist in the table schema.
     table_col_names = {col.name for col in tbl.columns}
     df = df[[c for c in df.columns if c in table_col_names]]
+
+    # Coerce INTEGER-family columns back to int — see _coerce_int_columns.
+    df = _coerce_int_columns(df, tbl)
 
     records = df.to_dict(orient='records')
     total = 0
