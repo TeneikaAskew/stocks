@@ -2337,3 +2337,112 @@ ALTER TABLE signal_alerts
 
 CREATE INDEX IF NOT EXISTS idx_signal_alerts_gate_action
     ON signal_alerts(gate_action) WHERE gate_action IS NOT NULL;
+
+
+-- ─────────────────────────────────────────────────────────
+-- BACKTEST PIPELINE (Cloud Run job: backtest-pipeline)
+-- ─────────────────────────────────────────────────────────
+-- These three tables replace the file-based CSV hand-off the
+-- backtest pipeline used when it ran as a GitHub Actions job.
+-- scripts/run_backtest.py and scripts/run_timeframe_sweep.py
+-- write the "simulate" stage output here; scripts/generate_
+-- backtest_report.py reads it back, renders the markdown, and
+-- records the run in backtest_reports.
+--
+-- A pipeline run is identified by a `run_id` UUID generated
+-- once in scripts/run_pipeline.py and threaded through every
+-- sub-step. Re-running with the same run_id is idempotent
+-- (ON CONFLICT DO UPDATE on the natural keys below).
+
+-- backtest_trades — one row per simulated trade. Columns mirror
+-- lib/backtest.py:BacktestResult.to_dataframe() plus the run/
+-- ticker/mode grouping columns.
+CREATE TABLE IF NOT EXISTS backtest_trades (
+    run_id         UUID             NOT NULL,
+    ticker         VARCHAR(10)      NOT NULL,
+    use_strat      BOOLEAN          NOT NULL,
+    mode           VARCHAR(8)       NOT NULL,   -- 'base' | 'strat'
+    trade_seq      INTEGER          NOT NULL,   -- 0-based trade index within (run_id, ticker, mode)
+
+    -- Columns from BacktestResult.to_dataframe()
+    entry_time     TIMESTAMPTZ,
+    exit_time      TIMESTAMPTZ,
+    direction      VARCHAR(4),                  -- 'CALL' | 'PUT'
+    entry_price    DOUBLE PRECISION,
+    exit_price     DOUBLE PRECISION,
+    exit_reason    VARCHAR(16),                 -- 'target' | 'stop_loss' | 'time_stop' | ...
+    base_score     INTEGER,
+    strat_bonus    INTEGER,
+    total_score    INTEGER,
+    position_size  DOUBLE PRECISION,
+    return_pct     DOUBLE PRECISION,
+    mae            DOUBLE PRECISION,            -- Max Adverse Excursion
+    mfe            DOUBLE PRECISION,            -- Max Favorable Excursion
+    ftfc_score     DOUBLE PRECISION,            -- FTFC alignment at entry (-1..+1)
+    orb_trend      INTEGER,                     -- ORB trend at entry (-1, 0, +1)
+    conditions     TEXT,                        -- comma-joined conditions_met
+
+    created_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    -- trade_seq makes each simulated trade uniquely addressable so a
+    -- re-run with the same run_id converges (ON CONFLICT DO UPDATE)
+    -- rather than appending duplicates.
+    CONSTRAINT uq_backtest_trades UNIQUE (run_id, ticker, mode, trade_seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_trades_run
+    ON backtest_trades (run_id, ticker);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_trades_ticker_created
+    ON backtest_trades (ticker, created_at DESC);
+
+-- backtest_sweeps — one row per (timeframe / combo) tested by
+-- run_timeframe_sweep.py. Columns mirror the result_to_row()
+-- dict that script builds plus the run/ticker grouping columns.
+CREATE TABLE IF NOT EXISTS backtest_sweeps (
+    run_id         UUID             NOT NULL,
+    ticker         VARCHAR(10)      NOT NULL,
+    label          VARCHAR(32)      NOT NULL,   -- e.g. '1m', '1m+15m', '5m+30m'
+    sweep_type     VARCHAR(16)      NOT NULL,   -- 'single' | 'combo' | 'general_combo'
+
+    trades         INTEGER,
+    win_rate       DOUBLE PRECISION,
+    avg_win        DOUBLE PRECISION,
+    avg_loss       DOUBLE PRECISION,
+    pf             DOUBLE PRECISION,            -- profit factor
+    expectancy     DOUBLE PRECISION,
+    max_dd         DOUBLE PRECISION,            -- max drawdown
+    sharpe         DOUBLE PRECISION,
+
+    created_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_backtest_sweeps UNIQUE (run_id, ticker, label)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_sweeps_run
+    ON backtest_sweeps (run_id, ticker);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_sweeps_ticker_created
+    ON backtest_sweeps (ticker, created_at DESC);
+
+-- backtest_reports — one row per pipeline run: the rendered
+-- markdown plus structured aggregate metrics for quick querying
+-- without re-parsing the markdown.
+CREATE TABLE IF NOT EXISTS backtest_reports (
+    run_id         UUID             PRIMARY KEY,
+    tickers        TEXT[]           NOT NULL,
+    report_md      TEXT             NOT NULL,
+
+    -- Aggregate metrics across all tickers in the run (computed in
+    -- generate_backtest_report.py from the primary trade set —
+    -- strat if available, else base).
+    total_trades   INTEGER,
+    win_rate       DOUBLE PRECISION,
+    expectancy_pct DOUBLE PRECISION,
+    sharpe         DOUBLE PRECISION,
+
+    created_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_reports_created
+    ON backtest_reports (created_at DESC);
