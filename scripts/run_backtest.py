@@ -12,6 +12,7 @@ Usage:
 import argparse
 import sys
 import os
+import uuid
 from pathlib import Path
 from datetime import datetime
 
@@ -25,6 +26,43 @@ from lib.indicators import add_all_indicators
 from lib.config import load_config
 from lib.backtest import BacktestEngine
 from lib.walk_forward import WalkForwardValidator
+
+
+def persist_trades(
+    trades_df: pd.DataFrame,
+    run_id: str,
+    ticker: str,
+    use_strat: bool,
+) -> int:
+    """Write simulated trade rows to the backtest_trades Cloud SQL table.
+
+    This is the canonical hand-off seam between the "simulate" stage
+    (this script) and the "report" stage (generate_backtest_report.py),
+    replacing the old CSV plumbing. Each trade is tagged with the shared
+    pipeline ``run_id`` plus ``ticker`` / ``use_strat`` / ``mode`` so the
+    report stage can slice by run.
+
+    Returns the number of rows written. Raises on Cloud SQL failure —
+    the table is the canonical path, so a write failure must surface
+    (per CLAUDE.md §3.7: no silent fallbacks in data-access code).
+    """
+    from gcp.database import upsert_dataframe
+
+    df = trades_df.copy()
+    df.insert(0, 'run_id', run_id)
+    df.insert(1, 'ticker', ticker)
+    df.insert(2, 'use_strat', bool(use_strat))
+    df.insert(3, 'mode', 'strat' if use_strat else 'base')
+    # 0-based trade index within (run_id, ticker, mode) — completes the
+    # natural key so a re-run with the same run_id converges via
+    # ON CONFLICT DO UPDATE rather than appending duplicate rows.
+    df.insert(4, 'trade_seq', range(len(df)))
+
+    return upsert_dataframe(
+        df,
+        table='backtest_trades',
+        conflict_cols=['run_id', 'ticker', 'mode', 'trade_seq'],
+    )
 
 
 def main():
@@ -51,8 +89,14 @@ def main():
                         help='Directory to save results (default from config)')
     parser.add_argument('--daily-data', action='store_true',
                         help='Use daily data instead of intraday')
+    parser.add_argument('--run-id', type=str, default=None,
+                        help=('Shared pipeline run UUID. run_pipeline.py '
+                              'passes one id to every sub-step so the report '
+                              'stage can group all rows from one run. If '
+                              'omitted, a fresh uuid4 is generated.'))
 
     args = parser.parse_args()
+    run_id = args.run_id or str(uuid.uuid4())
 
     # Load config (with per-ticker overrides)
     cfg = load_config(ticker=args.ticker)
@@ -159,14 +203,26 @@ def main():
         result = engine.run(df, use_strat=args.use_strat, close_col=close_col)
         print(f"\n{result.summary()}")
 
-        # Save trades
+        # Save trades — the backtest_trades Cloud SQL table is the
+        # canonical hand-off to the report stage. The local CSV is
+        # kept too: it's harmless and useful for offline/local dev
+        # where Cloud SQL isn't configured.
         trades_df = result.to_dataframe()
         if not trades_df.empty:
             output_file = output_dir / f'backtest_{args.ticker}_{timestamp}.csv'
             trades_df.to_csv(output_file, index=False)
             print(f"\nTrades saved to {output_file}")
 
-        # Save equity curve
+            n_written = persist_trades(
+                trades_df, run_id, args.ticker, args.use_strat,
+            )
+            print(f"Wrote {n_written} trade row(s) to backtest_trades "
+                  f"(run_id={run_id}, mode={'strat' if args.use_strat else 'base'})")
+        else:
+            print("\nNo trades simulated — nothing written to backtest_trades.")
+
+        # Save equity curve (local CSV only — equity curves aren't
+        # part of the report stage's table-based contract).
         if not result.equity_curve.empty:
             eq_file = output_dir / f'equity_{args.ticker}_{timestamp}.csv'
             result.equity_curve.to_csv(eq_file)

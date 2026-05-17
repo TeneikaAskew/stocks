@@ -17,6 +17,7 @@ import logging
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 logging.basicConfig(
@@ -61,11 +62,18 @@ def main():
     )
     parser.add_argument(
         "--report-only", action="store_true",
-        help="Only regenerate the report from existing CSVs",
+        help=("Only regenerate the report from an existing run's rows in "
+              "the backtest tables (requires --run-id)"),
     )
     parser.add_argument(
         "--output", type=str, default=None,
         help="Output path for the report (default: BACKTEST_RESULTS.md)",
+    )
+    parser.add_argument(
+        "--run-id", type=str, default=None,
+        help=("Pipeline run UUID. Threaded through every sub-step so all "
+              "rows from one run share an id in the backtest_* tables. "
+              "Defaults to a fresh uuid4."),
     )
     args = parser.parse_args()
 
@@ -73,8 +81,19 @@ def main():
     tickers = args.tickers
     failed: list[str] = []
 
-    log.info("Pipeline: tickers=%s  skip_sweep=%s  report_only=%s",
-             tickers, args.skip_sweep, args.report_only)
+    # One run_id for the whole pipeline. Every sub-step receives it via
+    # --run-id so backtest_trades / backtest_sweeps / backtest_reports
+    # rows all join on it. --report-only re-runs against an EXISTING run,
+    # so the caller must pass --run-id in that mode (a fresh uuid would
+    # find no rows). For a fresh full run, a generated uuid is correct.
+    if args.report_only and not args.run_id:
+        log.error("--report-only requires --run-id (the run to report on); "
+                  "a fresh uuid would match no rows in backtest_trades.")
+        sys.exit(2)
+    run_id = args.run_id or str(uuid.uuid4())
+
+    log.info("Pipeline: run_id=%s  tickers=%s  skip_sweep=%s  report_only=%s",
+             run_id, tickers, args.skip_sweep, args.report_only)
     t_start = time.time()
 
     if not args.report_only:
@@ -82,7 +101,7 @@ def main():
         for ticker in tickers:
             ok = run_step(
                 [python, str(SCRIPTS_DIR / "run_backtest.py"),
-                 "--ticker", ticker],
+                 "--ticker", ticker, "--run-id", run_id],
                 f"Backtest {ticker} (base)",
             )
             if not ok:
@@ -92,7 +111,7 @@ def main():
         for ticker in tickers:
             ok = run_step(
                 [python, str(SCRIPTS_DIR / "run_backtest.py"),
-                 "--ticker", ticker, "--use-strat"],
+                 "--ticker", ticker, "--use-strat", "--run-id", run_id],
                 f"Backtest {ticker} (strat)",
             )
             if not ok:
@@ -103,7 +122,7 @@ def main():
             for ticker in tickers:
                 ok = run_step(
                     [python, str(SCRIPTS_DIR / "run_timeframe_sweep.py"),
-                     "--ticker", ticker, "--use-strat"],
+                     "--ticker", ticker, "--use-strat", "--run-id", run_id],
                     f"Timeframe sweep {ticker}",
                 )
                 if not ok:
@@ -112,7 +131,7 @@ def main():
     # --- Step 4: Generate report ---
     report_cmd = [
         python, str(SCRIPTS_DIR / "generate_backtest_report.py"),
-        "--tickers", *tickers,
+        "--tickers", *tickers, "--run-id", run_id,
     ]
     if args.output:
         report_cmd += ["--output", args.output]
@@ -124,12 +143,13 @@ def main():
     # --- Summary ---
     elapsed_total = time.time() - t_start
     if failed:
-        log.error("PIPELINE FAILED (%.0fs) — failed steps: %s",
-                  elapsed_total, ", ".join(failed))
+        log.error("PIPELINE FAILED (%.0fs, run_id=%s) — failed steps: %s",
+                  elapsed_total, run_id, ", ".join(failed))
         sys.exit(1)
     else:
         output_path = args.output or str(PROJECT_ROOT / "BACKTEST_RESULTS.md")
-        log.info("PIPELINE COMPLETE (%.0fs) — report: %s", elapsed_total, output_path)
+        log.info("PIPELINE COMPLETE (%.0fs, run_id=%s) — report: %s",
+                 elapsed_total, run_id, output_path)
         sys.exit(0)
 
 

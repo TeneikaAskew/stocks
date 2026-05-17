@@ -1097,6 +1097,53 @@ deploy_compute_earnings_reactions() {
         --quiet
 }
 
+# Backtest pipeline (migrated off the .github/workflows/backtest-pipeline.yml
+# `report` job — that workload is data processing, not CI). Runs
+# scripts/run_pipeline.py: per ticker it simulates a base + strat backtest
+# and a timeframe sweep, then renders BACKTEST_RESULTS.md and records the
+# run in backtest_reports. The per-stage output (trades, sweeps) lands in
+# the backtest_trades / backtest_sweeps Cloud SQL tables, keyed by a
+# shared run_id the orchestrator generates.
+#
+# Capacity (3 tickers × {base, strat, sweep} ≈ 9 backtest-engine runs over
+# ~5y of 1-min bars):
+#   - Volume: ~9 × a few-thousand simulated trades → < 100k rows total.
+#   - Velocity: DB writes are batched per ticker/mode via upsert_dataframe
+#     (chunked, ON CONFLICT) — ~7 write round-trips total, not per-row. The
+#     cost is CPU-bound simulation, not SQL round-trips.
+#   - Wall-clock: ~3-7 min per backtest-engine run × 9 ≈ 30-60 min typical.
+#     task-timeout 14400s (4h) gives the >= 4× headroom CLAUDE.md §5 wants;
+#     Cloud Run charges runtime not the cap, so headroom is free.
+# memory 2Gi: ~5y of 1-min OHLCV+indicators for one ticker is a few hundred
+# MB; the sweep resamples it to 5 timeframes. 2Gi covers peak working-set
+# with margin.
+# max-retries 0: the job is idempotent (ON CONFLICT DO UPDATE keyed by
+# run_id) but a retry re-runs from scratch under a fresh run_id, doubling
+# spend without converging — re-dispatch manually if a run fails.
+#
+# On-demand only — NO Cloud Scheduler entry. Invoke with:
+#   gcloud run jobs execute backtest-pipeline --region us-east1 --wait
+deploy_backtest_pipeline() {
+    echo "Deploying backtest-pipeline job..."
+    gcloud run jobs create backtest-pipeline \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 2Gi --cpu 1 --max-retries 0 \
+        --task-timeout 14400 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.run_pipeline" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update backtest-pipeline \
+        --image "${IMAGE}" --region "${REGION}" \
+        --task-timeout 14400 \
+        --command "python,-m,scripts.run_pipeline" \
+        --args "" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
 deploy_fetch_news_sentiment() {
     echo "Deploying fetch-news-sentiment (ticker mode) job..."
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
@@ -1204,6 +1251,7 @@ deploy_fetchers() {
     deploy_fetch_news_sentiment
     deploy_fetch_news_sentiment_topics
     deploy_fetch_news_sentiment_earnings
+    deploy_backtest_pipeline
 }
 
 # ── Backup / disaster-recovery jobs ───────────────────────────────────────────
