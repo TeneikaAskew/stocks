@@ -16,6 +16,8 @@ dropped — the regression is invisible otherwise (the pipeline still
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -62,3 +64,37 @@ def test_pipeline_sweep_step_still_uses_strat_and_run_id():
     args = _sweep_step_args()
     assert "--use-strat" in args
     assert "--run-id" in args
+
+
+# --- --sweep-only mode validation -------------------------------------------
+# These run run_pipeline.py as a subprocess and assert it exits 2 on a
+# bad flag combination. Validation happens before any DB/subprocess work,
+# so the tests are hermetic — no Cloud SQL needed.
+
+def _run_pipeline(*flags) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "scripts/run_pipeline.py", *flags],
+        capture_output=True, text=True, timeout=30,
+    )
+
+
+def test_sweep_only_requires_run_id():
+    """--sweep-only reuses an existing run's base/strat trades, so it
+    must be given that run's --run-id; without it → exit 2."""
+    r = _run_pipeline("--sweep-only")
+    assert r.returncode == 2
+    assert "--sweep-only requires --run-id" in (r.stdout + r.stderr)
+
+
+def test_sweep_only_conflicts_with_report_only():
+    r = _run_pipeline("--sweep-only", "--report-only", "--run-id", "x")
+    assert r.returncode == 2
+    assert "mutually exclusive" in (r.stdout + r.stderr)
+
+
+def test_sweep_only_conflicts_with_skip_sweep():
+    """--sweep-only with --skip-sweep would run neither backtests nor
+    sweep — a no-op the pipeline rejects."""
+    r = _run_pipeline("--sweep-only", "--skip-sweep", "--run-id", "x")
+    assert r.returncode == 2
+    assert "would run nothing" in (r.stdout + r.stderr)
