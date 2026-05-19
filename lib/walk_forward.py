@@ -18,6 +18,29 @@ from lib.config import (
 )
 
 
+def _rebuild_consecutive(
+    df: pd.DataFrame, consecutive_periods: int, close_col: str = 'Close',
+) -> pd.DataFrame:
+    """Return a copy of `df` with Consecutive_Up/Down rebuilt for a given
+    window.
+
+    The consecutive-bar columns are a rolling-N sum, so when the sweep
+    varies `consecutive_periods` the column's window must move with the
+    evaluate_signal threshold — a check of `>= 4` against a column built
+    with window 3 can never fire. Called once per distinct swept value.
+    """
+    from lib.indicators import calculate_consecutive_moves
+    out = df.copy()
+    if 'Price_Change' in out.columns:
+        price_change = out['Price_Change']
+    else:
+        price_change = out[close_col].pct_change() * 100
+    up, down = calculate_consecutive_moves(price_change, consecutive_periods)
+    out['Consecutive_Up'] = up
+    out['Consecutive_Down'] = down
+    return out
+
+
 @dataclass
 class WalkForwardResult:
     fold_results: List[BacktestResult]
@@ -254,11 +277,28 @@ class WalkForwardValidator:
         values = list(param_grid.values())
         combos = list(product(*values))
 
+        # When consecutive_periods is swept, process combos grouped by
+        # its value so the Consecutive_Up/Down indicator columns are
+        # rebuilt once per distinct value rather than per combo (the
+        # column window must track the threshold — see
+        # _rebuild_consecutive).
+        cp_idx = (keys.index('consecutive_periods')
+                  if 'consecutive_periods' in keys else None)
+        if cp_idx is not None:
+            combos.sort(key=lambda c: c[cp_idx])
+
         rows = []
         total = len(combos)
+        _active_cp = None
+        df_active = df
         for i, combo in enumerate(combos):
             params = dict(zip(keys, combo))
             print(f"  WF sweep combo {i + 1}/{total}: {params}")
+
+            cp = params.get('consecutive_periods')
+            if cp is not None and cp != _active_cp:
+                _active_cp = cp
+                df_active = _rebuild_consecutive(df, int(cp), close_col)
 
             # Same param→config mapping as parameter_sensitivity, so the
             # two sweep entry points can't drift on how a combo is built.
@@ -292,7 +332,7 @@ class WalkForwardValidator:
                 train_months=self.train_months,
                 test_months=self.test_months,
             )
-            wf = validator.run(df, use_strat=use_strat, close_col=close_col)
+            wf = validator.run(df_active, use_strat=use_strat, close_col=close_col)
             agg = wf.aggregate_metrics
 
             row = dict(params)

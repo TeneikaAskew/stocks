@@ -33,6 +33,7 @@ from lib.indicators import (
     calculate_rvol_recent, calculate_atr_expansion, calculate_rsi_thrust,
 )
 from lib.signals import evaluate_signal
+from lib.strategies.exit_config_overrides import get_consecutive_periods
 from lib.strat import StratClassifier
 from lib.strat_levels import LevelMap, build_level_map
 from lib.config import load_config, get_position_size, get_signal_strength_label
@@ -342,8 +343,12 @@ class SignalMonitor:
 
         price_change = close.pct_change() * 100
         df['Price_Change'] = price_change
+        # Per-ticker consecutive-bar window — Tier-A from the walk-forward
+        # calibration sweep, Tier-B = SignalConfig default. The column
+        # window MUST match the threshold evaluate_signal checks, so both
+        # read get_consecutive_periods(ticker).
         df['Consecutive_Up'], df['Consecutive_Down'] = calculate_consecutive_moves(
-            price_change, ind.consecutive_periods,
+            price_change, get_consecutive_periods(ticker),
         )
         # Phase 0.7.x — relaxed 3-of-5 gate columns + 3 new momentum
         # confirmer indicators read by `lib.strategies.MOMENTUM.evaluate`.
@@ -576,7 +581,7 @@ class SignalMonitor:
         sig = evaluate_signal(
             latest,
             min_conditions=self.signal_cfg.min_conditions,
-            consecutive_periods=self.signal_cfg.consecutive_periods,
+            consecutive_periods=get_consecutive_periods(ticker),
             call_rsi_range=call_rng,
             put_rsi_range=put_rng,
             ticker=ticker,

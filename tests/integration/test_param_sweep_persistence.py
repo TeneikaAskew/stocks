@@ -39,12 +39,12 @@ def _sweep_df() -> pd.DataFrame:
     """Two combos: the first clears the selection gates, the second
     (stability 0.40) does not."""
     return pd.DataFrame([
-        {"call_target": 0.0030, "put_target": 0.0038,
+        {"consecutive_periods": 3, "call_target": 0.0030, "put_target": 0.0038,
          "call_time_stop": 30, "put_time_stop": 35,
          "avg_expectancy_pct": 0.0020, "avg_win_rate": 0.55,
          "std_expectancy_pct": 0.001, "stability_score": 0.75,
          "total_folds": 10, "total_trades": 120},
-        {"call_target": 0.0035, "put_target": 0.0044,
+        {"consecutive_periods": 4, "call_target": 0.0035, "put_target": 0.0044,
          "call_time_stop": 25, "put_time_stop": 40,
          "avg_expectancy_pct": 0.0010, "avg_win_rate": 0.52,
          "std_expectancy_pct": 0.002, "stability_score": 0.40,

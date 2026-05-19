@@ -256,3 +256,34 @@ class TestSelectCalibrationWinner:
         winner = select_calibration_winner(df)
         assert winner is not None
         assert winner['call_target'] == 0.0032
+
+
+class TestRebuildConsecutive:
+    """lib/walk_forward.py:_rebuild_consecutive — the per-combo rebuild
+    that keeps the Consecutive_Up/Down column window in lockstep with the
+    swept consecutive_periods threshold."""
+
+    def test_window_saturates_at_n(self):
+        from lib.walk_forward import _rebuild_consecutive
+        # A strictly rising series — every bar is an up-move, so the
+        # rolling-N up-count saturates at the window size N.
+        df = pd.DataFrame({'Close': list(range(1, 21))})
+        assert _rebuild_consecutive(df, 3)['Consecutive_Up'].max() == 3
+        assert _rebuild_consecutive(df, 5)['Consecutive_Up'].max() == 5
+
+    def test_does_not_mutate_input(self):
+        from lib.walk_forward import _rebuild_consecutive
+        df = pd.DataFrame({'Close': [100.0, 101.0, 102.0]})
+        _rebuild_consecutive(df, 3)
+        assert 'Consecutive_Up' not in df.columns
+
+    def test_uses_existing_price_change_column(self):
+        from lib.walk_forward import _rebuild_consecutive
+        # When Price_Change is already present it is used as-is rather
+        # than recomputed from Close.
+        df = pd.DataFrame({
+            'Close': [100.0, 100.0, 100.0],
+            'Price_Change': [1.0, 1.0, 1.0],  # all up despite flat Close
+        })
+        out = _rebuild_consecutive(df, 2)
+        assert out['Consecutive_Up'].iloc[-1] == 2

@@ -12,12 +12,13 @@ sweeps strategy exit parameters with walk-forward validation. Every
 combo is written to ``walk_forward_results``; the selected winner is
 also written to ``exit_config_overrides``.
 
-Only the four exit parameters are swept — they apply cleanly at
-fire-time through the existing per-ticker resolver pipeline.
-``consecutive_periods`` is deliberately NOT swept: it is baked into a
-precomputed indicator column, so varying it correctly would need a
-per-combo indicator rebuild (and a per-ticker rebuild in the live
-monitor) — out of safe scope for an auto-applied sweep.
+Five parameters are swept: the four exit params plus
+``consecutive_periods``. The exit params apply at fire-time through the
+per-ticker resolver pipeline. ``consecutive_periods`` also drives a
+precomputed indicator column, so the sweep rebuilds that column per
+combo (lib.walk_forward._rebuild_consecutive) and the live monitor
+builds AND checks it with the per-ticker value
+(signal_monitor.calculate_indicators / evaluate_signal).
 
 Usage:
     python scripts/run_param_sweep.py                    # SPY,IWM,QQQ
@@ -49,8 +50,9 @@ log = logging.getLogger("param-sweep")
 
 DEFAULT_TICKERS = ["SPY", "IWM", "QQQ"]
 
-# Deep grid over the four exit params. 3^4 = 81 combos per ticker.
+# Deep grid: four exit params + consecutive_periods. 3^5 = 243 combos.
 PARAM_GRID = {
+    "consecutive_periods": [2, 3, 4],
     "call_target":    [0.0025, 0.0030, 0.0035],
     "put_target":     [0.0032, 0.0038, 0.0044],
     "call_time_stop": [25, 30, 35],
@@ -64,7 +66,8 @@ def combo_label(row) -> str:
     Accepts a dict or a pandas Series — both support ``[]`` access.
     """
     return (
-        f"ct{float(row['call_target']) * 10000:.0f}"
+        f"cp{int(row['consecutive_periods'])}"
+        f"_ct{float(row['call_target']) * 10000:.0f}"
         f"_pt{float(row['put_target']) * 10000:.0f}"
         f"_cts{int(row['call_time_stop'])}"
         f"_pts{int(row['put_time_stop'])}"
@@ -86,7 +89,7 @@ def persist_results(
     df["selected"] = df["label"] == winner_label
 
     cols = [
-        "run_id", "ticker", "label",
+        "run_id", "ticker", "label", "consecutive_periods",
         "call_target", "put_target", "call_time_stop", "put_time_stop",
         "avg_expectancy_pct", "avg_win_rate", "std_expectancy_pct",
         "stability_score", "total_folds", "total_trades", "selected",
@@ -103,10 +106,12 @@ def apply_winner(ticker: str, winner: dict, run_id: str) -> None:
     snapshot so the live signal monitor picks it up at the next fire.
 
     Uses INSERT ... SELECT so the prior row's non-swept knobs (call_stop,
-    put_stop, blue_sky_atr_offset, consecutive_periods, disabled_*) are
-    carried forward — a new snapshot must be complete, never a partial
-    row that silently drops earlier calibration. Requires an existing
-    row for the ticker (the core-3 are seeded in gcp/schema.sql)."""
+    put_stop, blue_sky_atr_offset, disabled_*) are carried forward — a
+    new snapshot must be complete, never a partial row that silently
+    drops earlier calibration. The five swept params (the four exit
+    knobs + consecutive_periods) are overlaid from the winning combo.
+    Requires an existing row for the ticker (the core-3 are seeded in
+    gcp/schema.sql)."""
     from gcp.database import execute_sql
 
     notes = (
@@ -124,18 +129,19 @@ def apply_winner(ticker: str, winner: dict, run_id: str) -> None:
            blue_sky_atr_offset, notes)
         SELECT ticker, CURRENT_DATE, :call_target, :put_target,
                call_stop, put_stop, :call_time_stop, :put_time_stop,
-               consecutive_periods, disabled_conditions, disabled_directions,
+               :consecutive_periods, disabled_conditions, disabled_directions,
                blue_sky_atr_offset, :notes
           FROM exit_config_overrides
          WHERE ticker = :ticker
          ORDER BY calibration_date DESC
          LIMIT 1
         ON CONFLICT (ticker, calibration_date) DO UPDATE SET
-           call_target    = EXCLUDED.call_target,
-           put_target     = EXCLUDED.put_target,
-           call_time_stop = EXCLUDED.call_time_stop,
-           put_time_stop  = EXCLUDED.put_time_stop,
-           notes          = EXCLUDED.notes
+           call_target         = EXCLUDED.call_target,
+           put_target          = EXCLUDED.put_target,
+           call_time_stop      = EXCLUDED.call_time_stop,
+           put_time_stop       = EXCLUDED.put_time_stop,
+           consecutive_periods = EXCLUDED.consecutive_periods,
+           notes               = EXCLUDED.notes
     """
     execute_sql(sql, {
         "ticker": ticker,
@@ -143,6 +149,7 @@ def apply_winner(ticker: str, winner: dict, run_id: str) -> None:
         "put_target": float(winner["put_target"]),
         "call_time_stop": int(winner["call_time_stop"]),
         "put_time_stop": int(winner["put_time_stop"]),
+        "consecutive_periods": int(winner["consecutive_periods"]),
         "notes": notes,
     })
 
