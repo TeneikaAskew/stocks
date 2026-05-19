@@ -121,7 +121,12 @@ def get_engine():
         from google.cloud.sql.connector import Connector
         import sqlalchemy
 
-        connector = Connector()
+        # refresh_strategy="lazy": refresh the ephemeral client cert on
+        # demand at connect time rather than via a background scheduler.
+        # The background refresher is unreliable on Cloud Run with
+        # request-based CPU (throttled between requests), so the cert can
+        # go stale and the next request hits a delayed/failed connection.
+        connector = Connector(refresh_strategy="lazy")
 
         def _getconn():
             return connector.connect(
