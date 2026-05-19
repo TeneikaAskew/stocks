@@ -29,7 +29,7 @@ from datetime import date
 from functools import lru_cache
 from typing import Optional
 
-from lib.config import ExitConfig
+from lib.config import ExitConfig, SignalConfig
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +98,7 @@ def _latest_overrides(ticker: str) -> Optional[dict]:
         """
         SELECT calibration_date, call_target, put_target,
                call_stop, put_stop, call_time_stop, put_time_stop,
+               consecutive_periods,
                disabled_conditions, disabled_directions,
                blue_sky_atr_offset, notes
           FROM exit_config_overrides
@@ -181,6 +182,20 @@ def get_put_time_stop(ticker: str) -> int:
     return _defaults().put_time_stop
 
 
+def get_consecutive_periods(ticker: str) -> int:
+    """Resolve the per-ticker consecutive-bar-pressure window.
+
+    Tier A: `exit_config_overrides.consecutive_periods` — written by the
+    walk-forward calibration sweep. Tier B: the `SignalConfig` default.
+    Unlike the target/stop knobs (Tier-B = ExitConfig), this one's
+    universal default lives in SignalConfig.
+    """
+    row = _latest_overrides(ticker)
+    if row and _is_usable_int(row.get("consecutive_periods")):
+        return int(float(row["consecutive_periods"]))
+    return SignalConfig().consecutive_periods
+
+
 def get_disabled_directions(ticker: str) -> set[str]:
     """Return the set of upper-cased disabled directions for `ticker`.
 
@@ -240,6 +255,6 @@ def get_resolution_tier(ticker: str, knob: str) -> str:
     if not row:
         return "B"
     val = row.get(knob)
-    if knob in ("call_time_stop", "put_time_stop"):
+    if knob in ("call_time_stop", "put_time_stop", "consecutive_periods"):
         return "A" if _is_usable_int(val) else "B"
     return "A" if _is_usable_number(val) else "B"

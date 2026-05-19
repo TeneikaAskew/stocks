@@ -227,6 +227,85 @@ class WalkForwardValidator:
 
         return pd.DataFrame(results)
 
+    def walk_forward_sweep(
+        self,
+        df: pd.DataFrame,
+        param_grid: Dict[str, List],
+        use_strat: bool = True,
+        close_col: str = 'Close',
+    ) -> pd.DataFrame:
+        """Walk-forward validate every parameter combination in `param_grid`.
+
+        Unlike `parameter_sensitivity` (one full-period backtest per
+        combo), this runs the full anchored walk-forward per combo, so
+        each row carries out-of-sample aggregate metrics and a
+        `stability_score` across folds — the inputs the calibration
+        sweep ranks on.
+
+        `param_grid` keys are the same as `parameter_sensitivity`:
+        consecutive_periods, call_rsi_low/high, put_rsi_low/high,
+        call_target, put_target, call_time_stop, put_time_stop.
+
+        Returns one row per combo: the param values plus
+        avg_expectancy_pct, avg_win_rate, std_expectancy_pct,
+        stability_score, total_folds, total_trades.
+        """
+        keys = list(param_grid.keys())
+        values = list(param_grid.values())
+        combos = list(product(*values))
+
+        rows = []
+        total = len(combos)
+        for i, combo in enumerate(combos):
+            params = dict(zip(keys, combo))
+            print(f"  WF sweep combo {i + 1}/{total}: {params}")
+
+            # Same param→config mapping as parameter_sensitivity, so the
+            # two sweep entry points can't drift on how a combo is built.
+            sig = SignalConfig(
+                consecutive_periods=params.get(
+                    'consecutive_periods', self.signal.consecutive_periods),
+                call_rsi_range=(
+                    params.get('call_rsi_low', self.signal.call_rsi_range[0]),
+                    params.get('call_rsi_high', self.signal.call_rsi_range[1]),
+                ),
+                put_rsi_range=(
+                    params.get('put_rsi_low', self.signal.put_rsi_range[0]),
+                    params.get('put_rsi_high', self.signal.put_rsi_range[1]),
+                ),
+            )
+            exit_ = ExitConfig(
+                call_target=params.get('call_target', self.exit.call_target),
+                put_target=params.get('put_target', self.exit.put_target),
+                call_time_stop=params.get('call_time_stop', self.exit.call_time_stop),
+                put_time_stop=params.get('put_time_stop', self.exit.put_time_stop),
+            )
+
+            validator = WalkForwardValidator(
+                risk_config=self.risk,
+                exit_config=exit_,
+                signal_config=sig,
+                strat_config=self.strat,
+                backtest_config=self.bt_config,
+                indicator_config=self.ind_config,
+                walk_forward_config=self.wf_config,
+                train_months=self.train_months,
+                test_months=self.test_months,
+            )
+            wf = validator.run(df, use_strat=use_strat, close_col=close_col)
+            agg = wf.aggregate_metrics
+
+            row = dict(params)
+            row['stability_score'] = wf.stability_score
+            row['avg_expectancy_pct'] = agg.get('avg_expectancy_pct', 0.0)
+            row['avg_win_rate'] = agg.get('avg_win_rate', 0.0)
+            row['std_expectancy_pct'] = agg.get('std_expectancy_pct', 0.0)
+            row['total_folds'] = int(agg.get('total_folds', 0))
+            row['total_trades'] = int(agg.get('total_trades_all_folds', 0))
+            rows.append(row)
+
+        return pd.DataFrame(rows)
+
     def _aggregate_metrics(self, fold_results: List[BacktestResult]) -> Dict[str, float]:
         """Average metrics across all folds."""
         if not fold_results:

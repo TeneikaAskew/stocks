@@ -148,3 +148,48 @@ class TestParameterSensitivity:
         assert len(results_df) == 2
         assert 'consecutive_periods' in results_df.columns
         assert 'expectancy_pct' in results_df.columns
+
+
+class TestWalkForwardSweep:
+    """lib/walk_forward.py:WalkForwardValidator.walk_forward_sweep — the
+    per-combo walk-forward used by the ETF calibration sweep."""
+
+    def test_sweep_shape(self, long_data):
+        """One row per combo, with the param values and the WF aggregate
+        metrics the calibration sweep ranks on."""
+        validator = WalkForwardValidator(
+            signal_config=SignalConfig(min_conditions=2),
+            train_months=2,
+            test_months=1,
+        )
+        param_grid = {
+            'consecutive_periods': [2, 3],
+            'call_target': [0.0030, 0.0035],
+        }
+        df = validator.walk_forward_sweep(long_data, param_grid, close_col='Close')
+        assert isinstance(df, pd.DataFrame)
+        # 2 x 2 grid -> 4 combos.
+        assert len(df) == 4
+        # Param values echoed back.
+        assert 'consecutive_periods' in df.columns
+        assert 'call_target' in df.columns
+        # Walk-forward aggregate metrics present for every row.
+        for col in ('stability_score', 'avg_expectancy_pct', 'avg_win_rate',
+                    'std_expectancy_pct', 'total_folds', 'total_trades'):
+            assert col in df.columns
+        # stability_score is a fraction-of-profitable-folds in [0, 1].
+        assert ((df['stability_score'] >= 0.0)
+                & (df['stability_score'] <= 1.0)).all()
+
+    def test_sweep_single_combo(self, long_data):
+        """A 1-combo grid still returns a well-formed 1-row frame."""
+        validator = WalkForwardValidator(
+            signal_config=SignalConfig(min_conditions=2),
+            train_months=2,
+            test_months=1,
+        )
+        df = validator.walk_forward_sweep(
+            long_data, {'consecutive_periods': [3]}, close_col='Close',
+        )
+        assert len(df) == 1
+        assert df.iloc[0]['consecutive_periods'] == 3

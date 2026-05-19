@@ -31,7 +31,7 @@ def test_table_definition_present():
     assert "CREATE TABLE IF NOT EXISTS exit_config_overrides" in sql
     # Must mention every column the resolver module will read.
     for col in ("call_target", "put_target", "call_stop", "put_stop",
-                "call_time_stop", "put_time_stop",
+                "call_time_stop", "put_time_stop", "consecutive_periods",
                 "disabled_conditions", "calibration_date", "ticker"):
         assert col in sql, f"missing {col} in exit_config_overrides DDL"
 

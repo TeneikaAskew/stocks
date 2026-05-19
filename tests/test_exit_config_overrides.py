@@ -18,9 +18,10 @@ from unittest.mock import patch
 import pytest
 
 from lib.strategies import exit_config_overrides as eco
-from lib.config import ExitConfig
+from lib.config import ExitConfig, SignalConfig
 
 DEFAULTS = ExitConfig()
+SIGNAL_DEFAULTS = SignalConfig()
 
 
 @pytest.fixture(autouse=True)
@@ -58,6 +59,7 @@ def _row(**overrides) -> dict:
         "call_target": 0.00301, "put_target": 0.00238,
         "call_stop": 0.00075, "put_stop": 0.00075,
         "call_time_stop": 20, "put_time_stop": 25,
+        "consecutive_periods": 3,
         "disabled_conditions": None,
         "blue_sky_atr_offset": None,
         "notes": "test",
@@ -230,3 +232,43 @@ class TestLatestOverridesFallsBackOnDbError:
         monkeypatch.setattr('gcp.database.get_engine', _no_creds)
         assert eco._latest_overrides('SPY') is None
         assert eco.get_put_target('SPY') == DEFAULTS.put_target
+
+
+# ── consecutive_periods (walk-forward calibration knob) ──────────────
+# Unlike the target/stop knobs, Tier-B for consecutive_periods is the
+# SignalConfig default, not ExitConfig.
+
+
+def test_consecutive_periods_tier_a_hit():
+    with patch.object(eco, "_latest_overrides",
+                      return_value=_row(consecutive_periods=4)):
+        assert eco.get_consecutive_periods("QQQ") == 4
+
+
+def test_consecutive_periods_no_row_falls_back():
+    with patch.object(eco, "_latest_overrides", return_value=None):
+        assert (eco.get_consecutive_periods("X")
+                == SIGNAL_DEFAULTS.consecutive_periods)
+
+
+def test_consecutive_periods_null_falls_back():
+    with patch.object(eco, "_latest_overrides",
+                      return_value=_row(consecutive_periods=None)):
+        assert (eco.get_consecutive_periods("QQQ")
+                == SIGNAL_DEFAULTS.consecutive_periods)
+
+
+def test_consecutive_periods_zero_falls_back():
+    """0 is nonsense for a consecutive-bar window — treat as missing."""
+    with patch.object(eco, "_latest_overrides",
+                      return_value=_row(consecutive_periods=0)):
+        assert (eco.get_consecutive_periods("QQQ")
+                == SIGNAL_DEFAULTS.consecutive_periods)
+
+
+def test_consecutive_periods_resolution_tier():
+    with patch.object(eco, "_latest_overrides",
+                      return_value=_row(consecutive_periods=4)):
+        assert eco.get_resolution_tier("QQQ", "consecutive_periods") == "A"
+    with patch.object(eco, "_latest_overrides", return_value=None):
+        assert eco.get_resolution_tier("QQQ", "consecutive_periods") == "B"
