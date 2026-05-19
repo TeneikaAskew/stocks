@@ -31,6 +31,7 @@ import argparse
 import logging
 import sys
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -49,6 +50,13 @@ logging.basicConfig(
 log = logging.getLogger("param-sweep")
 
 DEFAULT_TICKERS = ["SPY", "IWM", "QQQ"]
+
+# The sweep loads 1-minute bars for the walk-forward window. The full
+# market_data_intraday history is ~2.3M rows/ticker (11+ years back to
+# 2015) — far more than calibration needs, and enough to OOM the job
+# loading it all. Default to a bounded recent window; --start overrides.
+# ~2 trading years is plenty of folds and reflects the current regime.
+DEFAULT_SWEEP_LOOKBACK_DAYS = 730
 
 # Deep grid: four exit params + consecutive_periods. 3^5 = 243 combos.
 PARAM_GRID = {
@@ -215,7 +223,10 @@ def main() -> None:
         description="Walk-forward parameter calibration sweep")
     parser.add_argument("--tickers", default=",".join(DEFAULT_TICKERS),
                         help="Comma-separated tickers (default SPY,IWM,QQQ)")
-    parser.add_argument("--start", type=str, help="Start date YYYY-MM-DD")
+    parser.add_argument("--start", type=str,
+                        help="Start date YYYY-MM-DD (default: "
+                             f"{DEFAULT_SWEEP_LOOKBACK_DAYS}d ago — bounds the "
+                             "1-min load for memory + recent-regime calibration)")
     parser.add_argument("--end", type=str, help="End date YYYY-MM-DD")
     parser.add_argument("--use-strat", dest="use_strat", action="store_true",
                         default=True, help="Enable Strat scoring (default on)")
@@ -230,13 +241,17 @@ def main() -> None:
 
     run_id = args.run_id or str(uuid.uuid4())
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    log.info("param sweep run_id=%s tickers=%s apply=%s",
-             run_id, tickers, args.apply)
+    start = args.start
+    if start is None:
+        start = (date.today()
+                 - timedelta(days=DEFAULT_SWEEP_LOOKBACK_DAYS)).isoformat()
+    log.info("param sweep run_id=%s tickers=%s start=%s end=%s apply=%s",
+             run_id, tickers, start, args.end or "latest", args.apply)
 
     failures = 0
     for ticker in tickers:
         try:
-            sweep_ticker(ticker, args.start, args.end, args.use_strat,
+            sweep_ticker(ticker, start, args.end, args.use_strat,
                          run_id, args.apply)
         except Exception:
             failures += 1
