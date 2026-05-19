@@ -1510,6 +1510,35 @@ deploy_calibrate_thresholds() {
 }
 
 
+# ── Walk-forward parameter calibration sweep (on-demand Cloud Run Job) ────────
+# Sweeps the four exit params (call/put target, call/put time-stop) per
+# ticker with walk-forward validation, then auto-applies the winning
+# combo to exit_config_overrides. Sibling to calibrate-thresholds.
+#
+# On-demand only (no Cloud Scheduler entry — run when you want a fresh
+# calibration): `gcloud run jobs execute param-sweep --region us-east1`.
+# Loops SPY/IWM/QQQ sequentially; --max-retries 0 so a partial failure
+# does not silently re-run and double-write exit_config_overrides.
+deploy_param_sweep() {
+    echo "Deploying param-sweep job..."
+    gcloud run jobs create param-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 28800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.run_param_sweep" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update param-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 28800 \
+        --command "python,-m,scripts.run_param_sweep" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
 # ── Failure notifier (Cloud Run Service) ─────────────────────────────────────
 # Receives Cloud Logging entries about failed Cloud Run Jobs via Pub/Sub push
 # and fans out to (1) Discord webhook and (2) GitHub issue create/update.
@@ -2246,6 +2275,7 @@ case "${1:-help}" in
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
+    param-sweep)  build_image && deploy_param_sweep ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     signal-replay) build_image && deploy_signal_replay ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
@@ -2325,6 +2355,10 @@ case "${1:-help}" in
         echo "             Deploy signal-replay job (re-posts stored signal_alerts"
         echo "             to the signals channel for a date + ET time block;"
         echo "             backs the /replay-signals slash command)."
+        echo "  param-sweep"
+        echo "             Deploy param-sweep job — walk-forward calibration of the"
+        echo "             four exit params, auto-applied to exit_config_overrides."
+        echo "             On-demand: gcloud run jobs execute param-sweep."
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac
