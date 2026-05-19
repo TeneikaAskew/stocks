@@ -71,14 +71,22 @@ def fetch_reactions_for_backtest(min_nq: int = 12) -> pd.DataFrame:
     return df
 
 
-def _reactions_stats_from_past(past: pd.DataFrame) -> dict | None:
+def _reactions_stats_from_past(
+    past: pd.DataFrame, lookback: int | None = None,
+) -> dict | None:
     """Compute archetype/score inputs from a ticker's PAST reaction rows.
 
     Mirrors lib.earnings_reactions.query_reaction_stats but in-memory,
     walk-forward — only uses rows strictly before the target reported_date.
+
+    When `lookback` is given (> 0), only the most recent `lookback` past
+    rows are used — a bounded window rather than all history. This is one
+    of the two knobs the earnings calibration sweep tunes.
     """
     if past.empty:
         return None
+    if lookback is not None and lookback > 0:
+        past = past.tail(lookback)
     gaps = past['reaction_gap_pct'].dropna()
     if gaps.empty:
         return None
@@ -116,8 +124,45 @@ def hit_for_archetype(archetype: str | None,
     return None  # 'quiet' or unknown
 
 
-def run_backtest(min_nq: int) -> pd.DataFrame:
-    """Walk forward, return DataFrame of predictions with hit flags."""
+def compute_quintile_spread(predictions: pd.DataFrame) -> dict:
+    """Reduce a run_backtest() predictions frame to the calibration
+    sweep's ranking metrics.
+
+    Returns {n_predictions, overall_hit_rate, quintile_spread}, where
+    quintile_spread is the hit-rate of the highest-score quintile minus
+    the lowest. A high spread means the playability score orders
+    earnings plays in a way that tracks real outcomes — the property
+    the sweep maximises. Zeros on an empty/degenerate frame.
+    """
+    zero = {'n_predictions': 0, 'overall_hit_rate': 0.0, 'quintile_spread': 0.0}
+    if predictions is None or predictions.empty:
+        return zero
+    df = predictions.dropna(subset=['hit', 'score']).copy()
+    if df.empty:
+        return zero
+    df['hit'] = df['hit'].astype(bool)
+    df['score'] = df['score'].astype(float)
+    n = len(df)
+    overall = float(df['hit'].mean())
+    spread = 0.0
+    if df['score'].nunique() >= 5:
+        try:
+            df['q'] = pd.qcut(df['score'], q=5, labels=False, duplicates='drop')
+            by_q = df.groupby('q')['hit'].mean().sort_index()
+            spread = float(by_q.iloc[-1] - by_q.iloc[0])
+        except (ValueError, IndexError):
+            spread = 0.0
+    return {'n_predictions': n, 'overall_hit_rate': overall,
+            'quintile_spread': spread}
+
+
+def run_backtest(min_nq: int, lookback: int | None = None) -> pd.DataFrame:
+    """Walk forward, return DataFrame of predictions with hit flags.
+
+    `lookback` caps how many recent past quarters feed each prediction's
+    stats (None / 0 = all history). It and `min_nq` are the two knobs
+    the earnings calibration sweep tunes.
+    """
     log.info("Fetching earnings_reactions for backtest…")
     all_reactions = fetch_reactions_for_backtest()
     log.info("  loaded %d rows across %d tickers",
@@ -146,7 +191,7 @@ def run_backtest(min_nq: int) -> pd.DataFrame:
                 skipped_low_nq += 1
                 continue
 
-            stats = _reactions_stats_from_past(past)
+            stats = _reactions_stats_from_past(past, lookback)
             if stats is None:
                 continue
 
@@ -327,6 +372,9 @@ def main():
     parser.add_argument('--min-nq', type=int, default=12,
                         help="Minimum quarters of past history required to "
                              "score a prediction (default: 12, matches brief).")
+    parser.add_argument('--lookback', type=int, default=0,
+                        help="Cap recent past quarters per prediction "
+                             "(0 = use all history; default: 0).")
     parser.add_argument('--output', type=str, default='BACKTEST_PLAYABILITY_RESULTS.md',
                         help="Output report path (default: BACKTEST_PLAYABILITY_RESULTS.md)")
     args = parser.parse_args()
@@ -335,7 +383,7 @@ def main():
     if not output.is_absolute():
         output = Path(__file__).resolve().parent.parent / output
 
-    df = run_backtest(min_nq=args.min_nq)
+    df = run_backtest(min_nq=args.min_nq, lookback=(args.lookback or None))
     write_report(df, output, args.min_nq)
     print(f"\nReport written to: {output}\n")
 

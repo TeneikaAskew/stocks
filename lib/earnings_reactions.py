@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import math
 import os
+from functools import lru_cache
 from typing import Optional
 
 
@@ -72,6 +73,75 @@ DEFAULT_LOOKBACK_QUARTERS = _env_int('BRIEF_REACTION_LOOKBACK_QUARTERS', 12)
 DEFAULT_GAP_BAND_PCT      = _env_float('BRIEF_CONDITIONAL_GAP_BAND_PCT', 2.0)
 DEFAULT_CONDITIONAL_THRESHOLD = _env_float('BRIEF_CONDITIONAL_THRESHOLD', 0.75)
 DEFAULT_CONDITIONAL_MIN_SAMPLE = _env_int('BRIEF_CONDITIONAL_MIN_SAMPLE', 3)
+# Min past quarters before a playability read is trusted/shown — the
+# earnings calibration sweep tunes this; Tier-B default here.
+DEFAULT_MIN_NQ = _env_int('BRIEF_REACTION_MIN_NQ', 12)
+
+
+@lru_cache(maxsize=1)
+def get_earnings_calibration() -> dict:
+    """Resolve the playability lookback knobs.
+
+    Tier A: the latest ``earnings_calibration`` row, written by the
+    earnings calibration sweep (``scripts/calibrate_earnings.py``).
+    Tier B: the env-var defaults above. Returns
+    ``{'min_nq': int, 'lookback_quarters': int}``.
+
+    Resilient — missing table / missing creds / empty table all resolve
+    to Tier B so the brief keeps running. Cached per process; the brief
+    runs as a fresh process each time, so it always sees the latest row.
+    """
+    tier_b = {'min_nq': DEFAULT_MIN_NQ,
+              'lookback_quarters': DEFAULT_LOOKBACK_QUARTERS}
+    try:
+        from gcp.database import query_to_dataframe, is_cloud_sql_configured
+    except ImportError:
+        return tier_b
+    if not is_cloud_sql_configured():
+        return tier_b
+    df = query_to_dataframe(
+        "SELECT min_nq, lookback_quarters FROM earnings_calibration "
+        "ORDER BY calibration_date DESC LIMIT 1"
+    )
+    if df is None or df.empty:
+        return tier_b
+    row = df.iloc[0]
+    min_nq = _to_float(row.get('min_nq'))
+    lookback = _to_float(row.get('lookback_quarters'))
+    return {
+        'min_nq': int(min_nq) if min_nq is not None else DEFAULT_MIN_NQ,
+        'lookback_quarters': (int(lookback) if lookback is not None
+                              else DEFAULT_LOOKBACK_QUARTERS),
+    }
+
+
+def select_earnings_winner(
+    results: list,
+    min_predictions: int = 5000,
+    min_quintile_spread: float = 0.0,
+) -> Optional[dict]:
+    """Pick the strategic winner from the earnings sweep's combo results.
+
+    Each result is a dict with min_nq, lookback_quarters, n_predictions,
+    overall_hit_rate, quintile_spread. The winner maximises
+    quintile_spread (the score actually separates strong plays from
+    weak) subject to hard gates:
+      * n_predictions >= min_predictions   — enough out-of-sample sample
+      * quintile_spread > min_quintile_spread
+
+    Returns None when nothing clears the gates — the caller then leaves
+    the current earnings_calibration untouched rather than applying a
+    weak combo. The guardrails are the review, since the sweep
+    auto-applies with no manual step.
+    """
+    eligible = [
+        r for r in results
+        if (r.get('n_predictions') or 0) >= min_predictions
+        and (r.get('quintile_spread') or 0.0) > min_quintile_spread
+    ]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda r: r['quintile_spread'])
 
 
 # ────────────────────────────────────────────────────────────
@@ -410,7 +480,7 @@ def query_conditional_reactions(
     if gap_band_pct is None:
         gap_band_pct = DEFAULT_GAP_BAND_PCT
     if lookback_quarters is None:
-        lookback_quarters = DEFAULT_LOOKBACK_QUARTERS
+        lookback_quarters = get_earnings_calibration()['lookback_quarters']
     try:
         from gcp.database import query_to_dataframe, is_cloud_sql_configured
     except ImportError:
@@ -627,8 +697,10 @@ def enrich_with_playability(
     """
     if not rows:
         return rows
+    cal = get_earnings_calibration()
     if lookback_quarters is None:
-        lookback_quarters = DEFAULT_LOOKBACK_QUARTERS
+        lookback_quarters = cal['lookback_quarters']
+    min_nq = cal['min_nq']
     tickers = sorted({str(r['ticker']) for r in rows if r.get('ticker')})
     stats_map = query_reaction_stats(tickers, lookback_quarters)
     daily_map = query_typical_daily_return(tickers, daily_return_window)
@@ -659,6 +731,10 @@ def enrich_with_playability(
             reversal_rate        = stats.get('reversal_rate'),
         )
         r['playability_n_q'] = stats.get('n_q', 0)
+        # Calibrated min-history gate (earnings_calibration.min_nq):
+        # too few past quarters → the score isn't trustworthy, drop it.
+        if (stats.get('n_q') or 0) < min_nq:
+            r['playability_score'] = None
         # Also expose the underlying inputs so the brief can show them
         r['playability_move_mag_pct']    = stats.get('move_magnitude_pct')
         r['playability_dir_bias_pct']    = stats.get('directional_bias_pct')

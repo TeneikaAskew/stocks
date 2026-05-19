@@ -1539,6 +1539,33 @@ deploy_param_sweep() {
 }
 
 
+# ── Earnings playability calibration sweep (on-demand Cloud Run Job) ──────────
+# Sweeps (min_nq, lookback_quarters) over the playability backtest and
+# auto-applies the best combo to earnings_calibration, which the
+# premarket brief reads. Sibling to param-sweep.
+#
+# On-demand only: `gcloud run jobs execute earnings-sweep --region us-east1`.
+# The sweep is formula-eval over ~21k earnings_reactions rows — light.
+deploy_earnings_sweep() {
+    echo "Deploying earnings-sweep job..."
+    gcloud run jobs create earnings-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.calibrate_earnings" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 1Gi --cpu 1 --max-retries 0 --task-timeout 1800 \
+        --command "python,-m,scripts.calibrate_earnings" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
 # ── Failure notifier (Cloud Run Service) ─────────────────────────────────────
 # Receives Cloud Logging entries about failed Cloud Run Jobs via Pub/Sub push
 # and fans out to (1) Discord webhook and (2) GitHub issue create/update.
@@ -2276,6 +2303,7 @@ case "${1:-help}" in
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
     param-sweep)  build_image && deploy_param_sweep ;;
+    earnings-sweep) build_image && deploy_earnings_sweep ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     signal-replay) build_image && deploy_signal_replay ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
@@ -2359,6 +2387,10 @@ case "${1:-help}" in
         echo "             Deploy param-sweep job — walk-forward calibration of the"
         echo "             four exit params, auto-applied to exit_config_overrides."
         echo "             On-demand: gcloud run jobs execute param-sweep."
+        echo "  earnings-sweep"
+        echo "             Deploy earnings-sweep job — calibration of the"
+        echo "             playability lookback knobs, auto-applied to"
+        echo "             earnings_calibration. On-demand."
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac

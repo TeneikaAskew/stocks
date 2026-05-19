@@ -2503,3 +2503,34 @@ CREATE INDEX IF NOT EXISTS idx_walk_forward_results_run
 
 CREATE INDEX IF NOT EXISTS idx_walk_forward_results_ticker_created
     ON walk_forward_results (ticker, created_at DESC);
+
+-- ─────────────────────────────────────────────────────────
+-- EARNINGS_CALIBRATION: tuned inputs for the playability score
+--
+-- Written by scripts/calibrate_earnings.py — the earnings sweep walks
+-- the playability backtest over a grid of (min_nq, lookback_quarters)
+-- and writes the combo with the best out-of-sample quintile hit-rate
+-- spread here. The premarket brief reads the latest row (Tier A) via
+-- lib/earnings_reactions.py:get_earnings_calibration(), falling back to
+-- the env-var defaults (Tier B) when the table is empty.
+--
+-- Dated rows — latest wins, prior rows kept for audit.
+-- ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS earnings_calibration (
+    calibration_date  DATE             PRIMARY KEY,
+
+    -- Tuned knobs (the sweep's winning combo).
+    min_nq            INTEGER,         -- min past quarters to score
+    lookback_quarters INTEGER,         -- recent-window cap; NULL = all history
+
+    -- Achieved out-of-sample metrics for the winning combo.
+    quintile_spread   DOUBLE PRECISION,  -- Q5 - Q1 hit-rate, 0..1
+    overall_hit_rate  DOUBLE PRECISION,
+    n_predictions     INTEGER,
+
+    notes             TEXT,
+    created_at        TIMESTAMPTZ      NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_calibration_recent
+    ON earnings_calibration (calibration_date DESC);
