@@ -5,7 +5,9 @@ import numpy as np
 import pytest
 from datetime import datetime
 
-from lib.walk_forward import WalkForwardValidator, WalkForwardResult
+from lib.walk_forward import (
+    WalkForwardValidator, WalkForwardResult, select_calibration_winner,
+)
 from lib.backtest import BacktestResult
 from lib.config import RiskConfig, ExitConfig, SignalConfig, StratConfig
 
@@ -193,3 +195,64 @@ class TestWalkForwardSweep:
         )
         assert len(df) == 1
         assert df.iloc[0]['consecutive_periods'] == 3
+
+
+class TestSelectCalibrationWinner:
+    """lib/walk_forward.py:select_calibration_winner — the strategic
+    auto-apply gate. Pure function; build frames directly."""
+
+    def _frame(self, rows):
+        return pd.DataFrame(rows)
+
+    def test_picks_highest_expectancy_among_gated(self):
+        df = self._frame([
+            # clears gates, lower expectancy
+            {'call_target': 0.0030, 'stability_score': 0.8,
+             'avg_expectancy_pct': 0.0010, 'total_trades': 100},
+            # clears gates, highest expectancy -> winner
+            {'call_target': 0.0035, 'stability_score': 0.7,
+             'avg_expectancy_pct': 0.0025, 'total_trades': 80},
+        ])
+        winner = select_calibration_winner(df)
+        assert winner is not None
+        assert winner['call_target'] == 0.0035
+
+    def test_none_when_stability_too_low(self):
+        df = self._frame([
+            {'call_target': 0.0030, 'stability_score': 0.4,
+             'avg_expectancy_pct': 0.0025, 'total_trades': 100},
+        ])
+        assert select_calibration_winner(df) is None
+
+    def test_none_when_expectancy_not_positive(self):
+        df = self._frame([
+            {'call_target': 0.0030, 'stability_score': 0.9,
+             'avg_expectancy_pct': -0.0001, 'total_trades': 100},
+        ])
+        assert select_calibration_winner(df) is None
+
+    def test_none_when_too_few_trades(self):
+        df = self._frame([
+            {'call_target': 0.0030, 'stability_score': 0.9,
+             'avg_expectancy_pct': 0.0025, 'total_trades': 12},
+        ])
+        assert select_calibration_winner(df) is None
+
+    def test_none_on_empty_frame(self):
+        assert select_calibration_winner(pd.DataFrame()) is None
+        assert select_calibration_winner(None) is None
+
+    def test_weak_combo_excluded_strong_combo_wins(self):
+        """A frame mixing failing and passing combos returns the best
+        *passing* one, not the global-max-expectancy row."""
+        df = self._frame([
+            # highest expectancy overall but fails the stability gate
+            {'call_target': 0.0040, 'stability_score': 0.2,
+             'avg_expectancy_pct': 0.0090, 'total_trades': 100},
+            # the best combo that actually clears every gate
+            {'call_target': 0.0032, 'stability_score': 0.75,
+             'avg_expectancy_pct': 0.0018, 'total_trades': 60},
+        ])
+        winner = select_calibration_winner(df)
+        assert winner is not None
+        assert winner['call_target'] == 0.0032

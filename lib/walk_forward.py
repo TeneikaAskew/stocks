@@ -339,3 +339,36 @@ class WalkForwardValidator:
             1 for r in fold_results if r.expectancy > 0
         )
         return profitable_folds / len(fold_results)
+
+
+def select_calibration_winner(
+    sweep_df: pd.DataFrame,
+    min_stability: float = 0.6,
+    min_avg_expectancy: float = 0.0,
+    min_total_trades: int = 40,
+) -> Optional[dict]:
+    """Pick the strategic winner from a `walk_forward_sweep()` result frame.
+
+    The ETF calibration sweep auto-applies its winner, so the guardrails
+    *are* the review: a combo is eligible only if it clears all three
+    hard gates —
+
+      * stability_score >= min_stability   (profitable in most folds)
+      * avg_expectancy_pct > min_avg_expectancy  (positive out-of-sample)
+      * total_trades >= min_total_trades   (enough sample to trust)
+
+    Among the survivors the highest `avg_expectancy_pct` wins. Returns
+    None when no combo clears the gates — the caller then leaves the
+    ticker's existing params untouched rather than applying a weak or
+    overfit combo.
+    """
+    if sweep_df is None or sweep_df.empty:
+        return None
+    gated = sweep_df[
+        (sweep_df['stability_score'] >= min_stability)
+        & (sweep_df['avg_expectancy_pct'] > min_avg_expectancy)
+        & (sweep_df['total_trades'] >= min_total_trades)
+    ]
+    if gated.empty:
+        return None
+    return gated.loc[gated['avg_expectancy_pct'].idxmax()].to_dict()
