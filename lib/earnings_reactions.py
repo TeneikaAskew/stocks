@@ -34,10 +34,13 @@ Tunable knobs (env vars, defaults match the values locked in Phase 0.5):
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
 from functools import lru_cache
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────────────────────
@@ -99,10 +102,18 @@ def get_earnings_calibration() -> dict:
         return tier_b
     if not is_cloud_sql_configured():
         return tier_b
-    df = query_to_dataframe(
-        "SELECT min_nq, lookback_quarters FROM earnings_calibration "
-        "ORDER BY calibration_date DESC LIMIT 1"
-    )
+    try:
+        df = query_to_dataframe(
+            "SELECT min_nq, lookback_quarters FROM earnings_calibration "
+            "ORDER BY calibration_date DESC LIMIT 1"
+        )
+    except Exception as e:
+        # Config resolver (not a financial-data path): any query failure
+        # — missing table, creds, transient error — resolves to Tier-B.
+        # Mirrors lib/strategies/exit_config_overrides._latest_overrides.
+        log.warning("earnings_calibration query failed (%s) — Tier-B",
+                    type(e).__name__)
+        return tier_b
     if df is None or df.empty:
         return tier_b
     row = df.iloc[0]
