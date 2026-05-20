@@ -1521,9 +1521,15 @@ deploy_calibrate_thresholds() {
 # does not silently re-run and double-write exit_config_overrides.
 deploy_param_sweep() {
     echo "Deploying param-sweep job..."
+    # --tasks 3 / --parallelism 3 fan-out one ticker per task (SPY/IWM/QQQ
+    # via stride sharding on CLOUD_RUN_TASK_INDEX in run_param_sweep.py).
+    # Sequential was ~3.5h/ticker × 3 = 10.5h (blew the 8h timeout);
+    # parallel = ~3.5h wall-clock. --task-timeout is per-task, so 6h is
+    # ample for the one-ticker workload each task handles.
     gcloud run jobs create param-sweep \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 28800 \
+        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 21600 \
+        --tasks 3 --parallelism 3 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.run_param_sweep" \
         ${DB_SECRET_FLAG} \
@@ -1531,7 +1537,8 @@ deploy_param_sweep() {
         --quiet 2>/dev/null || \
     gcloud run jobs update param-sweep \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 28800 \
+        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 21600 \
+        --tasks 3 --parallelism 3 \
         --command "python,-m,scripts.run_param_sweep" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \

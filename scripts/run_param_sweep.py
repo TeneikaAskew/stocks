@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import uuid
 from datetime import date, timedelta
@@ -239,17 +240,41 @@ def main() -> None:
                         help="Shared run UUID (one is generated if omitted)")
     args = parser.parse_args()
 
-    run_id = args.run_id or str(uuid.uuid4())
+    run_id = args.run_id
+    if run_id is None:
+        # Under Cloud Run parallel tasks, all tasks share the same execution
+        # name — derive a deterministic run_id from it so per-ticker tasks
+        # group as one batch in walk_forward_results. Locally / outside Cloud
+        # Run, fall back to a fresh UUID.
+        exec_name = os.environ.get("CLOUD_RUN_EXECUTION", "")
+        if exec_name:
+            run_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                    f"cloud-run-execution://{exec_name}"))
+        else:
+            run_id = str(uuid.uuid4())
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
+
+    # Cloud Run Jobs parallel-task sharding: one ticker per task. Stride
+    # sharding works for any (tickers, task_count) — empty assignments are
+    # a clean no-op.
+    task_idx = int(os.environ.get("CLOUD_RUN_TASK_INDEX", "0"))
+    task_count = int(os.environ.get("CLOUD_RUN_TASK_COUNT", "1"))
+    assigned = tickers[task_idx::task_count] if task_count > 1 else tickers
+
     start = args.start
     if start is None:
         start = (date.today()
                  - timedelta(days=DEFAULT_SWEEP_LOOKBACK_DAYS)).isoformat()
-    log.info("param sweep run_id=%s tickers=%s start=%s end=%s apply=%s",
-             run_id, tickers, start, args.end or "latest", args.apply)
+    log.info("param sweep run_id=%s task=%d/%d tickers=%s start=%s end=%s apply=%s",
+             run_id, task_idx, task_count, assigned, start,
+             args.end or "latest", args.apply)
+    if not assigned:
+        log.info("task %d/%d: no tickers assigned — exiting cleanly",
+                 task_idx, task_count)
+        return
 
     failures = 0
-    for ticker in tickers:
+    for ticker in assigned:
         try:
             sweep_ticker(ticker, start, args.end, args.use_strat,
                          run_id, args.apply)
@@ -257,9 +282,9 @@ def main() -> None:
             failures += 1
             log.exception("[%s] sweep failed — continuing", ticker)
 
-    log.info("param sweep complete (run_id=%s, %d/%d tickers failed)",
-             run_id, failures, len(tickers))
-    sys.exit(1 if failures == len(tickers) and tickers else 0)
+    log.info("param sweep task %d/%d complete (run_id=%s, %d/%d tickers failed)",
+             task_idx, task_count, run_id, failures, len(assigned))
+    sys.exit(1 if failures == len(assigned) and assigned else 0)
 
 
 if __name__ == "__main__":
