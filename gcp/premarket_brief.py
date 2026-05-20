@@ -437,6 +437,7 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     # The two lists are mutually exclusive — a ticker is in exactly one.
     # Daily mode only; weekly preview keeps the broader pre-split view.
     watchlist: list[dict] = []
+    low_conviction: list[dict] = []
     if mode == 'daily' and os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '') != '1':
         min_nq = int(os.environ.get('BRIEF_MIN_REACTION_QUARTERS', '12'))
         wl_min_oi  = int(os.environ.get('BRIEF_WATCHLIST_MIN_OI',  '50000'))
@@ -457,18 +458,34 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
             before_n, len(earnings), min_nq, len(watchlist), wl_min_oi, wl_min_vol,
         )
 
-        # Drop Q1 (SKIP) names from Track A — below-baseline conviction
-        # (34.8% hit rate per backtest) doesn't deserve a row in the brief.
+        # Route Q1 (SKIP) names to a separate `low_conviction` list
+        # instead of dropping them entirely. Q1-scoring names are quiet
+        # on earnings (e.g. HD averages 2.2% post-earnings moves) and
+        # genuinely don't warrant a full playability row, but silently
+        # dropping them hides whole-slate visibility — on a thin Monday
+        # the brief collapsed to 2 rows with no trace of the other 5
+        # gate-survivors, and on a normal day mega-caps like HD/XP/TOL
+        # vanish without a trace. The embed renders these as a compact
+        # `⤷ Also reporting (lower conviction): TICK, TICK, …` line per
+        # bucket so the full slate is always visible without giving
+        # below-baseline conviction names a full row each.
         try:
             from lib.earnings_reactions import score_quintile
-            before_a = len(earnings)
-            earnings = [e for e in earnings
-                        if score_quintile(e.get('playability_score')) != 'Q1']
-            if before_a != len(earnings):
-                logger.info("Dropped %d Q1-SKIP names from Track A",
-                            before_a - len(earnings))
+            survivors = []
+            for e in earnings:
+                if score_quintile(e.get('playability_score')) == 'Q1':
+                    low_conviction.append(e)
+                else:
+                    survivors.append(e)
+            earnings = survivors
+            if low_conviction:
+                logger.info(
+                    "Q1 routed to compact line: %d names — %s",
+                    len(low_conviction),
+                    ','.join(e['ticker'] for e in low_conviction),
+                )
         except Exception as exc:
-            logger.warning("Q1 filter skipped: %s", exc)
+            logger.warning("Q1 routing skipped: %s", exc)
 
     # Sort Track A: playability_score DESC primary; OI/vol/mcap fallback.
     earnings.sort(key=lambda r: (
@@ -497,7 +514,8 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
         earnings = earnings[:top_n]
 
     return {'mode': mode, 'start': start, 'end': end,
-            'earnings': earnings, 'watchlist': watchlist}
+            'earnings': earnings, 'watchlist': watchlist,
+            'low_conviction': low_conviction}
 
 # ── Yesterday-AMC reaction view (PR 3) ──────────────────────────────────────
 
@@ -2213,11 +2231,16 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         # a busy AMC day no longer crowds out BMO names. Loader has
         # already filtered to confirmed-only (BRIEF_INCLUDE_UNCONFIRMED
         # disabled), so headers show just the count.
+        # Low-conviction (Q1) names routed by the loader to a compact
+        # `⤷ Also reporting` line per bucket — visible but not given a
+        # full playability row each.
+        low_conv = earnings_data.get('low_conviction') or []
+
         title_date = ''
         d = earnings_data.get('start') or (rows[0].get('date') if rows else None)
         if d and hasattr(d, 'strftime'):
             title_date = f' — {d.strftime("%a %m/%d")}'
-        title = f'Earnings Today{title_date} — {len(rows)}'
+        title = f'Earnings Today{title_date} — {len(rows) + len(low_conv)}'
 
         def _bucket(r):
             t = r.get('time')
@@ -2226,10 +2249,15 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
             return None  # intraday/unknown — dropped (mostly foreign tickers / TNS)
 
         buckets = {'bmo': [], 'amc': []}
+        low_conv_buckets = {'bmo': [], 'amc': []}
         for r in rows:
             b = _bucket(r)
             if b is not None:
                 buckets[b].append(r)
+        for r in low_conv:
+            b = _bucket(r)
+            if b is not None:
+                low_conv_buckets[b].append(r)
 
         # Section order is intentional — most-actionable first:
         #   1. ☀️ BMO — opens in minutes, immediate setup
@@ -2239,22 +2267,31 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         # are dropped (foreign listings / TNS placeholders).
         SECTION_CAP = {'bmo': 10, 'amc': 10}
 
-        def _build_bucket_section(header, bucket, cap):
-            if not bucket:
+        def _build_bucket_section(header, bucket, cap, low_conv_bucket=None):
+            low_conv_bucket = low_conv_bucket or []
+            if not bucket and not low_conv_bucket:
                 return None
-            kept = bucket[:cap]
-            sec_lines = [f'\n**{header}** ({len(bucket)})']
-            sec_lines.extend(_row_line(r) for r in kept)
-            if len(bucket) > cap:
-                sec_lines.append(f'_+{len(bucket) - cap} more_')
-            sec_lines.extend(_playability_lines(bucket, top_n=5))
+            total = len(bucket) + len(low_conv_bucket)
+            sec_lines = [f'\n**{header}** ({total})']
+            if bucket:
+                kept = bucket[:cap]
+                sec_lines.extend(_row_line(r) for r in kept)
+                if len(bucket) > cap:
+                    sec_lines.append(f'_+{len(bucket) - cap} more_')
+                sec_lines.extend(_playability_lines(bucket, top_n=5))
+            if low_conv_bucket:
+                tickers = ', '.join(r['ticker'] for r in low_conv_bucket)
+                sec_lines.append(
+                    f'  ⤷ _Also reporting (lower conviction): {tickers}_'
+                )
             return '\n'.join(sec_lines)
 
         sections = []
 
         # 1. BMO
         bmo = _build_bucket_section('☀️ Reporting Before Open',
-                                     buckets['bmo'], SECTION_CAP['bmo'])
+                                     buckets['bmo'], SECTION_CAP['bmo'],
+                                     low_conv_buckets['bmo'])
         if bmo:
             sections.append(bmo)
 
@@ -2286,7 +2323,8 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
 
         # 3. Tonight's AMC — reports after today's close
         amc = _build_bucket_section('\U0001f319 Reporting After Close',
-                                     buckets['amc'], SECTION_CAP['amc'])
+                                     buckets['amc'], SECTION_CAP['amc'],
+                                     low_conv_buckets['amc'])
         if amc:
             sections.append(amc)
 
