@@ -2540,7 +2540,7 @@ def _build_playbook_embed(brief: dict) -> dict:
 def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
     """Format brief as a list of (channel_kind, payload) tuples.
 
-    Returns 1-3 messages, each tagged with the webhook channel it
+    Returns 1-4 messages, each tagged with the webhook channel it
     should post to:
 
       ('main', overview + ticker_analysis + playbook)   — analytics
@@ -2568,10 +2568,17 @@ def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
         'color': overview.get('color', 0x3498db),
     }
 
-    # ── Main channel — analytics ────────────────────────────────────
-    main_msg = [overview, ticker_embed]
+    # ── Main channel — analytics (overview + ticker analysis) ──────
+    analytics_msg = [overview, ticker_embed]
+
+    # ── Main channel — Strat Playbook (separate message so it doesn't
+    # share the analytics char budget — historically the playbook was
+    # dropped on most runs because overview+ticker already filled the
+    # 6000-char per-message cap. Same split-for-budget pattern the
+    # macro calendar already uses below.) ────────────────────────────
+    playbook_msg = []
     if playbook.get('fields'):
-        main_msg.append(playbook)
+        playbook_msg.append(playbook)
 
     # ── Earnings channel — company earnings ─────────────────────────
     earnings_msg = []
@@ -2585,7 +2592,8 @@ def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
         calendar_msg.append(calendar)
 
     output: list[tuple[str, dict]] = []
-    for kind, embeds in [('main', main_msg),
+    for kind, embeds in [('main', analytics_msg),
+                         ('main', playbook_msg),
                          ('earnings', earnings_msg),
                          ('main', calendar_msg)]:
         # Per-message truncation
