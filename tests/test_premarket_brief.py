@@ -2501,3 +2501,140 @@ class TestWhispersSection:
         assert 'Reactions to Last Night' not in embed['description']
 
 
+
+
+# ── Compact "Also reporting (lower conviction)" line ─────────────────────
+# Q1-scoring names (HD, XP, etc. — quiet on earnings) used to be silently
+# dropped from the brief. They now route to `low_conviction` and render as
+# a compact `⤷ Also reporting` line per bucket so the full slate is visible.
+
+
+def _q2_row(ticker, time_):
+    """Fully-formed Track A row used for the embed's detailed playability
+    sub-section. Numbers are arbitrary; the test only inspects rendering."""
+    return {
+        'ticker': ticker, 'date': date(2026, 5, 19), 'company_name': ticker,
+        'time': time_, 'expected_move': 2.0, 'sector': 'Tech', 'market_cap': 1e10,
+        'stock_volume': 1_000_000, 'options_volume': 5000, 'open_interest': 50_000,
+        'rv_1d_last_12q': 5.0, 'strategy': '', 'strike': None, 'premium': None,
+        'score': None, 'source': 'unusual_whales',
+        'sources': ['alphavantage', 'unusual_whales'], 'tier': 2,
+        'gap_pct': None, 'pre_high': None, 'pre_low': None,
+        'ew_strike_verdict': None, 'ew_strike_move_pct': None,
+        'ew_minutes_to_hit': None, 'ew_minutes_in_zone': None,
+        'ew_day_change_pct': None,
+        'playability_score': 25.0,           # Q3 — gets a full row
+        'playability_archetype': 'mixed',
+        'playability_n_q': 12,
+        'playability_move_mag_pct': 5.0, 'playability_dir_bias_pct': 0.5,
+        'playability_dir_consistency': 0.6, 'playability_reversal_rate': 0.3,
+        'playability_typical_daily': 1.2,
+    }
+
+
+def _q1_row(ticker, time_):
+    """Track A row with a Q1-score — currently dropped, now routed to
+    the compact line."""
+    r = _q2_row(ticker, time_)
+    r['playability_score'] = 8.0   # < 15.7 → Q1
+    return r
+
+
+def test_low_conviction_renders_compact_line_per_bucket():
+    """Q1 names appear as `⤷ Also reporting (lower conviction): T1, T2`
+    under their bucket — visible without a full row each."""
+    from gcp.premarket_brief import _build_earnings_embed
+    embed = _build_earnings_embed({
+        'mode': 'daily',
+        'start': date(2026, 5, 19), 'end': date(2026, 5, 19),
+        'earnings': [_q2_row('BILI', 'premarket'), _q2_row('KEYS', 'postmarket')],
+        'watchlist': [],
+        'low_conviction': [
+            _q1_row('HD', 'premarket'), _q1_row('CAN', 'premarket'),
+            _q1_row('XP', 'postmarket'),
+        ],
+    })
+    desc = embed.get('description', '')
+    # BMO bucket — detail row for BILI + compact line listing HD, CAN
+    assert 'BILI' in desc
+    assert 'Also reporting (lower conviction): HD, CAN' in desc
+    # AMC bucket — detail row for KEYS + compact line listing XP
+    assert 'KEYS' in desc
+    assert 'Also reporting (lower conviction): XP' in desc
+
+
+def test_low_conviction_included_in_title_and_section_counts():
+    """The title count and per-section `(N)` reflect all earnings shown
+    (full rows + compact line), not just the full-row subset."""
+    from gcp.premarket_brief import _build_earnings_embed
+    embed = _build_earnings_embed({
+        'mode': 'daily',
+        'start': date(2026, 5, 19), 'end': date(2026, 5, 19),
+        'earnings': [_q2_row('BILI', 'premarket')],
+        'watchlist': [],
+        'low_conviction': [
+            _q1_row('HD', 'premarket'), _q1_row('XP', 'postmarket'),
+        ],
+    })
+    # Title: 1 full + 2 low-conviction = 3 total
+    assert '— 3' in embed['title']
+    desc = embed['description']
+    # BMO section header reflects 1 full + 1 low-conv = 2
+    assert 'Reporting Before Open** (2)' in desc
+    # AMC section: 0 full + 1 low-conv = 1 — still renders so XP is visible
+    assert 'Reporting After Close** (1)' in desc
+    assert 'XP' in desc
+
+
+def test_loader_routes_q1_to_low_conviction_not_dropped(mock_cloud_sql,
+                                                        monkeypatch):
+    """The Q1 filter no longer drops names — it routes them into
+    `low_conviction`. Regression guard: HD shouldn't vanish."""
+    monkeypatch.delenv('BRIEF_INCLUDE_UNCONFIRMED', raising=False)
+    install, _ = mock_cloud_sql
+    # One row that passes the AV∩UW gate (sources = both, OI/vol present)
+    install(pd.DataFrame([
+        {'ticker': 'HD', 'earnings_date': date(2026, 5, 19),
+         'company_name': 'Home Depot', 'earnings_time': 'premarket',
+         'eps_estimate': 4.0, 'eps_actual': None, 'eps_surprise_pct': None,
+         'expected_move': 2.0, 'sector': 'Retail', 'market_cap': 4e11,
+         'stock_volume': 5_000_000, 'options_volume': 34146,
+         'open_interest': 281647, 'rv_1d_last_12q': 2.2,
+         'strategy': '', 'strike': None, 'premium': None, 'score': None,
+         'data_source': 'alphavantage',
+         'ew_strike_verdict': None, 'ew_strike_move_pct': None,
+         'ew_minutes_to_hit': None, 'ew_minutes_in_zone': None,
+         'ew_day_change_pct': None,
+         'gap_pct': None, 'pre_high': None, 'pre_low': None},
+        {'ticker': 'HD', 'earnings_date': date(2026, 5, 19),
+         'company_name': 'Home Depot', 'earnings_time': 'premarket',
+         'eps_estimate': 4.0, 'eps_actual': None, 'eps_surprise_pct': None,
+         'expected_move': 2.0, 'sector': 'Retail', 'market_cap': 4e11,
+         'stock_volume': 5_000_000, 'options_volume': 34146,
+         'open_interest': 281647, 'rv_1d_last_12q': 2.2,
+         'strategy': '', 'strike': None, 'premium': None, 'score': None,
+         'data_source': 'unusual_whales',
+         'ew_strike_verdict': None, 'ew_strike_move_pct': None,
+         'ew_minutes_to_hit': None, 'ew_minutes_in_zone': None,
+         'ew_day_change_pct': None,
+         'gap_pct': None, 'pre_high': None, 'pre_low': None},
+    ]))
+    # Stub enrichment to stamp a Q1 score on HD so it hits the routing
+    from gcp import premarket_brief as pb
+    def _fake_enrich(rows):
+        for r in rows:
+            r['playability_score'] = 8.0   # Q1 — below 15.7 cutoff
+            r['playability_n_q'] = 12
+            r['playability_archetype'] = 'mixed'
+            r['playability_move_mag_pct'] = 2.2
+            r['playability_dir_consistency'] = 0.33
+            r['playability_reversal_rate'] = 0.67
+    monkeypatch.setattr(
+        'lib.earnings_reactions.enrich_with_playability', _fake_enrich
+    )
+
+    result = pb.load_earnings_for_brief(date(2026, 5, 19))
+    # HD was Q1 — must NOT appear in `earnings` (full rows)
+    assert all(e['ticker'] != 'HD' for e in result['earnings'])
+    # HD MUST appear in `low_conviction` (compact line) — not silently dropped
+    assert any(e['ticker'] == 'HD' for e in result['low_conviction'])
