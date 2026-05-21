@@ -237,6 +237,20 @@ def load_calendar_reporters(target_date: date) -> list[dict]:
     Returns one dict per ticker: {ticker, company_name, earnings_time}.
     Dedupes across data sources (a ticker can appear once per source).
 
+    Filter pipeline -- mirrors ``premarket_brief.load_earnings_for_brief``
+    so this brief shows the same tradeable universe the morning brief does
+    (no foreign/OTC tickers that have no daily-fetcher coverage, no
+    illiquid chains, no AV-only rows that haven't been cross-confirmed):
+
+      1. AV ∩ UW source confirmation -- both AlphaVantage AND Unusual
+         Whales must list the (ticker, date). UW's curated daily list
+         is the gate; AV cross-confirms the date.
+      2. options_volume > 0 -- some daily flow exists.
+      3. open_interest > 1000 -- real positions exist on the chain.
+
+    ``BRIEF_INCLUDE_UNCONFIRMED=1`` bypasses the filter (matches the
+    premarket brief's debug escape hatch).
+
     Raises on DB error -- no silent empty fallback (CLAUDE.md 3.7).
     """
     from gcp.database import is_cloud_sql_configured, query_to_dataframe
@@ -246,13 +260,35 @@ def load_calendar_reporters(target_date: date) -> list[dict]:
             "Cloud SQL is not configured -- cannot resolve earnings reporters"
         )
 
-    sql = """
-        SELECT ticker,
-               MAX(company_name)  AS company_name,
-               MAX(earnings_time) AS earnings_time
-          FROM earnings_calendar
-         WHERE earnings_date = :d
-         GROUP BY ticker
+    include_unconfirmed = os.environ.get("BRIEF_INCLUDE_UNCONFIRMED", "") == "1"
+
+    # Roll per-source rows up to one row per ticker, then gate on the
+    # rolled-up flags. NULL options_volume / open_interest fail the
+    # strict > comparison, so foreign/OTC names (UW leaves these NULL)
+    # drop naturally -- no COALESCE(_, 0) needed (and CLAUDE.md 3.7
+    # forbids it on financial fields anyway).
+    filter_clause = "" if include_unconfirmed else """
+         WHERE has_av = TRUE
+           AND has_uw = TRUE
+           AND options_volume > 0
+           AND open_interest > 1000
+    """
+    sql = f"""
+        WITH ticker_rollup AS (
+            SELECT ticker,
+                   MAX(company_name)                       AS company_name,
+                   MAX(earnings_time)                      AS earnings_time,
+                   MAX(options_volume)                     AS options_volume,
+                   MAX(open_interest)                      AS open_interest,
+                   BOOL_OR(data_source = 'alphavantage')   AS has_av,
+                   BOOL_OR(data_source = 'unusual_whales') AS has_uw
+              FROM earnings_calendar
+             WHERE earnings_date = :d
+             GROUP BY ticker
+        )
+        SELECT ticker, company_name, earnings_time
+          FROM ticker_rollup
+         {filter_clause}
          ORDER BY ticker
     """
     df = query_to_dataframe(sql, {"d": target_date})
