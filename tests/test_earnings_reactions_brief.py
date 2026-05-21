@@ -288,6 +288,94 @@ def test_query_count_is_fixed_not_per_ticker(mock_db, monkeypatch):
     assert len(captured["sqls"]) == 6
 
 
+def test_calendar_query_applies_av_uw_liquidity_filter(mock_db, monkeypatch):
+    """The earnings_calendar query mirrors the premarket brief's filter:
+    AV ∩ UW source confirmation + options_volume > 0 + open_interest > 1000.
+
+    This is what drops foreign/OTC tickers (ACDBF, AGMRF, CFRUY, …) that
+    end up on earnings_calendar but have no daily-fetcher coverage and
+    therefore can never produce an earnings_reactions row.
+    """
+    monkeypatch.delenv("EARNINGS_BRIEF_AS_OF", raising=False)
+    monkeypatch.delenv("BRIEF_INCLUDE_UNCONFIRMED", raising=False)
+    install, captured = mock_db
+    install(calendar=pd.DataFrame())  # empty is fine -- we only assert SQL shape
+
+    generate_brief(analysis_date=date(2026, 5, 14))
+
+    cal_sqls = [s for s in captured["sqls"]
+                if "from earnings_calendar" in s.lower()]
+    assert cal_sqls, "expected an earnings_calendar query"
+    for s in cal_sqls:
+        low = s.lower()
+        assert "data_source = 'alphavantage'" in low, \
+            "AV source confirmation must be in the SQL"
+        assert "data_source = 'unusual_whales'" in low, \
+            "UW source confirmation must be in the SQL"
+        assert "options_volume > 0" in low, \
+            "options_volume liquidity floor must be in the SQL"
+        assert "open_interest > 1000" in low, \
+            "open_interest liquidity floor must be in the SQL"
+
+
+def test_last_session_sorted_by_absolute_gap_desc(mock_db, monkeypatch):
+    """Last-session reporters sort by |reaction_gap_pct| DESC, with
+    not-yet-computed (gap is None) at the bottom -- biggest movers
+    surface first, tail doesn't crowd them out."""
+    monkeypatch.delenv("EARNINGS_BRIEF_AS_OF", raising=False)
+    install, _ = mock_db
+
+    # All on the last session (2026-05-13, Wednesday → analysis_date Thu 5/14).
+    cal = pd.DataFrame([
+        {"ticker": "BIG_NEG", "company_name": "Big Drop",
+         "earnings_time": "postmarket"},
+        {"ticker": "SMALL",   "company_name": "Small Move",
+         "earnings_time": "postmarket"},
+        {"ticker": "PENDING", "company_name": "Not Yet",
+         "earnings_time": "postmarket"},
+        {"ticker": "BIG_POS", "company_name": "Big Pop",
+         "earnings_time": "postmarket"},
+    ])
+
+    # last_session = 2026-05-13. _prev_session(2026-05-14) is 2026-05-13.
+    # load_reaction_history filters fiscal_date_ending < 2026-05-13 so the
+    # rows that count as "last session's actual reaction" are dated before.
+    rx = pd.DataFrame([
+        _reaction_row(ticker="BIG_POS", fiscal="2026-03-31", gap=15.0),
+        _reaction_row(ticker="BIG_NEG", fiscal="2026-03-31", gap=-30.0),
+        _reaction_row(ticker="SMALL",   fiscal="2026-03-31", gap=0.5),
+        # PENDING has no row at all → reaction not yet computed → bottom.
+    ])
+    install(calendar=cal, reactions=rx)
+
+    brief = generate_brief(analysis_date=date(2026, 5, 14))
+    tickers = [c.ticker for c in brief["last_session_contexts"]]
+    # Largest |gap| first, PENDING last (no row).
+    assert tickers == ["BIG_NEG", "BIG_POS", "SMALL", "PENDING"]
+
+
+def test_brief_include_unconfirmed_bypasses_filter(mock_db, monkeypatch):
+    """BRIEF_INCLUDE_UNCONFIRMED=1 drops the AV/UW/liquidity gate so a
+    debug run can see every calendar row (matches premarket_brief.py)."""
+    monkeypatch.delenv("EARNINGS_BRIEF_AS_OF", raising=False)
+    monkeypatch.setenv("BRIEF_INCLUDE_UNCONFIRMED", "1")
+    install, captured = mock_db
+    install(calendar=pd.DataFrame())
+
+    generate_brief(analysis_date=date(2026, 5, 14))
+
+    cal_sqls = [s for s in captured["sqls"]
+                if "from earnings_calendar" in s.lower()]
+    for s in cal_sqls:
+        low = s.lower()
+        # The rollup CTE still computes has_av / has_uw flags, but the
+        # filter predicates that gate the outer SELECT are absent.
+        assert "has_av = true" not in low
+        assert "has_uw = true" not in low
+        assert "options_volume > 0" not in low
+        assert "open_interest > 1000" not in low
+
+
 def test_history_query_has_no_lookahead(mock_db):
     """The earnings_reactions query filters fiscal_date_ending < report."""
     install, captured = mock_db
