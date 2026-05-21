@@ -318,6 +318,42 @@ def test_calendar_query_applies_av_uw_liquidity_filter(mock_db, monkeypatch):
             "open_interest liquidity floor must be in the SQL"
 
 
+def test_last_session_sorted_by_absolute_gap_desc(mock_db, monkeypatch):
+    """Last-session reporters sort by |reaction_gap_pct| DESC, with
+    not-yet-computed (gap is None) at the bottom -- biggest movers
+    surface first, tail doesn't crowd them out."""
+    monkeypatch.delenv("EARNINGS_BRIEF_AS_OF", raising=False)
+    install, _ = mock_db
+
+    # All on the last session (2026-05-13, Wednesday → analysis_date Thu 5/14).
+    cal = pd.DataFrame([
+        {"ticker": "BIG_NEG", "company_name": "Big Drop",
+         "earnings_time": "postmarket"},
+        {"ticker": "SMALL",   "company_name": "Small Move",
+         "earnings_time": "postmarket"},
+        {"ticker": "PENDING", "company_name": "Not Yet",
+         "earnings_time": "postmarket"},
+        {"ticker": "BIG_POS", "company_name": "Big Pop",
+         "earnings_time": "postmarket"},
+    ])
+
+    # last_session = 2026-05-13. _prev_session(2026-05-14) is 2026-05-13.
+    # load_reaction_history filters fiscal_date_ending < 2026-05-13 so the
+    # rows that count as "last session's actual reaction" are dated before.
+    rx = pd.DataFrame([
+        _reaction_row(ticker="BIG_POS", fiscal="2026-03-31", gap=15.0),
+        _reaction_row(ticker="BIG_NEG", fiscal="2026-03-31", gap=-30.0),
+        _reaction_row(ticker="SMALL",   fiscal="2026-03-31", gap=0.5),
+        # PENDING has no row at all → reaction not yet computed → bottom.
+    ])
+    install(calendar=cal, reactions=rx)
+
+    brief = generate_brief(analysis_date=date(2026, 5, 14))
+    tickers = [c.ticker for c in brief["last_session_contexts"]]
+    # Largest |gap| first, PENDING last (no row).
+    assert tickers == ["BIG_NEG", "BIG_POS", "SMALL", "PENDING"]
+
+
 def test_brief_include_unconfirmed_bypasses_filter(mock_db, monkeypatch):
     """BRIEF_INCLUDE_UNCONFIRMED=1 drops the AV/UW/liquidity gate so a
     debug run can see every calendar row (matches premarket_brief.py)."""

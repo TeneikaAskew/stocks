@@ -664,6 +664,16 @@ def generate_brief(analysis_date: Optional[date] = None) -> dict:
         )
         last_contexts.append(ctx)
 
+    # Sort last-session reporters by absolute reaction gap DESC -- the
+    # biggest movers surface first so traders see the actionable signal
+    # before the small-move noise. Reporters with no computed reaction
+    # row yet sort last so the "awaiting earnings_reactions row" tail
+    # doesn't crowd out the real reactions.
+    def _last_session_key(c: TickerReactionContext):
+        gap = _to_float((c.latest_reaction or {}).get("reaction_gap_pct"))
+        return (gap is None, -abs(gap) if gap is not None else 0.0, c.ticker)
+    last_contexts.sort(key=_last_session_key)
+
     # Sort each next-session bucket by historical move magnitude (biggest
     # expected move first); contexts with no magnitude sort last.
     def _magnitude_key(c: TickerReactionContext):
@@ -711,10 +721,10 @@ def _predictor_line(ctx: TickerReactionContext) -> str:
         f"consist {_fmt_rate(ctx.hist12q_consistent_rate)}",
         f"|move| {_fmt_pct(ctx.hist12q_avg_abs_gap_pct, 1).lstrip('+')}",
         f"reversal {_fmt_rate(ctx.hist12q_reversal_rate)}",
-        f"drift10d {_fmt_pct(ctx.pre_earnings_drift_10d_pct)}",
-        f"sustain5d {_fmt_pct(ctx.hist12q_avg_sustain_5d_pct)}",
-        f"gapUp {_fmt_rate(ctx.hist12q_gap_up_rate)}",
-        f"insider60d {_fmt_money(ctx.insider_net_value_60d)}",
+        f"drift 10d {_fmt_pct(ctx.pre_earnings_drift_10d_pct)}",
+        f"sustain 5d {_fmt_pct(ctx.hist12q_avg_sustain_5d_pct)}",
+        f"gap up {_fmt_rate(ctx.hist12q_gap_up_rate)}",
+        f"insider 60d {_fmt_money(ctx.insider_net_value_60d)}",
     ]
     return (
         f"**{ctx.ticker}** ({time_tag}, {ctx.n_quarters}q) — "
