@@ -181,6 +181,24 @@ def test_no_earnings_message_when_no_earnings(patched_builders):
     )
 
 
+def test_legacy_single_payload_preserves_playbook(patched_builders):
+    """format_discord_message (singular) must NOT silently lose the
+    Strat Playbook when the routed function splits it into its own
+    message — back-compat regression guard for PR #522. Pre-split the
+    single payload was [overview, ticker, playbook]; after the split
+    msgs[0] is just [overview, ticker] and a naive `msgs[0]` would
+    drop the playbook for any legacy caller."""
+    msg = patched_builders.format_discord_message(_full_brief())
+    titles = [e.get('title', '') for e in msg['embeds']]
+    assert 'Premarket Overview' in titles
+    assert 'Ticker Analysis' in titles
+    assert 'Playbook' in titles, (
+        f"Playbook missing from legacy single-payload — got: {titles}")
+    # Earnings + Calendar were never in the legacy single payload
+    assert not any('Earnings' in t for t in titles)
+    assert not any('Calendar' in t for t in titles)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Backward compatibility
 # ────────────────────────────────────────────────────────────────────────────

@@ -2619,14 +2619,26 @@ def format_discord_messages(brief: dict) -> list[dict]:
 
 def format_discord_message(brief: dict) -> dict:
     """Legacy single-payload API kept for back-compat with tests + any
-    direct callers. Returns the FIRST message from format_discord_messages,
-    which is overview + tickers + playbook (the analytics half). Earnings
-    and calendar move to a second message — callers using this legacy
-    function will silently lose them. New code should prefer
-    format_discord_messages.
+    direct callers. Returns one Discord payload containing the analytics
+    half — Overview + Ticker Analysis + Strat Playbook (when present).
+
+    PR #522 split the playbook into its own routed message so it gets
+    its own 6000-char budget. This function merges it back in for the
+    single-payload contract so the playbook isn't silently lost for any
+    legacy caller. Earnings + Calendar move to other messages and are
+    not included here (matches pre-#522 behavior — the legacy contract
+    was analytics-only).
     """
-    msgs = format_discord_messages(brief)
-    return msgs[0] if msgs else {'embeds': []}
+    routed = format_discord_messages_routed(brief)
+    embeds: list[dict] = []
+    for kind, msg in routed:
+        if kind != 'main':
+            break   # hit the earnings channel — stop
+        first = (msg.get('embeds') or [{}])[0]
+        if 'Calendar' in (first.get('title') or ''):
+            break   # hit the macro calendar (still 'main') — stop
+        embeds.extend(msg.get('embeds') or [])
+    return {'embeds': embeds}
 
 
 # ── Cloud SQL Persistence ───────────────────────────────────────────────────
