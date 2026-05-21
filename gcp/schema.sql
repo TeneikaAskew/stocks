@@ -2534,3 +2534,23 @@ CREATE TABLE IF NOT EXISTS earnings_calibration (
 
 CREATE INDEX IF NOT EXISTS idx_earnings_calibration_recent
     ON earnings_calibration (calibration_date DESC);
+
+-- Additive migration (2026-05-21): top-quintile dollar attribution.
+-- The sweep restricts to Q5 directional archetypes
+-- (bullish/bearish/reversal) and computes per-trade P&L over the 5d
+-- canonical hold. `best_hold_horizon_days` reports which of
+-- {1,3,5,10} maximised payoff_ratio.
+-- All columns nullable: a degenerate combo (empty Q5, insufficient
+-- sample) writes SQL NULL rather than fabricating $0
+-- (CLAUDE.md §3.7 — no silent fallback on financial fields).
+ALTER TABLE earnings_calibration
+    ADD COLUMN IF NOT EXISTS n_q5_directional          INTEGER,
+    ADD COLUMN IF NOT EXISTS avg_win_pct               DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_loss_pct              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS payoff_ratio              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS expectancy_pct            DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS expectancy_dollars_per_1k DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS profit_factor             DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS max_drawdown_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS sharpe_per_trade          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS best_hold_horizon_days    INTEGER;

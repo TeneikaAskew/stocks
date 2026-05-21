@@ -30,7 +30,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.earnings_reactions import select_earnings_winner
-from scripts.backtest_playability import compute_quintile_spread, run_backtest
+from scripts.backtest_playability import (
+    compute_dollar_metrics,
+    compute_quintile_spread,
+    run_backtest,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,17 +58,54 @@ def run_sweep() -> list:
                  i, len(combos), min_nq, lookback)
         preds = run_backtest(min_nq=min_nq, lookback=lookback)
         m = compute_quintile_spread(preds)
+        d = compute_dollar_metrics(preds)
         results.append({
             "min_nq": min_nq,
             "lookback_quarters": lookback,
             "n_predictions": m["n_predictions"],
             "overall_hit_rate": m["overall_hit_rate"],
             "quintile_spread": m["quintile_spread"],
+            # Top-quintile dollar attribution (5d canonical hold).
+            "n_q5_directional":        d["n_q5_directional"],
+            "avg_win_pct":             d["avg_win_pct"],
+            "avg_loss_pct":            d["avg_loss_pct"],
+            "payoff_ratio":            d["payoff_ratio"],
+            "expectancy_pct":          d["expectancy_pct"],
+            "expectancy_dollars_per_1k": d["expectancy_dollars_per_1k"],
+            "profit_factor":           d["profit_factor"],
+            "max_drawdown_pct":        d["max_drawdown_pct"],
+            "sharpe_per_trade":        d["sharpe_per_trade"],
+            "best_hold_horizon_days":  d["best_hold_horizon_days"],
         })
-        log.info("  -> n=%d hit=%.3f quintile_spread=%.3f",
-                 m["n_predictions"], m["overall_hit_rate"],
-                 m["quintile_spread"])
+        log.info(
+            "  -> n=%d hit=%.3f quintile_spread=%.3f | "
+            "q5_dir n=%d exp=%.2f%% ($%.2f/$1k) payoff=%.2f best_hold=%sd",
+            m["n_predictions"], m["overall_hit_rate"], m["quintile_spread"],
+            d["n_q5_directional"],
+            d["expectancy_pct"] if d["expectancy_pct"] == d["expectancy_pct"] else 0.0,
+            d["expectancy_dollars_per_1k"] if d["expectancy_dollars_per_1k"] == d["expectancy_dollars_per_1k"] else 0.0,
+            d["payoff_ratio"] if d["payoff_ratio"] == d["payoff_ratio"] else 0.0,
+            d["best_hold_horizon_days"],
+        )
     return results
+
+
+def _nan_to_none(v):
+    """SQL NULL pass-through for NaN / None / non-finite values.
+
+    The dollar metrics are NaN-safe at compute time (empty combos,
+    degenerate quintiles); the writer normalises them to SQL NULL so a
+    legitimately-missing value never silently becomes 0 in the table.
+    """
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return v
+    if f != f or f == float('inf') or f == float('-inf'):
+        return None
+    return f
 
 
 def apply_winner(winner: dict) -> None:
@@ -81,20 +122,37 @@ def apply_winner(winner: dict) -> None:
         f"hit={winner['overall_hit_rate']:.3f} "
         f"n={winner['n_predictions']}"
     )
+    best_hold = winner.get("best_hold_horizon_days")
     execute_sql(
         """
         INSERT INTO earnings_calibration
           (calibration_date, min_nq, lookback_quarters,
-           quintile_spread, overall_hit_rate, n_predictions, notes)
+           quintile_spread, overall_hit_rate, n_predictions, notes,
+           n_q5_directional, avg_win_pct, avg_loss_pct, payoff_ratio,
+           expectancy_pct, expectancy_dollars_per_1k, profit_factor,
+           max_drawdown_pct, sharpe_per_trade, best_hold_horizon_days)
         VALUES (CURRENT_DATE, :min_nq, :lookback,
-                :spread, :hit, :n, :notes)
+                :spread, :hit, :n, :notes,
+                :n_q5, :avg_win, :avg_loss, :payoff,
+                :exp_pct, :exp_dollars, :profit_factor,
+                :max_dd, :sharpe, :best_hold)
         ON CONFLICT (calibration_date) DO UPDATE SET
-           min_nq            = EXCLUDED.min_nq,
-           lookback_quarters = EXCLUDED.lookback_quarters,
-           quintile_spread   = EXCLUDED.quintile_spread,
-           overall_hit_rate  = EXCLUDED.overall_hit_rate,
-           n_predictions     = EXCLUDED.n_predictions,
-           notes             = EXCLUDED.notes
+           min_nq                    = EXCLUDED.min_nq,
+           lookback_quarters         = EXCLUDED.lookback_quarters,
+           quintile_spread           = EXCLUDED.quintile_spread,
+           overall_hit_rate          = EXCLUDED.overall_hit_rate,
+           n_predictions             = EXCLUDED.n_predictions,
+           notes                     = EXCLUDED.notes,
+           n_q5_directional          = EXCLUDED.n_q5_directional,
+           avg_win_pct               = EXCLUDED.avg_win_pct,
+           avg_loss_pct              = EXCLUDED.avg_loss_pct,
+           payoff_ratio              = EXCLUDED.payoff_ratio,
+           expectancy_pct            = EXCLUDED.expectancy_pct,
+           expectancy_dollars_per_1k = EXCLUDED.expectancy_dollars_per_1k,
+           profit_factor             = EXCLUDED.profit_factor,
+           max_drawdown_pct          = EXCLUDED.max_drawdown_pct,
+           sharpe_per_trade          = EXCLUDED.sharpe_per_trade,
+           best_hold_horizon_days    = EXCLUDED.best_hold_horizon_days
         """,
         {
             "min_nq": int(winner["min_nq"]),
@@ -103,6 +161,16 @@ def apply_winner(winner: dict) -> None:
             "hit": float(winner["overall_hit_rate"]),
             "n": int(winner["n_predictions"]),
             "notes": notes,
+            "n_q5":          int(winner.get("n_q5_directional") or 0),
+            "avg_win":       _nan_to_none(winner.get("avg_win_pct")),
+            "avg_loss":      _nan_to_none(winner.get("avg_loss_pct")),
+            "payoff":        _nan_to_none(winner.get("payoff_ratio")),
+            "exp_pct":       _nan_to_none(winner.get("expectancy_pct")),
+            "exp_dollars":   _nan_to_none(winner.get("expectancy_dollars_per_1k")),
+            "profit_factor": _nan_to_none(winner.get("profit_factor")),
+            "max_dd":        _nan_to_none(winner.get("max_drawdown_pct")),
+            "sharpe":        _nan_to_none(winner.get("sharpe_per_trade")),
+            "best_hold":     int(best_hold) if best_hold is not None else None,
         },
     )
 
@@ -129,9 +197,18 @@ def main() -> None:
         log.warning("no combo cleared the gates — "
                     "earnings_calibration left unchanged")
         return
-    log.info("winner: min_nq=%d lookback=%d quintile_spread=%.3f",
-             winner["min_nq"], winner["lookback_quarters"],
-             winner["quintile_spread"])
+    exp_dollars = winner.get("expectancy_dollars_per_1k")
+    payoff = winner.get("payoff_ratio")
+    log.info(
+        "winner: min_nq=%d lookback=%d quintile_spread=%.3f | "
+        "exp=$%.2f/$1k payoff=%.2f best_hold=%sd n_q5_dir=%d",
+        winner["min_nq"], winner["lookback_quarters"],
+        winner["quintile_spread"],
+        exp_dollars if exp_dollars is not None and exp_dollars == exp_dollars else 0.0,
+        payoff if payoff is not None and payoff == payoff else 0.0,
+        winner.get("best_hold_horizon_days"),
+        winner.get("n_q5_directional") or 0,
+    )
     if args.apply:
         apply_winner(winner)
         log.info("applied winner to earnings_calibration")

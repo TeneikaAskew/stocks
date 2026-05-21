@@ -438,7 +438,24 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     # Daily mode only; weekly preview keeps the broader pre-split view.
     watchlist: list[dict] = []
     if mode == 'daily' and os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '') != '1':
-        min_nq = int(os.environ.get('BRIEF_MIN_REACTION_QUARTERS', '12'))
+        # Source-of-truth chain for the Track A/B min-quarters gate:
+        #   1. BRIEF_MIN_REACTION_QUARTERS env var (operator override)
+        #   2. earnings_calibration.min_nq (latest sweep winner)
+        #   3. DEFAULT_MIN_NQ from lib/earnings_reactions (Tier B)
+        # Closes the wire-up gap where the brief's Track A/B split used
+        # to bypass the sweep-driven min_nq even though
+        # enrich_with_playability already gates the score against it.
+        env_min_nq = os.environ.get('BRIEF_MIN_REACTION_QUARTERS')
+        if env_min_nq is not None:
+            min_nq = int(env_min_nq)
+        else:
+            try:
+                from lib.earnings_reactions import get_earnings_calibration
+                min_nq = int(get_earnings_calibration()['min_nq'])
+            except Exception as e:
+                logger.warning("calibration min_nq resolution failed (%s) — "
+                               "defaulting to 12", type(e).__name__)
+                min_nq = 12
         wl_min_oi  = int(os.environ.get('BRIEF_WATCHLIST_MIN_OI',  '50000'))
         wl_min_vol = int(os.environ.get('BRIEF_WATCHLIST_MIN_VOL', '5000'))
 

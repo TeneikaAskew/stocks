@@ -55,13 +55,22 @@ MIXED_HIT_THRESHOLD = 3.0
 
 
 def fetch_reactions_for_backtest(min_nq: int = 12) -> pd.DataFrame:
-    """Pull all earnings_reactions sorted by (ticker, reported_date)."""
+    """Pull all earnings_reactions sorted by (ticker, reported_date).
+
+    Pulls the full multi-horizon return ladder so the calibration sweep
+    can compute dollar P&L on each prediction (1d / 3d / 5d / 10d holds)
+    in addition to the hit/miss ranking metric.
+    """
     sql = """
         SELECT ticker, reported_date, fiscal_date_ending,
                reaction_gap_pct,
                direction_consistent_5d,
                is_reversal_5d,
-               sustain_5d_pct
+               sustain_3d_pct,
+               sustain_5d_pct,
+               sustain_10d_pct,
+               reaction_max_run_pct,
+               reaction_max_drawdown_pct
         FROM earnings_reactions
         WHERE reaction_gap_pct IS NOT NULL
           AND reported_date IS NOT NULL
@@ -156,6 +165,195 @@ def compute_quintile_spread(predictions: pd.DataFrame) -> dict:
             'quintile_spread': spread}
 
 
+# Dollar conversion: per_trade_pct (e.g. 3.4 means +3.4%) × $10 = $34
+# per $1k notional. Centralised here so any rendering layer can do the
+# same conversion without re-deriving the factor.
+_DOLLARS_PER_PCT_PER_1K = 10.0
+
+# Hold horizons evaluated for best_hold_horizon_days. 1 = day-of
+# reaction (uses actual_gap_pct); 3/5/10 = sustain_*_pct.
+_HOLD_HORIZONS_DAYS = (1, 3, 5, 10)
+
+
+def _archetype_directional_return(archetype: str | None,
+                                  actual_gap_pct: float | None,
+                                  hold_return_pct: float | None) -> float | None:
+    """Realised return of the archetype's directional bet for one hold.
+
+    Sign convention: positive = the prediction made money.
+      bullish_trend: long position over the hold horizon → +hold_return
+      bearish_trend: short position over the hold horizon → -hold_return
+      reversal_play: fade the initial gap; long if gap < 0, short if > 0
+                     → -sign(actual_gap) × hold_return
+      mixed / quiet / unknown: None (no single-direction stock trade).
+    """
+    if hold_return_pct is None or archetype is None:
+        return None
+    if archetype == 'bullish_trend':
+        return float(hold_return_pct)
+    if archetype == 'bearish_trend':
+        return -float(hold_return_pct)
+    if archetype == 'reversal_play':
+        if actual_gap_pct is None or actual_gap_pct == 0:
+            return None
+        return -float(hold_return_pct) if actual_gap_pct > 0 else float(hold_return_pct)
+    return None
+
+
+def _summary_stats_pct(returns: pd.Series) -> dict:
+    """Win/loss decomposition + payoff/expectancy/profit-factor/sharpe
+    from a Series of per-trade percent returns. NaNs dropped. Empty
+    input returns NaN-filled dict so downstream INSERT writes SQL NULL.
+    Caller passes returns in chronological order for path-dependent
+    max-drawdown to be meaningful.
+    """
+    s = returns.dropna()
+    n = int(len(s))
+    if n == 0:
+        nan = float('nan')
+        return {
+            'n': 0, 'win_rate': nan, 'avg_win_pct': nan, 'avg_loss_pct': nan,
+            'payoff_ratio': nan, 'expectancy_pct': nan, 'profit_factor': nan,
+            'max_drawdown_pct': nan, 'sharpe_per_trade': nan,
+        }
+    wins = s[s > 0]
+    losses = s[s < 0]
+    win_rate = float(len(wins)) / n
+    avg_win_pct  = float(wins.mean())   if len(wins)   > 0 else 0.0
+    avg_loss_pct = float(losses.mean()) if len(losses) > 0 else 0.0  # negative
+    payoff_ratio = (
+        abs(avg_win_pct / avg_loss_pct) if avg_loss_pct < 0 else float('inf')
+    )
+    expectancy_pct = float(s.mean())
+    gross_win  = float(wins.sum())   if len(wins)   > 0 else 0.0
+    gross_loss = float(losses.sum()) if len(losses) > 0 else 0.0  # negative
+    profit_factor = (
+        gross_win / abs(gross_loss) if gross_loss < 0 else float('inf')
+    )
+    # Equity curve starts at 0 (no trades). Prepend 0 so the first
+    # trade's drawdown is measured relative to initial equity, not to
+    # itself (a series of all losses must report total cumulative loss
+    # as the max drawdown, not zero).
+    equity = pd.concat([pd.Series([0.0]), s.cumsum()], ignore_index=True)
+    peak = equity.cummax()
+    drawdown = equity - peak
+    max_dd_pct = float(drawdown.min()) if len(drawdown) > 0 else 0.0
+    std = float(s.std(ddof=1)) if n > 1 else 0.0
+    sharpe = float(expectancy_pct / std) if std > 0 else 0.0
+    return {
+        'n': n,
+        'win_rate': win_rate,
+        'avg_win_pct': avg_win_pct,
+        'avg_loss_pct': avg_loss_pct,
+        'payoff_ratio': float(payoff_ratio),
+        'expectancy_pct': expectancy_pct,
+        'profit_factor': float(profit_factor),
+        'max_drawdown_pct': max_dd_pct,
+        'sharpe_per_trade': sharpe,
+    }
+
+
+def compute_dollar_metrics(predictions: pd.DataFrame) -> dict:
+    """Dollar P&L attribution on top-quintile predictions.
+
+    Restricts to the top-score quintile (Q5) and the directional
+    archetypes (bullish_trend / bearish_trend / reversal_play) because
+    those map to clean stock-only trade structures. Mixed and quiet rows
+    are excluded — see _archetype_directional_return.
+
+    For each of {1d, 3d, 5d, 10d} hold horizons computes win_rate,
+    avg_win/loss, payoff_ratio, expectancy, profit_factor, max
+    drawdown, and per-trade sharpe. Picks best_hold_horizon_days by
+    payoff_ratio (ties broken by expectancy_pct), excluding horizons
+    with n<50 or zero-loss (inf payoff) noise.
+
+    Returns dict with keys for the 5d-hold canonical metrics plus
+    best_hold_horizon_days + n_q5_directional. All values NaN-safe.
+    """
+    nan_safe = {
+        'n_q5_directional': 0,
+        'avg_win_pct': float('nan'),
+        'avg_loss_pct': float('nan'),
+        'payoff_ratio': float('nan'),
+        'expectancy_pct': float('nan'),
+        'expectancy_dollars_per_1k': float('nan'),
+        'profit_factor': float('nan'),
+        'max_drawdown_pct': float('nan'),
+        'sharpe_per_trade': float('nan'),
+        'best_hold_horizon_days': None,
+    }
+    if predictions is None or predictions.empty:
+        return nan_safe
+    df = predictions.dropna(subset=['score']).copy()
+    if df.empty or df['score'].nunique() < 5:
+        return nan_safe
+
+    df['q'] = pd.qcut(df['score'], q=5, labels=False, duplicates='drop')
+    q5 = df[df['q'] == df['q'].max()].copy()
+    q5 = q5[q5['archetype'].isin(
+        ['bullish_trend', 'bearish_trend', 'reversal_play'])]
+    if q5.empty:
+        return nan_safe
+    q5 = q5.sort_values('reported_date').reset_index(drop=True)
+
+    horizon_to_col = {
+        1:  'actual_gap_pct',
+        3:  'sustain_3d_pct',
+        5:  'sustain_5d_pct',
+        10: 'sustain_10d_pct',
+    }
+    per_horizon: dict[int, dict] = {}
+    for h in _HOLD_HORIZONS_DAYS:
+        col = horizon_to_col[h]
+        if col not in q5.columns:
+            continue
+        returns = q5.apply(
+            lambda r: _archetype_directional_return(
+                r['archetype'], r.get('actual_gap_pct'), r.get(col)),
+            axis=1,
+        )
+        per_horizon[h] = _summary_stats_pct(pd.Series(returns, dtype='float64'))
+
+    if not per_horizon:
+        return nan_safe
+
+    eligible = {
+        h: m for h, m in per_horizon.items()
+        if m['n'] >= 50 and m['payoff_ratio'] != float('inf')
+    }
+    if eligible:
+        best_h = max(
+            eligible.keys(),
+            key=lambda h: (eligible[h]['payoff_ratio'],
+                           eligible[h]['expectancy_pct']),
+        )
+    else:
+        best_h = max(per_horizon.keys(),
+                     key=lambda h: per_horizon[h]['n'])
+
+    # Canonical reported metrics: 5d hold (matches the existing
+    # backtest's hit definition's time window).
+    canon = per_horizon.get(5) or per_horizon[best_h]
+    exp_pct = canon['expectancy_pct']
+    exp_dollars = (
+        exp_pct * _DOLLARS_PER_PCT_PER_1K
+        if exp_pct == exp_pct  # not NaN
+        else float('nan')
+    )
+    return {
+        'n_q5_directional':        canon['n'],
+        'avg_win_pct':             canon['avg_win_pct'],
+        'avg_loss_pct':            canon['avg_loss_pct'],
+        'payoff_ratio':            canon['payoff_ratio'],
+        'expectancy_pct':          exp_pct,
+        'expectancy_dollars_per_1k': exp_dollars,
+        'profit_factor':           canon['profit_factor'],
+        'max_drawdown_pct':        canon['max_drawdown_pct'],
+        'sharpe_per_trade':        canon['sharpe_per_trade'],
+        'best_hold_horizon_days':  int(best_h),
+    }
+
+
 def run_backtest(min_nq: int, lookback: int | None = None) -> pd.DataFrame:
     """Walk forward, return DataFrame of predictions with hit flags.
 
@@ -224,6 +422,10 @@ def run_backtest(min_nq: int, lookback: int | None = None) -> pd.DataFrame:
             )
             hit = hit_for_archetype(archetype, actual_gap, actual_reversal)
 
+            def _f(col: str) -> float | None:
+                v = row.get(col)
+                return float(v) if pd.notna(v) else None
+
             predictions.append({
                 'ticker': ticker,
                 'reported_date': row['reported_date'],
@@ -236,6 +438,14 @@ def run_backtest(min_nq: int, lookback: int | None = None) -> pd.DataFrame:
                 'actual_gap_pct': actual_gap,
                 'actual_reversal_5d': actual_reversal,
                 'hit': hit,
+                # Multi-horizon return ladder for dollar P&L attribution.
+                # 1d return = the close-to-close reaction itself; 3/5/10d
+                # are cumulative returns from anchor through hold horizon.
+                'sustain_3d_pct':  _f('sustain_3d_pct'),
+                'sustain_5d_pct':  _f('sustain_5d_pct'),
+                'sustain_10d_pct': _f('sustain_10d_pct'),
+                'max_run_pct':     _f('reaction_max_run_pct'),
+                'max_dd_pct':      _f('reaction_max_drawdown_pct'),
             })
 
         if i % 100 == 0:
