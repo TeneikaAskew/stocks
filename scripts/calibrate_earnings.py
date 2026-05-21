@@ -31,7 +31,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.earnings_reactions import select_earnings_winner
 from scripts.backtest_playability import (
+    _load_options_snapshots,
     compute_dollar_metrics,
+    compute_options_metrics,
     compute_quintile_spread,
     run_backtest,
 )
@@ -52,6 +54,17 @@ LOOKBACK_VALUES = [8, 12, 16, 20]
 def run_sweep() -> list:
     """Run the playability backtest for every (min_nq, lookback) combo."""
     combos = [(mq, lb) for mq in MIN_NQ_VALUES for lb in LOOKBACK_VALUES]
+
+    # Load options snapshots ONCE per sweep — joined per-combo at the
+    # Q5 subset. Empty load is acceptable: compute_options_metrics
+    # returns NaN-safe values and the columns write SQL NULL.
+    log.info("loading earnings_options_snapshots for options-side metrics…")
+    options_df = _load_options_snapshots()
+    log.info("  %d option rows loaded across %d events",
+             len(options_df),
+             options_df.groupby(['symbol', 'snapshot_date']).ngroups
+             if not options_df.empty else 0)
+
     results = []
     for i, (min_nq, lookback) in enumerate(combos, 1):
         log.info("combo %d/%d: min_nq=%d lookback=%d",
@@ -59,13 +72,14 @@ def run_sweep() -> list:
         preds = run_backtest(min_nq=min_nq, lookback=lookback)
         m = compute_quintile_spread(preds)
         d = compute_dollar_metrics(preds)
+        o = compute_options_metrics(preds, options_df)
         results.append({
             "min_nq": min_nq,
             "lookback_quarters": lookback,
             "n_predictions": m["n_predictions"],
             "overall_hit_rate": m["overall_hit_rate"],
             "quintile_spread": m["quintile_spread"],
-            # Top-quintile dollar attribution (5d canonical hold).
+            # Top-quintile stock dollar attribution (5d canonical hold).
             "n_q5_directional":        d["n_q5_directional"],
             "avg_win_pct":             d["avg_win_pct"],
             "avg_loss_pct":            d["avg_loss_pct"],
@@ -76,16 +90,30 @@ def run_sweep() -> list:
             "max_drawdown_pct":        d["max_drawdown_pct"],
             "sharpe_per_trade":        d["sharpe_per_trade"],
             "best_hold_horizon_days":  d["best_hold_horizon_days"],
+            # Options-side attribution (T-1 → T+1, intrinsic-only exit).
+            "n_with_options":            o["n_with_options"],
+            "avg_atm_straddle_iv_pct":   o["avg_atm_straddle_iv_pct"],
+            "avg_implied_move_pct":      o["avg_implied_move_pct"],
+            "avg_realized_move_pct":     o["avg_realized_move_pct"],
+            "realized_vs_implied_ratio": o["realized_vs_implied_ratio"],
+            "avg_long_straddle_pnl_pct": o["avg_long_straddle_pnl_pct"],
+            "avg_short_strangle_pnl_pct": o["avg_short_strangle_pnl_pct"],
+            "avg_long_call_pnl_pct":     o["avg_long_call_pnl_pct"],
+            "avg_long_put_pnl_pct":      o["avg_long_put_pnl_pct"],
         })
+        _fmt = lambda v: v if v == v else 0.0  # NaN-safe %g format
         log.info(
-            "  -> n=%d hit=%.3f quintile_spread=%.3f | "
-            "q5_dir n=%d exp=%.2f%% ($%.2f/$1k) payoff=%.2f best_hold=%sd",
-            m["n_predictions"], m["overall_hit_rate"], m["quintile_spread"],
-            d["n_q5_directional"],
-            d["expectancy_pct"] if d["expectancy_pct"] == d["expectancy_pct"] else 0.0,
-            d["expectancy_dollars_per_1k"] if d["expectancy_dollars_per_1k"] == d["expectancy_dollars_per_1k"] else 0.0,
-            d["payoff_ratio"] if d["payoff_ratio"] == d["payoff_ratio"] else 0.0,
-            d["best_hold_horizon_days"],
+            "  -> n=%d spread=%.3f | stock: q5=%d exp=%.2f%% ($%.2f/$1k) payoff=%.2f "
+            "| opts: n=%d implied=%.2f%% realized=%.2f%% rv=%.2f "
+            "long_straddle=%.1f%% short_strangle=%.1f%%",
+            m["n_predictions"], m["quintile_spread"],
+            d["n_q5_directional"], _fmt(d["expectancy_pct"]),
+            _fmt(d["expectancy_dollars_per_1k"]), _fmt(d["payoff_ratio"]),
+            o["n_with_options"],
+            _fmt(o["avg_implied_move_pct"]), _fmt(o["avg_realized_move_pct"]),
+            _fmt(o["realized_vs_implied_ratio"]),
+            _fmt(o["avg_long_straddle_pnl_pct"]),
+            _fmt(o["avg_short_strangle_pnl_pct"]),
         )
     return results
 
@@ -130,12 +158,18 @@ def apply_winner(winner: dict) -> None:
            quintile_spread, overall_hit_rate, n_predictions, notes,
            n_q5_directional, avg_win_pct, avg_loss_pct, payoff_ratio,
            expectancy_pct, expectancy_dollars_per_1k, profit_factor,
-           max_drawdown_pct, sharpe_per_trade, best_hold_horizon_days)
+           max_drawdown_pct, sharpe_per_trade, best_hold_horizon_days,
+           n_with_options, avg_atm_straddle_iv_pct, avg_implied_move_pct,
+           avg_realized_move_pct, realized_vs_implied_ratio,
+           avg_long_straddle_pnl_pct, avg_short_strangle_pnl_pct,
+           avg_long_call_pnl_pct, avg_long_put_pnl_pct)
         VALUES (CURRENT_DATE, :min_nq, :lookback,
                 :spread, :hit, :n, :notes,
                 :n_q5, :avg_win, :avg_loss, :payoff,
                 :exp_pct, :exp_dollars, :profit_factor,
-                :max_dd, :sharpe, :best_hold)
+                :max_dd, :sharpe, :best_hold,
+                :n_opts, :iv, :imp_move, :real_move, :rv_ratio,
+                :ls_pnl, :ss_pnl, :lc_pnl, :lp_pnl)
         ON CONFLICT (calibration_date) DO UPDATE SET
            min_nq                    = EXCLUDED.min_nq,
            lookback_quarters         = EXCLUDED.lookback_quarters,
@@ -152,7 +186,16 @@ def apply_winner(winner: dict) -> None:
            profit_factor             = EXCLUDED.profit_factor,
            max_drawdown_pct          = EXCLUDED.max_drawdown_pct,
            sharpe_per_trade          = EXCLUDED.sharpe_per_trade,
-           best_hold_horizon_days    = EXCLUDED.best_hold_horizon_days
+           best_hold_horizon_days    = EXCLUDED.best_hold_horizon_days,
+           n_with_options            = EXCLUDED.n_with_options,
+           avg_atm_straddle_iv_pct   = EXCLUDED.avg_atm_straddle_iv_pct,
+           avg_implied_move_pct      = EXCLUDED.avg_implied_move_pct,
+           avg_realized_move_pct     = EXCLUDED.avg_realized_move_pct,
+           realized_vs_implied_ratio = EXCLUDED.realized_vs_implied_ratio,
+           avg_long_straddle_pnl_pct = EXCLUDED.avg_long_straddle_pnl_pct,
+           avg_short_strangle_pnl_pct= EXCLUDED.avg_short_strangle_pnl_pct,
+           avg_long_call_pnl_pct     = EXCLUDED.avg_long_call_pnl_pct,
+           avg_long_put_pnl_pct      = EXCLUDED.avg_long_put_pnl_pct
         """,
         {
             "min_nq": int(winner["min_nq"]),
@@ -171,6 +214,15 @@ def apply_winner(winner: dict) -> None:
             "max_dd":        _nan_to_none(winner.get("max_drawdown_pct")),
             "sharpe":        _nan_to_none(winner.get("sharpe_per_trade")),
             "best_hold":     int(best_hold) if best_hold is not None else None,
+            "n_opts":        int(winner.get("n_with_options") or 0),
+            "iv":            _nan_to_none(winner.get("avg_atm_straddle_iv_pct")),
+            "imp_move":      _nan_to_none(winner.get("avg_implied_move_pct")),
+            "real_move":     _nan_to_none(winner.get("avg_realized_move_pct")),
+            "rv_ratio":      _nan_to_none(winner.get("realized_vs_implied_ratio")),
+            "ls_pnl":        _nan_to_none(winner.get("avg_long_straddle_pnl_pct")),
+            "ss_pnl":        _nan_to_none(winner.get("avg_short_strangle_pnl_pct")),
+            "lc_pnl":        _nan_to_none(winner.get("avg_long_call_pnl_pct")),
+            "lp_pnl":        _nan_to_none(winner.get("avg_long_put_pnl_pct")),
         },
     )
 

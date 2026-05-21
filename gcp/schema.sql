@@ -2554,3 +2554,21 @@ ALTER TABLE earnings_calibration
     ADD COLUMN IF NOT EXISTS max_drawdown_pct          DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS sharpe_per_trade          DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS best_hold_horizon_days    INTEGER;
+
+-- PR-B (2026-05-21): options-side dollar attribution. Sourced from
+-- the T-1 close ATM call+put pair (and the delta-20 strangle wings)
+-- in earnings_options_snapshots, with exit at T+1 close modelled as
+-- intrinsic-only — a conservative bound. n_with_options is reported
+-- separately so the % means are computed only over the matched
+-- subset (not silently fabricated as 0 for unmatched events per
+-- CLAUDE.md §3.7).
+ALTER TABLE earnings_calibration
+    ADD COLUMN IF NOT EXISTS n_with_options              INTEGER,
+    ADD COLUMN IF NOT EXISTS avg_atm_straddle_iv_pct     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_implied_move_pct        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_realized_move_pct       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS realized_vs_implied_ratio   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_long_straddle_pnl_pct   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_short_strangle_pnl_pct  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_long_call_pnl_pct       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_long_put_pnl_pct        DOUBLE PRECISION;

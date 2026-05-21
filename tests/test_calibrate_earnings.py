@@ -14,9 +14,16 @@ import pytest
 
 from scripts.backtest_playability import (
     _archetype_directional_return,
+    _long_call_pnl_pct,
+    _long_put_pnl_pct,
+    _long_straddle_pnl_pct,
     _reactions_stats_from_past,
+    _select_atm_pair,
+    _select_delta_n_pair,
+    _short_strangle_pnl_pct,
     _summary_stats_pct,
     compute_dollar_metrics,
+    compute_options_metrics,
     compute_quintile_spread,
 )
 from lib.earnings_reactions import select_earnings_winner
@@ -252,6 +259,241 @@ class TestComputeDollarMetrics:
             })
         m = compute_dollar_metrics(pd.DataFrame(rows))
         assert m['n_q5_directional'] == 0
+
+
+class TestLongStraddlePnlPct:
+    def test_winner_when_move_exceeds_premium(self):
+        # Bought ATM straddle 100C+100P at premium $3+$3=$6. Stock
+        # moves to 110. Intrinsic = 10 (call) + 0 = 10. PnL = 10-6 = 4.
+        # Return = 4/6 = 66.7%.
+        assert _long_straddle_pnl_pct(3.0, 3.0, 100.0, 110.0) == pytest.approx(
+            (10.0 - 6.0) / 6.0 * 100.0)
+
+    def test_loser_when_move_below_premium(self):
+        # Same straddle, stock stays at 102. Intrinsic = 2. PnL = -4.
+        # Return = -4/6 = -66.7%.
+        assert _long_straddle_pnl_pct(3.0, 3.0, 100.0, 102.0) == pytest.approx(
+            (2.0 - 6.0) / 6.0 * 100.0)
+
+    def test_total_loss_when_pinned(self):
+        # Stock pins at strike, intrinsic=0, lose 100% of premium.
+        assert _long_straddle_pnl_pct(3.0, 3.0, 100.0, 100.0) == -100.0
+
+    def test_none_inputs(self):
+        assert _long_straddle_pnl_pct(None, 3.0, 100.0, 100.0) is None
+        assert _long_straddle_pnl_pct(3.0, 3.0, 100.0, None) is None
+
+    def test_zero_premium_unusable(self):
+        # Defensive — zero-mid pair shouldn't crash.
+        assert _long_straddle_pnl_pct(0.0, 0.0, 100.0, 105.0) is None
+
+
+class TestShortStranglePnlPct:
+    def test_max_profit_when_inside_strikes(self):
+        # Sold 110C + 90P for $1+$1=$2. Stock stays at 100. Intrinsic
+        # at expiry = 0+0. Keep full $2 premium. Return = 100%.
+        assert _short_strangle_pnl_pct(1.0, 1.0, 110.0, 90.0, 100.0) == 100.0
+
+    def test_partial_loss_blow_through_call(self):
+        # Same wings, stock moves to 115. Intrinsic = 5 (call) + 0
+        # = 5. PnL = 2 - 5 = -3. Return = -3/2 = -150%.
+        assert _short_strangle_pnl_pct(1.0, 1.0, 110.0, 90.0, 115.0) == pytest.approx(
+            (2.0 - 5.0) / 2.0 * 100.0)
+
+    def test_loss_blow_through_put(self):
+        assert _short_strangle_pnl_pct(1.0, 1.0, 110.0, 90.0, 85.0) == pytest.approx(
+            (2.0 - 5.0) / 2.0 * 100.0)
+
+    def test_none_inputs(self):
+        assert _short_strangle_pnl_pct(None, 1.0, 110.0, 90.0, 100.0) is None
+        assert _short_strangle_pnl_pct(1.0, 1.0, None, 90.0, 100.0) is None
+
+
+class TestLongCallPutPnlPct:
+    def test_long_call_in_the_money(self):
+        # Paid $2 for 100C, stock goes to 105. Intrinsic = 5. PnL = 3.
+        assert _long_call_pnl_pct(2.0, 100.0, 105.0) == pytest.approx(150.0)
+
+    def test_long_call_total_loss_otm(self):
+        assert _long_call_pnl_pct(2.0, 100.0, 99.0) == -100.0
+
+    def test_long_put_in_the_money(self):
+        # Paid $2 for 100P, stock drops to 95. Intrinsic = 5. PnL = 3.
+        assert _long_put_pnl_pct(2.0, 100.0, 95.0) == pytest.approx(150.0)
+
+    def test_long_put_total_loss_otm(self):
+        assert _long_put_pnl_pct(2.0, 100.0, 101.0) == -100.0
+
+
+class TestSelectAtmPair:
+    @staticmethod
+    def _chain(strikes_with_call_put):
+        """Build a chain DF from a list of (strike, has_call, has_put, bid, ask)."""
+        from datetime import date
+        rows = []
+        for strike, has_c, has_p, bid, ask in strikes_with_call_put:
+            if has_c:
+                rows.append({'strike': strike, 'option_type': 'calls',
+                             'expiration': date(2025, 2, 7),
+                             'bid': bid, 'ask': ask, 'last_price': (bid+ask)/2,
+                             'implied_volatility': 0.30, 'delta': 0.5})
+            if has_p:
+                rows.append({'strike': strike, 'option_type': 'puts',
+                             'expiration': date(2025, 2, 7),
+                             'bid': bid, 'ask': ask, 'last_price': (bid+ask)/2,
+                             'implied_volatility': 0.32, 'delta': -0.5})
+        return pd.DataFrame(rows)
+
+    def test_picks_closest_paired_strike(self):
+        # spot=100, paired strikes at 95, 100, 105 — should pick 100.
+        chain = self._chain([(95, True, True, 0.5, 0.6),
+                              (100, True, True, 2.0, 2.2),
+                              (105, True, True, 0.5, 0.6)])
+        atm = _select_atm_pair(chain, spot=100.0)
+        assert atm is not None
+        assert atm['strike'] == 100.0
+        assert atm['call_mid'] == pytest.approx(2.1)
+        assert atm['put_mid'] == pytest.approx(2.1)
+
+    def test_skips_unpaired_strikes(self):
+        # 100 has call only, 99 has both → pick 99.
+        chain = self._chain([(100, True, False, 2.0, 2.2),
+                              (99, True, True, 1.5, 1.7)])
+        atm = _select_atm_pair(chain, spot=100.0)
+        assert atm is not None
+        assert atm['strike'] == 99.0
+
+    def test_returns_none_no_paired_strike(self):
+        chain = self._chain([(100, True, False, 2.0, 2.2)])
+        assert _select_atm_pair(chain, spot=100.0) is None
+
+    def test_returns_none_empty_chain(self):
+        assert _select_atm_pair(pd.DataFrame(), spot=100.0) is None
+
+    def test_returns_none_invalid_spot(self):
+        chain = self._chain([(100, True, True, 2.0, 2.2)])
+        assert _select_atm_pair(chain, spot=0.0) is None
+        assert _select_atm_pair(chain, spot=None) is None
+
+
+class TestSelectDeltaNPair:
+    @staticmethod
+    def _chain_with_deltas(items):
+        """items: list of (strike, option_type, delta, bid, ask)."""
+        from datetime import date
+        rows = []
+        for strike, ot, delta, bid, ask in items:
+            rows.append({'strike': strike, 'option_type': ot,
+                         'expiration': date(2025, 2, 7),
+                         'bid': bid, 'ask': ask, 'last_price': (bid+ask)/2,
+                         'implied_volatility': 0.30, 'delta': delta})
+        return pd.DataFrame(rows)
+
+    def test_picks_closest_to_target(self):
+        chain = self._chain_with_deltas([
+            (110, 'calls', 0.18, 0.5, 0.6),
+            (105, 'calls', 0.35, 1.5, 1.7),
+            (95, 'puts', -0.20, 0.5, 0.6),
+            (90, 'puts', -0.10, 0.2, 0.3),
+        ])
+        w = _select_delta_n_pair(chain, target_delta=0.20)
+        assert w is not None
+        # Closest to +0.20 call is delta 0.18 at strike 110.
+        assert w['call_strike'] == 110.0
+        # Closest to -0.20 put is delta -0.20 at strike 95.
+        assert w['put_strike'] == 95.0
+
+    def test_returns_none_no_calls_or_puts(self):
+        chain = self._chain_with_deltas([(110, 'calls', 0.18, 0.5, 0.6)])
+        assert _select_delta_n_pair(chain) is None
+
+
+class TestComputeOptionsMetrics:
+    @staticmethod
+    def _build_predictions_and_options():
+        """Q5 events with matched options snapshots — small but
+        deterministic so the means are computable by hand."""
+        from datetime import date, timedelta
+        events = []
+        opt_rows = []
+        for q in range(5):
+            base_score = 10 + q * 10
+            for i in range(20):
+                ticker = f'T{q}{i}'
+                # Spread events across a year so dates differ
+                reported = date(2024, 1, 1) + timedelta(days=q * 20 + i)
+                snapshot = reported - timedelta(days=1)
+                events.append({
+                    'ticker': ticker,
+                    'reported_date': reported,
+                    'archetype': 'bullish_trend',
+                    'score': float(base_score + i * 0.01),
+                    'actual_gap_pct': 3.0,
+                    'sustain_5d_pct': 2.0,
+                    'd_minus_1_close': 100.0,
+                    'd_plus_1_close':  103.0,  # 3% move (matches gap)
+                })
+                # Only attach options for Q5 events
+                if q == 4:
+                    # ATM 100C + 100P at $2 each → straddle premium $4
+                    # → implied move 4%. Realized 3% < implied 4% →
+                    # long straddle loses, short strangle wins.
+                    expiry = reported + timedelta(days=7)
+                    opt_rows.append({'symbol': ticker, 'snapshot_date': snapshot,
+                                     'expiration': expiry, 'strike': 100.0,
+                                     'option_type': 'calls', 'bid': 1.9, 'ask': 2.1,
+                                     'last_price': 2.0, 'implied_volatility': 0.40,
+                                     'delta': 0.50})
+                    opt_rows.append({'symbol': ticker, 'snapshot_date': snapshot,
+                                     'expiration': expiry, 'strike': 100.0,
+                                     'option_type': 'puts', 'bid': 1.9, 'ask': 2.1,
+                                     'last_price': 2.0, 'implied_volatility': 0.40,
+                                     'delta': -0.50})
+                    # Add delta-20 wings for the strangle calc
+                    opt_rows.append({'symbol': ticker, 'snapshot_date': snapshot,
+                                     'expiration': expiry, 'strike': 105.0,
+                                     'option_type': 'calls', 'bid': 0.4, 'ask': 0.6,
+                                     'last_price': 0.5, 'implied_volatility': 0.40,
+                                     'delta': 0.20})
+                    opt_rows.append({'symbol': ticker, 'snapshot_date': snapshot,
+                                     'expiration': expiry, 'strike': 95.0,
+                                     'option_type': 'puts', 'bid': 0.4, 'ask': 0.6,
+                                     'last_price': 0.5, 'implied_volatility': 0.40,
+                                     'delta': -0.20})
+        return pd.DataFrame(events), pd.DataFrame(opt_rows)
+
+    def test_empty_predictions(self):
+        m = compute_options_metrics(pd.DataFrame(), pd.DataFrame())
+        assert m['n_with_options'] == 0
+        assert m['avg_long_straddle_pnl_pct'] != m['avg_long_straddle_pnl_pct']  # NaN
+
+    def test_empty_options(self):
+        preds, _ = self._build_predictions_and_options()
+        m = compute_options_metrics(preds, pd.DataFrame())
+        assert m['n_with_options'] == 0
+
+    def test_q5_matched_metrics(self):
+        preds, opts = self._build_predictions_and_options()
+        m = compute_options_metrics(preds, opts)
+        # Q5 = 20 events, all matched.
+        assert m['n_with_options'] == 20
+        # Implied move from $4 straddle / $100 = 4.0%.
+        assert m['avg_implied_move_pct'] == pytest.approx(4.0)
+        # Realized move |3%| = 3.0%.
+        assert m['avg_realized_move_pct'] == pytest.approx(3.0)
+        # Ratio = 3/4 = 0.75.
+        assert m['realized_vs_implied_ratio'] == pytest.approx(0.75)
+        # Long straddle: spot exit 103, strike 100, intrinsic = 3.
+        # Premium = $4. PnL = 3-4 = -1 → -25% return.
+        assert m['avg_long_straddle_pnl_pct'] == pytest.approx(-25.0)
+        # Short delta-20 strangle (105C + 95P @ $0.5 each, $1 total premium).
+        # Spot 103, intrinsic = max(103-105,0) + max(95-103,0) = 0.
+        # PnL = premium - 0 = 1 = 100% return.
+        assert m['avg_short_strangle_pnl_pct'] == pytest.approx(100.0)
+        # Long ATM call: paid $2, spot 103, intrinsic 3, PnL = 1 = 50%.
+        assert m['avg_long_call_pnl_pct'] == pytest.approx(50.0)
+        # Long ATM put: paid $2, spot 103, intrinsic 0, total loss -100%.
+        assert m['avg_long_put_pnl_pct'] == pytest.approx(-100.0)
 
 
 class TestGetEarningsCalibration:

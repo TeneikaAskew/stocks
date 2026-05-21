@@ -1573,6 +1573,54 @@ deploy_earnings_sweep() {
 }
 
 
+# ── earnings-options-backfill (Cloud Run Job, on-demand) ─────────────────────
+# One-shot historical-options backfill driven by earnings_reactions events.
+# For every (ticker, reported_date) pair, fetches the AV HISTORICAL_OPTIONS
+# chain at close of T-1 and writes the post-earnings-expiry slice
+# (≤14d after reported_date) into earnings_options_snapshots.
+#
+# Capacity (CLAUDE.md Rule 0):
+#   - 41,756 events × 1 AV call/event @ 150 RPM = ~4.5 h wall-clock.
+#   - task-timeout 32400s (9h) = 2× headroom over actual estimate.
+#   - max-retries 0: Cloud Run can't distinguish transient from permanent
+#     here; the script's own per-event retry covers the transient case.
+#     A re-dispatch resumes via per-event idempotency check.
+#   - Cost: ~$0.50 per full run; the AV calls themselves are free under
+#     the existing premium subscription.
+#
+# Not on a Cloud Scheduler — this is the catch-up run. Forward-looking
+# snapshots will be covered by a separate daily fetcher (PR-B follow-up)
+# that snapshots tomorrow's earnings tickers' chains each evening.
+deploy_earnings_options_backfill() {
+    echo "Deploying earnings-options-backfill job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 32400
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_earnings_options_backfill"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create earnings-options-backfill "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update earnings-options-backfill "${common_flags[@]}"
+}
+
+
 # ── Failure notifier (Cloud Run Service) ─────────────────────────────────────
 # Receives Cloud Logging entries about failed Cloud Run Jobs via Pub/Sub push
 # and fans out to (1) Discord webhook and (2) GitHub issue create/update.
@@ -2311,6 +2359,7 @@ case "${1:-help}" in
     calibrate)    build_image && deploy_calibrate_thresholds ;;
     param-sweep)  build_image && deploy_param_sweep ;;
     earnings-sweep) build_image && deploy_earnings_sweep ;;
+    earnings-options-backfill) build_image && deploy_earnings_options_backfill ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     signal-replay) build_image && deploy_signal_replay ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
