@@ -272,6 +272,118 @@ def action_hint_for_archetype(archetype: Optional[str]) -> str:
     return ARCHETYPE_ACTION_HINT.get(archetype or 'quiet', 'skip')
 
 
+# Calibration-aware vehicle override (PR-B, 2026-05-22)
+# ----------------------------------------------------
+# When the 2026-05-21 backfill sweep computed options-side $ attribution
+# across 2,533 Q5 events, the result was unambiguous: top-quintile picks
+# have realized_vs_implied_ratio=0.636 (options OVERPRICED) and
+# avg_short_strangle_pnl_pct=+20.3% (vs avg_long_straddle_pnl_pct=-9.5%
+# and directional stock -$3.55/$1k). So the "right vehicle" for Q5 picks
+# is NOT directional or long-volatility — it's SHORT premium.
+#
+# This helper overrides the archetype → action map for top-quintile picks
+# when the live calibration row confirms the over-pricing pattern.
+# Below Q5 (lower conviction), the archetype map still wins because the
+# options edge is concentrated in the top quintile.
+
+# Thresholds tuned to match the 2026-05-22 calibration row but
+# loose enough that natural drift won't flip the recommendation.
+_IC_RATIO_THRESHOLD     = 0.85   # realized must be < 85% of implied
+_IC_STRANGLE_THRESHOLD  = 5.0    # short-strangle PnL must be > +5%
+
+
+def recommended_structure(
+    archetype: Optional[str],
+    score_quintile: Optional[str],
+    calibration: Optional[dict] = None,
+) -> Optional[str]:
+    """Return the brief's action tag for one earnings row.
+
+    For Q5 (top-conviction) picks AND a calibration row showing the
+    options market is over-pricing the realized move, returns 'IC'
+    (Iron Condor — defined-risk short strangle). Otherwise falls back
+    to the archetype-driven map (CALL / PUT / STRDL).
+
+    ``calibration`` is a dict with optional keys:
+      - realized_vs_implied_ratio (float, e.g. 0.636)
+      - avg_short_strangle_pnl_pct (float, e.g. 20.3)
+    Both must be present and above thresholds for the override to
+    fire. None / missing values cleanly fall through to the archetype
+    map per CLAUDE.md §3.7 — no silent fallback to a hardcoded vehicle.
+    """
+    _archetype_map = {
+        'bullish_trend': 'CALL',
+        'bearish_trend': 'PUT',
+        'reversal_play': 'STRDL',
+        'mixed':         'STRDL',
+    }
+    archetype_action = _archetype_map.get(archetype) if archetype else None
+
+    # Override only kicks in for Q5 (top quintile) — that's where the
+    # backtest showed the options edge concentrates.
+    if score_quintile != 'Q5':
+        return archetype_action
+    if not calibration:
+        return archetype_action
+
+    ratio = calibration.get('realized_vs_implied_ratio')
+    ss_pnl = calibration.get('avg_short_strangle_pnl_pct')
+    # Both signals must agree: stock under-moves vs implied AND
+    # short-strangle PnL is meaningfully positive.
+    if (ratio is not None and ss_pnl is not None
+            and ratio < _IC_RATIO_THRESHOLD
+            and ss_pnl > _IC_STRANGLE_THRESHOLD):
+        return 'IC'
+
+    return archetype_action
+
+
+def get_calibration_options_metrics() -> dict:
+    """Pull the options-side calibration metrics from the latest row.
+
+    Returns a dict of metrics the brief needs to drive
+    ``recommended_structure()``. Falls back to an empty dict on any
+    query failure — caller (`recommended_structure`) treats empty
+    calibration as "no Q5 override available" and falls back to the
+    archetype map. Resilient like ``get_earnings_calibration``.
+    """
+    try:
+        from gcp.database import query_to_dataframe, is_cloud_sql_configured
+    except ImportError:
+        return {}
+    if not is_cloud_sql_configured():
+        return {}
+    try:
+        df = query_to_dataframe(
+            "SELECT realized_vs_implied_ratio, avg_short_strangle_pnl_pct, "
+            "avg_long_straddle_pnl_pct, avg_implied_move_pct, "
+            "avg_realized_move_pct, n_with_options "
+            "FROM earnings_calibration "
+            "ORDER BY calibration_date DESC LIMIT 1"
+        )
+    except Exception as e:
+        log.warning("earnings_calibration options-metrics query failed "
+                    "(%s) — empty", type(e).__name__)
+        return {}
+    if df is None or df.empty:
+        return {}
+    row = df.iloc[0]
+    out: dict = {}
+    for k in ('realized_vs_implied_ratio', 'avg_short_strangle_pnl_pct',
+              'avg_long_straddle_pnl_pct', 'avg_implied_move_pct',
+              'avg_realized_move_pct'):
+        v = _to_float(row.get(k))
+        if v is not None:
+            out[k] = v
+    n_opts = row.get('n_with_options')
+    if n_opts is not None:
+        try:
+            out['n_with_options'] = int(n_opts)
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def classify_archetype(
     move_magnitude_pct: Optional[float],
     directional_bias_pct: Optional[float],
