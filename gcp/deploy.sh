@@ -1628,7 +1628,7 @@ deploy_intraday_bulk_backfill() {
         --task-timeout 18000
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday"
-        --args "--symbols-file,/app/gcp/fetchers/symbol_lists/earnings_universe.txt,--start-date,2024-01-01"
+        --args="--symbols-file,/app/gcp/fetchers/symbol_lists/earnings_universe.txt,--start-date,2024-01-01"
         ${secrets_flag}
         --set-env-vars "${non_secret_env}"
         --quiet
