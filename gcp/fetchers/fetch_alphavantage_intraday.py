@@ -127,6 +127,53 @@ def fetch_month(symbol: str, year: int, month: int, api_key: str) -> Optional[pd
         return None
 
 
+# Ticker-level skip threshold for the bulk-backfill re-run path.
+# A fully backfilled ticker over 24 months has ~500k 1-min bars; 100k
+# is the floor for "substantial coverage already" while still leaving
+# room for partial-fetch tickers (where a daily-fetch wrote a single
+# day) to be re-fetched. This is intentionally coarser than per-month
+# checking because 1,356 tickers × 24 months = 32k queries vs 1,356
+# queries — the per-month variant adds 15 minutes of pure DB overhead
+# to avoid maybe 5 minutes of AV re-fetches per partial ticker.
+_SKIP_TICKER_ROW_THRESHOLD = 100_000
+
+
+def _ticker_already_backfilled(symbol: str) -> bool:
+    """Fast check: does this ticker already have substantial 1-min coverage?
+
+    Returns True when ``market_data_intraday`` has ≥100k rows for this
+    ticker in the 2024-01-01+ range — the indicator that a previous
+    backfill run completed this ticker. The query uses the
+    (ticker, interval, ts) primary-key prefix so it's index-scan fast
+    (~10 ms typical). False on any failure (table missing, creds
+    missing, transient query error) so a flaky DB doesn't silently
+    skip a ticker that should run.
+    """
+    try:
+        from gcp.database import query_to_dataframe, is_cloud_sql_configured
+    except ImportError:
+        return False
+    if not is_cloud_sql_configured():
+        return False
+    try:
+        df = query_to_dataframe(
+            "SELECT count(*) AS n FROM market_data_intraday "
+            "WHERE ticker = :t AND interval = '1min' "
+            "AND ts >= '2024-01-01'",
+            {"t": symbol.upper()},
+        )
+    except Exception as e:
+        log.debug("    skip-check failed for %s: %s — will fetch", symbol, e)
+        return False
+    if df is None or df.empty:
+        return False
+    try:
+        n = int(df.iloc[0]['n'])
+    except (TypeError, ValueError, KeyError):
+        return False
+    return n >= _SKIP_TICKER_ROW_THRESHOLD
+
+
 def process_symbol(
     symbol: str,
     start_date: str,
@@ -150,9 +197,16 @@ def process_symbol(
     180 calls ≈ 1.2 min. Idempotent via ON CONFLICT DO UPDATE on
     (ticker, interval, ts).
 
-    --force is retained as a no-op for back-compat with existing callers
-    and Cloud Scheduler args; behavior is now equivalent in both modes.
+    For BULK BACKFILL (1,356 tickers via --symbols-file): the script
+    skips tickers that already have substantial coverage (≥100k rows
+    in 2024-01-01+) so a re-run after a task-timeout completes only
+    the NEW tickers, not the ones we already finished. The skip is
+    bypassed with --force.
     """
+    if not force and _ticker_already_backfilled(symbol):
+        log.info("  %s: already has ≥%d rows from a prior run — skipping",
+                 symbol, _SKIP_TICKER_ROW_THRESHOLD)
+        return
     months = get_trading_months(start_date, end_date)
     log.info("  %s: %d months (%s → %s)", symbol, len(months), start_date, end_date)
 

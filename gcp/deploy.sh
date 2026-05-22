@@ -1604,14 +1604,20 @@ deploy_earnings_sweep() {
 #   - Volume: 1,356 tickers × 24 months ≈ 32,544 AV calls.
 #   - Per-call latency: ~5 s end-to-end (AV response ~2 s + DB upsert ~2 s
 #     + 0.4 s rate-limit floor). Single-task throughput observed
-#     2026-05-21: ~1 ticker/min ≈ 24 h for the whole universe — way
-#     over the 5h ceiling and reasonable usability.
-#   - Solution: --tasks=8 --parallelism=8. Each task processes a
-#     symbol stripe (1356 / 8 ≈ 170 tickers). Global AV call rate at
-#     8 × 0.33 = 2.6 calls/s = 156 RPM — fits inside the 150 RPM
-#     premium ceiling with negligible spillover risk.
-#   - Wall-clock at 8× parallel: ~3 h.
-#   - task-timeout 18000s (5h) = 1.7× headroom.
+#     2026-05-21: ~1 ticker/min on solo run, but ~7.5 min/ticker at
+#     8-way parallel — combined call rate exceeded 150 RPM and AV
+#     throttled, plus 8 simultaneous DB upsert streams thrashed the
+#     Cloud SQL connection pool.
+#   - Solution v2 (2026-05-22): --tasks=4 --parallelism=4. Combined
+#     call rate 4 × 0.33 = 1.3 calls/s = 80 RPM — well under the 150
+#     premium cap with no throttle storms. The fetcher also checks
+#     market_data_intraday at task startup and skips tickers with
+#     ≥100k existing rows (re-runs after timeout finish only the
+#     remaining tickers, not the ones the prior run completed).
+#   - Wall-clock at 4× parallel for the remaining ~1,000 tickers:
+#     ~250 tickers per task × ~2 min/ticker ≈ 8 h.
+#   - task-timeout 86400s (24h Cloud Run max) — 3× headroom over the
+#     estimate. Re-launch is safe via the ticker-skip check.
 #   - max-retries 0: per-symbol failures are non-fatal (logged + continued)
 #     so transient retries would double-charge quota without recovering.
 #   - Disk: Cloud SQL storageAutoResize=true, no ceiling.
@@ -1639,8 +1645,8 @@ deploy_intraday_bulk_backfill() {
     local common_flags=(
         --image "${IMAGE}" --region "${REGION}"
         --memory 1Gi --cpu 1 --max-retries 0
-        --task-timeout 18000
-        --tasks 8 --parallelism 8
+        --task-timeout 86400
+        --tasks 4 --parallelism 4
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday"
         --args="--symbols-file,/app/gcp/fetchers/symbol_lists/earnings_universe.txt,--start-date,2024-01-01"
