@@ -18,14 +18,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-# Skip the entire module if google-genai isn't installed in the test
-# environment. Production CI installs it via requirements.txt; this
-# guard keeps a hermetic local test run (or any env that hasn't
-# `pip install google-genai`) from hitting a ModuleNotFoundError
-# inside the adapter's `from google.genai import types` runtime
-# import, which the existing patch.dict on sys.modules['google.genai.types']
-# alone can't satisfy without the parent module being importable.
-pytest.importorskip("google.genai")
+# Importing the adapter module is safe without google-genai installed —
+# the `from google.genai import types` lives inside complete() (line 113),
+# not at module load. We don't use importorskip because importorskip
+# eagerly imports google.genai, and google.genai's __init__ binds the
+# `types` submodule as an attribute on the package object. Once that
+# attribute is bound, patch.dict(sys.modules, {"google.genai.types":
+# mock}) no longer affects `from google.genai import types` — the
+# resolution goes via the package attribute, not sys.modules. The
+# per-test patch_dict below patches the PARENT module so it works
+# whether or not google-genai is installed.
 
 from lib.agents.llm_client import Message
 from lib.agents.schema import AnalystOutput, EntryZone, TraderOutput
@@ -110,7 +112,12 @@ def test_complete_parses_analyst_output():
     types_mod.Content = lambda role, parts: {"role": role, "parts": parts}
     types_mod.Part = lambda text: {"text": text}
     types_mod.GenerateContentConfig = lambda **kw: kw
-    with patch.dict(sys.modules, {"google.genai.types": types_mod}):
+    genai_pkg = MagicMock()
+    genai_pkg.types = types_mod
+    with patch.dict(sys.modules, {
+            "google.genai": genai_pkg,
+            "google.genai.types": types_mod,
+    }):
         adapter = VertexGeminiAdapter()
         result = asyncio.run(
             adapter.complete(
@@ -151,7 +158,12 @@ def test_complete_hoists_system_message_into_instruction():
 
     types_mod.GenerateContentConfig = capture_config
 
-    with patch.dict(sys.modules, {"google.genai.types": types_mod}):
+    genai_pkg = MagicMock()
+    genai_pkg.types = types_mod
+    with patch.dict(sys.modules, {
+            "google.genai": genai_pkg,
+            "google.genai.types": types_mod,
+    }):
         adapter = VertexGeminiAdapter()
         asyncio.run(
             adapter.complete(
@@ -197,7 +209,12 @@ def test_usage_subtracts_cache_reads_from_input():
     types_mod.Content = lambda role, parts: {"role": role, "parts": parts}
     types_mod.Part = lambda text: {"text": text}
     types_mod.GenerateContentConfig = lambda **kw: kw
-    with patch.dict(sys.modules, {"google.genai.types": types_mod}):
+    genai_pkg = MagicMock()
+    genai_pkg.types = types_mod
+    with patch.dict(sys.modules, {
+            "google.genai": genai_pkg,
+            "google.genai.types": types_mod,
+    }):
         adapter = VertexGeminiAdapter()
         result = asyncio.run(
             adapter.complete(
@@ -222,7 +239,12 @@ def test_complete_raises_on_empty_response():
     types_mod.Content = lambda role, parts: {"role": role, "parts": parts}
     types_mod.Part = lambda text: {"text": text}
     types_mod.GenerateContentConfig = lambda **kw: kw
-    with patch.dict(sys.modules, {"google.genai.types": types_mod}):
+    genai_pkg = MagicMock()
+    genai_pkg.types = types_mod
+    with patch.dict(sys.modules, {
+            "google.genai": genai_pkg,
+            "google.genai.types": types_mod,
+    }):
         adapter = VertexGeminiAdapter()
         with pytest.raises(RuntimeError, match="empty response"):
             asyncio.run(
