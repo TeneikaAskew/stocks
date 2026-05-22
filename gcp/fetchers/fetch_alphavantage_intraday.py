@@ -250,6 +250,21 @@ def main():
         raw = args.symbol.replace(',', ' ')
         symbols = [s.strip().upper() for s in raw.split() if s.strip()]
 
+    # Cloud Run Job task sharding — when --tasks=N is set on the job,
+    # Cloud Run injects CLOUD_RUN_TASK_INDEX (0..N-1) and
+    # CLOUD_RUN_TASK_COUNT (=N) into each task's env. We carve the
+    # symbol list into N stripes and each task processes its own.
+    # Striping rather than contiguous chunking spreads
+    # heavyweight (high-volume) tickers across tasks instead of
+    # piling them onto task 0 alphabetically.
+    task_idx = int(os.environ.get('CLOUD_RUN_TASK_INDEX', '0'))
+    task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
+    if task_cnt > 1:
+        before = len(symbols)
+        symbols = symbols[task_idx::task_cnt]
+        log.info("  Task %d/%d — processing %d/%d symbols (stripe)",
+                 task_idx, task_cnt, len(symbols), before)
+
     log.info("AlphaVantage Intraday Fetch Job")
     log.info("  Symbols   : %s", symbols)
     log.info("  Date range: %s → %s", start_date, end_date)

@@ -1555,9 +1555,13 @@ deploy_param_sweep() {
 # The sweep is formula-eval over ~21k earnings_reactions rows — light.
 deploy_earnings_sweep() {
     echo "Deploying earnings-sweep job..."
+    # Memory bumped from 1Gi → 4Gi on 2026-05-21 when the PR-B options-join
+    # was added: _load_options_snapshots() pulls ~1.8M rows × ~10 columns
+    # which materialises as a ~700 MB DataFrame, plus the per-combo Q5
+    # filtering and groupby work peaks 2-3× that during the sweep.
     gcloud run jobs create earnings-sweep \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 0 --task-timeout 1800 \
+        --memory 4Gi --cpu 2 --max-retries 0 --task-timeout 1800 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.calibrate_earnings" \
         ${DB_SECRET_FLAG} \
@@ -1565,7 +1569,7 @@ deploy_earnings_sweep() {
         --quiet 2>/dev/null || \
     gcloud run jobs update earnings-sweep \
         --image "${IMAGE}" --region "${REGION}" \
-        --memory 1Gi --cpu 1 --max-retries 0 --task-timeout 1800 \
+        --memory 4Gi --cpu 2 --max-retries 0 --task-timeout 1800 \
         --command "python,-m,scripts.calibrate_earnings" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "$(_env_string)" \
@@ -1591,23 +1595,33 @@ deploy_earnings_sweep() {
 # Not on a Cloud Scheduler — this is the catch-up run. Forward-looking
 # snapshots will be covered by a separate daily fetcher (PR-B follow-up)
 # that snapshots tomorrow's earnings tickers' chains each evening.
-# ── intraday-bulk-backfill (Cloud Run Job, on-demand) ────────────────────────
+# ── intraday-bulk-backfill (Cloud Run Job, on-demand, parallel) ──────────────
 # Historical 1-min underlying-bar backfill for the full earnings universe
 # (1,356 tickers as of 2026-05-21). Powers the PR-C intraday option
 # repricer and the platform's intraday-chart view for any earnings name.
 #
 # Capacity per Rule 0:
 #   - Volume: 1,356 tickers × 24 months ≈ 32,544 AV calls.
-#   - Velocity: 150 RPM premium → ~3.6 h wall-clock.
-#   - task-timeout 18000s (5h) = 1.4× headroom over the estimate.
+#   - Per-call latency: ~5 s end-to-end (AV response ~2 s + DB upsert ~2 s
+#     + 0.4 s rate-limit floor). Single-task throughput observed
+#     2026-05-21: ~1 ticker/min ≈ 24 h for the whole universe — way
+#     over the 5h ceiling and reasonable usability.
+#   - Solution: --tasks=8 --parallelism=8. Each task processes a
+#     symbol stripe (1356 / 8 ≈ 170 tickers). Global AV call rate at
+#     8 × 0.33 = 2.6 calls/s = 156 RPM — fits inside the 150 RPM
+#     premium ceiling with negligible spillover risk.
+#   - Wall-clock at 8× parallel: ~3 h.
+#   - task-timeout 18000s (5h) = 1.7× headroom.
 #   - max-retries 0: per-symbol failures are non-fatal (logged + continued)
 #     so transient retries would double-charge quota without recovering.
-#   - Disk: Cloud SQL storageAutoResize=true, no ceiling — auto-grows by
-#     the ~25 GB the upserts add over time.
+#   - Disk: Cloud SQL storageAutoResize=true, no ceiling.
 #
-# Reads the symbols list from a baked-in text file rather than a long
-# --args string so the spec is reproducible and gcloud quoting bugs
-# can't corrupt the symbol list.
+# Sharding logic: fetch_alphavantage_intraday.main() reads
+# CLOUD_RUN_TASK_INDEX / CLOUD_RUN_TASK_COUNT (injected by Cloud Run)
+# and stripes the symbol list with `symbols[task_idx::task_cnt]`.
+# Striping rather than contiguous chunking distributes heavy
+# (high-volume) tickers across tasks instead of piling them on
+# task 0 alphabetically.
 deploy_intraday_bulk_backfill() {
     echo "Deploying intraday-bulk-backfill job..."
 
@@ -1626,6 +1640,7 @@ deploy_intraday_bulk_backfill() {
         --image "${IMAGE}" --region "${REGION}"
         --memory 1Gi --cpu 1 --max-retries 0
         --task-timeout 18000
+        --tasks 8 --parallelism 8
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday"
         --args="--symbols-file,/app/gcp/fetchers/symbol_lists/earnings_universe.txt,--start-date,2024-01-01"
