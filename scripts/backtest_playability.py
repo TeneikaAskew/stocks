@@ -688,6 +688,327 @@ def compute_options_metrics(predictions: pd.DataFrame,
     }
 
 
+def _long_strangle_pnl_pct(call_mid: float, put_mid: float,
+                            call_strike: float, put_strike: float,
+                            spot_exit: float) -> float | None:
+    """PnL of a long OTM strangle, % return on premium paid.
+
+    Entry: buy delta-20 call + delta-20 put. Exit at T+1 close,
+    modelled as intrinsic-only. Mirror of _short_strangle_pnl_pct
+    (sign-flipped on the numerator).
+    """
+    if (call_mid is None or put_mid is None
+            or call_strike is None or put_strike is None
+            or spot_exit is None):
+        return None
+    premium = call_mid + put_mid
+    if premium <= 0:
+        return None
+    intrinsic = (max(spot_exit - call_strike, 0.0)
+                 + max(put_strike - spot_exit, 0.0))
+    return (intrinsic - premium) / premium * 100.0
+
+
+def _short_straddle_pnl_pct(call_mid: float, put_mid: float,
+                             strike: float, spot_exit: float) -> float | None:
+    """PnL of a short ATM straddle, % return on premium collected.
+
+    Mirror of _long_straddle_pnl_pct — collect premium upfront,
+    pay back intrinsic at exit. NAKED — unbounded loss possible.
+    """
+    if call_mid is None or put_mid is None or spot_exit is None:
+        return None
+    premium = call_mid + put_mid
+    if premium <= 0:
+        return None
+    intrinsic = abs(spot_exit - strike)
+    return (premium - intrinsic) / premium * 100.0
+
+
+def compute_options_insights(
+    predictions: pd.DataFrame,
+    options_df: pd.DataFrame,
+) -> tuple[list[dict], list[dict], str]:
+    """Per-(quintile × ratio_bucket × structure) options insights.
+
+    Computes hit rate, mean / median / p10 / p90 PnL%, and avg implied/
+    realized move for every combination of:
+
+      - quintile ∈ {Q1, Q2, Q3, Q4, Q5, ALL}
+      - ratio_bucket ∈ {over_realized, fair, over_priced, all}
+        where ratio = abs(reaction_gap_pct) / implied_move_pct
+      - structure ∈ {long_straddle, long_call, long_put, long_strangle,
+                     short_straddle, short_strangle}
+
+    Returns (insight_rows, winner_rows, markdown_report).
+      - insight_rows: ready-to-upsert into earnings_options_strategy_insights
+      - winner_rows: top-10 named events per (structure, quintile)
+        ready for earnings_options_strategy_winners
+      - markdown_report: human-readable summary for stdout / docs
+
+    Single-leg short_call / short_put are deliberately omitted —
+    they're covered/cash-secured income strategies, not directional
+    bets like the other six.
+    """
+    if predictions is None or predictions.empty or options_df is None or options_df.empty:
+        return [], [], "# Options insights\n\nNo data available.\n"
+
+    # Quintile assignment using the SAME pd.qcut as compute_options_metrics.
+    df = predictions.dropna(subset=['score']).copy()
+    if df.empty or df['score'].nunique() < 5:
+        return [], [], "# Options insights\n\nInsufficient score variation.\n"
+    # qcut returns 0..4; map to Q1..Q5 with Q5 as the highest score.
+    df['q'] = pd.qcut(df['score'], q=5, labels=False, duplicates='drop')
+    q_max = df['q'].max()
+    df['quintile_label'] = df['q'].map(
+        {i: f"Q{i + 1}" for i in range(int(q_max) + 1)}
+    )
+
+    # Pre-group options once.
+    options_df = options_df.copy()
+    options_df['snapshot_date'] = pd.to_datetime(
+        options_df['snapshot_date']).dt.date
+    opts_by_event = {
+        k: g for k, g in options_df.groupby(['symbol', 'snapshot_date'])
+    }
+
+    # Build per-event detail across ALL quintiles (not just Q5).
+    rows = []
+    for _, row in df.iterrows():
+        ticker = str(row['ticker']).upper()
+        reported = pd.to_datetime(row['reported_date']).date()
+        snapshot_dt = reported - timedelta(days=1)
+        spot_entry = _safe_float(row.get('d_minus_1_close'))
+        spot_exit = _safe_float(row.get('d_plus_1_close'))
+        if spot_entry is None or spot_exit is None or spot_entry <= 0:
+            continue
+        chain = opts_by_event.get((ticker, snapshot_dt))
+        if chain is None or chain.empty:
+            continue
+        atm = _select_atm_pair(chain, spot_entry)
+        if atm is None:
+            continue
+        wings = _select_delta_n_pair(chain, target_delta=0.20)
+
+        implied_pct = (atm['call_mid'] + atm['put_mid']) / spot_entry * 100.0
+        realized_pct_signed = _safe_float(row.get('actual_gap_pct')) or 0.0
+        realized_pct = abs(realized_pct_signed)
+        ratio = realized_pct / implied_pct if implied_pct > 0 else None
+        if ratio is None:
+            continue
+
+        # All six structure PnLs (None if data insufficient).
+        ls = _long_straddle_pnl_pct(atm['call_mid'], atm['put_mid'],
+                                     atm['strike'], spot_exit)
+        ss = _short_straddle_pnl_pct(atm['call_mid'], atm['put_mid'],
+                                      atm['strike'], spot_exit)
+        lc = _long_call_pnl_pct(atm['call_mid'], atm['strike'], spot_exit)
+        lp = _long_put_pnl_pct(atm['put_mid'], atm['strike'], spot_exit)
+        ls_wing = ss_wing = None
+        wc_mid = wp_mid = wc_strike = wp_strike = None
+        if wings is not None:
+            wc_mid = wings['call_mid']
+            wp_mid = wings['put_mid']
+            wc_strike = wings['call_strike']
+            wp_strike = wings['put_strike']
+            ls_wing = _long_strangle_pnl_pct(
+                wc_mid, wp_mid, wc_strike, wp_strike, spot_exit)
+            ss_wing = _short_strangle_pnl_pct(
+                wc_mid, wp_mid, wc_strike, wp_strike, spot_exit)
+
+        rows.append({
+            'ticker': ticker, 'date': reported,
+            'quintile': row['quintile_label'],
+            'archetype': row.get('archetype'),
+            'spot_entry': spot_entry, 'spot_exit': spot_exit,
+            'atm_strike': atm['strike'],
+            'call_mid': atm['call_mid'], 'put_mid': atm['put_mid'],
+            'wing_call_strike': wc_strike, 'wing_put_strike': wp_strike,
+            'wing_call_mid': wc_mid, 'wing_put_mid': wp_mid,
+            'implied_pct': implied_pct,
+            'realized_pct': realized_pct,
+            'realized_signed_pct': realized_pct_signed,
+            'ratio': ratio,
+            'long_straddle': ls,
+            'long_call': lc,
+            'long_put': lp,
+            'long_strangle': ls_wing,
+            'short_straddle': ss,
+            'short_strangle': ss_wing,
+        })
+
+    if not rows:
+        return [], [], "# Options insights\n\nNo matched events.\n"
+    detail = pd.DataFrame(rows)
+
+    # Ratio buckets.
+    def _bucket(r: float) -> str:
+        if r > 1.5:
+            return 'over_realized'
+        if r >= 0.85:
+            return 'fair'
+        return 'over_priced'
+    detail['ratio_bucket'] = detail['ratio'].map(_bucket)
+
+    today = datetime.now().date()
+    structures = ['long_straddle', 'long_call', 'long_put', 'long_strangle',
+                  'short_straddle', 'short_strangle']
+    insight_rows: list[dict] = []
+    winner_rows: list[dict] = []
+
+    def _build_stats(sub: pd.DataFrame, quintile: str, bucket: str) -> None:
+        for s in structures:
+            v = sub[s].dropna()
+            if v.empty:
+                continue
+            insight_rows.append({
+                'calculation_date': today,
+                'quintile': quintile,
+                'ratio_bucket': bucket,
+                'structure': s,
+                'n_events': int(len(v)),
+                'hit_rate_pct': float((v > 0).mean() * 100),
+                'mean_pnl_pct': float(v.mean()),
+                'median_pnl_pct': float(v.median()),
+                'p10_pnl_pct': float(v.quantile(0.10)),
+                'p90_pnl_pct': float(v.quantile(0.90)),
+                'avg_implied_move_pct': float(sub['implied_pct'].mean()),
+                'avg_realized_move_pct': float(sub['realized_pct'].mean()),
+                'notes': None,
+            })
+
+    # Stats per (quintile, ratio_bucket) — plus 'all' / 'ALL' rollups.
+    quintile_labels = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']
+    for q in quintile_labels:
+        q_df = detail[detail['quintile'] == q]
+        if q_df.empty:
+            continue
+        _build_stats(q_df, q, 'all')
+        for b in ['over_realized', 'fair', 'over_priced']:
+            _build_stats(q_df[q_df['ratio_bucket'] == b], q, b)
+    # Cross-quintile baseline.
+    _build_stats(detail, 'ALL', 'all')
+    for b in ['over_realized', 'fair', 'over_priced']:
+        _build_stats(detail[detail['ratio_bucket'] == b], 'ALL', b)
+
+    # Top-10 winners per (structure, quintile) — sorted by PnL DESC.
+    for s in structures:
+        for q in quintile_labels + ['ALL']:
+            q_df = detail if q == 'ALL' else detail[detail['quintile'] == q]
+            sub = q_df.dropna(subset=[s]).sort_values(s, ascending=False).head(10)
+            for rank, (_, r) in enumerate(sub.iterrows(), start=1):
+                # Compute premium + exit value per share for the
+                # specific structure so the winner row stands alone.
+                if s == 'long_straddle' or s == 'short_straddle':
+                    prem = (r['call_mid'] or 0) + (r['put_mid'] or 0)
+                    exitv = abs(r['spot_exit'] - r['atm_strike'])
+                    strk = r['atm_strike']
+                elif s == 'long_call':
+                    prem = r['call_mid'] or 0
+                    exitv = max(r['spot_exit'] - r['atm_strike'], 0)
+                    strk = r['atm_strike']
+                elif s == 'long_put':
+                    prem = r['put_mid'] or 0
+                    exitv = max(r['atm_strike'] - r['spot_exit'], 0)
+                    strk = r['atm_strike']
+                elif s == 'long_strangle' or s == 'short_strangle':
+                    prem = (r['wing_call_mid'] or 0) + (r['wing_put_mid'] or 0)
+                    exitv = (max(r['spot_exit'] - (r['wing_call_strike'] or 0), 0)
+                             + max((r['wing_put_strike'] or 0) - r['spot_exit'], 0))
+                    strk = None  # two strikes, not one
+                else:
+                    prem = None; exitv = None; strk = None
+                winner_rows.append({
+                    'calculation_date': today,
+                    'structure': s,
+                    'quintile': q,
+                    'rank': rank,
+                    'ticker': r['ticker'],
+                    'event_date': r['date'],
+                    'archetype': r['archetype'],
+                    'spot_entry': float(r['spot_entry']),
+                    'spot_exit': float(r['spot_exit']),
+                    'strike': float(strk) if strk is not None else None,
+                    'premium_per_share': float(prem) if prem else None,
+                    'exit_value_per_share': float(exitv) if exitv is not None else None,
+                    'pnl_pct': float(r[s]),
+                    'implied_move_pct': float(r['implied_pct']),
+                    'realized_move_pct': float(r['realized_pct']),
+                    'ratio': float(r['ratio']),
+                })
+
+    # Markdown summary — focuses on Q5 detail since that's the headline.
+    md = _build_options_insights_markdown(detail, insight_rows, winner_rows)
+    return insight_rows, winner_rows, md
+
+
+def _build_options_insights_markdown(detail, insight_rows, winner_rows) -> str:
+    """Compact markdown summary of compute_options_insights results."""
+    df = pd.DataFrame(insight_rows)
+    if df.empty:
+        return "# Options Insights\n\nNo rows.\n"
+    lines = ["# Options Strategy Insights\n"]
+    lines.append(f"_{len(detail)} events with usable options data._\n")
+    lines.append("All P&L as % return on premium (paid for longs, "
+                 "collected for shorts). Exit modelled as intrinsic-only "
+                 "at T+1 close.\n")
+
+    # One table per (quintile, ratio_bucket) showing all 6 structures.
+    for q in ['Q5', 'Q4', 'Q3', 'Q2', 'Q1', 'ALL']:
+        for bucket in ['all', 'over_realized', 'fair', 'over_priced']:
+            sub = df[(df['quintile'] == q) & (df['ratio_bucket'] == bucket)]
+            if sub.empty:
+                continue
+            n = int(sub['n_events'].max())  # all structures share the segment
+            label = (f"{q} — {bucket}" if bucket != 'all'
+                     else f"{q} — all events")
+            lines.append(f"### {label}  (n ≈ {n})\n")
+            lines.append("| Structure | Hit rate | Mean | Median | p10 | p90 |")
+            lines.append("|---|---|---|---|---|---|")
+            order = ['long_straddle', 'long_strangle', 'long_call', 'long_put',
+                     'short_straddle', 'short_strangle']
+            sub_idx = sub.set_index('structure')
+            for s in order:
+                if s not in sub_idx.index:
+                    continue
+                r = sub_idx.loc[s]
+                lines.append(
+                    f"| {s} | {r['hit_rate_pct']:.0f}% | "
+                    f"{r['mean_pnl_pct']:+.0f}% | "
+                    f"{r['median_pnl_pct']:+.0f}% | "
+                    f"{r['p10_pnl_pct']:+.0f}% | "
+                    f"{r['p90_pnl_pct']:+.0f}% |"
+                )
+            lines.append("")
+    return "\n".join(lines)
+
+
+def write_options_insights_to_db(insight_rows: list[dict],
+                                  winner_rows: list[dict]) -> tuple[int, int]:
+    """Upsert insights + winners into Cloud SQL. Returns (n_insights, n_winners)."""
+    from gcp.database import upsert_dataframe, is_cloud_sql_configured
+    if not is_cloud_sql_configured():
+        log.warning("Cloud SQL not configured — skipping DB write")
+        return 0, 0
+    n_i = n_w = 0
+    if insight_rows:
+        df = pd.DataFrame(insight_rows)
+        upsert_dataframe(
+            df, 'earnings_options_strategy_insights',
+            conflict_cols=['calculation_date', 'quintile', 'ratio_bucket',
+                           'structure'],
+        )
+        n_i = len(df)
+    if winner_rows:
+        df = pd.DataFrame(winner_rows)
+        upsert_dataframe(
+            df, 'earnings_options_strategy_winners',
+            conflict_cols=['calculation_date', 'structure', 'quintile', 'rank'],
+        )
+        n_w = len(df)
+    return n_i, n_w
+
+
 def compute_long_only_report(
     predictions: pd.DataFrame,
     options_df: pd.DataFrame,
