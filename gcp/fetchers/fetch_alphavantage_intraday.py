@@ -30,6 +30,7 @@ from gcp.database import (
     is_cloud_sql_configured,
     upsert_dataframe,
 )
+from lib.config import AlphaVantageConfig
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -37,8 +38,11 @@ log = logging.getLogger(__name__)
 
 SYMBOLS = ['SPY', 'IWM', 'QQQ']
 AV_BASE_URL = 'https://www.alphavantage.co/query'
-# Rate limits: 5 calls/min on free tier; 75/min on premium
-CALL_INTERVAL_SECS = 13
+# Per-call interval is read from AlphaVantageConfig so the 150 RPM
+# premium-tier setting is the single source of truth across fetchers.
+# (Previously hardcoded to 13 s — the 5-RPM free-tier value — which
+# made a 50-ticker backfill take 5+ hours instead of ~10 minutes.)
+_av_cfg = AlphaVantageConfig()
 
 
 def get_api_keys() -> list:
@@ -160,10 +164,11 @@ def process_symbol(
     for year, month in months:
         month_str = f"{year}-{month:02d}"
 
-        # Rate limiting
+        # Rate limiting — uses AlphaVantageConfig.delay_between_calls
+        # so premium-tier callers get the full 150 RPM throughput.
         elapsed = time.time() - last_call_time
-        if elapsed < CALL_INTERVAL_SECS:
-            time.sleep(CALL_INTERVAL_SECS - elapsed)
+        if elapsed < _av_cfg.delay_between_calls:
+            time.sleep(_av_cfg.delay_between_calls - elapsed)
 
         api_key = api_keys[key_idx % len(api_keys)]
         df = fetch_month(symbol, year, month, api_key)
@@ -200,7 +205,14 @@ def process_symbol(
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
-                        help='Symbol to fetch or ALL (SPY IWM QQQ)')
+                        help='Single symbol, comma- or space-separated list, or ALL '
+                             '(SPY IWM QQQ). Examples: --symbol AMD, '
+                             '--symbol "AMD NVDA QCOM", --symbol AMD,NVDA,QCOM')
+    parser.add_argument('--symbols-file', default=None,
+                        help='Path to text file with one ticker per line. Lines '
+                             'starting with # are treated as comments. Used by the '
+                             'earnings backfill — gives us 50+ tickers without a '
+                             'huge --args string in the Cloud Run job spec.')
     parser.add_argument('--start-date', default=None,
                         help='Start date YYYY-MM-DD. Defaults to first of previous month.')
     parser.add_argument('--end-date', default=None,
@@ -222,7 +234,21 @@ def main():
         log.error("No ALPHA_VANTAGE_API_KEY set. Exiting.")
         sys.exit(1)
 
-    symbols = SYMBOLS if args.symbol == 'ALL' else [args.symbol.upper()]
+    # Resolve symbols: ALL → SYMBOLS; file → parse; otherwise split on
+    # comma/whitespace to support "AMD,NVDA,QCOM" and "AMD NVDA QCOM"
+    # uniformly. Allows the Cloud Run job to take a long list via
+    # --args="--symbol,AMD NVDA QCOM" without quoting headaches.
+    if args.symbols_file:
+        with open(args.symbols_file) as f:
+            symbols = [
+                line.strip().upper() for line in f
+                if line.strip() and not line.strip().startswith('#')
+            ]
+    elif args.symbol == 'ALL':
+        symbols = SYMBOLS
+    else:
+        raw = args.symbol.replace(',', ' ')
+        symbols = [s.strip().upper() for s in raw.split() if s.strip()]
 
     log.info("AlphaVantage Intraday Fetch Job")
     log.info("  Symbols   : %s", symbols)

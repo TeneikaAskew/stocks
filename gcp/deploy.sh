@@ -1591,6 +1591,54 @@ deploy_earnings_sweep() {
 # Not on a Cloud Scheduler — this is the catch-up run. Forward-looking
 # snapshots will be covered by a separate daily fetcher (PR-B follow-up)
 # that snapshots tomorrow's earnings tickers' chains each evening.
+# ── intraday-bulk-backfill (Cloud Run Job, on-demand) ────────────────────────
+# Historical 1-min underlying-bar backfill for the full earnings universe
+# (1,356 tickers as of 2026-05-21). Powers the PR-C intraday option
+# repricer and the platform's intraday-chart view for any earnings name.
+#
+# Capacity per Rule 0:
+#   - Volume: 1,356 tickers × 24 months ≈ 32,544 AV calls.
+#   - Velocity: 150 RPM premium → ~3.6 h wall-clock.
+#   - task-timeout 18000s (5h) = 1.4× headroom over the estimate.
+#   - max-retries 0: per-symbol failures are non-fatal (logged + continued)
+#     so transient retries would double-charge quota without recovering.
+#   - Disk: Cloud SQL storageAutoResize=true, no ceiling — auto-grows by
+#     the ~25 GB the upserts add over time.
+#
+# Reads the symbols list from a baked-in text file rather than a long
+# --args string so the spec is reproducible and gcloud quoting bugs
+# can't corrupt the symbol list.
+deploy_intraday_bulk_backfill() {
+    echo "Deploying intraday-bulk-backfill job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 18000
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday"
+        --args "--symbols-file,/app/gcp/fetchers/symbol_lists/earnings_universe.txt,--start-date,2024-01-01"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create intraday-bulk-backfill "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update intraday-bulk-backfill "${common_flags[@]}"
+}
+
+
 deploy_earnings_options_backfill() {
     echo "Deploying earnings-options-backfill job..."
 
@@ -2360,6 +2408,7 @@ case "${1:-help}" in
     param-sweep)  build_image && deploy_param_sweep ;;
     earnings-sweep) build_image && deploy_earnings_sweep ;;
     earnings-options-backfill) build_image && deploy_earnings_options_backfill ;;
+    intraday-bulk-backfill) build_image && deploy_intraday_bulk_backfill ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     signal-replay) build_image && deploy_signal_replay ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
