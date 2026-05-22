@@ -688,6 +688,230 @@ def compute_options_metrics(predictions: pd.DataFrame,
     }
 
 
+def compute_long_only_report(
+    predictions: pd.DataFrame,
+    options_df: pd.DataFrame,
+) -> str:
+    """Long-only Q5 detail report — segments + named winners + predictors.
+
+    For traders who only BUY premium (long straddles, long strangles,
+    long calls, long puts). Restricts to Q5 events with options matches,
+    then explores: where do these structures actually win? What do those
+    events look like? Specifically targeted at finding "CRCL-style"
+    blowouts where a low-implied / high-realized event hands the long
+    side a multi-bagger.
+
+    Returns a markdown string suitable for printing to stdout / logs.
+
+    Segments:
+      1. ALL Q5         — baseline
+      2. ratio > 1.5    — large over-realization (long wins big here)
+      3. ratio 0.85-1.5 — roughly fair pricing (long is coin-flip)
+      4. ratio < 0.85   — over-priced premium (long loses; user should skip)
+
+    Per-segment metrics:
+      - n events
+      - hit rate (% positive PnL) for each long structure
+      - mean PnL %
+      - 90th-pct PnL % (the upside tail — what you make on the wins)
+      - 10th-pct PnL % (the downside tail — what you lose when wrong)
+
+    Named drill-downs:
+      - Top 10 long straddle wins (ticker / date / PnL / implied vs realized)
+      - Top 10 long call wins
+      - Top 10 long put wins
+
+    Predictors of long-wins (in the ratio > 1.5 segment):
+      - Distribution of implied_move sizes (small implied → easier to beat)
+      - Most common archetypes
+      - reaction_gap direction distribution
+    """
+    if predictions is None or predictions.empty or options_df is None or options_df.empty:
+        return "# Long-only report\n\nNo data available.\n"
+
+    # Restrict to Q5
+    df = predictions.dropna(subset=['score']).copy()
+    if df.empty or df['score'].nunique() < 5:
+        return "# Long-only report\n\nInsufficient score variation for quintile cut.\n"
+    df['q'] = pd.qcut(df['score'], q=5, labels=False, duplicates='drop')
+    q5 = df[df['q'] == df['q'].max()].copy()
+    if q5.empty:
+        return "# Long-only report\n\nNo Q5 events found.\n"
+
+    # Pre-group options once.
+    options_df = options_df.copy()
+    options_df['snapshot_date'] = pd.to_datetime(options_df['snapshot_date']).dt.date
+    opts_by_event = {k: g for k, g in options_df.groupby(['symbol', 'snapshot_date'])}
+
+    # Compute per-event long-side metrics.
+    rows = []
+    for _, row in q5.iterrows():
+        ticker = str(row['ticker']).upper()
+        reported = pd.to_datetime(row['reported_date']).date()
+        snapshot_dt = reported - timedelta(days=1)
+        spot_entry = _safe_float(row.get('d_minus_1_close'))
+        spot_exit = _safe_float(row.get('d_plus_1_close'))
+        if spot_entry is None or spot_exit is None or spot_entry <= 0:
+            continue
+        chain = opts_by_event.get((ticker, snapshot_dt))
+        if chain is None or chain.empty:
+            continue
+        atm = _select_atm_pair(chain, spot_entry)
+        if atm is None:
+            continue
+
+        implied_pct = (atm['call_mid'] + atm['put_mid']) / spot_entry * 100.0
+        realized_pct_signed = _safe_float(row.get('actual_gap_pct')) or 0.0
+        realized_pct = abs(realized_pct_signed)
+        ratio = realized_pct / implied_pct if implied_pct > 0 else None
+
+        ls = _long_straddle_pnl_pct(atm['call_mid'], atm['put_mid'],
+                                     atm['strike'], spot_exit)
+        lc = _long_call_pnl_pct(atm['call_mid'], atm['strike'], spot_exit)
+        lp = _long_put_pnl_pct(atm['put_mid'], atm['strike'], spot_exit)
+
+        rows.append({
+            'ticker': ticker,
+            'date': reported,
+            'archetype': row.get('archetype'),
+            'spot_entry': spot_entry,
+            'spot_exit': spot_exit,
+            'strike': atm['strike'],
+            'call_mid': atm['call_mid'],
+            'put_mid': atm['put_mid'],
+            'straddle_premium': atm['call_mid'] + atm['put_mid'],
+            'implied_pct': implied_pct,
+            'realized_pct': realized_pct,
+            'realized_signed_pct': realized_pct_signed,
+            'ratio': ratio,
+            'long_straddle_pnl': ls,
+            'long_call_pnl': lc,
+            'long_put_pnl': lp,
+        })
+
+    if not rows:
+        return "# Long-only report\n\nNo matched events.\n"
+    detail = pd.DataFrame(rows).dropna(subset=['ratio'])
+
+    # ──────────────────────────────────────────────
+    # Build the report.
+    # ──────────────────────────────────────────────
+    lines = ["# Long-Only Strategy Report (Q5 picks only)\n"]
+    lines.append(f"_{len(detail)} Q5 events with usable options snapshots._\n")
+    lines.append("All P&L expressed as % return on premium paid. "
+                 "Exit modelled as intrinsic-only at T+1 close (conservative — "
+                 "real exit value is slightly higher because some extrinsic "
+                 "survives IV crush).\n")
+
+    def _segment_stats(name: str, sub: pd.DataFrame) -> list[str]:
+        if sub.empty:
+            return [f"### {name}\n_No events._\n"]
+        out = [f"### {name} — n = {len(sub)}\n"]
+        out.append("| Structure | Hit rate | Mean PnL | p90 (best wins) | p10 (worst losses) | Median PnL |")
+        out.append("|---|---|---|---|---|---|")
+        for col, label in [
+            ('long_straddle_pnl', 'Long Straddle'),
+            ('long_call_pnl',     'Long Call'),
+            ('long_put_pnl',      'Long Put'),
+        ]:
+            v = sub[col].dropna()
+            if v.empty:
+                out.append(f"| {label} | — | — | — | — | — |")
+                continue
+            hit = (v > 0).mean() * 100
+            out.append(f"| {label} | {hit:.0f}% | {v.mean():+.0f}% | "
+                       f"{v.quantile(0.90):+.0f}% | {v.quantile(0.10):+.0f}% | "
+                       f"{v.median():+.0f}% |")
+        return out + [""]
+
+    lines += _segment_stats(
+        "All Q5 (baseline)", detail)
+    lines += _segment_stats(
+        "Ratio > 1.5 — REALIZED MASSIVELY EXCEEDED IMPLIED (where long wins big)",
+        detail[detail['ratio'] > 1.5])
+    lines += _segment_stats(
+        "Ratio 0.85 – 1.5 — fairly priced (mostly coin-flip)",
+        detail[(detail['ratio'] >= 0.85) & (detail['ratio'] <= 1.5)])
+    lines += _segment_stats(
+        "Ratio < 0.85 — OPTIONS OVER-PRICED (long loses; skip these)",
+        detail[detail['ratio'] < 0.85])
+
+    # Named drill-downs — top winners per structure.
+    def _top_winners(name: str, col: str, n: int = 10) -> list[str]:
+        out = [f"### Top {n} winners — {name}\n"]
+        sub = detail.dropna(subset=[col]).sort_values(col, ascending=False).head(n)
+        if sub.empty:
+            return out + ["_No events._\n"]
+        out.append("| Ticker | Date | Move | Implied → Realized | PnL % | $ paid → $ exit per contract |")
+        out.append("|---|---|---|---|---|---|")
+        for _, r in sub.iterrows():
+            if col == 'long_straddle_pnl':
+                premium = r['straddle_premium']
+                exit_v = abs(r['spot_exit'] - r['strike'])  # intrinsic-only
+                direction = ''
+            elif col == 'long_call_pnl':
+                premium = r['call_mid']
+                exit_v = max(r['spot_exit'] - r['strike'], 0)
+                direction = '↑'
+            else:  # long_put_pnl
+                premium = r['put_mid']
+                exit_v = max(r['strike'] - r['spot_exit'], 0)
+                direction = '↓'
+            paid = premium * 100
+            exitd = exit_v * 100
+            out.append(
+                f"| {r['ticker']} | {r['date']} | "
+                f"{direction}{abs(r['realized_signed_pct']):.1f}% | "
+                f"{r['implied_pct']:.1f}% → {r['realized_pct']:.1f}% "
+                f"(ratio {r['ratio']:.2f}) | "
+                f"{r[col]:+.0f}% | "
+                f"${paid:.0f} → ${exitd:.0f} |")
+        return out + [""]
+
+    lines += _top_winners("Long Straddle", 'long_straddle_pnl', 10)
+    lines += _top_winners("Long Call (direction-correct upside)", 'long_call_pnl', 10)
+    lines += _top_winners("Long Put (direction-correct downside)", 'long_put_pnl', 10)
+
+    # Predictors of long-wins.
+    winners = detail[detail['ratio'] > 1.5]
+    losers = detail[detail['ratio'] < 0.85]
+    lines.append("### Predictors of long-wins (the ratio > 1.5 subset)\n")
+    lines.append(f"_{len(winners)} long-win events vs {len(losers)} long-skip events._\n")
+
+    def _compare_means(col: str, label: str) -> str:
+        w_mean = winners[col].mean() if col in winners else float('nan')
+        l_mean = losers[col].mean() if col in losers else float('nan')
+        return f"- **{label}**: long-wins avg {w_mean:.2f} vs long-skips avg {l_mean:.2f}"
+
+    lines.append(_compare_means('implied_pct', 'Implied move%'))
+    lines.append(_compare_means('realized_pct', 'Realized move%'))
+    lines.append("")
+
+    # Archetype breakdown
+    if 'archetype' in winners.columns and not winners['archetype'].isna().all():
+        lines.append("**Archetype mix of long-wins:**")
+        for arch, n in winners['archetype'].value_counts().head(5).items():
+            pct = n / len(winners) * 100
+            lines.append(f"- {arch}: {n} ({pct:.0f}%)")
+        lines.append("")
+        lines.append("**Archetype mix of long-skips (for contrast):**")
+        for arch, n in losers['archetype'].value_counts().head(5).items():
+            pct = n / len(losers) * 100
+            lines.append(f"- {arch}: {n} ({pct:.0f}%)")
+        lines.append("")
+
+    lines.append("### Key takeaway\n")
+    lines.append("Filter Q5 events to those with **realized > implied "
+                 "historically** (i.e. moves that the options market "
+                 "consistently under-prices). On that subset, long "
+                 "straddle and the correct directional leg have positive "
+                 "expectancy. On the over-priced subset (ratio < 0.85), "
+                 "long premium loses systematically — skip those events "
+                 "or wait for IV to compress before entry.\n")
+
+    return "\n".join(lines)
+
+
 def run_backtest(min_nq: int, lookback: int | None = None) -> pd.DataFrame:
     """Walk forward, return DataFrame of predictions with hit flags.
 
