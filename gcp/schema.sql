@@ -1917,6 +1917,10 @@ CREATE TABLE IF NOT EXISTS exit_config_overrides (
     call_time_stop     INTEGER,            -- minutes
     put_time_stop      INTEGER,
 
+    -- Walk-forward calibration sweep: per-ticker consecutive-bar
+    -- pressure window. NULL = use the SignalConfig default.
+    consecutive_periods INTEGER,
+
     -- PR-E3: per-ticker dropped strategy conditions (e.g.
     -- ['stoch_rsi_overbought', 'rsi_overbought_zone'] for IWM/QQQ MR PUT).
     -- NULL = use the strategy's full condition list.
@@ -1948,6 +1952,12 @@ ALTER TABLE exit_config_overrides
 -- for the disabled side regardless of score.
 ALTER TABLE exit_config_overrides
     ADD COLUMN IF NOT EXISTS disabled_directions JSONB;
+
+-- Walk-forward calibration sweep: per-ticker consecutive-bar window.
+-- Written by scripts/run_param_sweep.py; read by
+-- lib/strategies/exit_config_overrides.py:get_consecutive_periods().
+ALTER TABLE exit_config_overrides
+    ADD COLUMN IF NOT EXISTS consecutive_periods INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_exit_config_overrides_recent
     ON exit_config_overrides (ticker, calibration_date DESC);
@@ -2446,3 +2456,119 @@ CREATE TABLE IF NOT EXISTS backtest_reports (
 
 CREATE INDEX IF NOT EXISTS idx_backtest_reports_created
     ON backtest_reports (created_at DESC);
+
+-- ─────────────────────────────────────────────────────────
+-- WALK_FORWARD_RESULTS: per-(parameter combo) walk-forward sweep output
+--
+-- Written by scripts/run_param_sweep.py — one row per parameter
+-- combination tested, carrying the out-of-sample aggregate metrics and
+-- the cross-fold stability_score the strategic selector ranks on. The
+-- selected winner per ticker is also written to exit_config_overrides
+-- so the live signal monitor picks it up on the next fire.
+--
+-- Sibling to backtest_sweeps (which sweeps timeframes); this table
+-- sweeps strategy parameters with walk-forward validation.
+-- ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS walk_forward_results (
+    run_id              UUID             NOT NULL,
+    ticker              VARCHAR(10)      NOT NULL,
+    label               VARCHAR(48)      NOT NULL,   -- encodes the param combo
+
+    -- The swept parameter values for this combo.
+    consecutive_periods INTEGER,
+    call_target         DOUBLE PRECISION,
+    put_target          DOUBLE PRECISION,
+    call_time_stop      INTEGER,
+    put_time_stop       INTEGER,
+
+    -- Out-of-sample aggregate metrics across the walk-forward folds.
+    avg_expectancy_pct  DOUBLE PRECISION,
+    avg_win_rate        DOUBLE PRECISION,
+    std_expectancy_pct  DOUBLE PRECISION,
+    stability_score     DOUBLE PRECISION,   -- fraction of profitable folds, 0..1
+    total_folds         INTEGER,
+    total_trades        INTEGER,
+
+    -- TRUE for the combo the strategic selector promoted to
+    -- exit_config_overrides for this (run_id, ticker).
+    selected            BOOLEAN          NOT NULL DEFAULT FALSE,
+
+    created_at          TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_walk_forward_results UNIQUE (run_id, ticker, label)
+);
+
+CREATE INDEX IF NOT EXISTS idx_walk_forward_results_run
+    ON walk_forward_results (run_id, ticker);
+
+CREATE INDEX IF NOT EXISTS idx_walk_forward_results_ticker_created
+    ON walk_forward_results (ticker, created_at DESC);
+
+-- ─────────────────────────────────────────────────────────
+-- EARNINGS_CALIBRATION: tuned inputs for the playability score
+--
+-- Written by scripts/calibrate_earnings.py — the earnings sweep walks
+-- the playability backtest over a grid of (min_nq, lookback_quarters)
+-- and writes the combo with the best out-of-sample quintile hit-rate
+-- spread here. The premarket brief reads the latest row (Tier A) via
+-- lib/earnings_reactions.py:get_earnings_calibration(), falling back to
+-- the env-var defaults (Tier B) when the table is empty.
+--
+-- Dated rows — latest wins, prior rows kept for audit.
+-- ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS earnings_calibration (
+    calibration_date  DATE             PRIMARY KEY,
+
+    -- Tuned knobs (the sweep's winning combo).
+    min_nq            INTEGER,         -- min past quarters to score
+    lookback_quarters INTEGER,         -- recent-window cap; NULL = all history
+
+    -- Achieved out-of-sample metrics for the winning combo.
+    quintile_spread   DOUBLE PRECISION,  -- Q5 - Q1 hit-rate, 0..1
+    overall_hit_rate  DOUBLE PRECISION,
+    n_predictions     INTEGER,
+
+    notes             TEXT,
+    created_at        TIMESTAMPTZ      NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_calibration_recent
+    ON earnings_calibration (calibration_date DESC);
+
+-- Additive migration (2026-05-21): top-quintile dollar attribution.
+-- The sweep restricts to Q5 directional archetypes
+-- (bullish/bearish/reversal) and computes per-trade P&L over the 5d
+-- canonical hold. `best_hold_horizon_days` reports which of
+-- {1,3,5,10} maximised payoff_ratio.
+-- All columns nullable: a degenerate combo (empty Q5, insufficient
+-- sample) writes SQL NULL rather than fabricating $0
+-- (CLAUDE.md §3.7 — no silent fallback on financial fields).
+ALTER TABLE earnings_calibration
+    ADD COLUMN IF NOT EXISTS n_q5_directional          INTEGER,
+    ADD COLUMN IF NOT EXISTS avg_win_pct               DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_loss_pct              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS payoff_ratio              DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS expectancy_pct            DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS expectancy_dollars_per_1k DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS profit_factor             DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS max_drawdown_pct          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS sharpe_per_trade          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS best_hold_horizon_days    INTEGER;
+
+-- PR-B (2026-05-21): options-side dollar attribution. Sourced from
+-- the T-1 close ATM call+put pair (and the delta-20 strangle wings)
+-- in earnings_options_snapshots, with exit at T+1 close modelled as
+-- intrinsic-only — a conservative bound. n_with_options is reported
+-- separately so the % means are computed only over the matched
+-- subset (not silently fabricated as 0 for unmatched events per
+-- CLAUDE.md §3.7).
+ALTER TABLE earnings_calibration
+    ADD COLUMN IF NOT EXISTS n_with_options              INTEGER,
+    ADD COLUMN IF NOT EXISTS avg_atm_straddle_iv_pct     DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_implied_move_pct        DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_realized_move_pct       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS realized_vs_implied_ratio   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_long_straddle_pnl_pct   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_short_strangle_pnl_pct  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_long_call_pnl_pct       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS avg_long_put_pnl_pct        DOUBLE PRECISION;

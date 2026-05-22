@@ -18,6 +18,29 @@ from lib.config import (
 )
 
 
+def _rebuild_consecutive(
+    df: pd.DataFrame, consecutive_periods: int, close_col: str = 'Close',
+) -> pd.DataFrame:
+    """Return a copy of `df` with Consecutive_Up/Down rebuilt for a given
+    window.
+
+    The consecutive-bar columns are a rolling-N sum, so when the sweep
+    varies `consecutive_periods` the column's window must move with the
+    evaluate_signal threshold — a check of `>= 4` against a column built
+    with window 3 can never fire. Called once per distinct swept value.
+    """
+    from lib.indicators import calculate_consecutive_moves
+    out = df.copy()
+    if 'Price_Change' in out.columns:
+        price_change = out['Price_Change']
+    else:
+        price_change = out[close_col].pct_change() * 100
+    up, down = calculate_consecutive_moves(price_change, consecutive_periods)
+    out['Consecutive_Up'] = up
+    out['Consecutive_Down'] = down
+    return out
+
+
 @dataclass
 class WalkForwardResult:
     fold_results: List[BacktestResult]
@@ -227,6 +250,102 @@ class WalkForwardValidator:
 
         return pd.DataFrame(results)
 
+    def walk_forward_sweep(
+        self,
+        df: pd.DataFrame,
+        param_grid: Dict[str, List],
+        use_strat: bool = True,
+        close_col: str = 'Close',
+    ) -> pd.DataFrame:
+        """Walk-forward validate every parameter combination in `param_grid`.
+
+        Unlike `parameter_sensitivity` (one full-period backtest per
+        combo), this runs the full anchored walk-forward per combo, so
+        each row carries out-of-sample aggregate metrics and a
+        `stability_score` across folds — the inputs the calibration
+        sweep ranks on.
+
+        `param_grid` keys are the same as `parameter_sensitivity`:
+        consecutive_periods, call_rsi_low/high, put_rsi_low/high,
+        call_target, put_target, call_time_stop, put_time_stop.
+
+        Returns one row per combo: the param values plus
+        avg_expectancy_pct, avg_win_rate, std_expectancy_pct,
+        stability_score, total_folds, total_trades.
+        """
+        keys = list(param_grid.keys())
+        values = list(param_grid.values())
+        combos = list(product(*values))
+
+        # When consecutive_periods is swept, process combos grouped by
+        # its value so the Consecutive_Up/Down indicator columns are
+        # rebuilt once per distinct value rather than per combo (the
+        # column window must track the threshold — see
+        # _rebuild_consecutive).
+        cp_idx = (keys.index('consecutive_periods')
+                  if 'consecutive_periods' in keys else None)
+        if cp_idx is not None:
+            combos.sort(key=lambda c: c[cp_idx])
+
+        rows = []
+        total = len(combos)
+        _active_cp = None
+        df_active = df
+        for i, combo in enumerate(combos):
+            params = dict(zip(keys, combo))
+            print(f"  WF sweep combo {i + 1}/{total}: {params}")
+
+            cp = params.get('consecutive_periods')
+            if cp is not None and cp != _active_cp:
+                _active_cp = cp
+                df_active = _rebuild_consecutive(df, int(cp), close_col)
+
+            # Same param→config mapping as parameter_sensitivity, so the
+            # two sweep entry points can't drift on how a combo is built.
+            sig = SignalConfig(
+                consecutive_periods=params.get(
+                    'consecutive_periods', self.signal.consecutive_periods),
+                call_rsi_range=(
+                    params.get('call_rsi_low', self.signal.call_rsi_range[0]),
+                    params.get('call_rsi_high', self.signal.call_rsi_range[1]),
+                ),
+                put_rsi_range=(
+                    params.get('put_rsi_low', self.signal.put_rsi_range[0]),
+                    params.get('put_rsi_high', self.signal.put_rsi_range[1]),
+                ),
+            )
+            exit_ = ExitConfig(
+                call_target=params.get('call_target', self.exit.call_target),
+                put_target=params.get('put_target', self.exit.put_target),
+                call_time_stop=params.get('call_time_stop', self.exit.call_time_stop),
+                put_time_stop=params.get('put_time_stop', self.exit.put_time_stop),
+            )
+
+            validator = WalkForwardValidator(
+                risk_config=self.risk,
+                exit_config=exit_,
+                signal_config=sig,
+                strat_config=self.strat,
+                backtest_config=self.bt_config,
+                indicator_config=self.ind_config,
+                walk_forward_config=self.wf_config,
+                train_months=self.train_months,
+                test_months=self.test_months,
+            )
+            wf = validator.run(df_active, use_strat=use_strat, close_col=close_col)
+            agg = wf.aggregate_metrics
+
+            row = dict(params)
+            row['stability_score'] = wf.stability_score
+            row['avg_expectancy_pct'] = agg.get('avg_expectancy_pct', 0.0)
+            row['avg_win_rate'] = agg.get('avg_win_rate', 0.0)
+            row['std_expectancy_pct'] = agg.get('std_expectancy_pct', 0.0)
+            row['total_folds'] = int(agg.get('total_folds', 0))
+            row['total_trades'] = int(agg.get('total_trades_all_folds', 0))
+            rows.append(row)
+
+        return pd.DataFrame(rows)
+
     def _aggregate_metrics(self, fold_results: List[BacktestResult]) -> Dict[str, float]:
         """Average metrics across all folds."""
         if not fold_results:
@@ -260,3 +379,36 @@ class WalkForwardValidator:
             1 for r in fold_results if r.expectancy > 0
         )
         return profitable_folds / len(fold_results)
+
+
+def select_calibration_winner(
+    sweep_df: pd.DataFrame,
+    min_stability: float = 0.6,
+    min_avg_expectancy: float = 0.0,
+    min_total_trades: int = 40,
+) -> Optional[dict]:
+    """Pick the strategic winner from a `walk_forward_sweep()` result frame.
+
+    The ETF calibration sweep auto-applies its winner, so the guardrails
+    *are* the review: a combo is eligible only if it clears all three
+    hard gates —
+
+      * stability_score >= min_stability   (profitable in most folds)
+      * avg_expectancy_pct > min_avg_expectancy  (positive out-of-sample)
+      * total_trades >= min_total_trades   (enough sample to trust)
+
+    Among the survivors the highest `avg_expectancy_pct` wins. Returns
+    None when no combo clears the gates — the caller then leaves the
+    ticker's existing params untouched rather than applying a weak or
+    overfit combo.
+    """
+    if sweep_df is None or sweep_df.empty:
+        return None
+    gated = sweep_df[
+        (sweep_df['stability_score'] >= min_stability)
+        & (sweep_df['avg_expectancy_pct'] > min_avg_expectancy)
+        & (sweep_df['total_trades'] >= min_total_trades)
+    ]
+    if gated.empty:
+        return None
+    return gated.loc[gated['avg_expectancy_pct'].idxmax()].to_dict()

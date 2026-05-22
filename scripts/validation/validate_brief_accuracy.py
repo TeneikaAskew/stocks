@@ -162,7 +162,9 @@ def _connect():
                 pg8000.dbapi.Cursor.__exit__ = (
                     lambda self, *_a: self.close()
                 )
-            connector = Connector()
+            # lazy refresh — see gcp/database.py: on-demand cert refresh,
+            # safe under Cloud Run request-based CPU throttling.
+            connector = Connector(refresh_strategy="lazy")
             return connector.connect(
                 csql_conn, "pg8000",
                 user=db_user, password=db_pass, db=db_name,

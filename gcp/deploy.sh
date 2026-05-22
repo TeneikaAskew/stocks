@@ -1510,6 +1510,186 @@ deploy_calibrate_thresholds() {
 }
 
 
+# ── Walk-forward parameter calibration sweep (on-demand Cloud Run Job) ────────
+# Sweeps the four exit params (call/put target, call/put time-stop) per
+# ticker with walk-forward validation, then auto-applies the winning
+# combo to exit_config_overrides. Sibling to calibrate-thresholds.
+#
+# On-demand only (no Cloud Scheduler entry — run when you want a fresh
+# calibration): `gcloud run jobs execute param-sweep --region us-east1`.
+# Loops SPY/IWM/QQQ sequentially; --max-retries 0 so a partial failure
+# does not silently re-run and double-write exit_config_overrides.
+deploy_param_sweep() {
+    echo "Deploying param-sweep job..."
+    # --tasks 3 / --parallelism 3 fan-out one ticker per task (SPY/IWM/QQQ
+    # via stride sharding on CLOUD_RUN_TASK_INDEX in run_param_sweep.py).
+    # Sequential was ~3.5h/ticker × 3 = 10.5h (blew the 8h timeout);
+    # parallel = ~3.5h wall-clock. --task-timeout is per-task, so 6h is
+    # ample for the one-ticker workload each task handles.
+    gcloud run jobs create param-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 21600 \
+        --tasks 3 --parallelism 3 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.run_param_sweep" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update param-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi --cpu 1 --max-retries 0 --task-timeout 21600 \
+        --tasks 3 --parallelism 3 \
+        --command "python,-m,scripts.run_param_sweep" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
+# ── Earnings playability calibration sweep (on-demand Cloud Run Job) ──────────
+# Sweeps (min_nq, lookback_quarters) over the playability backtest and
+# auto-applies the best combo to earnings_calibration, which the
+# premarket brief reads. Sibling to param-sweep.
+#
+# On-demand only: `gcloud run jobs execute earnings-sweep --region us-east1`.
+# The sweep is formula-eval over ~21k earnings_reactions rows — light.
+deploy_earnings_sweep() {
+    echo "Deploying earnings-sweep job..."
+    # Memory bumped from 1Gi → 4Gi on 2026-05-21 when the PR-B options-join
+    # was added: _load_options_snapshots() pulls ~1.8M rows × ~10 columns
+    # which materialises as a ~700 MB DataFrame, plus the per-combo Q5
+    # filtering and groupby work peaks 2-3× that during the sweep.
+    gcloud run jobs create earnings-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 --task-timeout 1800 \
+        --service-account "${SA_EMAIL}" \
+        --command "python,-m,scripts.calibrate_earnings" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet 2>/dev/null || \
+    gcloud run jobs update earnings-sweep \
+        --image "${IMAGE}" --region "${REGION}" \
+        --memory 4Gi --cpu 2 --max-retries 0 --task-timeout 1800 \
+        --command "python,-m,scripts.calibrate_earnings" \
+        ${DB_SECRET_FLAG} \
+        --set-env-vars "$(_env_string)" \
+        --quiet
+}
+
+
+# ── earnings-options-backfill (Cloud Run Job, on-demand) ─────────────────────
+# One-shot historical-options backfill driven by earnings_reactions events.
+# For every (ticker, reported_date) pair, fetches the AV HISTORICAL_OPTIONS
+# chain at close of T-1 and writes the post-earnings-expiry slice
+# (≤14d after reported_date) into earnings_options_snapshots.
+#
+# Capacity (CLAUDE.md Rule 0):
+#   - 41,756 events × 1 AV call/event @ 150 RPM = ~4.5 h wall-clock.
+#   - task-timeout 32400s (9h) = 2× headroom over actual estimate.
+#   - max-retries 0: Cloud Run can't distinguish transient from permanent
+#     here; the script's own per-event retry covers the transient case.
+#     A re-dispatch resumes via per-event idempotency check.
+#   - Cost: ~$0.50 per full run; the AV calls themselves are free under
+#     the existing premium subscription.
+#
+# Not on a Cloud Scheduler — this is the catch-up run. Forward-looking
+# snapshots will be covered by a separate daily fetcher (PR-B follow-up)
+# that snapshots tomorrow's earnings tickers' chains each evening.
+# ── intraday-bulk-backfill (Cloud Run Job, on-demand, parallel) ──────────────
+# Historical 1-min underlying-bar backfill for the full earnings universe
+# (1,356 tickers as of 2026-05-21). Powers the PR-C intraday option
+# repricer and the platform's intraday-chart view for any earnings name.
+#
+# Capacity per Rule 0:
+#   - Volume: 1,356 tickers × 24 months ≈ 32,544 AV calls.
+#   - Per-call latency: ~5 s end-to-end (AV response ~2 s + DB upsert ~2 s
+#     + 0.4 s rate-limit floor). Single-task throughput observed
+#     2026-05-21: ~1 ticker/min on solo run, but ~7.5 min/ticker at
+#     8-way parallel — combined call rate exceeded 150 RPM and AV
+#     throttled, plus 8 simultaneous DB upsert streams thrashed the
+#     Cloud SQL connection pool.
+#   - Solution v2 (2026-05-22): --tasks=4 --parallelism=4. Combined
+#     call rate 4 × 0.33 = 1.3 calls/s = 80 RPM — well under the 150
+#     premium cap with no throttle storms. The fetcher also checks
+#     market_data_intraday at task startup and skips tickers with
+#     ≥100k existing rows (re-runs after timeout finish only the
+#     remaining tickers, not the ones the prior run completed).
+#   - Wall-clock at 4× parallel for the remaining ~1,000 tickers:
+#     ~250 tickers per task × ~2 min/ticker ≈ 8 h.
+#   - task-timeout 86400s (24h Cloud Run max) — 3× headroom over the
+#     estimate. Re-launch is safe via the ticker-skip check.
+#   - max-retries 0: per-symbol failures are non-fatal (logged + continued)
+#     so transient retries would double-charge quota without recovering.
+#   - Disk: Cloud SQL storageAutoResize=true, no ceiling.
+#
+# Sharding logic: fetch_alphavantage_intraday.main() reads
+# CLOUD_RUN_TASK_INDEX / CLOUD_RUN_TASK_COUNT (injected by Cloud Run)
+# and stripes the symbol list with `symbols[task_idx::task_cnt]`.
+# Striping rather than contiguous chunking distributes heavy
+# (high-volume) tickers across tasks instead of piling them on
+# task 0 alphabetically.
+deploy_intraday_bulk_backfill() {
+    echo "Deploying intraday-bulk-backfill job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 86400
+        --tasks 4 --parallelism 4
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_alphavantage_intraday"
+        --args="--symbols-file,/app/gcp/fetchers/symbol_lists/earnings_universe.txt,--start-date,2024-01-01"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create intraday-bulk-backfill "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update intraday-bulk-backfill "${common_flags[@]}"
+}
+
+
+deploy_earnings_options_backfill() {
+    echo "Deploying earnings-options-backfill job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+    non_secret_env="${non_secret_env},GCS_BUCKET=${PROJECT_ID}-trading-data"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 1Gi --cpu 1 --max-retries 0
+        --task-timeout 32400
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_earnings_options_backfill"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create earnings-options-backfill "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update earnings-options-backfill "${common_flags[@]}"
+}
+
+
 # ── Failure notifier (Cloud Run Service) ─────────────────────────────────────
 # Receives Cloud Logging entries about failed Cloud Run Jobs via Pub/Sub push
 # and fans out to (1) Discord webhook and (2) GitHub issue create/update.
@@ -2246,6 +2426,10 @@ case "${1:-help}" in
     fred-rates)   build_image && deploy_fetch_fred_rates ;;
     spx-greeks)   build_image && deploy_compute_spx_greeks_backfill ;;
     calibrate)    build_image && deploy_calibrate_thresholds ;;
+    param-sweep)  build_image && deploy_param_sweep ;;
+    earnings-sweep) build_image && deploy_earnings_sweep ;;
+    earnings-options-backfill) build_image && deploy_earnings_options_backfill ;;
+    intraday-bulk-backfill) build_image && deploy_intraday_bulk_backfill ;;
     signal-quality) build_image && deploy_signal_quality_report && deploy_signal_quality_alarm ;;
     signal-replay) build_image && deploy_signal_replay ;;
     setup-notifier-secrets) setup_notifier_secrets ;;
@@ -2325,6 +2509,14 @@ case "${1:-help}" in
         echo "             Deploy signal-replay job (re-posts stored signal_alerts"
         echo "             to the signals channel for a date + ET time block;"
         echo "             backs the /replay-signals slash command)."
+        echo "  param-sweep"
+        echo "             Deploy param-sweep job — walk-forward calibration of the"
+        echo "             four exit params, auto-applied to exit_config_overrides."
+        echo "             On-demand: gcloud run jobs execute param-sweep."
+        echo "  earnings-sweep"
+        echo "             Deploy earnings-sweep job — calibration of the"
+        echo "             playability lookback knobs, auto-applied to"
+        echo "             earnings_calibration. On-demand."
         echo "  all        Build + deploy everything (jobs + schedulers + backfill)"
         ;;
 esac

@@ -30,6 +30,7 @@ from gcp.database import (
     is_cloud_sql_configured,
     upsert_dataframe,
 )
+from lib.config import AlphaVantageConfig
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -37,8 +38,11 @@ log = logging.getLogger(__name__)
 
 SYMBOLS = ['SPY', 'IWM', 'QQQ']
 AV_BASE_URL = 'https://www.alphavantage.co/query'
-# Rate limits: 5 calls/min on free tier; 75/min on premium
-CALL_INTERVAL_SECS = 13
+# Per-call interval is read from AlphaVantageConfig so the 150 RPM
+# premium-tier setting is the single source of truth across fetchers.
+# (Previously hardcoded to 13 s — the 5-RPM free-tier value — which
+# made a 50-ticker backfill take 5+ hours instead of ~10 minutes.)
+_av_cfg = AlphaVantageConfig()
 
 
 def get_api_keys() -> list:
@@ -123,6 +127,53 @@ def fetch_month(symbol: str, year: int, month: int, api_key: str) -> Optional[pd
         return None
 
 
+# Ticker-level skip threshold for the bulk-backfill re-run path.
+# A fully backfilled ticker over 24 months has ~500k 1-min bars; 100k
+# is the floor for "substantial coverage already" while still leaving
+# room for partial-fetch tickers (where a daily-fetch wrote a single
+# day) to be re-fetched. This is intentionally coarser than per-month
+# checking because 1,356 tickers × 24 months = 32k queries vs 1,356
+# queries — the per-month variant adds 15 minutes of pure DB overhead
+# to avoid maybe 5 minutes of AV re-fetches per partial ticker.
+_SKIP_TICKER_ROW_THRESHOLD = 100_000
+
+
+def _ticker_already_backfilled(symbol: str) -> bool:
+    """Fast check: does this ticker already have substantial 1-min coverage?
+
+    Returns True when ``market_data_intraday`` has ≥100k rows for this
+    ticker in the 2024-01-01+ range — the indicator that a previous
+    backfill run completed this ticker. The query uses the
+    (ticker, interval, ts) primary-key prefix so it's index-scan fast
+    (~10 ms typical). False on any failure (table missing, creds
+    missing, transient query error) so a flaky DB doesn't silently
+    skip a ticker that should run.
+    """
+    try:
+        from gcp.database import query_to_dataframe, is_cloud_sql_configured
+    except ImportError:
+        return False
+    if not is_cloud_sql_configured():
+        return False
+    try:
+        df = query_to_dataframe(
+            "SELECT count(*) AS n FROM market_data_intraday "
+            "WHERE ticker = :t AND interval = '1min' "
+            "AND ts >= '2024-01-01'",
+            {"t": symbol.upper()},
+        )
+    except Exception as e:
+        log.debug("    skip-check failed for %s: %s — will fetch", symbol, e)
+        return False
+    if df is None or df.empty:
+        return False
+    try:
+        n = int(df.iloc[0]['n'])
+    except (TypeError, ValueError, KeyError):
+        return False
+    return n >= _SKIP_TICKER_ROW_THRESHOLD
+
+
 def process_symbol(
     symbol: str,
     start_date: str,
@@ -146,9 +197,16 @@ def process_symbol(
     180 calls ≈ 1.2 min. Idempotent via ON CONFLICT DO UPDATE on
     (ticker, interval, ts).
 
-    --force is retained as a no-op for back-compat with existing callers
-    and Cloud Scheduler args; behavior is now equivalent in both modes.
+    For BULK BACKFILL (1,356 tickers via --symbols-file): the script
+    skips tickers that already have substantial coverage (≥100k rows
+    in 2024-01-01+) so a re-run after a task-timeout completes only
+    the NEW tickers, not the ones we already finished. The skip is
+    bypassed with --force.
     """
+    if not force and _ticker_already_backfilled(symbol):
+        log.info("  %s: already has ≥%d rows from a prior run — skipping",
+                 symbol, _SKIP_TICKER_ROW_THRESHOLD)
+        return
     months = get_trading_months(start_date, end_date)
     log.info("  %s: %d months (%s → %s)", symbol, len(months), start_date, end_date)
 
@@ -160,10 +218,11 @@ def process_symbol(
     for year, month in months:
         month_str = f"{year}-{month:02d}"
 
-        # Rate limiting
+        # Rate limiting — uses AlphaVantageConfig.delay_between_calls
+        # so premium-tier callers get the full 150 RPM throughput.
         elapsed = time.time() - last_call_time
-        if elapsed < CALL_INTERVAL_SECS:
-            time.sleep(CALL_INTERVAL_SECS - elapsed)
+        if elapsed < _av_cfg.delay_between_calls:
+            time.sleep(_av_cfg.delay_between_calls - elapsed)
 
         api_key = api_keys[key_idx % len(api_keys)]
         df = fetch_month(symbol, year, month, api_key)
@@ -200,7 +259,14 @@ def process_symbol(
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
-                        help='Symbol to fetch or ALL (SPY IWM QQQ)')
+                        help='Single symbol, comma- or space-separated list, or ALL '
+                             '(SPY IWM QQQ). Examples: --symbol AMD, '
+                             '--symbol "AMD NVDA QCOM", --symbol AMD,NVDA,QCOM')
+    parser.add_argument('--symbols-file', default=None,
+                        help='Path to text file with one ticker per line. Lines '
+                             'starting with # are treated as comments. Used by the '
+                             'earnings backfill — gives us 50+ tickers without a '
+                             'huge --args string in the Cloud Run job spec.')
     parser.add_argument('--start-date', default=None,
                         help='Start date YYYY-MM-DD. Defaults to first of previous month.')
     parser.add_argument('--end-date', default=None,
@@ -222,7 +288,36 @@ def main():
         log.error("No ALPHA_VANTAGE_API_KEY set. Exiting.")
         sys.exit(1)
 
-    symbols = SYMBOLS if args.symbol == 'ALL' else [args.symbol.upper()]
+    # Resolve symbols: ALL → SYMBOLS; file → parse; otherwise split on
+    # comma/whitespace to support "AMD,NVDA,QCOM" and "AMD NVDA QCOM"
+    # uniformly. Allows the Cloud Run job to take a long list via
+    # --args="--symbol,AMD NVDA QCOM" without quoting headaches.
+    if args.symbols_file:
+        with open(args.symbols_file) as f:
+            symbols = [
+                line.strip().upper() for line in f
+                if line.strip() and not line.strip().startswith('#')
+            ]
+    elif args.symbol == 'ALL':
+        symbols = SYMBOLS
+    else:
+        raw = args.symbol.replace(',', ' ')
+        symbols = [s.strip().upper() for s in raw.split() if s.strip()]
+
+    # Cloud Run Job task sharding — when --tasks=N is set on the job,
+    # Cloud Run injects CLOUD_RUN_TASK_INDEX (0..N-1) and
+    # CLOUD_RUN_TASK_COUNT (=N) into each task's env. We carve the
+    # symbol list into N stripes and each task processes its own.
+    # Striping rather than contiguous chunking spreads
+    # heavyweight (high-volume) tickers across tasks instead of
+    # piling them onto task 0 alphabetically.
+    task_idx = int(os.environ.get('CLOUD_RUN_TASK_INDEX', '0'))
+    task_cnt = int(os.environ.get('CLOUD_RUN_TASK_COUNT', '1'))
+    if task_cnt > 1:
+        before = len(symbols)
+        symbols = symbols[task_idx::task_cnt]
+        log.info("  Task %d/%d — processing %d/%d symbols (stripe)",
+                 task_idx, task_cnt, len(symbols), before)
 
     log.info("AlphaVantage Intraday Fetch Job")
     log.info("  Symbols   : %s", symbols)

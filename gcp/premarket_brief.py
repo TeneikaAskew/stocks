@@ -41,6 +41,13 @@ logger = logging.getLogger(__name__)
 MAX_EMBED_CHARS = 6000
 MAX_FIELD_VALUE = 1024
 
+# Live calibration options-metrics, populated once at the top of
+# _build_earnings_embed and consumed by per-row action-tag logic
+# (recommended_structure). Module-level so the row-rendering closure
+# inside _build_earnings_embed can see it without threading it through
+# every helper. Resets per brief invocation.
+_BRIEF_CAL_OPTS: dict = {}
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -439,7 +446,24 @@ def load_earnings_for_brief(today: date, weekly: bool = False, top_n: int = 25) 
     watchlist: list[dict] = []
     low_conviction: list[dict] = []
     if mode == 'daily' and os.environ.get('BRIEF_INCLUDE_UNCONFIRMED', '') != '1':
-        min_nq = int(os.environ.get('BRIEF_MIN_REACTION_QUARTERS', '12'))
+        # Source-of-truth chain for the Track A/B min-quarters gate:
+        #   1. BRIEF_MIN_REACTION_QUARTERS env var (operator override)
+        #   2. earnings_calibration.min_nq (latest sweep winner)
+        #   3. DEFAULT_MIN_NQ from lib/earnings_reactions (Tier B)
+        # Closes the wire-up gap where the brief's Track A/B split used
+        # to bypass the sweep-driven min_nq even though
+        # enrich_with_playability already gates the score against it.
+        env_min_nq = os.environ.get('BRIEF_MIN_REACTION_QUARTERS')
+        if env_min_nq is not None:
+            min_nq = int(env_min_nq)
+        else:
+            try:
+                from lib.earnings_reactions import get_earnings_calibration
+                min_nq = int(get_earnings_calibration()['min_nq'])
+            except Exception as e:
+                logger.warning("calibration min_nq resolution failed (%s) — "
+                               "defaulting to 12", type(e).__name__)
+                min_nq = 12
         wl_min_oi  = int(os.environ.get('BRIEF_WATCHLIST_MIN_OI',  '50000'))
         wl_min_vol = int(os.environ.get('BRIEF_WATCHLIST_MIN_VOL', '5000'))
 
@@ -1943,6 +1967,16 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
 
     Truncates to stay under Discord's 4096-char description limit.
     """
+    # Load options-side calibration once per brief run — used by every
+    # row's action-tag decision via recommended_structure(). Resilient:
+    # empty dict on any failure → archetype map drives the action.
+    global _BRIEF_CAL_OPTS
+    try:
+        from lib.earnings_reactions import get_calibration_options_metrics
+        _BRIEF_CAL_OPTS = get_calibration_options_metrics() or {}
+    except Exception:
+        _BRIEF_CAL_OPTS = {}
+
     mode = earnings_data.get('mode', 'daily')
     rows = earnings_data.get('earnings', [])
 
@@ -2111,9 +2145,18 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         gap_str = _gap_str(r.get('gap_pct'))
         if gap_str:
             extras.append(gap_str)
-        # Playability archetype → action (revised 2026-05-14 post-backtest).
+        # Playability archetype → action (revised 2026-05-14 post-backtest,
+        # 2026-05-22 with calibration-aware Q5 override).
         # Every row gets a tradeable action; confidence label below
         # tells you how to size it.
+        #
+        # Q5 (top quintile) + live calibration shows over-pricing
+        # (realized/implied < 0.85 + short-strangle PnL > +5%) → IC.
+        # Backtest 2026-05-21: 2,533 Q5 events showed straddle -9.5%
+        # vs strangle +20.3% — the options market over-prices these
+        # picks, so SELLING premium has historical edge.
+        #
+        # Other archetypes / quintiles fall through to:
         #   bullish_trend  → CALL   (directional)
         #   bearish_trend  → PUT    (directional)
         #   mixed          → STRDL  (vol-only — no direction)
@@ -2122,13 +2165,22 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
         #                            don't bet a side)
         #   quiet          → (filtered upstream)
         archetype = r.get('playability_archetype')
-        action_map = {
-            'bullish_trend': 'CALL',
-            'bearish_trend': 'PUT',
-            'reversal_play': 'STRDL',
-            'mixed':         'STRDL',
-        }
-        action = action_map.get(archetype)
+        try:
+            from lib.earnings_reactions import (
+                recommended_structure, score_quintile,
+            )
+            q = score_quintile(r.get('playability_score'))
+            action = recommended_structure(
+                archetype, q, _BRIEF_CAL_OPTS,
+            )
+        except Exception:
+            # Calibration unavailable / lib import failed — fall back to
+            # the archetype map. Brief still runs.
+            _fallback = {
+                'bullish_trend': 'CALL', 'bearish_trend': 'PUT',
+                'reversal_play': 'STRDL', 'mixed': 'STRDL',
+            }
+            action = _fallback.get(archetype)
         if action:
             extras.append(action)
         # Confidence label — tells the reader how much to size this trade.

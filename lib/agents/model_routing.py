@@ -50,7 +50,9 @@ def _get_connector():
     if _CONNECTOR is None:
         from google.cloud.sql.connector import Connector  # type: ignore
 
-        _CONNECTOR = Connector()
+        # lazy refresh: on-demand cert refresh — the background refresher
+        # is unreliable under Cloud Run request-based CPU throttling.
+        _CONNECTOR = Connector(refresh_strategy="lazy")
         atexit.register(_CONNECTOR.close)
     return _CONNECTOR
 
