@@ -28,7 +28,7 @@ import argparse
 import logging
 import sys
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
