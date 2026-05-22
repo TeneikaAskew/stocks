@@ -1,0 +1,494 @@
+<mxfile host="65bd71144e">
+    <diagram name="① Master ERD" id="erd_master">
+        <mxGraphModel dx="598" dy="1033" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2400" pageHeight="1700" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="title" value="Cloud SQL trading-db — Entity Relationship Diagram (master view, 44 tables)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;fontColor=#222222;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="20" width="2320" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="subtitle" value="9 logical clusters • PK / UQ shown per table • Solid arrow = real FK • Dashed = semantic join (ticker / date / run_id) • ★ = added 2026-05-08→2026-05-22 • verified 2026-05-22 against gcp/schema.sql" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=2;fontColor=#666666;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="48" width="2320" height="20" as="geometry"/>
+                </mxCell>
+
+                <!-- Cluster 1: Market data -->
+                <mxCell id="c_md" value="① Market Data" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="80" width="600" height="430" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_mdd" value="market_data_daily&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (bigserial)&#xa;UQ  (ticker, date)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker · date · open/high/low/close · volume&#xa;rsi_14 · ema_9 · ema_20 · ema_50 · ema_200&#xa;atr_14 · macd · bb_upper/mid/lower · vwap&#xa;gap_pct · pre_high · pre_low · pre_vwap&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-market-data, backfill-daily-indicators ★" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b46504;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="115" width="280" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_mdi" value="market_data_intraday  [LIST PARTITIONED]&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  (ticker, interval, ts)&#xa;━━━━━━━━━━━━━━━━━&#xa;Partitions:&#xa;  • _spy   (ticker='SPY')&#xa;  • _iwm   (ticker='IWM')&#xa;  • _qqq   (ticker='QQQ')&#xa;  • _spx   (ticker='SPX')&#xa;  • _other (DEFAULT)&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-alphavantage-intraday,&#xa;  fetch-premarket-refresh, intraday-bulk-backfill ★" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b46504;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="360" y="115" width="260" height="195" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_rates" value="daily_rates&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  date&#xa;━━━━━━━━━━━━━━━━━&#xa;dgs3mo_rate (FRED, BSM r)&#xa;sp500_div_yield&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-fred-rates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b46504;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="305" width="280" height="125" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_archive_md" value="archive_yahoo_market_data_daily&#xa;archive_yahoo_market_data_intraday&#xa;━━━━━━━━━━━━━━━━━&#xa;Legacy Yahoo data (pre-AV cutover)&#xa;Not written to in production" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#888888;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="360" y="335" width="260" height="95" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_md_legend" value="Wire: ticker · (ticker, date) · (ticker, ts) join out to every other cluster" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="445" width="560" height="22" as="geometry"/>
+                </mxCell>
+
+                <!-- Cluster 2: Options & Greeks -->
+                <mxCell id="c_opt" value="② Options &amp; Greeks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="660" y="80" width="600" height="430" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_etfo" value="etf_options_snapshots&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (bigserial)&#xa;UQ  (ticker, snapshot_ts, type, exp, strike)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker · snapshot_ts · type ∈ {C, P}&#xa;exp · strike · iv · open_interest · volume&#xa;Greeks: delta, gamma, theta, vega, rho&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-av-options-backfill (9 PM ET daily)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b46504;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="680" y="115" width="280" height="165" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_eo" value="earnings_options_snapshots  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (bigserial)&#xa;UQ  (symbol, snapshot_ts, type, exp, strike)&#xa;━━━━━━━━━━━━━━━━━&#xa;Same shape as etf_options_snapshots&#xa;Key column is &apos;symbol&apos;, not &apos;ticker&apos;&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-av-earnings-options-backfill ★" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="980" y="115" width="260" height="165" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_archive_opt" value="archive_yahoo_etf_options_snapshots&#xa;archive_yahoo_earnings_options_snapshots&#xa;━━━━━━━━━━━━━━━━━&#xa;Legacy Yahoo options data&#xa;Not written to in production" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#888888;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="680" y="305" width="560" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="opt_note" value="Spot (close from market_data_daily) and r (dgs3mo_rate from daily_rates) feed lib/options_greeks.py to compute Greeks. lib/gamma.py aggregates → per-strike GEX → King/Gate/Spot/Flip levels." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="680" y="410" width="560" height="80" as="geometry"/>
+                </mxCell>
+
+                <!-- Cluster 3: Earnings -->
+                <mxCell id="c_earn" value="③ Earnings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fad7ac;strokeColor=#b46504;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="1280" y="80" width="1080" height="430" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_ecal" value="earnings_calendar&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (bigserial)&#xa;UQ  (ticker, earnings_date, strategy, data_source)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker · earnings_date · strategy ∈ {EW,UW,AV}&#xa;data_source · strike · premium · score&#xa;ew_verdict ∈ {hit,miss,kept,assigned}&#xa;minutes_to_hit · realized_vol_12q · eps_actual&#xa;sp500_flag · vol · oi · day_change&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-earnings-calendar,&#xa;  evaluate-ew-strikes, compute-earnings-reactions&#xa;Trigger: trg_earnings_calendar_updated" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b46504;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1300" y="115" width="280" height="215" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_eh" value="earnings_history&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (bigserial)&#xa;UQ  (ticker, fiscal_date_ending)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker · fiscal_date_ending&#xa;reported_eps · estimated_eps · surprise_pct&#xa;report_time ∈ {bmo, amc}&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-earnings-history (weekly)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b46504;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1600" y="115" width="260" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_er" value="earnings_reactions&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (bigserial)&#xa;UQ  (ticker, fiscal_date_ending)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker · fiscal_date_ending · pre_drift_pct&#xa;gap_pct · reaction_basis ∈ {bmo,amc}&#xa;sustain_3d/5d/10d · direction_consistency&#xa;reversal_flag · atr_context · mae/mfe_pct&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: compute-earnings-reactions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b46504;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1880" y="115" width="280" height="175" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_ecalib" value="earnings_calibration  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  calibration_date&#xa;━━━━━━━━━━━━━━━━━&#xa;min_nq · lookback_quarters&#xa;avg_win_pct · avg_loss_pct · payoff_ratio&#xa;expectancy · sharpe&#xa;straddle/strangle pricing&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: earnings-sweep ★&#xa;Latest dated row wins" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="2180" y="115" width="160" height="175" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_eh_er" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#b46504;dashed=1;" parent="1" source="t_eh" target="t_er" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e_ecal_eh" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#b46504;dashed=1;" parent="1" source="t_ecal" target="t_eh" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_ecalib_er" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;dashed=1;dashPattern=1 4;" parent="1" source="t_ecalib" target="t_er" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="earn_legend" value="(ticker, fiscal_date_ending) wires earnings_history ↔ earnings_reactions. earnings_calendar joins on ticker. earnings_calibration is global knobs (no ticker, no FK)." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="1300" y="340" width="1040" height="40" as="geometry"/>
+                </mxCell>
+
+                <!-- Cluster 4: Signals -->
+                <mxCell id="c_sig" value="④ Signals" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#5b6abf;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="530" width="1240" height="410" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_sa" value="signal_alerts&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (bigserial)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker · entry_time · direction ∈ {CALL,PUT}&#xa;strategy · score · base_score&#xa;proximity_multiplier · agreement_bonus&#xa;rsi_at_signal · rvol_at_signal&#xa;orb_high/low · brief_bias · brief_alignment&#xa;exit_ts · exit_reason · exit_price · is_open&#xa;exit_return_pct · gate_action · gate_reason&#xa;insight_direction/conviction/regime&#xa;next/last_catalyst_min · proximity_bucket&#xa;run_kind ∈ {live,replay,backfill} · replay_id&#xa;signal_agreement (JSONB)&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: signal-monitor (insert),&#xa;  signal-monitor-eod-resolver ★ (exit cols),&#xa;  signal-replay ★ (re-post)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b6abf;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="565" width="380" height="350" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_hs" value="historical_signals&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  (ticker, entry_time, strategy)&#xa;━━━━━━━━━━━━━━━━━&#xa;direction ∈ {call, put} · entry_price&#xa;signal_strength · conditions_met (X/5)&#xa;mfe_20m · ret_5m · ret_10m · ret_15m&#xa;ret_20m · ret_30m · ret_45m · ret_60m&#xa;rsi · ema_9 · ema_20 · vwap · volume&#xa;timeframe_tag · expected_hold&#xa;next/last_catalyst_min · proximity_bucket&#xa;extra (JSONB — ORB + order blocks)&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: historical-signals-watchlist (1 AM)&#xa;  + trading_analysis.py (momentum)&#xa;  + signal_monitor.py (mean_reversion)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b6abf;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="565" width="360" height="305" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_sm" value="signal_metrics&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  (ticker, entry_time, strategy)&#xa;━━━━━━━━━━━━━━━━━&#xa;classification per horizon:&#xa;  5m / 15m / 30m / 60m / 90m / 120m / 240m&#xa;  ∈ {CLEAN_HIT, WRONG_DIRECTION, NOISE, MIXED}&#xa;best_timeframe · status ∈ {pending, final}&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: signal-quality-report" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b6abf;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="840" y="565" width="420" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_hs_sm" style="endArrow=open;startArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#5b6abf;dashed=1;strokeWidth=2;" parent="1" source="t_hs" target="t_sm" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="sig_legend" value="historical_signals ↔ signal_metrics joined 1:1 on (ticker, entry_time, strategy). signal_alerts is live wire — no PK link to historical_signals, but the same (ticker, entry_time, strategy) tuple is the de-facto join key for quality analysis." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="840" y="750" width="420" height="160" as="geometry"/>
+                </mxCell>
+
+                <!-- Cluster 5: Insights -->
+                <mxCell id="c_ins" value="⑤ Insights (AI pipeline) — the ONLY cluster with hard FKs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="1300" y="530" width="1060" height="410" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_ir" value="insight_reports&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (UUID)&#xa;UQ  (ticker, as_of)&#xa;━━━━━━━━━━━━━━━━━&#xa;report (JSONB) · model_versions (JSONB)&#xa;per_role_cost (JSONB) · cost_usd&#xa;latency_ms · created_at&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: insight-pipeline (daily + on-demand)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1320" y="565" width="290" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_irun" value="insight_runs&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (UUID)&#xa;FK  report_id → insight_reports.id  (ON DELETE SET NULL)&#xa;━━━━━━━━━━━━━━━━━&#xa;status ∈ {queued, running, done, failed}&#xa;trigger ∈ {scheduled, on_demand, local_dev,&#xa;  manual_batch, cache_hit, replay_refresh}&#xa;started_at · finished_at · error · duration_ms&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: insight-pipeline" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1630" y="565" width="370" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_irh" value="insight_reports_history  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (bigserial)&#xa;FK  insight_run_id → insight_runs.id&#xa;     (ON DELETE SET NULL)&#xa;UQ  (ticker, as_of, written_at)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker · as_of · written_at&#xa;run_kind · triggered_by · notes&#xa;Append-only audit shadow of insight_reports&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: insight-pipeline (all modes)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="2020" y="565" width="320" height="220" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_mr" value="model_routing&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  role&#xa;━━━━━━━━━━━━━━━━━&#xa;role ∈ {analyst, bull, bear, judge,&#xa;  trader, risk, portfolio_manager}&#xa;provider · model_name · params (JSONB)&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: manual (seeded in schema)&#xa;Trigger: trg_model_routing_updated&#xa;Default: Vertex gemini-3.1-flash-lite (5/11)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1320" y="755" width="380" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_ir_irun" style="endArrow=classic;startArrow=classicThin;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;strokeWidth=3;" parent="1" source="t_ir" target="t_irun" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_irun_irh" style="endArrow=classic;startArrow=classicThin;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;strokeWidth=3;" parent="1" source="t_irun" target="t_irh" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_mr_irun" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;dashed=1;dashPattern=1 4;" parent="1" source="t_mr" target="t_irun" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ins_legend" value="Bold solid arrows = REAL FOREIGN KEY (only place in the schema). Both FKs are ON DELETE SET NULL so a deleted report doesn't orphan its history." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#1e8449;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="1720" y="800" width="600" height="110" as="geometry"/>
+                </mxCell>
+
+                <!-- Cluster 6: Premarket -->
+                <mxCell id="c_pmb" value="⑥ Premarket Analysis &amp; Playbook" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d4e1f5;strokeColor=#4d7eb8;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="960" width="1240" height="280" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_pma" value="premarket_analysis&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (bigserial)&#xa;UQ  (analysis_date, ticker)&#xa;━━━━━━━━━━━━━━━━━&#xa;Brief inputs: price · rsi_14 · consecutive_up/down&#xa;signal_status · strat_candle · strat_combo · ftfc_score · ftfc_direction&#xa;change_pct · rvol · bb_* · vol_regime · macd_cross&#xa;orb_recommendation · orb_reason · llm_playbook&#xa;LLM audit: llm_overview · llm_orb_explanation · llm_analysis&#xa;data_as_of · data_freshness_status&#xa;━━━━━━━━━━━━━━━━━&#xa;Outcome resolution (4:30 PM EOD):&#xa;  trigger_price · stop_price · t1 · t2 · t3 (CALL + PUT)&#xa;  hit_ts · reversal_flag · mae_pct · mfe_pct · eod_pnl&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: premarket-brief (insert 8:30 ET),&#xa;  premarket-playbook-resolver ★ (outcome cols 4:30 ET)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#4d7eb8;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="995" width="640" height="235" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_pmah" value="premarket_analysis_history  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (bigserial)&#xa;UQ  (analysis_date, ticker, written_at)&#xa;━━━━━━━━━━━━━━━━━&#xa;Mirrors premarket_analysis schema&#xa;Plus: written_at · run_kind · triggered_by · notes&#xa;run_kind ∈ {scheduled, manual, replay, backfill}&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: premarket-brief (every run mode)&#xa;Append-only audit shadow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="720" y="995" width="540" height="190" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_pma_pmah" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;strokeWidth=2;dashed=1;" parent="1" source="t_pma" target="t_pmah" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="pmb_legend" value="Every brief run writes 1 row to premarket_analysis (canonical, UPSERT) AND 1 row to premarket_analysis_history (append-only). Outcome columns on canonical are populated 8h later by the 4:30 PM resolver, never on history." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="720" y="1190" width="540" height="40" as="geometry"/>
+                </mxCell>
+
+                <!-- Cluster 7: Backtest -->
+                <mxCell id="c_bt" value="⑦ Backtest (PR #513 ★ + PR #532 ★) — wired by run_id (UUID)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="1300" y="960" width="1060" height="280" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_btr" value="backtest_reports  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  run_id (UUID)&#xa;━━━━━━━━━━━━━━━━━&#xa;tickers TEXT[] · report_md (rendered)&#xa;total_trades · win_rate · expectancy_pct · sharpe&#xa;created_at&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: backtest, backtest-pipeline ★" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1320" y="995" width="260" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_btt" value="backtest_trades  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;UQ  (run_id, ticker, mode, trade_seq)&#xa;━━━━━━━━━━━━━━━━━&#xa;run_id · ticker · mode · trade_seq&#xa;entry/exit_time · direction · entry/exit_price&#xa;exit_reason ∈ {target, stop_loss, time_stop}&#xa;return_pct · mae_pct · mfe_pct · position_size&#xa;score (base, strat, total) · ftfc_score&#xa;conditions_met · orb_trend&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: backtest, backtest-pipeline ★" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1600" y="995" width="260" height="185" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_bts" value="backtest_sweeps  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;UQ  (run_id, ticker, label)&#xa;━━━━━━━━━━━━━━━━━&#xa;run_id · ticker · label ∈ {1m, 1m+15m, 5m+30m…}&#xa;trades · win_rate · avg_win/loss&#xa;profit_factor · expectancy · max_dd · sharpe&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: backtest-pipeline ★" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1880" y="995" width="220" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_wfr" value="walk_forward_results  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;UQ  (run_id, ticker, label)&#xa;━━━━━━━━━━━━━━━━━&#xa;Swept params: consecutive_periods,&#xa;  call_target, call_time_stop,&#xa;  put_target, put_time_stop&#xa;OOS metrics: avg_expectancy, avg_win_rate,&#xa;  std_expectancy, stability_score&#xa;total_folds · total_trades · selected (bool)&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: param-sweep ★" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="2120" y="995" width="220" height="190" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_btr_btt" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;dashed=1;" parent="1" source="t_btr" target="t_btt" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_btr_bts" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;dashed=1;" parent="1" source="t_btr" target="t_bts" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_btr_wfr" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;dashed=1;" parent="1" source="t_btr" target="t_wfr" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="bt_note" value="run_id (UUID) is the parent of all four backtest tables. walk_forward_results.selected=true rows are upserted into exit_config_overrides (see Strategy Config cluster — page ② or ③ below)." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="1320" y="1190" width="1020" height="40" as="geometry"/>
+                </mxCell>
+
+                <!-- Cluster 8: Strategy Config -->
+                <mxCell id="c_cfg" value="⑧ Strategy Configuration" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="1260" width="1160" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_sl" value="strat_levels&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  (ticker, as_of, level_name)&#xa;━━━━━━━━━━━━━━━━━&#xa;level_type · price · strat_class (e.g. Failed_2U)&#xa;period_label · source_data_as_of (freshness)&#xa;is_current (flag, supersession)&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: premarket-brief, signal-monitor&#xa;via lib/strat_levels.persist_level_map()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="1295" width="340" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_tc" value="ticker_calibration&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  (ticker, calibration_date)&#xa;━━━━━━━━━━━━━━━━━&#xa;ATR medians per timeframe (5m, 15m, 30m, 60m, 240m)&#xa;RVOL percentiles (p25, p50, p75, p95)&#xa;RSI percentiles (p25, p75)&#xa;clean/wrong/noise_thresholds (JSONB)&#xa;rvol_min/max_band · atr_expansion_multiplier&#xa;n_bars_used · earliest/latest_bar_date · drift_flagged&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: calibrate-thresholds (quarterly)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="420" y="1295" width="380" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_eco" value="exit_config_overrides  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  (ticker, calibration_date)&#xa;━━━━━━━━━━━━━━━━━&#xa;CALL/PUT separate:&#xa;  target_pct · stop_pct · time_stop_min&#xa;disabled_conditions (JSONB)&#xa;disabled_directions (JSONB: ['CALL'] or ['PUT'])&#xa;blue_sky_atr_offset · notes&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: param-sweep ★ (auto-apply selected),&#xa;  manual seed (audit 2026-05-08)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="820" y="1295" width="360" height="160" as="geometry"/>
+                </mxCell>
+
+                <!-- Cluster 9: News & Admin -->
+                <mxCell id="c_news" value="⑨ News &amp; Sentiment / Admin &amp; Control" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;dashed=0;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry x="1220" y="1260" width="1140" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_news_box" value="News &amp; Catalysts (5)&#xa;━━━━━━━━━━━━━━━━━&#xa;news_sentiment       UQ (ticker, published_ts, url)     fetch-news-sentiment{,-earnings,-topics}&#xa;economic_events     UQ (event_date, event_name)          fetch-economic-events&#xa;sec_filings              UQ (cik, accession_number)             fetch-sec-filings (4×/day)&#xa;insider_transactions UQ (ticker, trans_date, exec, type, shares, price)  fetch-insider-transactions&#xa;top_movers_daily    UQ (snapshot_date, ticker, category)  fetch-top-movers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=9;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1240" y="1295" width="540" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="t_admin_box" value="Admin &amp; Control (5)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker_info             PK ticker          relationships JSONB · raw_json     lib.ticker_info&#xa;watchlists             PK (user_id, ticker)  in_brief/in_insight/signals flags    user API · Discord&#xa;trades                  PK id                 automated pipeline trades                signal-monitor&#xa;journal_entries     PK id (UUID)    embedding vector(768) pgvector    user API&#xa;ranker_runs        PK id (UUID)    decision log JSONB                            premarket-brief" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=9;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1800" y="1295" width="540" height="160" as="geometry"/>
+                </mxCell>
+
+                <!-- Master legend -->
+                <mxCell id="master_legend" value="LEGEND&#xa;━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━&#xa;Solid green arrow with bold edges = REAL FOREIGN KEY (only insight_reports → insight_runs → insight_reports_history)&#xa;Dashed orange arrow = semantic join (ticker / date / fiscal_date_ending / run_id)&#xa;Dotted purple arrow = config-driven dependency (model_routing → insight_runs, ticker_calibration ↔ exit_config_overrides)&#xa;★ = added in 2026-05-08 → 2026-05-22 wave (PR #461, #491, #510, #511, #512, #513, #514, #518, #532)&#xa;Greyed-out box = legacy archive_yahoo_* table — not written to in production but retained for forensic queries" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fontStyle=2;fontColor=#555;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="1480" width="2320" height="160" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+
+    <diagram name="② Market data + Options" id="erd_p2">
+        <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="p2_title" value="② Market Data &amp; Options — partition family + Greeks dependency" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="30" width="1320" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_mdd" value="market_data_daily&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id · UQ (ticker, date)&#xa;━━━━━━━━━━━━━━━━━&#xa;OHLCV + 30+ indicators (RSI/EMA/ATR/MACD/BB/VWAP)&#xa;gap_pct · pre_high · pre_low · pre_vwap (premarket-refresh fills)&#xa;Trigger: trg_market_data_daily_updated&#xa;Writer: fetch-market-data, backfill-daily-indicators ★" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b46504;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="100" width="440" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_rates" value="daily_rates&#xa;━━━━━━━━━━━━━━━━━&#xa;PK date&#xa;━━━━━━━━━━━━━━━━━&#xa;dgs3mo_rate (BSM r)&#xa;sp500_div_yield&#xa;Writer: fetch-fred-rates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b46504;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="290" width="440" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_mdi" value="market_data_intraday  [LIST PARTITIONED by ticker]&#xa;━━━━━━━━━━━━━━━━━&#xa;PK (ticker, interval, ts)&#xa;Writer: fetch-alphavantage-intraday, fetch-premarket-refresh,&#xa;  intraday-bulk-backfill ★" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b46504;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="100" width="520" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_p1" value="…_spy&#xa;LIST (ticker='SPY')" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fdf3e2;strokeColor=#b46504;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="220" width="100" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_p2" value="…_iwm&#xa;LIST (ticker='IWM')" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fdf3e2;strokeColor=#b46504;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="650" y="220" width="100" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_p3" value="…_qqq&#xa;LIST (ticker='QQQ')" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fdf3e2;strokeColor=#b46504;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="760" y="220" width="100" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_p4" value="…_spx&#xa;LIST (ticker='SPX')" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fdf3e2;strokeColor=#b46504;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="870" y="220" width="100" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_p5" value="…_other&#xa;DEFAULT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fdf3e2;strokeColor=#b46504;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="980" y="220" width="80" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_etfo" value="etf_options_snapshots&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id · UQ (ticker, snapshot_ts, type, exp, strike)&#xa;Greeks: delta · gamma · theta · vega · rho · iv&#xa;Writer: fetch-av-options-backfill (9 PM ET daily)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b46504;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="320" width="500" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_eo" value="earnings_options_snapshots  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id · UQ (symbol, snapshot_ts, type, exp, strike)&#xa;Same shape as etf_options_snapshots, key column = symbol&#xa;Writer: fetch-av-earnings-options-backfill ★" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="470" width="500" height="130" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e1" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#b46504;dashed=1;strokeWidth=2;" parent="1" source="p2_mdd" target="p2_etfo" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                    <mxCell value="spot price (close)" style="" connectable="0" vertex="1" parent="p2_e1">
+                        <mxGeometry x="-0.5" relative="1" as="geometry">
+                            <mxPoint as="offset"/>
+                        </mxGeometry>
+                    </mxCell>
+                </mxCell>
+                <mxCell id="p2_e2" style="exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.7;entryDx=0;entryDy=0;endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#b46504;dashed=1;strokeWidth=2;" parent="1" source="p2_rates" target="p2_etfo" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e3" style="endArrow=open;startArrow=open;html=1;edgeStyle=none;rounded=1;strokeColor=#b46504;" parent="1" source="p2_mdi" target="p2_p1" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e4" style="endArrow=open;startArrow=open;html=1;edgeStyle=none;rounded=1;strokeColor=#b46504;" parent="1" source="p2_mdi" target="p2_p2" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e5" style="endArrow=open;startArrow=open;html=1;edgeStyle=none;rounded=1;strokeColor=#b46504;" parent="1" source="p2_mdi" target="p2_p3" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e6" style="endArrow=open;startArrow=open;html=1;edgeStyle=none;rounded=1;strokeColor=#b46504;" parent="1" source="p2_mdi" target="p2_p4" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_e7" style="endArrow=open;startArrow=open;html=1;edgeStyle=none;rounded=1;strokeColor=#b46504;" parent="1" source="p2_mdi" target="p2_p5" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p2_note" value="Production note:&#xa;&#xa;• All queries to market_data_intraday go through the parent — Postgres routes to the right partition by ticker. App code does NOT reference the child tables directly.&#xa;&#xa;• etf_options_snapshots Greeks depend on BOTH spot (market_data_daily.close) AND r (daily_rates.dgs3mo_rate). lib/options_greeks.py is the single place this math runs.&#xa;&#xa;• Stale daily_rates → wrong r → wrong Greeks. Audit 2026-05-08 G.P0.7 traced an old delta to a missed FRED fetch — schema does NOT enforce daily_rates freshness; the application must check (data_as_of pattern).&#xa;&#xa;• lib/gamma.py aggregates per-strike GEX → King/Gate/Spot/Flip levels used by premarket-brief + signal-monitor." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="460" width="460" height="380" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+
+    <diagram name="③ Signals + Premarket" id="erd_p3">
+        <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="p3_title" value="③ Signals + Premarket — live wire + historical backfill + brief + EOD reconcilers" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="30" width="1520" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_sa" value="signal_alerts&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id (bigserial)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker · entry_time · direction · strategy&#xa;score components: base_score + strat_bonus + agreement_bonus,&#xa;  × proximity_multiplier → total score&#xa;rsi/rvol at signal · orb_high/low · brief_bias · brief_alignment&#xa;EXIT (populated 4:30 PM by eod-resolver ★):&#xa;  exit_ts · exit_reason ∈ {target_hit, time_stop, rsi_extreme, eod_close}&#xa;  exit_price · exit_return_pct · is_open&#xa;GATE (insight cross-check):&#xa;  insight_direction · conviction · regime · gate_action · gate_reason&#xa;CATALYST: next/last_catalyst_min · proximity_bucket&#xa;REPLAY: run_kind ∈ {live, replay, backfill} · replay_id&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: signal-monitor (insert),&#xa;  signal-monitor-eod-resolver ★ (exit cols),&#xa;  signal-replay ★ (re-post stored alerts)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b6abf;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="80" width="540" height="350" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_hs" value="historical_signals&#xa;━━━━━━━━━━━━━━━━━&#xa;PK (ticker, entry_time, strategy)&#xa;━━━━━━━━━━━━━━━━━&#xa;direction · entry_price · signal_strength · conditions_met (X/5)&#xa;mfe_20m + per-horizon returns: 5/10/15/20/30/45/60 min&#xa;rsi · ema_9 · ema_20 · vwap · volume at entry&#xa;timeframe_tag · expected_hold&#xa;next/last_catalyst_min · proximity_bucket&#xa;extra (JSONB — ORB, order blocks)&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: historical-signals-watchlist (1 AM daily),&#xa;  trading_analysis.py (momentum), signal_monitor.py (mean_reversion)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b6abf;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="620" y="80" width="500" height="245" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_sm" value="signal_metrics&#xa;━━━━━━━━━━━━━━━━━&#xa;PK (ticker, entry_time, strategy)&#xa;━━━━━━━━━━━━━━━━━&#xa;classification_5m / _15m / _30m / _60m / _90m / _120m / _240m&#xa;  ∈ {CLEAN_HIT, WRONG_DIRECTION, NOISE, MIXED}&#xa;favorable_excursion_pct per horizon&#xa;best_timeframe (fast vs slow winner)&#xa;status ∈ {pending (rolling), final (closed)}&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: signal-quality-report" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#5b6abf;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1160" y="80" width="400" height="245" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_pma" value="premarket_analysis&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id · UQ (analysis_date, ticker)&#xa;━━━━━━━━━━━━━━━━━&#xa;price · rsi_14 · consecutive_up/down · signal_status&#xa;strat_candle · strat_combo · ftfc_score · ftfc_direction&#xa;change_pct · rvol · bollinger · volatility · macd_cross · vol_regime&#xa;orb_recommendation · orb_reason · llm_playbook&#xa;data_as_of · data_freshness_status (CLAUDE.md Rule 3.7)&#xa;LLM audit: llm_overview · llm_orb_explanation · llm_analysis&#xa;OUTCOME (populated 4:30 PM by playbook-resolver ★):&#xa;  CALL/PUT: trigger · stop · t1 · t2 · t3 · hit_ts · reversal_flag&#xa;  mae_pct · mfe_pct · eod_pnl&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: premarket-brief (insert 8:30 ET),&#xa;  premarket-playbook-resolver ★ (outcome 4:30 ET)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#4d7eb8;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="490" width="700" height="320" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_pmah" value="premarket_analysis_history  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id · UQ (analysis_date, ticker, written_at)&#xa;━━━━━━━━━━━━━━━━━&#xa;Mirrors premarket_analysis schema&#xa;+ written_at · run_kind · triggered_by · notes&#xa;run_kind ∈ {scheduled, manual, replay, backfill}&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: premarket-brief (every run mode)&#xa;Append-only — every brief leaves a fingerprint" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="780" y="490" width="540" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_sl" value="strat_levels&#xa;━━━━━━━━━━━━━━━━━&#xa;PK (ticker, as_of, level_name)&#xa;━━━━━━━━━━━━━━━━━&#xa;Horizontal price markers&#xa;trigger / stop / target / S/R&#xa;strat_class · source_data_as_of · is_current&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: premarket-brief, signal-monitor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="780" y="710" width="540" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e1" style="endArrow=open;startArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#5b6abf;strokeWidth=2;dashed=1;" parent="1" source="p3_hs" target="p3_sm" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e2" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;dashed=1;strokeWidth=2;" parent="1" source="p3_pma" target="p3_pmah" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e3" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#9673a6;dashed=1;" parent="1" source="p3_sl" target="p3_pma" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_e4" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#4d7eb8;dashed=1;" parent="1" source="p3_pma" target="p3_sa" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p3_note" value="Flow: premarket-brief (8:30 ET) writes premarket_analysis canonical row AND a premarket_analysis_history audit row. brief_bias propagates into signal_alerts as an alignment hint. The 4:30 PM resolvers walk RTH 1-min bars from market_data_intraday and populate the outcome columns on the CANONICAL row (premarket_analysis), never on the history shadow." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#666;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="880" width="1500" height="100" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+
+    <diagram name="④ Insights (FK chain)" id="erd_p4">
+        <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="800" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="p4_title" value="④ Insights cluster — the ONLY place with real FOREIGN KEY constraints" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="30" width="1320" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_sub" value="Both FKs are ON DELETE SET NULL — deletes propagate as nullification, never as cascading delete. Audit-trail integrity is preserved." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=2;fontColor=#666666;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="64" width="1320" height="22" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_ir" value="insight_reports&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (UUID)&#xa;UQ  (ticker, as_of)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker · as_of · report (JSONB InsightReport)&#xa;model_versions (JSONB)&#xa;per_role_cost (JSONB) · cost_usd · latency_ms&#xa;created_at&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: insight-pipeline (daily 8:45 ET + on-demand)&#xa;UPSERT on (ticker, as_of) — same day re-run overwrites" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1e8449;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="130" width="380" height="240" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_irun" value="insight_runs&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (UUID)&#xa;FK  report_id → insight_reports.id&#xa;     ON DELETE SET NULL&#xa;━━━━━━━━━━━━━━━━━&#xa;status ∈ {queued, running, done, failed}&#xa;trigger ∈ {scheduled, on_demand, local_dev,&#xa;  manual_batch, cache_hit, replay_refresh}&#xa;started_at · finished_at · error&#xa;duration_ms · cost_usd&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: insight-pipeline&#xa;State machine: queued → running → done|failed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1e8449;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="500" y="130" width="380" height="290" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_irh" value="insight_reports_history  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  id (bigserial)&#xa;FK  insight_run_id → insight_runs.id&#xa;     ON DELETE SET NULL&#xa;UQ  (ticker, as_of, written_at)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker · as_of · written_at · report (JSONB)&#xa;run_kind ∈ {scheduled, manual, replay,&#xa;  backfill, cache_hit}&#xa;triggered_by · notes&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: insight-pipeline (every run mode)&#xa;Append-only audit log — Phase 1 protection plan" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="940" y="130" width="380" height="290" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_mr" value="model_routing&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  role&#xa;━━━━━━━━━━━━━━━━━&#xa;role ∈ {analyst, bull, bear, judge,&#xa;  trader, risk, portfolio_manager}&#xa;provider ∈ {vertex, anthropic}&#xa;model_name · params (JSONB)&#xa;Trigger: trg_model_routing_updated&#xa;━━━━━━━━━━━━━━━━━&#xa;As of 2026-05-11: all roles → Vertex gemini-3.1-flash-lite&#xa;Writer: manual (seeded in schema migration)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#1e8449;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="450" width="500" height="220" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_wl" value="watchlists&#xa;━━━━━━━━━━━━━━━━━&#xa;PK (user_id, ticker)&#xa;━━━━━━━━━━━━━━━━━&#xa;in_insight (bool) gates whether ticker shows up&#xa;in /api/insights/watchlist (frontend AI cards)&#xa;Writer: user API · Discord /watchlist · seed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="620" y="450" width="500" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_e1" style="endArrow=classic;startArrow=classicThin;html=1;edgeStyle=none;strokeColor=#1e8449;strokeWidth=3;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;" parent="1" source="p4_ir" target="p4_irun" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                    <mxCell value="FK report_id" style="" connectable="0" vertex="1" parent="p4_e1">
+                        <mxGeometry x="-0.3" relative="1" as="geometry">
+                            <mxPoint as="offset"/>
+                        </mxGeometry>
+                    </mxCell>
+                </mxCell>
+                <mxCell id="p4_e2" style="endArrow=classic;startArrow=classicThin;html=1;edgeStyle=none;strokeColor=#1e8449;strokeWidth=3;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="p4_irun" target="p4_irh" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                    <mxCell value="FK insight_run_id" style="" connectable="0" vertex="1" parent="p4_e2">
+                        <mxGeometry x="-0.3" relative="1" as="geometry">
+                            <mxPoint as="offset"/>
+                        </mxGeometry>
+                    </mxCell>
+                </mxCell>
+                <mxCell id="p4_e3" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;dashed=1;dashPattern=1 4;" parent="1" source="p4_mr" target="p4_irun" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_e4" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#d6b656;dashed=1;dashPattern=1 4;" parent="1" source="p4_wl" target="p4_ir" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p4_note" value="Read this cluster top-to-bottom:&#xa;&#xa;1. User clicks Refresh in /insights → FastAPI POST /api/insights/report/{ticker}/refresh enqueues a Cloud Task.&#xa;2. insight-pipeline Job picks up the task → inserts a row in insight_runs with status=queued, trigger=on_demand.&#xa;3. Job moves status to running, looks up the per-role model in model_routing, calls Vertex/Anthropic.&#xa;4. On success: writes insight_reports row (UPSERT — same (ticker, as_of) overwrites), sets insight_runs.report_id FK to the new id, status=done.&#xa;5. EVERY run (success OR failure) writes a row to insight_reports_history with insight_run_id FK back to the run. The history table&#39;s UQ (ticker, as_of, written_at) prevents duplicates at the same instant.&#xa;&#xa;On report deletion (purge, GDPR-style): the FK SET NULL preserves run + history rows so the audit trail is intact." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="700" width="1260" height="80" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+
+    <diagram name="⑤ Backtest (PR #513)" id="erd_p5">
+        <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="p5_title" value="⑤ Backtest cluster — PR #513 (May 2026) — wired by run_id (UUID)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;fontColor=#1e8449;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="30" width="1520" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_sub" value="Three sibling tables share run_id (no real FK; UUID generated by the orchestrator). param-sweep auto-applies winners into exit_config_overrides → live signal-monitor picks them up." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=2;fontColor=#666;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="64" width="1520" height="22" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_btr" value="backtest_reports  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;PK  run_id (UUID)&#xa;━━━━━━━━━━━━━━━━━&#xa;tickers TEXT[] · report_md (rendered markdown)&#xa;total_trades · win_rate · expectancy_pct · sharpe&#xa;created_at · params (JSONB sweep config)&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: backtest (Discord /backtest 8Gi/8h ★ PR #515),&#xa;  backtest-pipeline ★ (walk-forward orchestrator)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="120" width="500" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_btt" value="backtest_trades  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;UQ (run_id, ticker, mode, trade_seq)&#xa;━━━━━━━━━━━━━━━━━&#xa;run_id (UUID, no FK) · ticker · mode · trade_seq&#xa;entry_time · exit_time · direction&#xa;entry_price · exit_price&#xa;exit_reason ∈ {target, stop_loss, time_stop}&#xa;return_pct · mae_pct · mfe_pct · position_size&#xa;score: base · strat · total · ftfc_score · orb_trend&#xa;conditions_met (comma-joined)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="600" y="120" width="480" height="210" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_bts" value="backtest_sweeps  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;UQ (run_id, ticker, label)&#xa;━━━━━━━━━━━━━━━━━&#xa;label ∈ {1m, 1m+15m, 5m+30m, …}&#xa;trades · win_rate · avg_win · avg_loss&#xa;profit_factor · expectancy · max_dd · sharpe" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1140" y="120" width="420" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_wfr" value="walk_forward_results  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;UQ (run_id, ticker, label)&#xa;━━━━━━━━━━━━━━━━━&#xa;Swept params:&#xa;  consecutive_periods · call_target · call_time_stop&#xa;  put_target · put_time_stop&#xa;OOS metrics:&#xa;  avg_expectancy · avg_win_rate · std_expectancy&#xa;  stability_score (% folds profitable)&#xa;  total_folds · total_trades&#xa;selected (bool) — true rows promoted to exit_config_overrides&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: param-sweep ★" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="360" width="520" height="270" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_eco" value="exit_config_overrides  ★&#xa;━━━━━━━━━━━━━━━━━&#xa;PK (ticker, calibration_date)&#xa;━━━━━━━━━━━━━━━━━&#xa;CALL: target_pct · stop_pct · time_stop_min&#xa;PUT:  target_pct · stop_pct · time_stop_min&#xa;disabled_conditions (JSONB — opt-out conditions)&#xa;disabled_directions (JSONB — [&apos;CALL&apos;] or [&apos;PUT&apos;])&#xa;blue_sky_atr_offset · notes&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: param-sweep ★ (auto-apply selected),&#xa;  manual seed (audit 2026-05-08)&#xa;Read by: signal-monitor, signal-monitor-eod-resolver" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5f5e3;strokeColor=#1e8449;strokeWidth=2;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="620" y="360" width="500" height="250" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_sm" value="signal_monitor (live alert engine)&#xa;━━━━━━━━━━━━━━━━━&#xa;On bar fire:&#xa;  1. compute conditions → if cleared, create signal_alerts row&#xa;  2. look up exit_config_overrides[(ticker, latest_calibration_date)]&#xa;  3. set target/stop/time_stop per CALL or PUT direction&#xa;  4. honour disabled_conditions / disabled_directions overrides&#xa;━━━━━━━━━━━━━━━━━&#xa;CLOSED LOOP: backtest → walk-forward → exit_config_overrides → live monitor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1160" y="360" width="400" height="250" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_e1" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;dashed=1;strokeWidth=2;" parent="1" source="p5_btr" target="p5_btt" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                    <mxCell value="run_id" style="" connectable="0" vertex="1" parent="p5_e1">
+                        <mxGeometry x="-0.5" relative="1" as="geometry">
+                            <mxPoint as="offset"/>
+                        </mxGeometry>
+                    </mxCell>
+                </mxCell>
+                <mxCell id="p5_e2" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;dashed=1;strokeWidth=2;" parent="1" source="p5_btt" target="p5_bts" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_e3" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;dashed=1;strokeWidth=2;" parent="1" source="p5_btr" target="p5_wfr" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p5_e4" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#1e8449;strokeWidth=3;" parent="1" source="p5_wfr" target="p5_eco" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                    <mxCell value="selected=true → UPSERT" style="" connectable="0" vertex="1" parent="p5_e4">
+                        <mxGeometry x="-0.3" relative="1" as="geometry">
+                            <mxPoint as="offset"/>
+                        </mxGeometry>
+                    </mxCell>
+                </mxCell>
+                <mxCell id="p5_e5" style="endArrow=classic;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#d6b656;strokeWidth=3;" parent="1" source="p5_eco" target="p5_sm" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                    <mxCell value="latest calibration_date wins" style="" connectable="0" vertex="1" parent="p5_e5">
+                        <mxGeometry x="-0.3" relative="1" as="geometry">
+                            <mxPoint as="offset"/>
+                        </mxGeometry>
+                    </mxCell>
+                </mxCell>
+                <mxCell id="p5_note" value="Why no FK on run_id across the four backtest tables? Because runs are written by an orchestrator that generates run_id once and fans out — putting an FK on backtest_trades.run_id → backtest_reports.id would require writing the report row FIRST, but the report&#39;s aggregate metrics aren&#39;t known until all trades complete. The UUID-as-correlation-id pattern works because writes are atomic-per-table and the orchestrator guarantees the run_id is unique." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#666;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="660" width="1520" height="80" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+
+    <diagram name="⑥ News + Admin" id="erd_p6">
+        <mxGraphModel dx="0" dy="0" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="p6_title" value="⑥ News &amp; Sentiment / Admin &amp; Control" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="30" width="1520" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_news" value="news_sentiment&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id · UQ (ticker, published_ts, url)&#xa;━━━━━━━━━━━━━━━━━&#xa;sentiment_score · relevance_score · overall_sentiment_label&#xa;topics TEXT[] (GIN-indexed for catalyst lookups)&#xa;data_source ∈ {alphavantage, rss, finviz}&#xa;match_method ∈ {direct, title_regex, alias_match, relationship, llm}&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-news-sentiment,&#xa;  fetch-news-sentiment-earnings, fetch-news-sentiment-topics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="90" width="500" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_econ" value="economic_events&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id · UQ (event_date, event_name)&#xa;━━━━━━━━━━━━━━━━━&#xa;event_date · event_name · country · importance&#xa;actual · forecast · previous · source ∈ {ff, fred}&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-economic-events&#xa;Consumed by: lib.strategies.catalyst_proximity" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="580" y="90" width="500" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_sec" value="sec_filings&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id · UQ (cik, accession_number)&#xa;━━━━━━━━━━━━━━━━━&#xa;cik · accession_number · ticker (nullable)&#xa;form_type ∈ {8-K, 10-Q, 10-K, 4, …}&#xa;items TEXT[] (GIN; 1.01 M&amp;A, 5.02 exec change)&#xa;filed_ts&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-sec-filings (4×/day 07/10/13/17 ET)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1120" y="90" width="440" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_ins" value="insider_transactions&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id&#xa;UQ (ticker, transaction_date, executive,&#xa;     transaction_type, shares, share_price)&#xa;━━━━━━━━━━━━━━━━━&#xa;Form 4 (officer/director/10%-owner buy/sell)&#xa;Ranker clusters 3+ same-dir within 30 days&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-insider-transactions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="320" width="500" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_movers" value="top_movers_daily&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id · UQ (snapshot_date, ticker, category)&#xa;━━━━━━━━━━━━━━━━━&#xa;category ∈ {gainer, loser, most_active}&#xa;pct_change · volume&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: fetch-top-movers (post-close)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="580" y="320" width="500" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_ti" value="ticker_info&#xa;━━━━━━━━━━━━━━━━━&#xa;PK ticker&#xa;━━━━━━━━━━━━━━━━━&#xa;name · sector · industry · market_cap · asset_type&#xa;description · raw_json (full AV OVERVIEW)&#xa;relationships JSONB (peers, industry_peers)&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: lib.ticker_info (on first watchlist add)&#xa;Consumer: news_sentiment alias-matching&#xa;Trigger: trg_ticker_info_updated" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1120" y="320" width="440" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_wl" value="watchlists&#xa;━━━━━━━━━━━━━━━━━&#xa;PK (user_id, ticker)&#xa;━━━━━━━━━━━━━━━━━&#xa;user_id (default &apos;default&apos;; future: auth layer)&#xa;added_at · removed_at (NULL = active soft-delete)&#xa;source ∈ {ui, cli, admin, seed}&#xa;in_brief · in_insight · signals (per-surface flags)&#xa;Index: active rows (removed_at IS NULL)&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: user API, Discord /watchlist, seed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="550" width="500" height="220" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_je" value="journal_entries&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id (UUID)&#xa;━━━━━━━━━━━━━━━━━&#xa;ticker · direction · entry_ts · exit_ts&#xa;entry_price · exit_price · return_pct&#xa;notes (free text)&#xa;embedding vector(768) — pgvector&#xa;  (Vertex text-embedding-005 over notes)&#xa;Trigger: set_journal_updated_at&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: user API&#xa;Used for &apos;find similar past trades&apos; semantic search" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="580" y="550" width="500" height="220" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_tr" value="trades&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id (bigserial)&#xa;━━━━━━━━━━━━━━━━━&#xa;Automated pipeline trades&#xa;Mirrors signal_alerts once positions close&#xa;Realized return_pct, slippage, fees&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: signal-monitor&#xa;Separate from user-authored journal_entries" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1120" y="550" width="440" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_rr" value="ranker_runs&#xa;━━━━━━━━━━━━━━━━━&#xa;PK id (UUID)&#xa;━━━━━━━━━━━━━━━━━&#xa;Decision log for lib.agents.ranker.rank_tickers()&#xa;candidate_count · excluded_count&#xa;weights_used (JSONB) · results (ranked list w/ breakdowns)&#xa;duration_ms · started_at&#xa;━━━━━━━━━━━━━━━━━&#xa;Writer: premarket-brief (audit trail)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;strokeWidth=2;fontSize=10;align=left;verticalAlign=top;spacingLeft=8;spacingTop=6;" parent="1" vertex="1">
+                    <mxGeometry x="1120" y="740" width="440" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_e1" style="endArrow=open;html=1;edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#d6b656;dashed=1;dashPattern=1 4;" parent="1" source="p6_ti" target="p6_news" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="p6_note" value="Notes: news_sentiment uses ticker_info.relationships to alias-match articles that don&#39;t mention the ticker directly (&quot;Apple&quot; → AAPL via name; &quot;TSM&quot; → TSMC via aliases). topics GIN index + economic_events.event_name are the two indexes that drive catalyst-proximity scoring." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#666;fontStyle=2;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="790" width="1040" height="80" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
