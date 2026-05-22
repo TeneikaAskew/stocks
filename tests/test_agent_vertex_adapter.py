@@ -18,6 +18,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+# Skip the entire module if google-genai isn't installed in the test
+# environment. Production CI installs it via requirements.txt; this
+# guard keeps a hermetic local test run (or any env that hasn't
+# `pip install google-genai`) from hitting a ModuleNotFoundError
+# inside the adapter's `from google.genai import types` runtime
+# import, which the existing patch.dict on sys.modules['google.genai.types']
+# alone can't satisfy without the parent module being importable.
+pytest.importorskip("google.genai")
+
 from lib.agents.llm_client import Message
 from lib.agents.schema import AnalystOutput, EntryZone, TraderOutput
 from lib.agents.vertex_adapter import VertexGeminiAdapter
