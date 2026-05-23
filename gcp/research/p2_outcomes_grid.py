@@ -167,20 +167,30 @@ def _load_daily_features(engine, ticker: str) -> pd.DataFrame:
         return pd.read_sql(sql, conn, params={"ticker": ticker})
 
 
-def _load_bars_for_date(engine, ticker: str, day: _date) -> pd.DataFrame:
-    """Load 1-min RTH bars for a single (ticker, date), index by ts."""
+def _load_bars_for_year(engine, ticker: str, year: int) -> pd.DataFrame:
+    """Load 1-min RTH bars for one ticker × full year.
+
+    Refactored from per-date to per-year (2026-05-23) — the per-date version
+    did 2,858 round-trips per ticker. Per-year is 12 round-trips per ticker.
+    Each year is ~98k rows × ~50 bytes = ~5MB, well within memory.
+    """
     from sqlalchemy import text
     table = INTRADAY_TABLE_BY_TICKER[ticker]
     sql = text(f"""
-    SELECT ts, open, high, low, close, volume
+    SELECT ts, open, high, low, close, volume,
+           (ts AT TIME ZONE 'America/New_York')::date AS local_date
     FROM {table}
-    WHERE ts::date = :d
+    WHERE ts >= :y_start
+      AND ts <  :y_end
       AND interval = '1min'
       AND (ts AT TIME ZONE 'America/New_York')::time BETWEEN '09:30' AND '15:59'
     ORDER BY ts
     """)
+    y_start = pd.Timestamp(year, 1, 1, tz="UTC")
+    y_end = pd.Timestamp(year + 1, 1, 1, tz="UTC")
     with engine.connect() as conn:
-        return pd.read_sql(sql, conn, params={"d": day})
+        df = pd.read_sql(sql, conn, params={"y_start": y_start, "y_end": y_end})
+    return df
 
 
 def _build_summary_from_levels(ticker: str, snap_date: _date,
@@ -270,127 +280,139 @@ def _process_ticker(engine, ticker: str) -> int:
     log.info("%s: %d level rows across %d days; %d daily rows",
              ticker, len(levels_all), levels_all["snapshot_date"].nunique(), len(daily))
 
-    levels_by_date = {d: g for d, g in levels_all.groupby("snapshot_date")}
-    daily_by_date = daily.set_index("date").to_dict("index")
-
-    # Iterate dates that have BOTH a prior-day level AND today's daily row.
+    levels_by_date: dict = {d: g for d, g in levels_all.groupby("snapshot_date")}
+    daily_by_date: dict = daily.set_index("date").to_dict("index")
     sorted_dates = sorted(daily.set_index("date").index.tolist())
-    prev_date = None
 
-    event_rows: list[dict] = []
     n_bars_processed = 0
     n_alerts = 0
     t0 = time.time()
 
-    for cur_date in sorted_dates:
-        if prev_date is None:
-            prev_date = cur_date
+    # Determine year span from levels coverage
+    if not levels_all.empty:
+        min_year = pd.Timestamp(levels_all["snapshot_date"].min()).year
+        max_year = pd.Timestamp(levels_all["snapshot_date"].max()).year
+    else:
+        log.warning("%s: no levels loaded — skipping ticker", ticker)
+        return 0
+
+    for year in range(min_year, max_year + 1):
+        yt0 = time.time()
+        bars_year = _load_bars_for_year(engine, ticker, year)
+        if bars_year.empty:
+            log.info("%s %d: no bars", ticker, year)
             continue
-        # Use prev_date's EOD chain → summary
-        levels_for_today = levels_by_date.get(prev_date)
-        if levels_for_today is None or levels_for_today.empty:
-            prev_date = cur_date
-            continue
+        log.info("%s %d: loaded %d bars", ticker, year, len(bars_year))
 
-        summary = _build_summary_from_levels(ticker, cur_date, levels_for_today)
-        if summary is None:
-            prev_date = cur_date
-            continue
+        # Group by local trading date
+        bars_year["local_date"] = pd.to_datetime(bars_year["local_date"]).dt.date
+        event_rows: list[dict] = []
 
-        # FTFC proxy: prev day's daily direction
-        today_row = daily_by_date.get(cur_date, {})
-        prev_day_dir = today_row.get("prev_day_dir")  # already computed
-        vix_today = today_row.get("vix_close")
-        vix_tercile = _vix_tercile(vix_today)
-        dow = cur_date.weekday() if hasattr(cur_date, "weekday") else None
+        dates_in_year = sorted(bars_year["local_date"].unique())
+        prev_trading_date: Optional[_date] = None
+        for d in sorted_dates:
+            if d.year > year:
+                break
+            if d.year < year:
+                prev_trading_date = d
+                continue
+            if d not in dates_in_year:
+                prev_trading_date = d
+                continue
 
-        # Load bars for cur_date
-        bars = _load_bars_for_date(engine, ticker, cur_date)
-        if bars.empty:
-            prev_date = cur_date
-            continue
-        n_bars_processed += len(bars)
+            # Use prev_trading_date's EOD chain for D's analysis
+            if prev_trading_date is None:
+                prev_trading_date = d
+                continue
+            levels_for_today = levels_by_date.get(prev_trading_date)
+            if levels_for_today is None or levels_for_today.empty:
+                prev_trading_date = d
+                continue
+            summary = _build_summary_from_levels(ticker, d, levels_for_today)
+            if summary is None:
+                prev_trading_date = d
+                continue
 
-        # Walk bars chronologically, evaluate alerts, dedup per session
-        fired_keys: set[tuple] = set()
-        prev_close: Optional[float] = None
-        bars["ts"] = pd.to_datetime(bars["ts"], utc=True)
-        for i, bar in bars.iterrows():
-            close = float(bar["close"])
-            alerts = gp.evaluate_all(
-                price=close,
-                prev_close=prev_close,
-                summary=summary,
-                prev_day_dir=prev_day_dir,
-            )
-            for a in alerts:
-                key = (a.kind, round(a.level_strike, 4))
-                if key in fired_keys:
-                    continue
-                fired_keys.add(key)
-                n_alerts += 1
-                ts = bar["ts"]
-                event_rows.append({
-                    "ticker": ticker,
-                    "alert_ts": ts,
-                    "alert_date": cur_date,
-                    "alert_kind": a.kind,
-                    "alert_direction": a.direction,
-                    "level_kind": a.level_kind,
-                    "level_strike": a.level_strike,
-                    "distance_pct": a.distance_pct,
-                    "regime": a.regime,
-                    "bar_close": close,
-                    "bar_open": float(bar.get("open") or 0.0) or None,
-                    "ftfc_prev_day_dir": prev_day_dir,
-                    "vix_level": vix_today,
-                    "vix_tercile": vix_tercile,
-                    "tod_bucket": _tod_bucket(ts),
-                    "dow": dow,
-                    # Forward closes — computed after the bar walk below
-                    "_bar_idx": i,
-                })
-            prev_close = close
+            today_row = daily_by_date.get(d, {})
+            prev_day_dir = today_row.get("prev_day_dir")
+            vix_today = today_row.get("vix_close")
+            vix_tercile = _vix_tercile(vix_today)
+            dow = d.weekday()
 
-        # After walking, compute fwd_close_* for each event from the bars table
-        if event_rows and event_rows[-1].get("ticker") == ticker:
-            # Process events that belong to THIS date in this pass
-            cur_events = [e for e in event_rows if e["alert_date"] == cur_date and "_bar_idx" in e]
+            bars = bars_year[bars_year["local_date"] == d].copy()
+            if bars.empty:
+                prev_trading_date = d
+                continue
+            n_bars_processed += len(bars)
+            bars["ts"] = pd.to_datetime(bars["ts"], utc=True)
             closes = bars["close"].astype(float).values
-            for e in cur_events:
+            bars_ts = bars["ts"].tolist()
+
+            fired_keys: set[tuple] = set()
+            day_events: list[dict] = []
+            prev_close: Optional[float] = None
+            for i in range(len(bars)):
+                close = float(closes[i])
+                alerts = gp.evaluate_all(
+                    price=close,
+                    prev_close=prev_close,
+                    summary=summary,
+                    prev_day_dir=prev_day_dir,
+                )
+                for a in alerts:
+                    key = (a.kind, round(a.level_strike, 4))
+                    if key in fired_keys:
+                        continue
+                    fired_keys.add(key)
+                    n_alerts += 1
+                    day_events.append({
+                        "ticker": ticker,
+                        "alert_ts": bars_ts[i],
+                        "alert_date": d,
+                        "alert_kind": a.kind,
+                        "alert_direction": a.direction,
+                        "level_kind": a.level_kind,
+                        "level_strike": a.level_strike,
+                        "distance_pct": a.distance_pct,
+                        "regime": a.regime,
+                        "bar_close": close,
+                        "bar_open": float(bars.iloc[i].get("open") or 0.0) or None,
+                        "ftfc_prev_day_dir": prev_day_dir,
+                        "vix_level": vix_today,
+                        "vix_tercile": vix_tercile,
+                        "tod_bucket": _tod_bucket(bars_ts[i]),
+                        "dow": dow,
+                        "_bar_idx": i,
+                    })
+                prev_close = close
+
+            # Fwd returns for events fired today
+            for e in day_events:
                 idx = e.pop("_bar_idx")
-                # Intraday horizons (5m=5 bars, 15m=15 bars, etc.)
                 for horizon_min in (5, 15, 30, 60, 240):
                     j = idx + horizon_min
-                    fwd_close = float(closes[j]) if j < len(closes) else None
-                    e[f"fwd_close_{horizon_min}m"] = fwd_close
+                    fwd = float(closes[j]) if j < len(closes) else None
+                    e[f"fwd_close_{horizon_min}m"] = fwd
                     e[f"fwd_ret_{horizon_min}m_bps"] = _signed_ret_bps(
-                        e["bar_close"], fwd_close, e["alert_direction"])
-                # 1-day / 5-day: use daily-bar closes
-                # Find the future daily close for cur_date+1 / cur_date+5 (trading days)
-                # Walk daily_by_date forward
-                next_n_days = []
-                future_iter = iter(d for d in sorted_dates if d > cur_date)
-                for _ in range(5):
-                    try:
-                        next_n_days.append(next(future_iter))
-                    except StopIteration:
-                        break
-                if next_n_days:
-                    d1 = daily_by_date.get(next_n_days[0], {}).get("close")
-                    e["fwd_close_1d"] = float(d1) if d1 is not None else None
-                    e["fwd_ret_1d_bps"] = _signed_ret_bps(
-                        e["bar_close"], e["fwd_close_1d"], e["alert_direction"])
-                if len(next_n_days) >= 5:
-                    d5 = daily_by_date.get(next_n_days[4], {}).get("close")
-                    e["fwd_close_5d"] = float(d5) if d5 is not None else None
+                        e["bar_close"], fwd, e["alert_direction"])
+                # Daily-horizon forwards
+                future_dates = [fd for fd in sorted_dates if fd > d][:5]
+                d1c = daily_by_date.get(future_dates[0], {}).get("close") if future_dates else None
+                e["fwd_close_1d"] = float(d1c) if d1c is not None else None
+                e["fwd_ret_1d_bps"] = _signed_ret_bps(
+                    e["bar_close"], e["fwd_close_1d"], e["alert_direction"])
+                if len(future_dates) >= 5:
+                    d5c = daily_by_date.get(future_dates[4], {}).get("close")
+                    e["fwd_close_5d"] = float(d5c) if d5c is not None else None
                     e["fwd_ret_5d_bps"] = _signed_ret_bps(
                         e["bar_close"], e["fwd_close_5d"], e["alert_direction"])
 
-        # Bulk-insert events every 200 trading days (memory bound)
-        if cur_date.month % 6 == 0 and cur_date.day < 8 and len(event_rows) > 2000:
+            event_rows.extend(day_events)
+            prev_trading_date = d
+
+        # Flush the year's events
+        if event_rows:
             df = pd.DataFrame(event_rows)
-            # drop the helper column if present
             if "_bar_idx" in df.columns:
                 df = df.drop(columns=["_bar_idx"])
             upsert_dataframe(
@@ -400,26 +422,11 @@ def _process_ticker(engine, ticker: str) -> int:
                              if c not in ("ticker", "alert_ts", "alert_kind",
                                           "level_strike", "computed_at")],
             )
-            log.info("%s: flushed %d events through %s; n_bars=%d, n_alerts=%d, dt=%.1fs",
-                     ticker, len(df), cur_date, n_bars_processed, n_alerts,
-                     time.time() - t0)
-            event_rows = []
-
-        prev_date = cur_date
-
-    # Final flush
-    if event_rows:
-        df = pd.DataFrame(event_rows)
-        if "_bar_idx" in df.columns:
-            df = df.drop(columns=["_bar_idx"])
-        upsert_dataframe(
-            df, "gamma_events",
-            conflict_cols=["ticker", "alert_ts", "alert_kind", "level_strike"],
-            update_cols=[c for c in df.columns
-                         if c not in ("ticker", "alert_ts", "alert_kind",
-                                      "level_strike", "computed_at")],
-        )
-        log.info("%s: final flush %d events", ticker, len(df))
+            log.info("%s %d: flushed %d events (%.1fs, cumulative n_bars=%d, n_alerts=%d)",
+                     ticker, year, len(df), time.time() - yt0,
+                     n_bars_processed, n_alerts)
+        else:
+            log.info("%s %d: no events fired", ticker, year)
 
     log.info("=== %s: done — %d bars walked, %d alerts fired in %.1fs ===",
              ticker, n_bars_processed, n_alerts, time.time() - t0)
