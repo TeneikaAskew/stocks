@@ -102,6 +102,9 @@ def client(monkeypatch):
     grid_router._HIST_GRID_CACHE.clear()
     grid_router._NODES_CACHE.clear()
     grid_router._HIST_NODES_CACHE.clear()
+    # B2 caches — same rationale
+    grid_router._TIMESERIES_CACHE.clear()
+    grid_router._ONDEMAND_RATE_CACHE.clear()
 
     app = FastAPI()
     app.include_router(grid_router.router)
@@ -156,14 +159,21 @@ class TestGridLive:
         assert len(data["cells"]) > 0
 
     def test_unavailable_envelope_when_no_data(self, client, monkeypatch):
-        """Neither REALTIME nor EOD rows → typed unavailable envelope.
+        """Neither REALTIME nor EOD rows AND on-demand opted out →
+        typed unavailable envelope.
 
         Critical: HTTP 200 (not 404) so the UI can render the
         unavailable footer gracefully. Cells empty, no synthetic
-        numbers. Mirrors Track 1 contract."""
+        numbers. Mirrors Track 1 contract.
+
+        Phase B2 added on-demand AV dispatch for off-list tickers, so
+        this test passes `?allow_on_demand=false` to exercise the
+        original envelope behavior. The on-demand path itself has its
+        own coverage in TestOnDemand.
+        """
         _install_query_router(monkeypatch, realtime_df=None, eod_df=None)
 
-        r = client.get("/api/options/RANDOM/grid")
+        r = client.get("/api/options/RANDOM/grid?allow_on_demand=false")
         assert r.status_code == 200
         data = r.json()
         assert data["data_source"] == "unavailable"
@@ -296,6 +306,11 @@ class TestNodesLive:
         assert r.json()["tactical_summary"] is None
 
     def test_unavailable_envelope_shape(self, client, monkeypatch):
+        """`/nodes` doesn't yet support on-demand fallback (Phase B2
+        scoped the on-demand path to /grid only — adding it to /nodes
+        is a one-line lift in a follow-up). For now an off-list ticker
+        with no Cloud SQL data returns the unavailable envelope
+        directly."""
         _install_query_router(monkeypatch, realtime_df=None, eod_df=None)
         r = client.get("/api/options/RANDOM/nodes")
         assert r.status_code == 200
@@ -447,3 +462,262 @@ class TestThirdFridayDetection:
         d = date(2026, 8, 21)
         assert d.weekday() == 4
         assert grid_router._is_third_friday(d)
+
+
+# ─── Phase B2 — on-demand dispatch, rate limit, BSM, timeseries ────────────
+
+
+class TestOnDemandDispatch:
+    """On-demand AV fetch for off-list tickers when Cloud SQL has no data."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_rate_limit(self):
+        """Each test starts with a clean rate-limit cache so a noisy
+        prior test can't bleed in."""
+        grid_router._ONDEMAND_RATE_CACHE.clear()
+        yield
+
+    def test_on_demand_fires_for_off_list_ticker(self, client, monkeypatch):
+        """When ticker isn't SPY/IWM/QQQ and Cloud SQL is empty, the
+        router fires the AV fetcher. Tests this by stubbing
+        `fetch_av_realtime_options` to return a fixture chain."""
+        _install_query_router(monkeypatch)  # empty Cloud SQL
+
+        # Stub the AV fetcher to return a chain. The router uses a lazy
+        # import (`from gcp.fetchers.fetch_av_realtime_options import
+        # fetch_av_realtime_options`); patch the source module so the
+        # lazy import sees the stub.
+        import gcp.fetchers.fetch_av_realtime_options as fetcher_mod
+
+        def fake_fetch(ticker, api_key, snapshot_ts):
+            df = _chain_df(snapshot_ts.date(), "REALTIME")
+            df["ticker"] = ticker.upper()
+            df["market_session"] = "REALTIME"
+            df["data_source"] = "alphavantage"
+            return df
+
+        monkeypatch.setattr(fetcher_mod, "fetch_av_realtime_options", fake_fetch)
+        # Force API key to non-empty so the 503 short-circuit doesn't fire.
+        monkeypatch.setattr(grid_router, "_AV_API_KEY", "test-key")
+        # No-op upsert — we don't want to write to a real DB in the test.
+        import gcp.database
+        monkeypatch.setattr(gcp.database, "upsert_dataframe",
+                            lambda df, table, cols: None)
+
+        r = client.get("/api/options/NVDA/grid")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["data_source"] == "realtime"
+        assert len(data["cells"]) > 0
+        assert data["ticker"] == "NVDA"
+
+    def test_on_demand_503_when_av_key_missing(self, client, monkeypatch):
+        """No AV key → 503 (typed signal, not silent fallback)."""
+        _install_query_router(monkeypatch)
+        monkeypatch.setattr(grid_router, "_AV_API_KEY", "")
+
+        r = client.get("/api/options/NVDA/grid")
+        assert r.status_code == 503
+        assert "on-demand" in r.json()["detail"].lower()
+
+    def test_on_demand_503_when_av_returns_unavailable(self, client, monkeypatch):
+        """AV's RealtimeOptionsUnavailable (sample data / tier downgrade /
+        empty) bubbles up as a 503 to the client."""
+        _install_query_router(monkeypatch)
+        monkeypatch.setattr(grid_router, "_AV_API_KEY", "test-key")
+
+        import gcp.fetchers.fetch_av_realtime_options as fetcher_mod
+
+        def fake_fetch(ticker, api_key, snapshot_ts):
+            raise fetcher_mod.RealtimeOptionsUnavailable(
+                f"AV returned sample data for {ticker}"
+            )
+
+        monkeypatch.setattr(fetcher_mod, "fetch_av_realtime_options", fake_fetch)
+
+        r = client.get("/api/options/NVDA/grid")
+        assert r.status_code == 503
+        assert "sample data" in r.json()["detail"].lower() or \
+               "unavailable" in r.json()["detail"].lower()
+
+    def test_allow_on_demand_false_skips_av_call(self, client, monkeypatch):
+        """`?allow_on_demand=false` short-circuits to the envelope
+        WITHOUT firing AV. The opt-out is critical for B1-era tests
+        and for callers who want a hard 'is data ready?' check."""
+        _install_query_router(monkeypatch)
+        monkeypatch.setattr(grid_router, "_AV_API_KEY", "test-key")
+
+        # If on-demand fired this would either succeed or 503; with
+        # allow_on_demand=false neither should happen — straight to envelope.
+        import gcp.fetchers.fetch_av_realtime_options as fetcher_mod
+
+        def fake_fetch(*a, **kw):
+            raise AssertionError("AV fetcher must NOT be called when "
+                                 "allow_on_demand=false")
+        monkeypatch.setattr(fetcher_mod, "fetch_av_realtime_options", fake_fetch)
+
+        r = client.get("/api/options/NVDA/grid?allow_on_demand=false")
+        assert r.status_code == 200
+        assert r.json()["data_source"] == "unavailable"
+
+    def test_scheduled_tickers_never_hit_on_demand_path(self, client, monkeypatch):
+        """SPY/IWM/QQQ falls back to envelope when Cloud SQL is empty —
+        on-demand is reserved for off-list tickers because Track 0's
+        scheduler keeps the scheduled list current."""
+        _install_query_router(monkeypatch)
+        monkeypatch.setattr(grid_router, "_AV_API_KEY", "test-key")
+
+        import gcp.fetchers.fetch_av_realtime_options as fetcher_mod
+
+        def fake_fetch(*a, **kw):
+            raise AssertionError("AV fetcher must NOT be called for "
+                                 "scheduled tickers — they're served from "
+                                 "Cloud SQL only")
+        monkeypatch.setattr(fetcher_mod, "fetch_av_realtime_options", fake_fetch)
+
+        # SPY is a scheduled ticker; no Cloud SQL data; no on-demand.
+        # Expect the envelope.
+        r = client.get("/api/options/SPY/grid")
+        assert r.status_code == 200
+        assert r.json()["data_source"] == "unavailable"
+
+
+class TestOnDemandRateLimit:
+    """Per-IP per-60s cap of 10 unique tickers on the on-demand path."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_rate_limit(self):
+        grid_router._ONDEMAND_RATE_CACHE.clear()
+        yield
+
+    def test_under_limit_passes(self):
+        """First 10 unique tickers from one IP — all allowed."""
+        for i in range(grid_router._ONDEMAND_MAX_TICKERS_PER_WINDOW):
+            grid_router._check_ondemand_rate_limit("1.2.3.4", f"T{i}")
+            # No exception = allowed
+
+    def test_repeat_ticker_does_not_count_again(self):
+        """Same ticker from same IP repeats freely — only DISTINCT
+        tickers consume the budget."""
+        for _ in range(50):
+            grid_router._check_ondemand_rate_limit("1.2.3.4", "NVDA")
+            # No exception even after 50 repeats
+
+    def test_11th_unique_ticker_raises_429(self):
+        """Crossing the cap → 429 with Retry-After header."""
+        from fastapi import HTTPException
+        for i in range(grid_router._ONDEMAND_MAX_TICKERS_PER_WINDOW):
+            grid_router._check_ondemand_rate_limit("1.2.3.4", f"T{i}")
+        # 11th unique ticker — cap exceeded
+        with pytest.raises(HTTPException) as excinfo:
+            grid_router._check_ondemand_rate_limit("1.2.3.4", "TBLOCKED")
+        assert excinfo.value.status_code == 429
+        assert "Retry-After" in excinfo.value.headers
+
+    def test_different_ips_have_independent_budgets(self):
+        """A noisy IP doesn't block other IPs."""
+        for i in range(grid_router._ONDEMAND_MAX_TICKERS_PER_WINDOW):
+            grid_router._check_ondemand_rate_limit("1.1.1.1", f"T{i}")
+        # 2.2.2.2 should still be at zero — independent budget
+        grid_router._check_ondemand_rate_limit("2.2.2.2", "FRESH1")
+        grid_router._check_ondemand_rate_limit("2.2.2.2", "FRESH2")
+        # No exceptions
+
+
+class TestGridTimeseries:
+    """GET /api/options/{ticker}/grid/timeseries — realtime rate-of-change."""
+
+    def _multi_snapshot_df(self) -> pd.DataFrame:
+        """Three snapshots 5 minutes apart, two strikes, one expiration."""
+        snapshots = [
+            pd.Timestamp("2026-05-23T15:45:00", tz="UTC"),
+            pd.Timestamp("2026-05-23T15:50:00", tz="UTC"),
+            pd.Timestamp("2026-05-23T15:55:00", tz="UTC"),
+        ]
+        rows = []
+        for snap in snapshots:
+            for strike, gamma_v in [(100.0, 0.05), (105.0, 0.04)]:
+                rows.append({
+                    "snapshot_ts": snap,
+                    "snapshot_date": snap.date(),
+                    "expiration": date(2026, 6, 19),
+                    "strike": strike,
+                    "option_type": "calls",
+                    "open_interest": 1000,
+                    "gamma": gamma_v,
+                    "vega": 0.20,
+                })
+                rows.append({
+                    "snapshot_ts": snap,
+                    "snapshot_date": snap.date(),
+                    "expiration": date(2026, 6, 19),
+                    "strike": strike,
+                    "option_type": "puts",
+                    "open_interest": 800,
+                    "gamma": gamma_v,
+                    "vega": 0.20,
+                })
+        return pd.DataFrame(rows)
+
+    def test_basic_shape(self, client, monkeypatch):
+        df = self._multi_snapshot_df()
+        import gcp.database
+        monkeypatch.setattr(gcp.database, "query_to_dataframe",
+                            lambda sql, params=None: df.copy())
+
+        r = client.get("/api/options/SPY/grid/timeseries")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["ticker"] == "SPY"
+        assert data["data_source"] == "realtime"
+        assert data["expiration"] is not None
+        assert isinstance(data["series"], list)
+        assert len(data["series"]) > 0
+        # Each row has the expected fields
+        for row in data["series"]:
+            assert "snapshot_ts" in row
+            assert "strike" in row
+            assert "gex" in row
+            assert "delta_from_prev" in row
+
+    def test_delta_from_prev_null_on_first_snapshot(self, client, monkeypatch):
+        df = self._multi_snapshot_df()
+        import gcp.database
+        monkeypatch.setattr(gcp.database, "query_to_dataframe",
+                            lambda sql, params=None: df.copy())
+
+        r = client.get("/api/options/SPY/grid/timeseries?strikes=100")
+        data = r.json()
+        # The first snapshot for strike 100 should have null delta
+        strike_100_rows = [r for r in data["series"] if r["strike"] == 100.0]
+        assert strike_100_rows[0]["delta_from_prev"] is None
+        # Subsequent rows should have a numeric delta
+        assert all(r["delta_from_prev"] is not None for r in strike_100_rows[1:])
+
+    def test_unavailable_when_no_realtime_rows(self, client, monkeypatch):
+        import gcp.database
+        monkeypatch.setattr(gcp.database, "query_to_dataframe",
+                            lambda sql, params=None: pd.DataFrame())
+
+        r = client.get("/api/options/SPY/grid/timeseries")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["data_source"] == "unavailable"
+        assert data["series"] == []
+        assert "warnings" in data
+
+    def test_invalid_lookback_returns_400(self, client, monkeypatch):
+        r = client.get("/api/options/SPY/grid/timeseries?lookback_hours=0")
+        assert r.status_code == 422  # FastAPI's Query(ge=0.0833) rejects this
+
+    def test_explicit_strikes_filter(self, client, monkeypatch):
+        df = self._multi_snapshot_df()
+        import gcp.database
+        monkeypatch.setattr(gcp.database, "query_to_dataframe",
+                            lambda sql, params=None: df.copy())
+
+        r = client.get("/api/options/SPY/grid/timeseries?strikes=105")
+        data = r.json()
+        assert data["strikes_resolved"] == [105.0]
+        for row in data["series"]:
+            assert row["strike"] == 105.0
