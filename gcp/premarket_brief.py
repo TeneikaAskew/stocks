@@ -83,53 +83,86 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
     threshold semantics — see Track 1 of
     docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md.
 
-    Returns a dict with `data_source`, `snapshot_ts` (ISO string or
-    None), `snapshot_date`, and `days_behind` (None when realtime or
-    unavailable). Failures are wrapped — Cloud SQL outages, missing
-    columns, etc. fall through to `data_source='unavailable'` so the
-    footer simply omits itself rather than crashing the brief.
+    Hard-capped at `_GAMMA_PROBE_TIMEOUT_MS` Postgres statement timeout
+    per query so a slow planner choice (e.g. after Track 0 added 3M+
+    realtime rows in a single day without freshly-collected ANALYZE
+    stats) can NEVER hang the brief. If either probe trips the
+    timeout, the function falls through to `data_source='unavailable'`
+    and the footer simply omits itself — the brief renders normally
+    without the gamma section. This is a typed-UNAVAILABLE envelope
+    per CLAUDE.md Rule 3.7 §EXTERNAL, not a silent fallback.
+
+    The 5-second cap is intentionally generous (an indexed single-row
+    lookup should complete in <100 ms) so genuine slowness shows up
+    as a Cloud Logging warning rather than silent footer omission.
     """
+    # Defensive timeout (ms) so a slow query can NEVER hang the brief.
+    # Indexed single-row lookups normally complete in <100 ms — anything
+    # past 5 s indicates a planner regression or unavailable Cloud SQL.
+    _GAMMA_PROBE_TIMEOUT_MS = 5000
+
+    logger.info("[brief:%s] _load_gamma_freshness start (as_of=%s)", ticker, as_of)
     try:
         import numpy as np
-        from gcp.database import query_to_dataframe
+        import sqlalchemy
+        from gcp.database import get_engine
         from lib.agents.summarizers import classify_gamma_freshness
 
         params = {"ticker": ticker.upper(), "as_of": str(as_of)}
+        engine = get_engine()
 
-        # Phase 1: realtime probe — strictly-before `as_of` so the
-        # premarket brief (which runs at 8:45 AM ET, before today's
-        # market opens) sees yesterday's last RTH snapshot, not a
-        # phantom intraday row that shouldn't exist yet.
-        df = query_to_dataframe(
-            "SELECT snapshot_ts, snapshot_date FROM etf_options_snapshots "
-            "WHERE ticker = :ticker "
-            "  AND data_source = 'alphavantage' "
-            "  AND market_session = 'REALTIME' "
-            "  AND snapshot_date < :as_of "
-            "ORDER BY snapshot_ts DESC LIMIT 1",
-            params,
-        )
-        if not df.empty:
-            ts = df["snapshot_ts"].iloc[0]
-            ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-            return {
-                "data_source": "realtime",
-                "snapshot_ts": ts_iso,
-                "snapshot_date": df["snapshot_date"].iloc[0],
-                "days_behind": 0,
-            }
+        # One connection serves both probes inside a single transaction;
+        # SET LOCAL statement_timeout scopes the cap to that transaction
+        # only so we don't pollute the connection pool's session state.
+        with engine.connect() as conn:
+            conn.execute(sqlalchemy.text(
+                f"SET LOCAL statement_timeout = {_GAMMA_PROBE_TIMEOUT_MS}"
+            ))
 
-        # Phase 2: EOD probe.
-        df = query_to_dataframe(
-            "SELECT snapshot_ts, snapshot_date FROM etf_options_snapshots "
-            "WHERE ticker = :ticker "
-            "  AND data_source = 'alphavantage' "
-            "  AND (market_session = 'EOD' OR market_session IS NULL) "
-            "  AND snapshot_date < :as_of "
-            "ORDER BY snapshot_date DESC, snapshot_ts DESC LIMIT 1",
-            params,
-        )
+            # Phase 1: realtime probe. ORDER BY (snapshot_date DESC,
+            # snapshot_ts DESC) is index-friendly — the leading column
+            # matches idx_etf_options_ticker_date so the planner can
+            # walk the index backwards with no in-memory sort, even on
+            # a multi-million-row table.
+            df = pd.read_sql(
+                sqlalchemy.text(
+                    "SELECT snapshot_ts, snapshot_date FROM etf_options_snapshots "
+                    "WHERE ticker = :ticker "
+                    "  AND data_source = 'alphavantage' "
+                    "  AND market_session = 'REALTIME' "
+                    "  AND snapshot_date < :as_of "
+                    "ORDER BY snapshot_date DESC, snapshot_ts DESC LIMIT 1"
+                ),
+                conn,
+                params=params,
+            )
+            if not df.empty:
+                ts = df["snapshot_ts"].iloc[0]
+                ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                logger.info("[brief:%s] gamma=realtime ts=%s", ticker, ts_iso)
+                return {
+                    "data_source": "realtime",
+                    "snapshot_ts": ts_iso,
+                    "snapshot_date": df["snapshot_date"].iloc[0],
+                    "days_behind": 0,
+                }
+
+            # Phase 2: EOD probe.
+            df = pd.read_sql(
+                sqlalchemy.text(
+                    "SELECT snapshot_ts, snapshot_date FROM etf_options_snapshots "
+                    "WHERE ticker = :ticker "
+                    "  AND data_source = 'alphavantage' "
+                    "  AND (market_session = 'EOD' OR market_session IS NULL) "
+                    "  AND snapshot_date < :as_of "
+                    "ORDER BY snapshot_date DESC, snapshot_ts DESC LIMIT 1"
+                ),
+                conn,
+                params=params,
+            )
+
         if df.empty:
+            logger.info("[brief:%s] gamma=unavailable (no rows)", ticker)
             return {"data_source": "unavailable", "snapshot_ts": None,
                     "snapshot_date": None, "days_behind": None}
 
@@ -138,11 +171,15 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
         days = int(np.busday_count(sd, as_of))
         tier = classify_gamma_freshness(days)
         if tier == "unavailable":
+            logger.info("[brief:%s] gamma=unavailable (%d trading days behind)",
+                        ticker, days)
             return {"data_source": "unavailable", "snapshot_ts": None,
                     "snapshot_date": sd, "days_behind": days}
 
         ts = df["snapshot_ts"].iloc[0]
         ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+        logger.info("[brief:%s] gamma=%s ts=%s days_behind=%d",
+                    ticker, tier, ts_iso, days)
         return {
             "data_source": tier,
             "snapshot_ts": ts_iso,
@@ -150,7 +187,8 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
             "days_behind": days,
         }
     except Exception as exc:
-        logger.warning("gamma freshness probe failed for %s: %s", ticker, exc)
+        logger.warning("[brief:%s] gamma freshness probe failed: %s: %s",
+                       ticker, type(exc).__name__, exc)
         return {"data_source": "unavailable", "snapshot_ts": None,
                 "snapshot_date": None, "days_behind": None}
 
