@@ -123,23 +123,26 @@ def _load_levels_for_prior_day(engine, ticker: str) -> pd.DataFrame:
     Caller uses date D-1's levels for date D's analysis (no leak —
     matches production's `_latest_gamma_for_ticker_pure` semantics).
     """
-    sql = """
+    from sqlalchemy import text
+    sql = text("""
     SELECT snapshot_date, level_kind, level_strike, gex, score, tags,
            regime, flip_price, total_gex, spot_estimate
     FROM gamma_levels_eod
-    WHERE ticker = %(ticker)s
+    WHERE ticker = :ticker
     ORDER BY snapshot_date, level_kind, level_strike
-    """
-    return pd.read_sql(sql, engine, params={"ticker": ticker})
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(sql, conn, params={"ticker": ticker})
 
 
 def _load_daily_features(engine, ticker: str) -> pd.DataFrame:
     """Load per-date OHLC + prev-day-direction + VIX level for the ticker."""
-    sql = """
+    from sqlalchemy import text
+    sql = text("""
     WITH t_daily AS (
       SELECT date, open, high, low, close
       FROM market_data_daily
-      WHERE ticker = %(ticker)s
+      WHERE ticker = :ticker
     ),
     vix AS (
       SELECT date, close AS vix_close
@@ -159,23 +162,25 @@ def _load_daily_features(engine, ticker: str) -> pd.DataFrame:
     FROM t_daily t
     LEFT JOIN vix v ON v.date = t.date
     ORDER BY t.date
-    """
-    return pd.read_sql(sql, engine, params={"ticker": ticker})
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(sql, conn, params={"ticker": ticker})
 
 
 def _load_bars_for_date(engine, ticker: str, day: _date) -> pd.DataFrame:
     """Load 1-min RTH bars for a single (ticker, date), index by ts."""
+    from sqlalchemy import text
     table = INTRADAY_TABLE_BY_TICKER[ticker]
-    sql = f"""
+    sql = text(f"""
     SELECT ts, open, high, low, close, volume
     FROM {table}
-    WHERE ts::date = %(d)s
+    WHERE ts::date = :d
       AND interval = '1min'
       AND (ts AT TIME ZONE 'America/New_York')::time BETWEEN '09:30' AND '15:59'
     ORDER BY ts
-    """
-    df = pd.read_sql(sql, engine, params={"d": day})
-    return df
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(sql, conn, params={"d": day})
 
 
 def _build_summary_from_levels(ticker: str, snap_date: _date,

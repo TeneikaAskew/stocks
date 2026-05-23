@@ -100,11 +100,16 @@ CREATE INDEX IF NOT EXISTS ix_gamma_levels_ticker_date
 
 
 def _load_chain_for_ticker_quarter(engine, ticker: str, year: int, q: int) -> pd.DataFrame:
-    """Pull one ticker × one calendar quarter of EOD chain rows from Cloud SQL."""
+    """Pull one ticker × one calendar quarter of EOD chain rows from Cloud SQL.
+
+    Uses SQLAlchemy text() with :name binds — pg8000 only accepts %s or %s-style,
+    not psycopg2's %(name)s pyformat, so we route through SQLAlchemy.
+    """
+    from sqlalchemy import text
     q_start = pd.Timestamp(year, (q - 1) * 3 + 1, 1).date()
     q_end_dt = pd.Timestamp(year, (q - 1) * 3 + 1, 1) + pd.offsets.QuarterEnd()
     q_end = q_end_dt.date()
-    sql = """
+    sql = text("""
     SELECT
         snapshot_date,
         contract_symbol,
@@ -117,15 +122,16 @@ def _load_chain_for_ticker_quarter(engine, ticker: str, year: int, q: int) -> pd
         delta, gamma, theta, vega, rho,
         underlying_price
     FROM etf_options_snapshots
-    WHERE ticker = %(ticker)s
+    WHERE ticker = :ticker
       AND data_source = 'alphavantage'
       AND market_session = 'EOD'
-      AND snapshot_date BETWEEN %(start)s AND %(end)s
-    """
-    df = pd.read_sql(
-        sql, engine,
-        params={"ticker": ticker, "start": q_start, "end": q_end},
-    )
+      AND snapshot_date BETWEEN :start AND :end
+    """)
+    with engine.connect() as conn:
+        df = pd.read_sql(
+            sql, conn,
+            params={"ticker": ticker, "start": q_start, "end": q_end},
+        )
     return df
 
 
