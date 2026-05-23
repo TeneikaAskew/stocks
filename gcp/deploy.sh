@@ -854,6 +854,51 @@ deploy_av_options_backfill() {
     gcloud run jobs update fetch-av-options-backfill "${common_flags[@]}"
 }
 
+# Companion to deploy_av_options_backfill — same image, same secrets,
+# different entrypoint. Runs every 5 min during RTH and writes
+# market_session='REALTIME' rows to etf_options_snapshots. Wired into the
+# scheduler via `av-options-realtime` (see deploy_schedulers).
+#
+# Added 2026-05-22 after AV subscription upgrade to the realtime-options
+# tier ($199.99/mo, 600 req/min). See
+# /root/.claude/plans/okay-for-the-gamma-hashed-rainbow.md for the
+# multi-track plan this job unlocks (Tracks 1-5).
+deploy_av_options_realtime() {
+    echo "Deploying fetch-av-options-realtime job..."
+
+    local non_secret_env
+    non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
+    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env},DB_NAME=trading"
+
+    local secrets_flag
+    secrets_flag="--set-secrets=DB_PASS=db-trading-pass:latest"
+    secrets_flag="${secrets_flag},AV_API_KEY=av-api-key:latest"
+    secrets_flag="${secrets_flag},ALPHA_VANTAGE_API_KEY=av-api-key:latest"
+
+    # Sizing per CLAUDE.md Rule 0 back-of-envelope:
+    #   3 tickers × ~14k contracts/snapshot × 3-5s wall-clock per snapshot
+    #   = ~10-15s total wall-clock; --task-timeout=600 gives ~50x headroom.
+    #   --memory=512Mi peak working set is ~120 MiB (one ticker chain at a
+    #   time), 4x headroom. --max-retries=0 is the Rule 0 default — a
+    #   transient AV blip at 14:05 is recovered automatically by the 14:10
+    #   fire 5 min later; no need for Cloud Run-side retry to double-write.
+    local common_flags=(
+        --image "${IMAGE}" --region "${REGION}"
+        --memory 512Mi --cpu 1 --max-retries 0
+        --task-timeout 600
+        --service-account "${SA_EMAIL}"
+        --command "python,-m,gcp.fetchers.fetch_av_realtime_options"
+        --args "--tickers,SPY IWM QQQ"
+        ${secrets_flag}
+        --set-env-vars "${non_secret_env}"
+        --quiet
+    )
+
+    gcloud run jobs create fetch-av-options-realtime "${common_flags[@]}" 2>/dev/null || \
+    gcloud run jobs update fetch-av-options-realtime "${common_flags[@]}"
+}
+
 # Pull FRED DGS3MO into daily_rates for BSM Greeks risk-free rate lookup.
 # Backfill mode pulls full history from 2015 (~3000 daily rows, <60s).
 # Default mode is the 14-day incremental window — wire to a daily scheduler
@@ -1276,6 +1321,7 @@ deploy_fetchers() {
     deploy_backfill_daily_indicators
     deploy_fetch_alphavantage
     deploy_av_options_backfill
+    deploy_av_options_realtime
     deploy_fetch_fred_rates
     deploy_fetch_economic_events
     deploy_fetch_earnings_calendar
@@ -2160,6 +2206,21 @@ deploy_schedulers() {
     # makes overlap idempotent.
     _schedule "av-options-daily"    "0 21 * * 1-5"  "fetch-av-options-backfill"
     _schedule "av-options-monthly"  "0 5 1 * *"  "fetch-av-options-backfill"
+
+    # Realtime options — every 5 min, 09:00-15:55 ET, Mon-Fri. Fires
+    # 84 times per session (covers premarket 09:00-09:25 + RTH 09:30-
+    # 15:55). The 16:00 close snapshot is captured by av-options-daily
+    # at 21:00 ET; missing 16:00 from the realtime cadence is fine —
+    # signal monitor's last useful intraday read is 15:55 anyway.
+    #
+    # Capacity: 84 fires × 3 tickers = 252 AV calls/day, well under
+    # the 600/min realtime-tier budget (600 × 60 × 6.5h = 234,000/day
+    # ceiling). Cloud Run cost ~$3-5/mo.
+    #
+    # Added 2026-05-22 — unblocks Tracks 1-5 in
+    # /root/.claude/plans/okay-for-the-gamma-hashed-rainbow.md.
+    _schedule "av-options-realtime" "*/5 9-15 * * 1-5"  "fetch-av-options-realtime"
+
     # Live options queries beyond the last refresh continue to flow
     # through the OptionsFlowPage AV-fallback path; the SQL table is
     # the source of truth for historical analysis.
