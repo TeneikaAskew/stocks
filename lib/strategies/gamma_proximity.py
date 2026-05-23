@@ -22,7 +22,7 @@ Three alert kinds, all derived from `lib.gamma.build_summary()` output:
                          FTFC-gated: same alignment requirement as gate
 
 Direction mapping (empirically validated 2026-05-23 — SPY/IWM/QQQ 30d
-backtest, N≈1,200 events; see docs/audit/gamma_proximity_2026-05-23.md):
+backtest, N≈1,200 events; see docs/audits/gamma_proximity_2026-05-23.md):
 
   King-approach from below   → CALL  (magnet effect, price continues UP toward king)
   King-approach from above   → PUT   (magnet effect, price continues DOWN toward king)

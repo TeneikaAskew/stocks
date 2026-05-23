@@ -4,12 +4,33 @@
 -- intraday bars to detect King-approach events (price first enters 0.5%
 -- of the King), then compute the forward 15-minute price change.
 --
--- "Hit" rate semantics (validates the direction mapping):
---   approach_from_below = PUT bias → "hit" if price LOWER 15m later
---   approach_from_above = CALL bias → "hit" if price HIGHER 15m later
+-- HISTORICAL CONTEXT — read before reinterpreting these labels:
 --
--- A hit rate well above 50% validates the directional mapping. ~50%
--- means it's noise. Significantly below 50% means we should invert.
+--   This query was the INITIAL validation that disproved the
+--   barrier/rejection thesis baked into the original mapping (PUT from
+--   below, CALL from above). Results showed the OPPOSITE — price drifts
+--   TOWARD the king (magnet effect), not away. The mapping was inverted
+--   in commit a4d3153 (2026-05-23). The production direction is now:
+--
+--     below_king → CALL   (magnet ↑ — expect continuation up to king)
+--     above_king → PUT    (magnet ↓ — expect continuation down to king)
+--
+--   The "PUT bias from below" / "CALL bias from above" labels and the
+--   CASE-WHEN hit predicates below still encode the OLD (pre-inversion)
+--   hypothesis — they show the hit rate AGAINST the new production
+--   mapping. A "high" number here (~75%) means the OLD bias was correct
+--   ~25% of the time and therefore the NEW (inverted) bias is correct
+--   ~75% of the time. Flipping the labels would also be valid; we leave
+--   them as-is so the historical PR / audit context remains greppable.
+--
+-- See:
+--   - lib/strategies/gamma_proximity.py             — production mapping
+--   - docs/audits/gamma_proximity_2026-05-23.md     — full backtest + FTFC results
+--
+-- This query covers KINGS ONLY. Gate / flip × FTFC validation lives in
+-- the audit doc (the queries were dispatched ad-hoc via db-query.yml
+-- and aren't committed because the FTFC filter is a runtime concern,
+-- not a per-row schema property).
 
 WITH agg AS (
     SELECT
