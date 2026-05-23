@@ -1,0 +1,7 @@
+ticker,model,n_test,y_test_mean,auc,best_iter,top5_gain
+SPY,base,759,0.5731225296442688,0.4572158365261814,1,"price_vs_ema9(15), atr_14(9), macd_histogram(7), rvol(5), consecutive_up(5)"
+SPY,with_gamma,759,0.5731225296442688,0.47710373208457507,1,"price_vs_ema9(15), rvol(8), n_put_alerts(6), vix_close(5), macd_signal(1)"
+IWM,base,759,0.5322793148880105,0.5335413470924557,5,"volatility_20d(48), atr_14(39), price_vs_ema9(26), macd_signal(23), bb_width(23)"
+IWM,with_gamma,759,0.5322793148880105,0.5265200111560451,3,"volatility_20d(26), atr_14(22), bb_width(13), vix_close(13), macd(12)"
+QQQ,base,759,0.5797101449275363,0.5050263607865488,1,"atr_14(25), macd_signal(18), vix_close(16), price_vs_ema9(14), strat_combo_id(8)"
+QQQ,with_gamma,759,0.5797101449275363,0.5019841835280707,1,"atr_14(25), macd_signal(18), vix_close(16), n_call_alerts(15), price_vs_ema9(11)"
