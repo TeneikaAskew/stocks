@@ -101,6 +101,22 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
     # past 5 s indicates a planner regression or unavailable Cloud SQL.
     _GAMMA_PROBE_TIMEOUT_MS = 5000
 
+    # Hard floor on the snapshot_date range each probe will scan. The
+    # only existing index that covers this query is
+    # idx_etf_options_ticker_date (ticker, snapshot_date DESC); it
+    # doesn't include market_session, so the planner has to fetch each
+    # ticker row in date-DESC order and check market_session in
+    # memory. Without a date floor that scan walks MILLIONS of rows
+    # looking for a REALTIME match in the historical EOD-only era
+    # (everything before 2026-05-22), and the 5 s statement_timeout
+    # trips every time. By bounding the scan to a 10-trading-day
+    # window (covers the hard-stale cutoff plus a safety margin) the
+    # query stays well under 1 s in production even on this 20M+ row
+    # table. The window is symmetric for realtime and EOD; if no
+    # qualifying row exists in 10 trading days, no fresher one
+    # exists anywhere, so the data-source tier is identical.
+    _GAMMA_PROBE_DATE_FLOOR_DAYS = 10
+
     logger.info("[brief:%s] _load_gamma_freshness start (as_of=%s)", ticker, as_of)
     try:
         import numpy as np
@@ -108,7 +124,19 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
         from gcp.database import get_engine
         from lib.agents.summarizers import classify_gamma_freshness
 
-        params = {"ticker": ticker.upper(), "as_of": str(as_of)}
+        # Hard-floor the scan range to one window's worth of trading
+        # days (calendar-day math is fine here — we want a generous
+        # floor not a precise count).
+        as_of_dt = as_of
+        if isinstance(as_of_dt, datetime):
+            as_of_dt = as_of_dt.date()
+        floor_dt = as_of_dt - timedelta(days=int(_GAMMA_PROBE_DATE_FLOOR_DAYS * 1.5))
+
+        params = {
+            "ticker": ticker.upper(),
+            "as_of": str(as_of_dt),
+            "floor": str(floor_dt),
+        }
         engine = get_engine()
 
         # One connection serves both probes inside a single transaction;
@@ -120,16 +148,19 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
             ))
 
             # Phase 1: realtime probe. ORDER BY (snapshot_date DESC,
-            # snapshot_ts DESC) is index-friendly — the leading column
-            # matches idx_etf_options_ticker_date so the planner can
-            # walk the index backwards with no in-memory sort, even on
-            # a multi-million-row table.
+            # snapshot_ts DESC) plus the snapshot_date BETWEEN bound
+            # lets the planner walk the
+            # idx_etf_options_ticker_date (ticker, snapshot_date DESC)
+            # index backwards starting from `as_of` and stop at `floor`,
+            # checking market_session per row. Worst-case work is
+            # ~ (rows-per-trading-day × 10), not the full table.
             df = pd.read_sql(
                 sqlalchemy.text(
                     "SELECT snapshot_ts, snapshot_date FROM etf_options_snapshots "
                     "WHERE ticker = :ticker "
                     "  AND data_source = 'alphavantage' "
                     "  AND market_session = 'REALTIME' "
+                    "  AND snapshot_date >= :floor "
                     "  AND snapshot_date < :as_of "
                     "ORDER BY snapshot_date DESC, snapshot_ts DESC LIMIT 1"
                 ),
@@ -147,13 +178,16 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
                     "days_behind": 0,
                 }
 
-            # Phase 2: EOD probe.
+            # Phase 2: EOD probe. Same date-floor bound — if no EOD row
+            # in the last ~15 calendar days, classify_gamma_freshness
+            # would have returned 'unavailable' anyway.
             df = pd.read_sql(
                 sqlalchemy.text(
                     "SELECT snapshot_ts, snapshot_date FROM etf_options_snapshots "
                     "WHERE ticker = :ticker "
                     "  AND data_source = 'alphavantage' "
                     "  AND (market_session = 'EOD' OR market_session IS NULL) "
+                    "  AND snapshot_date >= :floor "
                     "  AND snapshot_date < :as_of "
                     "ORDER BY snapshot_date DESC, snapshot_ts DESC LIMIT 1"
                 ),
