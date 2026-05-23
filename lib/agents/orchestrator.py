@@ -977,9 +977,22 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
     # above and below spot, when the gamma section ran successfully.
     gamma = bundle.get("gamma", {}) or {}
     if gamma.get("available"):
+        # Track 5: namespace the gamma-derived key_level keys with
+        # ' (EOD)' when the underlying chain is from a fallback path
+        # (data_source ∈ {'eod_fallback','stale_fallback'} or missing).
+        # The downstream trader / judge / risk-reviewer prompts read
+        # these keys and emit prose like "target the Gamma Flip at
+        # 502" — without the suffix they'd reference a stale Tuesday
+        # close as if it were live. Bundles that predate Track 1
+        # (no data_source field) default to suffixed, matching the
+        # pre-Track-0 reality where every gamma read was EOD.
+        # See docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md Track 5.
+        _ds = gamma.get("data_source")
+        _gsfx = "" if _ds == "realtime" else " (EOD)"
+
         flip = gamma.get("flip")
         if isinstance(flip, (int, float)):
-            levels["Gamma Flip"] = float(flip)
+            levels[f"Gamma Flip{_gsfx}"] = float(flip)
         # Kings — `summary.kings` preserves classify_levels()/strike order,
         # not nearest-to-spot order, so `kings[0]` could surface the
         # lowest king while the gamma analyst is prompted to call out the
@@ -1002,13 +1015,13 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
             below = [s for s in king_strikes if s < spot_f]
             above = [s for s in king_strikes if s > spot_f]
             if below:
-                levels["Gamma King Below"] = max(below)
+                levels[f"Gamma King Below{_gsfx}"] = max(below)
             if above:
-                levels["Gamma King Above"] = min(above)
+                levels[f"Gamma King Above{_gsfx}"] = min(above)
         elif king_strikes:
             # No spot to compare — keep legacy first-king behaviour so
             # callers aren't broken on bundles missing `gamma.spot`.
-            levels["Gamma King"] = king_strikes[0]
+            levels[f"Gamma King{_gsfx}"] = king_strikes[0]
         # For the gates, surface the closest one above and below spot.
         # The dealer-positioning analyst typically calls these out in
         # prose; populating the structured field closes the loop.
@@ -1031,9 +1044,9 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
                 reverse=True,
             )
             if above_strikes:
-                levels["Gamma Gate Above"] = above_strikes[0]
+                levels[f"Gamma Gate Above{_gsfx}"] = above_strikes[0]
             if below_strikes:
-                levels["Gamma Gate Below"] = below_strikes[0]
+                levels[f"Gamma Gate Below{_gsfx}"] = below_strikes[0]
 
     return levels
 
