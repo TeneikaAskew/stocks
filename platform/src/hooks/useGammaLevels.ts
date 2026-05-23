@@ -41,6 +41,10 @@ export interface GammaLevelsResponse {
   window_pct: number;
   warnings: string[];
   snapshot_timestamp?: string | null;
+  // Track 4 (2026-05-22): populated by the API from etf_options_snapshots —
+  // 'REALTIME' for 5-min intraday rows (drives auto-refresh below), 'EOD'
+  // for nightly rows. Null when the source row predates the column.
+  market_session?: 'REALTIME' | 'EOD' | string | null;
   chain_size: number;
 }
 
@@ -54,12 +58,28 @@ async function parseError(r: Response, fallback: string): Promise<string> {
   return `${fallback} (HTTP ${r.status})`;
 }
 
+// Refresh cadence for REALTIME data. AV REALTIME_OPTIONS fires every 5 min;
+// 60s gives the UI 1–4 polls per source-data update without thrashing.
+const REALTIME_REFRESH_MS = 60_000;
+
 export function useGammaLevels(
   ticker: string,
   date: string,
-  opts?: { windowPct?: number; spotOverride?: number; enabled?: boolean },
+  opts?: {
+    windowPct?: number;
+    spotOverride?: number;
+    enabled?: boolean;
+    // Track 4: default true — refetches every 60s when the last response was
+    // tagged market_session='REALTIME'. EOD data never auto-refreshes.
+    autoRefresh?: boolean;
+  },
 ) {
-  const { windowPct, spotOverride, enabled = true } = opts ?? {};
+  const {
+    windowPct,
+    spotOverride,
+    enabled = true,
+    autoRefresh = true,
+  } = opts ?? {};
   return useQuery<GammaLevelsResponse>({
     queryKey: ['gamma-levels', ticker, date, windowPct ?? null, spotOverride ?? null],
     queryFn: async () => {
@@ -75,7 +95,14 @@ export function useGammaLevels(
       return r.json();
     },
     enabled: enabled && !!ticker && !!date,
-    staleTime: 3_600_000, // 1 hour — EOD snapshots are immutable once written
+    // EOD snapshots are immutable once written → 1h staleTime keeps the
+    // cache warm. The refetchInterval below independently re-polls REALTIME
+    // data without invalidating EOD entries.
+    staleTime: 3_600_000,
+    refetchInterval: (query) =>
+      autoRefresh && query.state.data?.market_session === 'REALTIME'
+        ? REALTIME_REFRESH_MS
+        : false,
     retry: false,
   });
 }

@@ -1,5 +1,11 @@
 """
-Options flow router — Cloud SQL reader over etf_options_snapshots (AlphaVantage EOD).
+Options flow router — Cloud SQL reader over etf_options_snapshots.
+
+As of 2026-05-22 (Track 0 of the realtime-options multi-track plan, see
+docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md) the table holds both
+nightly EOD snapshots and 5-minute REALTIME snapshots — both surface via
+the same endpoints; the `market_session` field on each response tells
+the caller which kind they got.
 
 Endpoints
 ---------
@@ -347,7 +353,7 @@ async def get_options(ticker: str, date_str: str):
         SELECT contract_symbol, expiration, strike, option_type,
                bid, ask, mark, last_price, volume, open_interest,
                implied_volatility, delta, gamma, theta, vega, rho,
-               snapshot_ts
+               snapshot_ts, market_session
         FROM   etf_options_snapshots
         WHERE  ticker = :ticker
           AND  snapshot_date = :snap_date
@@ -382,8 +388,23 @@ async def get_options(ticker: str, date_str: str):
 
     contracts = _df_to_contracts(df)
 
-    # Take the max snapshot_ts as the "as of" marker.
-    snapshot_ts_val = df["snapshot_ts"].max() if "snapshot_ts" in df.columns else None
+    # "As-of" marker = freshest snapshot in the result set. When intraday
+    # REALTIME and nightly EOD rows coexist for the same snapshot_date, the
+    # REALTIME row is strictly newer, so the max() row's market_session is
+    # also the correct freshness label for the chain we're returning.
+    snapshot_ts_val = None
+    market_session_val: str | None = None
+    if "snapshot_ts" in df.columns and not df["snapshot_ts"].isna().all():
+        idx = df["snapshot_ts"].idxmax()
+        snapshot_ts_val = df.at[idx, "snapshot_ts"]
+        if "market_session" in df.columns:
+            session_raw = df.at[idx, "market_session"]
+            market_session_val = (
+                str(session_raw) if session_raw is not None and not (
+                    isinstance(session_raw, float) and math.isnan(session_raw)
+                ) else None
+            )
+
     if isinstance(snapshot_ts_val, (pd.Timestamp, datetime)):
         snapshot_timestamp = snapshot_ts_val.isoformat()
     else:
@@ -394,6 +415,7 @@ async def get_options(ticker: str, date_str: str):
         "date": date_str,
         "options": contracts,
         "snapshot_timestamp": snapshot_timestamp,
+        "market_session": market_session_val,
         "metadata": {
             "source": "cloud_sql",
             "data_source": "alphavantage",
@@ -478,6 +500,10 @@ async def get_options_live(ticker: str, date_str: str, response: Response):
         "date": date_str,
         "options": contracts,
         "snapshot_timestamp": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        # The live AV proxy is the freshest possible source (no DB hop); tag
+        # it REALTIME so the freshness badge shows green even when this is the
+        # 404-fallback path for a date Cloud SQL hasn't ingested yet.
+        "market_session": "REALTIME",
         "metadata": {
             "source": "alphavantage_live",
             "data_source": "alphavantage",
@@ -621,5 +647,6 @@ async def get_gamma_levels(
     return {
         **summary.to_dict(),
         "snapshot_timestamp": chain_response.get("snapshot_timestamp"),
+        "market_session": chain_response.get("market_session"),
         "chain_size": len(options),
     }

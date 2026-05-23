@@ -63,6 +63,106 @@ test.describe('Options Flow', () => {
   });
 });
 
+// ── Freshness badge: REALTIME / EOD / Stale (Track 4) ──────────────────────
+// The badge sits next to the date selector in the toolbar. Tone derives
+// purely from the chain response's market_session + snapshot_timestamp,
+// so we drive these three states by varying just those two fields.
+
+const FRESHNESS_BASE = {
+  ticker: 'IWM',
+  date: '2026-04-25',
+  options: MOCK_CHAIN.options,
+  metadata: { source: 'cloud_sql', data_source: 'alphavantage', row_count: 10 },
+};
+
+test.describe('Options Flow — freshness badge', () => {
+  test('REALTIME chain shows green Live · HH:MM ET badge', async ({ page }) => {
+    await mockCommon(page);
+    await page.route('**/api/options/dates/IWM', (r) => r.fulfill(M.ok(MOCK_DATES)));
+    await page.route('**/api/options/IWM/*', (r) =>
+      r.fulfill(
+        M.ok({
+          ...FRESHNESS_BASE,
+          // Use an explicit UTC time so the rendered ET time is deterministic.
+          // 18:32 UTC on 2026-04-25 = 14:32 ET (EDT, UTC-4).
+          snapshot_timestamp: '2026-04-25T18:32:00Z',
+          market_session: 'REALTIME',
+        })
+      )
+    );
+    await page.goto('/options');
+    await page.waitForLoadState('networkidle');
+    const badge = page.getByTestId('options-freshness-badge');
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute('data-tone', 'live');
+    await expect(badge).toContainText(/^Live · \d{2}:\d{2} ET$/);
+  });
+
+  test('EOD chain shows amber EOD · DOW HH:MM badge', async ({ page }) => {
+    await mockCommon(page);
+    await page.route('**/api/options/dates/IWM', (r) => r.fulfill(M.ok(MOCK_DATES)));
+    // Build an EOD timestamp within the ≤2-trading-day fresh window relative
+    // to the wall clock the test is running at — otherwise the test silently
+    // becomes a stale-badge test as time marches on.
+    const recentEod = new Date(Date.now() - 16 * 3600 * 1000).toISOString();
+    await page.route('**/api/options/IWM/*', (r) =>
+      r.fulfill(
+        M.ok({
+          ...FRESHNESS_BASE,
+          snapshot_timestamp: recentEod,
+          market_session: 'EOD',
+        })
+      )
+    );
+    await page.goto('/options');
+    await page.waitForLoadState('networkidle');
+    const badge = page.getByTestId('options-freshness-badge');
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute('data-tone', 'eod');
+    await expect(badge).toContainText(/^EOD · [A-Z][a-z]{2} \d{2}:\d{2} ET$/);
+  });
+
+  test('stale chain (>2 trading days old EOD) shows red Stale · Nd old badge', async ({ page }) => {
+    await mockCommon(page);
+    await page.route('**/api/options/dates/IWM', (r) => r.fulfill(M.ok(MOCK_DATES)));
+    await page.route('**/api/options/IWM/*', (r) =>
+      r.fulfill(
+        M.ok({
+          ...FRESHNESS_BASE,
+          // 30 days old — definitely outside the 2-trading-day window.
+          snapshot_timestamp: '2026-01-15T21:00:00Z',
+          market_session: 'EOD',
+        })
+      )
+    );
+    await page.goto('/options');
+    await page.waitForLoadState('networkidle');
+    const badge = page.getByTestId('options-freshness-badge');
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute('data-tone', 'stale');
+    await expect(badge).toContainText(/^Stale · \d+d old$/);
+  });
+
+  test('legacy chain (null market_session) shows Stale badge', async ({ page }) => {
+    await mockCommon(page);
+    await page.route('**/api/options/dates/IWM', (r) => r.fulfill(M.ok(MOCK_DATES)));
+    await page.route('**/api/options/IWM/*', (r) =>
+      r.fulfill(
+        M.ok({
+          ...FRESHNESS_BASE,
+          snapshot_timestamp: '2026-04-25T21:00:00Z',
+          market_session: null,
+        })
+      )
+    );
+    await page.goto('/options');
+    await page.waitForLoadState('networkidle');
+    const badge = page.getByTestId('options-freshness-badge');
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute('data-tone', 'stale');
+  });
+});
+
 // ── Live fallback: Cloud SQL 404 → AlphaVantage live proxy ────────────────
 // Replaces the decommissioned Cloudflare Worker. When the EOD Cloud SQL
 // endpoint returns 404 (e.g. today's date before the 9 PM fetcher), the page

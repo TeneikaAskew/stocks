@@ -14,6 +14,10 @@ import {
   spotMethodLabel,
   regimeLabel,
 } from '@/hooks/useGammaLevels';
+import {
+  freshnessFromSnapshot,
+  freshnessBadgeClasses,
+} from '@/lib/optionsFreshness';
 import * as d3 from 'd3';
 import { ChevronLeft, ChevronRight, AlertTriangle, Info } from 'lucide-react';
 
@@ -25,8 +29,16 @@ interface OptionsResponse {
   date: string;
   options: OptionRecord[];
   snapshot_timestamp?: string;
+  // Track 4 (2026-05-22): populated by the API. 'REALTIME' triggers the 60s
+  // auto-refresh and the green "Live · HH:MM ET" badge. 'EOD' shows amber.
+  // Older rows / missing column → null → red "Stale" badge.
+  market_session?: 'REALTIME' | 'EOD' | string | null;
   metadata?: { source?: string; data_source?: string; row_count?: number };
 }
+
+// REALTIME chain polls every 60s — matches useGammaLevels.REALTIME_REFRESH_MS
+// so the badge timestamp and the gamma levels update in lockstep.
+const REALTIME_REFRESH_MS = 60_000;
 
 interface AvailableDatesResponse {
   ticker: string;
@@ -75,7 +87,11 @@ function useOptionsData(ticker: string, date: string, enabled: boolean) {
       throw new Error(await parseApiError(r, 'Failed to fetch options data'));
     },
     enabled: enabled && !!ticker && !!date,
-    staleTime: 3_600_000, // 1 hour
+    staleTime: 3_600_000, // 1 hour — EOD rows are immutable
+    // Auto-poll REALTIME rows so the badge timestamp + heatmap stay live.
+    // The whole point of the Live badge is that it actually updates.
+    refetchInterval: (query) =>
+      query.state.data?.market_session === 'REALTIME' ? REALTIME_REFRESH_MS : false,
     retry: false,
   });
 }
@@ -291,6 +307,16 @@ export default function OptionsFlowPage() {
 
   const options: OptionRecord[] = optionsData?.options ?? [];
 
+  // Freshness badge — derived from the chain response. Always shown when
+  // there's an options response so the user can never silently look at
+  // stale data without an indicator.
+  const freshness = optionsData
+    ? freshnessFromSnapshot(
+        optionsData.market_session,
+        optionsData.snapshot_timestamp,
+      )
+    : null;
+
   // Compute spot price (override or estimate from ATM options)
   const estimatedSpot = options.length > 0
     ? options.reduce((best, o) => {
@@ -400,6 +426,18 @@ export default function OptionsFlowPage() {
             <ChevronRight size={14} />
           </button>
         </div>
+
+        {/* Freshness badge — green Live / amber EOD / red Stale. Track 4. */}
+        {freshness && (
+          <span
+            data-testid="options-freshness-badge"
+            data-tone={freshness.tone}
+            className={`rounded border px-2 py-1 text-xs font-medium ${freshnessBadgeClasses(freshness.tone)}`}
+            title={freshness.title}
+          >
+            {freshness.label}
+          </span>
+        )}
 
         {/* Spot override */}
         <div className="flex items-center gap-1">
@@ -607,11 +645,14 @@ export default function OptionsFlowPage() {
         </div>
       )}
 
-      {/* Source footer */}
+      {/* Source footer — the badge in the toolbar is the prominent freshness
+          signal; this footer attributes the underlying source. */}
       {optionsData && options.length > 0 && (
         <div className="text-right text-[10px] text-[var(--color-text-muted)]">
           Source: {optionsData.metadata?.source === 'alphavantage_live'
             ? 'AlphaVantage Live'
+            : optionsData.market_session === 'REALTIME'
+            ? 'AlphaVantage Realtime · Cloud SQL'
             : 'AlphaVantage EOD · Cloud SQL'} · {options.length} contracts · snapshot {optionsData.snapshot_timestamp?.slice(0, 10) ?? selectedDate}
         </div>
       )}
