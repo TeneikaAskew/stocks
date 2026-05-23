@@ -423,28 +423,37 @@ bottom of this doc captures the same content for now.)
 GET /api/glossary/gamma
 ```
 
-Returns the full `GAMMA_TERMS` dict as JSON. Cached forever (it's a
-module constant; revalidates on deploy). Frontend fetches once at app
-boot, stores in React Query cache.
+Returns the **UI-safe subset** of `GAMMA_TERMS` as JSON — canonical
+name + short_definition + long_definition + math. The `aliases` dict
+is deliberately NOT exposed by this endpoint; it stays in the Python
+module as an internal mapping for AI prompts and engineering reference.
+Cached forever (it's a module constant; revalidates on deploy).
+Frontend fetches once at app boot, stores in React Query cache.
 
 ```json
 {
   "terms": {
     "king": {
       "canonical": "King",
-      "short_definition": "The strike with the largest absolute net GEX...",
-      "aliases": {
-        "stratalyst": "Anchor Pivot",
-        "heatseeker": "King Node ★",
-        "squeezemetrics": "Gamma Wall",
-        "spotgamma": "Largest Gamma Strike",
-        "plain_english": "Strongest dealer-pin level"
-      }
+      "short_definition": "The strike with the largest absolute net GEX in the window — dealer's preferred end-of-day pin target.",
+      "long_definition": "Strongest dealer-pin level — first touches react ~80% of the time in positive gamma regime...",
+      "math": "|net_gamma × spot² × 0.01|, max in window"
+    },
+    "flip": {
+      "canonical": "Flip",
+      "short_definition": "Cumulative GEX zero crossing. Above = positive gamma regime (pinning, low vol). Below = negative gamma regime (trending, high vol).",
+      "long_definition": "...",
+      "math": "..."
     },
     ...
-  }
+  },
+  "version": "1"
 }
 ```
+
+The internal Python view (for AI prompts, reference, future
+internal tooling) imports `lib.gamma_glossary.GAMMA_TERMS` directly
+and sees the full dataclass including `aliases`.
 
 ### 1.7.3 UI hover component
 
@@ -463,16 +472,16 @@ Renders the wrapped text inline; on hover shows a tooltip card:
 │ The strike with the largest absolute net GEX in the    │
 │ window — dealer's preferred end-of-day pin target.     │
 │                                                        │
-│ Also called:                                           │
-│   • Anchor Pivot       (Stratalyst)                    │
-│   • King Node ★         (Heatseeker)                    │
-│   • Gamma Wall         (SqueezeMetrics)                │
-│   • Largest Gamma Strike (SpotGamma)                   │
-│                                                        │
 │ Strongest dealer-pin level — first touches react ~80%  │
 │ of the time in positive gamma regime.                  │
 └────────────────────────────────────────────────────────┘
 ```
+
+**The user-facing tooltip shows our canonical name + definition
+only.** The cross-framework aliases (Stratalyst / Heatseeker /
+SqueezeMetrics / SpotGamma) stay in the Python dictionary as
+internal reference — see §1.7.4 on AI prompt usage — but are NOT
+exposed in the UI. The public surface speaks our own vocabulary.
 
 Used throughout:
 - Heatmap node markers (★ ◆ ► ⏷ 🛡 — all wrapped in `<TermHover>`)
@@ -1078,18 +1087,22 @@ raises (`gcp/fetchers/fetch_av_realtime_options.py:58`) — reused.
 
 ### 6.5 `GET /api/glossary/gamma` (NEW)
 
-Returns the cross-framework term dictionary from §1.7. Cached forever
+Returns the **UI-safe subset** of the term dictionary from §1.7 —
+canonical name + definitions + math only. Framework aliases
+(Stratalyst / Heatseeker / SqueezeMetrics / SpotGamma) stay in
+`lib/gamma_glossary.GAMMA_TERMS` for internal use and are
+deliberately stripped from this endpoint's response. Cached forever
 (in-process; revalidates on deploy). Loaded once at frontend boot.
 
 ```json
 {
   "terms": { "king": {...}, "gate": {...}, "flip": {...}, ... },
-  "version": "1",      // bump when dict shape changes
-  "frameworks": ["stratalyst", "heatseeker", "squeezemetrics", "spotgamma", "plain_english"]
+  "version": "1"      // bump when dict shape changes
 }
 ```
 
-Read cost: ~5 KB JSON. One fetch per page load.
+Read cost: ~3 KB JSON (aliases excluded; smaller than the full
+dict). One fetch per page load.
 
 ### 6.6 Breaking change (small): `/levels` becomes a thin wrapper
 
@@ -1183,7 +1196,9 @@ Two-panel layout:
 
 Every place the UI names a King / Gate / Flip / Midpoint / Hedge Node /
 OPEX Node / GEX / VEX is wrapped in `<TermHover term="...">`. On
-hover the user sees:
+hover the user sees the canonical name + the plain-language
+definition — nothing else. The cross-framework aliases that live in
+the Python dictionary are internal-only and stay off the wire.
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -1192,11 +1207,8 @@ hover the user sees:
 │ The strike with the largest absolute net GEX in the    │
 │ window — dealer's preferred end-of-day pin target.     │
 │                                                        │
-│ Also called:                                           │
-│   • Anchor Pivot       (Stratalyst)                    │
-│   • King Node ★         (Heatseeker)                    │
-│   • Gamma Wall         (SqueezeMetrics)                │
-│   • Largest Gamma Strike (SpotGamma)                   │
+│ First touches react ~80% of the time in positive       │
+│ gamma regime.                                          │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -1209,10 +1221,11 @@ The component:
 ```
 
 Tooltip data fetched once from `/api/glossary/gamma` at app boot,
-cached in React Query indefinitely. Component takes ~5 KB JSON for
-ALL terms; no per-hover network call. The wrapped text is rendered
-inline with a subtle dotted underline (matches existing help-text
-conventions on `HelpPage.tsx`).
+cached in React Query indefinitely. Component takes ~3 KB JSON for
+ALL terms (UI-safe subset only — definitions, no aliases); no
+per-hover network call. The wrapped text is rendered inline with a
+subtle dotted underline (matches existing help-text conventions on
+`HelpPage.tsx`).
 
 **Where it shows up:**
 - Heatmap node markers and column / row labels
