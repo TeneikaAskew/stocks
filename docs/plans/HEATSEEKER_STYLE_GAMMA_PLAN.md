@@ -254,6 +254,256 @@ brief footer, no drift risk.
 
 ---
 
+## Part 1.6 — Ticker coverage matrix (live vs on-demand vs historical)
+
+Not every ticker has every data path available. The plan reflects this
+in the routing logic of the new endpoints.
+
+| Ticker class | Scheduled realtime (5-min) | On-demand realtime (user-triggered) | Historical (EOD archive) | Notes |
+|---|---|---|---|---|
+| **SPY, IWM, QQQ** | ✅ via `fetch_av_realtime_options.py` | ✅ (no need — served from Cloud SQL) | ✅ | Heatmap is instant from Cloud SQL |
+| **SPX, NDX, RUT, XSP** (index options) | ❌ excluded — AV returns `-` for index-Greeks | ✅ via on-demand endpoint, BUT requires inline BSM solver | ✅ Greeks backfilled by `scripts/maintenance/compute_spx_greeks.py` | Inline BSM adds ~500 ms latency; FRED rates fetched on-demand |
+| **NVDA, TSLA, AAPL, AVGO**, other watchlist single names | ❌ — not in scheduled list today | ✅ via on-demand endpoint (real Greeks from AV) | ✅ via watchlist union in `fetch_av_historical_options.py:264-269` | First user query for a ticker triggers AV call (1-3 s); subsequent users within 60 s get cache |
+| **Any other valid US options ticker** (user types it) | ❌ | ✅ — same on-demand path as above | ❌ (would need to add to watchlist) | Persistence flag determines whether one user's lookup builds history for the next |
+
+**Implication for the heatmap UI:** the "Live" toggle is always
+available, but its meaning differs:
+
+- SPY/IWM/QQQ → reads the most-recent scheduled realtime row
+- Anything else → triggers a fresh on-demand call (UI shows spinner)
+- Index tickers → inline BSM Greeks computation, slightly slower
+- Pre-2026-05-22 dates → live toggle disabled (no realtime existed yet),
+  historical path only
+
+---
+
+## Part 1.7 — Term dictionary + UI hover (cross-framework glossary)
+
+The community has fragmented gamma vocabulary: SqueezeMetrics calls a
+King a "Gamma Wall," Stratalyst calls it an "Anchor Pivot," Heatseeker
+keeps "King Node ★," SpotGamma names it the "Largest Gamma Strike."
+**We don't rename anything.** Our internal names stay
+`King | Gate | Spot | Flip | Midpoint | Hedge Node | OPEX Node`. They're
+already in `lib/gamma.py`, the `key_levels` dict keys, the brief
+footers, the analyst prompts. Churning the names breaks every
+downstream consumer for cosmetic gain.
+
+Instead: build a **term dictionary** that exposes every term's
+cross-framework aliases + plain-English definition, and the UI
+renders an on-hover tooltip showing the multi-framework mapping.
+
+### 1.7.1 Dictionary data shape
+
+New module `lib/gamma_glossary.py` (single source of truth):
+
+```python
+@dataclass(frozen=True)
+class GammaTerm:
+    canonical: str              # Our internal name — used in code, key_levels, prompts
+    short_definition: str       # 1 sentence for the hover tooltip
+    long_definition: str        # paragraph for the reference page
+    math: str | None            # formula, if applicable
+    aliases: dict[str, str]     # framework → their term
+    # Framework keys:
+    #   "stratalyst"    — Strat-lineage names (Anchor Pivot, Trigger Pivot, ...)
+    #   "heatseeker"    — Heatseeker product names (King Node ★, Gatekeeper, ...)
+    #   "squeezemetrics"— SqueezeMetrics research vocabulary (Gamma Wall, ...)
+    #   "spotgamma"     — SpotGamma vocabulary (Largest Gamma Strike, ...)
+    #   "plain_english" — for users without any framework background
+
+GAMMA_TERMS: dict[str, GammaTerm] = {
+    "king": GammaTerm(
+        canonical="King",
+        short_definition=(
+            "The strike with the largest absolute net GEX in the window — "
+            "dealer's preferred end-of-day pin target."
+        ),
+        long_definition="...",  # paragraph-length
+        math="|net_gamma × spot² × 0.01|, max in window",
+        aliases={
+            "stratalyst":     "Anchor Pivot",
+            "heatseeker":     "King Node ★",
+            "squeezemetrics": "Gamma Wall",
+            "spotgamma":      "Largest Gamma Strike",
+            "plain_english":  "Strongest dealer-pin level",
+        },
+    ),
+    "gate": GammaTerm(
+        canonical="Gate",
+        short_definition=(
+            "Secondary high-|GEX| strike between current spot and the King — "
+            "must break before price can reach the King."
+        ),
+        aliases={
+            "stratalyst":     "Trigger Pivot",
+            "heatseeker":     "Gatekeeper Node",
+            "squeezemetrics": "Secondary Gamma Level",
+            "spotgamma":      "Call/Put Wall",
+            "plain_english":  "Secondary support/resistance",
+        },
+        ...
+    ),
+    "flip": GammaTerm(
+        canonical="Flip",
+        short_definition=(
+            "Cumulative GEX zero crossing. Above = positive gamma regime "
+            "(pinning, low vol). Below = negative gamma regime (trending, "
+            "high vol)."
+        ),
+        aliases={
+            "stratalyst":     "Regime Pivot",
+            "heatseeker":     "Flip",
+            "squeezemetrics": "Gamma Flip",
+            "spotgamma":      "Zero Gamma",
+            "plain_english":  "Regime divider",
+        },
+        ...
+    ),
+    "midpoint": GammaTerm(
+        canonical="Midpoint",
+        aliases={
+            "stratalyst":     "Inside Pivot",
+            "heatseeker":     "Midpoint Trap Zone",
+            "squeezemetrics": "Range Midpoint",
+            "spotgamma":      "Pin Center",
+            "plain_english":  "Range middle — worst R:R",
+        },
+        ...
+    ),
+    "hedge_node": GammaTerm(
+        canonical="Hedge Node",
+        aliases={
+            "stratalyst":     "Event Pivot",
+            "heatseeker":     "Hedge Node",
+            "squeezemetrics": "Event-Linked Position",
+            "spotgamma":      "Event Hedge",
+            "plain_english":  "Macro-event insurance level",
+        },
+        ...
+    ),
+    "opex_node": GammaTerm(
+        canonical="OPEX Node",
+        aliases={
+            "stratalyst":     "Expiry Pivot",
+            "heatseeker":     "OPEX Node",
+            "squeezemetrics": "Monthly OI Concentration",
+            "spotgamma":      "Monthly Expiry",
+            "plain_english":  "Third-Friday expiration cluster",
+        },
+        ...
+    ),
+    "gex": GammaTerm(canonical="GEX", aliases={"plain_english": "Gamma Exposure ($)"} ...),
+    "vex": GammaTerm(canonical="VEX", aliases={"plain_english": "Vanna Exposure ($)"} ...),
+    "positive_gamma_regime": GammaTerm(
+        canonical="Positive Gamma",
+        aliases={
+            "stratalyst":     "Pinning Regime",
+            "plain_english":  "Range-bound, dealer-suppressed volatility",
+        },
+        ...
+    ),
+    "negative_gamma_regime": GammaTerm(
+        canonical="Negative Gamma",
+        aliases={
+            "stratalyst":     "Trending Regime",
+            "plain_english":  "Trending, dealer-amplified volatility",
+        },
+        ...
+    ),
+    ...
+}
+```
+
+(Full populated dict in implementation; the §11 glossary table at the
+bottom of this doc captures the same content for now.)
+
+### 1.7.2 API endpoint
+
+```
+GET /api/glossary/gamma
+```
+
+Returns the full `GAMMA_TERMS` dict as JSON. Cached forever (it's a
+module constant; revalidates on deploy). Frontend fetches once at app
+boot, stores in React Query cache.
+
+```json
+{
+  "terms": {
+    "king": {
+      "canonical": "King",
+      "short_definition": "The strike with the largest absolute net GEX...",
+      "aliases": {
+        "stratalyst": "Anchor Pivot",
+        "heatseeker": "King Node ★",
+        "squeezemetrics": "Gamma Wall",
+        "spotgamma": "Largest Gamma Strike",
+        "plain_english": "Strongest dealer-pin level"
+      }
+    },
+    ...
+  }
+}
+```
+
+### 1.7.3 UI hover component
+
+New shared component `platform/src/components/TermHover.tsx`:
+
+```tsx
+<TermHover term="king">King</TermHover>
+```
+
+Renders the wrapped text inline; on hover shows a tooltip card:
+
+```
+┌────────────────────────────────────────────────────────┐
+│ King                                                   │
+│ ──────────────────────────────────────────────────     │
+│ The strike with the largest absolute net GEX in the    │
+│ window — dealer's preferred end-of-day pin target.     │
+│                                                        │
+│ Also called:                                           │
+│   • Anchor Pivot       (Stratalyst)                    │
+│   • King Node ★         (Heatseeker)                    │
+│   • Gamma Wall         (SqueezeMetrics)                │
+│   • Largest Gamma Strike (SpotGamma)                   │
+│                                                        │
+│ Strongest dealer-pin level — first touches react ~80%  │
+│ of the time in positive gamma regime.                  │
+└────────────────────────────────────────────────────────┘
+```
+
+Used throughout:
+- Heatmap node markers (★ ◆ ► ⏷ 🛡 — all wrapped in `<TermHover>`)
+- Right-panel level cards
+- Brief footer (when rendered in the platform; Discord stays plain text)
+- Tactical-read prose (when the AI analyst names a level)
+
+### 1.7.4 AI analyst awareness
+
+The gamma analyst prompt (`lib/agents/prompts.py:83-115`) optionally
+receives the glossary in its bundle so it knows the cross-framework
+aliases. Example use: "the King strike at 502 (also known to
+SqueezeMetrics readers as the Gamma Wall)" — gives the LLM permission
+to use multiple terms in prose when context warrants. Deferred to
+Phase D; not required for v1.
+
+### 1.7.5 Why this beats a rename
+
+| | Rename to Strat-native | Glossary + hover (THIS) |
+|---|---|---|
+| Code churn | Every `key_levels['Gamma Flip']` consumer breaks | Zero |
+| User retraining | Existing users relearn vocabulary | None |
+| Multi-framework discovery | Lose Heatseeker / SqueezeMetrics names | Surface ALL frameworks in one place |
+| AI prompt drift risk | High during transition window | None — prompts unchanged |
+| Implementation cost | ~1 day rename + tests + backward-compat alias | ~1 day dictionary + endpoint + component |
+| User value | Cosmetic | Educational — explains the field |
+
+The dictionary IS the value-add. The rename was always a tradeoff.
+
+---
+
 ## Part 2 — Current state audit
 
 This is what we have today, surveyed via the file references in
@@ -773,7 +1023,75 @@ prose key_levels suffix all read it. Same end-to-end contract.
 not great entry" UX. The `tactical_summary` is the AI insight pipeline's
 gamma analyst output, served fresh per snapshot.
 
-### 6.4 Breaking change (small): `/levels` becomes a thin wrapper
+### 6.4 On-demand ticker dispatch — embedded in `/api/options/{ticker}/grid`
+
+The live endpoint (§6.1) handles BOTH the scheduled-list shortcut AND
+the on-demand fetch in one route, so the UI doesn't need to know
+which path was taken.
+
+**Decision tree, server side:**
+
+```
+ticker ∈ {SPY, IWM, QQQ}?
+├─ YES → read most-recent REALTIME row from Cloud SQL → return
+│        ~50-100 ms total
+│
+└─ NO  → check 60s in-memory cache for this ticker
+         ├─ HIT  → return cached payload (sub-10 ms)
+         │
+         └─ MISS → fire AV REALTIME_OPTIONS call
+                   ~1-3 s for equities, ~1.5-4 s for index tickers
+                   (BSM Greeks inline)
+                   ├─ persist to etf_options_snapshots with
+                   │  market_session='REALTIME', data_source='alphavantage'
+                   │  (no special marker — these rows are identical
+                   │  in shape to the scheduled fetcher's writes)
+                   ├─ store in 60s in-memory cache
+                   └─ return payload
+```
+
+**Index ticker handling (SPX/NDX/RUT/XSP):** AV returns `-` for
+Greeks. The endpoint detects NaN gamma + ticker ∈ `COMPUTE_GREEKS_TICKERS`
+and runs `lib.options_greeks.enrich_av_chain_with_greeks()` synchronously
+before returning. Adds ~500 ms latency. Same code path
+`scripts/maintenance/compute_spx_greeks.py` uses today.
+
+**Rate limiting:** new middleware enforces 10 unique on-demand tickers
+per session per minute. AV's 600 req/min total budget is comfortable
+under this cap even with 50 concurrent users. Surfaces a 429 response
+with `Retry-After` header when exceeded; UI shows a "Slow down — too
+many lookups in flight" toast.
+
+**Failure modes (Rule 3.7 §EXTERNAL):**
+
+| AV response | Status code | Response shape |
+|---|---|---|
+| Healthy realtime payload | 200 | `GammaGridSummary` with `data_source='realtime'` |
+| Rate-limit / `Note` field | 429 | `{data_source: 'unavailable', reason: 'av_rate_limit'}` |
+| Sample/illustration payload (tier downgrade) | 503 | `{data_source: 'unavailable', reason: 'av_tier_downgrade'}` |
+| HTTP timeout (>15 s) | 503 | `{data_source: 'unavailable', reason: 'av_timeout'}` |
+| Empty `data: []` during RTH | 503 | `{data_source: 'unavailable', reason: 'av_empty'}` |
+| Off-hours empty (weekend / pre-market) | 200 | Falls back to latest cached payload from this ticker in Cloud SQL (last successful realtime call) |
+
+Same `RealtimeOptionsUnavailable` exception class the scheduled fetcher
+raises (`gcp/fetchers/fetch_av_realtime_options.py:58`) — reused.
+
+### 6.5 `GET /api/glossary/gamma` (NEW)
+
+Returns the cross-framework term dictionary from §1.7. Cached forever
+(in-process; revalidates on deploy). Loaded once at frontend boot.
+
+```json
+{
+  "terms": { "king": {...}, "gate": {...}, "flip": {...}, ... },
+  "version": "1",      // bump when dict shape changes
+  "frameworks": ["stratalyst", "heatseeker", "squeezemetrics", "spotgamma", "plain_english"]
+}
+```
+
+Read cost: ~5 KB JSON. One fetch per page load.
+
+### 6.6 Breaking change (small): `/levels` becomes a thin wrapper
 
 `/api/options/{ticker}/{date}/levels` continues to return the existing
 `GammaSummary` shape but is recomputed from the new grid → no consumer
@@ -812,6 +1130,18 @@ the top bar (default: Live for today, Historical for any other date).
 
 Two-panel layout:
 
+**Top bar:**
+- **Ticker input** — debounced text field (300 ms), accepts any valid
+  US options ticker. Three quick-pick buttons next to it for
+  SPY / IWM / QQQ (always-fast). Last-viewed ticker persisted to
+  localStorage for next visit. When the user submits a non-quick-pick
+  ticker, the right side shows a small spinner with
+  "Fetching realtime chain for NVDA..." while the on-demand call
+  resolves.
+- **Live ↔ Historical toggle** — as described above.
+- **Date picker** — disabled in Live mode (always "now"); active in
+  Historical mode.
+
 **Left panel (60% width): 2-D heatmap**
 
 ```
@@ -848,6 +1178,50 @@ Two-panel layout:
 - Bottom: "Hedge Node alerts" — if any present, with the linked
   `economic_events` row inline ("FOMC 2026-06-12 at 14:00 ET")
 - Bottom: Rate-of-change sparkline for the King and top 2 Gatekeepers
+
+### 7.1.5 Term hover tooltips — `<TermHover>` component
+
+Every place the UI names a King / Gate / Flip / Midpoint / Hedge Node /
+OPEX Node / GEX / VEX is wrapped in `<TermHover term="...">`. On
+hover the user sees:
+
+```
+┌────────────────────────────────────────────────────────┐
+│ King                                                   │
+│ ──────────────────────────────────────────────────     │
+│ The strike with the largest absolute net GEX in the    │
+│ window — dealer's preferred end-of-day pin target.     │
+│                                                        │
+│ Also called:                                           │
+│   • Anchor Pivot       (Stratalyst)                    │
+│   • King Node ★         (Heatseeker)                    │
+│   • Gamma Wall         (SqueezeMetrics)                │
+│   • Largest Gamma Strike (SpotGamma)                   │
+└────────────────────────────────────────────────────────┘
+```
+
+The component:
+
+```tsx
+<TermHover term="king">King</TermHover>
+<TermHover term="flip">Flip</TermHover>
+<TermHover term="vex">VEX</TermHover>
+```
+
+Tooltip data fetched once from `/api/glossary/gamma` at app boot,
+cached in React Query indefinitely. Component takes ~5 KB JSON for
+ALL terms; no per-hover network call. The wrapped text is rendered
+inline with a subtle dotted underline (matches existing help-text
+conventions on `HelpPage.tsx`).
+
+**Where it shows up:**
+- Heatmap node markers and column / row labels
+- Right-panel level cards
+- Brief footer when rendered in the platform UI
+- AI tactical-read prose (the LLM's output is HTML-rendered; we
+  post-process to wrap recognized term occurrences automatically)
+- HelpPage definitions (these become canonical definitions, fed by
+  the same glossary)
 
 ### 7.2 OptionsFlowPage backward compat
 
@@ -911,6 +1285,21 @@ just renders what `/nodes` returned.
 Phase boundaries chosen so each phase is independently deployable and
 provides user-visible value.
 
+### Phase 0 — Term dictionary + glossary endpoint (~1 day, no UI)
+
+Goal: ship the cross-framework glossary first so every later phase
+can use `<TermHover>` from the moment its UI lands.
+
+- Create `lib/gamma_glossary.py` with the `GammaTerm` dataclass and
+  the populated `GAMMA_TERMS` dict (~12 terms)
+- Add `GET /api/glossary/gamma` endpoint
+- Unit tests: assert every term has all 5 framework aliases + a
+  short definition + a long definition
+
+**No naming changes anywhere else.** Existing `key_levels` dict keys,
+`Level.kind` values, brief footer strings, and the analyst prompt
+stay exactly as they are. The glossary is purely additive.
+
 ### Phase A — Math + view (1-2 days, no UI)
 
 Goal: server-side data layer. No user-visible change yet.
@@ -927,30 +1316,45 @@ Goal: server-side data layer. No user-visible change yet.
 
 Capacity: trivial. Adds zero query load.
 
-### Phase B — API endpoints (2-3 days)
+### Phase B — API endpoints (3-4 days)
 
-Goal: serve the data.
+Goal: serve the data, both modes.
 
-- Add `GET /api/options/{ticker}/{date}/grid`
-- Add `GET /api/options/{ticker}/{date}/grid/timeseries`
-- Add `GET /api/options/{ticker}/{date}/nodes` (with placeholder
-  `tactical_summary = null` — wire to AI insights in Phase D)
-- Tests in `tests/test_api_options.py`
-- 12 h cache TTL on grid; 1 min cache on timeseries
+- Add `GET /api/options/{ticker}/grid` (live, with on-demand
+  dispatch decision tree from §6.4)
+- Add `GET /api/options/{ticker}/{date}/grid` (historical)
+- Add `GET /api/options/{ticker}/grid/timeseries` (realtime-only)
+- Add `GET /api/options/{ticker}/nodes` (live, placeholder
+  `tactical_summary` until Phase D)
+- Add `GET /api/options/{ticker}/{date}/nodes` (historical)
+- Inline BSM Greeks computation for index tickers (SPX/NDX/RUT/XSP)
+  in the on-demand path
+- Rate-limit middleware: 10 unique on-demand tickers per session per
+  minute
+- 60 s cache on live; 12 h cache on historical; 1 min on timeseries
+- Tests in `tests/test_api_options.py` — including the on-demand
+  routing decision tree and the AV failure-mode envelopes
 
 Capacity: 800 cells per ticker × 3 tickers × ~84 reads/day from the
 brief + insight pipeline + UI = ~200 k cell reads/day. ~6 KB per
 read = 1.2 GB/day egress. Negligible cost.
 
-### Phase C — Frontend (1 week)
+### Phase C — Frontend (1-1.5 weeks)
 
-Goal: user-visible 2-D heatmap + tactical panel.
+Goal: user-visible 2-D heatmap + tactical panel + glossary hover.
 
 - New route `platform/src/routes/OptionsGridPage.tsx`
 - D3.js 2-D grid component
+- Top bar: ticker input (free-form + quick-picks) + Live/Historical
+  toggle + date picker
 - Right-panel level cards with `/nodes` integration
+- `<TermHover>` component fetching `/api/glossary/gamma` at app boot
+  and wrapping every term occurrence in the page
+- Loading skeleton with "Fetching realtime chain for {ticker}..."
+  for the on-demand path
 - Vitest component tests
-- Playwright e2e test (load SPY, click King cell, verify modal)
+- Playwright e2e test (load SPY → click King cell → verify modal;
+  type NVDA → verify spinner → verify heatmap renders)
 
 Capacity: pure client-side render of a ~30 KB JSON. No backend impact.
 
@@ -989,12 +1393,19 @@ in production logs.
 
 | Phase | One-time eng | Monthly recurring | What you get |
 |---|---|---|---|
-| A | 1-2 days | $0 | Server-side data layer |
-| B | 2-3 days | <$1 (egress) | Reachable from any consumer |
-| C | 1 week | $0 | User-visible heatmap |
+| 0 | ~1 day | $0 | Cross-framework glossary + `/api/glossary/gamma` endpoint |
+| A | 1-2 days | $0 | Server-side data layer (per-strike × per-expiration aggregates, per-strike VEX) |
+| B | 3-4 days | $0-3 (AV on-demand calls; depends on user activity) | Reachable from any consumer; on-demand ticker lookup live |
+| C | 1-1.5 weeks | $0 | User-visible heatmap + ticker input + `<TermHover>` tooltips |
 | D | 1-2 weeks | ~$22 (AI insights × 84 fires/day × 30 days) | Tactical recommendations |
 | E | 1 day | ~$0.50 (extra storage) | Sub-100ms read latency |
-| **Total** | ~3-4 weeks | ~$25/month | Heatseeker parity + AI-driven entry recos |
+| **Total** | ~4-5 weeks | ~$25-28/month | Heatseeker parity + AI-driven entry recos + multi-framework glossary |
+
+**On-demand AV cost detail:** AV is $200/mo flat for 600 req/min. Adding
+user-triggered fetches doesn't change the bill unless we exceed the
+rate cap. Per-call internal cost ≈ $0 at our subscription tier. The
+$0-3 in Phase B is purely the egress / Cloud Run CPU for the inline
+BSM solver — negligible.
 
 For comparison: Track 0's realtime fetcher is ~$5/mo. The full
 Heatseeker subscription publicly listed is $99-149/mo. We can do
