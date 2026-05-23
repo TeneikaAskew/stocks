@@ -11,10 +11,10 @@ coexist in etf_options_snapshots via the unique key
 
 Why this exists:
     Added 2026-05-22 after AV subscription upgrade to the $199.99/mo,
-    600 req/min, realtime-options tier (premium key UI946ZBT4PNKOS5Z).
-    Prior to this, the entire repo only had EOD options data — see
-    /root/.claude/plans/okay-for-the-gamma-hashed-rainbow.md for the
-    multi-track plan this fetcher unlocks:
+    600 req/min, realtime-options tier. Prior to this, the entire repo
+    only had EOD options data — see
+    docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md for the multi-track
+    plan this fetcher unlocks:
       Track 1 — premarket brief gamma section (realtime-primary)
       Track 2 — 0DTE theta replacement (observed > empirical curve)
       Track 3 — signal monitor "approaching the King" alerts

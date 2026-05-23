@@ -861,7 +861,7 @@ deploy_av_options_backfill() {
 #
 # Added 2026-05-22 after AV subscription upgrade to the realtime-options
 # tier ($199.99/mo, 600 req/min). See
-# /root/.claude/plans/okay-for-the-gamma-hashed-rainbow.md for the
+# docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md for the
 # multi-track plan this job unlocks (Tracks 1-5).
 deploy_av_options_realtime() {
     echo "Deploying fetch-av-options-realtime job..."
@@ -2218,7 +2218,7 @@ deploy_schedulers() {
     # ceiling). Cloud Run cost ~$3-5/mo.
     #
     # Added 2026-05-22 — unblocks Tracks 1-5 in
-    # /root/.claude/plans/okay-for-the-gamma-hashed-rainbow.md.
+    # docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md.
     _schedule "av-options-realtime" "*/5 9-15 * * 1-5"  "fetch-av-options-realtime"
 
     # Live options queries beyond the last refresh continue to flow
