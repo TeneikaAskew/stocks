@@ -2200,6 +2200,12 @@ def _playability_lines(bucket: list[dict], top_n: int = 5) -> list[str]:
         from lib.earnings_reactions import action_hint_for_archetype
     except ImportError:
         def action_hint_for_archetype(_a):
+            """Fallback no-op when ``lib.earnings_reactions`` isn't importable.
+
+            The brief should still render — the action hint is decorative
+            text on a playability row, not a load-bearing field. Returns
+            empty string so the f-string formatting stays well-formed.
+            """
             return ''
 
     # Pull the lookback target from lib so the embed header label
