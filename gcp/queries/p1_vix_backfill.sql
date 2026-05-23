@@ -1,6 +1,4 @@
--- VIX / VIX3M / VVIX backfill from yfinance into market_data_daily
--- Generated 2026-05-23 for Phase 1 audit. Volume = 0 (these are indices).
-
+-- VIX backfill chunk 1 (0:1500 of 8584)
 INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume) VALUES
   ('^VIX', '2015-01-02', 17.7600, 20.1400, 17.0500, 17.7900, 0),
   ('^VIX', '2015-01-05', 19.1900, 21.2900, 19.1900, 19.9200, 0),
@@ -1501,7 +1499,12 @@ INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume) VAL
   ('^VIX', '2020-12-10', 22.1200, 23.4600, 21.5300, 22.5200, 0),
   ('^VIX', '2020-12-11', 22.4900, 25.1400, 22.4800, 23.3100, 0),
   ('^VIX', '2020-12-14', 22.6700, 24.8200, 21.9500, 24.7200, 0),
-  ('^VIX', '2020-12-15', 24.0000, 24.0700, 22.7300, 22.8900, 0),
+  ('^VIX', '2020-12-15', 24.0000, 24.0700, 22.7300, 22.8900, 0)
+ON CONFLICT (ticker, date) DO UPDATE
+SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+    close = EXCLUDED.close, volume = EXCLUDED.volume;
+-- VIX backfill chunk 2 (1500:3000 of 8584)
+INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume) VALUES
   ('^VIX', '2020-12-16', 22.5100, 23.6700, 22.2900, 22.5000, 0),
   ('^VIX', '2020-12-17', 21.9800, 22.2700, 21.5200, 21.9300, 0),
   ('^VIX', '2020-12-18', 22.1500, 23.7700, 21.5700, 21.5700, 0),
@@ -3001,7 +3004,12 @@ INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume) VAL
   ('^VIX3M', '2015-07-14', 15.7700, 15.7700, 15.1300, 15.4600, 0),
   ('^VIX3M', '2015-07-15', 15.6000, 16.1000, 15.2200, 15.6000, 0),
   ('^VIX3M', '2015-07-16', 14.9600, 14.9700, 14.5600, 14.7300, 0),
-  ('^VIX3M', '2015-07-17', 14.5400, 14.7700, 14.4800, 14.6100, 0),
+  ('^VIX3M', '2015-07-17', 14.5400, 14.7700, 14.4800, 14.6100, 0)
+ON CONFLICT (ticker, date) DO UPDATE
+SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+    close = EXCLUDED.close, volume = EXCLUDED.volume;
+-- VIX backfill chunk 3 (3000:4500 of 8584)
+INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume) VALUES
   ('^VIX3M', '2015-07-20', 14.7100, 14.9200, 14.3300, 14.8500, 0),
   ('^VIX3M', '2015-07-21', 14.7000, 15.1000, 14.5800, 14.7500, 0),
   ('^VIX3M', '2015-07-22', 14.9600, 15.0200, 14.5100, 14.8100, 0),
@@ -4501,7 +4509,12 @@ INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume) VAL
   ('^VIX3M', '2021-06-28', 19.0800, 19.4600, 18.9500, 19.0200, 0),
   ('^VIX3M', '2021-06-29', 18.8700, 19.6100, 18.8200, 19.4900, 0),
   ('^VIX3M', '2021-06-30', 19.7300, 19.9600, 19.2600, 19.5100, 0),
-  ('^VIX3M', '2021-07-01', 19.3700, 19.6500, 19.2800, 19.4500, 0),
+  ('^VIX3M', '2021-07-01', 19.3700, 19.6500, 19.2800, 19.4500, 0)
+ON CONFLICT (ticker, date) DO UPDATE
+SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+    close = EXCLUDED.close, volume = EXCLUDED.volume;
+-- VIX backfill chunk 4 (4500:6000 of 8584)
+INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume) VALUES
   ('^VIX3M', '2021-07-02', 18.9800, 19.3600, 18.8400, 19.3000, 0),
   ('^VIX3M', '2021-07-06', 19.5800, 21.1000, 19.5700, 20.2600, 0),
   ('^VIX3M', '2021-07-07', 20.0700, 21.0500, 20.0200, 20.4100, 0),
@@ -6001,7 +6014,12 @@ INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume) VAL
   ('^VVIX', '2016-01-27', 98.6000, 101.1500, 96.0100, 100.0400, 0),
   ('^VVIX', '2016-01-28', 97.8200, 100.0400, 95.4000, 96.5600, 0),
   ('^VVIX', '2016-01-29', 95.4700, 95.4700, 89.6300, 89.9500, 0),
-  ('^VVIX', '2016-02-01', 92.5800, 92.5800, 89.3200, 89.6500, 0),
+  ('^VVIX', '2016-02-01', 92.5800, 92.5800, 89.3200, 89.6500, 0)
+ON CONFLICT (ticker, date) DO UPDATE
+SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+    close = EXCLUDED.close, volume = EXCLUDED.volume;
+-- VIX backfill chunk 5 (6000:7500 of 8584)
+INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume) VALUES
   ('^VVIX', '2016-02-02', 92.1000, 98.7300, 92.1000, 97.6000, 0),
   ('^VVIX', '2016-02-03', 97.2600, 102.5800, 97.0900, 97.3200, 0),
   ('^VVIX', '2016-02-04', 98.1000, 99.0400, 94.7200, 95.2200, 0),
@@ -7501,7 +7519,12 @@ INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume) VAL
   ('^VVIX', '2022-01-21', 138.3500, 151.8000, 136.8000, 149.5000, 0),
   ('^VVIX', '2022-01-24', 161.0900, 172.8200, 153.2600, 154.3800, 0),
   ('^VVIX', '2022-01-25', 159.2000, 164.0000, 146.8100, 150.8000, 0),
-  ('^VVIX', '2022-01-26', 145.5100, 155.9800, 138.8800, 148.5500, 0),
+  ('^VVIX', '2022-01-26', 145.5100, 155.9800, 138.8800, 148.5500, 0)
+ON CONFLICT (ticker, date) DO UPDATE
+SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+    close = EXCLUDED.close, volume = EXCLUDED.volume;
+-- VIX backfill chunk 6 (7500:8584 of 8584)
+INSERT INTO market_data_daily (ticker, date, open, high, low, close, volume) VALUES
   ('^VVIX', '2022-01-27', 141.9400, 145.9000, 137.8600, 141.1400, 0),
   ('^VVIX', '2022-01-28', 141.0700, 144.9600, 131.1100, 132.4400, 0),
   ('^VVIX', '2022-01-31', 133.8700, 134.7100, 124.8400, 125.0600, 0),
