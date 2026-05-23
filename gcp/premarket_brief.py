@@ -62,6 +62,176 @@ def _safe_float(val, default=None):
         return default
 
 
+def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
+    """Lightweight freshness probe for the brief's gamma footer.
+
+    Returns the most recent etf_options_snapshots row's metadata
+    (data_source tier + snapshot timestamp) so `_build_gamma_footer`
+    can render a 'Live gamma · HH:MM ET' / 'EOD gamma' / 'Stale gamma'
+    line without paying the cost of running the full
+    `summarize_gamma_levels` GEX math three times per brief.
+
+    Mirrors the tiered loader in
+    `lib.agents.summarizers.summarize_gamma_levels`:
+      1. REALTIME row present (strictly before as_of) → 'realtime'
+      2. else most recent EOD ≤2 trading days behind → 'eod_fallback'
+      3. else 3-5 trading days behind → 'stale_fallback'
+      4. else (or no rows) → 'unavailable'
+
+    The classification helper `classify_gamma_freshness` is shared
+    with the full summarizer so the two paths can never diverge on
+    threshold semantics — see Track 1 of
+    docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md.
+
+    Hard-capped at `_GAMMA_PROBE_TIMEOUT_MS` Postgres statement timeout
+    per query so a slow planner choice (e.g. after Track 0 added 3M+
+    realtime rows in a single day without freshly-collected ANALYZE
+    stats) can NEVER hang the brief. If either probe trips the
+    timeout, the function falls through to `data_source='unavailable'`
+    and the footer simply omits itself — the brief renders normally
+    without the gamma section. This is a typed-UNAVAILABLE envelope
+    per CLAUDE.md Rule 3.7 §EXTERNAL, not a silent fallback.
+
+    The 5-second cap is intentionally generous (an indexed single-row
+    lookup should complete in <100 ms) so genuine slowness shows up
+    as a Cloud Logging warning rather than silent footer omission.
+    """
+    # Defensive timeout (ms) so a slow query can NEVER hang the brief.
+    # SPY has ~14 k contracts per EOD snapshot vs ~3 k for IWM, so a
+    # 15-day window scan touches ~150 k rows for SPY — close to the
+    # cliff at 5 s under Cloud SQL's current IOPS budget when the
+    # partial REALTIME index isn't available yet. 10 s gives 2x
+    # headroom for SPY's heavier scan; the existing brief task-timeout
+    # is 600 s so the absolute worst-case (3 tickers × 10 s) still
+    # leaves ample budget for the rest of the brief.
+    _GAMMA_PROBE_TIMEOUT_MS = 10000
+
+    # Hard floor on the snapshot_date range each probe will scan. The
+    # only existing index that covers this query is
+    # idx_etf_options_ticker_date (ticker, snapshot_date DESC); it
+    # doesn't include market_session, so the planner has to fetch each
+    # ticker row in date-DESC order and check market_session in
+    # memory. Without a date floor that scan walks MILLIONS of rows
+    # looking for a REALTIME match in the historical EOD-only era
+    # (everything before 2026-05-22), and the 5 s statement_timeout
+    # trips every time. By bounding the scan to a 10-trading-day
+    # window (covers the hard-stale cutoff plus a safety margin) the
+    # query stays well under 1 s in production even on this 20M+ row
+    # table. The window is symmetric for realtime and EOD; if no
+    # qualifying row exists in 10 trading days, no fresher one
+    # exists anywhere, so the data-source tier is identical.
+    _GAMMA_PROBE_DATE_FLOOR_DAYS = 10
+
+    logger.info("[brief:%s] _load_gamma_freshness start (as_of=%s)", ticker, as_of)
+    try:
+        import numpy as np
+        import sqlalchemy
+        from gcp.database import get_engine
+        from lib.agents.summarizers import classify_gamma_freshness
+
+        # Hard-floor the scan range to one window's worth of trading
+        # days (calendar-day math is fine here — we want a generous
+        # floor not a precise count).
+        as_of_dt = as_of
+        if isinstance(as_of_dt, datetime):
+            as_of_dt = as_of_dt.date()
+        floor_dt = as_of_dt - timedelta(days=int(_GAMMA_PROBE_DATE_FLOOR_DAYS * 1.5))
+
+        params = {
+            "ticker": ticker.upper(),
+            "as_of": str(as_of_dt),
+            "floor": str(floor_dt),
+        }
+        engine = get_engine()
+
+        # One connection serves both probes inside a single transaction;
+        # SET LOCAL statement_timeout scopes the cap to that transaction
+        # only so we don't pollute the connection pool's session state.
+        with engine.connect() as conn:
+            conn.execute(sqlalchemy.text(
+                f"SET LOCAL statement_timeout = {_GAMMA_PROBE_TIMEOUT_MS}"
+            ))
+
+            # Phase 1: realtime probe. ORDER BY (snapshot_date DESC,
+            # snapshot_ts DESC) plus the snapshot_date BETWEEN bound
+            # lets the planner walk the
+            # idx_etf_options_ticker_date (ticker, snapshot_date DESC)
+            # index backwards starting from `as_of` and stop at `floor`,
+            # checking market_session per row. Worst-case work is
+            # ~ (rows-per-trading-day × 10), not the full table.
+            df = pd.read_sql(
+                sqlalchemy.text(
+                    "SELECT snapshot_ts, snapshot_date FROM etf_options_snapshots "
+                    "WHERE ticker = :ticker "
+                    "  AND data_source = 'alphavantage' "
+                    "  AND market_session = 'REALTIME' "
+                    "  AND snapshot_date >= :floor "
+                    "  AND snapshot_date < :as_of "
+                    "ORDER BY snapshot_date DESC, snapshot_ts DESC LIMIT 1"
+                ),
+                conn,
+                params=params,
+            )
+            if not df.empty:
+                ts = df["snapshot_ts"].iloc[0]
+                ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                logger.info("[brief:%s] gamma=realtime ts=%s", ticker, ts_iso)
+                return {
+                    "data_source": "realtime",
+                    "snapshot_ts": ts_iso,
+                    "snapshot_date": df["snapshot_date"].iloc[0],
+                    "days_behind": 0,
+                }
+
+            # Phase 2: EOD probe. Same date-floor bound — if no EOD row
+            # in the last ~15 calendar days, classify_gamma_freshness
+            # would have returned 'unavailable' anyway.
+            df = pd.read_sql(
+                sqlalchemy.text(
+                    "SELECT snapshot_ts, snapshot_date FROM etf_options_snapshots "
+                    "WHERE ticker = :ticker "
+                    "  AND data_source = 'alphavantage' "
+                    "  AND (market_session = 'EOD' OR market_session IS NULL) "
+                    "  AND snapshot_date >= :floor "
+                    "  AND snapshot_date < :as_of "
+                    "ORDER BY snapshot_date DESC, snapshot_ts DESC LIMIT 1"
+                ),
+                conn,
+                params=params,
+            )
+
+        if df.empty:
+            logger.info("[brief:%s] gamma=unavailable (no rows)", ticker)
+            return {"data_source": "unavailable", "snapshot_ts": None,
+                    "snapshot_date": None, "days_behind": None}
+
+        sd_raw = df["snapshot_date"].iloc[0]
+        sd = sd_raw.date() if hasattr(sd_raw, "date") else pd.to_datetime(sd_raw).date()
+        days = int(np.busday_count(sd, as_of))
+        tier = classify_gamma_freshness(days)
+        if tier == "unavailable":
+            logger.info("[brief:%s] gamma=unavailable (%d trading days behind)",
+                        ticker, days)
+            return {"data_source": "unavailable", "snapshot_ts": None,
+                    "snapshot_date": sd, "days_behind": days}
+
+        ts = df["snapshot_ts"].iloc[0]
+        ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+        logger.info("[brief:%s] gamma=%s ts=%s days_behind=%d",
+                    ticker, tier, ts_iso, days)
+        return {
+            "data_source": tier,
+            "snapshot_ts": ts_iso,
+            "snapshot_date": sd,
+            "days_behind": days,
+        }
+    except Exception as exc:
+        logger.warning("[brief:%s] gamma freshness probe failed: %s: %s",
+                       ticker, type(exc).__name__, exc)
+        return {"data_source": "unavailable", "snapshot_ts": None,
+                "snapshot_date": None, "days_behind": None}
+
+
 def _delete_null_close_rows(ticker: str) -> int:
     """Delete market_data_daily rows for `ticker` that have NULL close.
 
@@ -1034,6 +1204,18 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'freshness_gap_days': gap_days,
         }
 
+        # Track 1 (REALTIME_OPTIONS_MULTITRACK_PLAN.md): record the
+        # gamma-data freshness tier for the per-brief footer in
+        # _build_overview_embed. Cheap metadata-only probe (2 single-
+        # row queries); the full GEX math stays in the insight
+        # pipeline. data_source ∈ {'realtime','eod_fallback',
+        # 'stale_fallback','unavailable'}.
+        gamma_meta = _load_gamma_freshness(ticker, analysis_date)
+        brief['tickers'][ticker]['gamma_data_source'] = gamma_meta['data_source']
+        brief['tickers'][ticker]['gamma_snapshot_ts'] = gamma_meta['snapshot_ts']
+        brief['tickers'][ticker]['gamma_snapshot_date'] = gamma_meta['snapshot_date']
+        brief['tickers'][ticker]['gamma_days_behind'] = gamma_meta['days_behind']
+
     # ── Brief-level data freshness summary (Track B G.P0.5) ─────────
     # Aggregate across the per-ticker data_as_of stamps so the
     # overview embed can render a single "Based on data from X to Y"
@@ -1678,6 +1860,94 @@ def _stoch_regime_tag(stoch_k, stoch_d) -> str:
     return 'neutral'
 
 
+_GAMMA_FOOTER_SEVERITY = {
+    "realtime":       0,
+    "eod_fallback":   1,
+    "stale_fallback": 2,
+    "unavailable":    3,
+}
+
+
+def _fmt_gamma_ts(ts_iso: Optional[str]) -> str:
+    """Render an ISO timestamp as 'HH:MM ET' / 'Day HH:MM' for the footer."""
+    if not ts_iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return str(ts_iso)
+    # Convert to ET (America/New_York). zoneinfo is stdlib on Py 3.9+.
+    try:
+        from zoneinfo import ZoneInfo
+        dt = dt.astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        # Cleanup — original tz used if zoneinfo lookup fails on a minimal
+        # base image; the footer still renders, just in UTC.
+        pass
+    return dt.strftime("%a %H:%M ET") if dt.hour < 4 or dt.hour > 20 else dt.strftime("%H:%M ET")
+
+
+def _build_gamma_footer(brief: dict) -> Optional[str]:
+    """Single-line gamma freshness footer for the overview embed.
+
+    Aggregates `gamma_data_source` across all tickers and renders the
+    worst-case status. The brief carries 3 ETFs (SPY/IWM/QQQ); when
+    Track 0's realtime fetcher is healthy all three are 'realtime'
+    and the footer is the green 'Live gamma · HH:MM ET' line. If the
+    fetcher missed today's session for any ticker the footer flips to
+    an amber EOD-fallback warning; if any ticker is on stale data the
+    footer goes red with the days-behind indicator.
+
+    Returns None when no ticker has any gamma data — the embed simply
+    omits the line rather than render an unhelpful 'unavailable'
+    message that would conflict with the existing data-freshness line.
+
+    Per Track 1 of docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md.
+    """
+    sources: list[tuple[str, str, Optional[str], Optional[int]]] = []
+    for ticker, d in brief.get('tickers', {}).items():
+        ds = d.get('gamma_data_source')
+        if not ds:
+            continue
+        sources.append((
+            ticker, ds, d.get('gamma_snapshot_ts'), d.get('gamma_days_behind'),
+        ))
+    if not sources:
+        return None
+
+    # Pick the worst-case status to drive the footer wording.
+    worst = max(sources, key=lambda s: _GAMMA_FOOTER_SEVERITY.get(s[1], 99))
+    _w_ticker, worst_ds, worst_ts, worst_days = worst
+
+    if worst_ds == "realtime":
+        # All-realtime is the green-path — display the most recent ts so
+        # readers see exactly how fresh the dealer book is.
+        latest_ts = max(
+            (ts for _, ds, ts, _ in sources if ds == "realtime" and ts),
+            default=worst_ts,
+        )
+        return f"\U0001F7E2 Live gamma · {_fmt_gamma_ts(latest_ts)}"
+
+    if worst_ds == "eod_fallback":
+        return (
+            f"⚠️ EOD gamma ({_fmt_gamma_ts(worst_ts)}) "
+            f"— realtime fetcher missed today's session"
+        )
+
+    if worst_ds == "stale_fallback":
+        days = worst_days if worst_days is not None else "?"
+        return (
+            f"⚠️ Stale gamma ({_fmt_gamma_ts(worst_ts)}, "
+            f"{days} trading days old) — section may not reflect "
+            f"current dealer positioning"
+        )
+
+    # worst_ds == "unavailable" — every ticker is dark. Skip the footer
+    # rather than render a noisy line; the existing data-freshness line
+    # already covers the broader pipeline-health story.
+    return None
+
+
 def _build_overview_embed(brief: dict) -> dict:
     """Embed 1: Market overview — previous day recap + regime context."""
     lines = []
@@ -1741,6 +2011,14 @@ def _build_overview_embed(brief: dict) -> dict:
     if freshness_summary:
         lines.append('')
         lines.append('\U0001F4CA ' + freshness_summary)
+
+    # 🟢 / ⚠️ Gamma freshness footer (Track 1 of
+    # docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md). Tells the
+    # reader at a glance whether the dealer-positioning levels the
+    # brief and insight pipeline reference are live, EOD, or stale.
+    gamma_footer = _build_gamma_footer(brief)
+    if gamma_footer:
+        lines.append(gamma_footer)
 
     # \ud83e\udde0 LLM "Today's setup" explanation (PR \u03b2 fills brief['llm_overview'];
     # PR \u03b1 reserves the slot). Renders as a description-suffix paragraph

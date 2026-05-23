@@ -100,7 +100,18 @@ ANALYST_PROMPTS: dict[str, str] = {
         "Gate. Neutral inside a tight Gate-King-Gate cluster (chop). "
         "Confidence is lower when the regime is unknown (no flip "
         "detected in window) or when warnings indicate the spot was "
-        "estimated from the median strike fallback."
+        "estimated from the median strike fallback. "
+        "Check `data_source` in your input. If 'realtime', the chain "
+        "is intraday (see `snapshot_ts`) — you may reference how "
+        "positioning has shifted since yesterday's close. If "
+        "'eod_fallback' or 'stale_fallback', the chain is from "
+        "yesterday's EOD print or older; do NOT use language that "
+        "implies intraday repositioning ('dealers just hedged', "
+        "'fresh build at X') — describe levels as static positioning "
+        "as of the snapshot date. On 'stale_fallback' (3-5 trading "
+        "days old) explicitly note that strikes may have rolled and "
+        "the dealer book may not reflect current spot, and lower "
+        "your confidence accordingly."
     ),
 }
 

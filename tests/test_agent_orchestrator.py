@@ -618,6 +618,10 @@ def test_derive_key_levels_includes_gamma_flip_and_kings():
         "options": {"available": True, "max_pain_strike_proxy": 240.0},
         "gamma":   {
             "available": True,
+            # Track 5: data_source='realtime' → keys are NOT suffixed.
+            # Without this field the suffix defaults to ' (EOD)' to
+            # mirror pre-Track-0 reality (no realtime data ever).
+            "data_source": "realtime",
             "spot": 277.0,
             "flip": 275.24,
             "kings": [{"strike": 270.0, "gex": 1234},
@@ -643,6 +647,7 @@ def test_derive_key_levels_handles_partial_gamma():
     bundle = {
         "gamma": {
             "available": True,
+            "data_source": "realtime",
             "spot": 100.0,
             "flip": 99.5,
             "kings": [],
@@ -678,6 +683,7 @@ def test_derive_key_levels_handles_only_gates_above_spot():
     bundle = {
         "gamma": {
             "available": True,
+            "data_source": "realtime",
             "spot": 100.0,
             "flip": 100.5,
             "kings": [{"strike": 105.0, "gex": 100}],
@@ -700,6 +706,7 @@ def test_derive_key_levels_kings_uses_nearest_when_multiple_per_side():
     bundle = {
         "gamma": {
             "available": True,
+            "data_source": "realtime",
             "spot": 277.0,
             "kings": [
                 {"strike": 250.0, "gex": 100},   # below, far
@@ -724,6 +731,7 @@ def test_derive_key_levels_kings_legacy_fallback_no_spot():
     bundle = {
         "gamma": {
             "available": True,
+            "data_source": "realtime",
             # spot intentionally absent
             "kings": [{"strike": 100.0, "gex": 500}, {"strike": 110.0, "gex": 300}],
             "gates": [],
@@ -733,6 +741,87 @@ def test_derive_key_levels_kings_legacy_fallback_no_spot():
     assert levels.get("Gamma King") == 100.0  # legacy first-king
     assert "Gamma King Above" not in levels
     assert "Gamma King Below" not in levels
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Track 5 — `data_source`-aware key_levels suffix
+# (see docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md)
+# ────────────────────────────────────────────────────────────────────────
+
+
+def test_derive_key_levels_suffixes_keys_on_eod_fallback():
+    """`data_source='eod_fallback'` → every gamma-derived level key
+    gets a ' (EOD)' suffix so downstream trader/judge prose can't
+    reference a stale Tuesday close as if it were current intraday
+    dealer positioning. Same fixture as the happy-path test but with
+    the data_source flipped."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            "data_source": "eod_fallback",
+            "spot": 277.0,
+            "flip": 275.24,
+            "kings": [{"strike": 270.0, "gex": 1234},
+                      {"strike": 285.0, "gex": 980}],
+            "gates": [{"strike": 273.0}, {"strike": 280.0}, {"strike": 290.0}],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert "Gamma Flip" not in levels
+    assert "Gamma King Below" not in levels
+    assert "Gamma King Above" not in levels
+    assert levels["Gamma Flip (EOD)"] == 275.24
+    assert levels["Gamma King Below (EOD)"] == 270.0
+    assert levels["Gamma King Above (EOD)"] == 285.0
+    assert levels["Gamma Gate Above (EOD)"] == 280.0
+    assert levels["Gamma Gate Below (EOD)"] == 273.0
+
+
+def test_derive_key_levels_suffixes_keys_on_stale_fallback():
+    """`data_source='stale_fallback'` (3-5 trading days old) → same
+    suffix as eod_fallback. The footer in the brief differentiates
+    the two for the user; key-naming just needs to flag 'not realtime'."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            "data_source": "stale_fallback",
+            "spot": 100.0,
+            "flip": 99.5,
+            "kings": [],
+            "gates": [],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert "Gamma Flip" not in levels
+    assert levels["Gamma Flip (EOD)"] == 99.5
+
+
+def test_derive_key_levels_legacy_bundle_defaults_to_eod_suffix():
+    """Bundle that predates Track 1 (no data_source field at all)
+    defaults to the EOD-suffix path. This matches the pre-Track-0
+    reality where every gamma read was EOD, so historical replays
+    and any caller that hasn't been updated to populate data_source
+    still produce safe (suffixed) key names."""
+    from lib.agents.orchestrator import _derive_key_levels
+
+    bundle = {
+        "gamma": {
+            "available": True,
+            # data_source intentionally absent
+            "spot": 100.0,
+            "flip": 99.5,
+            "kings": [{"strike": 105.0, "gex": 200}],
+            "gates": [],
+        },
+    }
+    levels = _derive_key_levels(bundle)
+    assert "Gamma Flip" not in levels
+    assert levels["Gamma Flip (EOD)"] == 99.5
+    assert levels["Gamma King Above (EOD)"] == 105.0
 
 
 def test_build_strat_snapshot_default_when_unavailable():

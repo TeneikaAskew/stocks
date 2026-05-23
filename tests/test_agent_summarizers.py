@@ -461,35 +461,49 @@ def test_build_context_bundle_catches_exceptions(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _eod_chain_fixture(snapshot_date):
+    """Helper: balanced ATM chain that produces a usable gamma summary."""
+    return pd.DataFrame([
+        # Heavy puts at 95 → negative GEX below
+        {"option_type": "puts",  "strike": 95.0, "expiration": date(2025, 11, 21),
+         "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": -0.30,
+         "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13,
+         "snapshot_date": snapshot_date},
+        # ATM call/put balanced — spot via parity should land near 100
+        {"option_type": "calls", "strike": 100.0, "expiration": date(2025, 11, 21),
+         "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": 0.50,
+         "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
+         "snapshot_date": snapshot_date},
+        {"option_type": "puts",  "strike": 100.0, "expiration": date(2025, 11, 21),
+         "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": -0.50,
+         "bid": 1.45, "ask": 1.55, "mark": 1.50, "last_price": 1.50,
+         "snapshot_date": snapshot_date},
+        # Heavy calls at 105 → positive GEX above
+        {"option_type": "calls", "strike": 105.0, "expiration": date(2025, 11, 21),
+         "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": 0.30,
+         "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13,
+         "snapshot_date": snapshot_date},
+    ])
+
+
 def test_gamma_levels_extracts_kings_and_regime(patch_query):
-    """Synthetic chain → King at the heaviest strike, regime classified."""
+    """Synthetic chain → King at the heaviest strike, regime classified.
+
+    Uses the EOD-fallback path (needle scopes to market_session = 'EOD'
+    so phase 1 REALTIME returns empty and phase 2 EOD picks up the
+    fixture). Asserts the new data_source field defaults to
+    'eod_fallback' when only EOD data is present and within the 2-day
+    freshness window.
+    """
     patch_query(
-        "etf_options_snapshots",
-        pd.DataFrame([
-            # Heavy puts at 95 → negative GEX below
-            {"option_type": "puts",  "strike": 95.0, "expiration": date(2025, 11, 21),
-             "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": -0.30,
-             "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13,
-             "snapshot_date": date(2026, 5, 12)},
-            # ATM call/put balanced
-            {"option_type": "calls", "strike": 100.0, "expiration": date(2025, 11, 21),
-             "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": 0.50,
-             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
-             "snapshot_date": date(2026, 5, 12)},
-            {"option_type": "puts",  "strike": 100.0, "expiration": date(2025, 11, 21),
-             "open_interest": 1500, "gamma": 0.06, "vega": 0.10, "delta": -0.50,
-             "bid": 1.45, "ask": 1.55, "mark": 1.50, "last_price": 1.50,
-             "snapshot_date": date(2026, 5, 12)},
-            # Heavy calls at 105 → positive GEX above
-            {"option_type": "calls", "strike": 105.0, "expiration": date(2025, 11, 21),
-             "open_interest": 5000, "gamma": 0.05, "vega": 0.10, "delta": 0.30,
-             "bid": 0.10, "ask": 0.15, "mark": 0.12, "last_price": 0.13,
-             "snapshot_date": date(2026, 5, 12)},
-        ]),
+        "market_session = 'EOD'",
+        _eod_chain_fixture(date(2026, 5, 12)),
     )
     # as_of=2026-05-13 (Wed) reading 2026-05-12 (Tue) chain = 1 trading day behind = fresh
     out = summarizers.summarize_gamma_levels("XYZ", as_of=date(2026, 5, 13))
     assert out["available"] is True
+    assert out["data_source"] == "eod_fallback"
+    assert out["snapshot_ts"]  # populated (falls back to snapshot_date when ts col absent)
     assert out["spot"] == pytest.approx(100.0, abs=0.5)
     # Spot via parity (mark prices balanced at 100)
     assert out["spot_method"] == "parity"
@@ -504,31 +518,82 @@ def test_gamma_levels_extracts_kings_and_regime(patch_query):
 
 
 def test_gamma_levels_unavailable_when_no_chain(patch_query):
-    # No data set up → empty DataFrame returned
+    # No data set up → both phase 1 (REALTIME) and phase 2 (EOD)
+    # return empty → unavailable.
     out = summarizers.summarize_gamma_levels("ZZZ")
     assert out["available"] is False
     assert "no etf_options_snapshots" in out["reason"]
 
 
-def test_gamma_levels_stale_chain_returns_unavailable(patch_query):
-    """3+ trading days behind as_of → return _unavailable (Wed brief / Fri-EOD chain)."""
+def test_gamma_levels_realtime_preferred_over_eod(patch_query):
+    """REALTIME snapshot present → use it, ignore EOD even if newer date.
+
+    Models a midday brief where both an EOD chain from last night and a
+    fresh REALTIME chain from 5 min ago exist; the function must return
+    the realtime one with data_source='realtime' and the intraday
+    snapshot_ts.
+    """
+    intraday_ts = pd.Timestamp("2026-05-13 14:32:00", tz="UTC")
+    realtime_df = _eod_chain_fixture(date(2026, 5, 13))
+    realtime_df["snapshot_ts"] = intraday_ts
+    patch_query("market_session = 'REALTIME'", realtime_df)
+    # Also seed an EOD row — the function must NOT pick it up because
+    # REALTIME is found first.
+    patch_query("market_session = 'EOD'", _eod_chain_fixture(date(2026, 5, 12)))
+
+    out = summarizers.summarize_gamma_levels("SPY", as_of=date(2026, 5, 13))
+    assert out["available"] is True
+    assert out["data_source"] == "realtime"
+    # snapshot_ts should reflect the realtime fixture's intraday timestamp,
+    # not the EOD fixture's date-only stamp.
+    assert "14:32" in out["snapshot_ts"]
+
+
+def test_gamma_levels_falls_back_to_eod_when_no_realtime(patch_query):
+    """No REALTIME rows → fall through to EOD, mark as eod_fallback."""
+    patch_query("market_session = 'EOD'", _eod_chain_fixture(date(2026, 5, 12)))
+    # Do NOT register a market_session = 'REALTIME' needle — phase 1
+    # returns empty → phase 2 picks up the EOD chain.
+
+    out = summarizers.summarize_gamma_levels("SPY", as_of=date(2026, 5, 13))
+    assert out["available"] is True
+    assert out["data_source"] == "eod_fallback"
+    assert out["spot"] == pytest.approx(100.0, abs=0.5)
+
+
+def test_gamma_levels_stale_eod_returns_stale_fallback(patch_query):
+    """3-5 trading days behind as_of → populated summary with stale_fallback flag.
+
+    Pre-Track-1 behavior was to silence the section entirely at 3+ days
+    behind. New behavior surfaces the dealer walls so users still get
+    context, with `data_source='stale_fallback'` so the brief / analyst
+    prompt can render a warning footer.
+    """
     patch_query(
-        "etf_options_snapshots",
-        pd.DataFrame([
-            {"option_type": "calls", "strike": 100.0, "expiration": date(2026, 5, 30),
-             "open_interest": 1000, "gamma": 0.05, "vega": 0.10, "delta": 0.50,
-             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
-             "snapshot_date": date(2026, 5, 8)},   # Friday — 3 trading days behind Wed
-            {"option_type": "puts",  "strike": 100.0, "expiration": date(2026, 5, 30),
-             "open_interest": 1000, "gamma": 0.05, "vega": 0.10, "delta": -0.50,
-             "bid": 1.50, "ask": 1.60, "mark": 1.55, "last_price": 1.55,
-             "snapshot_date": date(2026, 5, 8)},
-        ]),
+        "market_session = 'EOD'",
+        _eod_chain_fixture(date(2026, 5, 8)),   # Fri — 3 trading days behind Wed
+    )
+    out = summarizers.summarize_gamma_levels("SPY", as_of=date(2026, 5, 13))
+    assert out["available"] is True
+    assert out["data_source"] == "stale_fallback"
+    # Summary still populated despite the warning flag
+    assert out["spot"] is not None
+    assert len(out["kings"]) >= 1
+
+
+def test_gamma_levels_hard_stale_returns_unavailable(patch_query):
+    """>5 trading days behind as_of → return _unavailable (the hard cutoff).
+
+    Dealer positioning a week old is no longer signal — strikes have
+    rolled, expirations have been added.
+    """
+    patch_query(
+        "market_session = 'EOD'",
+        _eod_chain_fixture(date(2026, 5, 1)),   # ~8 trading days behind Wed 5/13
     )
     out = summarizers.summarize_gamma_levels("SPY", as_of=date(2026, 5, 13))
     assert out["available"] is False
-    assert "chain stale" in out["reason"]
-    assert "3 trading days behind" in out["reason"]
+    assert "hard-stale" in out["reason"]
 
 
 def test_chain_freshness_boundary_2_trading_days_is_fresh():
