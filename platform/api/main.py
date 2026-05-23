@@ -20,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
-from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health
+from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ app.include_router(admin.router)
 app.include_router(analytics.router, prefix="")
 app.include_router(config_router.router, prefix="")
 app.include_router(health.router, prefix="")
+app.include_router(glossary.router, prefix="")
 
 data_loader = DataLoader()
 
