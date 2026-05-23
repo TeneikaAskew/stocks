@@ -141,6 +141,14 @@ class TickerReactionContext:
 
     @property
     def has_sufficient_history(self) -> bool:
+        """True iff this ticker has enough historical quarters to classify.
+
+        Threshold ``MIN_QUARTERS_FOR_CLASSIFICATION`` is the empirical
+        floor at which a per-ticker reaction archetype stabilizes —
+        below it, classification is suppressed (``CLASS_INSUFFICIENT``)
+        and the ticker appears in the brief flagged "insufficient
+        history" rather than being assigned a misleading archetype.
+        """
         return self.n_quarters >= MIN_QUARTERS_FOR_CLASSIFICATION
 
     def to_dict(self) -> dict:

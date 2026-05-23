@@ -114,6 +114,13 @@ def extract_failure_details(log_entry: dict[str, Any]) -> dict[str, Any]:
 
 # ── Discord ──────────────────────────────────────────────────────────────────
 def build_discord_payload(details: dict[str, Any]) -> dict[str, Any]:
+    """Format a parsed log entry as a Discord webhook payload (single embed).
+
+    Truncates the error snippet to 800 chars so the embed stays within
+    Discord's 6000-char total-embed limit even on huge tracebacks. The
+    full message is preserved on the GitHub issue side via
+    ``format_issue_body``.
+    """
     snippet = details["message"]
     if len(snippet) > 800:
         snippet = snippet[:800] + "…"
@@ -218,6 +225,7 @@ def close_issue(repo: str, issue_number: int, comment: str, token: str) -> None:
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
 def create_issue(repo: str, title: str, body: str, labels: list[str], token: str) -> int:
+    """POST a new issue and return its number. Retries 3× on transient errors."""
     url = f"{GITHUB_API}/repos/{repo}/issues"
     resp = requests.post(
         url,
@@ -231,6 +239,7 @@ def create_issue(repo: str, title: str, body: str, labels: list[str], token: str
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
 def add_issue_comment(repo: str, issue_number: int, body: str, token: str) -> None:
+    """POST a comment on an existing issue. Retries 3× on transient errors."""
     url = f"{GITHUB_API}/repos/{repo}/issues/{issue_number}/comments"
     resp = requests.post(
         url, headers=_gh_headers(token), json={"body": body}, timeout=REQUEST_TIMEOUT
@@ -239,6 +248,12 @@ def add_issue_comment(repo: str, issue_number: int, body: str, token: str) -> No
 
 
 def format_issue_body(details: dict[str, Any]) -> str:
+    """Render a parsed log entry as the markdown body of a GitHub issue.
+
+    Unlike ``build_discord_payload``, the full ``message`` is kept here
+    — GitHub has a 65 KB body limit and the Pub/Sub payload upstream
+    already truncates to 4000 chars in ``parse_pubsub_message``.
+    """
     return (
         f"## GCP Cloud Run Job Failed\n\n"
         f"**Job:** `{details['job_name']}`\n"
@@ -516,6 +531,14 @@ def handle_reconcile() -> tuple[int, str]:
 
 
 class Handler(BaseHTTPRequestHandler):
+    """HTTP routes:
+
+    * ``POST /``           — Pub/Sub push delivery (single log entry → Discord + GitHub issue)
+    * ``POST /reconcile``  — Cloud Scheduler trigger; closes issues whose
+                              latest job execution has since succeeded
+    * ``GET  /``           — health check (200 OK)
+    """
+
     def do_POST(self):  # noqa: N802
         if self.path.rstrip("/") == "/reconcile":
             status, body = handle_reconcile()
@@ -547,6 +570,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(port: int | None = None) -> None:
+    """Start the HTTP server. Cloud Run injects ``PORT``; default 8080 for local dev."""
     port = port or int(os.environ.get("PORT", "8080"))
     server = HTTPServer(("0.0.0.0", port), Handler)
     logger.info("failure-notifier listening on :%s", port)

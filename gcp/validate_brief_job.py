@@ -79,6 +79,19 @@ def _post_discord(content: str, webhook: str, header: str = "") -> None:
 
 
 def run() -> int:
+    """Execute one validate-brief-accuracy invocation and post to Discord.
+
+    Reads ``VALIDATE_TICKER`` / ``VALIDATE_DATE`` from env, rebuilds
+    ``sys.argv`` for ``scripts.validation.validate_brief_accuracy.main()``
+    (in-process call preserves the Cloud SQL connection pool — see
+    backtest_job.run for the same pattern), captures the printed
+    formatted report, and POSTs it to ``DISCORD_WEBHOOK_URL`` chunked
+    to Discord's 2000-char message limit.
+
+    Returns 0 on success, 1 if either env var is missing or the
+    validator raised. SystemExit from the validator is swallowed so
+    partial output still posts.
+    """
     ticker = (os.environ.get("VALIDATE_TICKER") or "").strip().upper()
     date_arg = (os.environ.get("VALIDATE_DATE") or "").strip()
     webhook = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip()

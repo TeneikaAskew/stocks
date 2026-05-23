@@ -244,6 +244,16 @@ class SignalMonitor:
         return tickers
 
     def is_market_hours(self) -> bool:
+        """True if wall-clock is inside RTH on a weekday, evaluated in ET.
+
+        Cloud Run runs in UTC, so naïve ``datetime.now()`` would put the
+        close at 21:00 and break weekend / holiday gating. Always go
+        through the explicit ET zone (``_ET``) and the configured
+        ``market_open_time`` / ``market_close_time`` so a future
+        early-close / half-day can be parameterized without code change.
+        Holidays are NOT checked here — the loop's per-bar staleness
+        guard catches them via "no new bar" naturally.
+        """
         now = datetime.now(_ET)
         if now.weekday() >= 5:
             return False

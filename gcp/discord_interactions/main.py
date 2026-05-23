@@ -809,6 +809,16 @@ def handle_backtest(ticker: str, start: str, end: str) -> str:
 
 def validate_in_background(ticker: str, date_arg: str,
                            application_id: str, interaction_token: str) -> None:
+    """FastAPI ``BackgroundTasks`` worker for ``/validate``.
+
+    The interactions endpoint must respond to Discord within 3 sec or
+    the interaction is dropped. This runs after the deferred-ack reply
+    has been sent: it kicks off the Cloud Run Job (via ``handle_validate``)
+    and PATCHes the deferred reply with the result, so the user sees
+    "🔬 Validate queued…" updated to the final message when the job
+    dispatches successfully or fails. Never raises — exceptions are
+    caught and surfaced into the reply text.
+    """
     try:
         msg = handle_validate(ticker, date_arg)
     except Exception as exc:
@@ -819,6 +829,14 @@ def validate_in_background(ticker: str, date_arg: str,
 
 def backtest_in_background(ticker: str, start: str, end: str,
                            application_id: str, interaction_token: str) -> None:
+    """FastAPI ``BackgroundTasks`` worker for ``/backtest``.
+
+    Same shape as ``validate_in_background`` — dispatch the Cloud Run
+    Job after the 3-sec deferred ack, PATCH the deferred reply with
+    the outcome. The actual backtest output is posted via webhook from
+    inside ``gcp/backtest_job.py`` (ack-and-fresh-post pattern — see
+    that file's module docstring for the rationale).
+    """
     try:
         msg = handle_backtest(ticker, start, end)
     except Exception as exc:
