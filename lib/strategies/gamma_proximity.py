@@ -10,14 +10,19 @@ signal monitor fires.
 Three alert kinds, all derived from `lib.gamma.build_summary()` output:
 
   gamma_king_approach  — price within `proximity_pct` of any King strike
+                         (FTFC-independent: magnet effect holds in any
+                         regime)
   gamma_gate_break     — bar's close crosses through a Gate strike
                          (i.e. prev_close on one side, current close on
                          the other; touch-only does NOT fire — close-only)
+                         FTFC-gated: only fires when alert direction
+                         aligns with `prev_day_dir`
   gamma_flip_cross     — bar's close crosses through the gamma flip price
                          (regime change: positive ↔ negative gamma)
+                         FTFC-gated: same alignment requirement as gate
 
-Direction mapping (empirically validated 2026-05-23 on SPY 14-day backtest,
-N=33 king approaches — see docs/audit/gamma_proximity_2026-05-23.md):
+Direction mapping (empirically validated 2026-05-23 — SPY/IWM/QQQ 30d
+backtest, N≈1,200 events; see docs/audit/gamma_proximity_2026-05-23.md):
 
   King-approach from below   → CALL  (magnet effect, price continues UP toward king)
   King-approach from above   → PUT   (magnet effect, price continues DOWN toward king)
@@ -26,13 +31,28 @@ N=33 king approaches — see docs/audit/gamma_proximity_2026-05-23.md):
   Flip-cross upward          → CALL  (entering positive-gamma pinning regime)
   Flip-cross downward        → PUT   (entering negative-gamma trending regime)
 
+FTFC alignment rule (gate + flip only — kings are magnet-direction, regime-independent):
+
+  alert_dir = 'CALL' requires prev_day_dir == 'UP'    (aligned bullish FTFC)
+  alert_dir = 'PUT'  requires prev_day_dir == 'DOWN'  (aligned bearish FTFC)
+
+`prev_day_dir` is the strat-classified direction of the PREVIOUS trading
+day's daily candle ('UP' if close > open, 'DOWN' if close < open, 'FLAT'
+otherwise). It's a no-leak FTFC proxy that the signal_monitor computes
+once per session from `market_data_daily`.
+
+Empirical justification: against-FTFC alerts have catastrophic hit rates
+(gate PUT against bullish FTFC: 39.7-46.6% across SPY/IWM/QQQ; flip PUT
+against bullish FTFC: 27.8-50%). Aligned alerts have 57-77% hit at the
+15-min horizon, with flip + aligned PUT-on-DOWN-day reaching 71-80%.
+Passing `prev_day_dir=None` disables the filter and restores legacy
+behavior (used by tests; production should always pass a concrete value).
+
 The "rejection at resistance/support" interpretation was tested against
-14 days of SPY data and FAILED: 65-77% of king approaches moved TOWARD
-the king within 15-30 min, not away (only 23-35% rejected). In a
-positive-gamma regime, dealers buy dips and sell rallies, which pulls
-price toward the highest-OI strike — the King acts as a magnet, not a
-barrier. Gate and Flip mappings are tested independently (gates are
-momentum-break events, flips are regime-change events).
+14 days of SPY data and FAILED for kings: 65-77% of king approaches
+moved TOWARD the king within 15-30 min, not away. In a positive-gamma
+regime, dealers buy dips and sell rallies, which pulls price toward the
+highest-OI strike — the King acts as a magnet, not a barrier.
 
 Rule 3.7 — no silent fallbacks. If `summary` is None or has no kings /
 gates / flip, the corresponding evaluator returns []. Callers MUST log
@@ -53,6 +73,22 @@ from lib.gamma import GammaSummary, Level
 # ── Defaults (tunable via signal_monitor; see docs/plans/...Track 3) ──
 DEFAULT_PROXIMITY_PCT = 0.005    # 0.5% — King-approach threshold
 DEFAULT_DEDUP_WINDOW_MIN = 15    # signal monitor uses this per (ticker, kind, level)
+
+# Type alias for prev_day_dir parameter values
+PrevDayDir = Optional[Literal["UP", "DOWN", "FLAT"]]
+
+
+def _ftfc_aligned(direction: Literal["CALL", "PUT"], prev_day_dir: PrevDayDir) -> bool:
+    """Return True iff alert direction aligns with prev-day FTFC bias.
+
+    `prev_day_dir=None` returns True (filter disabled — legacy / test mode).
+    'FLAT' prev day blocks both directions (no FTFC signal to align with).
+    """
+    if prev_day_dir is None:
+        return True
+    if direction == "CALL":
+        return prev_day_dir == "UP"
+    return prev_day_dir == "DOWN"
 
 
 # ── Alert dataclass ──────────────────────────────────────────────────
@@ -132,13 +168,18 @@ def evaluate_gate_break(
     prev_close: Optional[float],
     close: float,
     summary: GammaSummary,
+    *,
+    prev_day_dir: PrevDayDir = None,
 ) -> list[GammaAlert]:
     """Return one alert per Gate strike whose level was crossed between
-    `prev_close` and `close`.
+    `prev_close` and `close` AND whose direction aligns with `prev_day_dir`.
 
     Close-only — a wick that pokes through and reverses on the same bar
     does NOT fire (per plan §Track 3 tuning concerns). Caller must pass
     bar closes only.
+
+    `prev_day_dir` enforces the FTFC alignment rule documented in the
+    module docstring. Pass None to disable (legacy / test mode).
     """
     if not summary or not summary.gates or prev_close is None or close <= 0:
         return []
@@ -151,6 +192,8 @@ def evaluate_gate_break(
         if not (crossed_up or crossed_down):
             continue
         direction: Literal["CALL", "PUT"] = "CALL" if crossed_up else "PUT"
+        if not _ftfc_aligned(direction, prev_day_dir):
+            continue
         signed_dist_pct = (close - gate.strike) / gate.strike * 100.0
         out.append(GammaAlert(
             kind="gamma_gate_break",
@@ -167,11 +210,16 @@ def evaluate_flip_cross(
     prev_close: Optional[float],
     close: float,
     summary: GammaSummary,
+    *,
+    prev_day_dir: PrevDayDir = None,
 ) -> list[GammaAlert]:
-    """Return at most one alert when `close` crosses through `summary.flip`.
+    """Return at most one alert when `close` crosses through `summary.flip`
+    AND the cross direction aligns with `prev_day_dir`.
 
     Crossing UP (negative→positive gamma) = entering pinning regime = CALL.
     Crossing DOWN (positive→negative gamma) = entering trending regime = PUT.
+
+    `prev_day_dir` enforces the FTFC alignment rule. Pass None to disable.
     """
     if (not summary or summary.flip is None
             or prev_close is None or close <= 0):
@@ -184,6 +232,8 @@ def evaluate_flip_cross(
     if not (crossed_up or crossed_down):
         return []
     direction: Literal["CALL", "PUT"] = "CALL" if crossed_up else "PUT"
+    if not _ftfc_aligned(direction, prev_day_dir):
+        return []
     signed_dist_pct = (close - flip) / flip * 100.0
     # New regime AFTER the cross — independent of summary.regime which
     # was computed at snapshot time relative to the snapshot's spot.
@@ -206,14 +256,17 @@ def evaluate_all(
     summary: GammaSummary,
     *,
     proximity_pct: float = DEFAULT_PROXIMITY_PCT,
+    prev_day_dir: PrevDayDir = None,
 ) -> list[GammaAlert]:
     """Run all three evaluators in canonical order — kings, gates, flip.
 
     Order matches the plan's narrative (kings = strongest signal first).
     Caller is responsible for dedup against the per-session fired set.
+
+    `prev_day_dir` is forwarded to gate/flip; kings are FTFC-independent.
     """
     out: list[GammaAlert] = []
     out.extend(evaluate_king_approach(price, summary, proximity_pct=proximity_pct))
-    out.extend(evaluate_gate_break(prev_close, price, summary))
-    out.extend(evaluate_flip_cross(prev_close, price, summary))
+    out.extend(evaluate_gate_break(prev_close, price, summary, prev_day_dir=prev_day_dir))
+    out.extend(evaluate_flip_cross(prev_close, price, summary, prev_day_dir=prev_day_dir))
     return out
