@@ -15,23 +15,46 @@
 
 1. **We already have ~70% of the data and math.** `etf_options_snapshots`
    stores every Greek we'd need (δ, γ, θ, ν, ρ) per contract per
-   expiration, refreshed every 5 min during RTH as of PR #536. `lib/gamma.py`
-   already computes per-strike net GEX, per-strike call/put GEX, total VEX,
-   gamma flip, regime classification, and a King/Gate/Spot/Flip taxonomy.
+   expiration, refreshed every 5 min during RTH via the realtime
+   fetcher (`fetch_av_realtime_options.py`, Track 0 / PR #536) and
+   captured nightly as EOD by the historical fetcher
+   (`fetch_av_historical_options.py`). Both write to the same table
+   distinguished by `market_session ∈ {'REALTIME','EOD'}`.
 2. **What's missing is mostly aggregation surface area, not raw data.**
    We currently aggregate ACROSS all expirations into one 1-D heatmap.
    Heatseeker shows a 2-D `strike × expiration` grid. The contracts already
    carry an `expiration` column — we just don't group by it yet.
-3. **VEX is genuinely useful but secondary.** We compute it as a single
+3. **Data-source contract — two clean modes, never mixed.**
+   - **Live mode** → reads from the **realtime endpoint's writes**
+     (`fetch_av_realtime_options.py`, the 5-min intraday fetcher).
+     Falls back to the most-recent EOD snapshot ONLY if the realtime
+     fetcher missed today's session — that case is flagged with
+     `data_source='eod_fallback'` so the UI shows the ⚠️ EOD pivot
+     map footer. Default state when the user lands on the page.
+   - **Historical mode** → reads from the **snapshots archive**
+     (the `market_session='EOD'` rows in `etf_options_snapshots`,
+     written nightly by `fetch_av_historical_options.py`). Used
+     whenever the user picks a past date, OR when a backtest /
+     replay job runs with an explicit `*_AS_OF=YYYY-MM-DD`. Realtime
+     never applies to past dates — intraday data for "what dealers
+     were doing at 11:23 AM ET on 2026-02-18" doesn't exist unless
+     the realtime fetcher was already running back then.
+
+   Same `data_source` enum (`'realtime'|'eod_fallback'|'stale_fallback'|
+   'unavailable'`) flows through both modes for downstream consumers
+   ([`lib/agents/summarizers.py:classify_gamma_freshness`](../../lib/agents/summarizers.py)).
+4. **VEX is genuinely useful but secondary.** We compute it as a single
    total today; per-strike VEX would let us answer "which strikes are most
    sensitive to a VIX spike?" That's a different question from gamma's
    "which strikes pin price?" Both matter on event days (FOMC, CPI,
    earnings) when IV regime changes are the dominant driver.
-4. **Recommendation:** ship in 4 phases (data layer → API → UI → tactical
+5. **Recommendation:** ship in 4 phases (data layer → API → UI → tactical
    overlay). Phase A is a single table view (materialized aggregate) plus
    one new gamma helper function — ~1 day. Phases B-D are 1-2 weeks each.
-5. **No new fetcher work required.** The realtime fetcher is already
-   writing the underlying contracts at the granularity the new views need.
+6. **No new fetcher work required.** Both the realtime fetcher (every
+   5 min RTH) and the EOD fetcher (nightly) are already writing the
+   underlying contracts at the granularity the new views need. The
+   plan is a pure read-side extension.
 
 ---
 
@@ -120,6 +143,114 @@ In our system, we'd detect these by:
 Not strictly required for v1, but it's an answer to "why is there a
 huge node at 4500 SPX when we're trading 4600 and it's not doing
 anything?" — which the current taxonomy can't answer.
+
+---
+
+## Part 1.5 — Data-source contract (live vs historical)
+
+### One-line decision map
+
+| User scenario | Which fetcher's data does it read? | Endpoint called |
+|---|---|---|
+| Lands on `/options-grid/SPY` during RTH (default) | **Realtime endpoint** (5-min intraday writes) | `GET /api/options/SPY/grid` (live) |
+| Lands on `/options-grid/SPY` after 4 PM ET or weekend | **Realtime endpoint's last RTH write** (today's 15:55 ET snapshot) | `GET /api/options/SPY/grid` (live) |
+| Realtime fetcher missed today (broken / outage) | **Snapshots archive** (yesterday's EOD), tagged `eod_fallback` | `GET /api/options/SPY/grid` (live, falls back) |
+| Picks a past date `2026-04-20` from the date-picker | **Snapshots archive** (that date's EOD row) | `GET /api/options/SPY/2026-04-20/grid` (historical) |
+| Runs `BRIEF_AS_OF=2026-02-18` brief replay | **Snapshots archive** (2026-02-18 EOD) | `GET /api/options/SPY/2026-02-18/grid` (historical) |
+| Runs `INSIGHT_AS_OF=2026-02-18` insight replay | **Snapshots archive** (2026-02-18 EOD) | `GET /api/options/SPY/2026-02-18/nodes` (historical) |
+| Live tactical alert fires during RTH | **Realtime endpoint** | `GET /api/options/SPY/grid/timeseries` (realtime-only) |
+| Backtest re-runs strategies against a historical week | **Snapshots archive** (one EOD row per day in range) | per-date historical calls |
+
+**Rule of thumb:** if the user (or replay job) is asking about TODAY,
+the system reads from the realtime endpoint's writes. If they're
+asking about ANY OTHER DATE — past or specifically `*_AS_OF=` — it
+reads from the snapshots archive. The realtime → EOD fallback ONLY
+fires inside live mode when the realtime fetcher is unhealthy; it's
+not a normal path.
+
+### The longer story
+
+Every read path in this plan inherits the tiered loader pattern Track 1
+established for the brief gamma section (`summarize_gamma_levels` in
+`lib/agents/summarizers.py`). Restated explicitly so each new endpoint
+in §6 doesn't have to redocument it:
+
+### Live mode (default for the UI's default state)
+
+**Source:** `etf_options_snapshots WHERE market_session='REALTIME'`,
+most recent `snapshot_ts` strictly before "now."
+
+**Producer:** `fetch_av_realtime_options.py` runs every 5 min during
+RTH (`*/5 9-15 * * 1-5` America/New_York Cloud Scheduler). Writes one
+full chain per ticker per fire, ~14 k contracts/snapshot for SPY.
+
+**Used by:**
+- Default page-load of `/options-grid/:ticker` (the new UI from §7)
+- Phase D's tactical-overlay AI insight pipeline running on each
+  5-min snapshot
+- Auto-refresh in the UI when toggle is set to "Live"
+
+**Cadence:** new data lands every 5 min during RTH. UI auto-refreshes
+every 60 s (matching Track 4's design for the existing
+OptionsFlowPage).
+
+**Freshness footer:** `🟢 Live pivot map · HH:MM ET`.
+
+### Historical mode (any past date)
+
+**Source:** `etf_options_snapshots WHERE market_session='EOD' OR
+market_session IS NULL`, most recent `snapshot_date <= :requested_date`.
+
+**Producer:** `fetch_av_historical_options.py` runs nightly at
+~21:00 ET. One full chain per ticker per session-end.
+
+**Used by:**
+- Date-picker on `/options-grid/:ticker` — user picks any past date
+- Backtest / strategy-development tooling
+- `BRIEF_AS_OF=YYYY-MM-DD` replays of the premarket brief
+- `INSIGHT_AS_OF=YYYY-MM-DD` replays of the insight pipeline
+
+**Cadence:** one row per ticker per session. Reads are time-of-day
+agnostic.
+
+**Freshness footer:** `⚠️ EOD pivot map (Mon close)` —
+`stale_fallback` if the requested date's EOD row is more than 2
+trading days behind.
+
+### Fallback envelope (Rule 3.7 §EXTERNAL)
+
+If neither realtime nor EOD is available for the requested mode, the
+endpoint returns a typed `data_source='unavailable'` envelope; the UI
+suppresses the heatmap and surfaces "Pivot map unavailable" rather
+than rendering a synthetic empty grid. This mirrors the brief footer
+behavior shipped in PR #537.
+
+### Why we don't intermix realtime and EOD in one response
+
+A grid cell is `(ticker, snapshot_ts, expiration, strike)`. A single
+snapshot is one moment in time. The data source is a property of the
+SNAPSHOT, not the cell — every cell in the response came from the
+same write. The mode toggle picks which writer's output the user
+sees; the response is internally consistent.
+
+### Within-mode tier fallback (lifted from Track 1)
+
+Live mode is itself a tiered loader:
+
+1. **Phase 1 — Realtime probe.** Most recent `market_session='REALTIME'`
+   snapshot strictly before now. If found → `data_source='realtime'`.
+2. **Phase 2 — EOD fallback.** If realtime is absent (fetcher missed
+   today's session), fall back to the most recent EOD snapshot.
+   If ≤ 2 trading days behind → `data_source='eod_fallback'`.
+3. **Phase 3 — Stale fallback.** If EOD is 3-5 trading days behind →
+   `data_source='stale_fallback'`. Renders but with a louder warning.
+4. **Phase 4 — Unavailable.** If > 5 trading days behind or no rows
+   exist → `data_source='unavailable'`. UI suppresses.
+
+The shared classifier `classify_gamma_freshness(days_behind)` in
+`lib/agents/summarizers.py` already encodes the thresholds. The grid
+endpoint reuses it verbatim — same constants, same behavior as the
+brief footer, no drift risk.
 
 ---
 
@@ -490,63 +621,153 @@ This pulls `economic_events.event_date` + `economic_events.importance =
 
 Three new endpoints, one breaking change.
 
-### 6.1 `GET /api/options/{ticker}/{date}/grid` (NEW)
+### 6.1 `GET /api/options/{ticker}/grid` (NEW — live mode)
 
-Returns the full 2-D `GammaGridSummary` for a given snapshot.
+Returns the full 2-D `GammaGridSummary` for the LIVE pivot map.
+Resolves the source via the tiered loader from §1.5: realtime
+first, EOD fallback, stale fallback, unavailable.
 
 **Query params:**
-- `snapshot_ts` — exact intraday ts (default: latest)
 - `expirations` — comma-separated list (default: all in chain)
 - `strike_window_pct` — strike band around spot (default: 0.15)
 - `metric` — `gex` | `vex` | `both` (default: `both`)
+- `inclusive_today` — bool. Default `true` for intraday/midday calls;
+  the brief flow that runs at premarket sets `false` so it sees
+  yesterday's last RTH snapshot rather than today's first 5-min fire.
 
-**Response shape:** the `GammaGridSummary` dict from §5.3.
+**Response shape:** the `GammaGridSummary` dict from §5.3 plus the
+two metadata fields Track 1 ships on `summarize_gamma_levels`:
+
+```json
+{
+  "ticker": "SPY",
+  "data_source": "realtime",       // 'realtime'|'eod_fallback'|'stale_fallback'|'unavailable'
+  "snapshot_ts": "2026-05-23T15:55:00-04:00",
+  "snapshot_date": "2026-05-23",
+  "spot": {...},
+  "flip": ...,
+  "regime": "positive_gamma",
+  "total_gex": ...,
+  "total_vex": ...,
+  "cells": [...],
+  "expirations": [...],
+  "strikes": [...],
+  "warnings": [...]
+}
+```
 
 **Read cost:** ~80 strikes × ~10 expirations = 800 cells per ticker
-per snapshot. JSON payload ~30 KB. Cached for the snapshot_ts.
+per snapshot. JSON payload ~30 KB. Cached 60 s on the realtime path
+(matches the OptionsFlowPage auto-refresh), 12 h on the EOD-fallback
+path (date-stable).
 
-### 6.2 `GET /api/options/{ticker}/{date}/grid/timeseries` (NEW)
+### 6.1b `GET /api/options/{ticker}/{date}/grid` (NEW — historical mode)
 
-Returns the last N snapshots of a particular (strike, expiration) cell
-for rate-of-change visualization.
+Same response shape, but explicitly requests a historical snapshot.
+`{date}` is a calendar date; the endpoint resolves to the
+`market_session='EOD'` row for that date (or the most recent EOD
+strictly before it for date-rolling).
+
+**Query params:** same as 6.1 minus `inclusive_today` (always false
+in historical mode).
+
+**Cache:** 12 h. Historical EOD rows are immutable once written.
+
+**`data_source` values:** `'eod_fallback'` (within 2 trading days),
+`'stale_fallback'` (3-5), or `'unavailable'` (>5). Never
+`'realtime'` — the historical endpoint deliberately ignores the
+realtime fetcher's writes because mixing intraday and EOD for a
+past date is meaningless.
+
+### 6.2 `GET /api/options/{ticker}/grid/timeseries` (NEW — realtime only)
+
+Returns the last N realtime snapshots of a particular (strike, expiration)
+cell for rate-of-change / Pivot Build visualization.
+
+**Source:** `market_session='REALTIME'` rows only. This endpoint is
+explicitly intraday-only — the EOD path has one row per day, so a
+"timeseries" view of it is just the same nightly point repeated.
+Historical mode users who want day-over-day pivot evolution should
+use the daily-bar variant at `/grid/daily-history` (defer to Phase D).
 
 **Query params:**
 - `strikes` — comma-separated list (default: top 10 by \|GEX\|)
 - `expiration` — single expiration
-- `lookback_hours` — default 1
+- `lookback_hours` — default 1 (max 6.5 — one full RTH session)
 - `metric` — `gex` | `vex`
-
-**Response:** `[{snapshot_ts, strike, gex/vex, delta_from_prev}, ...]`
-
-### 6.3 `GET /api/options/{ticker}/{date}/nodes` (NEW — semantic-layer)
-
-Returns the *trader-facing* node taxonomy for the date: King, Gatekeepers,
-Midpoints, Hedge Nodes, OPEX Nodes, Flip — each with the tactical
-context the brief and the AI insight pipeline would want.
 
 **Response:**
 ```json
+[
+  {"snapshot_ts": "2026-05-23T15:55:00-04:00", "strike": 505, "gex": 1.2e9, "delta_from_prev_5min": 5.4e7},
+  {"snapshot_ts": "2026-05-23T15:50:00-04:00", "strike": 505, "gex": 1.15e9, "delta_from_prev_5min": 3.1e7},
+  ...
+]
+```
+
+**Cache:** 60 s — matches the 5-min realtime cadence.
+
+**Fallback:** if no realtime rows exist for the lookback window (e.g.
+weekend, or the fetcher's been down), returns `data_source='unavailable'`
+with an empty array. Does NOT fall back to EOD — the consumer needs
+to know there's no intraday data, not see a single EOD point fed
+back to it.
+
+### 6.3 `GET /api/options/{ticker}/nodes` (NEW — live, semantic-layer)
+### 6.3b `GET /api/options/{ticker}/{date}/nodes` (NEW — historical, semantic-layer)
+
+Returns the *trader-facing* node taxonomy: Anchor Pivot (King),
+Trigger Pivots (Gatekeepers), Inside Pivots (Midpoints), Event Pivots
+(Hedge Nodes), Expiry Pivots (OPEX Nodes), Regime Pivot (Flip) —
+each with the tactical context the brief and the AI insight pipeline
+would want.
+
+Same live/historical split as §6.1 / §6.1b. The live endpoint
+inherits the realtime → EOD → stale tiered loader; the historical
+endpoint reads EOD-only.
+
+**Response (Strat-aligned naming from the user's preference; see
+glossary §11):**
+```json
 {
   "ticker": "SPY",
+  "snapshot_ts": "2026-05-23T15:55:00-04:00",
   "snapshot_date": "2026-05-23",
-  "spot": {"price": 502.10, "method": "parity"},
-  "flip": 500.50,
-  "regime": "positive_gamma",
   "data_source": "realtime",
-  "kings": [{"strike": 505, "gex": 1.2e9, "call_oi": 50000, "put_oi": 2000, "distance_pct": 0.58, "dominant_side": "call"}],
-  "gatekeepers": [...],
-  "midpoints": [...],
-  "hedge_nodes": [{"strike": 480, "gex": -800e6, "linked_event": "FOMC 2026-06-12", "distance_pct": -4.4, "persistence_days": 4}],
-  "opex_nodes": [{"strike": 500, "expiration": "2026-05-30", "dte": 7}],
+  "spot": {"price": 502.10, "method": "parity"},
+  "regime_pivot": 500.50,
+  "regime": "pinning",
+  "anchor_pivot": {
+    "strike": 505,
+    "gex": 1.2e9,
+    "call_oi": 50000, "put_oi": 2000,
+    "distance_pct": 0.58,
+    "dominant_side": "call"
+  },
+  "trigger_pivots": [
+    {"strike": 500, "side": "below", "gex": -480e6, "distance_pct": -0.42, "dominant_side": "put"},
+    {"strike": 495, "side": "below", "gex": -360e6, "distance_pct": -1.41, "dominant_side": "put"}
+  ],
+  "inside_pivots": [...],
+  "event_pivots": [
+    {"strike": 480, "gex": -800e6, "linked_event": "FOMC 2026-06-12", "distance_pct": -4.40, "persistence_days": 4}
+  ],
+  "expiry_pivots": [
+    {"strike": 500, "expiration": "2026-05-30", "dte": 7, "gex": -240e6}
+  ],
   "tactical_summary": {
-    "current_state": "Pinning between 500 (flip) and 505 (King) — positive gamma regime",
-    "long_setup": "Buy support at flip 500 / King 502 reclaim with target King 505",
-    "short_setup": "Fade resistance at King 505 / break of flip 500 → trend to next gatekeeper 495",
-    "invalidation": "Close < 498 = break of cluster, regime risk to negative gamma",
+    "current_state": "Pinning between Regime Pivot 500 and Anchor Pivot 505",
+    "long_setup": "Buy support at Regime Pivot 500 / Anchor reclaim with target Anchor 505",
+    "short_setup": "Fade Anchor 505 / break of Regime 500 → trend to Trigger 495",
+    "invalidation": "Close < 498 = break of cluster, regime risk to trending",
     "vex_note": "Vol crush of >2% IV today implies dealer-buy pressure of ~$4M per 1% drop"
   }
 }
 ```
+
+The `data_source` field carries through everywhere downstream — the
+brief footer (Track 1), the analyst prompt (Track 5), the trader
+prose key_levels suffix all read it. Same end-to-end contract.
 
 **This is the headline endpoint** — it's what powers the "great entry vs
 not great entry" UX. The `tactical_summary` is the AI insight pipeline's
@@ -569,6 +790,25 @@ Goals (re-stated from the conversation):
 4. Visually distinct from Heatseeker — better dark mode, denser layout
 
 ### 7.1 New page: `/options-grid/:ticker`
+
+Two-panel layout. The page has a **Live ↔ Historical** mode toggle in
+the top bar (default: Live for today, Historical for any other date).
+
+**Live mode** (default landing state on a weekday during/after RTH):
+- Calls `GET /api/options/{ticker}/grid` (no date in path)
+- Polls every 60 s
+- Auto-refreshes the 2-D heatmap and the right-panel tactical read
+- Footer reads `🟢 Live pivot map · HH:MM ET` when realtime is healthy
+- Footer flips to `⚠️ EOD pivot map (Mon close)` if the realtime
+  fetcher missed today's session, with the analyst prose
+  auto-caveated via Track 5's `data_source`-aware prompt
+
+**Historical mode** (date picker active):
+- Calls `GET /api/options/{ticker}/{date}/grid`
+- No polling — historical EOD rows are immutable
+- Footer reads `⚠️ EOD pivot map (Mon close, 1 trading day behind)`
+- Time-series sparkline disabled (no intraday data for past sessions
+  unless the realtime fetcher was already running on that date)
 
 Two-panel layout:
 
@@ -617,15 +857,20 @@ from the same Cloud SQL backend.
 
 ### 7.3 What it looks like at the data level — worked example
 
-**Question:** "Show me high liquidation potential at 650 for SPY."
+**Question:** "Show me high liquidation potential at 650 for SPY,
+right now."
 
-With the new endpoints:
+With the new live endpoint (realtime path, auto-fallback to EOD):
 
 ```bash
-GET /api/options/SPY/2026-05-23/grid?strike_window_pct=0.05&metric=both
+GET /api/options/SPY/grid?strike_window_pct=0.05&metric=both
 ```
 
-returns a cell list. Find the row where `strike = 650`:
+The endpoint resolves the source via §1.5's tiered loader. On a
+healthy weekday afternoon it returns
+`"data_source": "realtime", "snapshot_ts": "2026-05-23T15:55:00-04:00"`
+with the most recent intraday cell list. Find the row where
+`strike = 650`:
 
 ```json
 {
