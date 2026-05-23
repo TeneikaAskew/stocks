@@ -136,11 +136,20 @@ def _load_chain_for_ticker_quarter(engine, ticker: str, year: int, q: int) -> pd
 
 
 def _chain_rows_to_options_list(rows: pd.DataFrame) -> list[dict]:
-    """Convert a per-day chain DataFrame slice into lib.gamma's options-list shape."""
-    # lib.gamma accepts dicts with keys: strike, option_type ('calls'|'puts'),
-    # expiration, gamma, delta, open_interest, bid, ask, mark, last_price,
-    # underlying_price (optional).
-    return rows.to_dict("records")
+    """Convert a per-day chain DataFrame slice into lib.gamma's options-list shape.
+
+    Field-name mapping caught 2026-05-23 after first execution produced 0
+    levels: lib.gamma expects 'type' = 'call'/'put' (singular), 'last' (not
+    'last_price'); etf_options_snapshots stores 'option_type' = 'calls'/
+    'puts' (plural) and 'last_price'. We translate before passing.
+    """
+    df = rows.copy()
+    # Map option_type -> type (singular 'call'/'put')
+    df["type"] = df["option_type"].map({"calls": "call", "puts": "put"})
+    # Map last_price -> last
+    if "last_price" in df.columns:
+        df["last"] = df["last_price"]
+    return df.to_dict("records")
 
 
 def _process_one_day(ticker: str, snap_date: _date, chain_rows: pd.DataFrame) -> list[dict]:
