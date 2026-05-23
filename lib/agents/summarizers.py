@@ -116,6 +116,26 @@ def _check_chain_freshness(
     return None
 
 
+def classify_gamma_freshness(days_behind: int) -> str:
+    """Map a trading-day gap to a Track 1 data_source tier.
+
+    Returns one of:
+      'eod_fallback'    — 0-2 trading days behind (institutional norm)
+      'stale_fallback'  — 3-5 trading days behind (warn but still serve)
+      'unavailable'     — >5 trading days behind (hard silence)
+
+    Shared between `summarize_gamma_levels` (which runs the full GEX
+    math) and the premarket-brief freshness footer (which probes only
+    the snapshot metadata) so the two paths can never disagree on
+    which tier a given chain falls into.
+    """
+    if days_behind > MAX_OPTIONS_HARD_STALE_TRADING_DAYS:
+        return "unavailable"
+    if days_behind > MAX_OPTIONS_STALE_TRADING_DAYS:
+        return "stale_fallback"
+    return "eod_fallback"
+
+
 # ---------------------------------------------------------------------------
 # 1. Market context
 # ---------------------------------------------------------------------------
@@ -681,15 +701,12 @@ def summarize_gamma_levels(
         if isinstance(target, datetime):
             target = target.date()
         days_behind = int(np.busday_count(chain_date, target))
-        if days_behind > MAX_OPTIONS_HARD_STALE_TRADING_DAYS:
+        data_source = classify_gamma_freshness(days_behind)
+        if data_source == "unavailable":
             return _unavailable(
                 f"chain hard-stale: {days_behind} trading days behind {target} "
                 f"(snapshot_date={chain_date})"
             )
-        elif days_behind > MAX_OPTIONS_STALE_TRADING_DAYS:
-            data_source = "stale_fallback"
-        else:
-            data_source = "eod_fallback"
 
     # Snapshot timestamp for the freshness footer / analyst prompt.
     # Falls back to snapshot_date midnight if a row predates the
