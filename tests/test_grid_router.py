@@ -721,3 +721,41 @@ class TestGridTimeseries:
         assert data["strikes_resolved"] == [105.0]
         for row in data["series"]:
             assert row["strike"] == 105.0
+
+    def test_malformed_strikes_returns_400(self, client, monkeypatch):
+        """`?strikes=abc` must surface a typed 4xx, not an internal 500.
+
+        Regression test for the Codex review on PR #544 — earlier
+        version did `{float(s) for s in strikes.split(',')}` which
+        would raise ValueError → 500 on bad input.
+        """
+        df = self._multi_snapshot_df()
+        import gcp.database
+        monkeypatch.setattr(gcp.database, "query_to_dataframe",
+                            lambda sql, params=None: df.copy())
+
+        r = client.get("/api/options/SPY/grid/timeseries?strikes=abc")
+        assert r.status_code == 400
+        assert "strikes" in r.json()["detail"].lower()
+
+    def test_partially_malformed_strikes_returns_400(self, client, monkeypatch):
+        """One bad token in a comma list also raises — we don't silently
+        skip bad tokens (that would mask typos)."""
+        df = self._multi_snapshot_df()
+        import gcp.database
+        monkeypatch.setattr(gcp.database, "query_to_dataframe",
+                            lambda sql, params=None: df.copy())
+
+        r = client.get("/api/options/SPY/grid/timeseries?strikes=100,xyz,105")
+        assert r.status_code == 400
+
+    def test_empty_strikes_param_returns_400(self, client, monkeypatch):
+        """`?strikes=,,` (only commas) → empty set → typed 4xx, not a
+        silent fallback to top-10 defaults."""
+        df = self._multi_snapshot_df()
+        import gcp.database
+        monkeypatch.setattr(gcp.database, "query_to_dataframe",
+                            lambda sql, params=None: df.copy())
+
+        r = client.get("/api/options/SPY/grid/timeseries?strikes=,,")
+        assert r.status_code == 400

@@ -1025,7 +1025,24 @@ async def get_grid_timeseries(
     # Pick the strike set: explicit list, or top-10 by |GEX| at the
     # most recent snapshot in the window.
     if strikes:
-        strike_set = {float(s.strip()) for s in strikes.split(",") if s.strip()}
+        try:
+            strike_set = {float(s.strip()) for s in strikes.split(",") if s.strip()}
+        except ValueError as exc:
+            # ?strikes=abc or ?strikes=100,xyz → typed 4xx instead of an
+            # internal 500. Surface the specific bad token so the caller
+            # can fix it (Codex review on PR #544).
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid `strikes` parameter — expected comma-separated "
+                    f"numbers (e.g. '650,655,660'). Parse error: {exc}"
+                ),
+            )
+        if not strike_set:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid `strikes` parameter — empty after parsing",
+            )
     else:
         # Use the latest snapshot's per-strike net_gamma magnitude to rank.
         latest_ts = df["snapshot_ts"].max()
