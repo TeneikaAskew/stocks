@@ -28,19 +28,32 @@ Estimation method (Greeks approximation):
        net_pnl_pct = net_pnl_$ / M                                  [return on premium paid]
   5. Transaction cost: half-spread at entry = (ask − bid) / (2 × M) subtracted
 
-Limitations (IMPORTANT — read before interpreting results):
+Estimation paths (2026-05-22, Track 2 phase 2a):
+  - Primary: REALTIME mark-to-mark. When AV's REALTIME_OPTIONS snapshots
+    cover both the entry minute and the exit minute (entry + hold_min) for
+    the trade's selected contract, P&L is the observed `mark_exit -
+    mark_entry - spread_cost`. No Greeks approximation. Used for dates
+    after the realtime fetcher began writing rows (~2026-05-22+).
+  - Fallback: empirical Greeks approximation. Used for historical dates
+    where REALTIME data does not exist (pre-2026-05-22) — applies EOD
+    delta + theta linearly to the underlying move, with the
+    20-40% afternoon-theta UNDERESTIMATION caveat below.
+
+Empirical-fallback bias (applies ONLY when data_source='empirical_fallback'):
   - Options data is EOD snapshots, not intraday. Delta/theta values are end-of-day,
     which for 0DTE options have very little time value left. At the time signals fire
     (9:30–12:00 AM), delta is similar to EOD but theta is much higher (0DTE theta
     accelerates exponentially through the day). This means theta_cost is UNDERESTIMATED
     here — actual options P&L is likely WORSE than reported.
-  - Results should be interpreted as an UPPER BOUND on options profitability.
-  - The true test requires intraday options data (not available in this dataset).
+  - Results should be interpreted as an UPPER BOUND on options profitability for
+    fallback rows. Realtime rows reflect realized mid-to-mid P&L within bid-ask spread.
+  - See docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md Track 2 for the full plan.
 
 Coverage:
-  - IWM options: 2016-02-22 to 2026-02-20
-  - SPY options: 2018-05-23 to 2026-02-20
-  - QQQ options: 2022-02-14 to 2022-09-09 (partial coverage)
+  - IWM options: 2016-02-22 to 2026-02-20 (empirical fallback for all)
+  - SPY options: 2018-05-23 to 2026-02-20 (empirical fallback for all)
+  - QQQ options: 2022-02-14 to 2022-09-09 (partial coverage; empirical fallback)
+  - Realtime: 2026-05-22 onwards once Track 0 deploys (av-options-realtime)
 
 Usage:
     python scripts/analysis/options_pnl_translation.py
@@ -71,6 +84,16 @@ from scripts.analysis.shared_utils import (
 from lib.config import load_config
 from lib.indicators import add_all_indicators
 from lib.backtest import BacktestEngine
+from lib.options_intraday import (
+    DATA_SOURCE_EMPIRICAL_FALLBACK,
+    DATA_SOURCE_REALTIME,
+)
+
+# How close (in minutes) an observed REALTIME snapshot must be to the
+# entry-minute / exit-minute to be accepted as a measurement. The
+# realtime fetcher runs every 5 min during RTH, so anything within 5
+# minutes is the next-snapshot rounding of the trade boundary.
+_REALTIME_SNAPSHOT_TOLERANCE_MIN = 5
 
 BAR_MINUTES = {'1m': 1, '5m': 5, '15m': 15, '30m': 30, '1h': 60}
 
@@ -162,6 +185,117 @@ def run_combo_trades(df_1m: pd.DataFrame, entry_tf: str, filter_tf: str,
     df['entry_time'] = pd.to_datetime(df['entry_time'])
     df['hhmm'] = df['entry_time'].dt.hour * 100 + df['entry_time'].dt.minute
     return df
+
+
+# ---------------------------------------------------------------------------
+# Realtime mark loader (Track 2 phase 2a primary path)
+# ---------------------------------------------------------------------------
+
+def load_realtime_marks(ticker: str, trade_date, expiration, strike: float,
+                        option_type: str,
+                        query_fn=None) -> pd.DataFrame:
+    """Load observed (snapshot_ts, mark, bid, ask) for one contract on one day.
+
+    Reads ``etf_options_snapshots WHERE market_session='REALTIME'``. Returns
+    a DataFrame (possibly empty) indexed by snapshot_ts; downstream code uses
+    ``find_realtime_mark_at`` to pick the snapshot nearest a wall-clock time.
+
+    Added 2026-05-22 (Track 2 phase 2a — see
+    ``docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md``). Pre-2026-05-22 dates
+    have no realtime data; every call for those dates returns empty and the
+    caller stamps ``data_source='empirical_fallback'``. This is the explicit,
+    typed-fallback path per CLAUDE.md §3.7 — the fallback is surfaced via
+    the ``data_source`` column, not hidden behind a synthetic value.
+
+    Parameters
+    ----------
+    ticker, trade_date, expiration, strike, option_type
+        Contract identifying tuple. ``option_type`` accepts 'call'/'put' or
+        the schema-native 'calls'/'puts'.
+    query_fn
+        Injection point for tests. Defaults to
+        ``gcp.database.query_to_dataframe`` which already swallows query
+        errors to an empty DataFrame.
+
+    Returns
+    -------
+    DataFrame
+        Columns: ``snapshot_ts`` (tz-naive), ``mark``, ``bid``, ``ask``,
+        ``delta``, ``theta``. Empty if Cloud SQL unconfigured, query fails,
+        or no realtime rows exist for the contract on that date.
+    """
+    import os
+
+    ot = (option_type or '').lower().strip()
+    if ot in ('call', 'c'):
+        ot_db = 'calls'
+    elif ot in ('put', 'p'):
+        ot_db = 'puts'
+    else:
+        ot_db = ot
+
+    if query_fn is None:
+        if not os.environ.get('CLOUD_SQL_CONNECTION_NAME'):
+            return pd.DataFrame()
+        try:
+            from gcp.database import query_to_dataframe as query_fn
+        except ImportError:
+            return pd.DataFrame()
+
+    sql = (
+        "SELECT snapshot_ts, mark, bid, ask, delta, theta "
+        "FROM etf_options_snapshots "
+        "WHERE ticker = :ticker "
+        "  AND snapshot_date = :sd "
+        "  AND expiration = :exp "
+        "  AND strike = :strike "
+        "  AND option_type = :ot "
+        "  AND market_session = 'REALTIME' "
+        "ORDER BY snapshot_ts ASC"
+    )
+    df = query_fn(sql, {
+        'ticker': ticker.upper(),
+        'sd': pd.Timestamp(trade_date).date(),
+        'exp': pd.Timestamp(expiration).date()
+                if not pd.isna(expiration) else None,
+        'strike': float(strike),
+        'ot': ot_db,
+    })
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.dropna(subset=['mark']).reset_index(drop=True)
+    if df.empty:
+        return df
+    df['snapshot_ts'] = pd.to_datetime(df['snapshot_ts'])
+    try:
+        df['snapshot_ts'] = df['snapshot_ts'].dt.tz_localize(None)
+    except (AttributeError, TypeError):
+        pass
+    return df
+
+
+def find_realtime_mark_at(marks_df: pd.DataFrame, target_time,
+                          tolerance_min: int = _REALTIME_SNAPSHOT_TOLERANCE_MIN
+                          ) -> pd.Series:
+    """Find the observed snapshot closest to ``target_time`` within tolerance.
+
+    Returns the matching row (with ``mark``, ``bid``, ``ask``, ``delta``,
+    ``theta``) or an empty Series if no snapshot is within
+    ``tolerance_min`` minutes of ``target_time``. The 5-min default matches
+    the av-options-realtime scheduler cadence.
+    """
+    if marks_df.empty:
+        return pd.Series(dtype=float)
+    target = pd.Timestamp(target_time)
+    try:
+        target = target.tz_localize(None) if target.tz is not None else target
+    except (AttributeError, TypeError):
+        pass
+    deltas = (marks_df['snapshot_ts'] - target).abs()
+    idx = deltas.idxmin()
+    if deltas.iloc[idx] > pd.Timedelta(minutes=tolerance_min):
+        return pd.Series(dtype=float)
+    return marks_df.loc[idx]
 
 
 # ---------------------------------------------------------------------------
@@ -408,10 +542,29 @@ def estimate_swing_options_pnl(entry_price: float, direction: str,
 # Options P&L estimation — intraday 0DTE (Greeks approximation)
 # ---------------------------------------------------------------------------
 
-def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series) -> dict:
-    """Estimate options P&L using first-order Greeks approximation.
+def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series,
+                          realtime_marks: pd.DataFrame | None = None) -> dict:
+    """Estimate options P&L for one trade.
 
-    Returns dict with estimated metrics or None if data insufficient.
+    Two paths (Track 2 phase 2a, see
+    ``docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md``):
+
+    1. **Realtime mark-to-mark** (primary, ``data_source='realtime'``) — used
+       when ``realtime_marks`` contains observations within ±5 min of both
+       the entry minute and the exit minute. Computes ``mark_exit -
+       mark_entry - spread_cost`` directly from observed mid prices. No
+       Greeks approximation, no theta-curve assumption.
+
+    2. **Empirical Greeks approximation** (fallback,
+       ``data_source='empirical_fallback'``) — used for historical dates
+       where no realtime snapshots exist (pre-2026-05-22) or when the
+       trade's entry/exit minutes fall outside any realtime snapshot's
+       tolerance window. Applies EOD delta + theta linearly to the
+       underlying move; underestimates afternoon theta by 20-40% per
+       module docstring.
+
+    Returns dict with estimated metrics + ``data_source`` column, or None
+    if neither path yields a value (atm_opt empty or all-NaN).
     """
     if atm_opt.empty:
         return None
@@ -427,6 +580,49 @@ def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series) -> dict:
 
     underlying_chg = trade['entry_price'] * trade['return_pct']  # $ move in underlying
 
+    # ── Try realtime mark-to-mark path first ──────────────────────────
+    rt_result = None
+    if realtime_marks is not None and not realtime_marks.empty:
+        entry_time = pd.Timestamp(trade.get('entry_time', trade['trade_date']))
+        exit_time  = entry_time + pd.Timedelta(minutes=float(trade['hold_min']))
+        entry_obs = find_realtime_mark_at(realtime_marks, entry_time)
+        exit_obs  = find_realtime_mark_at(realtime_marks, exit_time)
+        if not entry_obs.empty and not exit_obs.empty:
+            rt_mark_entry = float(entry_obs['mark'])
+            rt_mark_exit  = float(exit_obs['mark'])
+            if rt_mark_entry > 0 and not pd.isna(rt_mark_exit):
+                # Realized half-spread at entry — uses the observed
+                # entry-snapshot's bid/ask if present.
+                rt_bid_entry = entry_obs.get('bid', np.nan)
+                rt_ask_entry = entry_obs.get('ask', np.nan)
+                if not pd.isna(rt_bid_entry) and not pd.isna(rt_ask_entry) \
+                        and rt_ask_entry > rt_bid_entry:
+                    rt_spread_cost = (rt_ask_entry - rt_bid_entry) / 2.0
+                else:
+                    rt_spread_cost = rt_mark_entry * 0.02
+                rt_net = rt_mark_exit - rt_mark_entry - rt_spread_cost
+                rt_result = {
+                    'mark':              rt_mark_entry,
+                    'delta':             float(entry_obs.get('delta', delta)),
+                    'theta':             float(entry_obs.get('theta', theta)),
+                    # Realized "delta P&L" is the full mid-to-mid less spread;
+                    # the row keeps the column for shape parity with the
+                    # empirical path even though the components aren't
+                    # separable from a direct observation.
+                    'delta_pnl':         rt_mark_exit - rt_mark_entry,
+                    'theta_cost':        np.nan,
+                    'spread_cost':       rt_spread_cost,
+                    'net_pnl_dollar':    rt_net,
+                    'net_pnl_pct':       rt_net / rt_mark_entry,
+                    'option_win':        int(rt_net > 0),
+                    'underlying_win':    int(trade['return_pct'] > 0),
+                    'data_source':       DATA_SOURCE_REALTIME,
+                }
+
+    if rt_result is not None:
+        return rt_result
+
+    # ── Empirical Greeks-approximation fallback ──────────────────────
     # Adjust delta sign: PUT has negative delta, we want to align with direction
     eff_delta = abs(delta)  # for PUTs, underlying drop → option gain
 
@@ -438,8 +634,11 @@ def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series) -> dict:
     elif trade['direction'] == 'PUT' and underlying_chg > 0:
         delta_pnl = -delta_pnl
 
-    # Theta cost for hold period (theta is $/day)
+    # Theta cost for hold period (theta is $/day).
     # NOTE: This underestimates theta for 0DTE — see module docstring
+    # `Empirical-fallback bias` block. data_source='empirical_fallback'
+    # is stamped on the row so downstream rendering can surface the
+    # caveat per Track 2 phase 2a.
     theta_daily = abs(theta)
     theta_cost  = theta_daily * (trade['hold_min'] / 1440.0)
 
@@ -463,6 +662,7 @@ def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series) -> dict:
         'net_pnl_pct':       net_pnl_pct,
         'option_win':        option_win,
         'underlying_win':    int(trade['return_pct'] > 0),
+        'data_source':       DATA_SOURCE_EMPIRICAL_FALLBACK,
     }
 
 
@@ -497,7 +697,17 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
             no_atm_dates += 1
             continue
 
-        est = estimate_options_pnl(trade, atm)
+        # Track 2 phase 2a: try realtime mark-to-mark first; the call
+        # returns empty for pre-2026-05-22 dates so estimate_options_pnl
+        # transparently falls back to the empirical Greeks path with
+        # data_source='empirical_fallback'.
+        rt_marks = load_realtime_marks(
+            ticker, trade['trade_date'],
+            atm.get('expiration'), float(atm.get('strike', 0.0)),
+            'call' if trade['direction'] == 'CALL' else 'put',
+        )
+
+        est = estimate_options_pnl(trade, atm, realtime_marks=rt_marks)
         if est is None:
             continue
 
@@ -538,10 +748,24 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
     call_df = df[df['direction'] == 'CALL']
     put_df  = df[df['direction'] == 'PUT']
 
+    # Track 2 phase 2a: data_source column populated per-row. Caveat is
+    # only shown if any row used the empirical fallback (pre-Track-0 date
+    # or trade boundary outside snapshot tolerance).
+    rt_count = int((df['data_source'] == DATA_SOURCE_REALTIME).sum()) \
+               if 'data_source' in df.columns else 0
+    fb_count = len(df) - rt_count
+
     out = f'\n### {combo_label}\n\n'
-    out += f'> ⚠️ **Estimation caveat**: Results use EOD Greeks applied to intraday trades.\n'
-    out += f'> Theta is underestimated for 0DTE; actual options P&L is likely *worse* than shown.\n'
-    out += f'> Treat as an **upper bound** on profitability, not a precise forecast.\n\n'
+    out += f'> **P&L source mix**: realtime mark-to-mark on {rt_count:,} '
+    out += f'trades, empirical Greeks fallback on {fb_count:,}.\n'
+    if fb_count > 0:
+        out += (
+            '> ⚠️ **Empirical-fallback caveat**: fallback rows use EOD Greeks '
+            'applied to intraday trades. Theta is underestimated for 0DTE '
+            '(20-40% in the afternoon); their P&L is an **upper bound**, '
+            'not a precise forecast.\n'
+        )
+    out += '\n'
 
     out += md_table(['Metric', 'Underlying', 'Options (estimated)'], [
         ['Trades analysed',   fmt_num(n),              fmt_num(n)],
@@ -604,7 +828,15 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
         ['Period', 'Trades', 'Options WR', 'Underlying WR', 'Avg Theta Cost', 'Expectancy'],
         tod_rows,
     ) + '\n'
-    out += '_Note: afternoon theta cost is understated — EOD Greeks do not capture 0DTE acceleration after 14:00._\n\n'
+    # Caveat applies only to fallback rows — realtime rows measure P&L
+    # directly so afternoon theta acceleration is captured.
+    if fb_count > 0:
+        out += (
+            f'_Note: afternoon theta cost is understated for the {fb_count:,} '
+            'empirical-fallback rows — EOD Greeks do not capture 0DTE '
+            'acceleration after 14:00. Realtime rows reflect realized '
+            'mid-to-mid P&L within bid-ask spread._\n\n'
+        )
 
     # Underlying WR vs options WR mismatch analysis
     same_dir   = (df['underlying_win'] == df['option_win']).mean()

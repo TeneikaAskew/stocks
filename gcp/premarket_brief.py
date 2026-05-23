@@ -1479,6 +1479,58 @@ def _fmt_timeframe(tf: str) -> str:
     return tf.upper()
 
 
+# Track 2 phase 2a footer constant + helper. Surfaced when any 0DTE
+# P&L row rendered in the brief carries data_source='empirical_fallback'
+# (i.e. the empirical Greeks-approximation path in
+# scripts/analysis/options_pnl_translation.py was used because no
+# realtime AV snapshot existed for that contract on that date).
+#
+# See docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md Track 2 — the
+# fallback is intentional and typed per CLAUDE.md §3.7, never silent.
+# This helper is the standard place to render the human-visible
+# warning. Callers that wire 0DTE P&L into the brief (lib.options_intraday
+# repricer outputs, options_pnl_translation result rows, etc.) should
+# pass the list of rendered rows through `empirical_fallback_footer`
+# to get the right footnote (empty string when every row was realtime).
+_EMPIRICAL_FALLBACK_FOOTNOTE = (
+    '⚠️ 0DTE theta estimated (empirical curve) — realtime '
+    'Greeks unavailable for backtest window.'
+)
+
+
+def empirical_fallback_footer(rows) -> str:
+    """Return the 0DTE-fallback footnote if any rendered row used the
+    empirical Greeks-approximation fallback, else an empty string.
+
+    Accepts either a list of dicts (or pandas Series) or a single dict.
+    A row "used the fallback" iff its ``data_source`` field equals
+    ``'empirical_fallback'`` (the stable string constant defined in
+    ``lib.options_intraday``).
+
+    Added 2026-05-22 as part of Track 2 phase 2a. The brief does not
+    currently render 0DTE P&L from this path, but the helper lives here
+    so the wire-up in a follow-up PR (or Track 5's analyst-prompt work)
+    is one import away from rendering the warning consistently.
+    """
+    if rows is None:
+        return ''
+    if isinstance(rows, dict):
+        rows = [rows]
+    try:
+        from lib.options_intraday import DATA_SOURCE_EMPIRICAL_FALLBACK
+    except ImportError:
+        DATA_SOURCE_EMPIRICAL_FALLBACK = 'empirical_fallback'
+    any_fallback = False
+    for r in rows:
+        if r is None:
+            continue
+        ds = r.get('data_source') if hasattr(r, 'get') else None
+        if ds == DATA_SOURCE_EMPIRICAL_FALLBACK:
+            any_fallback = True
+            break
+    return _EMPIRICAL_FALLBACK_FOOTNOTE if any_fallback else ''
+
+
 def _resolve_signal_status(
     call_score: int,
     put_score: int,

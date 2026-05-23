@@ -2638,3 +2638,51 @@ def test_loader_routes_q1_to_low_conviction_not_dropped(mock_cloud_sql,
     assert all(e['ticker'] != 'HD' for e in result['earnings'])
     # HD MUST appear in `low_conviction` (compact line) — not silently dropped
     assert any(e['ticker'] == 'HD' for e in result['low_conviction'])
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Track 2 phase 2a — empirical_fallback_footer helper
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestEmpiricalFallbackFooter:
+    """Helper that surfaces the 0DTE-empirical-fallback warning when any
+    rendered P&L row carries data_source='empirical_fallback'. See
+    docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md Track 2."""
+
+    def test_empty_when_no_rows(self):
+        from gcp.premarket_brief import empirical_fallback_footer
+        assert empirical_fallback_footer([]) == ""
+        assert empirical_fallback_footer(None) == ""
+
+    def test_empty_when_all_realtime(self):
+        from gcp.premarket_brief import empirical_fallback_footer
+        rows = [
+            {"ticker": "SPY", "net_pnl_pct": 0.03, "data_source": "realtime"},
+            {"ticker": "QQQ", "net_pnl_pct": 0.01, "data_source": "realtime"},
+        ]
+        assert empirical_fallback_footer(rows) == ""
+
+    def test_footer_when_any_row_used_fallback(self):
+        from gcp.premarket_brief import empirical_fallback_footer
+        rows = [
+            {"ticker": "SPY", "data_source": "realtime"},
+            {"ticker": "QQQ", "data_source": "empirical_fallback"},
+        ]
+        result = empirical_fallback_footer(rows)
+        assert "empirical curve" in result
+        assert "realtime Greeks unavailable" in result
+
+    def test_accepts_single_dict(self):
+        from gcp.premarket_brief import empirical_fallback_footer
+        assert empirical_fallback_footer({"data_source": "empirical_fallback"})
+        assert empirical_fallback_footer({"data_source": "realtime"}) == ""
+
+    def test_handles_rows_missing_data_source(self):
+        from gcp.premarket_brief import empirical_fallback_footer
+        # Rows without data_source field (e.g. legacy callers) are
+        # treated as "unknown" — neither realtime nor fallback. No
+        # footer emitted.
+        rows = [{"ticker": "SPY"}, {"ticker": "QQQ"}]
+        assert empirical_fallback_footer(rows) == ""
+
