@@ -16,14 +16,23 @@ Three alert kinds, all derived from `lib.gamma.build_summary()` output:
   gamma_flip_cross     — bar's close crosses through the gamma flip price
                          (regime change: positive ↔ negative gamma)
 
-Direction mapping (validated against standard dealer-positioning theory):
+Direction mapping (empirically validated 2026-05-23 on SPY 14-day backtest,
+N=33 king approaches — see docs/audit/gamma_proximity_2026-05-23.md):
 
-  King-approach from below   → PUT   (resistance test, expect rejection ↓)
-  King-approach from above   → CALL  (support test, expect rejection ↑)
+  King-approach from below   → CALL  (magnet effect, price continues UP toward king)
+  King-approach from above   → PUT   (magnet effect, price continues DOWN toward king)
   Gate-break upward close    → CALL  (momentum overcame dealer hedging)
   Gate-break downward close  → PUT   (momentum overcame dealer hedging)
   Flip-cross upward          → CALL  (entering positive-gamma pinning regime)
   Flip-cross downward        → PUT   (entering negative-gamma trending regime)
+
+The "rejection at resistance/support" interpretation was tested against
+14 days of SPY data and FAILED: 65-77% of king approaches moved TOWARD
+the king within 15-30 min, not away (only 23-35% rejected). In a
+positive-gamma regime, dealers buy dips and sell rallies, which pulls
+price toward the highest-OI strike — the King acts as a magnet, not a
+barrier. Gate and Flip mappings are tested independently (gates are
+momentum-break events, flips are regime-change events).
 
 Rule 3.7 — no silent fallbacks. If `summary` is None or has no kings /
 gates / flip, the corresponding evaluator returns []. Callers MUST log
@@ -73,12 +82,16 @@ class GammaAlert:
 
 
 def _direction_for_king_approach(price: float, king: Level) -> Literal["CALL", "PUT"]:
-    """Below the king = approach-from-below = rejection-↓ thesis = PUT.
-    Above the king = approach-from-above = rejection-↑ thesis = CALL.
-    Equal: rare ATM tie; default to PUT (resistance bias when price is at the wall)."""
+    """Below the king = magnet-↑ thesis = CALL (expect continuation up to king).
+    Above the king = magnet-↓ thesis = PUT (expect continuation down to king).
+    Equal: ATM tie; default to PUT (slight magnet-down bias when price stalls at the
+    wall — at-king bars resolve down 50/50 ±noise empirically, so this is a coin flip).
+
+    Empirically validated 2026-05-23 (SPY 14d, N=33): 65-77% of approaches move
+    toward the king within 15-30 min. See module docstring + audit doc."""
     if price < king.strike:
-        return "PUT"
-    return "CALL"
+        return "CALL"
+    return "PUT"
 
 
 def evaluate_king_approach(

@@ -5,8 +5,8 @@ gate-break × up/down, flip-cross × up/down), no-fire conditions
 (out-of-range, empty summary, prev_close=None), and dedup_key stability.
 
 The directional mapping is the load-bearing contract:
-  - King-approach from below   → PUT
-  - King-approach from above   → CALL
+  - King-approach from below   → CALL  (magnet-↑, empirically validated 2026-05-23)
+  - King-approach from above   → PUT   (magnet-↓, empirically validated 2026-05-23)
   - Gate-break close > Gate    → CALL
   - Gate-break close < Gate    → PUT
   - Flip-cross close > flip    → CALL
@@ -62,34 +62,34 @@ def _summary(
 
 class TestKingApproach:
 
-    def test_below_king_within_threshold_fires_put(self):
+    def test_below_king_within_threshold_fires_call(self):
         summary = _summary(kings=[_level(580.0, kind="king")])
         # Price $577.50 = 0.43% below $580 — within 0.5%
         alerts = gp.evaluate_king_approach(577.50, summary)
         assert len(alerts) == 1
         a = alerts[0]
         assert a.kind == "gamma_king_approach"
-        assert a.direction == "PUT"   # approach-from-below = rejection-↓ thesis
+        assert a.direction == "CALL"  # magnet-↑: expect continuation up to king
         assert a.level_kind == "king"
         assert a.level_strike == 580.0
         assert a.distance_pct < 0     # signed: below
 
-    def test_above_king_within_threshold_fires_call(self):
+    def test_above_king_within_threshold_fires_put(self):
         summary = _summary(kings=[_level(580.0, kind="king")])
         alerts = gp.evaluate_king_approach(582.50, summary)
         assert len(alerts) == 1
         a = alerts[0]
-        assert a.direction == "CALL"   # approach-from-above = rejection-↑ thesis
+        assert a.direction == "PUT"   # magnet-↓: expect continuation down to king
         assert a.distance_pct > 0
 
-    def test_exactly_at_king_fires_call_tie(self):
-        # Edge case: price == king. The implementation defaults to CALL
-        # ("not strictly below"), which matches the "rejection-↑" reading
-        # for a price that just touched the wall from above and stalled.
+    def test_exactly_at_king_fires_put_tie(self):
+        # Edge case: price == king. Default to PUT (price has stalled
+        # at the wall — empirically a coin flip; slight bias to magnet-↓
+        # since flow more often pulled back down through the wall).
         summary = _summary(kings=[_level(580.0, kind="king")])
         alerts = gp.evaluate_king_approach(580.0, summary)
         assert len(alerts) == 1
-        assert alerts[0].direction == "CALL"
+        assert alerts[0].direction == "PUT"
         assert alerts[0].distance_pct == 0.0
 
     def test_outside_proximity_pct_no_fire(self):
@@ -103,7 +103,7 @@ class TestKingApproach:
         # $575 is 0.86% below; loosened threshold admits it
         alerts = gp.evaluate_king_approach(575.0, summary, proximity_pct=0.01)
         assert len(alerts) == 1
-        assert alerts[0].direction == "PUT"
+        assert alerts[0].direction == "CALL"  # magnet-↑ from below
 
     def test_multiple_kings_each_fires_independently(self):
         # Both kings within range — should produce two alerts
@@ -234,25 +234,26 @@ class TestFlipCross:
 class TestEvaluateAll:
 
     def test_all_three_alerts_can_fire_on_one_bar(self):
-        # Construct a bar that triggers king (near 580) + gate (crossed 585)
-        # + flip (crossed 578 upward in the same wide-range bar).
-        # Pathological but verifies the combined evaluator wires through.
+        # Construct a bar that triggers king (near 580) + flip (crossed
+        # 578 upward in the same wide-range bar). Verifies the combined
+        # evaluator wires all three sub-evaluators.
         summary = _summary(
             flip=578.0, regime="negative_gamma",
             kings=[_level(580.0, kind="king")],
             gates=[_level(585.0, kind="gate")],
         )
-        # prev=577.5, close=585.5 — crosses flip up, crosses gate up,
-        # and ends within proximity of king (585.5 vs 580 = 0.94% — NOT
-        # within 0.5%, so no king alert). Pick close=580.1 instead.
+        # prev=577.5, close=580.1 — crosses flip 578 upward → flip CALL,
+        # ends 0.017% above king → king PUT (magnet-↓),
+        # does NOT cross gate 585 → no gate alert.
         alerts = gp.evaluate_all(price=580.1, prev_close=577.5, summary=summary)
-        # 580.1 vs 580 king = 0.017% within → king fires (above → CALL)
-        # 577.5 → 580.1 crosses flip 578 upward → flip fires (CALL)
-        # 577.5 → 580.1 does NOT cross gate 585 → no gate fire
         kinds = sorted(a.kind for a in alerts)
         assert kinds == ["gamma_flip_cross", "gamma_king_approach"]
-        # Both should be CALL (above king + entering positive gamma)
-        assert all(a.direction == "CALL" for a in alerts)
+        # Different directions now: flip CALL (entering positive gamma)
+        # but king PUT (magnet-↓ from above 580.0).
+        flip = next(a for a in alerts if a.kind == "gamma_flip_cross")
+        king = next(a for a in alerts if a.kind == "gamma_king_approach")
+        assert flip.direction == "CALL"
+        assert king.direction == "PUT"
 
     def test_empty_summary_no_alerts(self):
         summary = _summary()  # no kings, no gates, no flip
@@ -270,7 +271,7 @@ class TestEvaluateAll:
         # 579.5 vs 580 = 0.086% — within proximity
         assert len(alerts) == 1
         assert alerts[0].kind == "gamma_king_approach"
-        assert alerts[0].direction == "PUT"   # below king
+        assert alerts[0].direction == "CALL"  # below king → magnet-↑ to king
 
 
 # ── Dedup key ────────────────────────────────────────────────────────
@@ -280,11 +281,11 @@ class TestDedupKey:
 
     def test_same_alert_same_key(self):
         a1 = gp.GammaAlert(
-            kind="gamma_king_approach", direction="PUT", level_kind="king",
+            kind="gamma_king_approach", direction="CALL", level_kind="king",
             level_strike=580.0, distance_pct=-0.1, regime="positive_gamma",
         )
         a2 = gp.GammaAlert(
-            kind="gamma_king_approach", direction="PUT", level_kind="king",
+            kind="gamma_king_approach", direction="CALL", level_kind="king",
             level_strike=580.0, distance_pct=-0.3, regime="positive_gamma",
         )
         # Same kind + strike → dedup_key collides even though distance_pct differs
