@@ -2022,11 +2022,23 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
     # Load options-side calibration once per brief run — used by every
     # row's action-tag decision via recommended_structure(). Resilient:
     # empty dict on any failure → archetype map drives the action.
+    #
+    # AUDIT-2026-05-23 (fallback-guard, Track 2 phase 2a review): the
+    # original silent-swallow lost trade-action correctness on lib import
+    # failure / Cloud SQL outage with no operator signal. Per
+    # docs/audits/FALLBACK_AUDIT_2026-05-13.md §C-NN and CLAUDE.md §3.7
+    # rule 1, INTERNAL failures must be observable. logger.exception
+    # captures the stack trace and severity-ERROR so on-call sees the
+    # degradation; empty dict still propagates so the brief itself runs.
     global _BRIEF_CAL_OPTS
     try:
         from lib.earnings_reactions import get_calibration_options_metrics
         _BRIEF_CAL_OPTS = get_calibration_options_metrics() or {}
     except Exception:
+        logger.exception(
+            "calibration_options_metrics load failed — action tags revert "
+            "to archetype-only map; Q5 IC override disabled this brief"
+        )
         _BRIEF_CAL_OPTS = {}
 
     mode = earnings_data.get('mode', 'daily')
