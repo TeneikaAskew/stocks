@@ -189,6 +189,71 @@ CREATE INDEX IF NOT EXISTS idx_etf_options_realtime
     WHERE market_session = 'REALTIME';
 
 
+-- Phase A (Heatseeker-style grid): per-snapshot per-strike per-expiration
+-- aggregate. Mirrors the 1-D aggregate `lib.gamma.aggregate_by_strike` but
+-- keeps the expiration dimension intact so consumers can render the 2-D
+-- `strike × expiration` heatmap. CREATE OR REPLACE so re-applying the
+-- schema picks up math fixes without dropping dependents.
+--
+-- Read pattern: usually filtered by (ticker, snapshot_ts) — uses
+-- idx_etf_options_realtime for the live path and idx_etf_options_ticker_date
+-- for the historical path.
+--
+-- Sign convention (matches lib.gamma):
+--   net_gamma = call_gamma×OI − put_gamma×OI
+--   net_vega  = call_vega×OI  − put_vega×OI
+--   GEX/VEX dollar conversion stays in the Python layer so callers
+--   share one source of truth for the multipliers; this view exposes
+--   only the raw aggregates.
+--
+-- See docs/plans/HEATSEEKER_STYLE_GAMMA_PLAN.md §4.1 for the design.
+CREATE OR REPLACE VIEW v_etf_options_node AS
+SELECT
+    ticker,
+    snapshot_ts,
+    snapshot_date,
+    market_session,
+    expiration,
+    strike,
+    -- Net (calls add, puts subtract) — same sign convention as lib.gamma.
+    SUM(
+        CASE
+            WHEN option_type = 'calls'
+                THEN COALESCE(gamma, 0) * COALESCE(open_interest, 0)
+            WHEN option_type = 'puts'
+                THEN -COALESCE(gamma, 0) * COALESCE(open_interest, 0)
+            ELSE 0
+        END
+    )                                                                AS net_gamma,
+    SUM(
+        CASE
+            WHEN option_type = 'calls'
+                THEN COALESCE(vega, 0) * COALESCE(open_interest, 0)
+            WHEN option_type = 'puts'
+                THEN -COALESCE(vega, 0) * COALESCE(open_interest, 0)
+            ELSE 0
+        END
+    )                                                                AS net_vega,
+    -- Per-side gamma×OI (unsigned, so the dollar-conversion layer can
+    -- decide whether to subtract puts).
+    SUM(CASE WHEN option_type = 'calls'
+             THEN COALESCE(gamma, 0) * COALESCE(open_interest, 0) ELSE 0 END) AS call_gamma_oi,
+    SUM(CASE WHEN option_type = 'puts'
+             THEN COALESCE(gamma, 0) * COALESCE(open_interest, 0) ELSE 0 END) AS put_gamma_oi,
+    SUM(CASE WHEN option_type = 'calls'
+             THEN COALESCE(vega, 0)  * COALESCE(open_interest, 0) ELSE 0 END) AS call_vega_oi,
+    SUM(CASE WHEN option_type = 'puts'
+             THEN COALESCE(vega, 0)  * COALESCE(open_interest, 0) ELSE 0 END) AS put_vega_oi,
+    -- OI / volume context.
+    SUM(CASE WHEN option_type = 'calls' THEN COALESCE(open_interest, 0) ELSE 0 END) AS call_oi,
+    SUM(CASE WHEN option_type = 'puts'  THEN COALESCE(open_interest, 0) ELSE 0 END) AS put_oi,
+    SUM(CASE WHEN option_type = 'calls' THEN COALESCE(volume, 0) ELSE 0 END)        AS call_volume,
+    SUM(CASE WHEN option_type = 'puts'  THEN COALESCE(volume, 0) ELSE 0 END)        AS put_volume
+FROM etf_options_snapshots
+WHERE data_source = 'alphavantage'
+GROUP BY ticker, snapshot_ts, snapshot_date, market_session, expiration, strike;
+
+
 CREATE TABLE IF NOT EXISTS earnings_options_snapshots (
     id                  BIGSERIAL PRIMARY KEY,
     symbol              VARCHAR(10)  NOT NULL,
