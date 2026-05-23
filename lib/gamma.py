@@ -112,6 +112,76 @@ class GammaSummary:
         return asdict(self)
 
 
+# ── 2-D grid shapes (Heatseeker-style strike × expiration heatmap) ──────────
+# Added 2026-05-23 in Phase A of HEATSEEKER_STYLE_GAMMA_PLAN.md.
+# The 1-D `GammaSummary` above collapses expirations into a single view;
+# `GammaGridSummary` keeps the expiration dimension so the UI can render
+# columns by expiry and the AI analyst can reason about "is the pressure
+# stacked in 0DTE or pushed out to monthlies?"
+
+
+@dataclass
+class GammaGridCell:
+    """One cell of the strike × expiration heatmap.
+
+    The 2-D analog of `Level`: every cell carries its dollar-notional
+    GEX and VEX broken out by side (call / put / net) plus the
+    underlying OI and volume context. `dte` is precomputed against
+    the snapshot date so the UI doesn't have to recompute on render.
+    """
+    strike: float
+    expiration: str           # ISO YYYY-MM-DD
+    dte: int                  # days from snapshot_date to expiration
+    # Greeks aggregates (signed: calls add, puts subtract for net_*)
+    net_gamma: float
+    call_gamma: float
+    put_gamma: float
+    net_vega: float
+    call_vega: float
+    put_vega: float
+    # Dollar-notional GEX (sign matches per-side semantics — see
+    # gex_by_strike for the call/put sign convention)
+    gex: float
+    call_gex: float
+    put_gex: float
+    # Dollar-notional VEX with dealer-perspective negation (matches
+    # vex_by_strike + total_vex semantics)
+    vex: float
+    call_vex: float
+    put_vex: float
+    # Liquidity / interest context
+    call_oi: int
+    put_oi: int
+    call_volume: int
+    put_volume: int
+    # Display geometry — distance from spot, signed
+    distance_pct: float
+
+
+@dataclass
+class GammaGridSummary:
+    """End-to-end 2-D grid payload — the response shape for
+    `GET /api/options/{ticker}/grid` (Phase B).
+    """
+    ticker: str
+    snapshot_date: str
+    snapshot_ts: str | None   # ISO timestamp of the underlying snapshot
+    data_source: str          # 'realtime'|'eod_fallback'|'stale_fallback'|'unavailable'
+    spot: SpotEstimate
+    flip: float | None
+    regime: str               # "positive_gamma" | "negative_gamma" | "unknown"
+    total_gex: float
+    total_vex: float
+    cells: list[GammaGridCell]
+    expirations: list[str]    # ISO dates, ascending — column headers
+    strikes: list[float]      # ascending — row headers
+    window_pct: float
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 # ── Aggregation (canonical replacement for options.py:_aggregate_by_strike) ─
 
 
@@ -123,9 +193,16 @@ def aggregate_by_strike(options: Sequence[dict]) -> list[dict]:
 
     Returns list[dict] sorted by strike, with keys:
       strike, net_gamma, call_gamma, put_gamma,
+      call_vega, put_vega, net_vega,
       call_oi, put_oi, call_volume, put_volume.
 
-    Sign convention: net_gamma = call_gamma_oi - put_gamma_oi.
+    Sign convention:
+      - net_gamma = call_gamma_oi - put_gamma_oi
+      - net_vega  = call_vega_oi  - put_vega_oi
+        (per-strike vega is signed the same way GEX is — calls add,
+        puts subtract — to keep `vex_by_strike` consistent with the
+        existing `gex_by_strike` shape. Total VEX dealer-perspective
+        negation lives in `total_vex` and `vex_by_strike`, not here.)
     """
     agg: dict[float, dict] = {}
     for opt in options:
@@ -136,25 +213,101 @@ def aggregate_by_strike(options: Sequence[dict]) -> list[dict]:
                 "net_gamma": 0.0,
                 "call_gamma": 0.0,
                 "put_gamma": 0.0,
+                "net_vega": 0.0,
+                "call_vega": 0.0,
+                "put_vega": 0.0,
                 "call_oi": 0.0,
                 "put_oi": 0.0,
                 "call_volume": 0.0,
                 "put_volume": 0.0,
             }
-        gamma = opt.get("gamma") or 0.0
+        gamma_g = opt.get("gamma") or 0.0
+        vega_v = opt.get("vega") or 0.0
         oi = opt.get("open_interest") or 0.0
-        gamma_oi = float(gamma) * float(oi)
+        gamma_oi = float(gamma_g) * float(oi)
+        vega_oi = float(vega_v) * float(oi)
         if opt.get("type") == "call":
             agg[s]["call_gamma"] += gamma_oi
+            agg[s]["call_vega"] += vega_oi
             agg[s]["call_oi"] += float(oi)
             agg[s]["call_volume"] += float(opt.get("volume") or 0.0)
             agg[s]["net_gamma"] += gamma_oi
+            agg[s]["net_vega"] += vega_oi
         elif opt.get("type") == "put":
             agg[s]["put_gamma"] += gamma_oi
+            agg[s]["put_vega"] += vega_oi
             agg[s]["put_oi"] += float(oi)
             agg[s]["put_volume"] += float(opt.get("volume") or 0.0)
             agg[s]["net_gamma"] -= gamma_oi
+            agg[s]["net_vega"] -= vega_oi
     return sorted(agg.values(), key=lambda r: r["strike"])
+
+
+def aggregate_by_strike_expiration(options: Sequence[dict]) -> list[dict]:
+    """Group an options chain by (strike, expiration) — one row per cell.
+
+    Returns the same column shape as `aggregate_by_strike`, with an
+    additional `expiration` key per row. This is the input to the 2-D
+    `strike × expiration` heatmap (Heatseeker-style grid).
+
+    Per the Heatseeker plan (Phase A): every cell carries call/put OI,
+    call/put gamma×OI, call/put vega×OI, and the net of each. The
+    consumer applies `gex_by_strike` / `vex_by_strike` per row to get
+    dollar-notional values.
+
+    Sort order: ascending by (expiration, strike) so the natural
+    iteration produces rows that read like a calendar — earliest
+    expiration first, lowest strike first within an expiration.
+    """
+    agg: dict[tuple[float, str], dict] = {}
+    for opt in options:
+        s = float(opt["strike"])
+        exp = opt.get("expiration")
+        if exp is None:
+            continue
+        # Normalize expiration to a stable string key so date/datetime
+        # variants don't fracture the same calendar day into two cells.
+        if hasattr(exp, "isoformat"):
+            exp_key = exp.isoformat()[:10]
+        else:
+            exp_key = str(exp)[:10]
+        key = (s, exp_key)
+        if key not in agg:
+            agg[key] = {
+                "strike": s,
+                "expiration": exp_key,
+                "net_gamma": 0.0,
+                "call_gamma": 0.0,
+                "put_gamma": 0.0,
+                "net_vega": 0.0,
+                "call_vega": 0.0,
+                "put_vega": 0.0,
+                "call_oi": 0.0,
+                "put_oi": 0.0,
+                "call_volume": 0.0,
+                "put_volume": 0.0,
+            }
+        gamma_g = opt.get("gamma") or 0.0
+        vega_v = opt.get("vega") or 0.0
+        oi = opt.get("open_interest") or 0.0
+        gamma_oi = float(gamma_g) * float(oi)
+        vega_oi = float(vega_v) * float(oi)
+        if opt.get("type") == "call":
+            agg[key]["call_gamma"] += gamma_oi
+            agg[key]["call_vega"] += vega_oi
+            agg[key]["call_oi"] += float(oi)
+            agg[key]["call_volume"] += float(opt.get("volume") or 0.0)
+            agg[key]["net_gamma"] += gamma_oi
+            agg[key]["net_vega"] += vega_oi
+        elif opt.get("type") == "put":
+            agg[key]["put_gamma"] += gamma_oi
+            agg[key]["put_vega"] += vega_oi
+            agg[key]["put_oi"] += float(oi)
+            agg[key]["put_volume"] += float(opt.get("volume") or 0.0)
+            agg[key]["net_gamma"] -= gamma_oi
+            agg[key]["net_vega"] -= vega_oi
+    # Sort: expiration ascending (calendar order), then strike ascending
+    return sorted(agg.values(), key=lambda r: (r["expiration"], r["strike"]))
 
 
 def gex_by_strike(strikes: Sequence[dict], spot: float) -> list[dict]:
@@ -187,6 +340,56 @@ def total_vex(options: Sequence[dict], spot: float) -> float:
         dealer_vanna = -float(gamma)
         total += dealer_vanna * float(oi) * SPOT_MULTIPLIER * spot * VEX_MULTIPLIER
     return total
+
+
+def vex_by_strike(strikes: Sequence[dict], spot: float) -> list[dict]:
+    """Per-strike VEX in dollar-notional terms.
+
+    Mirror of `gex_by_strike` but uses the same sign convention as
+    `total_vex` (NOT the call-minus-put convention `gex_by_strike`
+    uses). Dealers are SHORT both calls AND puts in normal market-
+    making — the customer is long, the dealer takes the other side —
+    so every contract contributes NEGATIVE dealer vanna. The formula:
+
+        vex_per_strike = -(call_vega_oi + put_vega_oi)
+                          × spot × SPOT_MULTIPLIER × VEX_MULTIPLIER
+
+    Invariant: `sum(vex_by_strike(...))` equals `total_vex(...)` on
+    the same chain. The test suite enforces this — drift between the
+    two surfaces the heatmap and the summary panel disagree.
+
+    Positive VEX at a strike → dealers buy underlying as IV drops at
+    this strike (rare; only possible when net vega is structurally
+    inverted, e.g. heavy short-vol customer positioning).
+    Negative VEX at a strike (the normal case) → dealers sell
+    underlying as IV drops, buy as IV rises.
+
+    Per-side keys (`call_vex`, `put_vex`) carry the dealer-flip too,
+    so both are typically negative when there's positive vega on
+    that side. Callers that want to render calls vs puts separately
+    in the heatmap read these directly.
+
+    Requires the input rows to carry call_vega / put_vega (added to
+    `aggregate_by_strike` in Phase A); legacy callers that pre-dated
+    the vega columns will see 0.0 instead of crashing.
+    """
+    return [
+        {
+            "strike":   s["strike"],
+            "vex":      -(s.get("call_vega", 0.0) + s.get("put_vega", 0.0))
+                        * spot * SPOT_MULTIPLIER * VEX_MULTIPLIER,
+            "call_vex": -s.get("call_vega", 0.0) * spot * SPOT_MULTIPLIER * VEX_MULTIPLIER,
+            "put_vex":  -s.get("put_vega",  0.0) * spot * SPOT_MULTIPLIER * VEX_MULTIPLIER,
+        }
+        for s in strikes
+    ]
+
+
+def total_vex_from_strikes(vex_strikes: Sequence[dict]) -> float:
+    """Total VEX = sum of per-strike VEX. Algebraically consistent with
+    per-strike sign, mirroring `total_gex_from_strikes`.
+    """
+    return sum(s["vex"] for s in vex_strikes)
 
 
 def put_call_ratio(options: Sequence[dict]) -> float:
@@ -563,6 +766,197 @@ def build_summary(
         kings=kings,
         gates=gates,
         flip_levels=flip_levels,
+        window_pct=window_pct,
+        warnings=warnings,
+    )
+
+
+# ── End-to-end grid summary (Heatseeker-style 2-D heatmap) ──────────────────
+
+
+def _dte_from(snapshot_date: str, expiration: str) -> int:
+    """Calendar days from snapshot_date to expiration.
+
+    Both args are ISO YYYY-MM-DD strings. Returns 0 when dates can't
+    be parsed (defensive — never raises, since this feeds a display
+    field, not a financial calculation).
+    """
+    from datetime import date as _date_type
+
+    try:
+        snap = _date_type.fromisoformat(snapshot_date[:10])
+        exp = _date_type.fromisoformat(expiration[:10])
+        return (exp - snap).days
+    except (ValueError, TypeError):
+        return 0
+
+
+def build_grid_summary(
+    ticker: str,
+    snapshot_date: str,
+    options: Sequence[dict],
+    *,
+    snapshot_ts: str | None = None,
+    data_source: str = "realtime",
+    spot_override: float | None = None,
+    window_pct: float = 8.0,
+    strike_window_pct: float | None = None,
+    expirations_filter: list[str] | None = None,
+) -> GammaGridSummary:
+    """Produce the 2-D `strike × expiration` GammaGridSummary.
+
+    End-to-end: estimate spot, aggregate per (strike, expiration),
+    compute GEX + VEX per cell, derive flip + regime from the collapsed
+    1-D view (regime is a per-snapshot property, not per-expiration),
+    filter cells to the display window around spot, and return one
+    `GammaGridCell` per (strike, expiration) pair.
+
+    Args:
+        ticker:           symbol the chain belongs to.
+        snapshot_date:    ISO YYYY-MM-DD of the snapshot.
+        options:          raw chain rows (same shape as `build_summary`
+                          accepts — type/strike/expiration/gamma/vega/...).
+        snapshot_ts:      ISO timestamp of the underlying snapshot. For
+                          realtime rows this is the intraday wall-clock
+                          (Track 0 semantics); for EOD rows it's the
+                          synthetic 23:00 UTC marker. Propagates straight
+                          through to the response so the UI footer can
+                          render "Live gamma · HH:MM ET".
+        data_source:      'realtime' | 'eod_fallback' | 'stale_fallback'
+                          | 'unavailable'. Mirrors the Track 1 tiered
+                          loader contract. Propagated for consistency
+                          with `summarize_gamma_levels` consumers.
+        spot_override:    optional caller-supplied spot. Skips the
+                          parity/delta/median fallbacks.
+        window_pct:       display window around spot for cell filtering,
+                          expressed in PERCENT (e.g. 8.0 means ±8%).
+        strike_window_pct: legacy alias for window_pct in some callers
+                          (Heatseeker plan §6.1 uses `strike_window_pct`).
+                          Accepts the same units (percent).
+        expirations_filter: optional whitelist of ISO expiration dates.
+                          When set, cells outside this list are dropped
+                          from `cells` but the headers list still
+                          reflects what's left after filtering.
+
+    Returns: GammaGridSummary suitable for serializing to JSON for the
+    `/api/options/{ticker}/grid` endpoint.
+    """
+    # Window arg compatibility — accept either name, prefer the new one.
+    if strike_window_pct is not None and window_pct == 8.0:
+        window_pct = strike_window_pct
+
+    warnings: list[str] = []
+    chain = list(options)
+
+    if expirations_filter:
+        chain = [o for o in chain if str(o.get("expiration", ""))[:10] in expirations_filter]
+
+    # ── Spot (shared with build_summary semantics) ─────────────────────────
+    if spot_override is not None and spot_override > 0:
+        spot = SpotEstimate(price=float(spot_override), method="override",
+                            note="caller-supplied spot")
+    else:
+        spot = estimate_spot(chain)
+        if spot.method == "median_strike":
+            warnings.append("Spot estimated from median strike — chain had no "
+                            "usable mid prices or deltas.")
+        elif spot.method == "none":
+            warnings.append("Could not estimate spot from this chain.")
+
+    if spot.price <= 0:
+        return GammaGridSummary(
+            ticker=ticker.upper(),
+            snapshot_date=snapshot_date,
+            snapshot_ts=snapshot_ts,
+            data_source=data_source,
+            spot=spot,
+            flip=None,
+            regime="unknown",
+            total_gex=0.0,
+            total_vex=0.0,
+            cells=[],
+            expirations=[],
+            strikes=[],
+            window_pct=window_pct,
+            warnings=warnings,
+        )
+
+    # ── 2-D per-cell aggregation ───────────────────────────────────────────
+    cell_rows = aggregate_by_strike_expiration(chain)
+
+    # GEX / VEX in dollar-notional terms — same per-strike functions
+    # applied row-by-row (each cell is already a one-strike aggregate
+    # with the expiration metadata attached).
+    spot_sq = spot.price * spot.price
+    cells: list[GammaGridCell] = []
+    for row in cell_rows:
+        cells.append(GammaGridCell(
+            strike=float(row["strike"]),
+            expiration=row["expiration"],
+            dte=_dte_from(snapshot_date, row["expiration"]),
+            net_gamma=row["net_gamma"],
+            call_gamma=row["call_gamma"],
+            put_gamma=row["put_gamma"],
+            net_vega=row["net_vega"],
+            call_vega=row["call_vega"],
+            put_vega=row["put_vega"],
+            # GEX: net × spot² × 0.01; per-side signed to match gex_by_strike
+            gex=row["net_gamma"] * spot_sq * GEX_MULTIPLIER,
+            call_gex=row["call_gamma"] * spot_sq * GEX_MULTIPLIER,
+            put_gex=-row["put_gamma"] * spot_sq * GEX_MULTIPLIER,
+            # VEX: dealer-perspective negation on BOTH sides (calls + puts);
+            # matches vex_by_strike + total_vex. Critical invariant:
+            #   sum(c.vex for c in cells) == total_vex(chain, spot)
+            # See vex_by_strike docstring for the full sign-convention
+            # rationale (dealers are short both calls and puts → both
+            # contribute negative dealer vanna).
+            vex=-(row["call_vega"] + row["put_vega"]) * spot.price * SPOT_MULTIPLIER * VEX_MULTIPLIER,
+            call_vex=-row["call_vega"] * spot.price * SPOT_MULTIPLIER * VEX_MULTIPLIER,
+            put_vex=-row["put_vega"] * spot.price * SPOT_MULTIPLIER * VEX_MULTIPLIER,
+            call_oi=int(row["call_oi"]),
+            put_oi=int(row["put_oi"]),
+            call_volume=int(row["call_volume"]),
+            put_volume=int(row["put_volume"]),
+            distance_pct=(float(row["strike"]) - spot.price) / spot.price * 100,
+        ))
+
+    # ── Window-filter cells around spot (display window) ───────────────────
+    lo = spot.price * (1 - window_pct / 100)
+    hi = spot.price * (1 + window_pct / 100)
+    cells = [c for c in cells if lo <= c.strike <= hi]
+
+    # ── Flip + regime: derived from the 1-D collapsed view ─────────────────
+    # The flip is a per-snapshot concept (regime divider in price space),
+    # not per-expiration. We compute it from the same aggregate
+    # `build_summary` uses so the two views can never disagree.
+    strikes_1d = aggregate_by_strike(chain)
+    flip = compute_gamma_flip(strikes_1d, spot.price) if strikes_1d else None
+    if flip is not None:
+        regime = "positive_gamma" if spot.price > flip else "negative_gamma"
+    else:
+        regime = "unknown"
+
+    # ── Totals (consistent with 1-D summary by construction) ───────────────
+    total_gex = sum(c.gex for c in cells)
+    total_vex = sum(c.vex for c in cells)
+
+    # ── Header arrays for the UI (column / row labels) ─────────────────────
+    expirations = sorted({c.expiration for c in cells})
+    strikes_sorted = sorted({c.strike for c in cells})
+
+    return GammaGridSummary(
+        ticker=ticker.upper(),
+        snapshot_date=snapshot_date,
+        snapshot_ts=snapshot_ts,
+        data_source=data_source,
+        spot=spot,
+        flip=flip,
+        regime=regime,
+        total_gex=total_gex,
+        total_vex=total_vex,
+        cells=cells,
+        expirations=expirations,
+        strikes=strikes_sorted,
         window_pct=window_pct,
         warnings=warnings,
     )
