@@ -175,6 +175,19 @@ CREATE INDEX IF NOT EXISTS idx_etf_options_ticker_date
 CREATE INDEX IF NOT EXISTS idx_etf_options_expiry
     ON etf_options_snapshots (ticker, expiration, strike);
 
+-- Track 1 (2026-05-23): partial index on REALTIME rows only.
+-- The premarket-brief gamma freshness probe needs to find "is there
+-- a REALTIME row for this ticker within the last 15 days?" — without
+-- this partial index the planner walks every EOD row in date order
+-- looking for the rare REALTIME match (5s+ on SPY's 14k contracts/day).
+-- The partial index has one entry per REALTIME row only, so the probe
+-- becomes index-only and sub-100ms even at table scale.
+-- See gcp/premarket_brief.py:_load_gamma_freshness and
+-- docs/plans/REALTIME_OPTIONS_MULTITRACK_PLAN.md Track 1.
+CREATE INDEX IF NOT EXISTS idx_etf_options_realtime
+    ON etf_options_snapshots (ticker, snapshot_ts DESC)
+    WHERE market_session = 'REALTIME';
+
 
 CREATE TABLE IF NOT EXISTS earnings_options_snapshots (
     id                  BIGSERIAL PRIMARY KEY,

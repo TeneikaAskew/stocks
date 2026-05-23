@@ -97,9 +97,14 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
     as a Cloud Logging warning rather than silent footer omission.
     """
     # Defensive timeout (ms) so a slow query can NEVER hang the brief.
-    # Indexed single-row lookups normally complete in <100 ms — anything
-    # past 5 s indicates a planner regression or unavailable Cloud SQL.
-    _GAMMA_PROBE_TIMEOUT_MS = 5000
+    # SPY has ~14 k contracts per EOD snapshot vs ~3 k for IWM, so a
+    # 15-day window scan touches ~150 k rows for SPY — close to the
+    # cliff at 5 s under Cloud SQL's current IOPS budget when the
+    # partial REALTIME index isn't available yet. 10 s gives 2x
+    # headroom for SPY's heavier scan; the existing brief task-timeout
+    # is 600 s so the absolute worst-case (3 tickers × 10 s) still
+    # leaves ample budget for the rest of the brief.
+    _GAMMA_PROBE_TIMEOUT_MS = 10000
 
     # Hard floor on the snapshot_date range each probe will scan. The
     # only existing index that covers this query is
