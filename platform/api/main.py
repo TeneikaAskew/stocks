@@ -45,6 +45,12 @@ app.add_middleware(
 
 # ── Router includes ──────────────────────────────────────────────────────────
 app.include_router(live.router, prefix="")
+# `grid` MUST mount before `options` — `options` has a greedy
+# `GET /api/options/{ticker}/{date_str}` that would otherwise shadow
+# `/api/options/SPY/grid` and `/api/options/SPY/nodes` (matching
+# `date_str="grid"` / `"nodes"` and 400ing in date validation).
+# Regression test: tests/test_grid_router.py::TestRoutingOrder.
+app.include_router(grid.router, prefix="")
 app.include_router(options.router, prefix="")
 app.include_router(playbook.router, prefix="")
 app.include_router(backtest.router, prefix="")
@@ -58,7 +64,6 @@ app.include_router(analytics.router, prefix="")
 app.include_router(config_router.router, prefix="")
 app.include_router(health.router, prefix="")
 app.include_router(glossary.router, prefix="")
-app.include_router(grid.router, prefix="")
 
 data_loader = DataLoader()
 

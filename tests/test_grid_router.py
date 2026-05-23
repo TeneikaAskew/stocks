@@ -326,6 +326,104 @@ class TestNodesHistorical:
 # ─── Date helpers ───────────────────────────────────────────────────────────
 
 
+class TestRoutingOrder:
+    """Regression test for the path-collision bug Codex caught on PR #541.
+
+    The existing `options.router` has a greedy
+    `GET /api/options/{ticker}/{date_str}` route. If `grid.router` is
+    registered AFTER `options.router`, FastAPI's first-match-wins
+    routing greedily binds `/api/options/SPY/grid` to the options
+    handler with `date_str='grid'`, which then 400s in date validation.
+
+    `main.py` registers `grid.router` BEFORE `options.router` to prevent
+    this. This test asserts the production-order app actually routes
+    `/grid` and `/nodes` to the grid handlers, not the options handler.
+    """
+
+    @pytest.fixture
+    def combined_client(self, monkeypatch):
+        """Mount grid AND options in the production order from main.py."""
+        import gcp.database
+        monkeypatch.setattr(gcp.database, "is_cloud_sql_configured", lambda: True)
+
+        grid_router._LIVE_GRID_CACHE.clear()
+        grid_router._HIST_GRID_CACHE.clear()
+        grid_router._NODES_CACHE.clear()
+        grid_router._HIST_NODES_CACHE.clear()
+
+        # Empty REALTIME + EOD — exercise the routing, not the data path
+        def fake_query(sql, params=None):
+            return pd.DataFrame()
+        monkeypatch.setattr(gcp.database, "query_to_dataframe", fake_query)
+
+        from routers import options as options_router
+        options_router._CHAIN_CACHE.clear()
+
+        app = FastAPI()
+        # Same order as main.py — `grid` BEFORE `options`
+        app.include_router(grid_router.router)
+        app.include_router(options_router.router)
+        return TestClient(app)
+
+    def test_grid_route_resolves_to_grid_handler(self, combined_client):
+        """`/api/options/SPY/grid` must NOT be 400 from date validation —
+        the grid router has to win the routing battle."""
+        r = combined_client.get("/api/options/SPY/grid")
+        # No data → unavailable envelope; the key thing is we got HERE
+        # (200 from the grid handler) instead of a 400 from options'
+        # date validation rejecting date_str='grid'.
+        assert r.status_code == 200, (
+            f"Expected 200 (grid handler), got {r.status_code} — likely "
+            f"the greedy options.router path shadowed the new endpoint. "
+            f"Response: {r.json()}"
+        )
+        body = r.json()
+        # The grid handler always returns this key; the options handler
+        # never does.
+        assert "data_source" in body
+        assert "cells" in body
+
+    def test_nodes_route_resolves_to_grid_handler(self, combined_client):
+        """Same routing check for `/api/options/SPY/nodes`."""
+        r = combined_client.get("/api/options/SPY/nodes")
+        assert r.status_code == 200, (
+            f"Expected 200 (nodes handler), got {r.status_code}. "
+            f"Response: {r.json()}"
+        )
+        body = r.json()
+        # Nodes-specific shape — proves we landed in _build_nodes_payload
+        # / unavailable envelope, NOT the options chain handler.
+        assert "king" in body
+        assert "gates" in body
+        assert "opex_nodes" in body
+
+    def test_historical_grid_route_resolves(self, combined_client):
+        """Historical mode lives at `/api/options/{ticker}/{date}/grid` —
+        three path segments, so it doesn't collide with the two-segment
+        options route. Sanity check that it routes correctly."""
+        r = combined_client.get("/api/options/SPY/2026-05-22/grid")
+        assert r.status_code == 200
+        assert "data_source" in r.json()
+
+    def test_options_two_segment_route_still_works(self, combined_client):
+        """The pre-existing `/api/options/{ticker}/{date_str}` must still
+        route to the options handler — our reordering can't break it.
+        Empty fixtures → options handler 404s (no data). Status code
+        is the routing proof: 404 from options, NOT 200 from grid."""
+        r = combined_client.get("/api/options/SPY/2026-05-22")
+        # Could be 404 (no data — options handler's behavior) or 200
+        # (cached empty result). What it CANNOT be is anything from
+        # the grid handler (no `data_source` field, no `cells`).
+        if r.status_code == 200:
+            body = r.json()
+            # Options chain handler returns `options` key, not `cells`
+            assert "options" in body, (
+                "Pre-existing /api/options/{ticker}/{date} should route "
+                "to options.get_options, not grid handler. "
+                f"Got: {list(body.keys())}"
+            )
+
+
 class TestThirdFridayDetection:
     """Mechanical OPEX tagging — third Friday of the month."""
 
