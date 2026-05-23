@@ -287,3 +287,70 @@ class TestEstimateOptionsPnl:
         })
         result = estimate_options_pnl(trade, atm, realtime_marks=None)
         assert result is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Column-semantics regression — delta_pnl / theta_cost MUST be NaN in
+# realtime rows so downstream aggregations don't silently mix
+# Greeks-decomposed numbers with mark-to-mark gross P&L. See
+# estimate_options_pnl docstring "Column semantics" table.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestRealtimeRowSchema:
+
+    def test_realtime_row_has_nan_delta_pnl(self):
+        d = date(2026, 5, 22)
+        trade = _trade(entry_min=9*60+35, hold_min=10.0, trade_date=d)
+        atm = _atm_chain_row(strike=500.0, mark=2.50, expiration=d)
+        rt = _realtime_marks(d, [0, 5, 10, 15], [2.50, 2.50, 2.80, 3.00])
+        result = estimate_options_pnl(trade, atm, realtime_marks=rt)
+        assert result['data_source'] == DATA_SOURCE_REALTIME
+        assert np.isnan(result['delta_pnl']), \
+            "realtime delta_pnl must be NaN — mark-to-mark P&L can't " \
+            "be decomposed into Greeks contributions without re-pricing"
+
+    def test_realtime_row_has_nan_theta_cost(self):
+        d = date(2026, 5, 22)
+        trade = _trade(entry_min=9*60+35, hold_min=10.0, trade_date=d)
+        atm = _atm_chain_row(strike=500.0, mark=2.50, expiration=d)
+        rt = _realtime_marks(d, [0, 5, 10, 15], [2.50, 2.50, 2.80, 3.00])
+        result = estimate_options_pnl(trade, atm, realtime_marks=rt)
+        assert np.isnan(result['theta_cost']), \
+            "realtime theta_cost must be NaN — theta drag is folded " \
+            "into the observed mark already"
+
+    def test_fallback_row_has_numeric_delta_pnl_and_theta_cost(self):
+        d = date(2020, 7, 31)
+        trade = _trade(entry_min=9*60+35, hold_min=30.0, trade_date=d,
+                       return_pct=0.005)
+        atm = _atm_chain_row(strike=500.0, mark=2.50,
+                             expiration=date(2020, 8, 1))
+        result = estimate_options_pnl(trade, atm, realtime_marks=None)
+        assert result['data_source'] == DATA_SOURCE_EMPIRICAL_FALLBACK
+        # Decomposed: eff_delta * |chg| = 0.5 * (500 * 0.005) = 1.25
+        assert result['delta_pnl'] == pytest.approx(1.25, abs=0.01)
+        # |theta| * hold/1440 = 0.20 * 30/1440 = 0.00417
+        assert result['theta_cost'] == pytest.approx(0.00417, abs=0.001)
+
+    def test_pandas_mean_skips_realtime_rows_safely(self):
+        """The whole point of the NaN: pd.DataFrame(['delta_pnl']).mean()
+        across mixed rows must reflect ONLY the fallback semantics, not
+        an incoherent mix of gross-P&L (realtime) and delta-attributed
+        (fallback)."""
+        d_realtime = date(2026, 5, 22)
+        d_fallback = date(2020, 7, 31)
+        trade_rt = _trade(entry_min=9*60+35, hold_min=10.0,
+                          trade_date=d_realtime)
+        trade_fb = _trade(entry_min=9*60+35, hold_min=30.0,
+                          trade_date=d_fallback, return_pct=0.005)
+        atm = _atm_chain_row(strike=500.0, mark=2.50, expiration=d_realtime)
+        rt = _realtime_marks(d_realtime, [0, 5, 10, 15],
+                             [2.50, 2.50, 2.80, 3.00])
+        r1 = estimate_options_pnl(trade_rt, atm, realtime_marks=rt)
+        r2 = estimate_options_pnl(trade_fb, atm, realtime_marks=None)
+        df = pd.DataFrame([r1, r2])
+        # NaN-skipped mean equals the fallback row's value alone — not
+        # corrupted by averaging in a 0.30 gross-P&L from the realtime row.
+        assert df['delta_pnl'].mean() == pytest.approx(1.25, abs=0.01)
+        assert df['theta_cost'].mean() == pytest.approx(0.00417, abs=0.001)

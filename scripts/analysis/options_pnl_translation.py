@@ -565,6 +565,32 @@ def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series,
 
     Returns dict with estimated metrics + ``data_source`` column, or None
     if neither path yields a value (atm_opt empty or all-NaN).
+
+    Column semantics by data_source
+    -------------------------------
+    The two paths populate different subsets of the result row because the
+    realtime branch measures realized P&L directly and cannot decompose it
+    into Greeks contributions without re-pricing. The empirical branch
+    explicitly models each Greek's contribution. Branch your downstream
+    aggregation on ``data_source`` — these columns are NOT comparable
+    across paths:
+
+    | Column           | realtime          | empirical_fallback     |
+    |------------------|-------------------|------------------------|
+    | mark             | entry mid (live)  | EOD mid                |
+    | delta, theta     | entry-snap Greeks | EOD Greeks             |
+    | delta_pnl        | NaN               | eff_delta × |chg|      |
+    | theta_cost       | NaN               | |theta| × hold/1440    |
+    | spread_cost      | observed at entry | EOD (ask-bid)/2        |
+    | net_pnl_dollar   | mark_exit - mark_entry - spread (REALIZED) | delta_pnl - theta_cost - spread (MODELED) |
+    | net_pnl_pct      | net_pnl_dollar / mark_entry                | net_pnl_dollar / mark                     |
+    | option_win       | int(net_pnl_dollar > 0)                    | int(net_pnl_dollar > 0)                   |
+
+    Aggregations like "mean delta_pnl across all trades" are only meaningful
+    when filtered to ``data_source == 'empirical_fallback'``. Aggregations
+    on ``net_pnl_dollar`` / ``net_pnl_pct`` / ``option_win`` are comparable
+    across paths (both describe per-trade $ P&L), though realtime rows are
+    realized and fallback rows are upper-bound estimates.
     """
     if atm_opt.empty:
         return None
@@ -601,15 +627,21 @@ def estimate_options_pnl(trade: pd.Series, atm_opt: pd.Series,
                 else:
                     rt_spread_cost = rt_mark_entry * 0.02
                 rt_net = rt_mark_exit - rt_mark_entry - rt_spread_cost
+                # delta_pnl and theta_cost are intentionally NaN in the
+                # realtime row. The empirical branch's `delta_pnl =
+                # eff_delta * |chg|` is a Greeks-decomposition; the realtime
+                # branch measures realized mark-to-mark and cannot attribute
+                # the gross to specific Greeks without re-pricing. Setting
+                # the same column name to a different meaning (gross_pnl)
+                # would silently corrupt any downstream `df['delta_pnl'].mean()`
+                # aggregation that mixes the two sources. NaN flags the
+                # column as N/A and forces consumers to branch on
+                # data_source — see docstring "Column semantics" table.
                 rt_result = {
                     'mark':              rt_mark_entry,
                     'delta':             float(entry_obs.get('delta', delta)),
                     'theta':             float(entry_obs.get('theta', theta)),
-                    # Realized "delta P&L" is the full mid-to-mid less spread;
-                    # the row keeps the column for shape parity with the
-                    # empirical path even though the components aren't
-                    # separable from a direct observation.
-                    'delta_pnl':         rt_mark_exit - rt_mark_entry,
+                    'delta_pnl':         np.nan,
                     'theta_cost':        np.nan,
                     'spread_cost':       rt_spread_cost,
                     'net_pnl_dollar':    rt_net,
@@ -726,16 +758,31 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
 
     df = pd.DataFrame(results)
 
+    # Track 2 phase 2a: data_source partitions the result set into rows
+    # whose Greeks decomposition is meaningful (empirical_fallback) and
+    # rows where it isn't (realtime — delta_pnl/theta_cost are NaN by
+    # design; see estimate_options_pnl docstring). Aggregations cross-cut
+    # by data_source so the report doesn't mix incomparable columns.
+    rt_count = int((df['data_source'] == DATA_SOURCE_REALTIME).sum()) \
+               if 'data_source' in df.columns else 0
+    fb_count = len(df) - rt_count
+    fb_df = df[df['data_source'] == DATA_SOURCE_EMPIRICAL_FALLBACK] \
+            if 'data_source' in df.columns else df
+
     # --- Underlying vs Options comparison ---
     n             = len(df)
     und_wr        = df['underlying_win'].mean()
     opt_wr        = df['option_win'].mean()
     und_exp       = df['underlying_ret'].mean()
     opt_exp       = df['net_pnl_pct'].mean()
+    # mark / net_pnl / option_win are comparable across paths
     avg_mark      = df['mark'].mean()
-    avg_theta_c   = df['theta_cost'].mean()
     avg_spread_c  = df['spread_cost'].mean()
-    avg_delta_pnl = df['delta_pnl'].mean()
+    # delta_pnl / theta_cost are only populated on the empirical-fallback
+    # path. Compute on the fallback subset to avoid silently-NaN-skipped
+    # means that would label a "0-fallback all-realtime" run with N/A.
+    avg_delta_pnl = fb_df['delta_pnl'].mean() if fb_count else float('nan')
+    avg_theta_c   = fb_df['theta_cost'].mean() if fb_count else float('nan')
 
     # Sharpe on options returns
     daily_opt = df.groupby('trade_date')['net_pnl_pct'].sum()
@@ -747,13 +794,6 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
     # By direction breakdown
     call_df = df[df['direction'] == 'CALL']
     put_df  = df[df['direction'] == 'PUT']
-
-    # Track 2 phase 2a: data_source column populated per-row. Caveat is
-    # only shown if any row used the empirical fallback (pre-Track-0 date
-    # or trade boundary outside snapshot tolerance).
-    rt_count = int((df['data_source'] == DATA_SOURCE_REALTIME).sum()) \
-               if 'data_source' in df.columns else 0
-    fb_count = len(df) - rt_count
 
     out = f'\n### {combo_label}\n\n'
     out += f'> **P&L source mix**: realtime mark-to-mark on {rt_count:,} '
@@ -767,6 +807,14 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
         )
     out += '\n'
 
+    # `delta_pnl` / `theta_cost` labels carry "(fallback rows)" suffix so
+    # the reader knows the average is scoped to the empirical subset and
+    # doesn't include realtime trades (whose Greeks aren't decomposable).
+    def _fmt_dollar_or_na(val, sign=False):
+        if val is None or (isinstance(val, float) and val != val):
+            return 'N/A'
+        return (f'${val:+.3f}' if sign else f'${val:.3f}')
+
     out += md_table(['Metric', 'Underlying', 'Options (estimated)'], [
         ['Trades analysed',   fmt_num(n),              fmt_num(n)],
         ['**Win Rate**',      f'**{fmt_pct(und_wr * 100)}**',
@@ -774,8 +822,11 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
         ['**Expectancy**',    fmt_pct(und_exp * 100),  fmt_pct(opt_exp * 100)],
         ['Sharpe (daily)',    '—',                      f'{opt_sharpe:.2f}'],
         ['Avg mark price',    '—',                      f'${avg_mark:.2f}'],
-        ['Avg delta P&L',     '—',                      f'${avg_delta_pnl:+.3f}'],
-        ['Avg theta cost',    '—',                      f'−${avg_theta_c:.3f}'],
+        ['Avg delta P&L (fallback rows)',  '—',
+                              _fmt_dollar_or_na(avg_delta_pnl, sign=True)],
+        ['Avg theta cost (fallback rows)', '—',
+                              ('N/A' if fb_count == 0
+                               else f'−${avg_theta_c:.3f}')],
         ['Avg spread cost',   '—',                      f'−${avg_spread_c:.3f}'],
     ]) + '\n'
 
@@ -816,16 +867,27 @@ def analyse_combo(ticker: str, combo_label: str, entry_tf: str, filter_tf: str,
         if sub.empty:
             tod_rows.append([bucket_name, '0', 'N/A', 'N/A', 'N/A', 'N/A'])
             continue
+        # Scope theta-cost average to the fallback subset within this
+        # bucket — realtime rows have NaN theta_cost by design. Show
+        # "N/A" rather than a misleadingly-skipped mean when this bucket
+        # has no fallback rows.
+        sub_fb = sub[sub['data_source'] == DATA_SOURCE_EMPIRICAL_FALLBACK] \
+                 if 'data_source' in sub.columns else sub
+        if len(sub_fb):
+            theta_cell = f'${sub_fb["theta_cost"].mean():.3f}'
+        else:
+            theta_cell = 'N/A'
         tod_rows.append([
             bucket_name,
             fmt_num(len(sub)),
             fmt_pct(sub['option_win'].mean() * 100),
             fmt_pct(sub['underlying_win'].mean() * 100),
-            f'${sub["theta_cost"].mean():.3f}',
+            theta_cell,
             fmt_pct(sub['net_pnl_pct'].mean() * 100),
         ])
     out += md_table(
-        ['Period', 'Trades', 'Options WR', 'Underlying WR', 'Avg Theta Cost', 'Expectancy'],
+        ['Period', 'Trades', 'Options WR', 'Underlying WR',
+         'Avg Theta Cost (fallback only)', 'Expectancy'],
         tod_rows,
     ) + '\n'
     # Caveat applies only to fallback rows — realtime rows measure P&L
