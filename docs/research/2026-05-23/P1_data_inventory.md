@@ -138,36 +138,99 @@ Phase 4's feature engineering will draw on:
 | `earnings_options_snapshots` | `(symbol, snapshot_date)` | single-stock options Greeks — for non-ETF gamma analysis at the symbol level |
 | `backtest_trades` | `(run_id, ticker, entry_time)` | existing backtest results — benchmark to beat |
 
-## 4. Known gaps + remediation
+## 4. Gaps remediated during Phase 1
 
-### 4.1 VIX — NOT in DB
+### 4.1 VIX backfilled (resolved)
 
-Critical blocker for Phase 2 (VIX-tercile conditioning) and Phase 4
-(vol-regime feature). Need to backfill:
+**Status:** ✅ Resolved. AlphaVantage does NOT serve VIX (CBOE-licensed
+index, not a stock). FRED works in production but is blocked from the
+sandbox firewall. **yfinance** is reachable from the sandbox and serves
+clean daily OHLC for `^VIX`, `^VIX3M`, `^VVIX` back to 2015-01-02.
 
-- **Source 1:** AlphaVantage `TIME_SERIES_DAILY` symbol `VIX` or `^VIX`
-- **Source 2:** yfinance `^VIX` (cheaper, no API rate limits)
-- **Recommendation:** add a one-shot Cloud Run Job
-  `gcp/fetchers/fetch_vix_history.py` that pulls `^VIX`, `^VIX3M`,
-  `^VVIX` daily back to 2015 into `market_data_daily` with the same
-  schema as the rest. ~$0.02/run, one-time.
+8,584 rows backfilled to `market_data_daily` via
+[`gcp/queries/p1_vix_backfill.sql`](../../../gcp/queries/p1_vix_backfill.sql)
+(chunked 6 × 1500-row INSERTs with ON CONFLICT DO UPDATE).
 
-Cost estimate: <$0.10 of credits + one-time job dispatch.
+VIX (^VIX) summary statistics over the 2015-2026 window:
 
-### 4.2 Intraday-cadence options-chain history (pre-Track-0)
+| stat | value |
+|---|---|
+| N days | 2,864 |
+| Range | 2015-01-02 → 2026-05-22 |
+| min / max | 9.14 / 82.69 (COVID March 2020 peak) |
+| Mean | 18.38 |
+| **Tercile thresholds** | **p33 = 14.65, p67 = 19.40** |
+| **Phase 2 buckets** | LOW (<14.65), MID (14.65-19.40), HIGH (>19.40) |
 
-Genuine vendor limitation — nobody sells historical 5-min options
-snapshots. Pre-Track-0 analysis uses prior-day EOD chain, which is
-what production also uses on D+1 morning. This is the **production
-replay path**, not a proxy. The constraint just means within-session
-wall updates aren't captured for the historical window — same as the
-live monitor was running until Track 0 deployed.
+Side-effect: had to patch `gcp/queries/run_query.py` to lift
+sqlparse's `MAX_GROUPING_TOKENS` from 10k to 5M so large multi-row
+INSERTs can be parsed without recursing into the per-statement
+clean_for_wrap. The patch helps any future large-data backfill.
 
-### 4.3 Broader-universe intraday coverage
+### 4.2 Broader-universe intraday coverage — backfilled (resolved)
 
-`market_data_intraday_other` GROUP BY ticker times out (table too
-large). Targeted probe for the top-100 universe is in flight; results
-will populate this section.
+**Status:** ✅ Resolved. Initial probe showed 7 names (SNOW, DELL,
+SNPS, COST, PLTR, PG, PWR) with only 1-3 days of intraday bars while
+the other 90 had ~649 trading days. Ran a targeted Cloud Run Job
+execution (`fetch-alphavantage-intraday-rnpw4`) with
+`--symbol="SNOW DELL SNPS COST PLTR PG PWR" --start-date=2024-01-01`.
+Completed in ~9 minutes.
+
+Post-backfill verification — all 7 names now have full coverage:
+
+| ticker | n_bars | n_days | range |
+|---|---|---|---|
+| PLTR | 572,007 | 649 | 2024-01-02 → 2026-05-22 |
+| COST | 459,552 | 649 | 2024-01-02 → 2026-05-22 |
+| SNOW | 450,789 | 649 | 2024-01-02 → 2026-05-22 |
+| DELL | 445,431 | 649 | 2024-01-02 → 2026-05-22 |
+| PG | 358,211 | 648 | 2024-01-02 → 2026-05-22 |
+| SNPS | 325,422 | 648 | 2024-01-02 → 2026-05-22 |
+| PWR | 258,370 | 649 | 2024-01-02 → 2026-05-22 |
+
+### 4.3 REALTIME options data — empty as of 2026-05-23
+
+**Status:** ⚠️ Empty (not a Phase 2 blocker). REALTIME-session rows
+in `etf_options_snapshots`:
+
+- **1 snapshot_date total**: 2026-05-23 (today, Saturday)
+- **2 distinct timestamps**: 01:46 + 02:26 UTC (= 21:46 + 22:26 ET
+  Friday night, after market close)
+- 3 (date, ticker) pairs for SPY/IWM/QQQ; no other tickers
+
+The Track 0 realtime fetcher (`fetch-av-realtime-options`) appears to
+have only run as a post-close test on Friday 5/22 evening — it has
+NOT yet been triggered during an actual RTH session. This is a
+**separate deployment / scheduler issue** worth investigating; it
+does not block Phase 2 because:
+
+1. Production's live `signal_monitor` reads the **prior-day EOD
+   chain** at session start (`_latest_gamma_for_ticker_pure`)
+2. We have the prior-day EOD chain for every trading day back to
+   2015 via `data_source='alphavantage', market_session='EOD'`
+3. Phase 2's "replay D-1 EOD chain against D's 1-min bars" IS the
+   production replay path
+
+Intraday-cadence (within-session) gamma updates simply don't exist
+for any historical date — they would only exist going forward once
+the realtime fetcher's RTH schedule is verified. No vendor sells
+historical 5-min options snapshots; this is a "record from now"
+data product.
+
+**Recommended follow-up (outside this audit):** verify
+`fetch-av-realtime-options` Cloud Scheduler job has an RTH-window
+trigger (M-F, 09:30-16:00 ET, every 5 min). If it's misconfigured
+or paused, no amount of waiting will accumulate the data.
+
+### 4.4 Top-100 universe intraday coverage (resolved)
+
+`market_data_intraday_other` GROUP BY ticker over the whole table
+times out — instead we probed for the specific 97 non-ETF names in
+the top-100 universe. 96 of 97 names returned data; the 7 thin names
+were backfilled per §4.2.
+
+Full coverage table:
+[`data/universe_intraday_coverage.csv`](data/universe_intraday_coverage.csv).
 
 ## 5. What this means for the next phases
 
@@ -216,10 +279,24 @@ will populate this section.
 - [`gcp/queries/p1_baselines.sql`](../../../gcp/queries/p1_baselines.sql)
   — reproducible baselines query
 
-## 7. Open follow-ups (post-Phase-1)
+## 7. Phase 1 close-out
 
-1. **VIX backfill** — block Phase 2 vol-regime conditioning until done
-2. **Schema fixes** in plan for: `news_sentiment.published_ts` (not
-   `published_at`), `strat_levels.as_of` (not `date`),
-   `earnings_options_snapshots.symbol` (not `ticker`)
-3. **Intraday probe for top-100** in flight — results pending
+All Phase 1 questions resolved. Moving on to Phase 2 with the
+following data envelope locked-in:
+
+| dimension | scope | notes |
+|---|---|---|
+| Gamma alert universe (Phase 2) | SPY, IWM, QQQ | the only tickers with EOD options chains; ~2,860 trading days |
+| Strat audit universe (Phase 3) | Top-100 by ADV | 10-year daily history for all; intraday for 97/97 |
+| Feature importance universe (Phase 4) | union of P2 + P3 universes | gamma features only for P2 universe |
+| Walk-forward universe (Phase 5) | Top-100 | use signed-return distributions from P1 baselines as the noise floor |
+
+**Open items NOT addressed by Phase 1 but flagged for separate work:**
+
+1. The Track 0 realtime-options fetcher is not running during RTH —
+   needs Cloud Scheduler trigger verification (§4.3). Not a Phase 2
+   blocker but worth fixing so future audits CAN run with intraday
+   gamma cadence.
+2. Schema typos in the original plan corrected (this doc, §3 table).
+3. Patch to `run_query.py` (sqlparse token cap) is reusable for
+   future large-data backfills.
