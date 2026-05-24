@@ -4,47 +4,7 @@
 
 ## TL;DR
 
-The dataset-first rebuild (per-TF tables with strat sequence + 30+ indicators
-+ VIX + GEX + VEX context per bar) revealed real signal that the earlier
-P1-P6 aggregate-first audits missed.
-
-**Headline: model walk-forward IC scales with timeframe, and 15m+ TFs
-produce positive mean L/S Sharpe across 5 different regime periods
-(after 5 bps/leg transaction costs):**
-
-| TF | Lasso mean IC | Mean L/S Sharpe (after cost) | Mean bps/day |
-|---|---|---|---|
-| 1m | +0.019 | -0.30 | +0.2 (noise) |
-| 5m | +0.022 | +0.17 | +0.7 |
-| 15m | +0.026 | +0.31 (LGBM **+1.14**) | +2.0 |
-| 30m | +0.029 | **+0.57** (LGBM +1.10) | +2.8 |
-| **60m** | +0.025 | **+2.52** (Ridge +2.58) | **+12.3** |
-
-**What earlier audits missed.** P4.5 trained on daily bars across 100
-tickers, got IC ≈ 0.034 but cost-adjusted Sharpe was negative. The bar-
-level multi-TF dataset per ETF reveals that the same kind of signal
-amplifies at intraday horizons when conditioned on strat state.
-
-**Practical caveats.** The L/S Sharpe is a within-day cross-sectional
-sort across BARS (3 tickers × N bars/day) — measures the model's
-RANKING ability, not a directly deployable PnL. To translate into
-real trades you need either a wider universe for proper cross-section
-or a per-ticker timing model on top.
-
-**Linear vs tree.** Lasso ≈ Ridge in IC throughout (signal is
-approximately linear). LightGBM has HIGHER Sharpe at 15m and 30m
-(+1.14, +1.10) despite similar IC — non-linear interactions help
-at intraday horizons. At 60m, linear wins on Sharpe (+2.52 Lasso
-vs +1.42 LGBM).
-
-**Answer to the original question — IS strat predictive?** Yes,
-conditionally:
-1. Signal exists at every TF (IC > 0 across all 5 folds)
-2. Scales with horizon
-3. Hits "tradeable if deployed via cross-sectional or timing strategy"
-   at 30-60m TF
-4. The strat-sequence + dealer-positioning regime + indicator stack
-   together carry the signal — none of them alone (per P3/P4/P5)
+(populated by inspecting the artifacts)
 
 ## 1. Model walk-forward summary (cross-TF view)
 
@@ -58,15 +18,36 @@ Mean IC + cost-adjusted Sharpe across 5 purged walk-forward folds per TF:
 | 5m | lasso | 0.0219 | 0.0244 | 0.1748 | 0.726 | 0.4644 |
 | 5m | lgbm | 0.0193 | 0.014 | -0.2012 | 0.15 | 0.4486 |
 | 5m | ridge | 0.0209 | 0.0242 | 0.1198 | 0.622 | 0.459 |
+| 15m | bayes_ridge | 0.027 | 0.03 | -0.2838 | 0.224 | 0.465 |
+| 15m | elasticnet | 0.0266 | 0.0281 | 0.2634 | 1.82 | 0.4826 |
 | 15m | lasso | 0.0264 | 0.0277 | 0.3098 | 1.966 | 0.4818 |
+| 15m | lasso_sparse | 0.0271 | 0.0288 | 0.3028 | 1.898 | 0.4816 |
 | 15m | lgbm | 0.023 | 0.0202 | 1.136 | 3.852 | 0.5066 |
+| 15m | lgbm_shallow | 0.0217 | 0.0204 | 0.361 | 0.862 | 0.474 |
+| 15m | pls10 | 0.0257 | 0.0282 | -1.489 | -3.968 | 0.4214 |
+| 15m | pls5 | 0.0194 | 0.0242 | -0.4472 | -0.598 | 0.452 |
 | 15m | ridge | 0.0232 | 0.0238 | 0.331 | 2.202 | 0.479 |
+| 15m | ridge_strong | 0.0265 | 0.028 | 0.33 | 2.04 | 0.483 |
+| 30m | bayes_ridge | 0.0267 | 0.0327 | 0.93 | 4.66 | 0.5038 |
+| 30m | elasticnet | 0.029 | 0.0335 | 0.5208 | 2.544 | 0.4782 |
 | 30m | lasso | 0.029 | 0.0335 | 0.572 | 2.772 | 0.4814 |
+| 30m | lasso_sparse | 0.029 | 0.0338 | 0.5854 | 2.842 | 0.48 |
 | 30m | lgbm | 0.0151 | 0.0164 | 1.1038 | 5.316 | 0.5034 |
+| 30m | lgbm_shallow | 0.0268 | 0.0179 | 0.4812 | 1.946 | 0.4956 |
+| 30m | pls10 | 0.0239 | 0.0292 | 0.9084 | 4.93 | 0.4994 |
+| 30m | pls5 | 0.0215 | 0.0278 | 0.6756 | 3.7 | 0.4862 |
 | 30m | ridge | 0.0296 | 0.0345 | 0.496 | 2.604 | 0.4784 |
+| 30m | ridge_strong | 0.0293 | 0.0341 | 0.5426 | 2.648 | 0.4758 |
+| 60m | bayes_ridge | 0.0235 | 0.0104 | 2.5912 | 12.766 | 0.548 |
+| 60m | elasticnet | 0.0254 | 0.014 | 2.4898 | 12.114 | 0.5442 |
 | 60m | lasso | 0.0254 | 0.0137 | 2.5194 | 12.252 | 0.546 |
+| 60m | lasso_sparse | 0.0253 | 0.0135 | 2.522 | 12.342 | 0.545 |
 | 60m | lgbm | 0.0351 | 0.0138 | 1.4168 | 6.472 | 0.5146 |
+| 60m | lgbm_shallow | 0.032 | 0.0076 | 1.267 | 5.884 | 0.4944 |
+| 60m | pls10 | 0.0213 | 0.0092 | 2.627 | 13.222 | 0.5452 |
+| 60m | pls5 | 0.0163 | 0.0043 | 2.0444 | 11.306 | 0.5282 |
 | 60m | ridge | 0.0262 | 0.0147 | 2.5756 | 12.52 | 0.5468 |
+| 60m | ridge_strong | 0.0256 | 0.0145 | 2.4442 | 11.962 | 0.5416 |
 
 ## 2. Top features by LGBM gain (per TF)
 
@@ -125,7 +106,7 @@ Mean IC + cost-adjusted Sharpe across 5 purged walk-forward folds per TF:
 | 4 | `macd_signal` | 57739986 |
 | 5 | `total_gex` | 55797880 |
 | 6 | `atr_14` | 54321181 |
-| 7 | `total_vex` | 51395105 |
+| 7 | `total_vex` | 51434467 |
 | 8 | `price_vs_vwap` | 48250128 |
 | 9 | `distance_to_king_pct` | 47494463 |
 | 10 | `distance_to_gate_pct` | 46149552 |
