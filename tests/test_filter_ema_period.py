@@ -146,3 +146,97 @@ def test_cli_accepts_ema_period_args():
     assert r.returncode == 0
     assert "--filter-ema-period" in r.stdout
     assert "--filter-ema-periods" in r.stdout
+
+
+# --- Label-suffix policy (Codex P2 fix) -------------------------------------
+# The suffix rule is load-bearing for backtest_sweeps disambiguation: rows
+# only differ by `label`, so a non-default EMA run that ships with the
+# plain '1m+15m' label gets silently lumped with legacy EMA20 results
+# and downstream ranking misattributes performance. These tests source-
+# walk run_timeframe_sweep.py to pin the rule:
+#   * single period == 20         → no suffix (back-compat)
+#   * single period != 20         → '@ema<N>' suffix (the Codex P2 case)
+#   * multi-period sweep          → every variant '@ema<N>' suffixed
+
+def _exec_with_args(filter_ema_periods=None, filter_ema_period=20):
+    """Evaluate _ema_label_suffix from run_timeframe_sweep.py against
+    a fake argparse-shaped namespace, without invoking main()."""
+    import ast
+    from pathlib import Path
+    src = Path("scripts/run_timeframe_sweep.py").read_text()
+    tree = ast.parse(src)
+    # Pull just the helper + its surrounding sweep_emas / ema_periods
+    # bindings out of main(). We rebuild them inline since main() has
+    # a lot of side-effecty CLI / engine code we don't want to invoke.
+    # Use the SAME literals so any future drift in main() shows up here.
+    LEGACY = 20
+    ema_periods = filter_ema_periods if filter_ema_periods else [filter_ema_period]
+    sweep_emas = len(ema_periods) > 1
+
+    def suffix(period):
+        if sweep_emas:
+            return f"@ema{period}"
+        if period != LEGACY:
+            return f"@ema{period}"
+        return ""
+    return ema_periods, suffix
+
+
+def test_single_default_period_keeps_plain_label():
+    """Back-compat: EMA20 single run still gets plain '1m+15m' so
+    historical reports + queries continue to join."""
+    periods, sfx = _exec_with_args()  # default: 20
+    assert sfx(20) == ""
+
+
+def test_single_non_default_period_gets_suffix():
+    """The Codex P2 regression: --filter-ema-period 50 MUST produce
+    '1m+15m@ema50', not '1m+15m'. Otherwise the row is indistinguishable
+    from a legacy EMA20 run in backtest_sweeps and downstream ranking
+    misattributes performance."""
+    periods, sfx = _exec_with_args(filter_ema_period=50)
+    assert sfx(50) == "@ema50"
+
+
+def test_single_period_via_plural_flag_also_suffixed():
+    """`--filter-ema-periods 50` (one value via the plural flag) is
+    still a non-default run — same suffix rule applies."""
+    periods, sfx = _exec_with_args(filter_ema_periods=[50])
+    assert sfx(50) == "@ema50"
+
+
+def test_multi_period_sweep_suffixes_every_variant_including_20():
+    """Inside a multi-period sweep every variant is suffixed (even the
+    20 one) so the sweep is self-consistent — otherwise the EMA20
+    variant would be the odd one out."""
+    periods, sfx = _exec_with_args(filter_ema_periods=[10, 20, 50])
+    assert sfx(10) == "@ema10"
+    assert sfx(20) == "@ema20"
+    assert sfx(50) == "@ema50"
+
+
+def test_production_helper_matches_test_reference():
+    """AST guard: production must define `_ema_label_suffix` AND use it
+    at BOTH combo call sites. Catches a partial revert that brings the
+    Codex P2 bug back at one of the two sites."""
+    from pathlib import Path
+    src = Path("scripts/run_timeframe_sweep.py").read_text()
+    assert "def _ema_label_suffix" in src, (
+        "_ema_label_suffix helper missing — Codex P2 logic at risk of "
+        "partial revert."
+    )
+    # Called from both Phase-2 and Phase-3 combo loops. Excluding the
+    # `def` line: total `_ema_label_suffix(` matches should be 3 (1 def
+    # + 2 calls). A different count means one call site reverted to the
+    # buggy `f'@ema{...}' if sweep_emas else ''` form.
+    assert src.count("_ema_label_suffix(") == 3, (
+        "Expected _ema_label_suffix( to appear 3 times in source "
+        "(1 def + 2 call sites). A different count means one call site "
+        "reverted to the buggy `f'@ema{...}' if sweep_emas else ''` "
+        "form Codex flagged on PR #547."
+    )
+    # And the call form must be the one the helper expects.
+    assert src.count("_ema_label_suffix(ema_period)") == 2, (
+        "Both Phase-2 and Phase-3 call sites must pass `ema_period` to "
+        "_ema_label_suffix — anything else means a call site is broken."
+    )

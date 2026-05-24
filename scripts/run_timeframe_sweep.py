@@ -524,10 +524,17 @@ def main():
     if '1m' in tf_results:
         combo_rows.append(result_to_row('1m (baseline)', tf_results['1m']))
 
-    # Resolve the EMA period(s) to test. Single value → preserve the
-    # legacy label '1m+15m' (backward compatible). A multi-value sweep
-    # → label becomes '1m+15m@ema10' so each variant is its own
-    # backtest_sweeps row (UNIQUE keyed on run_id+ticker+label).
+    # Resolve the EMA period(s) to test. The legacy hardcoded value was
+    # 20, so any run that uses EMA=20 keeps the plain label '1m+15m'
+    # (backward compatible — old reports / queries still join). Any
+    # NON-default period (single or part of a sweep) gets the
+    # '@ema<N>' suffix so it's distinguishable in backtest_sweeps —
+    # otherwise a `--filter-ema-period 50` run would land with
+    # label='1m+15m' and be silently lumped with legacy EMA20 results
+    # (Codex P2 caught this on PR #547). Inside a multi-period sweep
+    # EVERY variant is suffixed (including 20) so the sweep is
+    # self-consistent.
+    LEGACY_DEFAULT_EMA = 20
     ema_periods = (
         args.filter_ema_periods
         if args.filter_ema_periods
@@ -535,12 +542,19 @@ def main():
     )
     sweep_emas = len(ema_periods) > 1
 
+    def _ema_label_suffix(period: int) -> str:
+        if sweep_emas:
+            return f"@ema{period}"
+        if period != LEGACY_DEFAULT_EMA:
+            return f"@ema{period}"
+        return ""
+
     for htf in args.combos:
         if htf not in TIMEFRAMES or TIMEFRAMES[htf]['resample'] is None:
             continue
 
         for ema_period in ema_periods:
-            suffix = f"@ema{ema_period}" if sweep_emas else ""
+            suffix = _ema_label_suffix(ema_period)
             label = f"1m+{htf}{suffix}"
             print(f"  [{label} filter] Running combination backtest...")
 
@@ -594,7 +608,7 @@ def main():
 
             for entry_tf, filter_tf in pairs:
                 for ema_period in ema_periods:
-                    suffix = f"@ema{ema_period}" if sweep_emas else ""
+                    suffix = _ema_label_suffix(ema_period)
                     label = f'{entry_tf}+{filter_tf}{suffix}'
                     print(f"  [{label}] Running {entry_tf} entries filtered by {filter_tf} trend...")
 
